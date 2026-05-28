@@ -15,6 +15,7 @@ interface LoginResponse {
 	name: string;
 	email: string;
 	roles: string[];
+	permissions?: string[];
 	clientId: string | null;
 }
 
@@ -31,7 +32,9 @@ function mapLoginResponseToUser(response: LoginResponse): User {
 		name: response.name,
 		clientId: response.clientId,
 		roles: response.roles,
-		permissions: [], // Permissions are loaded separately or derived from roles
+		// Flat list of permission codes the backend resolved from the
+		// user's roles. Empty when the backend doesn't ship them.
+		permissions: response.permissions ?? [],
 	};
 }
 
