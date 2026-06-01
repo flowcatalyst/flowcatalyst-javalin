@@ -318,17 +318,33 @@ async function saveUser() {
 
 	saving.value = true;
 	try {
-		const updatePayload: { name: string; scope?: "ANCHOR" | "PARTNER" | "CLIENT"; clientId?: string | null } = {
-			name: editName.value,
-			scope: editScope.value ?? undefined,
-		};
-		if (editScope.value === "CLIENT") {
-			updatePayload.clientId = editClientId.value;
-		}
-		const updated = await usersApi.update(userId, updatePayload);
+		// 1. Display field (name) via the plain update.
+		const updated = await usersApi.update(userId, { name: editName.value });
 		user.value!.name = updated.name;
-		user.value!.scope = updated.scope;
-		user.value!.clientId = updated.clientId;
+
+		// 2. Scope / client association is a separate, anchor-gated change with
+		//    explicit intent. Only call it when it actually changed.
+		const scopeChanged = editScope.value !== user.value!.scope;
+		const clientChanged = editClientId.value !== (user.value!.clientId ?? null);
+		if (scopeChanged || clientChanged) {
+			let assoc: User | null = null;
+			if (editScope.value === "ANCHOR") {
+				assoc = await usersApi.setClientAssociation(userId, "*");
+			} else if (editScope.value === "CLIENT" && editClientId.value) {
+				assoc = await usersApi.setClientAssociation(userId, editClientId.value, "CHANGE_CLIENT");
+			} else if (editScope.value === "PARTNER" && editClientId.value) {
+				assoc = await usersApi.setClientAssociation(userId, editClientId.value, "TO_PARTNER");
+			} else if (editScope.value === "PARTNER" || editScope.value === "CLIENT") {
+				toast.error("Error", "Select a client for CLIENT/PARTNER scope");
+				saving.value = false;
+				return;
+			}
+			if (assoc) {
+				user.value!.scope = assoc.scope;
+				user.value!.clientId = assoc.clientId;
+			}
+		}
+
 		editMode.value = false;
 		toast.success("Success", "User updated successfully");
 	} catch (e: unknown) {
@@ -734,15 +750,15 @@ function goBack() {
             <span v-else>—</span>
           </div>
 
-          <div v-if="editMode ? editScope === 'CLIENT' : user.scope === 'CLIENT'" class="info-item">
-            <label>Client</label>
+          <div v-if="editMode ? (editScope === 'CLIENT' || editScope === 'PARTNER') : user.scope === 'CLIENT'" class="info-item">
+            <label>{{ editScope === 'PARTNER' ? 'Client to grant' : 'Client' }}</label>
             <Dropdown
               v-if="editMode"
               v-model="editClientId"
               :options="clients"
               optionLabel="name"
               optionValue="id"
-              placeholder="Select client"
+              :placeholder="editScope === 'PARTNER' ? 'Select a client to grant' : 'Select client'"
               class="w-full"
               filter
             />

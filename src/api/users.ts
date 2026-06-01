@@ -40,10 +40,14 @@ export interface ClientAccessGrant {
 }
 
 export interface UpdateUserRequest {
-	name: string;
-	scope?: PrincipalScope;
-	clientId?: string | null;
+	name?: string;
+	active?: boolean;
+	/** Optional; asserted against the stored email — a different value is rejected, not a rename. */
+	email?: string;
 }
+
+/** Explicit-intent change of a user's scope/client association (anchor-gated). */
+export type ClientAssociationMode = "CHANGE_CLIENT" | "TO_PARTNER";
 
 export interface RoleAssignment {
 	id: string;
@@ -152,6 +156,23 @@ export const usersApi = {
 		return apiFetch(`/principals/${id}`, {
 			method: "PUT",
 			body: JSON.stringify(data),
+		});
+	},
+
+	/**
+	 * Change a user's scope/client association with explicit intent (anchor-gated).
+	 * Pass clientId "*" to make the user an ANCHOR; otherwise supply a mode:
+	 * CHANGE_CLIENT (replace home client) or TO_PARTNER (promote to PARTNER,
+	 * keeping the old client and adding the new one).
+	 */
+	setClientAssociation(
+		id: string,
+		clientId: string,
+		mode?: ClientAssociationMode,
+	): Promise<User> {
+		return apiFetch(`/principals/${id}/client-association`, {
+			method: "PUT",
+			body: JSON.stringify({ clientId, mode }),
 		});
 	},
 
