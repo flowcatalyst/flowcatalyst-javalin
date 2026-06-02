@@ -46,7 +46,11 @@ function searchAppCodes(event: { query: string }) {
 }
 
 // Validation
-const CODE_PATTERN = /^[a-z][a-z0-9-]*$/;
+// Each colon-separated segment: starts with a lowercase letter, then
+// lowercase alphanumerics, hyphens, or dots (e.g. an event like
+// `arrival.update`). Mirrors the backend, which only requires four
+// non-empty colon-separated segments.
+const CODE_PATTERN = /^[a-z][a-z0-9.-]*$/;
 
 const isValidSegment = (value: string) => !value || CODE_PATTERN.test(value);
 
@@ -130,7 +134,7 @@ async function onSubmit() {
                 dropdown
               />
               <small v-if="application && !isValidSegment(application)" class="p-error">
-                Lowercase letters, numbers, hyphens only
+                Lowercase letters, numbers, hyphens, dots only
               </small>
             </div>
 
