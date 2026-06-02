@@ -56,7 +56,7 @@ func serveEmbedded(w http.ResponseWriter, r *http.Request) {
 		serveIndex(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil || info.IsDir() {
@@ -90,7 +90,7 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "index.html missing from embedded frontend", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		http.Error(w, "index.html stat failed", http.StatusInternalServerError)
