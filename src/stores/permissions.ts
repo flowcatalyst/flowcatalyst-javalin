@@ -155,6 +155,34 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
 
 	// Developer portal
 	"/developer": "platform:developer:application-openapi:view",
+
+	// Service Accounts
+	"/identity/service-accounts": "platform:iam:service-account:view",
+	"/identity/service-accounts/new": "platform:iam:service-account:create",
+
+	// Connections
+	"/connections": "platform:messaging:connection:view",
+	"/connections/new": "platform:messaging:connection:create",
+
+	// Processes
+	"/processes": "platform:messaging:process:view",
+	"/processes/create": "platform:messaging:process:create",
+
+	// Scheduled Jobs
+	"/scheduled-jobs": "platform:messaging:scheduled-job:view",
+	"/scheduled-jobs/create": "platform:messaging:scheduled-job:create",
+
+	// Events (messaging events)
+	"/events": "platform:messaging:event:view",
+
+	// Platform admin + debug pages (anchor-only on the backend; platform
+	// admins bypass via the role check in the route guard, everyone else is
+	// blocked — matching how /clients is handled).
+	"/platform/cors": "platform:admin:cors:view",
+	"/platform/login-attempts": "platform:admin:login-attempt:view",
+	"/platform/settings/theme": "platform:admin:settings:view",
+	"/platform/debug/events": "platform:messaging:event:view-raw",
+	"/platform/debug/dispatch-jobs": "platform:messaging:dispatch-job:view",
 };
 
 /**
@@ -162,27 +190,22 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
  * Handles dynamic routes like /applications/:id
  */
 export function getRoutePermission(path: string): string | undefined {
-	// First check exact match
+	// Exact match first.
 	if (ROUTE_PERMISSIONS[path]) {
 		return ROUTE_PERMISSIONS[path];
 	}
 
-	// Check for dynamic routes (e.g., /applications/123 -> /applications)
-	// Handle detail pages - they typically need view permission
+	// Otherwise walk up the path and inherit the nearest mapped ancestor's
+	// permission. This guards every detail/sub page (e.g.
+	// /scheduled-jobs/:id/instances, /connections/:id) under its base resource
+	// rather than letting deep routes fall through unguarded. Create/edit pages
+	// keep their own mapping via the exact match above and otherwise inherit the
+	// base view permission as a floor.
 	const segments = path.split("/").filter(Boolean);
-	if (segments.length >= 2) {
-		// Check if last segment looks like an ID (not a keyword like 'new' or 'create')
-		const lastSegment = segments[segments.length - 1];
-		if (
-			lastSegment !== "new" &&
-			lastSegment !== "create" &&
-			lastSegment !== "edit"
-		) {
-			// Try base path
-			const basePath = "/" + segments.slice(0, -1).join("/");
-			if (ROUTE_PERMISSIONS[basePath]) {
-				return ROUTE_PERMISSIONS[basePath];
-			}
+	for (let i = segments.length - 1; i >= 1; i--) {
+		const prefix = "/" + segments.slice(0, i).join("/");
+		if (ROUTE_PERMISSIONS[prefix]) {
+			return ROUTE_PERMISSIONS[prefix];
 		}
 	}
 
