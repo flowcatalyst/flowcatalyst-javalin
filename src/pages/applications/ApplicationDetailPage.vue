@@ -796,6 +796,27 @@ function formatDate(dateString: string) {
   width: 100%;
 }
 
+.redirect-uri-input {
+  display: flex;
+  gap: 8px;
+}
+
+.flex-grow {
+  flex: 1;
+}
+
+.uri-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.field-help {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;
