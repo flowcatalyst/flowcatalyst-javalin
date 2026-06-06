@@ -42,8 +42,11 @@ const form = ref({
 	rememberDeviceDays: 30,
 });
 
-// 2FA only applies to internal-auth (non-OIDC) domains.
-const show2faControls = computed(() => !isExternalIdp.value);
+// 2FA only applies to internal-auth domains: a provider must be selected and
+// it must not be OIDC. Hidden before selection and for OIDC providers.
+const show2faControls = computed(
+	() => !!selectedProvider.value && selectedProvider.value.type !== "OIDC",
+);
 
 function toggle2faMethod(method: TwoFactorMethod, on: boolean) {
 	const set = new Set(form.value.allowed2faMethods);

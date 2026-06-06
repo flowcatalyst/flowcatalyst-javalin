@@ -44,8 +44,11 @@ const editForm = ref({
 	rememberDeviceDays: 30,
 });
 
-// 2FA only applies to internal-auth (non-OIDC) domains.
-const show2faControls = computed(() => !isExternalIdp.value);
+// 2FA only applies to internal-auth domains: the linked provider must be loaded
+// and not OIDC. Hidden for OIDC-linked domains.
+const show2faControls = computed(
+	() => !!provider.value && provider.value.type !== "OIDC",
+);
 
 function toggle2faMethod(method: TwoFactorMethod, on: boolean) {
 	const set = new Set(editForm.value.allowed2faMethods);
@@ -252,16 +255,17 @@ async function saveChanges() {
 			updateData['rememberDeviceDays'] = editForm.value.rememberDeviceDays;
 		}
 
-		const updated = await emailDomainMappingsApi.update(
-			mapping.value.id,
-			updateData,
-		);
-		mapping.value = updated;
+		const id = mapping.value.id;
+		await emailDomainMappingsApi.update(id, updateData);
+		// PUT returns 204 No Content (empty body), so re-fetch the mapping to
+		// refresh the view with the saved values.
+		const refreshed = await emailDomainMappingsApi.get(id);
+		mapping.value = refreshed;
 
 		// Update the selected client display
-		if (updated.primaryClientId) {
+		if (refreshed.primaryClientId) {
 			selectedPrimaryClient.value =
-				clients.value.find((c) => c.id === updated.primaryClientId) || null;
+				clients.value.find((c) => c.id === refreshed.primaryClientId) || null;
 		} else {
 			selectedPrimaryClient.value = null;
 		}

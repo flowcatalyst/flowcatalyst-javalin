@@ -120,11 +120,11 @@ function copyCodes() {
 
 <template>
   <div class="tfa-setup">
-    <div v-if="error" class="error-banner">{{ error }}</div>
+    <div v-if="error" class="tfa-error">{{ error }}</div>
 
     <!-- Choose a method -->
     <template v-if="stage === 'choose'">
-      <p class="hint">
+      <p class="tfa-hint">
         Two-factor authentication adds a second step when you sign in with a
         password. Choose how you'd like to receive your codes.
       </p>
@@ -133,6 +133,7 @@ function copyCodes() {
           v-if="allowedMethods.includes('TOTP')"
           label="Use an authenticator app"
           icon="pi pi-mobile"
+          class="tfa-full"
           :loading="busy"
           @click="chooseTotp"
         />
@@ -141,6 +142,8 @@ function copyCodes() {
           label="Use email codes"
           icon="pi pi-envelope"
           severity="secondary"
+          outlined
+          class="tfa-full"
           :loading="busy"
           @click="chooseEmail"
         />
@@ -149,9 +152,9 @@ function copyCodes() {
 
     <!-- TOTP -->
     <template v-else-if="stage === 'totp'">
-      <p class="hint">
-        Scan or paste this secret into your authenticator app (Google
-        Authenticator, 1Password, Authy…), then enter the 6-digit code.
+      <p class="tfa-hint">
+        Add this secret to your authenticator app (Google Authenticator,
+        1Password, Authy…), then enter the 6-digit code it shows.
       </p>
       <div v-if="totp" class="tfa-secret">
         <code>{{ totp.secret }}</code>
@@ -159,46 +162,54 @@ function copyCodes() {
       </div>
       <InputText
         v-model="code"
+        class="tfa-input"
         placeholder="123456"
         inputmode="numeric"
         autocomplete="one-time-code"
         @keyup.enter="confirmTotp"
       />
-      <div class="tfa-actions">
-        <Button label="Back" text @click="stage = 'choose'" />
-        <Button label="Verify" :loading="busy" :disabled="!code" @click="confirmTotp" />
-      </div>
+      <Button
+        label="Verify"
+        class="tfa-full"
+        :loading="busy"
+        :disabled="!code"
+        @click="confirmTotp"
+      />
+      <Button label="Back" text class="tfa-back" @click="stage = 'choose'" />
     </template>
 
     <!-- Email PIN -->
     <template v-else-if="stage === 'email'">
-      <p class="hint">We sent a code to your email. Enter it below.</p>
+      <p class="tfa-hint">We've emailed you a code. Enter it below.</p>
       <InputText
         v-model="code"
+        class="tfa-input"
         placeholder="123456"
         inputmode="numeric"
         autocomplete="one-time-code"
         @keyup.enter="confirmEmail"
       />
-      <div class="tfa-actions">
-        <Button label="Back" text @click="stage = 'choose'" />
-        <Button label="Verify" :loading="busy" :disabled="!code" @click="confirmEmail" />
-      </div>
+      <Button
+        label="Verify"
+        class="tfa-full"
+        :loading="busy"
+        :disabled="!code"
+        @click="confirmEmail"
+      />
+      <Button label="Back" text class="tfa-back" @click="stage = 'choose'" />
     </template>
 
     <!-- Recovery codes -->
     <template v-else-if="stage === 'recovery'">
-      <p class="hint">
+      <p class="tfa-hint">
         Save these recovery codes somewhere safe. Each can be used once if you
         lose access to your second factor.
       </p>
       <ul class="tfa-recovery">
         <li v-for="c in recoveryCodes" :key="c"><code>{{ c }}</code></li>
       </ul>
-      <div class="tfa-actions">
-        <Button label="Copy codes" icon="pi pi-copy" text @click="copyCodes" />
-        <Button label="I've saved them — continue" @click="finish" />
-      </div>
+      <Button label="Copy codes" icon="pi pi-copy" outlined class="tfa-full" @click="copyCodes" />
+      <Button label="I've saved them — continue" class="tfa-full" @click="finish" />
     </template>
   </div>
 </template>
@@ -208,40 +219,64 @@ function copyCodes() {
 	display: flex;
 	flex-direction: column;
 	gap: 1rem;
+	text-align: left;
 }
-.tfa-methods,
-.tfa-actions {
+.tfa-hint {
+	margin: 0;
+	font-size: 0.9rem;
+	line-height: 1.45;
+	color: var(--text-color-secondary, #64748b);
+}
+.tfa-error {
+	padding: 0.6rem 0.85rem;
+	border-radius: 6px;
+	background: var(--red-50, #fef2f2);
+	color: var(--red-700, #b91c1c);
+	border: 1px solid var(--red-200, #fecaca);
+	font-size: 0.9rem;
+}
+.tfa-methods {
 	display: flex;
-	gap: 0.75rem;
-	flex-wrap: wrap;
+	flex-direction: column;
+	gap: 0.6rem;
 }
-.tfa-actions {
-	justify-content: space-between;
+/* Full-width buttons + input (Button/InputText roots carry the class). */
+.tfa-full,
+.tfa-input {
+	width: 100%;
+}
+.tfa-back {
+	align-self: center;
 }
 .tfa-secret {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: 1rem;
 	padding: 0.75rem 1rem;
 	background: var(--surface-100, #f3f4f6);
+	border: 1px solid var(--surface-200, #e5e7eb);
 	border-radius: 6px;
-	font-size: 1.05rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	letter-spacing: 1px;
 	word-break: break-all;
 }
 .tfa-uri-link {
 	white-space: nowrap;
+	font-family: inherit;
 }
 .tfa-recovery {
 	list-style: none;
-	padding: 1rem;
+	padding: 1rem 1.25rem;
 	margin: 0;
 	background: var(--surface-100, #f3f4f6);
+	border: 1px solid var(--surface-200, #e5e7eb);
 	border-radius: 6px;
 	columns: 2;
-	font-size: 1.05rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 1rem;
 }
 .tfa-recovery li {
-	padding: 0.15rem 0;
+	padding: 0.2rem 0;
 }
 </style>

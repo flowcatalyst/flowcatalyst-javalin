@@ -70,33 +70,33 @@ async function verify() {
 
 <template>
   <div class="tfa-challenge">
-    <h2 class="step-title">Two-step verification</h2>
-
-    <div v-if="error" class="error-banner">{{ error }}</div>
+    <div v-if="error" class="tfa-error">{{ error }}</div>
 
     <template v-if="active === 'TOTP'">
-      <p class="hint">Enter the 6-digit code from your authenticator app.</p>
+      <p class="tfa-hint">Enter the 6-digit code from your authenticator app.</p>
     </template>
     <template v-else-if="active === 'EMAIL_PIN'">
-      <p class="hint">
+      <p class="tfa-hint">
         <template v-if="emailSent">Enter the code we emailed you.</template>
-        <template v-else>We'll email you a one-time code.</template>
+        <template v-else>We'll email a one-time code to your address.</template>
       </p>
       <Button
         v-if="!emailSent"
         label="Email me a code"
         icon="pi pi-envelope"
+        class="tfa-full"
         :loading="busy"
         @click="requestEmail"
       />
     </template>
     <template v-else>
-      <p class="hint">Enter one of your recovery codes.</p>
+      <p class="tfa-hint">Enter one of your recovery codes.</p>
     </template>
 
     <template v-if="active !== 'EMAIL_PIN' || emailSent">
       <InputText
         v-model="code"
+        class="tfa-input"
         :placeholder="active === 'RECOVERY_CODE' ? 'XXXXX-XXXXX' : '123456'"
         inputmode="text"
         autocomplete="one-time-code"
@@ -106,7 +106,7 @@ async function verify() {
         <input type="checkbox" v-model="rememberDevice" />
         Remember this device for 30 days
       </label>
-      <Button label="Verify" :loading="busy" :disabled="!code" @click="verify" />
+      <Button label="Verify" class="tfa-full" :loading="busy" :disabled="!code" @click="verify" />
     </template>
 
     <div class="tfa-alt">
@@ -128,18 +128,38 @@ async function verify() {
 	display: flex;
 	flex-direction: column;
 	gap: 1rem;
+	text-align: left;
+}
+.tfa-hint {
+	margin: 0;
+	font-size: 0.9rem;
+	line-height: 1.45;
+	color: var(--text-color-secondary, #64748b);
+}
+.tfa-error {
+	padding: 0.6rem 0.85rem;
+	border-radius: 6px;
+	background: var(--red-50, #fef2f2);
+	color: var(--red-700, #b91c1c);
+	border: 1px solid var(--red-200, #fecaca);
+	font-size: 0.9rem;
+}
+.tfa-full,
+.tfa-input {
+	width: 100%;
 }
 .tfa-remember {
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
 	font-size: 0.9rem;
+	color: var(--text-color-secondary, #64748b);
 }
 .tfa-alt {
 	display: flex;
 	flex-direction: column;
 	gap: 0.4rem;
-	margin-top: 0.5rem;
+	margin-top: 0.25rem;
 	font-size: 0.9rem;
 }
 </style>

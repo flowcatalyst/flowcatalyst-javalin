@@ -101,10 +101,9 @@ export const emailDomainMappingsApi = {
 		});
 	},
 
-	update(
-		id: string,
-		data: UpdateEmailDomainMappingRequest,
-	): Promise<EmailDomainMapping> {
+	// PUT returns 204 No Content — no body. Callers should re-fetch via get(id)
+	// if they need the updated record.
+	update(id: string, data: UpdateEmailDomainMappingRequest): Promise<void> {
 		return apiFetch(`/email-domain-mappings/${id}`, {
 			method: "PUT",
 			body: JSON.stringify(data),
