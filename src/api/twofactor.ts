@@ -40,6 +40,8 @@ const del = <T>(path: string) => req<T>("DELETE", path);
 export interface TotpEnrollment {
 	secret: string;
 	uri: string;
+	// Base64 PNG data URI of the otpauth QR code (empty if rendering failed).
+	qr?: string;
 }
 
 // ── login challenge (token-gated) ──────────────────────────────────────────

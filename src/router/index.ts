@@ -204,6 +204,14 @@ const router = createRouter({
 							"@/pages/authentication/email-domains/EmailDomainMappingDetailPage.vue"
 						),
 				},
+				// Authentication - lost-device reset approvals (client-admin queue).
+				// The :id form is the deep link from the approval email.
+				{
+					path: "authentication/reset-approvals/:id?",
+					name: "reset-approvals",
+					component: () =>
+						import("@/pages/authentication/ResetApprovalsPage.vue"),
+				},
 				// Authentication - OAuth Clients
 				{
 					path: "authentication/oauth-clients",

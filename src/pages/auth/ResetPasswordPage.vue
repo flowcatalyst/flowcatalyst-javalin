@@ -27,6 +27,8 @@ const invalidReason = ref<"expired" | "not_found" | "unknown">("not_found");
 const submitError = ref<string | null>(null);
 const enrollToken = ref("");
 const enrollMethods = ref<TwoFactorMethod[]>([]);
+const requiresFactor = ref(false);
+const factorCode = ref("");
 
 const token = (route.query["token"] as string | undefined) ?? "";
 
@@ -40,6 +42,7 @@ async function checkToken() {
 	try {
 		const result = await validateResetToken(token);
 		if (result.valid) {
+			requiresFactor.value = result.requiresFactor ?? false;
 			pageState.value = "form";
 		} else {
 			invalidReason.value =
@@ -87,11 +90,19 @@ const { value: confirmPasswordValue, errorMessage: confirmPasswordError } =
 	useField<string>("confirmPassword");
 
 const onSubmit = handleSubmit(async (values) => {
+	if (requiresFactor.value && !factorCode.value.trim()) {
+		submitError.value = "Enter the code from your authenticator app.";
+		return;
+	}
 	pageState.value = "submitting";
 	submitError.value = null;
 
 	try {
-		const result = await confirmPasswordReset(token, values.password);
+		const result = await confirmPasswordReset(
+			token,
+			values.password,
+			requiresFactor.value ? factorCode.value.trim() : undefined,
+		);
 		if (result.status === "enrollment_required" && result.enrollToken) {
 			// Domain requires 2FA — set it up before finishing. TwoFactorSetup
 			// completes the session and redirects on its own.
@@ -214,6 +225,24 @@ const onSubmit = handleSubmit(async (values) => {
               />
               <small v-if="confirmPasswordError" class="field-error">
                 {{ confirmPasswordError }}
+              </small>
+            </div>
+
+            <!-- Strong-factor gate: a self-service reset needs an authenticator
+                 code (email alone can't authorize it). -->
+            <div v-if="requiresFactor" class="form-field">
+              <label for="factorCode">Authenticator code</label>
+              <InputText
+                id="factorCode"
+                v-model="factorCode"
+                placeholder="123456"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                :disabled="pageState === 'submitting'"
+                class="w-full"
+              />
+              <small class="field-hint">
+                Enter the 6-digit code from your authenticator app to confirm.
               </small>
             </div>
 

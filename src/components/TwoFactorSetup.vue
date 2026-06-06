@@ -153,9 +153,11 @@ function copyCodes() {
     <!-- TOTP -->
     <template v-else-if="stage === 'totp'">
       <p class="tfa-hint">
-        Add this secret to your authenticator app (Google Authenticator,
-        1Password, Authy…), then enter the 6-digit code it shows.
+        Scan this QR code with your authenticator app (Google Authenticator,
+        1Password, Authy…), or enter the key manually, then type the 6-digit
+        code it shows.
       </p>
+      <img v-if="totp?.qr" :src="totp.qr" alt="Authenticator QR code" class="tfa-qr" />
       <div v-if="totp" class="tfa-secret">
         <code>{{ totp.secret }}</code>
         <a :href="totp.uri" class="tfa-uri-link">Open in app</a>
@@ -247,6 +249,16 @@ function copyCodes() {
 }
 .tfa-back {
 	align-self: center;
+}
+.tfa-qr {
+	align-self: center;
+	width: 200px;
+	height: 200px;
+	image-rendering: pixelated;
+	border: 1px solid var(--surface-200, #e5e7eb);
+	border-radius: 8px;
+	background: #fff;
+	padding: 8px;
 }
 .tfa-secret {
 	display: flex;

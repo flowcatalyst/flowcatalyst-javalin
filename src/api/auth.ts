@@ -243,7 +243,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
 
 export async function validateResetToken(
 	token: string,
-): Promise<{ valid: boolean; reason?: string }> {
+): Promise<{ valid: boolean; reason?: string; requiresFactor?: boolean }> {
 	const response = await fetch(
 		`${AUTH_URL}/password-reset/validate?token=${encodeURIComponent(token)}`,
 		{ credentials: "include" },
@@ -266,11 +266,12 @@ export interface ConfirmPasswordResetResult {
 export async function confirmPasswordReset(
 	token: string,
 	password: string,
+	factorCode?: string,
 ): Promise<ConfirmPasswordResetResult> {
 	const response = await fetch(`${AUTH_URL}/password-reset/confirm`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ token, password }),
+		body: JSON.stringify({ token, password, factorCode }),
 		credentials: "include",
 	});
 

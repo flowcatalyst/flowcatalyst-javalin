@@ -136,8 +136,8 @@ onMounted(refresh);
         @click="adding = true"
       />
 
-      <!-- Recovery codes -->
-      <div v-if="status.methods.length" class="tfa-recovery-block">
+      <!-- Recovery codes (authenticator-app 2FA only) -->
+      <div v-if="status.methods.includes('TOTP')" class="tfa-recovery-block">
         <h3>Recovery codes</h3>
         <p class="hint">{{ status.recoveryCodesLeft }} unused codes remaining.</p>
         <ul v-if="newCodes.length" class="tfa-recovery">

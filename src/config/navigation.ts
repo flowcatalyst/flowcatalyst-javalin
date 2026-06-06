@@ -51,6 +51,11 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				route: "/authentication/oauth-clients",
 			},
 			{
+				label: "Reset Approvals",
+				icon: "pi pi-shield",
+				route: "/authentication/reset-approvals",
+			},
+			{
 				label: "Roles",
 				icon: "pi pi-shield",
 				route: "/authorization/roles",
