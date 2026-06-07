@@ -1,4 +1,5 @@
 import { useAuthStore, type User } from "@/stores/auth";
+import { landingPath } from "@/stores/permissions";
 import router from "@/router";
 import { getErrorMessage } from "@/utils/errors";
 import type { TwoFactorMethod } from "./twofactor";
@@ -143,11 +144,10 @@ export function redirectAfterLogin(): void {
 		window.location.href = `/oauth/authorize?${oauthParams.toString()}`;
 		return;
 	}
-	// Dashboard, or the profile for a user with no roles (nothing else to do).
+	// The most capable page the user can reach: dashboard (anchor/admin), else a
+	// client-administrator's user-management page, else their profile.
 	const authStore = useAuthStore();
-	const dest =
-		(authStore.user?.roles?.length ?? 0) > 0 ? "/dashboard" : "/profile";
-	void router.replace(dest);
+	void router.replace(landingPath(authStore.user));
 }
 
 // applyLoginSuccess = set user + redirect. Used by the password and 2FA-verify

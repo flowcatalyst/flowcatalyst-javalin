@@ -96,21 +96,33 @@ const router = createRouter({
 					name: "client-detail",
 					component: () => import("@/pages/clients/ClientDetailPage.vue"),
 				},
-				// Users
+				// Users (platform / anchor scope — full user administration)
 				{
 					path: "users",
 					name: "users",
 					component: () => import("@/pages/users/UserListPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				{
 					path: "users/new",
 					name: "user-create",
 					component: () => import("@/pages/users/UserCreatePage.vue"),
+					meta: { scope: "anchor" },
 				},
 				{
 					path: "users/:id",
 					name: "user-detail",
 					component: () => import("@/pages/users/UserDetailPage.vue"),
+					meta: { scope: "anchor" },
+				},
+				// Client-scoped user management (client-administrators) — manage only
+				// their own client's users, with role assignment bounded to the
+				// client's applications.
+				{
+					path: "client-administration/users",
+					name: "client-users",
+					component: () => import("@/pages/users/ClientUsersPage.vue"),
+					meta: { scope: "client" },
 				},
 				// Service Accounts
 				{

@@ -4,6 +4,12 @@ export interface NavItem {
 	route?: string;
 	children?: NavItem[];
 	expanded?: boolean;
+	// Restrict an item to a single audience by scope. "anchor" shows only to
+	// anchor-scoped users (platform admins); "client" shows only to client/
+	// partner-scoped users (client-administrators). Used to split the platform
+	// user-management page from the client-scoped one. Omit for items everyone
+	// who holds the route permission may see.
+	scope?: "anchor" | "client";
 }
 
 export interface NavGroup {
@@ -29,6 +35,7 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				label: "User Management",
 				icon: "pi pi-users",
 				route: "/users",
+				scope: "anchor",
 			},
 			{
 				label: "Service Accounts",
@@ -65,6 +72,12 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 	{
 		label: "Client Administration",
 		items: [
+			{
+				label: "User Management",
+				icon: "pi pi-users",
+				route: "/client-administration/users",
+				scope: "client",
+			},
 			{
 				label: "Reset Approvals",
 				icon: "pi pi-shield",

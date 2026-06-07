@@ -104,6 +104,11 @@ export const usePermissionsStore = defineStore("permissions", () => {
  * Maps route paths to required permissions.
  */
 export const ROUTE_PERMISSIONS: Record<string, string> = {
+	// Dashboard — platform-wide stats + role sync, anchor/super-admin only
+	// (mirrors the backend /bff/dashboard/stats IsAdmin gate). Non-admins are
+	// routed to their profile instead of landing on a page that 403s.
+	"/dashboard": "platform:*:*:*",
+
 	// Applications
 	"/applications": "platform:admin:application:view",
 	"/applications/new": "platform:admin:application:create",
@@ -115,6 +120,10 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
 	// Users
 	"/users": "platform:iam:user:view",
 	"/users/new": "platform:iam:user:create",
+
+	// Client-scoped user management (client-administrators) — same permission as
+	// the platform users page, separated by scope (see canSeeScope / nav config).
+	"/client-administration/users": "platform:iam:user:view",
 
 	// Authorization
 	"/authorization/roles": "platform:iam:role:view",
@@ -212,4 +221,84 @@ export function getRoutePermission(path: string): string | undefined {
 	}
 
 	return undefined;
+}
+
+/**
+ * Does a single held permission satisfy a required one? Mirrors the backend
+ * 4-segment wildcard match (e.g. "platform:*:*:*" or "platform:iam:*:*"), so a
+ * super-admin's "*"/"platform:*:*:*" grants everything while a client-admin's
+ * "platform:iam:user:view" matches only that exact resource/action.
+ */
+function permissionMatches(held: string, required: string): boolean {
+	if (held === "*" || held === required) return true;
+	const h = held.split(":");
+	const r = required.split(":");
+	if (h.length !== r.length) return false;
+	for (let i = 0; i < h.length; i++) {
+		if (h[i] !== "*" && h[i] !== r[i]) return false;
+	}
+	return true;
+}
+
+/**
+ * Can the given user reach a route? A route with no permission requirement is
+ * always accessible; otherwise the user must hold a permission that matches the
+ * route's requirement. This is the single source of truth used by the route
+ * guards, the post-login landing choice, and the sidebar so all three agree on
+ * what "accessible" means.
+ */
+export function canAccessPath(
+	user: { permissions?: string[] } | null | undefined,
+	path: string,
+): boolean {
+	const required = getRoutePermission(path);
+	if (!required) return true;
+	const perms = user?.permissions ?? [];
+	return perms.some((p) => permissionMatches(p, required));
+}
+
+/**
+ * A user's coarse scope, inferred from whether they have a home client. Anchor
+ * users (platform admins) have no home client; client- and partner-scoped users
+ * (client-administrators) do. Used to split the platform user-management page
+ * from the client-scoped one.
+ */
+export function userScope(
+	user: { clientId?: string | null } | null | undefined,
+): "anchor" | "client" {
+	return user && user.clientId == null ? "anchor" : "client";
+}
+
+/**
+ * May a user see/visit something gated to a particular scope? An undefined
+ * requirement is open to everyone (subject to permissions elsewhere).
+ */
+export function canSeeScope(
+	user: { clientId?: string | null } | null | undefined,
+	required: "anchor" | "client" | undefined,
+): boolean {
+	if (!required) return true;
+	return userScope(user) === required;
+}
+
+/**
+ * The best landing page for a freshly-authenticated user: the dashboard
+ * (anchor/admin) if reachable, else a client-administrator's own user-management
+ * page, else the profile — which is always reachable. A user with no access ends
+ * up on profile rather than a page that immediately 403s.
+ */
+export function landingPath(
+	user:
+		| { permissions?: string[]; clientId?: string | null }
+		| null
+		| undefined,
+): string {
+	if (canAccessPath(user, "/dashboard")) return "/dashboard";
+	if (
+		userScope(user) === "client" &&
+		canAccessPath(user, "/client-administration/users")
+	) {
+		return "/client-administration/users";
+	}
+	return "/profile";
 }

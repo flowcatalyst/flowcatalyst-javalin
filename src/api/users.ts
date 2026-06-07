@@ -206,6 +206,34 @@ export const usersApi = {
 		});
 	},
 
+	/**
+	 * Clear a user's enrolled 2FA (factors, recovery codes, pending PINs, trusted
+	 * devices). The user must re-enroll at next sign-in if their domain requires
+	 * 2FA — i.e. this re-triggers 2FA onboarding for a lost-device recovery.
+	 */
+	resetTwoFactor(id: string): Promise<{ message: string }> {
+		return apiFetch(`/principals/${id}/reset-2fa`, {
+			method: "POST",
+		});
+	},
+
+	/**
+	 * Create a CLIENT-scope user in a specific client. Used by the client-admin
+	 * user-management page; goes through POST /principals with an explicit scope
+	 * (the email-domain-driven /principals/users path derives scope instead).
+	 */
+	createClientUser(data: {
+		email: string;
+		name: string;
+		password?: string;
+		clientId: string;
+	}): Promise<{ id: string }> {
+		return apiFetch("/principals", {
+			method: "POST",
+			body: JSON.stringify({ ...data, scope: "CLIENT" }),
+		});
+	},
+
 	// Client access grants
 	getClientAccess(id: string): Promise<{ grants: ClientAccessGrant[] }> {
 		return apiFetch(`/principals/${id}/client-access`);

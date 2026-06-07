@@ -1,15 +1,15 @@
 import type { NavigationGuardNext, RouteLocationNormalized } from "vue-router";
-import { useAuthStore, type User } from "@/stores/auth";
-import { usePermissionsStore, getRoutePermission } from "@/stores/permissions";
+import { useAuthStore } from "@/stores/auth";
+import {
+	usePermissionsStore,
+	getRoutePermission,
+	canAccessPath,
+	canSeeScope,
+	userScope,
+	landingPath,
+} from "@/stores/permissions";
 import { usePlatformConfigStore } from "@/stores/platformConfig";
 import { checkSession } from "@/api/auth";
-
-// landingPath is where a freshly-authenticated user is sent: the dashboard if
-// they have any roles, otherwise their profile (a user with no roles can't do
-// anything else, so we drop them somewhere usable instead of an empty dashboard).
-export function landingPath(user: User | null): string {
-	return (user?.roles?.length ?? 0) > 0 ? "/dashboard" : "/profile";
-}
 
 /**
  * Guard that ensures user is authenticated.
@@ -192,35 +192,24 @@ export function createRoutePermissionGuard() {
 			return;
 		}
 
-		// Skip for routes without permission requirements
-		const requiredPermission = getRoutePermission(to.path);
-		if (!requiredPermission) {
-			next();
+		// Scope-restricted routes (e.g. the platform vs client-scoped user pages)
+		// send the wrong-scope user to their own equivalent instead of a bare
+		// denial, so a client-admin who follows a /users link lands on their page.
+		const requiredScope = (to.meta as { scope?: "anchor" | "client" }).scope;
+		if (!canSeeScope(authStore.user, requiredScope)) {
+			next({
+				path:
+					userScope(authStore.user) === "client"
+						? "/client-administration/users"
+						: "/users",
+				replace: true,
+			});
 			return;
 		}
 
-		const permissions = authStore.user?.permissions || [];
-		const roles = authStore.user?.roles || [];
-
-		// Platform admins bypass all permission checks
-		const adminRoles = [
-			"platform:super-admin",
-			"platform:admin",
-		];
-		if (
-			roles.some(
-				(role) =>
-					adminRoles.includes(role) ||
-					(role.toLowerCase().includes("platform") &&
-						role.toLowerCase().includes("admin")),
-			)
-		) {
-			next();
-			return;
-		}
-
-		// Check if user has the required permission
-		if (permissions.includes(requiredPermission) || permissions.includes("*")) {
+		// Accessible routes (no requirement, or the user holds a matching
+		// permission — wildcards included) are allowed through.
+		if (canAccessPath(authStore.user, to.path)) {
 			next();
 			return;
 		}
@@ -229,7 +218,7 @@ export function createRoutePermissionGuard() {
 		permissionsStore.showPermissionDenied({
 			type: "route",
 			message: "You do not have permission to access this page.",
-			requiredPermission,
+			requiredPermission: getRoutePermission(to.path) ?? "",
 			path: to.fullPath,
 		});
 
