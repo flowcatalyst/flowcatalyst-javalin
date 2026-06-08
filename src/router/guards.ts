@@ -1,4 +1,8 @@
-import type { NavigationGuardNext, RouteLocationNormalized } from "vue-router";
+import {
+	START_LOCATION,
+	type NavigationGuardNext,
+	type RouteLocationNormalized,
+} from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import {
 	usePermissionsStore,
@@ -173,7 +177,7 @@ export function permissionGuard(requiredPermission: string) {
 export function createRoutePermissionGuard() {
 	return (
 		to: RouteLocationNormalized,
-		_from: RouteLocationNormalized,
+		from: RouteLocationNormalized,
 		next: NavigationGuardNext,
 	): void => {
 		const authStore = useAuthStore();
@@ -214,13 +218,23 @@ export function createRoutePermissionGuard() {
 			return;
 		}
 
-		// Show permission denied modal
-		permissionsStore.showPermissionDenied({
-			type: "route",
-			message: "You do not have permission to access this page.",
-			requiredPermission: getRoutePermission(to.path) ?? "",
-			path: to.fullPath,
-		});
+		// Only surface the "permission denied" modal when the user DELIBERATELY
+		// navigated to a forbidden page from somewhere in the app. An automatic
+		// landing — the initial page load, straight after login, or a redirect
+		// such as "/" -> "/dashboard" — should quietly route a no-access user to
+		// their profile instead of greeting them with a denial dialog.
+		const isAutomaticLanding =
+			from === START_LOCATION ||
+			from.path.startsWith("/auth") ||
+			to.redirectedFrom != null;
+		if (!isAutomaticLanding) {
+			permissionsStore.showPermissionDenied({
+				type: "route",
+				message: "You do not have permission to access this page.",
+				requiredPermission: getRoutePermission(to.path) ?? "",
+				path: to.fullPath,
+			});
+		}
 
 		// Direct the user to their profile — somewhere they can always access.
 		next({ path: "/profile", replace: true });
