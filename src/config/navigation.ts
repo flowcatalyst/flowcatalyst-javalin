@@ -123,6 +123,11 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 						icon: "pi pi-palette",
 						route: "/platform/settings/theme",
 					},
+					{
+						label: "Names",
+						icon: "pi pi-tag",
+						route: "/platform/settings/names",
+					},
 				],
 			},
 			{

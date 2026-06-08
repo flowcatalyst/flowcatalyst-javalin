@@ -105,4 +105,25 @@ export const configApi = {
 			}),
 		});
 	},
+
+	// Platform name — the brand shown in emails, the authenticator app (2FA
+	// issuer), passkey prompts, and the SPA. Stored at platform/branding/platform-name.
+	getPlatformName(): Promise<string | null> {
+		return apiFetch<PlatformConfig>(
+			"/config/platform/branding/platform-name?scope=GLOBAL",
+		)
+			.then((response: PlatformConfig) => response.value)
+			.catch(() => null);
+	},
+
+	setPlatformName(name: string): Promise<PlatformConfig> {
+		return apiFetch("/config/platform/branding/platform-name?scope=GLOBAL", {
+			method: "PUT",
+			body: JSON.stringify({
+				value: name,
+				valueType: "PLAIN",
+				description: "Platform display name",
+			}),
+		});
+	},
 };
