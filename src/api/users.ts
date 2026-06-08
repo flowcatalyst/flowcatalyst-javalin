@@ -328,4 +328,39 @@ export const usersApi = {
 			body: JSON.stringify({ applicationIds }),
 		});
 	},
+
+	/**
+	 * Bulk-import CLIENT users for a client (CSV onboarding). Missing users are
+	 * created with the listed roles (validated against the client's apps);
+	 * existing users are skipped. Returns a per-row outcome.
+	 */
+	bulkImport(
+		clientId: string,
+		users: BulkImportUserRow[],
+	): Promise<BulkImportResponse> {
+		return apiFetch("/principals/bulk-import", {
+			method: "POST",
+			body: JSON.stringify({ clientId, users }),
+		});
+	},
 };
+
+export interface BulkImportUserRow {
+	name: string;
+	email: string;
+	roles: string[];
+}
+
+export interface BulkImportResultRow {
+	row: number;
+	email: string;
+	status: "created" | "exists" | "error";
+	message?: string;
+}
+
+export interface BulkImportResponse {
+	created: number;
+	skipped: number;
+	failed: number;
+	results: BulkImportResultRow[];
+}
