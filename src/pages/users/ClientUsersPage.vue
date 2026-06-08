@@ -9,6 +9,7 @@ import {
 	type User,
 	type RoleAssignment,
 	type ApplicationAccessGrant,
+	type AvailableApplication,
 } from "@/api/users";
 import { rolesApi, type Role } from "@/api/roles";
 
@@ -220,6 +221,63 @@ async function saveRoles() {
 	}
 }
 
+// ── Manage applications ─────────────────────────────────────────────────────
+const showApps = ref(false);
+const appsUser = ref<User | null>(null);
+const currentApps = ref<ApplicationAccessGrant[]>([]);
+const availableApps = ref<AvailableApplication[]>([]);
+const selectedAppIds = ref<string[]>([]);
+const appsSaving = ref(false);
+
+// The available-applications endpoint is already bounded server-side to the
+// applications the admin's client can access, so the picker only ever offers
+// grantable apps.
+const appOptions = computed(() =>
+	availableApps.value.map((a) => ({ label: a.name || a.code, value: a.id })),
+);
+
+async function openApps(user: User) {
+	appsUser.value = user;
+	currentApps.value = [];
+	availableApps.value = [];
+	selectedAppIds.value = [];
+	showApps.value = true;
+	try {
+		const [granted, available] = await Promise.all([
+			usersApi.getApplicationAccess(user.id),
+			usersApi.getAvailableApplications(user.id),
+		]);
+		currentApps.value = granted.applications;
+		availableApps.value = available.applications;
+		// Preselect only the grants this admin can manage (within the client's
+		// applications); any out-of-reach grants are preserved server-side.
+		const availIds = new Set(available.applications.map((a) => a.id));
+		selectedAppIds.value = granted.applications
+			.map((g) => g.applicationId)
+			.filter((id) => availIds.has(id));
+	} catch (error) {
+		toast.error("Error", getErrorMessage(error, "Request failed"));
+	}
+}
+
+async function saveApps() {
+	if (!appsUser.value) return;
+	appsSaving.value = true;
+	try {
+		await usersApi.assignApplicationAccess(appsUser.value.id, selectedAppIds.value);
+		toast.success(
+			"Applications updated",
+			`Application access saved for ${appsUser.value.name}`,
+		);
+		showApps.value = false;
+		await loadUsers();
+	} catch (error) {
+		toast.error("Save failed", getErrorMessage(error, "Request failed"));
+	} finally {
+		appsSaving.value = false;
+	}
+}
+
 // ── Reset password / 2FA ────────────────────────────────────────────────────
 const showReset = ref(false);
 const resetUser = ref<User | null>(null);
@@ -425,6 +483,14 @@ async function toggleActive(user: User) {
                 v-tooltip.top="'Manage roles'"
               />
               <Button
+                icon="pi pi-th-large"
+                text
+                rounded
+                severity="secondary"
+                @click="openApps(data)"
+                v-tooltip.top="'Manage applications'"
+              />
+              <Button
                 icon="pi pi-key"
                 text
                 rounded
@@ -541,6 +607,43 @@ async function toggleActive(user: User) {
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="showRoles = false" />
         <Button label="Save Roles" icon="pi pi-check" :loading="rolesSaving" @click="saveRoles" />
+      </template>
+    </Dialog>
+
+    <!-- Manage applications dialog -->
+    <Dialog
+      v-model:visible="showApps"
+      :header="appsUser ? `Applications — ${appsUser.name}` : 'Applications'"
+      modal
+      :style="{ width: '34rem' }"
+    >
+      <div class="dialog-form">
+        <p class="dialog-note">
+          Grant this user access to applications your client is entitled to.
+        </p>
+        <MultiSelect
+          v-model="selectedAppIds"
+          :options="appOptions"
+          optionLabel="label"
+          optionValue="value"
+          display="chip"
+          filter
+          placeholder="Select applications"
+          class="w-full"
+          :showToggleAll="false"
+        />
+        <p v-if="appOptions.length === 0" class="hint">
+          No applications available — your client has no applications to grant.
+        </p>
+      </div>
+      <template #footer>
+        <Button label="Cancel" text severity="secondary" @click="showApps = false" />
+        <Button
+          label="Save Applications"
+          icon="pi pi-check"
+          :loading="appsSaving"
+          @click="saveApps"
+        />
       </template>
     </Dialog>
 
