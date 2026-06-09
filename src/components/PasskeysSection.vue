@@ -109,7 +109,7 @@ onMounted(async () => {
       <div class="add-passkey">
         <InputText
           v-model="newPasskeyName"
-          placeholder="Name (e.g. 'Andrew's MacBook')"
+          placeholder="Name (e.g. 'My Computer/Phone')"
           :disabled="registering"
           class="passkey-name-input"
         />
