@@ -48,11 +48,19 @@ async function onRegister() {
 		await refresh();
 	} catch (e) {
 		// User cancelled in the authenticator UI is the most common case;
-		// surface a friendlier message for that path.
+		// surface friendlier messages for the known authenticator errors.
 		const message = getErrorMessage(e, "Failed to add passkey");
-		error.value = message.includes("NotAllowedError")
-			? "Cancelled — no passkey was added."
-			: message;
+		if (message.includes("NotAllowedError")) {
+			error.value = "Cancelled — no passkey was added.";
+		} else if (
+			message.includes("InvalidStateError") ||
+			message.toLowerCase().includes("previously registered")
+		) {
+			error.value =
+				"This device already has a passkey for your account — use a different device or security key to add another.";
+		} else {
+			error.value = message;
+		}
 	} finally {
 		registering.value = false;
 	}

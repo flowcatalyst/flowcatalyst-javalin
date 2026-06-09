@@ -7,7 +7,7 @@ import { z } from "zod";
 import { useAuthStore } from "@/stores/auth";
 import { landingPath } from "@/stores/permissions";
 import { useLoginThemeStore } from "@/stores/loginTheme";
-import { checkEmailDomain, login, type LoginResult } from "@/api/auth";
+import { checkEmailDomain, checkSession, login, type LoginResult } from "@/api/auth";
 import { authenticateWithPasskey, isWebauthnSupported } from "@/api/webauthn";
 import TwoFactorChallenge from "@/components/TwoFactorChallenge.vue";
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
@@ -169,17 +169,13 @@ async function onPasskeyLogin() {
 	authStore.setError(null);
 
 	try {
-		const result = await authenticateWithPasskey(currentEmail.value);
-		// Server set the session cookie. Mirror what /auth/login does to
-		// keep the auth store in sync and honour OAuth/OIDC redirects.
-		authStore.setUser({
-			id: result.principalId,
-			email: result.email ?? currentEmail.value,
-			name: result.name,
-			clientId: null,
-			roles: result.roles,
-			permissions: [],
-		});
+		await authenticateWithPasskey(currentEmail.value);
+		// The server set the session cookie. Load the FULL session (permissions,
+		// clientId, roles) into the store so the sidebar and landing decision
+		// have real data immediately — a partial setUser here previously left the
+		// store with clientId:null and no permissions, so the nav rendered empty
+		// until a manual page reload.
+		await checkSession();
 
 		const urlParams = new URLSearchParams(window.location.search);
 		const interactionUid = urlParams.get("interaction");
