@@ -25,6 +25,8 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				label: "Dashboard",
 				icon: "pi pi-home",
 				route: "/dashboard",
+				// Platform-wide stats — anchor (platform-admin) audience only.
+				scope: "anchor",
 			},
 		],
 	},
@@ -61,11 +63,16 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				label: "Roles",
 				icon: "pi pi-shield",
 				route: "/authorization/roles",
+				// Role-definition management is a platform concern; client
+				// administrators assign roles to users from the client-scoped
+				// user pages and never manage the role catalogue itself.
+				scope: "anchor",
 			},
 			{
 				label: "Permissions",
 				icon: "pi pi-lock",
 				route: "/authorization/permissions",
+				scope: "anchor",
 			},
 		],
 	},

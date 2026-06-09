@@ -5,6 +5,7 @@ import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import { z } from "zod";
 import { useAuthStore } from "@/stores/auth";
+import { landingPath } from "@/stores/permissions";
 import { useLoginThemeStore } from "@/stores/loginTheme";
 import { checkEmailDomain, login, type LoginResult } from "@/api/auth";
 import { authenticateWithPasskey, isWebauthnSupported } from "@/api/webauthn";
@@ -205,7 +206,7 @@ async function onPasskeyLogin() {
 			window.location.href = `/oauth/authorize?${oauthParams.toString()}`;
 			return;
 		}
-		await router.replace("/dashboard");
+		await router.replace(landingPath(authStore.user));
 	} catch (e) {
 		const message = getErrorMessage(e, "Passkey sign-in failed");
 		authStore.setError(

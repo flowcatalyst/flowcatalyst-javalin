@@ -294,7 +294,12 @@ export function landingPath(
 		| null
 		| undefined,
 ): string {
-	if (canAccessPath(user, "/dashboard")) return "/dashboard";
+	// The dashboard is anchor-scoped, so never land a client-scoped user there
+	// even if their permissions happen to match — send them to their own
+	// user-management page, falling back to the always-reachable profile.
+	if (canSeeScope(user, "anchor") && canAccessPath(user, "/dashboard")) {
+		return "/dashboard";
+	}
 	if (
 		userScope(user) === "client" &&
 		canAccessPath(user, "/client-administration/users")

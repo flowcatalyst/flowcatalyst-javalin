@@ -60,6 +60,7 @@ const router = createRouter({
 					path: "dashboard",
 					name: "dashboard",
 					component: () => import("@/pages/DashboardPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				// Applications
 				{
@@ -148,16 +149,19 @@ const router = createRouter({
 					path: "authorization/roles",
 					name: "roles",
 					component: () => import("@/pages/authorization/RoleListPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				{
 					path: "authorization/roles/:roleName",
 					name: "role-detail",
 					component: () => import("@/pages/authorization/RoleDetailPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				{
 					path: "authorization/roles/:roleName/edit",
 					name: "role-edit",
 					component: () => import("@/pages/authorization/RoleEditPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				// Authorization - Permissions
 				{
@@ -165,6 +169,7 @@ const router = createRouter({
 					name: "permissions",
 					component: () =>
 						import("@/pages/authorization/PermissionListPage.vue"),
+					meta: { scope: "anchor" },
 				},
 				// Authentication - Identity Providers
 				{
