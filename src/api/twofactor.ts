@@ -1,41 +1,23 @@
 // Two-factor auth API. Endpoints live under /auth/2fa/* (NOT /api), mirroring
-// the rest of the auth surface (see auth.ts, webauthn.ts).
+// the rest of the auth surface (see auth.ts, webauthn.ts). Transport is the
+// shared authFetch — same envelope decoding as the rest of the app, errors
+// surfaced inline by the calling form.
 import {
 	applyLoginSuccess,
 	setSessionUser,
 	type RawLoginResponse,
 } from "./auth";
+import { authFetch } from "./client";
 
 export { redirectAfterLogin } from "./auth";
-
-const AUTH = "/auth";
 
 export type TwoFactorMethod = "TOTP" | "EMAIL_PIN";
 export type ChallengeMethod = TwoFactorMethod | "RECOVERY_CODE";
 
-async function req<T>(
-	method: string,
-	path: string,
-	body?: unknown,
-): Promise<T> {
-	const res = await fetch(`${AUTH}${path}`, {
-		method,
-		headers: body ? { "Content-Type": "application/json" } : undefined,
-		body: body ? JSON.stringify(body) : undefined,
-		credentials: "include",
-	});
-	if (!res.ok) {
-		const e = await res.json().catch(() => ({}));
-		throw new Error(e.message || e.error || "Request failed");
-	}
-	// Some endpoints (204-ish) may have an empty body.
-	const text = await res.text();
-	return (text ? JSON.parse(text) : {}) as T;
-}
-
-const post = <T>(path: string, body?: unknown) => req<T>("POST", path, body ?? {});
-const get = <T>(path: string) => req<T>("GET", path);
-const del = <T>(path: string) => req<T>("DELETE", path);
+const post = <T>(path: string, body?: unknown) =>
+	authFetch<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+const get = <T>(path: string) => authFetch<T>(path);
+const del = <T>(path: string) => authFetch<T>(path, { method: "DELETE" });
 
 export interface TotpEnrollment {
 	secret: string;

@@ -5,13 +5,18 @@ import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import { z } from "zod";
 import { useAuthStore } from "@/stores/auth";
-import { landingPath } from "@/stores/permissions";
 import { useLoginThemeStore } from "@/stores/loginTheme";
-import { checkEmailDomain, checkSession, login, type LoginResult } from "@/api/auth";
+import {
+	checkEmailDomain,
+	checkSession,
+	externalIdpRedirectUrl,
+	login,
+	redirectAfterLogin,
+	type LoginResult,
+} from "@/api/auth";
 import { authenticateWithPasskey, isWebauthnSupported } from "@/api/webauthn";
 import TwoFactorChallenge from "@/components/TwoFactorChallenge.vue";
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
-import router from "@/router";
 import { getErrorMessage } from "@/utils/errors";
 
 type LoginStep = "email" | "password" | "redirecting" | "2fa" | "enroll";
@@ -92,44 +97,18 @@ const onCheckEmail = handleEmailSubmit(async (values) => {
 
 		if (result.authMethod === "external" && result.loginUrl) {
 			step.value = "redirecting";
-
-			// Forward OAuth params to OIDC login if this is part of an OAuth flow
-			const currentParams = new URLSearchParams(window.location.search);
-			let redirectUrl = result.loginUrl;
-
-			// Forward interaction param for OIDC interaction flow
-			const interactionUid = currentParams.get("interaction");
-			if (interactionUid) {
-				const loginUrl = new URL(result.loginUrl, window.location.origin);
-				loginUrl.searchParams.set("interaction", interactionUid);
-				redirectUrl = loginUrl.toString();
-			} else if (currentParams.get("oauth") === "true") {
-				const oauthFields = [
-					"client_id",
-					"redirect_uri",
-					"scope",
-					"state",
-					"code_challenge",
-					"code_challenge_method",
-					"nonce",
-				];
-				const loginUrl = new URL(result.loginUrl, window.location.origin);
-
-				for (const field of oauthFields) {
-					const value = currentParams.get(field);
-					if (value) {
-						// Map to oauth_ prefix expected by /auth/oidc/login
-						loginUrl.searchParams.set("oauth_" + field, value);
-					}
-				}
-				redirectUrl = loginUrl.toString();
-			}
-
-			window.location.href = redirectUrl;
+			// Forward OIDC-interaction / OAuth round-trip context to the IdP
+			// login URL (shared helper — see api/auth.ts).
+			window.location.href = externalIdpRedirectUrl(result.loginUrl);
 		} else {
 			step.value = "password";
 		}
 	} catch (e: unknown) {
+		// Surface the failure — a silent catch here meant "Continue" did
+		// nothing at all when the domain check errored.
+		authStore.setError(
+			getErrorMessage(e, "Could not check your email — please try again."),
+		);
 	} finally {
 		isSubmitting.value = false;
 	}
@@ -176,39 +155,17 @@ async function onPasskeyLogin() {
 		// store with clientId:null and no permissions, so the nav rendered empty
 		// until a manual page reload.
 		await checkSession();
-
-		const urlParams = new URLSearchParams(window.location.search);
-		const interactionUid = urlParams.get("interaction");
-		if (interactionUid) {
-			window.location.href = `/oidc/interaction/${interactionUid}/login`;
-			return;
-		}
-		if (urlParams.get("oauth") === "true") {
-			const oauthFields = [
-				"response_type",
-				"client_id",
-				"redirect_uri",
-				"scope",
-				"state",
-				"code_challenge",
-				"code_challenge_method",
-				"nonce",
-			];
-			const oauthParams = new URLSearchParams();
-			for (const field of oauthFields) {
-				const value = urlParams.get(field);
-				if (value) oauthParams.set(field, value);
-			}
-			window.location.href = `/oauth/authorize?${oauthParams.toString()}`;
-			return;
-		}
-		await router.replace(landingPath(authStore.user));
+		// Same post-login navigation as the password path (OIDC interaction /
+		// OAuth round-trip / landing page).
+		redirectAfterLogin();
 	} catch (e) {
-		const message = getErrorMessage(e, "Passkey sign-in failed");
+		// DOMException name, not message: getErrorMessage returns the human
+		// description, which doesn't contain the error name — the friendly
+		// "Cancelled" branch never fired on message matching.
 		authStore.setError(
-			message.includes("NotAllowedError")
+			e instanceof Error && e.name === "NotAllowedError"
 				? "Cancelled — try again or use your password."
-				: message,
+				: getErrorMessage(e, "Passkey sign-in failed"),
 		);
 	} finally {
 		isSubmitting.value = false;

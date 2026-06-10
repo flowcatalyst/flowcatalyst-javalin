@@ -97,10 +97,15 @@ async function loadRole() {
 		clientManaged.value = role.value.clientManaged;
 		selectedPermissions.value = new Set(role.value.permissions);
 
-		// Redirect if not editable
+		// Redirect if not editable. Return so the rest of the page setup
+		// (loadPermissions etc.) doesn't run and flash behind the redirect.
 		if (role.value.source !== "DATABASE") {
 			toast.warn("Not Editable", "Only admin-created roles can be edited");
-			router.push(`/authorization/roles/${encodeURIComponent(roleName.value)}`);
+			await router.push(
+				`/authorization/roles/${encodeURIComponent(roleName.value)}`,
+			);
+			role.value = null;
+			return;
 		}
 	} catch (e) {
 		error.value = e instanceof Error ? e.message : "Failed to load role";
@@ -115,7 +120,11 @@ async function loadPermissions() {
 	try {
 		const response = await permissionsApi.list(role.value.applicationCode);
 		allPermissions.value = response.items;
-	} catch {
+	} catch (e) {
+		// An empty permission catalogue with no explanation looked like a
+		// bug; surface the load failure instead.
+		error.value =
+			e instanceof Error ? e.message : "Failed to load permissions";
 	} finally {
 		loading.value = false;
 	}

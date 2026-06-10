@@ -49,11 +49,14 @@ async function onRegister() {
 	} catch (e) {
 		// User cancelled in the authenticator UI is the most common case;
 		// surface friendlier messages for the known authenticator errors.
+		// Match on the DOMException NAME — the message carries the human
+		// description, not the name, so message matching never fired.
+		const name = e instanceof Error ? e.name : "";
 		const message = getErrorMessage(e, "Failed to add passkey");
-		if (message.includes("NotAllowedError")) {
+		if (name === "NotAllowedError") {
 			error.value = "Cancelled — no passkey was added.";
 		} else if (
-			message.includes("InvalidStateError") ||
+			name === "InvalidStateError" ||
 			message.toLowerCase().includes("previously registered")
 		) {
 			error.value =

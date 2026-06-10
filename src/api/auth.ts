@@ -2,10 +2,8 @@ import { useAuthStore, type User } from "@/stores/auth";
 import { landingPath } from "@/stores/permissions";
 import router from "@/router";
 import { getErrorMessage } from "@/utils/errors";
+import { authFetch } from "./client";
 import type { TwoFactorMethod } from "./twofactor";
-
-// Auth endpoints are at /auth/* (not /api/auth/*)
-const AUTH_URL = "/auth";
 
 interface LoginCredentials {
 	email: string;
@@ -71,18 +69,10 @@ function mapLoginResponseToUser(response: LoginResponse): User {
 export async function checkEmailDomain(
 	email: string,
 ): Promise<DomainCheckResponse> {
-	const response = await fetch(`${AUTH_URL}/check-domain`, {
+	return authFetch<DomainCheckResponse>("/check-domain", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ email }),
-		credentials: "include",
 	});
-
-	if (!response.ok) {
-		throw new Error("Failed to check email domain");
-	}
-
-	return response.json();
 }
 
 export async function checkSession(): Promise<boolean> {
@@ -90,16 +80,7 @@ export async function checkSession(): Promise<boolean> {
 	authStore.setLoading(true);
 
 	try {
-		const response = await fetch(`${AUTH_URL}/me`, {
-			credentials: "include",
-		});
-
-		if (!response.ok) {
-			authStore.clearAuth();
-			return false;
-		}
-
-		const data: LoginResponse = await response.json();
+		const data = await authFetch<LoginResponse>("/me");
 		authStore.setUser(mapLoginResponseToUser(data));
 		return true;
 	} catch {
@@ -116,6 +97,66 @@ export function setSessionUser(data: RawLoginResponse): void {
 	authStore.setUser(mapLoginResponseToUser(data as LoginResponse));
 }
 
+// OAUTH_FORWARD_FIELDS is the full /oauth/authorize parameter set the SPA
+// round-trips through a login. One list, shared by every redirect path —
+// the per-page copies used to drift.
+const OAUTH_FORWARD_FIELDS = [
+	"response_type",
+	"client_id",
+	"redirect_uri",
+	"scope",
+	"state",
+	"code_challenge",
+	"code_challenge_method",
+	"nonce",
+] as const;
+
+// oauthAuthorizeUrl rebuilds the /oauth/authorize URL from a parameter
+// getter (window URL params, or a router `to.query` adapter in guards).
+export function oauthAuthorizeUrl(
+	get: (field: string) => string | null,
+): string {
+	const params = new URLSearchParams();
+	for (const field of OAUTH_FORWARD_FIELDS) {
+		const value = get(field);
+		if (value) params.set(field, value);
+	}
+	return `/oauth/authorize?${params.toString()}`;
+}
+
+// externalIdpRedirectUrl decorates an external IdP login URL
+// (/auth/oidc/login) with the OIDC-interaction or OAuth round-trip context
+// from the current page URL, so the bridge can resume the authorize flow
+// after the IdP callback. The oauth_ prefix and the field list match
+// exactly what the bridge's handleLogin consumes — response_type is
+// intentionally absent (the bridge doesn't read oauth_response_type).
+export function externalIdpRedirectUrl(loginUrl: string): string {
+	const currentParams = new URLSearchParams(window.location.search);
+	const url = new URL(loginUrl, window.location.origin);
+
+	const interactionUid = currentParams.get("interaction");
+	if (interactionUid) {
+		url.searchParams.set("interaction", interactionUid);
+		return url.toString();
+	}
+	if (currentParams.get("oauth") === "true") {
+		const bridgeFields = [
+			"client_id",
+			"redirect_uri",
+			"scope",
+			"state",
+			"code_challenge",
+			"code_challenge_method",
+			"nonce",
+		];
+		for (const field of bridgeFields) {
+			const value = currentParams.get(field);
+			if (value) url.searchParams.set("oauth_" + field, value);
+		}
+	}
+	return url.toString();
+}
+
 // redirectAfterLogin performs the post-login navigation: OIDC interaction,
 // OAuth authorize round-trip, or the dashboard.
 export function redirectAfterLogin(): void {
@@ -126,22 +167,7 @@ export function redirectAfterLogin(): void {
 		return;
 	}
 	if (urlParams.get("oauth") === "true") {
-		const oauthParams = new URLSearchParams();
-		const oauthFields = [
-			"response_type",
-			"client_id",
-			"redirect_uri",
-			"scope",
-			"state",
-			"code_challenge",
-			"code_challenge_method",
-			"nonce",
-		];
-		for (const field of oauthFields) {
-			const value = urlParams.get(field);
-			if (value) oauthParams.set(field, value);
-		}
-		window.location.href = `/oauth/authorize?${oauthParams.toString()}`;
+		window.location.href = oauthAuthorizeUrl((f) => urlParams.get(f));
 		return;
 	}
 	// The most capable page the user can reach: dashboard (anchor/admin), else a
@@ -166,23 +192,10 @@ export async function login(
 	authStore.setError(null);
 
 	try {
-		const response = await fetch(`${AUTH_URL}/login`, {
+		const data = await authFetch<RawLoginResponse>("/login", {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(credentials),
-			credentials: "include",
 		});
-
-		if (!response.ok) {
-			const errorData = await response.json().catch(() => ({}));
-			throw new Error(
-				errorData.message ||
-					errorData.error ||
-					"Login failed. Please check your credentials.",
-			);
-		}
-
-		const data: RawLoginResponse = await response.json();
 
 		// 2FA pending: no session yet — hand the token back to the caller.
 		if (data.status === "mfa_required") {
@@ -216,10 +229,7 @@ export async function logout(): Promise<void> {
 	const authStore = useAuthStore();
 
 	try {
-		await fetch(`${AUTH_URL}/logout`, {
-			method: "POST",
-			credentials: "include",
-		});
+		await authFetch<void>("/logout", { method: "POST" });
 	} catch {
 		// Ignore errors - clear local state anyway
 	}
@@ -230,34 +240,22 @@ export async function logout(): Promise<void> {
 }
 
 export async function requestPasswordReset(email: string): Promise<void> {
-	const response = await fetch(`${AUTH_URL}/password-reset/request`, {
+	await authFetch<void>("/password-reset/request", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ email }),
-		credentials: "include",
 	});
-
-	if (!response.ok) {
-		const errorData = await response.json().catch(() => ({}));
-		throw new Error(
-			errorData.error || "Failed to request password reset.",
-		);
-	}
 }
 
 export async function validateResetToken(
 	token: string,
 ): Promise<{ valid: boolean; reason?: string; requiresFactor?: boolean }> {
-	const response = await fetch(
-		`${AUTH_URL}/password-reset/validate?token=${encodeURIComponent(token)}`,
-		{ credentials: "include" },
-	);
-
-	if (!response.ok) {
+	try {
+		return await authFetch(
+			`/password-reset/validate?token=${encodeURIComponent(token)}`,
+		);
+	} catch {
 		return { valid: false, reason: "not_found" };
 	}
-
-	return response.json();
 }
 
 export interface ConfirmPasswordResetResult {
@@ -272,35 +270,17 @@ export async function confirmPasswordReset(
 	password: string,
 	factorCode?: string,
 ): Promise<ConfirmPasswordResetResult> {
-	const response = await fetch(`${AUTH_URL}/password-reset/confirm`, {
+	return authFetch<ConfirmPasswordResetResult>("/password-reset/confirm", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ token, password, factorCode }),
-		credentials: "include",
 	});
-
-	if (!response.ok) {
-		const errorData = await response.json().catch(() => ({}));
-		throw new Error(errorData.message || errorData.error || "Failed to reset password.");
-	}
-
-	return response.json();
 }
 
 export async function switchClient(clientId: string): Promise<void> {
 	const authStore = useAuthStore();
 
 	try {
-		const response = await fetch(`${AUTH_URL}/client/${clientId}`, {
-			method: "POST",
-			credentials: "include",
-		});
-
-		if (!response.ok) {
-			const errorData = await response.json().catch(() => ({}));
-			throw new Error(errorData.message || "Failed to switch client");
-		}
-
+		await authFetch<void>(`/client/${clientId}`, { method: "POST" });
 		authStore.selectClient(clientId);
 	} catch (error: unknown) {
 		authStore.setError(getErrorMessage(error, "Failed to switch client"));

@@ -13,7 +13,7 @@ import {
 	landingPath,
 } from "@/stores/permissions";
 import { usePlatformConfigStore } from "@/stores/platformConfig";
-import { checkSession } from "@/api/auth";
+import { checkSession, oauthAuthorizeUrl } from "@/api/auth";
 
 /**
  * Guard that ensures user is authenticated.
@@ -84,27 +84,14 @@ export async function guestGuard(
 			return;
 		}
 
-		// Check if this is an OAuth flow - redirect to /oauth/authorize to complete it
+		// Check if this is an OAuth flow - redirect to /oauth/authorize to
+		// complete it (shared field list — see api/auth.ts). The session
+		// cookie is sent and the auth code issued.
 		if (to.query['oauth'] === "true") {
-			const oauthParams = new URLSearchParams();
-			const oauthFields = [
-				"response_type",
-				"client_id",
-				"redirect_uri",
-				"scope",
-				"state",
-				"code_challenge",
-				"code_challenge_method",
-				"nonce",
-			];
-			for (const field of oauthFields) {
+			window.location.href = oauthAuthorizeUrl((field) => {
 				const value = to.query[field];
-				if (value && typeof value === "string") {
-					oauthParams.set(field, value);
-				}
-			}
-			// Redirect to OAuth authorize - the session cookie will be sent and auth code issued
-			window.location.href = `/oauth/authorize?${oauthParams.toString()}`;
+				return typeof value === "string" ? value : null;
+			});
 			return;
 		}
 

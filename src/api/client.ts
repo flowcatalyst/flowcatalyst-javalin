@@ -1,12 +1,15 @@
 /**
- * HTTP client configuration for Hey API generated SDK.
- * This sets up the base URL and any default headers.
+ * The app's HTTP transport: thin fetch wrappers with the platform error
+ * envelope decoded once — global toasts, 401/403 events, and per-field
+ * validation detail extraction live here so feature modules don't
+ * reimplement them.
  */
 
 import { toast } from "@/utils/errorBus";
 
 export const API_BASE_URL = "/api";
 export const BFF_BASE_URL = "/bff";
+export const AUTH_BASE_URL = "/auth";
 
 /**
  * Custom error class for API errors that includes status code
@@ -68,6 +71,12 @@ export interface FetchOptions extends RequestInit {
 	 * inline form message). The error is still thrown as an `ApiError`.
 	 */
 	suppressGlobalErrorToast?: boolean;
+	/**
+	 * If true, suppress the global 401/403 event (the "session expired" /
+	 * permission-denied modal). The auth surface sets this: a wrong password
+	 * or expired reset token is a form-level error, not an expired session.
+	 */
+	suppressAuthErrorEvent?: boolean;
 }
 
 /**
@@ -91,11 +100,29 @@ export async function bffFetch<T>(
 	return baseFetch<T>(`${BFF_BASE_URL}${path}`, options);
 }
 
+/**
+ * Fetch from the /auth/* surface (login, 2FA, passkeys, password reset).
+ * Same envelope decoding as apiFetch, but errors stay inline by default:
+ * no global toast, and no 401/403 modal — a failed credential is the
+ * form's problem, not a session expiry.
+ */
+export async function authFetch<T>(
+	path: string,
+	options: FetchOptions = {},
+): Promise<T> {
+	return baseFetch<T>(`${AUTH_BASE_URL}${path}`, {
+		suppressGlobalErrorToast: true,
+		suppressAuthErrorEvent: true,
+		...options,
+	});
+}
+
 async function baseFetch<T>(
 	url: string,
 	options: FetchOptions = {},
 ): Promise<T> {
-	const { suppressGlobalErrorToast, ...init } = options;
+	const { suppressGlobalErrorToast, suppressAuthErrorEvent, ...init } =
+		options;
 
 	const headers: Record<string, string> = {
 		...(init.headers as Record<string, string>),
@@ -139,8 +166,12 @@ async function baseFetch<T>(
 		const code =
 			(typeof error.error === "string" && error.error) || error.code;
 
-		// Emit error event for 401/403
-		if (response.status === 401 || response.status === 403) {
+		// Emit error event for 401/403 (session-expired / permission modal)
+		// unless the caller opted out (auth surface).
+		if (
+			(response.status === 401 || response.status === 403) &&
+			!suppressAuthErrorEvent
+		) {
 			emitApiError(response.status, message);
 		}
 
@@ -157,5 +188,8 @@ async function baseFetch<T>(
 		return undefined as T;
 	}
 
-	return response.json();
+	// Tolerate empty 200 bodies (some auth endpoints reply 200 with no
+	// payload) — response.json() would throw on them.
+	const text = await response.text();
+	return (text ? JSON.parse(text) : undefined) as T;
 }
