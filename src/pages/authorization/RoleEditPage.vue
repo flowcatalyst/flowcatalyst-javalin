@@ -52,8 +52,39 @@ const applications = computed(() =>
 	Array.from(permissionsByApplication.value.keys()).sort(),
 );
 
+// Custom permission entry. Platform permissions are code-defined, so this is
+// only offered for non-platform applications: a non-platform app has no
+// permission catalogue of its own — its permissions exist only as the strings
+// attached to its roles — so "creating a permission" means defining a new
+// one here and saving it onto the role. It then appears in the application's
+// catalogue for future roles.
+const isPlatformRole = computed(() => role.value?.applicationCode === "platform");
+const newPerm = ref({ context: "", aggregate: "", action: "" });
+
+const newPermString = computed(() => {
+	const app = role.value?.applicationCode ?? "";
+	const { context, aggregate, action } = newPerm.value;
+	return `${app}:${context.trim()}:${aggregate.trim()}:${action.trim()}`;
+});
+
+// Each segment must be a non-empty lowercase token (no colons/spaces) so the
+// result is a well-formed 4-segment permission the backend can parse.
+const segmentPattern = /^[a-z0-9-]+$/;
+const canAddPermission = computed(() =>
+	[newPerm.value.context, newPerm.value.aggregate, newPerm.value.action].every(
+		(s) => segmentPattern.test(s.trim()),
+	),
+);
+const permissionExists = computed(() =>
+	allPermissions.value.some((p) => p.permission === newPermString.value),
+);
+
 onMounted(async () => {
-	await Promise.all([loadRole(), loadPermissions()]);
+	// Load the role first so we know which application's permissions to fetch —
+	// a non-platform role must offer its own application's permissions, not the
+	// platform catalogue.
+	await loadRole();
+	await loadPermissions();
 });
 
 async function loadRole() {
@@ -77,8 +108,12 @@ async function loadRole() {
 }
 
 async function loadPermissions() {
+	if (!role.value) {
+		loading.value = false;
+		return;
+	}
 	try {
-		const response = await permissionsApi.list();
+		const response = await permissionsApi.list(role.value.applicationCode);
 		allPermissions.value = response.items;
 	} catch {
 	} finally {
@@ -94,6 +129,27 @@ function togglePermission(permissionString: string) {
 	}
 	// Trigger reactivity
 	selectedPermissions.value = new Set(selectedPermissions.value);
+}
+
+function addCustomPermission() {
+	if (!role.value || !canAddPermission.value || permissionExists.value) return;
+	const perm = newPermString.value;
+	// Surface it in the catalogue list so it renders & groups, then select it.
+	// It persists to the role on save (and to the app's catalogue thereafter).
+	allPermissions.value = [
+		...allPermissions.value,
+		{
+			permission: perm,
+			application: role.value.applicationCode,
+			context: newPerm.value.context.trim(),
+			aggregate: newPerm.value.aggregate.trim(),
+			action: newPerm.value.action.trim(),
+			description: "",
+		},
+	];
+	selectedPermissions.value.add(perm);
+	selectedPermissions.value = new Set(selectedPermissions.value);
+	newPerm.value = { context: "", aggregate: "", action: "" };
 }
 
 function selectAllInApplication(application: string) {
@@ -247,6 +303,34 @@ function getActionSeverity(action: string) {
         <div class="card-header">
           <h2 class="card-title">Permissions</h2>
           <span class="permission-count">{{ selectedPermissions.size }} selected</span>
+        </div>
+
+        <!-- Define a new permission for this application (non-platform only;
+             platform permissions are code-defined). -->
+        <div v-if="!isPlatformRole" class="add-permission">
+          <label class="add-permission-label">New permission</label>
+          <div class="add-permission-row">
+            <Tag :value="role.applicationCode" severity="secondary" />
+            <span class="separator">:</span>
+            <InputText v-model="newPerm.context" placeholder="context" class="seg-input" />
+            <span class="separator">:</span>
+            <InputText v-model="newPerm.aggregate" placeholder="aggregate" class="seg-input" />
+            <span class="separator">:</span>
+            <InputText v-model="newPerm.action" placeholder="action" class="seg-input" />
+            <Button
+              label="Add"
+              icon="pi pi-plus"
+              size="small"
+              :disabled="!canAddPermission || permissionExists"
+              @click="addCustomPermission"
+            />
+          </div>
+          <small v-if="permissionExists" class="add-permission-hint warn">
+            <code>{{ newPermString }}</code> already exists
+          </small>
+          <small v-else class="add-permission-hint">
+            Lowercase letters, numbers and hyphens. Saved onto this role.
+          </small>
         </div>
 
         <div v-if="allPermissions.length === 0" class="empty-permissions">
@@ -417,6 +501,53 @@ function getActionSeverity(action: string) {
 
 .permissions-card {
   padding-bottom: 0;
+}
+
+.add-permission {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.add-permission-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.add-permission-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.add-permission-row .separator {
+  color: #94a3b8;
+  font-family: monospace;
+}
+
+.seg-input {
+  width: 140px;
+  font-family: monospace;
+}
+
+.add-permission-hint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.add-permission-hint.warn {
+  color: #b45309;
+}
+
+.add-permission-hint code {
+  font-family: monospace;
 }
 
 .empty-permissions {
