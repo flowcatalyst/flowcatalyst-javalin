@@ -16,7 +16,7 @@ export type AccessResponse = {
     applicationCode: string;
     canRead: boolean;
     canWrite: boolean;
-    createdAt: Time;
+    createdAt: string;
     id: string;
     roleCode: string;
 };
@@ -74,12 +74,12 @@ export type AllowedOriginResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     id: string;
     origin: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type AnchorDomainListResponse = {
@@ -91,10 +91,10 @@ export type AnchorDomainListResponse = {
 };
 
 export type AnchorDomainResponse = {
-    createdAt: Time;
+    createdAt: string;
     domain: string;
     id: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ApplicationAccessListResponse = {
@@ -166,7 +166,7 @@ export type ApplicationResponse = {
     readonly $schema?: string;
     active: boolean;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     defaultBaseUrl?: string;
     description?: string;
     hasLoginClient: boolean;
@@ -177,7 +177,7 @@ export type ApplicationResponse = {
     name: string;
     serviceAccountId?: string;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
     website?: string;
 };
 
@@ -235,8 +235,8 @@ export type AttachServiceAccountRequest = {
 
 export type AttemptDto = {
     attemptNumber: number;
-    attemptedAt: Time;
-    completedAt?: Time;
+    attemptedAt: string;
+    completedAt?: string;
     durationMillis?: number;
     errorMessage?: string;
     errorType?: string;
@@ -299,7 +299,7 @@ export type AuditLogResponse = {
     id: string;
     operation: string;
     operationJson?: string;
-    performedAt: Time;
+    performedAt: string;
     principalId?: string;
     principalName?: string;
 };
@@ -316,7 +316,7 @@ export type AuthConfigResponse = {
     additionalClientIds: Array<string>;
     authProvider: string;
     configType: string;
-    createdAt: Time;
+    createdAt: string;
     emailDomain: string;
     grantedClientIds: Array<string>;
     id: string;
@@ -326,7 +326,7 @@ export type AuthConfigResponse = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     primaryClientId?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type AuthenticateBeginRequest = {
@@ -471,8 +471,8 @@ export type ClientAccessGrantResponse = {
      */
     readonly $schema?: string;
     clientId: string;
-    expiresAt?: Time;
-    grantedAt: Time;
+    expiresAt?: string;
+    grantedAt: string;
     id: string;
 };
 
@@ -528,10 +528,10 @@ export type ClientConfigResponse = {
     baseUrlOverride?: string;
     clientId: string;
     configJson?: unknown;
-    createdAt: Time;
+    createdAt: string;
     enabled: boolean;
     id: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ClientListResponse = {
@@ -548,15 +548,15 @@ export type ClientResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
-    createdAt: Time;
+    createdAt: string;
     id: string;
     identifier: string;
     name: string;
     notes: Array<NoteResponse>;
     status: string;
-    statusChangedAt?: Time;
+    statusChangedAt?: string;
     statusReason?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type CompleteInstanceRequest = {
@@ -597,13 +597,13 @@ export type ConfigResponse = {
     readonly $schema?: string;
     applicationCode: string;
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
     property: string;
     scope: string;
     section: string;
-    updatedAt: Time;
+    updatedAt: string;
     value: string;
     valueType: string;
 };
@@ -625,14 +625,14 @@ export type ConnectionResponse = {
     clientId?: string;
     clientIdentifier?: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     externalId?: string;
     id: string;
     name: string;
     serviceAccountId: string;
     status: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ContextEntryDto = {
@@ -1065,24 +1065,24 @@ export type DispatchJobRead = {
     clientId?: string;
     clientIdentifier?: string;
     code: string;
-    completedAt?: Time;
+    completedAt?: string;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     dispatchMode?: string;
     eventId?: string;
     id: string;
     kind: string;
-    lastAttemptAt?: Time;
+    lastAttemptAt?: string;
     mode: string;
     priority?: number;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     source?: string;
     status: string;
     subdomain?: string;
     subject?: string;
     subscriptionId?: string;
     targetUrl: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type DispatchJobResponse = {
@@ -1094,19 +1094,19 @@ export type DispatchJobResponse = {
     attempts?: Array<AttemptDto>;
     clientId?: string;
     code: string;
-    completedAt?: Time;
+    completedAt?: string;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     dataOnly: boolean;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
-    expiresAt?: Time;
+    expiresAt?: string;
     externalId?: string;
     id: string;
     idempotencyKey?: string;
     kind: string;
-    lastAttemptAt?: Time;
+    lastAttemptAt?: string;
     lastError?: string;
     maxRetries: number;
     messageGroup?: string;
@@ -1116,7 +1116,7 @@ export type DispatchJobResponse = {
     payloadContentType: string;
     protocol: string;
     retryStrategy: string;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     schemaId?: string;
     sequence: number;
     serviceAccountId?: string;
@@ -1126,7 +1126,7 @@ export type DispatchJobResponse = {
     subscriptionId?: string;
     targetUrl: string;
     timeoutSeconds: number;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type DispatchPoolListResponse = {
@@ -1147,13 +1147,13 @@ export type DispatchPoolResponse = {
     clientIdentifier?: string;
     code: string;
     concurrency: number;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
     name: string;
     rateLimit?: number;
     status: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ErrorModel = {
@@ -1190,11 +1190,11 @@ export type EventRead = {
     correlationId?: string;
     id: string;
     messageGroup?: string;
-    projectedAt: Time;
+    projectedAt: string;
     source: string;
     subdomain?: string;
     subject?: string;
-    time: Time;
+    time: string;
     type: string;
 };
 
@@ -1209,17 +1209,17 @@ export type EventResponse = {
     clientId?: string;
     contextData?: Array<ContextEntryDto>;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     data?: unknown;
     deduplicationId: string;
     id: string;
     messageGroup?: string;
-    projectedAt?: Time;
+    projectedAt?: string;
     source: string;
     specVersion: string;
     subdomain?: string;
     subject: string;
-    time: Time;
+    time: string;
     type: string;
 };
 
@@ -1247,7 +1247,7 @@ export type EventTypeResponse = {
     application: string;
     clientId?: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     eventName: string;
@@ -1257,7 +1257,7 @@ export type EventTypeResponse = {
     specVersions: Array<SpecVersionResponse>;
     status: string;
     subdomain: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type FireNowRequest = {
@@ -1323,7 +1323,7 @@ export type IdentityProviderResponse = {
     readonly $schema?: string;
     allowedEmailDomains: Array<string>;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     hasClientSecret: boolean;
     id: string;
     name: string;
@@ -1332,7 +1332,7 @@ export type IdentityProviderResponse = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type IdpRoleMappingListResponse = {
@@ -1344,12 +1344,12 @@ export type IdpRoleMappingListResponse = {
 };
 
 export type IdpRoleMappingResponse = {
-    createdAt: Time;
+    createdAt: string;
     id: string;
     idpRoleName: string;
     idpType: string;
     platformRoleName: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ListOutputBody = {
@@ -1372,7 +1372,7 @@ export type LoginAttemptListResponse = {
 
 export type LoginAttemptResponse = {
     attemptType: string;
-    attemptedAt: Time;
+    attemptedAt: string;
     failureReason: string | null;
     id: string;
     identifier: string;
@@ -1399,7 +1399,7 @@ export type MappingResponse = {
     additionalClientIds: Array<string>;
     allowed2faMethods: Array<string>;
     allowedRoleIds: Array<string>;
-    createdAt: Time;
+    createdAt: string;
     emailDomain: string;
     grantedClientIds: Array<string>;
     id: string;
@@ -1412,7 +1412,7 @@ export type MappingResponse = {
     requiredOidcTenantId?: string;
     scopeType: string;
     syncRolesFromIdp: boolean;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type MetadataDto = {
@@ -1421,7 +1421,7 @@ export type MetadataDto = {
 };
 
 export type NoteResponse = {
-    addedAt: Time;
+    addedAt: string;
     addedBy?: string;
     category: string;
     text: string;
@@ -1452,7 +1452,7 @@ export type OAuthClientResponse = {
     clientId: string;
     clientName: string;
     clientType: string;
-    createdAt: Time;
+    createdAt: string;
     defaultScopes: Array<string>;
     grantTypes: Array<string>;
     id: string;
@@ -1460,7 +1460,7 @@ export type OAuthClientResponse = {
     postLogoutRedirectUris: Array<string>;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type OffsetPageScheduledJobInstanceResponse = {
@@ -1537,7 +1537,7 @@ export type PrincipalResponse = {
     readonly $schema?: string;
     active: boolean;
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     email?: string;
     grantedClientIds: Array<string>;
     id: string;
@@ -1547,11 +1547,11 @@ export type PrincipalResponse = {
     roles: Array<string>;
     scope: string;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type PrincipalRoleAssignmentDto = {
-    assignedAt: Time;
+    assignedAt: string;
     assignmentSource: string;
     id: string;
     roleName: string;
@@ -1581,7 +1581,7 @@ export type ProcessResponse = {
     application: string;
     body: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     diagramType: string;
@@ -1592,7 +1592,7 @@ export type ProcessResponse = {
     status: string;
     subdomain: string;
     tags: Array<string>;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ProvisionLoginClientRequest = {
@@ -1622,9 +1622,9 @@ export type RawDispatchJobResponse = {
     attemptHistoryCount: number;
     clientId?: string;
     code: string;
-    completedAt?: Time;
+    completedAt?: string;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     dispatchPoolId?: string;
     eventId?: string;
     externalId?: string;
@@ -1639,7 +1639,7 @@ export type RawDispatchJobResponse = {
     payloadLength: number;
     protocol: string;
     retryStrategy: string;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     sequence: number;
     serviceAccountId?: string;
     source?: string;
@@ -1648,7 +1648,7 @@ export type RawDispatchJobResponse = {
     subscriptionId?: string;
     targetUrl: string;
     timeoutSeconds: number;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type RawEventResponse = {
@@ -1664,7 +1664,7 @@ export type RawEventResponse = {
     source: string;
     specVersion: string;
     subject?: string;
-    time: Time;
+    time: string;
 };
 
 export type RegenerateAuthTokenResponse = {
@@ -1724,9 +1724,9 @@ export type RegisterCompleteResponse = {
 
 export type RequestDto = {
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     email: string;
-    expiresAt: Time;
+    expiresAt: string;
     id: string;
     name: string;
     principalId: string;
@@ -1743,7 +1743,7 @@ export type ResetPasswordRequest = {
 };
 
 export type RoleAssignmentDto = {
-    assignedAt: Time;
+    assignedAt: string;
     assignedBy?: string;
     assignmentSource?: string;
     clientId?: string;
@@ -1775,14 +1775,14 @@ export type RoleResponse = {
     applicationCode: string;
     applicationId?: string;
     clientManaged: boolean;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     displayName: string;
     id: string;
     name: string;
     permissions: Array<string>;
     source: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type RolesAssignedResponse = {
@@ -1806,7 +1806,7 @@ export type RotateOAuthClientSecretResponse = {
 
 export type ScheduledJobInstanceLogResponse = {
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     id: string;
     instanceId: string;
     level: string;
@@ -1821,18 +1821,18 @@ export type ScheduledJobInstanceResponse = {
      */
     readonly $schema?: string;
     clientId?: string;
-    completedAt?: Time;
+    completedAt?: string;
     completionResult?: unknown;
     completionStatus?: string;
     correlationId?: string;
-    createdAt: Time;
-    deliveredAt?: Time;
+    createdAt: string;
+    deliveredAt?: string;
     deliveryAttempts: number;
     deliveryError?: string;
-    firedAt: Time;
+    firedAt: string;
     id: string;
     jobCode: string;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     scheduledJobId: string;
     status: string;
     triggerKind: string;
@@ -1846,14 +1846,14 @@ export type ScheduledJobResponse = {
     clientId?: string;
     code: string;
     concurrent: boolean;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     crons: Array<string>;
     deliveryMaxAttempts: number;
     description?: string;
     hasActiveInstance: boolean;
     id: string;
-    lastFiredAt?: Time;
+    lastFiredAt?: string;
     name: string;
     payload?: unknown;
     status: string;
@@ -1861,7 +1861,7 @@ export type ScheduledJobResponse = {
     timeoutSeconds?: number;
     timezone: string;
     tracksCompletion: boolean;
-    updatedAt: Time;
+    updatedAt: string;
     updatedBy?: string;
     version: number;
 };
@@ -1908,14 +1908,14 @@ export type ServiceAccountResponse = {
     authType: string;
     clientIds: Array<string>;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
-    lastUsedAt?: Time;
+    lastUsedAt?: string;
     name: string;
     roles: Array<string>;
     scope?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ServiceAccountRoleListResponse = {
@@ -1967,7 +1967,7 @@ export type SetPropertyRequest = {
 };
 
 export type SpecVersionResponse = {
-    createdAt: Time;
+    createdAt: string;
     schema: unknown;
     status: string;
     version: string;
@@ -2010,7 +2010,7 @@ export type SubscriptionResponse = {
     clientScoped: boolean;
     code: string;
     connectionId?: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     customConfig: Array<ConfigEntryDto>;
     dataOnly: boolean;
@@ -2031,7 +2031,7 @@ export type SubscriptionResponse = {
     source: string;
     status: string;
     timeoutSeconds: number;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type SuccessResponse = {
@@ -2276,8 +2276,6 @@ export type SyncSubscriptionsRequest = {
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown;
 };
-
-export type Time = string;
 
 export type UpdateAnchorDomainRequest = {
     /**
@@ -2527,9 +2525,9 @@ export type WebauthnAuthenticateCompleteResponse = {
 };
 
 export type WebauthnCredentialSummary = {
-    createdAt: Time;
+    createdAt: string;
     id: string;
-    lastUsedAt?: Time;
+    lastUsedAt?: string;
     name?: string;
 };
 
@@ -2595,12 +2593,12 @@ export type AddSchemaRequestWritable = {
 };
 
 export type AllowedOriginResponseWritable = {
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     id: string;
     origin: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type AnchorDomainListResponseWritable = {
@@ -2634,7 +2632,7 @@ export type ApplicationProvisionServiceAccountResponseWritable = {
 export type ApplicationResponseWritable = {
     active: boolean;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     defaultBaseUrl?: string;
     description?: string;
     hasLoginClient: boolean;
@@ -2645,7 +2643,7 @@ export type ApplicationResponseWritable = {
     name: string;
     serviceAccountId?: string;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
     website?: string;
 };
 
@@ -2705,7 +2703,7 @@ export type AuditLogResponseWritable = {
     id: string;
     operation: string;
     operationJson?: string;
-    performedAt: Time;
+    performedAt: string;
     principalId?: string;
     principalName?: string;
 };
@@ -2777,8 +2775,8 @@ export type ClientAccessGrantListResponseWritable = {
 
 export type ClientAccessGrantResponseWritable = {
     clientId: string;
-    expiresAt?: Time;
-    grantedAt: Time;
+    expiresAt?: string;
+    grantedAt: string;
     id: string;
 };
 
@@ -2808,10 +2806,10 @@ export type ClientConfigResponseWritable = {
     baseUrlOverride?: string;
     clientId: string;
     configJson?: unknown;
-    createdAt: Time;
+    createdAt: string;
     enabled: boolean;
     id: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ClientListResponseWritable = {
@@ -2820,15 +2818,15 @@ export type ClientListResponseWritable = {
 };
 
 export type ClientResponseWritable = {
-    createdAt: Time;
+    createdAt: string;
     id: string;
     identifier: string;
     name: string;
     notes: Array<NoteResponse>;
     status: string;
-    statusChangedAt?: Time;
+    statusChangedAt?: string;
     statusReason?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type CompleteInstanceRequestWritable = {
@@ -2852,13 +2850,13 @@ export type ConfigListResponseWritable = {
 export type ConfigResponseWritable = {
     applicationCode: string;
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
     property: string;
     scope: string;
     section: string;
-    updatedAt: Time;
+    updatedAt: string;
     value: string;
     valueType: string;
 };
@@ -2872,14 +2870,14 @@ export type ConnectionResponseWritable = {
     clientId?: string;
     clientIdentifier?: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     externalId?: string;
     id: string;
     name: string;
     serviceAccountId: string;
     status: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type CorsOriginListResponseWritable = {
@@ -3213,19 +3211,19 @@ export type DispatchJobResponseWritable = {
     attempts?: Array<AttemptDto>;
     clientId?: string;
     code: string;
-    completedAt?: Time;
+    completedAt?: string;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     dataOnly: boolean;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
-    expiresAt?: Time;
+    expiresAt?: string;
     externalId?: string;
     id: string;
     idempotencyKey?: string;
     kind: string;
-    lastAttemptAt?: Time;
+    lastAttemptAt?: string;
     lastError?: string;
     maxRetries: number;
     messageGroup?: string;
@@ -3235,7 +3233,7 @@ export type DispatchJobResponseWritable = {
     payloadContentType: string;
     protocol: string;
     retryStrategy: string;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     schemaId?: string;
     sequence: number;
     serviceAccountId?: string;
@@ -3245,7 +3243,7 @@ export type DispatchJobResponseWritable = {
     subscriptionId?: string;
     targetUrl: string;
     timeoutSeconds: number;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type DispatchPoolListResponseWritable = {
@@ -3258,13 +3256,13 @@ export type DispatchPoolResponseWritable = {
     clientIdentifier?: string;
     code: string;
     concurrency: number;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
     name: string;
     rateLimit?: number;
     status: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ErrorModelWritable = {
@@ -3288,17 +3286,17 @@ export type EventResponseWritable = {
     clientId?: string;
     contextData?: Array<ContextEntryDto>;
     correlationId?: string;
-    createdAt: Time;
+    createdAt: string;
     data?: unknown;
     deduplicationId: string;
     id: string;
     messageGroup?: string;
-    projectedAt?: Time;
+    projectedAt?: string;
     source: string;
     specVersion: string;
     subdomain?: string;
     subject: string;
-    time: Time;
+    time: string;
     type: string;
 };
 
@@ -3311,7 +3309,7 @@ export type EventTypeResponseWritable = {
     application: string;
     clientId?: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     eventName: string;
@@ -3321,7 +3319,7 @@ export type EventTypeResponseWritable = {
     specVersions: Array<SpecVersionResponse>;
     status: string;
     subdomain: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type FireNowRequestWritable = {
@@ -3359,7 +3357,7 @@ export type IdentityProviderListResponseWritable = {
 export type IdentityProviderResponseWritable = {
     allowedEmailDomains: Array<string>;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     hasClientSecret: boolean;
     id: string;
     name: string;
@@ -3368,7 +3366,7 @@ export type IdentityProviderResponseWritable = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type IdpRoleMappingListResponseWritable = {
@@ -3394,7 +3392,7 @@ export type MappingResponseWritable = {
     additionalClientIds: Array<string>;
     allowed2faMethods: Array<string>;
     allowedRoleIds: Array<string>;
-    createdAt: Time;
+    createdAt: string;
     emailDomain: string;
     grantedClientIds: Array<string>;
     id: string;
@@ -3407,7 +3405,7 @@ export type MappingResponseWritable = {
     requiredOidcTenantId?: string;
     scopeType: string;
     syncRolesFromIdp: boolean;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type OAuthClientListResponseWritable = {
@@ -3422,7 +3420,7 @@ export type OAuthClientResponseWritable = {
     clientId: string;
     clientName: string;
     clientType: string;
-    createdAt: Time;
+    createdAt: string;
     defaultScopes: Array<string>;
     grantTypes: Array<string>;
     id: string;
@@ -3430,7 +3428,7 @@ export type OAuthClientResponseWritable = {
     postLogoutRedirectUris: Array<string>;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type OffsetPageScheduledJobInstanceResponseWritable = {
@@ -3473,7 +3471,7 @@ export type PrincipalListResponseWritable = {
 export type PrincipalResponseWritable = {
     active: boolean;
     clientId?: string;
-    createdAt: Time;
+    createdAt: string;
     email?: string;
     grantedClientIds: Array<string>;
     id: string;
@@ -3483,7 +3481,7 @@ export type PrincipalResponseWritable = {
     roles: Array<string>;
     scope: string;
     type: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type PrincipalRoleListResponseWritable = {
@@ -3498,7 +3496,7 @@ export type ProcessResponseWritable = {
     application: string;
     body: string;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     description?: string;
     diagramType: string;
@@ -3509,7 +3507,7 @@ export type ProcessResponseWritable = {
     status: string;
     subdomain: string;
     tags: Array<string>;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ProvisionLoginClientRequestWritable = {
@@ -3576,14 +3574,14 @@ export type RoleResponseWritable = {
     applicationCode: string;
     applicationId?: string;
     clientManaged: boolean;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     displayName: string;
     id: string;
     name: string;
     permissions: Array<string>;
     source: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type RolesAssignedResponseWritable = {
@@ -3599,18 +3597,18 @@ export type RotateOAuthClientSecretResponseWritable = {
 
 export type ScheduledJobInstanceResponseWritable = {
     clientId?: string;
-    completedAt?: Time;
+    completedAt?: string;
     completionResult?: unknown;
     completionStatus?: string;
     correlationId?: string;
-    createdAt: Time;
-    deliveredAt?: Time;
+    createdAt: string;
+    deliveredAt?: string;
     deliveryAttempts: number;
     deliveryError?: string;
-    firedAt: Time;
+    firedAt: string;
     id: string;
     jobCode: string;
-    scheduledFor?: Time;
+    scheduledFor?: string;
     scheduledJobId: string;
     status: string;
     triggerKind: string;
@@ -3620,14 +3618,14 @@ export type ScheduledJobResponseWritable = {
     clientId?: string;
     code: string;
     concurrent: boolean;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     crons: Array<string>;
     deliveryMaxAttempts: number;
     description?: string;
     hasActiveInstance: boolean;
     id: string;
-    lastFiredAt?: Time;
+    lastFiredAt?: string;
     name: string;
     payload?: unknown;
     status: string;
@@ -3635,7 +3633,7 @@ export type ScheduledJobResponseWritable = {
     timeoutSeconds?: number;
     timezone: string;
     tracksCompletion: boolean;
-    updatedAt: Time;
+    updatedAt: string;
     updatedBy?: string;
     version: number;
 };
@@ -3661,14 +3659,14 @@ export type ServiceAccountResponseWritable = {
     authType: string;
     clientIds: Array<string>;
     code: string;
-    createdAt: Time;
+    createdAt: string;
     description?: string;
     id: string;
-    lastUsedAt?: Time;
+    lastUsedAt?: string;
     name: string;
     roles: Array<string>;
     scope?: string;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type ServiceAccountRoleListResponseWritable = {
@@ -3719,7 +3717,7 @@ export type SubscriptionResponseWritable = {
     clientScoped: boolean;
     code: string;
     connectionId?: string;
-    createdAt: Time;
+    createdAt: string;
     createdBy?: string;
     customConfig: Array<ConfigEntryDto>;
     dataOnly: boolean;
@@ -3740,7 +3738,7 @@ export type SubscriptionResponseWritable = {
     source: string;
     status: string;
     timeoutSeconds: number;
-    updatedAt: Time;
+    updatedAt: string;
 };
 
 export type SuccessResponseWritable = {
