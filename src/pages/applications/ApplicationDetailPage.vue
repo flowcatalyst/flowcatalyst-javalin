@@ -598,11 +598,14 @@ function formatDate(dateString: string) {
           <label>Client Secret</label>
           <div class="credential-value">
             <code>{{ provisionedCredentials.oauthClient.clientSecret }}</code>
+            <!-- clientSecret is optional on the shared credentials wire shape
+                 (PUBLIC login clients have none); service-account provisioning
+                 always returns one. -->
             <Button
               icon="pi pi-copy"
               text
               size="small"
-              @click="copyToClipboard(provisionedCredentials.oauthClient.clientSecret)"
+              @click="copyToClipboard(provisionedCredentials.oauthClient.clientSecret ?? '')"
             />
           </div>
         </div>

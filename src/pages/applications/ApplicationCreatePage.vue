@@ -2,11 +2,7 @@
 import { toast } from "@/utils/errorBus";
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import {
-	applicationsApi,
-	type ApplicationType,
-	type ApplicationWithServiceAccount,
-} from "@/api/applications";
+import { applicationsApi, type ApplicationType } from "@/api/applications";
 
 const router = useRouter();
 
@@ -25,10 +21,6 @@ const typeOptions = [
 	{ label: "Application", value: "APPLICATION" },
 	{ label: "Integration", value: "INTEGRATION" },
 ];
-
-// Service account credentials dialog
-const showCredentialsDialog = ref(false);
-const createdApplication = ref<ApplicationWithServiceAccount | null>(null);
 
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
@@ -68,15 +60,11 @@ async function onSubmit() {
 			type: type.value,
 		});
 
-		createdApplication.value = application;
-
-		// Show credentials dialog if service account was created
-		if (application.serviceAccount) {
-			showCredentialsDialog.value = true;
-		} else {
-			toast.success("Success", "Application created");
-			router.push(`/applications/${application.id}`);
-		}
+		// POST /applications returns the created envelope `{ id }` only —
+		// service-account credentials are provisioned (and shown) from the
+		// detail page, not at create time.
+		toast.success("Success", "Application created");
+		router.push(`/applications/${application.id}`);
 	} catch (e) {
 		errorMessage.value =
 			e instanceof Error ? e.message : "Failed to create application";
@@ -85,18 +73,6 @@ async function onSubmit() {
 	}
 }
 
-function onCredentialsDialogClose() {
-	showCredentialsDialog.value = false;
-	toast.success("Success", "Application created");
-	if (createdApplication.value) {
-		router.push(`/applications/${createdApplication.value.id}`);
-	}
-}
-
-function copyToClipboard(text: string) {
-	navigator.clipboard.writeText(text);
-	toast.info("Copied", "Copied to clipboard");
-}
 </script>
 
 <template>
@@ -244,62 +220,6 @@ function copyToClipboard(text: string) {
         </div>
       </div>
     </form>
-
-    <!-- Service Account Credentials Dialog -->
-    <Dialog
-      v-model:visible="showCredentialsDialog"
-      header="Service Account Created"
-      :style="{ width: '550px' }"
-      :modal="true"
-      :closable="false"
-    >
-      <div class="credentials-dialog-content" v-if="createdApplication?.serviceAccount">
-        <Message severity="warn" class="credentials-warning">
-          Save these credentials now. The client secret will not be shown again.
-        </Message>
-
-        <div class="credential-item">
-          <label>Client ID</label>
-          <div class="credential-value">
-            <code>{{ createdApplication.serviceAccount.oauthClient.clientId }}</code>
-            <Button
-              icon="pi pi-copy"
-              text
-              size="small"
-              @click="copyToClipboard(createdApplication.serviceAccount.oauthClient.clientId)"
-            />
-          </div>
-        </div>
-
-        <div class="credential-item">
-          <label>Client Secret</label>
-          <div class="credential-value">
-            <code>{{ createdApplication.serviceAccount.oauthClient.clientSecret }}</code>
-            <Button
-              icon="pi pi-copy"
-              text
-              size="small"
-              @click="copyToClipboard(createdApplication.serviceAccount.oauthClient.clientSecret)"
-            />
-          </div>
-        </div>
-
-        <div class="credential-item">
-          <label>Service Account</label>
-          <div class="credential-value">
-            <span>{{ createdApplication.serviceAccount.name }}</span>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <Button
-          label="I've saved the credentials"
-          icon="pi pi-check"
-          @click="onCredentialsDialogClose"
-        />
-      </template>
-    </Dialog>
   </div>
 </template>
 
@@ -375,46 +295,5 @@ function copyToClipboard(text: string) {
   gap: 12px;
   padding-top: 16px;
   border-top: 1px solid #e2e8f0;
-}
-
-/* Credentials Dialog */
-.credentials-dialog-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.credentials-warning {
-  margin-bottom: 8px;
-}
-
-.credential-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.credential-item > label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #64748b;
-  text-transform: uppercase;
-}
-
-.credential-value {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px 12px;
-}
-
-.credential-value code {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  flex: 1;
-  word-break: break-all;
 }
 </style>

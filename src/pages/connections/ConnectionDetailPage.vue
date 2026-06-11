@@ -3,11 +3,7 @@ import { toast } from "@/utils/errorBus";
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
-import {
-	connectionsApi,
-	type Connection,
-	type ConnectionStatus,
-} from "@/api/connections";
+import { connectionsApi, type Connection } from "@/api/connections";
 import { useReturnTo } from "@/composables/useReturnTo";
 
 const route = useRoute();
@@ -137,7 +133,9 @@ async function deleteConnection() {
 	}
 }
 
-function getStatusSeverity(status: ConnectionStatus) {
+// Takes the wire `status` (plain string in the generated type — the spec has
+// no enums); the default branch covers anything outside ACTIVE/PAUSED.
+function getStatusSeverity(status: string) {
 	switch (status) {
 		case "ACTIVE":
 			return "success";

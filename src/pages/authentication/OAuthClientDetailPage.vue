@@ -246,7 +246,9 @@ async function rotateSecret() {
 
 	try {
 		const response = await oauthClientsApi.rotateSecret(client.value.id);
-		newClientSecret.value = response.clientSecret;
+		// clientSecret is optional on the wire shape (PUBLIC clients have no
+		// secret to rotate); normalise undefined → null for the dialog ref.
+		newClientSecret.value = response.clientSecret ?? null;
 		showRotateSecretDialog.value = false;
 		showNewSecretDialog.value = true;
 		toast.success("Success", "Client secret rotated successfully");

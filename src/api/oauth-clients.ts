@@ -1,34 +1,26 @@
 import { apiFetch } from "./client";
+import type {
+	CreateOAuthClientResponse as GenCreateOAuthClientResponse,
+	OAuthClientApplicationRef,
+	OAuthClientListResponse as GenOAuthClientListResponse,
+	OAuthClientResponse,
+	RotateOAuthClientSecretResponse,
+	SuccessResponse,
+} from "./generated";
 
+// Request-side string union the forms rely on. The generated response
+// types deliberately stay `string` (the spec doesn't carry enums — see
+// docs/frontend-api-types-adoption.md on SDK coordination).
 export type ClientType = "PUBLIC" | "CONFIDENTIAL";
 
-export interface ApplicationRef {
-	id: string;
-	name: string;
-}
-
-export interface OAuthClient {
-	id: string;
-	clientId: string;
-	clientName: string;
-	clientType: ClientType;
-	redirectUris: string[];
-	postLogoutRedirectUris: string[];
-	allowedOrigins: string[];
-	grantTypes: string[];
-	defaultScopes: string[];
-	pkceRequired: boolean;
-	applicationIds: string[];
-	applications?: ApplicationRef[];
-	active: boolean;
-	createdAt: string;
-	updatedAt: string;
-}
-
-export interface OAuthClientListResponse {
-	clients: OAuthClient[];
-	total: number;
-}
+// Response types alias the generated contract (api/openapi.lock.json) so
+// `vue-tsc` fails on backend drift. Aliased under the historical names so
+// pages keep their imports.
+export type ApplicationRef = OAuthClientApplicationRef;
+export type OAuthClient = OAuthClientResponse;
+export type OAuthClientListResponse = GenOAuthClientListResponse;
+export type CreateOAuthClientResponse = GenCreateOAuthClientResponse;
+export type RotateSecretResponse = RotateOAuthClientSecretResponse;
 
 export interface CreateOAuthClientRequest {
 	clientName: string;
@@ -51,17 +43,6 @@ export interface UpdateOAuthClientRequest {
 	defaultScopes?: string[];
 	pkceRequired?: boolean;
 	applicationIds?: string[];
-}
-
-export interface CreateOAuthClientResponse {
-	client: OAuthClient;
-	/** Plaintext secret for CONFIDENTIAL clients — shown only once at creation time */
-	clientSecret?: string;
-}
-
-export interface RotateSecretResponse {
-	clientId: string;
-	clientSecret: string;
 }
 
 export const oauthClientsApi = {
@@ -111,11 +92,11 @@ export const oauthClientsApi = {
 		});
 	},
 
-	activate(id: string): Promise<{ message: string }> {
+	activate(id: string): Promise<SuccessResponse> {
 		return apiFetch(`/oauth-clients/${id}/activate`, { method: "POST" });
 	},
 
-	deactivate(id: string): Promise<{ message: string }> {
+	deactivate(id: string): Promise<SuccessResponse> {
 		return apiFetch(`/oauth-clients/${id}/deactivate`, {
 			method: "POST",
 		});

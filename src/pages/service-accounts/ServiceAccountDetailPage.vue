@@ -107,7 +107,9 @@ async function loadServiceAccount() {
 		serviceAccount.value = await serviceAccountsApi.get(serviceAccountId);
 		editName.value = serviceAccount.value.name;
 		editDescription.value = serviceAccount.value.description || "";
-		editScope.value = serviceAccount.value.scope || "ANCHOR";
+		// The wire only ever carries ANCHOR/PARTNER/CLIENT; the generated type
+		// is plain string (spec has no enums).
+		editScope.value = (serviceAccount.value.scope as PrincipalScope) || "ANCHOR";
 		editClientIds.value = serviceAccount.value.clientIds || [];
 	} catch (error) {
 		console.error("Failed to fetch service account:", error);
@@ -194,7 +196,9 @@ async function activateConnection(id: string) {
 function startEdit() {
 	editName.value = serviceAccount.value?.name || "";
 	editDescription.value = serviceAccount.value?.description || "";
-	editScope.value = serviceAccount.value?.scope || "ANCHOR";
+	// The wire only ever carries ANCHOR/PARTNER/CLIENT; the generated type
+	// is plain string (spec has no enums).
+	editScope.value = (serviceAccount.value?.scope as PrincipalScope) || "ANCHOR";
 	editClientIds.value = serviceAccount.value?.clientIds || [];
 	editMode.value = true;
 }
@@ -202,7 +206,9 @@ function startEdit() {
 function cancelEdit() {
 	editName.value = serviceAccount.value?.name || "";
 	editDescription.value = serviceAccount.value?.description || "";
-	editScope.value = serviceAccount.value?.scope || "ANCHOR";
+	// The wire only ever carries ANCHOR/PARTNER/CLIENT; the generated type
+	// is plain string (spec has no enums).
+	editScope.value = (serviceAccount.value?.scope as PrincipalScope) || "ANCHOR";
 	editClientIds.value = serviceAccount.value?.clientIds || [];
 	editMode.value = false;
 }
@@ -237,7 +243,7 @@ async function regenerateToken() {
 	saving.value = true;
 	try {
 		const response = await serviceAccountsApi.regenerateToken(serviceAccountId);
-		newToken.value = response.authToken;
+		newToken.value = response.authToken ?? null;
 		showRegenerateTokenDialog.value = true;
 		toast.success("Success", "Auth token regenerated");
 	} catch (e: unknown) {
@@ -251,7 +257,7 @@ async function regenerateSecret() {
 	try {
 		const response =
 			await serviceAccountsApi.regenerateSecret(serviceAccountId);
-		newSecret.value = response.signingSecret;
+		newSecret.value = response.signingSecret ?? null;
 		showRegenerateSecretDialog.value = true;
 		toast.success("Success", "Signing secret regenerated");
 	} catch (e: unknown) {

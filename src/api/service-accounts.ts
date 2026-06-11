@@ -1,28 +1,37 @@
 import { apiFetch } from "./client";
 import type { PrincipalScope } from "./users";
+import type {
+	CreateServiceAccountResponse as GenCreateServiceAccountResponse,
+	RegenerateAuthTokenResponse,
+	RegenerateSigningSecretResponse,
+	RoleAssignmentDto,
+	ServiceAccountListResponse as GenServiceAccountListResponse,
+	ServiceAccountOAuthSecrets,
+	ServiceAccountResponse,
+	ServiceAccountRoleListResponse,
+	ServiceAccountRolesAssignedResponse,
+	ServiceAccountWebhookSecrets,
+} from "./generated";
 
+// Request-side string union the forms rely on. The generated response
+// types deliberately stay `string` (the spec doesn't carry enums — see
+// docs/frontend-api-types-adoption.md on SDK coordination).
 export type WebhookAuthType = "BEARER" | "BASIC";
 
-export interface ServiceAccount {
-	id: string;
-	code: string;
-	name: string;
-	description: string | null;
-	scope: PrincipalScope | null;
-	clientIds: string[];
-	applicationId: string | null;
-	active: boolean;
-	authType: WebhookAuthType | null;
-	roles: string[];
-	lastUsedAt: string | null;
-	createdAt: string;
-	updatedAt: string;
-}
-
-export interface ServiceAccountListResponse {
-	serviceAccounts: ServiceAccount[];
-	total: number;
-}
+// Response types alias the generated contract (api/openapi.lock.json) so
+// `vue-tsc` fails on backend drift. Aliased under the historical names so
+// pages keep their imports. Optional fields come back `undefined` (not
+// `null`); normalise at use sites.
+export type ServiceAccount = ServiceAccountResponse;
+export type ServiceAccountListResponse = GenServiceAccountListResponse;
+export type OAuthCredentials = ServiceAccountOAuthSecrets;
+export type WebhookCredentials = ServiceAccountWebhookSecrets;
+export type CreateServiceAccountResponse = GenCreateServiceAccountResponse;
+export type RegenerateTokenResponse = RegenerateAuthTokenResponse;
+export type RegenerateSecretResponse = RegenerateSigningSecretResponse;
+export type RoleAssignment = RoleAssignmentDto;
+export type RolesResponse = ServiceAccountRoleListResponse;
+export type RolesAssignedResponse = ServiceAccountRolesAssignedResponse;
 
 export interface CreateServiceAccountRequest {
 	code: string;
@@ -33,52 +42,11 @@ export interface CreateServiceAccountRequest {
 	scope?: PrincipalScope;
 }
 
-export interface OAuthCredentials {
-	clientId: string;
-	clientSecret: string;
-}
-
-export interface WebhookCredentials {
-	authToken: string;
-	signingSecret: string;
-}
-
-export interface CreateServiceAccountResponse {
-	serviceAccount: ServiceAccount;
-	principalId: string;
-	oauth: OAuthCredentials;
-	webhook: WebhookCredentials;
-}
-
 export interface UpdateServiceAccountRequest {
 	name?: string;
 	description?: string;
 	clientIds?: string[];
 	scope?: PrincipalScope;
-}
-
-export interface RegenerateTokenResponse {
-	authToken: string;
-}
-
-export interface RegenerateSecretResponse {
-	signingSecret: string;
-}
-
-export interface RoleAssignment {
-	roleName: string;
-	assignmentSource: string;
-	assignedAt: string;
-}
-
-export interface RolesResponse {
-	roles: RoleAssignment[];
-}
-
-export interface RolesAssignedResponse {
-	roles: RoleAssignment[];
-	addedRoles: string[];
-	removedRoles: string[];
 }
 
 export interface ServiceAccountFilters {
@@ -131,12 +99,10 @@ export const serviceAccountsApi = {
 	},
 
 	/**
-	 * Update a service account's metadata.
+	 * Update a service account's metadata. Returns 204 (no body) — reload or
+	 * patch local state from the request after a successful save.
 	 */
-	update(
-		id: string,
-		data: UpdateServiceAccountRequest,
-	): Promise<ServiceAccount> {
+	update(id: string, data: UpdateServiceAccountRequest): Promise<void> {
 		return apiFetch(`/service-accounts/${id}`, {
 			method: "PUT",
 			body: JSON.stringify(data),
@@ -153,16 +119,6 @@ export const serviceAccountsApi = {
 	},
 
 	// ==================== Credential Management ====================
-
-	/**
-	 * Update the auth token with a custom value.
-	 */
-	updateAuthToken(id: string, authToken: string): Promise<ServiceAccount> {
-		return apiFetch(`/service-accounts/${id}/auth-token`, {
-			method: "PUT",
-			body: JSON.stringify({ authToken }),
-		});
-	},
 
 	/**
 	 * Regenerate the auth token (returns new token, shown only once).
