@@ -131,12 +131,17 @@ async function loadData() {
 function resetEditForm() {
 	if (mapping.value) {
 		editForm.value = {
-			scopeType: mapping.value.scopeType,
+			// Wire values are ANCHOR | PARTNER | CLIENT; the spec types them as
+			// plain string, so narrow at the form boundary.
+			scopeType: mapping.value.scopeType as ScopeType,
 			primaryClientId: mapping.value.primaryClientId || null,
 			requiredOidcTenantId: mapping.value.requiredOidcTenantId || "",
 			syncRolesFromIdp: mapping.value.syncRolesFromIdp ?? false,
 			require2fa: mapping.value.require2fa ?? false,
-			allowed2faMethods: [...(mapping.value.allowed2faMethods ?? [])],
+			// Wire values are TOTP | EMAIL_PIN; spec types them as plain string.
+			allowed2faMethods: [
+				...(mapping.value.allowed2faMethods ?? []),
+			] as TwoFactorMethod[],
 			rememberDeviceEnabled: mapping.value.rememberDeviceEnabled ?? false,
 			rememberDeviceDays: mapping.value.rememberDeviceDays ?? 30,
 		};

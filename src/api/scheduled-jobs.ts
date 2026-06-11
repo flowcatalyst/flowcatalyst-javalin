@@ -4,9 +4,17 @@
  * Reads use the BFF (cookie auth, response shapes tuned for the UI).
  * Writes go through the platform API (`/api/scheduled-jobs/*`) since the
  * BFF is read-only for this resource.
+ *
+ * Only the platform-API (apiFetch) responses alias the generated contract;
+ * the BFF read shapes below stay hand-rolled by design — /bff paths are
+ * stripped from the OpenAPI spec. (They are NOT the platform API's
+ * `OffsetPage*` envelope: the BFF paginates with camelCase `totalPages`,
+ * while the platform API's offset envelope is snake_case `total_pages` —
+ * verified against internal/platform/shared/bff/scheduled_jobs.go.)
  */
 
 import { apiFetch, bffFetch } from "./client";
+import type { CreatedResponse, FireNowResponse } from "./generated";
 
 export type ScheduledJobStatus = "ACTIVE" | "PAUSED" | "ARCHIVED";
 export type TriggerKind = "CRON" | "MANUAL";
@@ -19,6 +27,8 @@ export type InstanceStatus =
 	| "DELIVERY_FAILED";
 export type CompletionStatus = "SUCCESS" | "FAILURE";
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+// ── BFF read shapes (hand-rolled: /bff paths are stripped from the spec) ──
 
 export interface ScheduledJob {
 	id: string;
@@ -183,7 +193,8 @@ export const scheduledJobsApi = {
 
 	// ── Writes (Platform API) ───────────────────────────────────────────────
 
-	create(body: CreateScheduledJobBody): Promise<{ id: string }> {
+	/** POST /scheduled-jobs returns the standard created envelope `{ id }`. */
+	create(body: CreateScheduledJobBody): Promise<CreatedResponse> {
 		return apiFetch(`/scheduled-jobs`, {
 			method: "POST",
 			body: JSON.stringify(body),
@@ -215,7 +226,8 @@ export const scheduledJobsApi = {
 			method: "DELETE",
 		});
 	},
-	fire(id: string, correlationId?: string): Promise<{ id: string }> {
+	/** 202 Accepted; the wire returns `{ id, instanceId, scheduledJobId }`, not just `{ id }`. */
+	fire(id: string, correlationId?: string): Promise<FireNowResponse> {
 		return apiFetch(`/scheduled-jobs/${encodeURIComponent(id)}/fire`, {
 			method: "POST",
 			body: JSON.stringify({ correlationId }),

@@ -141,13 +141,9 @@ function formatDate(dateString: string) {
         </Column>
         <Column header="Identity Provider" sortable>
           <template #body="{ data }">
+            <!-- The wire only enriches identityProviderName; there is no
+                 identityProviderType field (the old Tag here never rendered). -->
             <span class="provider-name">{{ data.identityProviderName || 'Unknown' }}</span>
-            <Tag
-              v-if="data.identityProviderType"
-              :value="data.identityProviderType"
-              :severity="data.identityProviderType === 'OIDC' ? 'info' : 'secondary'"
-              class="provider-type-tag"
-            />
           </template>
         </Column>
         <Column field="scopeType" header="Scope Type" sortable>
@@ -157,8 +153,11 @@ function formatDate(dateString: string) {
         </Column>
         <Column header="Primary Client">
           <template #body="{ data }">
-            <span v-if="data.primaryClientName" class="client-name">{{
-              data.primaryClientName
+            <!-- The wire carries primaryClientId only (no primaryClientName —
+                 the old binding here never rendered); the detail page resolves
+                 the display name from the clients list. -->
+            <span v-if="data.primaryClientId" class="client-name">{{
+              data.primaryClientId
             }}</span>
             <span v-else class="text-muted">-</span>
           </template>

@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import {
-	dispatchPoolsApi,
-	type DispatchPool,
-	type DispatchPoolStatus,
-} from "@/api/dispatch-pools";
+import { dispatchPoolsApi, type DispatchPool } from "@/api/dispatch-pools";
 import { useListState } from "@/composables/useListState";
 import { useReturnTo } from "@/composables/useReturnTo";
 
@@ -67,7 +63,8 @@ async function loadPools() {
 	}
 }
 
-function getStatusSeverity(status: DispatchPoolStatus) {
+// Wire status is plain string (spec carries no enum); default covers unknowns.
+function getStatusSeverity(status: string) {
 	switch (status) {
 		case "ACTIVE":
 			return "success";

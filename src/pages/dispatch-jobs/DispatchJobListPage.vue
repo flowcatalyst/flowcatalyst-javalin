@@ -71,11 +71,18 @@ onMounted(async () => {
 async function loadFilterOptions() {
 	try {
 		const data = await dispatchJobsApi.filterOptions();
-		applicationOptions.value = data.applications || [];
-		subdomainOptions.value = data.subdomains || [];
-		aggregateOptions.value = data.aggregates || [];
-		codeOptions.value = data.codes || [];
-		statusOptions.value = data.statuses || [];
+		// The wire facets are plain string arrays (statuses/codes/clientIds/
+		// dispatchPoolIds/subscriptionIds/kinds); applications, subdomains and
+		// aggregates are not surfaced by this endpoint, so those selects stay
+		// empty (they were silently empty before, too — the old shape never
+		// matched the wire).
+		const toOptions = (values: string[]): FilterOption[] =>
+			values.map((v) => ({ label: v, value: v }));
+		applicationOptions.value = [];
+		subdomainOptions.value = [];
+		aggregateOptions.value = [];
+		codeOptions.value = toOptions(data.codes);
+		statusOptions.value = toOptions(data.statuses);
 	} catch (error) {
 		console.error("Failed to load filter options:", error);
 	}
@@ -180,7 +187,8 @@ function formatDate(dateStr: string | undefined): string {
 }
 
 function formatAttempts(job: DispatchJob): string {
-	return `${job.attemptCount || 0}/${(job["maxRetries"] as number | undefined) || 3}`;
+	// The list row doesn't carry maxRetries on the wire (detail-only field).
+	return String(job.attemptCount);
 }
 
 function formatCode(code: string | undefined): {

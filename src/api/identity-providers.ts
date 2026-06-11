@@ -1,26 +1,19 @@
 import { apiFetch } from "./client";
+import type {
+	IdentityProviderListResponse as GenIdentityProviderListResponse,
+	IdentityProviderResponse,
+} from "./generated";
 
+// Request-side string union the forms rely on. The generated response type
+// deliberately stays `string` (the spec doesn't carry enums — see
+// docs/frontend-api-types-adoption.md on SDK coordination).
 export type IdentityProviderType = "INTERNAL" | "OIDC";
 
-export interface IdentityProvider {
-	id: string;
-	code: string;
-	name: string;
-	type: IdentityProviderType;
-	oidcIssuerUrl?: string;
-	oidcClientId?: string;
-	oidcMultiTenant: boolean;
-	oidcIssuerPattern?: string;
-	allowedEmailDomains: string[];
-	hasClientSecret: boolean;
-	createdAt: string;
-	updatedAt: string;
-}
-
-export interface IdentityProviderListResponse {
-	identityProviders: IdentityProvider[];
-	total: number;
-}
+// Response types alias the generated contract (api/openapi.lock.json) so
+// `vue-tsc` fails on backend drift. Aliased under the historical names so
+// pages keep their imports.
+export type IdentityProvider = IdentityProviderResponse;
+export type IdentityProviderListResponse = GenIdentityProviderListResponse;
 
 export interface CreateIdentityProviderRequest {
 	code: string;
@@ -53,12 +46,14 @@ export const identityProvidersApi = {
 		return apiFetch(`/identity-providers/${id}`);
 	},
 
-	getByCode(code: string): Promise<IdentityProvider> {
-		return apiFetch(
-			`/identity-providers/by-code/${encodeURIComponent(code)}`,
-		);
-	},
+	// NOTE: there is no GET /identity-providers/by-code/{code} on the wire —
+	// the previous getByCode() here called a route the backend never exposed
+	// (404). Removed when adopting the generated types; use list() + filter
+	// or get(id) instead.
 
+	// Unlike most create endpoints (which return `{ id }`), the backend
+	// deliberately returns the full provider on 201 so the SPA can render it
+	// without a re-fetch (see CreateIdentityProviderResponses in the spec).
 	create(data: CreateIdentityProviderRequest): Promise<IdentityProvider> {
 		return apiFetch("/identity-providers", {
 			method: "POST",
@@ -66,6 +61,8 @@ export const identityProvidersApi = {
 		});
 	},
 
+	// PUT returns the full updated provider (200), same SPA-friendly choice
+	// as create.
 	update(
 		id: string,
 		data: UpdateIdentityProviderRequest,

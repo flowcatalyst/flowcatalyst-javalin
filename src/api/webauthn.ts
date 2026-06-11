@@ -1,3 +1,6 @@
+// Stays hand-rolled: auth surface. The routes ARE in the OpenAPI spec
+// (huma), but the browser-ceremony payloads (navigator.credentials shapes,
+// Set-Cookie session handling) don't map onto the generated types usefully.
 /**
  * WebAuthn / passkey API client.
  *

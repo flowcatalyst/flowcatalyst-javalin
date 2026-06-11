@@ -3,11 +3,7 @@ import { toast } from "@/utils/errorBus";
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
-import {
-	dispatchPoolsApi,
-	type DispatchPool,
-	type DispatchPoolStatus,
-} from "@/api/dispatch-pools";
+import { dispatchPoolsApi, type DispatchPool } from "@/api/dispatch-pools";
 import { useReturnTo } from "@/composables/useReturnTo";
 
 const route = useRoute();
@@ -47,7 +43,7 @@ function startEditing() {
 	if (pool.value) {
 		editName.value = pool.value.name;
 		editDescription.value = pool.value.description || "";
-		editRateLimit.value = pool.value.rateLimit;
+		editRateLimit.value = pool.value.rateLimit ?? null;
 		editConcurrency.value = pool.value.concurrency;
 		editing.value = true;
 	}
@@ -140,7 +136,8 @@ async function deletePool() {
 	}
 }
 
-function getStatusSeverity(status: DispatchPoolStatus) {
+// Wire status is plain string (spec carries no enum); default covers unknowns.
+function getStatusSeverity(status: string) {
 	switch (status) {
 		case "ACTIVE":
 			return "success";

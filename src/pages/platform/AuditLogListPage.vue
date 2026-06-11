@@ -139,7 +139,8 @@ function getEntityTypeSeverity(entityType: string): string {
 	return types[entityType] || "secondary";
 }
 
-function formatJson(json: string | null): string {
+// Absent on the wire means `undefined` (huma omits empty optionals).
+function formatJson(json: string | null | undefined): string {
 	if (!json) return "No data";
 	try {
 		return JSON.stringify(JSON.parse(json), null, 2);

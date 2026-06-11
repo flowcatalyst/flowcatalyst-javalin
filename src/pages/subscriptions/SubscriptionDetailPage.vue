@@ -6,7 +6,6 @@ import { useConfirm } from "primevue/useconfirm";
 import {
 	subscriptionsApi,
 	type Subscription,
-	type SubscriptionStatus,
 	type SubscriptionMode,
 } from "@/api/subscriptions";
 import { useReturnTo } from "@/composables/useReturnTo";
@@ -62,12 +61,13 @@ function startEditing() {
 		editDescription.value = subscription.value.description || "";
 		editEndpoint.value = subscription.value.endpoint || "";
 		editConnectionId.value = subscription.value.connectionId || "";
-		editQueue.value = subscription.value.queue;
+		editQueue.value = subscription.value.queue || "";
 		editMaxAgeSeconds.value = subscription.value.maxAgeSeconds;
 		editDelaySeconds.value = subscription.value.delaySeconds;
 		editSequence.value = subscription.value.sequence;
 		editTimeoutSeconds.value = subscription.value.timeoutSeconds;
-		editMode.value = subscription.value.mode;
+		// Wire mode is plain string; the form narrows to the known wire values.
+		editMode.value = subscription.value.mode as SubscriptionMode;
 		editing.value = true;
 	}
 }
@@ -165,7 +165,8 @@ async function deleteSubscription() {
 	}
 }
 
-function getStatusSeverity(status: SubscriptionStatus) {
+// Wire status/mode are plain strings (spec carries no enum); default covers unknowns.
+function getStatusSeverity(status: string) {
 	switch (status) {
 		case "ACTIVE":
 			return "success";
@@ -176,7 +177,7 @@ function getStatusSeverity(status: SubscriptionStatus) {
 	}
 }
 
-function getModeLabel(mode: SubscriptionMode) {
+function getModeLabel(mode: string) {
 	switch (mode) {
 		case "IMMEDIATE":
 			return "Immediate";

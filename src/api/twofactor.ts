@@ -1,3 +1,5 @@
+// Stays hand-rolled: auth surface — chi-mounted outside huma, not in the
+// OpenAPI spec. Revisit if these routes converge on huma.
 // Two-factor auth API. Endpoints live under /auth/2fa/* (NOT /api), mirroring
 // the rest of the auth surface (see auth.ts, webauthn.ts). Transport is the
 // shared authFetch — same envelope decoding as the rest of the app, errors

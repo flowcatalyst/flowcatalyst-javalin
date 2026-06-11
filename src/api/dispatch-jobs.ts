@@ -6,31 +6,20 @@
  */
 
 import { apiFetch } from "./client";
+import type {
+	DispatchJobFilterOptionsResponse,
+	DispatchJobRead as GenDispatchJobRead,
+} from "./generated";
 
-export interface DispatchJobRead {
-	id: string;
-	eventId: string;
-	subscriptionId: string;
-	clientId?: string | null;
-	clientIdentifier?: string | null;
-	application?: string | null;
-	subdomain?: string | null;
-	aggregate?: string | null;
-	code?: string | null;
-	source?: string | null;
-	subject?: string | null;
-	status: string;
-	dispatchMode?: string | null;
-	priority?: number | null;
-	correlationId?: string | null;
-	scheduledFor?: string | null;
-	createdAt: string;
-	updatedAt: string;
-	completedAt?: string | null;
-	lastAttemptAt?: string | null;
-	attemptCount?: number | null;
-	[key: string]: unknown;
-}
+// Response types alias the generated contract (api/openapi.lock.json) so
+// `vue-tsc` fails on backend drift. Aliased under the historical names so
+// pages keep their imports. The old hand-rolled row carried phantom fields
+// (no `maxRetries` on the read row) and an index signature; the old
+// filter-options shape ({value,label} arrays under applications/subdomains/
+// aggregates) never matched the wire — the facets are plain string arrays
+// under statuses/codes/clientIds/dispatchPoolIds/subscriptionIds/kinds.
+export type DispatchJobRead = GenDispatchJobRead;
+export type DispatchJobFilterOptions = DispatchJobFilterOptionsResponse;
 
 export interface DispatchJobsListParams {
 	size?: number;
@@ -41,14 +30,6 @@ export interface DispatchJobsListParams {
 	aggregates?: string[] | undefined;
 	codes?: string[] | undefined;
 	source?: string | undefined;
-}
-
-export interface DispatchJobFilterOptions {
-	applications: { value: string; label: string }[];
-	subdomains: { value: string; label: string }[];
-	aggregates: { value: string; label: string }[];
-	codes: { value: string; label: string }[];
-	statuses: { value: string; label: string }[];
 }
 
 function buildQuery(params: DispatchJobsListParams): string {

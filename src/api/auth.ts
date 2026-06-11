@@ -1,3 +1,5 @@
+// Stays hand-rolled: auth surface — chi-mounted outside huma, not in the
+// OpenAPI spec. Revisit if these routes converge on huma.
 import { useAuthStore, type User } from "@/stores/auth";
 import { landingPath } from "@/stores/permissions";
 import router from "@/router";

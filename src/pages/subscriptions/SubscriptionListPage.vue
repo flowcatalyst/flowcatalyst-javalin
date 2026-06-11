@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import {
-	subscriptionsApi,
-	type Subscription,
-	type SubscriptionStatus,
-} from "@/api/subscriptions";
+import { subscriptionsApi, type Subscription } from "@/api/subscriptions";
 import { useListState } from "@/composables/useListState";
 import { useReturnTo } from "@/composables/useReturnTo";
 
@@ -89,7 +85,8 @@ async function loadSubscriptions() {
 	}
 }
 
-function getStatusSeverity(status: SubscriptionStatus) {
+// Wire status is plain string (spec carries no enum); default covers unknowns.
+function getStatusSeverity(status: string) {
 	switch (status) {
 		case "ACTIVE":
 			return "success";

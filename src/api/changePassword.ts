@@ -1,3 +1,5 @@
+// Stays hand-rolled: auth surface — chi-mounted outside huma, not in the
+// OpenAPI spec. Revisit if these routes converge on huma.
 // Self-service password change. Endpoints live under /auth/* (NOT /api), like
 // the other session-gated auth calls. The change-password endpoint may answer
 // MFA_REQUIRED when the user has 2FA enrolled, so this client surfaces the
