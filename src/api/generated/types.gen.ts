@@ -855,7 +855,6 @@ export type CreateOAuthClientRequest = {
     readonly $schema?: string;
     allowedOrigins?: Array<string>;
     applicationIds?: Array<string>;
-    clientId: string;
     clientName: string;
     /**
      * PUBLIC or CONFIDENTIAL
@@ -3050,7 +3049,6 @@ export type CreateMappingRequestWritable = {
 export type CreateOAuthClientRequestWritable = {
     allowedOrigins?: Array<string>;
     applicationIds?: Array<string>;
-    clientId: string;
     clientName: string;
     /**
      * PUBLIC or CONFIDENTIAL
