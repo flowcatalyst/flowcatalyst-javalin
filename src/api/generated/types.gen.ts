@@ -756,6 +756,70 @@ export type CreateDispatchPoolRequest = {
     [key: string]: unknown;
 };
 
+export type CreateEventRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Causation ID - the event that caused this event
+     */
+    causationId?: string;
+    /**
+     * Client ID (optional, defaults to caller's client)
+     */
+    clientId?: string;
+    /**
+     * Context data for filtering/searching
+     */
+    contextData?: Array<ContextEntryDto>;
+    /**
+     * Correlation ID for request tracing
+     */
+    correlationId?: string;
+    /**
+     * Event payload data
+     */
+    data: unknown;
+    /**
+     * Deduplication ID for exactly-once delivery
+     */
+    deduplicationId?: string;
+    /**
+     * Event type code (e.g., "orders:fulfillment:shipment:shipped")
+     */
+    eventType: string;
+    /**
+     * Message group for FIFO ordering
+     */
+    messageGroup?: string;
+    /**
+     * Event source URI
+     */
+    source: string;
+    /**
+     * Event subject (optional context)
+     */
+    subject?: string;
+    [key: string]: unknown;
+};
+
+export type CreateEventResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Number of dispatch jobs created for matching subscriptions
+     */
+    dispatchJobCount: number;
+    event: CreatedEvent;
+    /**
+     * True if this was a deduplicated request (event already existed)
+     */
+    isDuplicate: boolean;
+};
+
 export type CreateEventTypeRequest = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1035,6 +1099,23 @@ export type CreateUserRequest = {
     name: string;
     password?: string;
     [key: string]: unknown;
+};
+
+export type CreatedEvent = {
+    causationId?: string;
+    clientId?: string;
+    contextData?: Array<ContextEntryDto>;
+    correlationId?: string;
+    createdAt: string;
+    data: unknown;
+    deduplicationId?: string;
+    eventType: string;
+    id: string;
+    messageGroup?: string;
+    source: string;
+    specVersion: string;
+    subject?: string;
+    time: string;
 };
 
 export type CreatedResponse = {
@@ -2966,6 +3047,62 @@ export type CreateDispatchPoolRequestWritable = {
      */
     rateLimit?: number;
     [key: string]: unknown;
+};
+
+export type CreateEventRequestWritable = {
+    /**
+     * Causation ID - the event that caused this event
+     */
+    causationId?: string;
+    /**
+     * Client ID (optional, defaults to caller's client)
+     */
+    clientId?: string;
+    /**
+     * Context data for filtering/searching
+     */
+    contextData?: Array<ContextEntryDto>;
+    /**
+     * Correlation ID for request tracing
+     */
+    correlationId?: string;
+    /**
+     * Event payload data
+     */
+    data: unknown;
+    /**
+     * Deduplication ID for exactly-once delivery
+     */
+    deduplicationId?: string;
+    /**
+     * Event type code (e.g., "orders:fulfillment:shipment:shipped")
+     */
+    eventType: string;
+    /**
+     * Message group for FIFO ordering
+     */
+    messageGroup?: string;
+    /**
+     * Event source URI
+     */
+    source: string;
+    /**
+     * Event subject (optional context)
+     */
+    subject?: string;
+    [key: string]: unknown;
+};
+
+export type CreateEventResponseWritable = {
+    /**
+     * Number of dispatch jobs created for matching subscriptions
+     */
+    dispatchJobCount: number;
+    event: CreatedEvent;
+    /**
+     * True if this was a deduplicated request (event already existed)
+     */
+    isDuplicate: boolean;
 };
 
 export type CreateEventTypeRequestWritable = {
@@ -7003,6 +7140,31 @@ export type ListEventsResponses = {
 };
 
 export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
+
+export type CreateEventData = {
+    body: CreateEventRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/events';
+};
+
+export type CreateEventErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CreateEventError = CreateEventErrors[keyof CreateEventErrors];
+
+export type CreateEventResponses = {
+    /**
+     * Created
+     */
+    201: CreateEventResponse;
+};
+
+export type CreateEventResponse2 = CreateEventResponses[keyof CreateEventResponses];
 
 export type BatchIngestEventsData = {
     body: BatchRequestWritable;
