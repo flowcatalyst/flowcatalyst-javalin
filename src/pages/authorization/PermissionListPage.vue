@@ -1,11 +1,47 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { permissionsApi, type Permission } from "@/api/permissions";
+import { rolesApi, type ApplicationOption } from "@/api/roles";
 import { useListState } from "@/composables/useListState";
+import { toast } from "@/utils/errorBus";
 
 
 const permissions = ref<Permission[]>([]);
 const loading = ref(true);
+
+// Create-permission dialog. Anyone who can manage roles can define a
+// permission (anchor-gated server-side). The four segments form the canonical
+// "application:context:aggregate:action" code.
+const applications = ref<ApplicationOption[]>([]);
+const showCreateDialog = ref(false);
+const creating = ref(false);
+const createError = ref<string | null>(null);
+const createForm = ref({
+	application: "",
+	context: "",
+	aggregate: "",
+	action: "",
+	description: "",
+});
+
+// Each segment must be a lowercase token so the assembled code is well-formed.
+const segmentPattern = /^[a-z0-9-]+$/;
+const newPermString = computed(() => {
+	const { application, context, aggregate, action } = createForm.value;
+	return `${application}:${context.trim()}:${aggregate.trim()}:${action.trim()}`;
+});
+const canCreate = computed(
+	() =>
+		!!createForm.value.application &&
+		[
+			createForm.value.context,
+			createForm.value.aggregate,
+			createForm.value.action,
+		].every((s) => segmentPattern.test(s.trim())),
+);
+const permissionExists = computed(() =>
+	permissions.value.some((p) => p.permission === newPermString.value),
+);
 
 const { filters, hasActiveFilters, clearFilters } = useListState({
 	filters: {
@@ -69,7 +105,7 @@ const filteredPermissions = computed(() => {
 });
 
 onMounted(async () => {
-	await loadPermissions();
+	await Promise.all([loadPermissions(), loadApplications()]);
 });
 
 async function loadPermissions() {
@@ -80,6 +116,49 @@ async function loadPermissions() {
 	} catch {
 	} finally {
 		loading.value = false;
+	}
+}
+
+async function loadApplications() {
+	try {
+		const response = await rolesApi.getApplications();
+		applications.value = response.options;
+	} catch {
+	}
+}
+
+function openCreateDialog() {
+	createForm.value = {
+		application: applications.value[0]?.code ?? "",
+		context: "",
+		aggregate: "",
+		action: "",
+		description: "",
+	};
+	createError.value = null;
+	showCreateDialog.value = true;
+}
+
+async function createPermission() {
+	if (!canCreate.value || permissionExists.value || creating.value) return;
+	creating.value = true;
+	createError.value = null;
+	try {
+		await permissionsApi.create({
+			application: createForm.value.application,
+			context: createForm.value.context.trim(),
+			aggregate: createForm.value.aggregate.trim(),
+			action: createForm.value.action.trim(),
+			description: createForm.value.description.trim() || undefined,
+		});
+		toast.success("Created", `Permission ${newPermString.value} created`);
+		showCreateDialog.value = false;
+		await loadPermissions();
+	} catch (e) {
+		createError.value =
+			e instanceof Error ? e.message : "Failed to create permission";
+	} finally {
+		creating.value = false;
 	}
 }
 
@@ -105,6 +184,9 @@ function getActionSeverity(action: string) {
       <div>
         <h1 class="page-title">Permissions</h1>
         <p class="page-subtitle">View all available permissions in the system</p>
+      </div>
+      <div class="header-right">
+        <Button label="Create Permission" icon="pi pi-plus" @click="openCreateDialog" />
       </div>
     </header>
 
@@ -238,10 +320,170 @@ function getActionSeverity(action: string) {
         </template>
       </DataTable>
     </div>
+
+    <!-- Create Permission Dialog -->
+    <Dialog
+      v-model:visible="showCreateDialog"
+      header="Create Permission"
+      :modal="true"
+      :style="{ width: '560px' }"
+      :closable="!creating"
+    >
+      <form class="dialog-form" @submit.prevent="createPermission">
+        <div class="form-field">
+          <label>Application <span class="required">*</span></label>
+          <Select
+            v-model="createForm.application"
+            :options="applications"
+            optionLabel="name"
+            optionValue="code"
+            placeholder="Select application"
+            class="full-width"
+          />
+        </div>
+
+        <div class="segments-row">
+          <div class="form-field">
+            <label>Context <span class="required">*</span></label>
+            <InputText v-model="createForm.context" placeholder="e.g. billing" class="seg-input" />
+          </div>
+          <div class="form-field">
+            <label>Aggregate <span class="required">*</span></label>
+            <InputText v-model="createForm.aggregate" placeholder="e.g. invoice" class="seg-input" />
+          </div>
+          <div class="form-field">
+            <label>Action <span class="required">*</span></label>
+            <InputText v-model="createForm.action" placeholder="e.g. approve" class="seg-input" />
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label>Description</label>
+          <InputText v-model="createForm.description" placeholder="What this permission grants" class="full-width" />
+        </div>
+
+        <div class="preview-row">
+          <span class="preview-label">Permission code</span>
+          <code class="preview-code">{{ newPermString }}</code>
+        </div>
+
+        <small v-if="permissionExists" class="hint warn">
+          This permission already exists.
+        </small>
+        <small v-else class="hint">
+          Lowercase letters, numbers and hyphens for each segment.
+        </small>
+
+        <Message v-if="createError" severity="error" class="error-message">
+          {{ createError }}
+        </Message>
+      </form>
+
+      <template #footer>
+        <Button
+          label="Cancel"
+          icon="pi pi-times"
+          severity="secondary"
+          outlined
+          :disabled="creating"
+          @click="showCreateDialog = false"
+        />
+        <Button
+          label="Create Permission"
+          icon="pi pi-check"
+          :loading="creating"
+          :disabled="!canCreate || permissionExists"
+          @click="createPermission"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <style scoped>
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+}
+
+.required {
+  color: #ef4444;
+}
+
+.segments-row {
+  display: flex;
+  gap: 12px;
+}
+
+.segments-row .form-field {
+  flex: 1;
+}
+
+.seg-input {
+  width: 100%;
+  font-family: monospace;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.preview-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.preview-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.preview-code {
+  font-family: monospace;
+  font-size: 13px;
+  color: #1e293b;
+}
+
+.hint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.hint.warn {
+  color: #b45309;
+}
+
+.error-message {
+  margin: 0;
+}
+
 .filter-card {
   margin-bottom: 24px;
 }

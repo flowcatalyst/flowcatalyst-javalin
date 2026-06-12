@@ -62,6 +62,11 @@ const showAppPickerDialog = ref(false);
 const appSearchQuery = ref("");
 const selectedAppIds = ref<Set<string>>(new Set());
 const savingApps = ref(false);
+// Whether the user has access to every application (present and future) — the
+// application-axis analogue of the anchor client tier. When true the explicit
+// grant list is moot and hidden. Only an all-applications admin may turn it on
+// (backend-enforced); turning it off is open to any user admin.
+const allApplications = ref(false);
 
 // Delete user
 const showDeleteDialog = ref(false);
@@ -283,8 +288,39 @@ async function loadApplicationAccess() {
 	try {
 		const response = await usersApi.getApplicationAccess(userId);
 		applicationAccessGrants.value = response.applications;
+		allApplications.value = response.allApplications;
 	} catch (error) {
 		console.error("Failed to fetch application access:", error);
+	}
+}
+
+// Toggle the "access to all applications" flag. Uses the existing assign
+// endpoint, preserving the current explicit grant list so flipping back off
+// restores the prior selection. One-way: on failure the switch reverts.
+async function onToggleAllApplications(value: boolean) {
+	savingApps.value = true;
+	try {
+		const applicationIds = applicationAccessGrants.value.map(
+			(a) => a.applicationId,
+		);
+		const response = await usersApi.assignApplicationAccess(
+			userId,
+			applicationIds,
+			value,
+		);
+		allApplications.value = response.allApplications;
+		applicationAccessGrants.value = response.applications;
+		toast.success(
+			"Success",
+			value
+				? "Granted access to all applications"
+				: "Restricted to specific applications",
+		);
+	} catch (e: unknown) {
+		// Revert the switch to its prior state; apiFetch surfaces the error.
+		allApplications.value = !value;
+	} finally {
+		savingApps.value = false;
 	}
 }
 
@@ -598,6 +634,7 @@ async function saveApps() {
 
 		// Update application access grants from response
 		applicationAccessGrants.value = response.applications;
+		allApplications.value = response.allApplications;
 
 		showAppPickerDialog.value = false;
 
@@ -893,24 +930,48 @@ function goBack() {
       <div class="fc-card">
         <div class="card-header">
           <h2 class="card-title">Application Access</h2>
-          <Button label="Manage Applications" icon="pi pi-pencil" text @click="openAppPicker" />
+          <Button
+            v-if="!allApplications"
+            label="Manage Applications"
+            icon="pi pi-pencil"
+            text
+            @click="openAppPicker"
+          />
         </div>
 
-        <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
-          <p>No application access granted to this user.</p>
-          <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
+        <!-- All-applications toggle: the application-axis analogue of an anchor. -->
+        <div class="all-apps-toggle">
+          <ToggleSwitch
+            inputId="allApplications"
+            v-model="allApplications"
+            :disabled="savingApps"
+            @update:modelValue="onToggleAllApplications"
+          />
+          <label for="allApplications" class="all-apps-label">
+            <span class="all-apps-title">Access to all applications</span>
+            <span class="all-apps-hint">
+              This user can access every application, present and future.
+            </span>
+          </label>
         </div>
 
-        <DataTable v-else :value="applicationAccessGrants" size="small">
-          <Column field="applicationName" header="Application">
-            <template #body="{ data }">
-              <div class="app-cell">
-                <span class="app-name">{{ data.applicationName || data.applicationId }}</span>
-                <span class="app-code">{{ data.applicationCode }}</span>
-              </div>
-            </template>
-          </Column>
-        </DataTable>
+        <template v-if="!allApplications">
+          <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
+            <p>No application access granted to this user.</p>
+            <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
+          </div>
+
+          <DataTable v-else :value="applicationAccessGrants" size="small">
+            <Column field="applicationName" header="Application">
+              <template #body="{ data }">
+                <div class="app-cell">
+                  <span class="app-name">{{ data.applicationName || data.applicationId }}</span>
+                  <span class="app-code">{{ data.applicationCode }}</span>
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
       </div>
     </template>
 
@@ -1371,6 +1432,30 @@ function goBack() {
 .no-apps-notice {
   text-align: center;
   padding: 24px;
+  color: #64748b;
+}
+
+.all-apps-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0 16px 0;
+}
+
+.all-apps-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.all-apps-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.all-apps-hint {
+  font-size: 12px;
   color: #64748b;
 }
 

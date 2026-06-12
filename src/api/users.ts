@@ -270,10 +270,19 @@ export const usersApi = {
 	assignApplicationAccess(
 		id: string,
 		applicationIds: string[],
+		allApplications?: boolean,
 	): Promise<ApplicationAccessAssignedResponse> {
+		// allApplications is omitted (left unchanged) unless explicitly passed;
+		// only an all-applications administrator may set it true (backend-enforced).
+		const body: { applicationIds: string[]; allApplications?: boolean } = {
+			applicationIds,
+		};
+		if (allApplications !== undefined) {
+			body.allApplications = allApplications;
+		}
 		return apiFetch(`/principals/${id}/application-access`, {
 			method: "PUT",
-			body: JSON.stringify({ applicationIds }),
+			body: JSON.stringify(body),
 		});
 	},
 

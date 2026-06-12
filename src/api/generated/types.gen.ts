@@ -102,6 +102,7 @@ export type ApplicationAccessListResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     total: number;
 };
@@ -1994,6 +1995,7 @@ export type ServiceAccountResponse = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    principalId?: string;
     roles: Array<string>;
     scope?: string;
     updatedAt: string;
@@ -2028,6 +2030,7 @@ export type SetApplicationAccessResponse = {
      */
     readonly $schema?: string;
     added: number;
+    allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     removed: number;
 };
@@ -2687,6 +2690,7 @@ export type AnchorDomainListResponseWritable = {
 };
 
 export type ApplicationAccessListResponseWritable = {
+    allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     total: number;
 };
@@ -3801,6 +3805,7 @@ export type ServiceAccountResponseWritable = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    principalId?: string;
     roles: Array<string>;
     scope?: string;
     updatedAt: string;
@@ -3818,6 +3823,7 @@ export type ServiceAccountRolesAssignedResponseWritable = {
 
 export type SetApplicationAccessResponseWritable = {
     added: number;
+    allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     removed: number;
 };

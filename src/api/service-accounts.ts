@@ -1,7 +1,11 @@
 import { apiFetch } from "./client";
 import type { PrincipalScope } from "./users";
 import type {
+	ApplicationAccessListResponse,
+	ApplicationAccessResponse,
 	CreateServiceAccountResponse as GenCreateServiceAccountResponse,
+	PrincipalAvailableApplication,
+	PrincipalAvailableApplicationsResponse,
 	RegenerateAuthTokenResponse,
 	RegenerateSigningSecretResponse,
 	RoleAssignmentDto,
@@ -11,6 +15,7 @@ import type {
 	ServiceAccountRoleListResponse,
 	ServiceAccountRolesAssignedResponse,
 	ServiceAccountWebhookSecrets,
+	SetApplicationAccessResponse,
 } from "./generated";
 
 // Request-side string union the forms rely on. The generated response
@@ -32,6 +37,11 @@ export type RegenerateSecretResponse = RegenerateSigningSecretResponse;
 export type RoleAssignment = RoleAssignmentDto;
 export type RolesResponse = ServiceAccountRoleListResponse;
 export type RolesAssignedResponse = ServiceAccountRolesAssignedResponse;
+export type ApplicationAccessGrant = ApplicationAccessResponse;
+export type ApplicationAccessAssignedResponse = SetApplicationAccessResponse;
+export type AvailableApplication = PrincipalAvailableApplication;
+export type AvailableApplicationsResponse =
+	PrincipalAvailableApplicationsResponse;
 
 export interface CreateServiceAccountRequest {
 	code: string;
@@ -154,6 +164,53 @@ export const serviceAccountsApi = {
 		return apiFetch(`/service-accounts/${id}/roles`, {
 			method: "PUT",
 			body: JSON.stringify({ roles }),
+		});
+	},
+
+	// ==================== Application Access ====================
+	//
+	// A service account's roles + application access live on its linked SERVICE
+	// principal, not the service-account row, so these target the shared
+	// /principals/{principalId}/application-access endpoints. The principal id
+	// comes from ServiceAccountResponse.principalId (single-account read).
+
+	/**
+	 * Get the application access grants for a service account's principal.
+	 */
+	getApplicationAccess(
+		principalId: string,
+	): Promise<ApplicationAccessListResponse> {
+		return apiFetch(`/principals/${principalId}/application-access`);
+	},
+
+	/**
+	 * Get applications available to grant to a service account's principal.
+	 */
+	getAvailableApplications(
+		principalId: string,
+	): Promise<AvailableApplicationsResponse> {
+		return apiFetch(`/principals/${principalId}/available-applications`);
+	},
+
+	/**
+	 * Declaratively set a service account's application access. allApplications is
+	 * omitted (left unchanged) unless explicitly passed; only an all-applications
+	 * administrator may set it true (backend-enforced).
+	 */
+	assignApplicationAccess(
+		principalId: string,
+		applicationIds: string[],
+		allApplications?: boolean,
+	): Promise<SetApplicationAccessResponse> {
+		const body: { applicationIds: string[]; allApplications?: boolean } = {
+			applicationIds,
+		};
+		if (allApplications !== undefined) {
+			body.allApplications = allApplications;
+		}
+		return apiFetch(`/principals/${principalId}/application-access`, {
+			method: "PUT",
+			body: JSON.stringify(body),
 		});
 	},
 };

@@ -8,6 +8,9 @@ import {
 	type ServiceAccount,
 	type RoleAssignment,
 	type RolesAssignedResponse,
+	type ApplicationAccessGrant,
+	type ApplicationAccessAssignedResponse,
+	type AvailableApplication,
 } from "@/api/service-accounts";
 import { connectionsApi, type Connection } from "@/api/connections";
 import type { PrincipalScope } from "@/api/users";
@@ -60,6 +63,42 @@ const roleSearchQuery = ref("");
 const selectedRoleNames = ref<Set<string>>(new Set());
 const savingRoles = ref(false);
 
+// Application access management. Roles + app access live on the linked SERVICE
+// principal, so these target /principals/{principalId}/... — principalId comes
+// from the single-account read.
+const principalId = computed(() => serviceAccount.value?.principalId ?? null);
+const applicationAccessGrants = ref<ApplicationAccessGrant[]>([]);
+const availableApplications = ref<AvailableApplication[]>([]);
+const showAppPickerDialog = ref(false);
+const appSearchQuery = ref("");
+const selectedAppIds = ref<Set<string>>(new Set());
+const savingApps = ref(false);
+// Whether the account can access every application (present and future) — the
+// application-axis analogue of the anchor client tier. When true the explicit
+// grant list is moot and hidden. Only an all-applications admin may turn it on
+// (backend-enforced); turning it off is open to any user admin.
+const allApplications = ref(false);
+
+const filteredAvailableApps = computed(() => {
+	const query = appSearchQuery.value.toLowerCase();
+	return availableApplications.value.filter(
+		(a) =>
+			a.name.toLowerCase().includes(query) ||
+			a.code.toLowerCase().includes(query),
+	);
+});
+
+const hasAppChanges = computed(() => {
+	const currentApps = new Set(
+		applicationAccessGrants.value.map((a) => a.applicationId),
+	);
+	if (currentApps.size !== selectedAppIds.value.size) return true;
+	for (const appId of currentApps) {
+		if (!selectedAppIds.value.has(appId)) return true;
+	}
+	return false;
+});
+
 // Connections
 const connections = ref<Connection[]>([]);
 const loadingConnections = ref(false);
@@ -94,7 +133,11 @@ onMounted(async () => {
 		loadAvailableRoles(),
 	]);
 	if (serviceAccount.value) {
-		await Promise.all([loadRoleAssignments(), loadConnections()]);
+		await Promise.all([
+			loadRoleAssignments(),
+			loadConnections(),
+			loadApplicationAccess(),
+		]);
 		if (route.query['edit'] === "true") {
 			startEdit();
 		}
@@ -142,6 +185,130 @@ async function loadRoleAssignments() {
 	} catch (error) {
 		console.error("Failed to fetch role assignments:", error);
 	}
+}
+
+async function loadApplicationAccess() {
+	if (!principalId.value) return;
+	try {
+		const response = await serviceAccountsApi.getApplicationAccess(
+			principalId.value,
+		);
+		applicationAccessGrants.value = response.applications;
+		allApplications.value = response.allApplications;
+	} catch (error) {
+		console.error("Failed to fetch application access:", error);
+	}
+}
+
+async function loadAvailableApplications() {
+	if (!principalId.value) return;
+	try {
+		const response = await serviceAccountsApi.getAvailableApplications(
+			principalId.value,
+		);
+		availableApplications.value = response.applications;
+	} catch (error) {
+		console.error("Failed to fetch available applications:", error);
+	}
+}
+
+// Toggle the "access to all applications" flag. Preserves the current explicit
+// grant list so flipping back off restores the prior selection. One-way: on
+// failure the switch reverts.
+async function onToggleAllApplications(value: boolean) {
+	if (!principalId.value) return;
+	savingApps.value = true;
+	try {
+		const applicationIds = applicationAccessGrants.value.map(
+			(a) => a.applicationId,
+		);
+		const response = await serviceAccountsApi.assignApplicationAccess(
+			principalId.value,
+			applicationIds,
+			value,
+		);
+		allApplications.value = response.allApplications;
+		applicationAccessGrants.value = response.applications;
+		toast.success(
+			"Success",
+			value
+				? "Granted access to all applications"
+				: "Restricted to specific applications",
+		);
+	} catch (e: unknown) {
+		allApplications.value = !value;
+	} finally {
+		savingApps.value = false;
+	}
+}
+
+async function openAppPicker() {
+	if (availableApplications.value.length === 0) {
+		await loadAvailableApplications();
+	}
+	selectedAppIds.value = new Set(
+		applicationAccessGrants.value.map((a) => a.applicationId),
+	);
+	appSearchQuery.value = "";
+	showAppPickerDialog.value = true;
+}
+
+function toggleApp(appId: string) {
+	if (selectedAppIds.value.has(appId)) {
+		selectedAppIds.value.delete(appId);
+	} else {
+		selectedAppIds.value.add(appId);
+	}
+	selectedAppIds.value = new Set(selectedAppIds.value);
+}
+
+function removeSelectedApp(appId: string) {
+	selectedAppIds.value.delete(appId);
+	selectedAppIds.value = new Set(selectedAppIds.value);
+}
+
+function cancelAppPicker() {
+	showAppPickerDialog.value = false;
+}
+
+async function saveApps() {
+	if (!principalId.value) return;
+	savingApps.value = true;
+	try {
+		const applicationIds = Array.from(selectedAppIds.value);
+		const response: ApplicationAccessAssignedResponse =
+			await serviceAccountsApi.assignApplicationAccess(
+				principalId.value,
+				applicationIds,
+			);
+		applicationAccessGrants.value = response.applications;
+		allApplications.value = response.allApplications;
+		showAppPickerDialog.value = false;
+
+		const added = response.added;
+		const removed = response.removed;
+		let detail = "Application access updated";
+		if (added > 0 && removed > 0) {
+			detail = `Added ${added} app(s), removed ${removed} app(s)`;
+		} else if (added > 0) {
+			detail = `Added ${added} app(s)`;
+		} else if (removed > 0) {
+			detail = `Removed ${removed} app(s)`;
+		}
+
+		toast.success("Success", detail);
+	} catch (e: unknown) {
+	} finally {
+		savingApps.value = false;
+	}
+}
+
+function getAppDisplay(appId: string) {
+	const app = availableApplications.value.find((a) => a.id === appId);
+	return {
+		name: app?.name || appId,
+		code: app?.code || "",
+	};
 }
 
 async function loadConnections() {
@@ -566,6 +733,54 @@ async function deleteServiceAccount() {
         </DataTable>
       </div>
 
+      <!-- Application Access Card -->
+      <div class="fc-card">
+        <div class="card-header">
+          <h2 class="card-title">Application Access</h2>
+          <Button
+            v-if="!allApplications"
+            label="Manage Applications"
+            icon="pi pi-pencil"
+            text
+            @click="openAppPicker"
+          />
+        </div>
+
+        <!-- All-applications toggle: the application-axis analogue of an anchor. -->
+        <div class="all-apps-toggle">
+          <ToggleSwitch
+            inputId="allApplications"
+            v-model="allApplications"
+            :disabled="savingApps"
+            @update:modelValue="onToggleAllApplications"
+          />
+          <label for="allApplications" class="all-apps-label">
+            <span class="all-apps-title">Access to all applications</span>
+            <span class="all-apps-hint">
+              This service account can access every application, present and future.
+            </span>
+          </label>
+        </div>
+
+        <template v-if="!allApplications">
+          <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
+            <p>No application access granted to this service account.</p>
+            <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
+          </div>
+
+          <DataTable v-else :value="applicationAccessGrants" size="small">
+            <Column field="applicationName" header="Application">
+              <template #body="{ data }">
+                <div class="app-cell">
+                  <span class="app-name">{{ data.applicationName || data.applicationId }}</span>
+                  <span class="app-code">{{ data.applicationCode }}</span>
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </div>
+
       <!-- Connections Card -->
       <div class="fc-card">
         <div class="card-header">
@@ -772,6 +987,83 @@ async function deleteServiceAccount() {
           :disabled="!hasRoleChanges"
           :loading="savingRoles"
           @click="saveRoles"
+        />
+      </template>
+    </Dialog>
+
+    <!-- Application Picker Dialog (Dual-Pane) -->
+    <Dialog
+      v-model:visible="showAppPickerDialog"
+      header="Manage Application Access"
+      :style="{ width: '700px' }"
+      :modal="true"
+      :closable="!savingApps"
+    >
+      <div class="app-picker">
+        <!-- Left Pane: Available Applications -->
+        <div class="app-pane available-apps">
+          <div class="pane-header">
+            <h4>Available Applications</h4>
+            <InputText
+              v-model="appSearchQuery"
+              placeholder="Filter applications..."
+              class="app-filter"
+            />
+          </div>
+          <div class="app-list">
+            <div
+              v-for="app in filteredAvailableApps"
+              :key="app.id"
+              class="app-item"
+              :class="{ selected: selectedAppIds.has(app.id) }"
+              @click="toggleApp(app.id)"
+            >
+              <div class="app-item-content">
+                <span class="app-display-name">{{ app.name }}</span>
+                <span class="app-name-code">{{ app.code }}</span>
+              </div>
+              <i v-if="selectedAppIds.has(app.id)" class="pi pi-check check-icon"></i>
+            </div>
+            <div v-if="filteredAvailableApps.length === 0" class="no-results">
+              No applications found
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Pane: Selected Applications -->
+        <div class="app-pane selected-apps">
+          <div class="pane-header">
+            <h4>Selected Applications ({{ selectedAppIds.size }})</h4>
+          </div>
+          <div class="app-list">
+            <div v-for="appId in selectedAppIds" :key="appId" class="app-item selected-item">
+              <div class="app-item-content">
+                <span class="app-display-name">{{ getAppDisplay(appId).name }}</span>
+                <span class="app-name-code">{{ getAppDisplay(appId).code }}</span>
+              </div>
+              <Button
+                icon="pi pi-times"
+                text
+                rounded
+                severity="danger"
+                size="small"
+                @click="removeSelectedApp(appId)"
+                v-tooltip.top="'Remove'"
+              />
+            </div>
+            <div v-if="selectedAppIds.size === 0" class="no-results">No applications selected</div>
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button label="Cancel" text @click="cancelAppPicker" :disabled="savingApps" />
+        <Button
+          label="Save Application Access"
+          icon="pi pi-check"
+          :disabled="!hasAppChanges"
+          :loading="savingApps"
+          @click="saveApps"
         />
       </template>
     </Dialog>
@@ -1158,6 +1450,135 @@ async function deleteServiceAccount() {
   margin: 0;
 }
 
+/* Application access section */
+.all-apps-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 4px 0 16px 0;
+}
+
+.all-apps-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.all-apps-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.all-apps-hint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.no-apps-notice {
+  text-align: center;
+  padding: 24px;
+  color: #64748b;
+}
+
+.no-apps-notice p {
+  margin: 0 0 12px 0;
+}
+
+.app-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.app-code {
+  font-size: 12px;
+  color: #64748b;
+  font-family: monospace;
+}
+
+/* Dual-pane application picker (mirrors the role picker) */
+.app-picker {
+  display: flex;
+  gap: 16px;
+  min-height: 350px;
+}
+
+.app-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.selected-apps .pane-header h4 {
+  margin-bottom: 0;
+}
+
+.app-filter {
+  width: 100%;
+}
+
+.app-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.app-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.app-item:hover {
+  background: #f1f5f9;
+}
+
+.app-item.selected {
+  background: #eff6ff;
+}
+
+.app-item.selected-item {
+  background: #f8fafc;
+  cursor: default;
+}
+
+.app-item.selected-item:hover {
+  background: #f1f5f9;
+}
+
+.app-item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-item-content .app-display-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.app-item-content .app-name-code {
+  font-size: 11px;
+  color: #64748b;
+  font-family: monospace;
+}
+
 @media (max-width: 768px) {
   .info-grid {
     grid-template-columns: 1fr;
@@ -1167,12 +1588,14 @@ async function deleteServiceAccount() {
     grid-column: span 1;
   }
 
-  .role-picker {
+  .role-picker,
+  .app-picker {
     flex-direction: column;
     min-height: 500px;
   }
 
-  .role-pane {
+  .role-pane,
+  .app-pane {
     min-height: 200px;
   }
 }
