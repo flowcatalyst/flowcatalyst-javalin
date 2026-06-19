@@ -252,6 +252,10 @@ function getSourceLabel(source: RoleSource) {
             optionValue="code"
             placeholder="All Applications"
             :showClear="true"
+            filter
+            filterPlaceholder="Type to filter..."
+            autoFilterFocus
+            resetFilterOnHide
             class="filter-input"
           />
         </div>
