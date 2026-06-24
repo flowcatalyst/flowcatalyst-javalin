@@ -7,10 +7,15 @@ import { useClientOptions } from "@/composables/useClientOptions";
 import { usersApi, type User } from "@/api/users";
 import { rolesApi, type Role } from "@/api/roles";
 import ClientFilter from "@/components/ClientFilter.vue";
+import UserImportDialog from "@/components/UserImportDialog.vue";
 
 const router = useRouter();
 const { navigateToDetail } = useReturnTo();
-const { ensureLoaded: ensureClients, getLabel: getClientLabel } = useClientOptions();
+const {
+	ensureLoaded: ensureClients,
+	getLabel: getClientLabel,
+	options: clientOptions,
+} = useClientOptions();
 
 const users = ref<User[]>([]);
 const availableRoles = ref<Role[]>([]);
@@ -159,7 +164,10 @@ function formatDate(dateStr: string | undefined | null) {
         <h1 class="page-title">Users</h1>
         <p class="page-subtitle">Manage platform users and their access</p>
       </div>
-      <Button label="Add User" icon="pi pi-user-plus" @click="addUser" />
+      <div class="header-actions">
+        <UserImportDialog :client-options="clientOptions" @imported="loadUsers" />
+        <Button label="Add User" icon="pi pi-user-plus" @click="addUser" />
+      </div>
     </header>
 
     <!-- Filters -->
@@ -363,6 +371,12 @@ function formatDate(dateStr: string | undefined | null) {
 </template>
 
 <style scoped>
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .filter-card {
   margin-bottom: 24px;
 }
