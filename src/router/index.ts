@@ -97,24 +97,26 @@ const router = createRouter({
 					name: "client-detail",
 					component: () => import("@/pages/clients/ClientDetailPage.vue"),
 				},
-				// Users (platform / anchor scope — full user administration)
+				// Users (platform / anchor scope — full user administration).
+				// Detail/create render in a right-side drawer over the list; children
+				// inherit the parent's meta.scope via vue-router's merged meta.
 				{
 					path: "users",
 					name: "users",
 					component: () => import("@/pages/users/UserListPage.vue"),
 					meta: { scope: "anchor" },
-				},
-				{
-					path: "users/new",
-					name: "user-create",
-					component: () => import("@/pages/users/UserCreatePage.vue"),
-					meta: { scope: "anchor" },
-				},
-				{
-					path: "users/:id",
-					name: "user-detail",
-					component: () => import("@/pages/users/UserDetailPage.vue"),
-					meta: { scope: "anchor" },
+					children: [
+						{
+							path: "new",
+							name: "user-create",
+							component: () => import("@/pages/users/UserCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "user-detail",
+							component: () => import("@/pages/users/UserDetailDrawer.vue"),
+						},
+					],
 				},
 				// Client-scoped user management (client-administrators) — manage only
 				// their own client's users, with role assignment bounded to the
@@ -197,6 +199,8 @@ const router = createRouter({
 						),
 				},
 				// Authentication - Email Domain Mappings
+				// Detail/create render in a right-side drawer over the list
+				// (nested children keep the list mounted underneath).
 				{
 					path: "authentication/email-domain-mappings",
 					name: "email-domain-mappings",
@@ -204,22 +208,24 @@ const router = createRouter({
 						import(
 							"@/pages/authentication/email-domains/EmailDomainMappingListPage.vue"
 						),
-				},
-				{
-					path: "authentication/email-domain-mappings/new",
-					name: "email-domain-mapping-create",
-					component: () =>
-						import(
-							"@/pages/authentication/email-domains/EmailDomainMappingCreatePage.vue"
-						),
-				},
-				{
-					path: "authentication/email-domain-mappings/:id",
-					name: "email-domain-mapping-detail",
-					component: () =>
-						import(
-							"@/pages/authentication/email-domains/EmailDomainMappingDetailPage.vue"
-						),
+					children: [
+						{
+							path: "new",
+							name: "email-domain-mapping-create",
+							component: () =>
+								import(
+									"@/pages/authentication/email-domains/EmailDomainMappingCreateDrawer.vue"
+								),
+						},
+						{
+							path: ":id",
+							name: "email-domain-mapping-detail",
+							component: () =>
+								import(
+									"@/pages/authentication/email-domains/EmailDomainMappingDetailDrawer.vue"
+								),
+						},
+					],
 				},
 				// Authentication - lost-device reset approvals (client-admin queue).
 				// The :id form is the deep link from the approval email.
@@ -320,24 +326,27 @@ const router = createRouter({
 							"@/pages/scheduled-jobs/ScheduledJobInstanceDetailPage.vue"
 						),
 				},
-				// Subscriptions
+				// Subscriptions — detail/create render in a right-side drawer over
+				// the list (nested children keep the list mounted underneath).
 				{
 					path: "subscriptions",
 					name: "subscriptions",
 					component: () =>
 						import("@/pages/subscriptions/SubscriptionListPage.vue"),
-				},
-				{
-					path: "subscriptions/new",
-					name: "subscription-create",
-					component: () =>
-						import("@/pages/subscriptions/SubscriptionCreatePage.vue"),
-				},
-				{
-					path: "subscriptions/:id",
-					name: "subscription-detail",
-					component: () =>
-						import("@/pages/subscriptions/SubscriptionDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "subscription-create",
+							component: () =>
+								import("@/pages/subscriptions/SubscriptionCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "subscription-detail",
+							component: () =>
+								import("@/pages/subscriptions/SubscriptionDetailDrawer.vue"),
+						},
+					],
 				},
 				// Connections
 				{

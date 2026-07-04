@@ -9,6 +9,7 @@ import { canAccessPath, canSeeScope } from "@/stores/permissions";
 
 defineProps<{
 	collapsed: boolean;
+	mobileOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -77,7 +78,7 @@ function isActive(item: NavItem): boolean {
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ collapsed }">
+  <aside class="sidebar" :class="{ collapsed, 'mobile-open': mobileOpen }">
     <!-- Logo Section -->
     <div class="sidebar-header">
       <div
@@ -178,10 +179,7 @@ function isActive(item: NavItem): boolean {
 
     <!-- Footer -->
     <div class="sidebar-footer">
-      <div v-if="!collapsed" class="version-info">
-        <span class="version-label">Version</span>
-        <span class="version-number">0.0.1</span>
-      </div>
+      <SidebarProfile :collapsed="collapsed" />
     </div>
   </aside>
 </template>
@@ -389,20 +387,8 @@ function isActive(item: NavItem): boolean {
 }
 
 .sidebar-footer {
-  padding: 16px;
+  padding: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.version-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.4);
-}
-
-.version-number {
-  color: rgba(255, 255, 255, 0.6);
 }
 
 /* Scrollbar styling */
@@ -424,7 +410,9 @@ function isActive(item: NavItem): boolean {
 }
 
 @media (max-width: 768px) {
-  .sidebar {
+  .sidebar,
+  .sidebar.collapsed {
+    width: 260px;
     transform: translateX(-100%);
   }
 

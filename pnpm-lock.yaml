@@ -11,6 +11,9 @@ importers:
       '@primeuix/themes':
         specifier: ^2.0.3
         version: 2.0.3
+      '@primevue/core':
+        specifier: ^4.5.4
+        version: 4.5.4(vue@3.5.30(typescript@5.8.3))
       '@simplewebauthn/browser':
         specifier: ^13.3.0
         version: 13.3.0

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, computed, onMounted } from "vue";
-import { useRoute } from "vue-router";
+import { ref, computed, watch } from "vue";
 import {
 	usersApi,
 	type User,
@@ -16,21 +15,33 @@ import {
 import { clientsApi, type Client } from "@/api/clients";
 import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
-import { useReturnTo } from "@/composables/useReturnTo";
 
-const route = useRoute();
-const { returnTo } = useReturnTo();
+const props = defineProps<{
+	userId: string;
+	/** Open the info card in edit mode once loaded (?edit=true deep link) */
+	autoEdit?: boolean;
+}>();
 
-const userId = route.params['id'] as string;
+const emit = defineEmits<{
+	/** Any successful mutation — hosts use it to refresh the list */
+	changed: [];
+	/** The user was deleted — hosts close the drawer / navigate away */
+	deleted: [];
+	/** Initial load finished (null = load failed) */
+	loaded: [user: User | null];
+}>();
+
+/** Doubles as the host's dirty flag: an open edit form counts as dirty. */
+const editMode = defineModel<boolean>("dirty", { default: false });
 
 const user = ref<User | null>(null);
 const clients = ref<Client[]>([]);
 const clientGrants = ref<ClientAccessGrant[]>([]);
 const loading = ref(true);
+const loadFailed = ref(false);
 const saving = ref(false);
 
-// Edit mode
-const editMode = ref(false);
+// Edit form
 const editName = ref("");
 const editScope = ref<"ANCHOR" | "PARTNER" | "CLIENT" | null>(null);
 const editClientId = ref<string | null>(null);
@@ -85,12 +96,10 @@ const resetPasswordConfirm = ref("");
 const resetPasswordError = ref("");
 
 // Internal-auth users only — OIDC users manage credentials at their IDP.
-const canSendPasswordReset = computed(() =>
-	user.value?.idpType === "INTERNAL" && !!user.value?.email,
+const canSendPasswordReset = computed(
+	() => user.value?.idpType === "INTERNAL" && !!user.value?.email,
 );
-const canResetPassword = computed(() =>
-	user.value?.idpType === "INTERNAL",
-);
+const canResetPassword = computed(() => user.value?.idpType === "INTERNAL");
 
 const isAnchorUser = computed(() => user.value?.isAnchorUser ?? false);
 
@@ -161,12 +170,9 @@ const assignableRoles = computed(() => {
 	const accessibleCodes = new Set(
 		applicationAccessGrants.value.map((g) => g.applicationCode),
 	);
-	const assignedNames = new Set(
-		roleAssignments.value.map((r) => r.roleName),
-	);
+	const assignedNames = new Set(roleAssignments.value.map((r) => r.roleName));
 	return availableRoles.value.filter(
-		(r) =>
-			accessibleCodes.has(r.applicationCode) || assignedNames.has(r.name),
+		(r) => accessibleCodes.has(r.applicationCode) || assignedNames.has(r.name),
 	);
 });
 
@@ -206,7 +212,9 @@ const filteredAvailableApps = computed(() => {
 
 // Check if there are unsaved changes in the app picker
 const hasAppChanges = computed(() => {
-	const currentApps = new Set(applicationAccessGrants.value.map((a) => a.applicationId));
+	const currentApps = new Set(
+		applicationAccessGrants.value.map((a) => a.applicationId),
+	);
 	if (currentApps.size !== selectedAppIds.value.size) return true;
 	for (const appId of currentApps) {
 		if (!selectedAppIds.value.has(appId)) return true;
@@ -214,29 +222,56 @@ const hasAppChanges = computed(() => {
 	return false;
 });
 
-onMounted(async () => {
-	await Promise.all([loadUser(), loadClients(), loadAvailableRoles()]);
-	if (user.value) {
-		await Promise.all([
-			loadClientGrants(),
-			loadRoleAssignments(),
-			loadApplicationAccess(),
-		]);
-		// Check if we should start in edit mode
-		if (route.query['edit'] === "true") {
-			startEdit();
+// Reactive param: the hosting drawer is reused when switching between rows,
+// so all per-user state resets and reloads whenever userId changes.
+watch(
+	() => props.userId,
+	async (value) => {
+		if (!value) return;
+		resetState();
+		await Promise.all([loadUser(), loadClients(), loadAvailableRoles()]);
+		if (user.value) {
+			await Promise.all([
+				loadClientGrants(),
+				loadRoleAssignments(),
+				loadApplicationAccess(),
+			]);
+			// Check if we should start in edit mode
+			if (props.autoEdit) {
+				startEdit();
+			}
 		}
-	}
-	loading.value = false;
-});
+		loading.value = false;
+		emit("loaded", user.value);
+	},
+	{ immediate: true },
+);
+
+function resetState() {
+	loading.value = true;
+	loadFailed.value = false;
+	user.value = null;
+	clientGrants.value = [];
+	roleAssignments.value = [];
+	applicationAccessGrants.value = [];
+	availableApplications.value = [];
+	allApplications.value = false;
+	editMode.value = false;
+	showAddClientDialog.value = false;
+	showRolePickerDialog.value = false;
+	showAppPickerDialog.value = false;
+	showDeleteDialog.value = false;
+	showSendResetDialog.value = false;
+	showResetPasswordDialog.value = false;
+}
 
 async function loadUser() {
 	try {
-		user.value = await usersApi.get(userId);
+		user.value = await usersApi.get(props.userId);
 		editName.value = user.value.name;
 	} catch (error) {
 		console.error("Failed to fetch user:", error);
-		returnTo("/users");
+		loadFailed.value = true;
 	}
 }
 
@@ -259,7 +294,7 @@ async function loadClients() {
 
 async function loadClientGrants() {
 	try {
-		const response = await usersApi.getClientAccess(userId);
+		const response = await usersApi.getClientAccess(props.userId);
 		clientGrants.value = response.grants;
 	} catch (error) {
 		console.error("Failed to fetch client grants:", error);
@@ -277,7 +312,7 @@ async function loadAvailableRoles() {
 
 async function loadRoleAssignments() {
 	try {
-		const response = await usersApi.getRoles(userId);
+		const response = await usersApi.getRoles(props.userId);
 		roleAssignments.value = response.roles;
 	} catch (error) {
 		console.error("Failed to fetch role assignments:", error);
@@ -286,7 +321,7 @@ async function loadRoleAssignments() {
 
 async function loadApplicationAccess() {
 	try {
-		const response = await usersApi.getApplicationAccess(userId);
+		const response = await usersApi.getApplicationAccess(props.userId);
 		applicationAccessGrants.value = response.applications;
 		allApplications.value = response.allApplications;
 	} catch (error) {
@@ -304,7 +339,7 @@ async function onToggleAllApplications(value: boolean) {
 			(a) => a.applicationId,
 		);
 		const response = await usersApi.assignApplicationAccess(
-			userId,
+			props.userId,
 			applicationIds,
 			value,
 		);
@@ -316,7 +351,8 @@ async function onToggleAllApplications(value: boolean) {
 				? "Granted access to all applications"
 				: "Restricted to specific applications",
 		);
-	} catch (e: unknown) {
+		emit("changed");
+	} catch {
 		// Revert the switch to its prior state; apiFetch surfaces the error.
 		allApplications.value = !value;
 	} finally {
@@ -326,7 +362,7 @@ async function onToggleAllApplications(value: boolean) {
 
 async function loadAvailableApplications() {
 	try {
-		const response = await usersApi.getAvailableApplications(userId);
+		const response = await usersApi.getAvailableApplications(props.userId);
 		availableApplications.value = response.applications;
 	} catch (error) {
 		console.error("Failed to fetch available applications:", error);
@@ -360,22 +396,36 @@ async function saveUser() {
 	saving.value = true;
 	try {
 		// 1. Display field (name) via the plain update.
-		const updated = await usersApi.update(userId, { name: editName.value });
+		const updated = await usersApi.update(props.userId, {
+			name: editName.value,
+		});
 		user.value!.name = updated.name;
 
 		// 2. Scope / client association is a separate, anchor-gated change with
 		//    explicit intent. Only call it when it actually changed.
 		const scopeChanged = editScope.value !== user.value!.scope;
-		const clientChanged = editClientId.value !== (user.value!.clientId ?? null);
+		const clientChanged =
+			editClientId.value !== (user.value!.clientId ?? null);
 		if (scopeChanged || clientChanged) {
 			let assoc: User | null = null;
 			if (editScope.value === "ANCHOR") {
-				assoc = await usersApi.setClientAssociation(userId, "*");
+				assoc = await usersApi.setClientAssociation(props.userId, "*");
 			} else if (editScope.value === "CLIENT" && editClientId.value) {
-				assoc = await usersApi.setClientAssociation(userId, editClientId.value, "CHANGE_CLIENT");
+				assoc = await usersApi.setClientAssociation(
+					props.userId,
+					editClientId.value,
+					"CHANGE_CLIENT",
+				);
 			} else if (editScope.value === "PARTNER" && editClientId.value) {
-				assoc = await usersApi.setClientAssociation(userId, editClientId.value, "TO_PARTNER");
-			} else if (editScope.value === "PARTNER" || editScope.value === "CLIENT") {
+				assoc = await usersApi.setClientAssociation(
+					props.userId,
+					editClientId.value,
+					"TO_PARTNER",
+				);
+			} else if (
+				editScope.value === "PARTNER" ||
+				editScope.value === "CLIENT"
+			) {
 				toast.error("Error", "Select a client for CLIENT/PARTNER scope");
 				saving.value = false;
 				return;
@@ -388,7 +438,10 @@ async function saveUser() {
 
 		editMode.value = false;
 		toast.success("Success", "User updated successfully");
-	} catch (e: unknown) {
+		emit("changed");
+		emit("loaded", user.value);
+	} catch {
+		// update errors surface via the global error toast
 	} finally {
 		saving.value = false;
 	}
@@ -400,15 +453,18 @@ async function toggleUserStatus() {
 	saving.value = true;
 	try {
 		if (user.value.active) {
-			await usersApi.deactivate(userId);
+			await usersApi.deactivate(props.userId);
 			user.value.active = false;
 			toast.success("Success", "User deactivated");
 		} else {
-			await usersApi.activate(userId);
+			await usersApi.activate(props.userId);
 			user.value.active = true;
 			toast.success("Success", "User activated");
 		}
-	} catch (e: unknown) {
+		emit("changed");
+		emit("loaded", user.value);
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		saving.value = false;
 	}
@@ -418,10 +474,11 @@ async function sendPasswordReset() {
 	if (!user.value) return;
 	sendingReset.value = true;
 	try {
-		const result = await usersApi.sendPasswordReset(userId);
+		const result = await usersApi.sendPasswordReset(props.userId);
 		showSendResetDialog.value = false;
 		toast.success("Reset email sent", result.message);
-	} catch (e: unknown) {
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		sendingReset.value = false;
 	}
@@ -451,7 +508,10 @@ async function resetPasswordDirect() {
 	}
 	resettingPassword.value = true;
 	try {
-		const result = await usersApi.resetPassword(userId, resetPasswordNew.value);
+		const result = await usersApi.resetPassword(
+			props.userId,
+			resetPasswordNew.value,
+		);
 		showResetPasswordDialog.value = false;
 		toast.success("Password reset", result.message);
 	} catch (e: unknown) {
@@ -464,11 +524,13 @@ async function resetPasswordDirect() {
 async function deleteUser() {
 	deleteLoading.value = true;
 	try {
-		await usersApi.delete(userId);
+		await usersApi.delete(props.userId);
 		showDeleteDialog.value = false;
 		toast.success("Success", `User "${user.value?.name}" deleted`);
-		returnTo("/users");
-	} catch (e: unknown) {
+		emit("changed");
+		emit("deleted");
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		deleteLoading.value = false;
 	}
@@ -489,7 +551,7 @@ async function grantClientAccess() {
 	saving.value = true;
 	try {
 		const grant = await usersApi.grantClientAccess(
-			userId,
+			props.userId,
 			selectedClient.value.id,
 		);
 		clientGrants.value.push(grant);
@@ -497,7 +559,9 @@ async function grantClientAccess() {
 		selectedClient.value = null;
 		clientSearchQuery.value = "";
 		toast.success("Success", "Client access granted");
-	} catch (e: unknown) {
+		emit("changed");
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		saving.value = false;
 	}
@@ -506,12 +570,14 @@ async function grantClientAccess() {
 async function revokeClientAccess(clientId: string) {
 	saving.value = true;
 	try {
-		await usersApi.revokeClientAccess(userId, clientId);
+		await usersApi.revokeClientAccess(props.userId, clientId);
 		clientGrants.value = clientGrants.value.filter(
 			(g) => g.clientId !== clientId,
 		);
 		toast.success("Success", "Client access revoked");
-	} catch (e: unknown) {
+		emit("changed");
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		saving.value = false;
 	}
@@ -550,7 +616,7 @@ async function saveRoles() {
 	try {
 		const roles = Array.from(selectedRoleNames.value);
 		const response: RolesAssignedResponse = await usersApi.assignRoles(
-			userId,
+			props.userId,
 			roles,
 		);
 
@@ -576,7 +642,9 @@ async function saveRoles() {
 		}
 
 		toast.success("Success", detail);
-	} catch (e: unknown) {
+		emit("changed");
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		savingRoles.value = false;
 	}
@@ -630,7 +698,7 @@ async function saveApps() {
 	try {
 		const applicationIds = Array.from(selectedAppIds.value);
 		const response: ApplicationAccessAssignedResponse =
-			await usersApi.assignApplicationAccess(userId, applicationIds);
+			await usersApi.assignApplicationAccess(props.userId, applicationIds);
 
 		// Update application access grants from response
 		applicationAccessGrants.value = response.applications;
@@ -650,7 +718,9 @@ async function saveApps() {
 		}
 
 		toast.success("Success", detail);
-	} catch (e: unknown) {
+		emit("changed");
+	} catch {
+		// errors surface via the global error toast
 	} finally {
 		savingApps.value = false;
 	}
@@ -669,64 +739,278 @@ function formatDate(dateStr: string | null | undefined) {
 	if (!dateStr) return "—";
 	return new Date(dateStr).toLocaleDateString();
 }
-
-function goBack() {
-	returnTo("/users");
-}
 </script>
 
 <template>
-  <div class="page-container">
-    <div v-if="loading" class="loading-container">
-      <ProgressSpinner strokeWidth="3" />
-    </div>
+  <div v-if="loading" class="loading-container">
+    <ProgressSpinner strokeWidth="3" />
+  </div>
 
-    <template v-else-if="user">
-      <header class="page-header">
-        <div class="header-left">
-          <Button
-            icon="pi pi-arrow-left"
-            text
-            rounded
-            severity="secondary"
-            @click="goBack"
-            v-tooltip.right="'Back to users'"
-          />
-          <div>
-            <h1 class="page-title">{{ user.name }}</h1>
-            <p class="page-subtitle">{{ user.email }}</p>
-          </div>
+  <Message v-else-if="loadFailed" severity="error" :closable="false">
+    Failed to load user
+  </Message>
+
+  <template v-else-if="user">
+    <!-- User Information -->
+    <FcFormSection title="User Information" flat>
+      <template #actions>
+        <Button v-if="!editMode" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
+        <template v-else>
+          <Button label="Cancel" text @click="cancelEdit" />
+          <Button label="Save" icon="pi pi-check" :loading="saving" @click="saveUser" />
+        </template>
+      </template>
+
+      <!-- View mode -->
+      <div v-if="!editMode" class="fc-detail-grid">
+        <FcDetailField label="Name" :value="user.name" />
+        <FcDetailField label="Email" :value="user.email" />
+        <FcDetailField
+          label="Authentication"
+          :value="user.idpType === 'INTERNAL' ? 'Internal' : user.idpType"
+        />
+        <FcDetailField label="Type">
           <Tag
             v-if="userType"
             :value="userType.label"
             :severity="userType.severity"
             :icon="userType.icon"
-            class="type-tag"
           />
-          <Tag
-            :value="user.active ? 'Active' : 'Inactive'"
-            :severity="user.active ? 'success' : 'danger'"
+          <span v-else>—</span>
+        </FcDetailField>
+        <FcDetailField
+          v-if="user.scope === 'CLIENT'"
+          label="Client"
+          :value="homeClient?.name"
+        />
+        <FcDetailField label="Created" :value="formatDate(user.createdAt)" />
+      </div>
+
+      <!-- Edit mode -->
+      <div v-else class="fc-form-grid">
+        <FcFormField label="Name" required>
+          <template #default="{ id: fieldId }">
+            <InputText :id="fieldId" v-model="editName" />
+          </template>
+        </FcFormField>
+        <FcFormField label="Type">
+          <template #default="{ id: fieldId }">
+            <Select
+              :id="fieldId"
+              v-model="editScope"
+              :options="scopeOptions"
+              optionLabel="label"
+              optionValue="value"
+            />
+          </template>
+        </FcFormField>
+        <FcFormField
+          v-if="editScope === 'CLIENT' || editScope === 'PARTNER'"
+          :label="editScope === 'PARTNER' ? 'Client to grant' : 'Client'"
+          span
+        >
+          <template #default="{ id: fieldId }">
+            <Select
+              :id="fieldId"
+              v-model="editClientId"
+              :options="clients"
+              optionLabel="name"
+              optionValue="id"
+              :placeholder="editScope === 'PARTNER' ? 'Select a client to grant' : 'Select client'"
+              filter
+            />
+          </template>
+        </FcFormField>
+      </div>
+    </FcFormSection>
+
+    <!-- Client Access -->
+    <FcFormSection title="Client Access" flat>
+      <template v-if="!isAnchorUser" #actions>
+        <Button label="Add Client" icon="pi pi-plus" text @click="showAddClientDialog = true" />
+      </template>
+
+      <div v-if="isAnchorUser" class="anchor-notice">
+        <i class="pi pi-star"></i>
+        <span
+          >This user has an anchor domain email and automatically has access to all clients.</span
+        >
+      </div>
+
+      <template v-else>
+        <div v-if="homeClient" class="home-client-section">
+          <h3 class="section-subtitle">Home Client</h3>
+          <div class="client-item home">
+            <div class="client-info">
+              <span class="client-name">{{ homeClient.name }}</span>
+              <span class="client-identifier">{{ homeClient.identifier }}</span>
+            </div>
+            <Tag value="Home" severity="secondary" />
+          </div>
+        </div>
+
+        <div v-if="!homeClient && grantedClients.length === 0" class="no-clients-notice">
+          <p>This user has no client access configured.</p>
+          <Button
+            label="Grant Client Access"
+            icon="pi pi-plus"
+            text
+            @click="showAddClientDialog = true"
           />
         </div>
-        <div class="header-right">
+
+        <div v-if="grantedClients.length > 0" class="granted-clients-section">
+          <h3 class="section-subtitle">Granted Access</h3>
+          <DataTable :value="grantedClients" size="small">
+            <Column field="clientName" header="Client">
+              <template #body="{ data }">
+                <div class="client-cell">
+                  <span class="client-name">{{ data.clientName }}</span>
+                  <span class="client-identifier">{{ data.clientIdentifier }}</span>
+                </div>
+              </template>
+            </Column>
+            <Column field="grantedAt" header="Granted">
+              <template #body="{ data }">
+                {{ formatDate(data.grantedAt) }}
+              </template>
+            </Column>
+            <Column header="" style="width: 80px">
+              <template #body="{ data }">
+                <Button
+                  v-tooltip.top="'Revoke access'"
+                  icon="pi pi-trash"
+                  text
+                  rounded
+                  severity="danger"
+                  @click="revokeClientAccess(data.clientId)"
+                />
+              </template>
+            </Column>
+          </DataTable>
+        </div>
+      </template>
+    </FcFormSection>
+
+    <!-- Roles -->
+    <FcFormSection title="Roles" flat>
+      <template #actions>
+        <Button label="Manage Roles" icon="pi pi-pencil" text @click="openRolePicker" />
+      </template>
+
+      <div v-if="roleAssignments.length === 0" class="no-roles-notice">
+        <p>No roles assigned to this user.</p>
+        <Button label="Assign Roles" icon="pi pi-plus" text @click="openRolePicker" />
+      </div>
+
+      <DataTable v-else :value="roleAssignments" size="small">
+        <Column field="roleName" header="Role">
+          <template #body="{ data }">
+            <div class="role-cell">
+              <span class="role-name">{{ data.roleName.split(':').pop() }}</span>
+              <span class="role-full-name">{{ data.roleName }}</span>
+            </div>
+          </template>
+        </Column>
+        <Column field="assignmentSource" header="Source">
+          <template #body="{ data }">
+            <Tag
+              :value="data.assignmentSource"
+              :severity="data.assignmentSource === 'MANUAL' ? 'info' : 'secondary'"
+            />
+          </template>
+        </Column>
+        <Column field="assignedAt" header="Assigned">
+          <template #body="{ data }">
+            {{ formatDate(data.assignedAt) }}
+          </template>
+        </Column>
+      </DataTable>
+    </FcFormSection>
+
+    <!-- Application Access -->
+    <FcFormSection title="Application Access" flat>
+      <template v-if="!allApplications" #actions>
+        <Button label="Manage Applications" icon="pi pi-pencil" text @click="openAppPicker" />
+      </template>
+
+      <!-- All-applications toggle: the application-axis analogue of an anchor. -->
+      <div class="all-apps-toggle">
+        <ToggleSwitch
+          v-model="allApplications"
+          inputId="allApplications"
+          :disabled="savingApps"
+          @update:modelValue="onToggleAllApplications"
+        />
+        <label for="allApplications" class="all-apps-label">
+          <span class="all-apps-title">Access to all applications</span>
+          <span class="all-apps-hint">
+            This user can access every application, present and future.
+          </span>
+        </label>
+      </div>
+
+      <template v-if="!allApplications">
+        <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
+          <p>No application access granted to this user.</p>
+          <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
+        </div>
+
+        <DataTable v-else :value="applicationAccessGrants" size="small">
+          <Column field="applicationName" header="Application">
+            <template #body="{ data }">
+              <div class="app-cell">
+                <span class="app-name">{{ data.applicationName || data.applicationId }}</span>
+                <span class="app-code">{{ data.applicationCode }}</span>
+              </div>
+            </template>
+          </Column>
+        </DataTable>
+      </template>
+    </FcFormSection>
+
+    <!-- Account Actions -->
+    <FcFormSection title="Account Actions" flat>
+      <div class="action-items">
+        <div v-if="canSendPasswordReset" class="action-item">
+          <div class="action-info">
+            <strong>Send Password Reset</strong>
+            <p>Email the user a single-use link to set a new password.</p>
+          </div>
           <Button
-            v-if="canSendPasswordReset"
-            label="Send Password Reset"
+            label="Send Email"
             icon="pi pi-envelope"
             severity="secondary"
             outlined
             @click="showSendResetDialog = true"
-            v-tooltip.bottom="'Email the user a single-use link to set a new password'"
           />
+        </div>
+
+        <div v-if="canResetPassword" class="action-item">
+          <div class="action-info">
+            <strong>Reset Password</strong>
+            <p>Set a new password directly (use when the user can't receive email).</p>
+          </div>
           <Button
-            v-if="canResetPassword"
             label="Reset Password"
             icon="pi pi-key"
             severity="secondary"
             outlined
             @click="openResetPasswordDialog"
-            v-tooltip.bottom="'Set a new password directly (use when the user can\'t receive email)'"
           />
+        </div>
+
+        <div class="action-item">
+          <div class="action-info">
+            <strong>{{ user.active ? 'Deactivate User' : 'Activate User' }}</strong>
+            <p>
+              {{
+                user.active
+                  ? 'Prevent this user from signing in.'
+                  : 'Allow this user to sign in again.'
+              }}
+            </p>
+          </div>
           <Button
             :label="user.active ? 'Deactivate' : 'Activate'"
             :icon="user.active ? 'pi pi-ban' : 'pi pi-check'"
@@ -735,6 +1019,13 @@ function goBack() {
             :loading="saving"
             @click="toggleUserStatus"
           />
+        </div>
+
+        <div class="action-item">
+          <div class="action-info">
+            <strong>Delete User</strong>
+            <p>Permanently remove this user. Cannot be undone.</p>
+          </div>
           <Button
             label="Delete"
             icon="pi pi-trash"
@@ -743,552 +1034,328 @@ function goBack() {
             @click="showDeleteDialog = true"
           />
         </div>
-      </header>
-
-      <!-- User Information Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">User Information</h2>
-          <Button v-if="!editMode" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
-          <div v-else class="edit-actions">
-            <Button label="Cancel" text @click="cancelEdit" />
-            <Button label="Save" icon="pi pi-check" :loading="saving" @click="saveUser" />
-          </div>
-        </div>
-
-        <div class="info-grid">
-          <div class="info-item">
-            <label>Name</label>
-            <InputText v-if="editMode" v-model="editName" class="w-full" />
-            <span v-else>{{ user.name }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Email</label>
-            <span>{{ user.email || '—' }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Authentication</label>
-            <span>{{ user.idpType === 'INTERNAL' ? 'Internal' : user.idpType || '—' }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Type</label>
-            <Select
-              v-if="editMode"
-              v-model="editScope"
-              :options="scopeOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-            />
-            <Tag
-              v-else-if="userType"
-              :value="userType.label"
-              :severity="userType.severity"
-              :icon="userType.icon"
-            />
-            <span v-else>—</span>
-          </div>
-
-          <div v-if="editMode ? (editScope === 'CLIENT' || editScope === 'PARTNER') : user.scope === 'CLIENT'" class="info-item">
-            <label>{{ editScope === 'PARTNER' ? 'Client to grant' : 'Client' }}</label>
-            <Dropdown
-              v-if="editMode"
-              v-model="editClientId"
-              :options="clients"
-              optionLabel="name"
-              optionValue="id"
-              :placeholder="editScope === 'PARTNER' ? 'Select a client to grant' : 'Select client'"
-              class="w-full"
-              filter
-            />
-            <span v-else>{{ homeClient?.name || '—' }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Created</label>
-            <span>{{ formatDate(user.createdAt) }}</span>
-          </div>
-        </div>
       </div>
+    </FcFormSection>
+  </template>
 
-      <!-- Client Access Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Client Access</h2>
-          <Button
-            v-if="!isAnchorUser"
-            label="Add Client"
-            icon="pi pi-plus"
-            text
-            @click="showAddClientDialog = true"
-          />
-        </div>
-
-        <div v-if="isAnchorUser" class="anchor-notice">
-          <i class="pi pi-star"></i>
-          <span
-            >This user has an anchor domain email and automatically has access to all clients.</span
-          >
-        </div>
-
-        <template v-else>
-          <div v-if="homeClient" class="home-client-section">
-            <h3 class="section-subtitle">Home Client</h3>
-            <div class="client-item home">
-              <div class="client-info">
-                <span class="client-name">{{ homeClient.name }}</span>
-                <span class="client-identifier">{{ homeClient.identifier }}</span>
-              </div>
-              <Tag value="Home" severity="secondary" />
-            </div>
-          </div>
-
-          <div v-if="!homeClient && grantedClients.length === 0" class="no-clients-notice">
-            <p>This user has no client access configured.</p>
-            <Button
-              label="Grant Client Access"
-              icon="pi pi-plus"
-              text
-              @click="showAddClientDialog = true"
-            />
-          </div>
-
-          <div v-if="grantedClients.length > 0" class="granted-clients-section">
-            <h3 class="section-subtitle">Granted Access</h3>
-            <DataTable :value="grantedClients" size="small">
-              <Column field="clientName" header="Client">
-                <template #body="{ data }">
-                  <div class="client-cell">
-                    <span class="client-name">{{ data.clientName }}</span>
-                    <span class="client-identifier">{{ data.clientIdentifier }}</span>
-                  </div>
-                </template>
-              </Column>
-              <Column field="grantedAt" header="Granted">
-                <template #body="{ data }">
-                  {{ formatDate(data.grantedAt) }}
-                </template>
-              </Column>
-              <Column header="" style="width: 80px">
-                <template #body="{ data }">
-                  <Button
-                    icon="pi pi-trash"
-                    text
-                    rounded
-                    severity="danger"
-                    @click="revokeClientAccess(data.clientId)"
-                    v-tooltip.top="'Revoke access'"
-                  />
-                </template>
-              </Column>
-            </DataTable>
+  <!-- Add Client Dialog -->
+  <Dialog
+    v-model:visible="showAddClientDialog"
+    header="Grant Client Access"
+    :style="{ width: '450px' }"
+    :modal="true"
+  >
+    <div class="dialog-content">
+      <label>Search for a client</label>
+      <AutoComplete
+        v-model="selectedClient"
+        :suggestions="filteredClients"
+        optionLabel="name"
+        placeholder="Type to search..."
+        class="w-full"
+        dropdown
+        @complete="searchClients"
+      >
+        <template #option="slotProps">
+          <div class="client-option">
+            <span class="client-name">{{ slotProps.option.name }}</span>
+            <span class="client-identifier">{{ slotProps.option.identifier }}</span>
           </div>
         </template>
-      </div>
+      </AutoComplete>
+    </div>
 
-      <!-- Roles Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Roles</h2>
-          <Button label="Manage Roles" icon="pi pi-pencil" text @click="openRolePicker" />
-        </div>
-
-        <div v-if="roleAssignments.length === 0" class="no-roles-notice">
-          <p>No roles assigned to this user.</p>
-          <Button label="Assign Roles" icon="pi pi-plus" text @click="openRolePicker" />
-        </div>
-
-        <DataTable v-else :value="roleAssignments" size="small">
-          <Column field="roleName" header="Role">
-            <template #body="{ data }">
-              <div class="role-cell">
-                <span class="role-name">{{ data.roleName.split(':').pop() }}</span>
-                <span class="role-full-name">{{ data.roleName }}</span>
-              </div>
-            </template>
-          </Column>
-          <Column field="assignmentSource" header="Source">
-            <template #body="{ data }">
-              <Tag
-                :value="data.assignmentSource"
-                :severity="data.assignmentSource === 'MANUAL' ? 'info' : 'secondary'"
-              />
-            </template>
-          </Column>
-          <Column field="assignedAt" header="Assigned">
-            <template #body="{ data }">
-              {{ formatDate(data.assignedAt) }}
-            </template>
-          </Column>
-        </DataTable>
-      </div>
-
-      <!-- Application Access Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Application Access</h2>
-          <Button
-            v-if="!allApplications"
-            label="Manage Applications"
-            icon="pi pi-pencil"
-            text
-            @click="openAppPicker"
-          />
-        </div>
-
-        <!-- All-applications toggle: the application-axis analogue of an anchor. -->
-        <div class="all-apps-toggle">
-          <ToggleSwitch
-            inputId="allApplications"
-            v-model="allApplications"
-            :disabled="savingApps"
-            @update:modelValue="onToggleAllApplications"
-          />
-          <label for="allApplications" class="all-apps-label">
-            <span class="all-apps-title">Access to all applications</span>
-            <span class="all-apps-hint">
-              This user can access every application, present and future.
-            </span>
-          </label>
-        </div>
-
-        <template v-if="!allApplications">
-          <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
-            <p>No application access granted to this user.</p>
-            <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
-          </div>
-
-          <DataTable v-else :value="applicationAccessGrants" size="small">
-            <Column field="applicationName" header="Application">
-              <template #body="{ data }">
-                <div class="app-cell">
-                  <span class="app-name">{{ data.applicationName || data.applicationId }}</span>
-                  <span class="app-code">{{ data.applicationCode }}</span>
-                </div>
-              </template>
-            </Column>
-          </DataTable>
-        </template>
-      </div>
+    <template #footer>
+      <Button label="Cancel" text @click="showAddClientDialog = false" />
+      <Button
+        label="Grant Access"
+        icon="pi pi-check"
+        :disabled="!selectedClient"
+        :loading="saving"
+        @click="grantClientAccess"
+      />
     </template>
+  </Dialog>
 
-    <!-- Add Client Dialog -->
-    <Dialog
-      v-model:visible="showAddClientDialog"
-      header="Grant Client Access"
-      :style="{ width: '450px' }"
-      :modal="true"
-    >
-      <div class="dialog-content">
-        <label>Search for a client</label>
-        <AutoComplete
-          v-model="selectedClient"
-          :suggestions="filteredClients"
-          @complete="searchClients"
-          optionLabel="name"
-          placeholder="Type to search..."
-          class="w-full"
-          dropdown
-        >
-          <template #option="slotProps">
-            <div class="client-option">
-              <span class="client-name">{{ slotProps.option.name }}</span>
-              <span class="client-identifier">{{ slotProps.option.identifier }}</span>
-            </div>
-          </template>
-        </AutoComplete>
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" text @click="showAddClientDialog = false" />
-        <Button
-          label="Grant Access"
-          icon="pi pi-check"
-          :disabled="!selectedClient"
-          :loading="saving"
-          @click="grantClientAccess"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Role Picker Dialog (Dual-Pane) -->
-    <Dialog
-      v-model:visible="showRolePickerDialog"
-      header="Manage Roles"
-      :style="{ width: '700px' }"
-      :modal="true"
-      :closable="!savingRoles"
-    >
-      <div class="role-picker">
-        <!-- Left Pane: Available Roles -->
-        <div class="role-pane available-roles">
-          <div class="pane-header">
-            <h4>Available Roles</h4>
-            <InputText
-              v-model="roleSearchQuery"
-              placeholder="Filter roles..."
-              class="role-filter"
-            />
-          </div>
-          <div class="role-list">
-            <div
-              v-for="role in filteredAvailableRoles"
-              :key="role.name"
-              class="role-item"
-              :class="{ selected: selectedRoleNames.has(role.name) }"
-              @click="toggleRole(role.name)"
-            >
-              <div class="role-item-content">
-                <span class="role-display-name">{{ role.displayName || role.name }}</span>
-                <span class="role-name-code">{{ role.name }}</span>
-              </div>
-              <i v-if="selectedRoleNames.has(role.name)" class="pi pi-check check-icon"></i>
-            </div>
-            <div v-if="filteredAvailableRoles.length === 0" class="no-results">No roles found</div>
-          </div>
-          <p v-if="hiddenRoleCount > 0" class="role-pane-hint">
-            {{ hiddenRoleCount }} role<span v-if="hiddenRoleCount !== 1">s</span>
-            hidden because their application isn't enabled for this user. Add the
-            application under <strong>Application Access</strong> to make them
-            available here.
-          </p>
-        </div>
-
-        <!-- Right Pane: Selected Roles -->
-        <div class="role-pane selected-roles">
-          <div class="pane-header">
-            <h4>Selected Roles ({{ selectedRoleNames.size }})</h4>
-          </div>
-          <div class="role-list">
-            <div
-              v-for="roleName in selectedRoleNames"
-              :key="roleName"
-              class="role-item selected-item"
-            >
-              <div class="role-item-content">
-                <span class="role-display-name">{{ getRoleDisplay(roleName).displayName }}</span>
-                <span class="role-name-code">{{ roleName }}</span>
-              </div>
-              <Button
-                icon="pi pi-times"
-                text
-                rounded
-                severity="danger"
-                size="small"
-                @click="removeSelectedRole(roleName)"
-                v-tooltip.top="'Remove'"
-              />
-            </div>
-            <div v-if="selectedRoleNames.size === 0" class="no-results">No roles selected</div>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" text @click="cancelRolePicker" :disabled="savingRoles" />
-        <Button
-          label="Save Roles"
-          icon="pi pi-check"
-          :disabled="!hasRoleChanges"
-          :loading="savingRoles"
-          @click="saveRoles"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Application Picker Dialog (Dual-Pane) -->
-    <Dialog
-      v-model:visible="showAppPickerDialog"
-      header="Manage Application Access"
-      :style="{ width: '700px' }"
-      :modal="true"
-      :closable="!savingApps"
-    >
-      <div class="app-picker">
-        <!-- Left Pane: Available Applications -->
-        <div class="app-pane available-apps">
-          <div class="pane-header">
-            <h4>Available Applications</h4>
-            <InputText
-              v-model="appSearchQuery"
-              placeholder="Filter applications..."
-              class="app-filter"
-            />
-          </div>
-          <div class="app-list">
-            <div
-              v-for="app in filteredAvailableApps"
-              :key="app.id"
-              class="app-item"
-              :class="{ selected: selectedAppIds.has(app.id) }"
-              @click="toggleApp(app.id)"
-            >
-              <div class="app-item-content">
-                <span class="app-display-name">{{ app.name }}</span>
-                <span class="app-name-code">{{ app.code }}</span>
-              </div>
-              <i v-if="selectedAppIds.has(app.id)" class="pi pi-check check-icon"></i>
-            </div>
-            <div v-if="filteredAvailableApps.length === 0" class="no-results">
-              No applications found
-            </div>
-          </div>
-        </div>
-
-        <!-- Right Pane: Selected Applications -->
-        <div class="app-pane selected-apps">
-          <div class="pane-header">
-            <h4>Selected Applications ({{ selectedAppIds.size }})</h4>
-          </div>
-          <div class="app-list">
-            <div v-for="appId in selectedAppIds" :key="appId" class="app-item selected-item">
-              <div class="app-item-content">
-                <span class="app-display-name">{{ getAppDisplay(appId).name }}</span>
-                <span class="app-name-code">{{ getAppDisplay(appId).code }}</span>
-              </div>
-              <Button
-                icon="pi pi-times"
-                text
-                rounded
-                severity="danger"
-                size="small"
-                @click="removeSelectedApp(appId)"
-                v-tooltip.top="'Remove'"
-              />
-            </div>
-            <div v-if="selectedAppIds.size === 0" class="no-results">No applications selected</div>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" text @click="cancelAppPicker" :disabled="savingApps" />
-        <Button
-          label="Save Application Access"
-          icon="pi pi-check"
-          :disabled="!hasAppChanges"
-          :loading="savingApps"
-          @click="saveApps"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Send Password Reset Confirmation Dialog -->
-    <Dialog
-      v-model:visible="showSendResetDialog"
-      header="Send Password Reset Email"
-      modal
-      :style="{ width: '480px' }"
-    >
-      <div class="dialog-content">
-        <p>
-          Send a password reset email to <strong>{{ user?.name }}</strong>
-          (<code>{{ user?.email }}</code>)?
-        </p>
-        <Message severity="info" :closable="false">
-          The user will receive a single-use link valid for 15 minutes. They will set their own
-          password — you will not see or handle it.
-          Any previously-issued reset tokens for this user will be invalidated.
-        </Message>
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" text @click="showSendResetDialog = false" :disabled="sendingReset" />
-        <Button
-          label="Send Email"
-          icon="pi pi-envelope"
-          :loading="sendingReset"
-          @click="sendPasswordReset"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Direct Password Reset Dialog -->
-    <Dialog
-      v-model:visible="showResetPasswordDialog"
-      header="Reset Password"
-      modal
-      :style="{ width: '480px' }"
-    >
-      <div class="dialog-content">
-        <p>
-          Set a new password for <strong>{{ user?.name }}</strong><span v-if="user?.email"> (<code>{{ user?.email }}</code>)</span>.
-        </p>
-        <Message severity="warn" :closable="false">
-          The user will need to sign in with this new password immediately. Only use this when the
-          user can't receive the password-reset email (e.g. lost inbox access).
-        </Message>
-        <div class="form-field">
-          <label for="new-password">New password</label>
-          <Password
-            id="new-password"
-            v-model="resetPasswordNew"
-            :feedback="false"
-            toggleMask
-            inputClass="w-full"
-            placeholder="At least 8 characters"
-            :disabled="resettingPassword"
+  <!-- Role Picker Dialog (Dual-Pane) -->
+  <Dialog
+    v-model:visible="showRolePickerDialog"
+    header="Manage Roles"
+    :style="{ width: '700px' }"
+    :modal="true"
+    :closable="!savingRoles"
+  >
+    <div class="role-picker">
+      <!-- Left Pane: Available Roles -->
+      <div class="role-pane available-roles">
+        <div class="pane-header">
+          <h4>Available Roles</h4>
+          <InputText
+            v-model="roleSearchQuery"
+            placeholder="Filter roles..."
+            class="role-filter"
           />
         </div>
-        <div class="form-field">
-          <label for="confirm-password">Confirm password</label>
-          <Password
-            id="confirm-password"
-            v-model="resetPasswordConfirm"
-            :feedback="false"
-            toggleMask
-            inputClass="w-full"
-            :disabled="resettingPassword"
+        <div class="role-list">
+          <div
+            v-for="role in filteredAvailableRoles"
+            :key="role.name"
+            class="role-item"
+            :class="{ selected: selectedRoleNames.has(role.name) }"
+            @click="toggleRole(role.name)"
+          >
+            <div class="role-item-content">
+              <span class="role-display-name">{{ role.displayName || role.name }}</span>
+              <span class="role-name-code">{{ role.name }}</span>
+            </div>
+            <i v-if="selectedRoleNames.has(role.name)" class="pi pi-check check-icon"></i>
+          </div>
+          <div v-if="filteredAvailableRoles.length === 0" class="no-results">No roles found</div>
+        </div>
+        <p v-if="hiddenRoleCount > 0" class="role-pane-hint">
+          {{ hiddenRoleCount }} role<span v-if="hiddenRoleCount !== 1">s</span>
+          hidden because their application isn't enabled for this user. Add the
+          application under <strong>Application Access</strong> to make them
+          available here.
+        </p>
+      </div>
+
+      <!-- Right Pane: Selected Roles -->
+      <div class="role-pane selected-roles">
+        <div class="pane-header">
+          <h4>Selected Roles ({{ selectedRoleNames.size }})</h4>
+        </div>
+        <div class="role-list">
+          <div
+            v-for="roleName in selectedRoleNames"
+            :key="roleName"
+            class="role-item selected-item"
+          >
+            <div class="role-item-content">
+              <span class="role-display-name">{{ getRoleDisplay(roleName).displayName }}</span>
+              <span class="role-name-code">{{ roleName }}</span>
+            </div>
+            <Button
+              v-tooltip.top="'Remove'"
+              icon="pi pi-times"
+              text
+              rounded
+              severity="danger"
+              size="small"
+              @click="removeSelectedRole(roleName)"
+            />
+          </div>
+          <div v-if="selectedRoleNames.size === 0" class="no-results">No roles selected</div>
+        </div>
+      </div>
+    </div>
+
+    <template #footer>
+      <Button label="Cancel" text :disabled="savingRoles" @click="cancelRolePicker" />
+      <Button
+        label="Save Roles"
+        icon="pi pi-check"
+        :disabled="!hasRoleChanges"
+        :loading="savingRoles"
+        @click="saveRoles"
+      />
+    </template>
+  </Dialog>
+
+  <!-- Application Picker Dialog (Dual-Pane) -->
+  <Dialog
+    v-model:visible="showAppPickerDialog"
+    header="Manage Application Access"
+    :style="{ width: '700px' }"
+    :modal="true"
+    :closable="!savingApps"
+  >
+    <div class="app-picker">
+      <!-- Left Pane: Available Applications -->
+      <div class="app-pane available-apps">
+        <div class="pane-header">
+          <h4>Available Applications</h4>
+          <InputText
+            v-model="appSearchQuery"
+            placeholder="Filter applications..."
+            class="app-filter"
           />
         </div>
-        <Message v-if="resetPasswordError" severity="error" :closable="false">
-          {{ resetPasswordError }}
-        </Message>
+        <div class="app-list">
+          <div
+            v-for="app in filteredAvailableApps"
+            :key="app.id"
+            class="app-item"
+            :class="{ selected: selectedAppIds.has(app.id) }"
+            @click="toggleApp(app.id)"
+          >
+            <div class="app-item-content">
+              <span class="app-display-name">{{ app.name }}</span>
+              <span class="app-name-code">{{ app.code }}</span>
+            </div>
+            <i v-if="selectedAppIds.has(app.id)" class="pi pi-check check-icon"></i>
+          </div>
+          <div v-if="filteredAvailableApps.length === 0" class="no-results">
+            No applications found
+          </div>
+        </div>
       </div>
 
-      <template #footer>
-        <Button label="Cancel" text @click="showResetPasswordDialog = false" :disabled="resettingPassword" />
-        <Button
-          label="Set Password"
-          icon="pi pi-key"
-          :loading="resettingPassword"
-          @click="resetPasswordDirect"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Delete User Confirmation Dialog -->
-    <Dialog
-      v-model:visible="showDeleteDialog"
-      header="Delete User"
-      modal
-      :style="{ width: '450px' }"
-    >
-      <div class="dialog-content">
-        <p>
-          Are you sure you want to delete <strong>{{ user?.name }}</strong
-          >?
-        </p>
-        <Message severity="warn" :closable="false">
-          This action cannot be undone. The user will be permanently removed.
-        </Message>
+      <!-- Right Pane: Selected Applications -->
+      <div class="app-pane selected-apps">
+        <div class="pane-header">
+          <h4>Selected Applications ({{ selectedAppIds.size }})</h4>
+        </div>
+        <div class="app-list">
+          <div v-for="appId in selectedAppIds" :key="appId" class="app-item selected-item">
+            <div class="app-item-content">
+              <span class="app-display-name">{{ getAppDisplay(appId).name }}</span>
+              <span class="app-name-code">{{ getAppDisplay(appId).code }}</span>
+            </div>
+            <Button
+              v-tooltip.top="'Remove'"
+              icon="pi pi-times"
+              text
+              rounded
+              severity="danger"
+              size="small"
+              @click="removeSelectedApp(appId)"
+            />
+          </div>
+          <div v-if="selectedAppIds.size === 0" class="no-results">No applications selected</div>
+        </div>
       </div>
+    </div>
 
-      <template #footer>
-        <Button label="Cancel" text @click="showDeleteDialog = false" :disabled="deleteLoading" />
-        <Button
-          label="Delete"
-          icon="pi pi-trash"
-          severity="danger"
-          @click="deleteUser"
-          :loading="deleteLoading"
+    <template #footer>
+      <Button label="Cancel" text :disabled="savingApps" @click="cancelAppPicker" />
+      <Button
+        label="Save Application Access"
+        icon="pi pi-check"
+        :disabled="!hasAppChanges"
+        :loading="savingApps"
+        @click="saveApps"
+      />
+    </template>
+  </Dialog>
+
+  <!-- Send Password Reset Confirmation Dialog -->
+  <Dialog
+    v-model:visible="showSendResetDialog"
+    header="Send Password Reset Email"
+    modal
+    :style="{ width: '480px' }"
+  >
+    <div class="dialog-content">
+      <p>
+        Send a password reset email to <strong>{{ user?.name }}</strong>
+        (<code>{{ user?.email }}</code>)?
+      </p>
+      <Message severity="info" :closable="false">
+        The user will receive a single-use link valid for 15 minutes. They will set their own
+        password — you will not see or handle it.
+        Any previously-issued reset tokens for this user will be invalidated.
+      </Message>
+    </div>
+
+    <template #footer>
+      <Button label="Cancel" text :disabled="sendingReset" @click="showSendResetDialog = false" />
+      <Button
+        label="Send Email"
+        icon="pi pi-envelope"
+        :loading="sendingReset"
+        @click="sendPasswordReset"
+      />
+    </template>
+  </Dialog>
+
+  <!-- Direct Password Reset Dialog -->
+  <Dialog
+    v-model:visible="showResetPasswordDialog"
+    header="Reset Password"
+    modal
+    :style="{ width: '480px' }"
+  >
+    <div class="dialog-content">
+      <p>
+        Set a new password for <strong>{{ user?.name }}</strong><span v-if="user?.email"> (<code>{{ user?.email }}</code>)</span>.
+      </p>
+      <Message severity="warn" :closable="false">
+        The user will need to sign in with this new password immediately. Only use this when the
+        user can't receive the password-reset email (e.g. lost inbox access).
+      </Message>
+      <div class="form-field">
+        <label for="new-password">New password</label>
+        <Password
+          id="new-password"
+          v-model="resetPasswordNew"
+          :feedback="false"
+          toggleMask
+          inputClass="w-full"
+          placeholder="At least 8 characters"
+          :disabled="resettingPassword"
         />
-      </template>
-    </Dialog>
-  </div>
+      </div>
+      <div class="form-field">
+        <label for="confirm-password">Confirm password</label>
+        <Password
+          id="confirm-password"
+          v-model="resetPasswordConfirm"
+          :feedback="false"
+          toggleMask
+          inputClass="w-full"
+          :disabled="resettingPassword"
+        />
+      </div>
+      <Message v-if="resetPasswordError" severity="error" :closable="false">
+        {{ resetPasswordError }}
+      </Message>
+    </div>
+
+    <template #footer>
+      <Button
+        label="Cancel"
+        text
+        :disabled="resettingPassword"
+        @click="showResetPasswordDialog = false"
+      />
+      <Button
+        label="Set Password"
+        icon="pi pi-key"
+        :loading="resettingPassword"
+        @click="resetPasswordDirect"
+      />
+    </template>
+  </Dialog>
+
+  <!-- Delete User Confirmation Dialog -->
+  <Dialog
+    v-model:visible="showDeleteDialog"
+    header="Delete User"
+    modal
+    :style="{ width: '450px' }"
+  >
+    <div class="dialog-content">
+      <p>
+        Are you sure you want to delete <strong>{{ user?.name }}</strong
+        >?
+      </p>
+      <Message severity="warn" :closable="false">
+        This action cannot be undone. The user will be permanently removed.
+      </Message>
+    </div>
+
+    <template #footer>
+      <Button label="Cancel" text :disabled="deleteLoading" @click="showDeleteDialog = false" />
+      <Button
+        label="Delete"
+        icon="pi pi-trash"
+        severity="danger"
+        :loading="deleteLoading"
+        @click="deleteUser"
+      />
+    </template>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -1297,70 +1364,6 @@ function goBack() {
   justify-content: center;
   align-items: center;
   padding: 60px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.type-tag {
-  margin-left: 8px;
-}
-
-.fc-card {
-  margin-bottom: 24px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
-.edit-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-}
-
-.info-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.info-item label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.info-item span {
-  font-size: 14px;
-  color: #1e293b;
 }
 
 .anchor-notice {
@@ -1469,14 +1472,32 @@ function goBack() {
   margin-top: 20px;
 }
 
-.roles-grid {
+.action-items {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.role-tag {
-  font-size: 12px;
+.action-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.action-info strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.action-info p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
 }
 
 .dialog-content {
@@ -1532,13 +1553,6 @@ function goBack() {
   font-size: 12px;
   color: #64748b;
   font-family: monospace;
-}
-
-.role-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
 }
 
 .role-display-name {
@@ -1780,11 +1794,13 @@ function goBack() {
   text-overflow: ellipsis;
 }
 
-@media (max-width: 768px) {
-  .info-grid {
-    grid-template-columns: 1fr;
-  }
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
+@media (max-width: 768px) {
   .role-picker,
   .app-picker {
     flex-direction: column;

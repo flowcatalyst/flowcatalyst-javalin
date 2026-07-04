@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
 import { ref, computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
 import { usersApi, type EmailDomainCheckResponse } from "@/api/users";
 import { clientsApi, type Client } from "@/api/clients";
+import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
+import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
-const router = useRouter();
+const emit = defineEmits<{
+	changed: [];
+}>();
 
 const saving = ref(false);
 
@@ -16,6 +19,15 @@ const name = ref("");
 // mappings, unmapped client-scope domains, or client-scope mappings without
 // a primary client pinned).
 const clientId = ref<string | null>(null);
+
+// Cheap dirty check: anything typed counts.
+const dirty = computed(() => email.value !== "" || name.value !== "");
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { goToList, replaceToDetail } = useDrawerRoute({
+	listPath: "/users",
+	dirty,
+});
 
 // Validation
 const emailError = ref("");
@@ -203,121 +215,102 @@ async function createUser() {
 				: "They can sign in via their identity provider.",
 		);
 
-		// Redirect to user detail/edit page
-		router.push(`/users/${user.id}`);
-	} catch (e: unknown) {
+		emit("changed");
+		replaceToDetail(user.id);
+	} catch {
+		// create errors surface via the global error toast
 	} finally {
 		saving.value = false;
 	}
 }
-
-function cancel() {
-	router.push("/users");
-}
 </script>
 
 <template>
-  <div class="page-container">
-    <header class="page-header">
-      <div class="header-left">
-        <Button
-          icon="pi pi-arrow-left"
-          text
-          rounded
-          severity="secondary"
-          @click="cancel"
-          v-tooltip.right="'Back to users'"
-        />
-        <div>
-          <h1 class="page-title">Add User</h1>
-          <p class="page-subtitle">Create a new platform user</p>
-        </div>
+  <EntityDrawer
+    ref="drawer"
+    title="Add User"
+    subtitle="Create a new platform user"
+    :dirty="dirty"
+    @close="goToList()"
+  >
+    <FcFormSection title="User Information" flat>
+      <div class="fc-form-grid">
+        <FcFormField label="Full Name" required :error="nameError || undefined">
+          <template #default="{ id: fieldId }">
+            <InputText
+              :id="fieldId"
+              v-model="name"
+              placeholder="e.g., John Smith"
+              :invalid="!!nameError"
+              @blur="validateName"
+            />
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          label="Email Address"
+          required
+          :error="emailError || (emailAlreadyExists ? domainCheck?.warning : undefined)"
+        >
+          <template #default="{ id: fieldId }">
+            <InputText
+              :id="fieldId"
+              v-model="email"
+              type="email"
+              placeholder="e.g., john.smith@example.com"
+              :invalid="!!emailError || emailAlreadyExists"
+              @blur="validateEmail"
+            />
+          </template>
+          <template #help>
+            <span v-if="checkingDomain" class="domain-checking">
+              <i class="pi pi-spin pi-spinner"></i> Checking email...
+            </span>
+            <span v-else-if="domainCheck?.warning" class="domain-warning">
+              <i class="pi pi-exclamation-triangle"></i> {{ domainCheck.warning }}
+            </span>
+            <span v-else-if="domainCheck?.info" class="domain-info">
+              <i class="pi pi-info-circle"></i> {{ domainCheck.info }}
+            </span>
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          v-if="requiresClient"
+          label="Client"
+          required
+          span
+          :error="!loadingClients && clientOptions.length === 0
+            ? 'No clients available to assign. Configure a client first.'
+            : undefined"
+        >
+          <template #default="{ id: fieldId }">
+            <Select
+              :id="fieldId"
+              v-model="clientId"
+              :options="clientOptions"
+              option-label="label"
+              option-value="value"
+              :placeholder="loadingClients ? 'Loading clients…' : 'Select a client'"
+              :loading="loadingClients"
+              :disabled="loadingClients || clientOptions.length === 0"
+              show-clear
+              filter
+            />
+          </template>
+          <template #help>
+            <span v-if="domainCheck?.derivedScope === 'PARTNER'" class="domain-info">
+              <i class="pi pi-info-circle"></i>
+              This partner domain restricts users to specific clients.
+            </span>
+            <span v-else class="domain-info">
+              <i class="pi pi-info-circle"></i>
+              Required for non-anchor users — sets the user's home client.
+            </span>
+          </template>
+        </FcFormField>
       </div>
-      <div class="header-right">
-        <Button label="Cancel" severity="secondary" text @click="cancel" />
-        <Button
-          label="Create User"
-          icon="pi pi-check"
-          :loading="saving"
-          :disabled="!isFormValid"
-          @click="createUser"
-        />
-      </div>
-    </header>
-
-    <div class="fc-card">
-      <h2 class="card-title">User Information</h2>
-
-      <div class="form-grid">
-        <div class="form-field">
-          <label for="name">Full Name <span class="required">*</span></label>
-          <InputText
-            id="name"
-            v-model="name"
-            placeholder="e.g., John Smith"
-            class="w-full"
-            :invalid="!!nameError"
-            @blur="validateName"
-          />
-          <small v-if="nameError" class="p-error">{{ nameError }}</small>
-        </div>
-
-        <div class="form-field">
-          <label for="email">Email Address <span class="required">*</span></label>
-          <InputText
-            id="email"
-            v-model="email"
-            type="email"
-            placeholder="e.g., john.smith@example.com"
-            class="w-full"
-            :invalid="!!emailError || emailAlreadyExists"
-            @blur="validateEmail"
-          />
-          <small v-if="emailError" class="p-error">{{ emailError }}</small>
-          <small v-else-if="checkingDomain" class="domain-checking">
-            <i class="pi pi-spin pi-spinner"></i> Checking email...
-          </small>
-          <small v-else-if="emailAlreadyExists" class="p-error">
-            <i class="pi pi-times-circle"></i> {{ domainCheck?.warning }}
-          </small>
-          <small v-else-if="domainCheck?.warning" class="domain-warning">
-            <i class="pi pi-exclamation-triangle"></i> {{ domainCheck.warning }}
-          </small>
-          <small v-else-if="domainCheck?.info" class="domain-info">
-            <i class="pi pi-info-circle"></i> {{ domainCheck.info }}
-          </small>
-        </div>
-
-        <div v-if="requiresClient" class="form-field client-field">
-          <label for="clientId">Client <span class="required">*</span></label>
-          <Select
-            id="clientId"
-            v-model="clientId"
-            :options="clientOptions"
-            option-label="label"
-            option-value="value"
-            :placeholder="loadingClients ? 'Loading clients…' : 'Select a client'"
-            :loading="loadingClients"
-            :disabled="loadingClients || clientOptions.length === 0"
-            class="w-full"
-            show-clear
-            filter
-          />
-          <small v-if="domainCheck?.derivedScope === 'PARTNER'" class="domain-info">
-            <i class="pi pi-info-circle"></i>
-            This partner domain restricts users to specific clients.
-          </small>
-          <small v-else class="domain-info">
-            <i class="pi pi-info-circle"></i>
-            Required for non-anchor users — sets the user's home client.
-          </small>
-          <small v-if="!loadingClients && clientOptions.length === 0" class="p-error">
-            No clients available to assign. Configure a client first.
-          </small>
-        </div>
-
-      </div>
-    </div>
+    </FcFormSection>
 
     <!-- Only show info message after domain check completes and email doesn't exist -->
     <Message
@@ -346,109 +339,45 @@ function cancel() {
       ({{ domainCheck?.authProvider }}) — no password to set.
       Scope: <strong>{{ domainCheck?.derivedScope }}</strong>.
     </Message>
-  </div>
+
+    <template #footer>
+      <FcFormActions :bordered="false">
+        <Button label="Cancel" severity="secondary" text :disabled="saving" @click="drawer?.close()" />
+        <Button
+          label="Create User"
+          icon="pi pi-check"
+          :loading="saving"
+          :disabled="!isFormValid"
+          @click="createUser"
+        />
+      </FcFormActions>
+    </template>
+  </EntityDrawer>
 </template>
 
 <style scoped>
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.fc-card {
-  margin-bottom: 24px;
-}
-
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 20px 0;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* Span the full grid width so the picker is easy to scan + filter. */
-.client-field {
-  grid-column: 1 / -1;
-}
-
-.form-field label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.required {
-  color: #ef4444;
-}
-
-.w-full {
-  width: 100%;
-}
-
-:deep(.p-password) {
-  width: 100%;
-}
-
-:deep(.p-password-input) {
-  width: 100%;
-}
-
-/* Fix password strength panel positioning */
-:deep(.p-password-panel) {
-  margin-top: 8px;
-}
-
-:deep(.p-password-meter) {
-  margin-top: 8px;
-}
-
 .info-message {
-  margin-top: 0;
+  margin-top: 16px;
 }
 
 .domain-checking {
   color: #64748b;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
 .domain-info {
   color: #0d9488;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
 .domain-warning {
   color: #d97706;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-@media (max-width: 768px) {
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>
