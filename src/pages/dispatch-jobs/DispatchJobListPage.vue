@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { useListState } from "@/composables/useListState";
+import { useTableFilters } from "@/composables/useTableFilters";
 import ClientFilter from "@/components/ClientFilter.vue";
 import {
 	dispatchJobsApi,
@@ -15,19 +16,40 @@ interface FilterOption {
 
 const sizeOptions = [50, 100, 200, 500, 1000];
 
+// MANUAL loading: the cascading handlers below clear child refs under
+// withSuppressed and call load() themselves. Do NOT pass an onChange
+// callback here — its async watcher flush would escape withSuppressed and
+// fire one load per cleared child ref.
+const listState = useListState({
+	filters: {
+		clients: { type: "array", key: "clients" },
+		applications: { type: "array", key: "applications" },
+		subdomains: { type: "array", key: "subdomains" },
+		aggregates: { type: "array", key: "aggregates" },
+		codes: { type: "array", key: "codes" },
+		statuses: { type: "array", key: "statuses" },
+		search: { type: "string", key: "q" },
+	},
+	pageSize: 200,
+});
 const { filters, pageSize, hasActiveFilters, clearFilters, syncToUrl, withSuppressed } =
-	useListState({
-		filters: {
-			clients: { type: "array", key: "clients" },
-			applications: { type: "array", key: "applications" },
-			subdomains: { type: "array", key: "subdomains" },
-			aggregates: { type: "array", key: "aggregates" },
-			codes: { type: "array", key: "codes" },
-			statuses: { type: "array", key: "statuses" },
-			search: { type: "string", key: "q" },
-		},
-		pageSize: 200,
-	});
+	listState;
+
+// Server-side filtering: the DataTable filter meta isn't bound — popup
+// inputs write the listState refs directly and load() serializes them
+// into API params. Only the badge count is derived here.
+const { activeFilterCount } = useTableFilters(
+	listState,
+	[
+		{ field: "clientId", param: "clients" },
+		{ field: "application", param: "applications" },
+		{ field: "subdomain", param: "subdomains" },
+		{ field: "aggregate", param: "aggregates" },
+		{ field: "code", param: "codes" },
+		{ field: "status", param: "statuses" },
+	],
+	{ globalParam: "search" },
+);
 
 function buildParams(): DispatchJobsListParams {
 	return {
@@ -55,6 +77,13 @@ async function load() {
 		loading.value = false;
 	}
 }
+
+// Search reload: debounced, replacing the old Enter-to-search.
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+watch(filters.search, () => {
+	clearTimeout(searchTimer);
+	searchTimer = setTimeout(load, 400);
+});
 
 // Filter options
 const applicationOptions = ref<FilterOption[]>([]);
@@ -126,6 +155,11 @@ function onAggregatesChange() {
 		filters.codes.value = [];
 	});
 	syncToUrl();
+	load();
+}
+
+function clearAllFilters() {
+	clearFilters();
 	load();
 }
 
@@ -218,93 +252,6 @@ function formatCode(code: string | undefined): {
     </header>
 
     <div class="fc-card">
-      <div class="toolbar">
-        <div class="filter-row">
-          <ClientFilter
-            v-model="filters.clients.value"
-            class="filter-select"
-            @change="onClientsChange"
-          />
-          <MultiSelect
-            v-model="filters.applications.value"
-            :options="applicationOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Applications"
-            class="filter-select"
-            @change="onApplicationsChange"
-          />
-          <MultiSelect
-            v-model="filters.subdomains.value"
-            :options="subdomainOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Subdomains"
-            class="filter-select"
-            @change="onSubdomainsChange"
-          />
-          <MultiSelect
-            v-model="filters.aggregates.value"
-            :options="aggregateOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Aggregates"
-            class="filter-select"
-            @change="onAggregatesChange"
-          />
-          <MultiSelect
-            v-model="filters.codes.value"
-            :options="codeOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Codes"
-            class="filter-select"
-            @change="load"
-          />
-        </div>
-        <div class="filter-row">
-          <MultiSelect
-            v-model="filters.statuses.value"
-            :options="statusOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Statuses"
-            class="filter-select"
-            @change="load"
-          />
-          <IconField>
-            <InputIcon class="pi pi-search" />
-            <InputText
-              v-model="filters.search.value"
-              placeholder="Search by source..."
-              @keyup.enter="load"
-            />
-          </IconField>
-          <Select
-            v-model="pageSize"
-            :options="sizeOptions"
-            class="size-select"
-            @change="load"
-            v-tooltip="'Result size — most recent N jobs'"
-          />
-          <Button
-            v-if="hasActiveFilters"
-            icon="pi pi-filter-slash"
-            text
-            rounded
-            @click="() => { clearFilters(); load(); }"
-            v-tooltip="'Clear filters'"
-          />
-          <Button
-            icon="pi pi-refresh"
-            text
-            rounded
-            @click="load"
-            v-tooltip="'Refresh'"
-          />
-        </div>
-      </div>
-
       <DataTable
         :value="dispatchJobs"
         :loading="loading"
@@ -312,6 +259,107 @@ function formatCode(code: string | undefined): {
         emptyMessage="No dispatch jobs found"
         tableStyle="min-width: 60rem"
       >
+        <template #header>
+          <FcTableToolbar
+            v-model:search="filters.search.value"
+            search-placeholder="Search by source..."
+            :active-filter-count="activeFilterCount"
+            :has-active-filters="hasActiveFilters"
+            show-refresh
+            @refresh="load"
+            @clear-all="clearAllFilters"
+          >
+            <template #actions>
+              <Select
+                v-model="pageSize"
+                :options="sizeOptions"
+                class="size-select"
+                @change="load"
+                v-tooltip="'Result size — most recent N jobs'"
+              />
+            </template>
+            <template #filters>
+              <FcFormField label="Client">
+                <ClientFilter
+                  v-model="filters.clients.value"
+                  appendTo="self"
+                  @change="onClientsChange"
+                />
+              </FcFormField>
+              <FcFormField label="Application">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.applications.value"
+                    :options="applicationOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Applications"
+                    appendTo="self"
+                    @change="onApplicationsChange"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Subdomain">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.subdomains.value"
+                    :options="subdomainOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Subdomains"
+                    appendTo="self"
+                    @change="onSubdomainsChange"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Aggregate">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.aggregates.value"
+                    :options="aggregateOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Aggregates"
+                    appendTo="self"
+                    @change="onAggregatesChange"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Code">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.codes.value"
+                    :options="codeOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Codes"
+                    appendTo="self"
+                    @change="load"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Status">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.statuses.value"
+                    :options="statusOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Statuses"
+                    appendTo="self"
+                    @change="load"
+                  />
+                </template>
+              </FcFormField>
+            </template>
+          </FcTableToolbar>
+        </template>
+
         <Column field="id" header="Job ID" style="width: 10rem">
           <template #body="{ data }">
             <span class="font-mono text-sm">{{ data.id?.slice(0, 8) }}...</span>
@@ -395,24 +443,6 @@ function formatCode(code: string | undefined): {
   font-size: 0.8125rem;
   color: var(--text-color-secondary);
   padding: 0.75rem 0 0.25rem;
-}
-
-.toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 16px;
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.filter-select {
-  min-width: 160px;
 }
 
 .font-mono {

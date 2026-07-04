@@ -278,19 +278,23 @@ const router = createRouter({
 					path: "event-types",
 					name: "event-types",
 					component: () => import("@/pages/event-types/EventTypeListPage.vue"),
+					children: [
+						{
+							path: "create",
+							name: "event-type-create",
+							component: () =>
+								import("@/pages/event-types/EventTypeCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "event-type-detail",
+							component: () =>
+								import("@/pages/event-types/EventTypeDetailDrawer.vue"),
+						},
+					],
 				},
-				{
-					path: "event-types/create",
-					name: "event-type-create",
-					component: () =>
-						import("@/pages/event-types/EventTypeCreatePage.vue"),
-				},
-				{
-					path: "event-types/:id",
-					name: "event-type-detail",
-					component: () =>
-						import("@/pages/event-types/EventTypeDetailPage.vue"),
-				},
+				// Add-schema stays a full page (carve-out); the 3-segment path wins
+				// over the nested :id child above.
 				{
 					path: "event-types/:id/add-schema",
 					name: "event-type-add-schema",
@@ -408,11 +412,14 @@ const router = createRouter({
 					path: "events",
 					name: "events",
 					component: () => import("@/pages/events/EventListPage.vue"),
-				},
-				{
-					path: "events/:id",
-					name: "event-detail",
-					component: () => import("@/pages/events/EventListPage.vue"),
+					children: [
+						{
+							path: ":id",
+							name: "event-detail",
+							component: () =>
+								import("@/pages/events/EventDetailDrawer.vue"),
+						},
+					],
 				},
 				// Platform - CORS Origins
 				{

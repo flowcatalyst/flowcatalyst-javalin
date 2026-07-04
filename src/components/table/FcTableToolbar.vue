@@ -10,12 +10,15 @@ withDefaults(
 		/** Shows Clear All — includes the global search */
 		hasActiveFilters?: boolean;
 		showRefresh?: boolean;
+		/** Hide the quick-search box on views with no free-text filter */
+		showSearch?: boolean;
 	}>(),
 	{
 		searchPlaceholder: "Search...",
 		activeFilterCount: 0,
 		hasActiveFilters: false,
 		showRefresh: false,
+		showSearch: true,
 	},
 );
 
@@ -69,7 +72,7 @@ defineExpose({
 <template>
   <div class="fc-table-toolbar">
     <div class="toolbar-start">
-      <IconField>
+      <IconField v-if="showSearch">
         <InputIcon class="pi pi-search" />
         <InputText
           v-model="search"
