@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useListState } from "@/composables/useListState";
-import { useReturnTo } from "@/composables/useReturnTo";
+import { useTableFilters } from "@/composables/useTableFilters";
 import {
 	scheduledJobsApi,
 	type ScheduledJob,
@@ -10,26 +10,37 @@ import {
 } from "@/api/scheduled-jobs";
 
 const router = useRouter();
-const { navigateToDetail } = useReturnTo();
+const route = useRoute();
 
 const jobs = ref<ScheduledJob[]>([]);
 const total = ref(0);
 const loading = ref(false);
 
-const { filters, page, pageSize, hasActiveFilters, clearFilters, onPage } =
-	useListState(
-		{
-			filters: {
-				clientId: { type: "string", key: "clientId" },
-				status: { type: "string", key: "status" },
-				search: { type: "string", key: "q" },
-			},
-			pageSize: 20,
-			sortField: "createdAt",
-			sortOrder: "desc",
+const listState = useListState(
+	{
+		filters: {
+			clientId: { type: "string", key: "clientId" },
+			status: { type: "string", key: "status" },
+			search: { type: "string", key: "q" },
 		},
-		() => load(),
-	);
+		pageSize: 20,
+		sortField: "createdAt",
+		sortOrder: "desc",
+	},
+	() => load(),
+);
+const { filters, page, pageSize, onPage } = listState;
+
+// Lazy table: the DataTable filter meta isn't bound — popup inputs write the
+// listState refs directly and load() serializes them into API params.
+const { activeFilterCount, clearAll } = useTableFilters(
+	listState,
+	[
+		{ field: "clientId", param: "clientId" },
+		{ field: "status", param: "status" },
+	],
+	{ globalParam: "search" },
+);
 
 const filterOptions = ref<ScheduledJobsFilterOptions>({
 	clients: [],
@@ -68,8 +79,12 @@ onMounted(async () => {
 	await load();
 });
 
+function createJob() {
+	void router.push({ path: "/scheduled-jobs/create", query: route.query });
+}
+
 function viewJob(job: ScheduledJob) {
-	navigateToDetail(`/scheduled-jobs/${job.id}`);
+	void router.push({ path: `/scheduled-jobs/${job.id}`, query: route.query });
 }
 
 function onRowClick(event: { data: ScheduledJob }) {
@@ -108,53 +123,10 @@ function formatDate(s?: string): string {
         <h1 class="page-title">Scheduled Jobs</h1>
         <p class="page-subtitle">Cron-triggered webhook jobs</p>
       </div>
-      <Button
-        label="New Scheduled Job"
-        icon="pi pi-plus"
-        @click="router.push('/scheduled-jobs/create')"
-      />
+      <Button label="New Scheduled Job" icon="pi pi-plus" @click="createJob" />
     </header>
 
-    <div class="fc-card">
-      <div class="toolbar">
-        <div class="filter-row">
-          <Select
-            v-model="filters.clientId.value"
-            :options="filterOptions.clients"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All clients"
-            class="filter-select"
-            showClear
-          />
-          <Select
-            v-model="filters.status.value"
-            :options="filterOptions.statuses"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All statuses"
-            class="filter-select"
-            showClear
-          />
-          <IconField class="search-field">
-            <InputIcon class="pi pi-search" />
-            <InputText
-              v-model="filters.search.value"
-              placeholder="Code or name…"
-            />
-          </IconField>
-          <Button
-            v-if="hasActiveFilters"
-            icon="pi pi-filter-slash"
-            text
-            rounded
-            severity="secondary"
-            v-tooltip="'Clear filters'"
-            @click="clearFilters"
-          />
-        </div>
-      </div>
-
+    <div class="fc-card table-card">
       <DataTable
         :value="jobs"
         :loading="loading"
@@ -168,10 +140,50 @@ function formatDate(s?: string): string {
         row-hover
         selection-mode="single"
         stripedRows
-        emptyMessage="No scheduled jobs found"
         @row-click="onRowClick"
         @page="onPage"
       >
+        <template #header>
+          <FcTableToolbar
+            v-model:search="filters.search.value"
+            search-placeholder="Code or name…"
+            :active-filter-count="activeFilterCount"
+            :has-active-filters="listState.hasActiveFilters.value"
+            @clear-all="clearAll"
+          >
+            <template #filters>
+              <FcFormField label="Client">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.clientId.value"
+                    :options="filterOptions.clients"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All clients"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Status">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.status.value"
+                    :options="filterOptions.statuses"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All statuses"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+            </template>
+          </FcTableToolbar>
+        </template>
+
         <Column header="Code" field="code" style="width: 22%">
           <template #body="{ data }">
             <span class="font-mono text-sm">{{ data.code }}</span>
@@ -214,36 +226,32 @@ function formatDate(s?: string): string {
             />
           </template>
         </Column>
+
+        <template #empty>
+          <div class="empty-message">
+            <span>No scheduled jobs found</span>
+            <Button
+              v-if="listState.hasActiveFilters.value"
+              label="Clear filters"
+              link
+              @click="clearAll"
+            />
+          </div>
+        </template>
       </DataTable>
     </div>
+
+    <!-- Drawer outlet: detail/create child routes render over this list -->
+    <RouterView v-slot="{ Component }">
+      <component :is="Component" @changed="load" />
+    </RouterView>
   </div>
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 16px;
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.filter-select {
-  min-width: 200px;
-}
-
-.search-field {
-  flex: 1 1 240px;
-}
-
-.search-field :deep(.p-inputtext) {
-  width: 100%;
+.table-card {
+  padding: 0;
+  overflow: hidden;
 }
 
 .font-mono {
@@ -266,5 +274,16 @@ function formatDate(s?: string): string {
 .scope-platform {
   color: var(--text-color-secondary);
   font-style: italic;
+}
+
+.empty-message {
+  text-align: center;
+  padding: 32px 24px;
+  color: #64748b;
+}
+
+.empty-message span {
+  display: block;
+  margin-bottom: 8px;
 }
 </style>

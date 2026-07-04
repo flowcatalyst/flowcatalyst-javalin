@@ -160,13 +160,17 @@ const router = createRouter({
 					name: "roles",
 					component: () => import("@/pages/authorization/RoleListPage.vue"),
 					meta: { scope: "anchor" },
+					children: [
+						{
+							path: ":roleName",
+							name: "role-detail",
+							component: () =>
+								import("@/pages/authorization/RoleDetailDrawer.vue"),
+						},
+					],
 				},
-				{
-					path: "authorization/roles/:roleName",
-					name: "role-detail",
-					component: () => import("@/pages/authorization/RoleDetailPage.vue"),
-					meta: { scope: "anchor" },
-				},
+				// Role editor stays a full page (carve-out); the 3-segment path
+				// wins over the nested :roleName child above.
 				{
 					path: "authorization/roles/:roleName/edit",
 					name: "role-edit",
@@ -313,18 +317,20 @@ const router = createRouter({
 					name: "scheduled-jobs",
 					component: () =>
 						import("@/pages/scheduled-jobs/ScheduledJobListPage.vue"),
-				},
-				{
-					path: "scheduled-jobs/create",
-					name: "scheduled-job-create",
-					component: () =>
-						import("@/pages/scheduled-jobs/ScheduledJobCreatePage.vue"),
-				},
-				{
-					path: "scheduled-jobs/:id",
-					name: "scheduled-job-detail",
-					component: () =>
-						import("@/pages/scheduled-jobs/ScheduledJobDetailPage.vue"),
+					children: [
+						{
+							path: "create",
+							name: "scheduled-job-create",
+							component: () =>
+								import("@/pages/scheduled-jobs/ScheduledJobCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "scheduled-job-detail",
+							component: () =>
+								import("@/pages/scheduled-jobs/ScheduledJobDetailDrawer.vue"),
+						},
+					],
 				},
 				{
 					path: "scheduled-jobs/:id/instances",
@@ -477,18 +483,22 @@ const router = createRouter({
 					path: "processes",
 					name: "processes",
 					component: () => import("@/pages/processes/ProcessListPage.vue"),
+					children: [
+						{
+							path: ":id",
+							name: "process-detail",
+							component: () =>
+								import("@/pages/processes/ProcessDetailDrawer.vue"),
+						},
+					],
 				},
+				// Process editor stays a full page (carve-out); static "create" and
+				// the 3-segment edit path win over the nested :id child above.
 				{
 					path: "processes/create",
 					name: "process-create",
 					component: () =>
 						import("@/pages/processes/ProcessCreatePage.vue"),
-				},
-				{
-					path: "processes/:id",
-					name: "process-detail",
-					component: () =>
-						import("@/pages/processes/ProcessDetailPage.vue"),
 				},
 				{
 					path: "processes/:id/edit",

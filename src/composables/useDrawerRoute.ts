@@ -34,6 +34,8 @@ export function confirmDiscardChanges(
 interface DrawerRouteOptions {
 	/** The list route this drawer sits over, e.g. "/subscriptions" */
 	listPath: string;
+	/** Route param carrying the entity key; default "id" (roles use "roleName") */
+	paramKey?: string;
 	/** When set and true, leaving the route prompts a discard confirmation */
 	dirty?: Ref<boolean>;
 	/** Drawer-only query params dropped when navigating back to the list */
@@ -58,9 +60,9 @@ export function useDrawerRoute(options: DrawerRouteOptions) {
 
 	let approved = false;
 
-	/** Reactive :id param — drawer instances are reused across rows */
+	/** Reactive entity-key param — drawer instances are reused across rows */
 	const id = computed(() => {
-		const raw = route.params["id"];
+		const raw = route.params[options.paramKey ?? "id"];
 		return typeof raw === "string" ? raw : undefined;
 	});
 

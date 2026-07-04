@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { permissionsApi, type Permission } from "@/api/permissions";
 import { rolesApi, type ApplicationOption } from "@/api/roles";
 import { useListState } from "@/composables/useListState";
+import { useTableFilters } from "@/composables/useTableFilters";
 import { toast } from "@/utils/errorBus";
 
 
@@ -43,7 +44,8 @@ const permissionExists = computed(() =>
 	permissions.value.some((p) => p.permission === newPermString.value),
 );
 
-const { filters, hasActiveFilters, clearFilters } = useListState({
+// Fetch-all page: every constraint runs in the DataTable's client-side engine.
+const listState = useListState({
 	filters: {
 		q:           { type: "string", key: "q" },
 		application: { type: "string", key: "app" },
@@ -51,6 +53,16 @@ const { filters, hasActiveFilters, clearFilters } = useListState({
 		action:      { type: "string", key: "action" },
 	},
 });
+const { filters } = listState;
+
+const { filters: tableFilters, activeFilterCount, clearAll } = useTableFilters(
+	listState,
+	[
+		{ field: "application", param: "application" },
+		{ field: "context", param: "context" },
+		{ field: "action", param: "action" },
+	],
+);
 
 // Compute unique filter options
 const applicationOptions = computed(() => {
@@ -76,33 +88,6 @@ const actionOptions = computed(() => [
 	{ label: "delete", value: "delete" },
 	{ label: "retry", value: "retry" },
 ]);
-
-const filteredPermissions = computed(() => {
-	let result = permissions.value;
-
-	if (filters.q.value) {
-		const query = filters.q.value.toLowerCase();
-		result = result.filter(
-			(p) =>
-				p.permission.toLowerCase().includes(query) ||
-				p.description?.toLowerCase().includes(query),
-		);
-	}
-
-	if (filters.application.value) {
-		result = result.filter((p) => p.application === filters.application.value);
-	}
-
-	if (filters.context.value) {
-		result = result.filter((p) => p.context === filters.context.value);
-	}
-
-	if (filters.action.value) {
-		result = result.filter((p) => p.action === filters.action.value);
-	}
-
-	return result;
-});
 
 onMounted(async () => {
 	await Promise.all([loadPermissions(), loadApplications()]);
@@ -190,82 +175,13 @@ function getActionSeverity(action: string) {
       </div>
     </header>
 
-    <!-- Filters -->
-    <div class="fc-card filter-card">
-      <div class="filter-row">
-        <div class="filter-group">
-          <label>Search</label>
-          <IconField>
-            <InputIcon class="pi pi-search" />
-            <InputText
-              v-model="filters.q.value"
-              placeholder="Search permissions..."
-              class="filter-input"
-            />
-          </IconField>
-        </div>
-
-        <div class="filter-group">
-          <label>Application</label>
-          <Select
-            v-model="filters.application.value"
-            :options="applicationOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Applications"
-            :showClear="true"
-            class="filter-input"
-          />
-        </div>
-
-        <div class="filter-group">
-          <label>Context</label>
-          <Select
-            v-model="filters.context.value"
-            :options="contextOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Contexts"
-            :showClear="true"
-            class="filter-input"
-          />
-        </div>
-
-        <div class="filter-group">
-          <label>Action</label>
-          <Select
-            v-model="filters.action.value"
-            :options="actionOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Actions"
-            :showClear="true"
-            class="filter-input"
-          />
-        </div>
-
-        <div class="filter-actions">
-          <Button
-            v-if="hasActiveFilters"
-            label="Clear Filters"
-            icon="pi pi-filter-slash"
-            text
-            severity="secondary"
-            @click="clearFilters"
-          />
-        </div>
-      </div>
-    </div>
-
     <!-- Data Table -->
     <div class="fc-card table-card">
-      <div v-if="loading" class="loading-container">
-        <ProgressSpinner strokeWidth="3" />
-      </div>
-
       <DataTable
-        v-else
-        :value="filteredPermissions"
+        :value="permissions"
+        :loading="loading"
+        :filters="tableFilters"
+        :globalFilterFields="['permission', 'description']"
         :paginator="true"
         :rows="100"
         :rowsPerPageOptions="[50, 100, 250, 500]"
@@ -273,6 +189,61 @@ function getActionSeverity(action: string) {
         currentPageReportTemplate="Showing {first} to {last} of {totalRecords} permissions"
         size="small"
       >
+        <template #header>
+          <FcTableToolbar
+            v-model:search="filters.q.value"
+            search-placeholder="Search permissions..."
+            :active-filter-count="activeFilterCount"
+            :has-active-filters="listState.hasActiveFilters.value"
+            @clear-all="clearAll"
+          >
+            <template #filters>
+              <FcFormField label="Application">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.application.value"
+                    :options="applicationOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Applications"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+              <!-- Context options cascade off the selected application -->
+              <FcFormField label="Context">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.context.value"
+                    :options="contextOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Contexts"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Action">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.action.value"
+                    :options="actionOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Actions"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+            </template>
+          </FcTableToolbar>
+        </template>
         <Column header="Permission" style="width: 35%">
           <template #body="{ data }">
             <span class="permission-string">{{ data.permission }}</span>
@@ -315,7 +286,12 @@ function getActionSeverity(action: string) {
           <div class="empty-message">
             <i class="pi pi-lock"></i>
             <span>No permissions found</span>
-            <Button v-if="hasActiveFilters" label="Clear filters" link @click="clearFilters" />
+            <Button
+              v-if="listState.hasActiveFilters.value"
+              label="Clear filters"
+              link
+              @click="clearAll"
+            />
           </div>
         </template>
       </DataTable>
@@ -484,48 +460,9 @@ function getActionSeverity(action: string) {
   margin: 0;
 }
 
-.filter-card {
-  margin-bottom: 24px;
-}
-
-.filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-end;
-}
-
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 160px;
-}
-
-.filter-group label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.filter-input {
-  width: 100%;
-}
-
-.filter-actions {
-  margin-left: auto;
-}
-
 .table-card {
   padding: 0;
   overflow: hidden;
-}
-
-.loading-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 60px;
 }
 
 .permission-string {
@@ -569,21 +506,5 @@ function getActionSeverity(action: string) {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-@media (max-width: 1024px) {
-  .filter-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-group {
-    min-width: 100%;
-  }
-
-  .filter-actions {
-    margin-left: 0;
-    margin-top: 8px;
-  }
 }
 </style>
