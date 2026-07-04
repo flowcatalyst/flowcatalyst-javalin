@@ -66,42 +66,39 @@ function resetToDefault() {
       <ProgressSpinner strokeWidth="3" />
     </div>
 
-    <div v-else class="fc-card settings-card">
-      <h2 class="section-title">Platform Name</h2>
+    <div v-else class="fc-form">
+      <FcFormSection title="Platform Name">
+        <FcFormField
+          label="Platform name"
+          :error="error || undefined"
+          help="Shown wherever the product is named to users: security emails, the authenticator-app label for two-factor codes, passkey prompts, and the browser tab. Defaults to “Flowcatalyst”."
+        >
+          <template #default="{ id: fieldId }">
+            <InputText
+              :id="fieldId"
+              v-model="platformName"
+              placeholder="Flowcatalyst"
+              @keyup.enter="save"
+            />
+          </template>
+        </FcFormField>
 
-      <div class="field">
-        <label for="platform-name">Platform name</label>
-        <InputText
-          id="platform-name"
-          v-model="platformName"
-          class="w-full"
-          placeholder="Flowcatalyst"
-          @keyup.enter="save"
-        />
-        <small class="hint">
-          Shown wherever the product is named to users: security emails, the
-          authenticator-app label for two-factor codes, passkey prompts, and the
-          browser tab. Defaults to “Flowcatalyst”.
-        </small>
-      </div>
+        <FcFormActions>
+          <Button
+            label="Reset to default"
+            text
+            severity="secondary"
+            icon="pi pi-replay"
+            @click="resetToDefault"
+          />
+          <Button label="Save" icon="pi pi-check" :loading="saving" @click="save" />
+        </FcFormActions>
 
-      <p v-if="error" class="error-text">{{ error }}</p>
-
-      <div class="form-actions">
-        <Button
-          label="Reset to default"
-          text
-          severity="secondary"
-          icon="pi pi-replay"
-          @click="resetToDefault"
-        />
-        <Button label="Save" icon="pi pi-check" :loading="saving" @click="save" />
-      </div>
-
-      <p class="note">
-        The authenticator-app and email names update immediately. The passkey
-        prompt name updates on the next server restart.
-      </p>
+        <p class="note">
+          The authenticator-app and email names update immediately. The passkey
+          prompt name updates on the next server restart.
+        </p>
+      </FcFormSection>
     </div>
   </div>
 </template>
@@ -113,58 +110,9 @@ function resetToDefault() {
   padding: 60px;
 }
 
-.settings-card {
-  max-width: 640px;
-}
-
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #243b53;
-  margin: 0 0 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field label {
-  font-size: 14px;
-  font-weight: 500;
-  color: #334e68;
-}
-
-.hint {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.error-text {
-  margin: 16px 0 0;
-  font-size: 13px;
-  color: #b91c1c;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
-}
-
 .note {
   margin: 16px 0 0;
   font-size: 12px;
   color: #94a3b8;
-}
-
-.w-full {
-  width: 100%;
 }
 </style>

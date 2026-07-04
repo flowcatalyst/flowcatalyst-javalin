@@ -134,128 +134,144 @@ function resetToDefaults() {
 
     <div v-else class="settings-layout">
       <!-- Form Section -->
-      <div class="fc-card settings-form">
-        <h3 class="section-title">Branding</h3>
+      <div class="fc-form">
+        <FcFormSection title="Branding">
+          <div class="fc-form-grid">
+            <FcFormField label="Brand Name" help="Displayed as the main heading on the login page">
+              <template #default="{ id: fieldId }">
+                <InputText :id="fieldId" v-model="theme.brandName" />
+              </template>
+            </FcFormField>
 
-        <div class="field">
-          <label for="brandName">Brand Name</label>
-          <InputText id="brandName" v-model="theme.brandName" class="w-full" />
-          <small class="field-help">Displayed as the main heading on the login page</small>
-        </div>
+            <FcFormField label="Brand Subtitle" help="Displayed below the brand name">
+              <template #default="{ id: fieldId }">
+                <InputText :id="fieldId" v-model="theme.brandSubtitle" />
+              </template>
+            </FcFormField>
 
-        <div class="field">
-          <label for="brandSubtitle">Brand Subtitle</label>
-          <InputText id="brandSubtitle" v-model="theme.brandSubtitle" class="w-full" />
-          <small class="field-help">Displayed below the brand name</small>
-        </div>
+            <FcFormField label="Footer Text" span help="Displayed at the bottom of the login form">
+              <template #default="{ id: fieldId }">
+                <InputText :id="fieldId" v-model="theme.footerText" />
+              </template>
+            </FcFormField>
+          </div>
+        </FcFormSection>
 
-        <div class="field">
-          <label for="footerText">Footer Text</label>
-          <InputText id="footerText" v-model="theme.footerText" class="w-full" />
-          <small class="field-help">Displayed at the bottom of the login form</small>
-        </div>
+        <FcFormSection title="Logo">
+          <div class="fc-form-grid">
+            <FcFormField label="Logo URL" span help="URL to an image file (PNG, SVG, etc.)">
+              <template #default="{ id: fieldId }">
+                <InputText
+                  :id="fieldId"
+                  v-model="theme.logoUrl"
+                  placeholder="https://example.com/logo.png"
+                />
+              </template>
+            </FcFormField>
 
-        <h3 class="section-title">Logo</h3>
+            <FcFormField
+              label="Logo SVG (inline)"
+              span
+              help="Paste inline SVG markup. Takes precedence over Logo URL if both are set."
+            >
+              <template #default="{ id: fieldId }">
+                <Textarea
+                  :id="fieldId"
+                  v-model="theme.logoSvg"
+                  rows="4"
+                  placeholder="<svg>...</svg>"
+                />
+              </template>
+            </FcFormField>
 
-        <div class="field">
-          <label for="logoUrl">Logo URL</label>
-          <InputText
-            id="logoUrl"
-            v-model="theme.logoUrl"
-            class="w-full"
-            placeholder="https://example.com/logo.png"
-          />
-          <small class="field-help">URL to an image file (PNG, SVG, etc.)</small>
-        </div>
+            <FcFormField
+              label="Logo Height (px)"
+              help="Height of the logo in pixels (default: 40, max: 120)"
+            >
+              <template #default="{ id: fieldId }">
+                <InputText
+                  :id="fieldId"
+                  :model-value="theme.logoHeight != null ? String(theme.logoHeight) : ''"
+                  @update:model-value="
+                    (v: string | undefined) => (theme.logoHeight = v ? Number(v) : undefined)
+                  "
+                  type="number"
+                  class="w-small"
+                  min="20"
+                  max="120"
+                />
+              </template>
+            </FcFormField>
+          </div>
+        </FcFormSection>
 
-        <div class="field">
-          <label for="logoSvg">Logo SVG (inline)</label>
-          <Textarea
-            id="logoSvg"
-            v-model="theme.logoSvg"
-            class="w-full"
-            rows="4"
-            placeholder="<svg>...</svg>"
-          />
-          <small class="field-help"
-            >Paste inline SVG markup. Takes precedence over Logo URL if both are set.</small
-          >
-        </div>
+        <FcFormSection title="Colors">
+          <div class="fc-form-grid">
+            <FcFormField label="Primary Color" help="Main brand color for headings">
+              <template #default="{ id: fieldId }">
+                <div class="color-input">
+                  <ColorPicker v-model="primaryColorPicker" @update:modelValue="onPrimaryColorChange" />
+                  <InputText :id="fieldId" v-model="theme.primaryColor" class="color-text" />
+                </div>
+              </template>
+            </FcFormField>
 
-        <div class="field">
-          <label for="logoHeight">Logo Height (px)</label>
-          <InputText
-            id="logoHeight"
-            :model-value="theme.logoHeight != null ? String(theme.logoHeight) : ''"
-            @update:model-value="
-              (v: string | undefined) => (theme.logoHeight = v ? Number(v) : undefined)
-            "
-            type="number"
-            class="w-small"
-            min="20"
-            max="120"
-          />
-          <small class="field-help">Height of the logo in pixels (default: 40, max: 120)</small>
-        </div>
+            <FcFormField label="Accent Color" help="Button and link color">
+              <template #default="{ id: fieldId }">
+                <div class="color-input">
+                  <ColorPicker v-model="accentColorPicker" @update:modelValue="onAccentColorChange" />
+                  <InputText :id="fieldId" v-model="theme.accentColor" class="color-text" />
+                </div>
+              </template>
+            </FcFormField>
 
-        <h3 class="section-title">Colors</h3>
+            <FcFormField label="Background Color" help="Page background color">
+              <template #default="{ id: fieldId }">
+                <div class="color-input">
+                  <ColorPicker
+                    v-model="backgroundColorPicker"
+                    @update:modelValue="onBackgroundColorChange"
+                  />
+                  <InputText :id="fieldId" v-model="theme.backgroundColor" class="color-text" />
+                </div>
+              </template>
+            </FcFormField>
 
-        <div class="color-fields">
-          <div class="field color-field">
-            <label>Primary Color</label>
-            <div class="color-input">
-              <ColorPicker v-model="primaryColorPicker" @update:modelValue="onPrimaryColorChange" />
-              <InputText v-model="theme.primaryColor" class="color-text" />
-            </div>
-            <small class="field-help">Main brand color for headings</small>
+            <FcFormField
+              label="Background Gradient"
+              span
+              help="CSS gradient (overrides background color if set)"
+            >
+              <template #default="{ id: fieldId }">
+                <InputText :id="fieldId" v-model="theme.backgroundGradient" />
+              </template>
+            </FcFormField>
+          </div>
+        </FcFormSection>
+
+        <FcFormSection title="Advanced">
+          <div class="fc-form-grid">
+            <FcFormField
+              label="Custom CSS"
+              span
+              help="Additional CSS rules to inject on the login page"
+            >
+              <template #default="{ id: fieldId }">
+                <Textarea
+                  :id="fieldId"
+                  v-model="theme.customCss"
+                  rows="4"
+                  placeholder=".login-card { ... }"
+                />
+              </template>
+            </FcFormField>
           </div>
 
-          <div class="field color-field">
-            <label>Accent Color</label>
-            <div class="color-input">
-              <ColorPicker v-model="accentColorPicker" @update:modelValue="onAccentColorChange" />
-              <InputText v-model="theme.accentColor" class="color-text" />
-            </div>
-            <small class="field-help">Button and link color</small>
-          </div>
-
-          <div class="field color-field">
-            <label>Background Color</label>
-            <div class="color-input">
-              <ColorPicker
-                v-model="backgroundColorPicker"
-                @update:modelValue="onBackgroundColorChange"
-              />
-              <InputText v-model="theme.backgroundColor" class="color-text" />
-            </div>
-            <small class="field-help">Page background color</small>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="backgroundGradient">Background Gradient</label>
-          <InputText id="backgroundGradient" v-model="theme.backgroundGradient" class="w-full" />
-          <small class="field-help">CSS gradient (overrides background color if set)</small>
-        </div>
-
-        <h3 class="section-title">Advanced</h3>
-
-        <div class="field">
-          <label for="customCss">Custom CSS</label>
-          <Textarea
-            id="customCss"
-            v-model="theme.customCss"
-            class="w-full"
-            rows="4"
-            placeholder=".login-card { ... }"
-          />
-          <small class="field-help">Additional CSS rules to inject on the login page</small>
-        </div>
-
-        <div class="form-actions">
-          <Button label="Reset to Defaults" text @click="resetToDefaults" />
-          <Button label="Save Changes" icon="pi pi-check" @click="saveTheme" :loading="saving" />
-        </div>
+          <FcFormActions>
+            <Button label="Reset to Defaults" text @click="resetToDefaults" />
+            <Button label="Save Changes" icon="pi pi-check" @click="saveTheme" :loading="saving" />
+          </FcFormActions>
+        </FcFormSection>
       </div>
 
       <!-- Preview Section -->
@@ -324,63 +340,9 @@ function resetToDefaults() {
   }
 }
 
-.settings-form {
-  padding: 24px;
-}
-
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 24px 0 16px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.section-title:first-child {
-  margin-top: 0;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-
-.field label {
-  font-weight: 500;
-  color: #334155;
-  font-size: 14px;
-}
-
-.field-help {
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.w-full {
-  width: 100%;
-}
-
-.w-small {
+/* Fixed-width inputs inside form fields (beat the kit's global width: 100%) */
+.fc-form-field .w-small {
   width: 120px;
-}
-
-.color-fields {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-
-@media (max-width: 800px) {
-  .color-fields {
-    grid-template-columns: 1fr;
-  }
-}
-
-.color-field {
-  margin-bottom: 0;
 }
 
 .color-input {
@@ -389,18 +351,9 @@ function resetToDefaults() {
   gap: 8px;
 }
 
-.color-text {
+.fc-form-field .color-text {
   width: 100px;
   font-family: monospace;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid #e2e8f0;
 }
 
 /* Preview styles */

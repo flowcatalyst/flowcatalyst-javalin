@@ -126,12 +126,26 @@ const router = createRouter({
 				},
 				// Client-scoped user management (client-administrators) — manage only
 				// their own client's users, with role assignment bounded to the
-				// client's applications.
+				// client's applications. Children inherit meta.scope.
 				{
 					path: "client-administration/users",
 					name: "client-users",
 					component: () => import("@/pages/users/ClientUsersPage.vue"),
 					meta: { scope: "client" },
+					children: [
+						{
+							path: "new",
+							name: "client-user-create",
+							component: () =>
+								import("@/pages/users/ClientUserCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "client-user-detail",
+							component: () =>
+								import("@/pages/users/ClientUserDetailDrawer.vue"),
+						},
+					],
 				},
 				// Service Accounts
 				{

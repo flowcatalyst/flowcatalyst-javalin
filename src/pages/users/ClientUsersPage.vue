@@ -1,67 +1,74 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
-import { toast } from "@/utils/errorBus";
-import { getErrorMessage } from "@/utils/errors";
+import { ref, computed, onMounted } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
+import { useListState } from "@/composables/useListState";
+import { useTableFilters } from "@/composables/useTableFilters";
 import { useClientOptions } from "@/composables/useClientOptions";
-import {
-	usersApi,
-	type User,
-	type RoleAssignment,
-	type ApplicationAccessGrant,
-	type AvailableApplication,
-} from "@/api/users";
-import { rolesApi, type Role } from "@/api/roles";
+import { usersApi, type User } from "@/api/users";
 import UserImportDialog from "@/components/UserImportDialog.vue";
 
 // Client-administrator user management. Scoped by construction: every endpoint
-// it calls (list / create / assign-roles / reset / 2FA / activate) is one the
-// backend permits a non-anchor administrator to use against their own client's
-// users — so it never surfaces an anchor-only control or hits a scope 403. The
-// platform user-management page (anchor scope) stays separate.
+// it calls is one the backend permits a non-anchor administrator to use against
+// their own client's users — so it never surfaces an anchor-only control or
+// hits a scope 403. Detail/create render in a right-side drawer over this list
+// (ClientUserDetailDrawer / ClientUserCreateDrawer); role, application,
+// password and 2FA management live there now. The platform user-management
+// page (anchor scope) stays separate.
 
+const router = useRouter();
+const route = useRoute();
 const authStore = useAuthStore();
-const { ensureLoaded: ensureClients, getLabel: getClientLabel } = useClientOptions();
+const { ensureLoaded: ensureClients, getLabel: getClientLabel } =
+	useClientOptions();
 
 const users = ref<User[]>([]);
 const loading = ref(false);
-const initialLoading = ref(true);
 const totalRecords = ref(0);
-const availableRoles = ref<Role[]>([]);
 
-// Filters
-const q = ref("");
-const selectedStatus = ref<string | null>(null);
-const clientFilter = ref<string | null>(null);
-const page = ref(0);
-const pageSize = ref(100);
+const listState = useListState(
+	{
+		filters: {
+			q: { type: "string", key: "q" },
+			clientId: { type: "string", key: "clientId" },
+			active: { type: "boolean", key: "active" },
+		},
+		pageSize: 100,
+		sortField: "createdAt",
+		sortOrder: "asc",
+	},
+	() => loadUsers(),
+);
+const { filters, page, pageSize, sortField, sortOrder, onPage } = listState;
 
-const statusOptions = [
-	{ label: "Active", value: "active" },
-	{ label: "Inactive", value: "inactive" },
+// Lazy table: the popup inputs write the listState refs directly and
+// loadUsers() serializes them into API params; the specs only feed the badge.
+const { activeFilterCount, clearAll } = useTableFilters(listState, [
+	{ field: "clientId", param: "clientId" },
+	{ field: "active", param: "active" },
+]);
+
+const statusFilterOptions = [
+	{ label: "Active", value: true },
+	{ label: "Inactive", value: false },
 ];
 
-// The clients this administrator can act in. With more than one, expose a client
-// filter and a target picker on create; with one, everything is implicit.
+// The clients this administrator can act in. With more than one, expose a
+// client filter (and the import dialog's target picker); with one, everything
+// is implicit.
 const clientOptions = computed(() =>
-	authStore.accessibleClients.map((id) => ({ label: getClientLabel(id), value: id })),
+	authStore.accessibleClients.map((id) => ({
+		label: getClientLabel(id),
+		value: id,
+	})),
 );
 const isMultiClient = computed(() => authStore.accessibleClients.length > 1);
 const defaultClientId = computed(
 	() => authStore.accessibleClients[0] ?? authStore.user?.clientId ?? "",
 );
 
-const hasActiveFilters = computed(
-	() => !!q.value || selectedStatus.value !== null || clientFilter.value !== null,
-);
-
 onMounted(async () => {
-	await Promise.all([ensureClients(), loadRoles(), loadUsers()]);
-});
-
-watch([q, selectedStatus, clientFilter], () => {
-	page.value = 0;
-	loadUsers();
+	await Promise.all([ensureClients(), loadUsers()]);
 });
 
 async function loadUsers() {
@@ -69,280 +76,51 @@ async function loadUsers() {
 	try {
 		const response = await usersApi.list({
 			type: "USER",
-			clientId: clientFilter.value || undefined,
+			clientId: filters.clientId.value || undefined,
 			active:
-				selectedStatus.value === "active"
-					? true
-					: selectedStatus.value === "inactive"
-						? false
-						: undefined,
-			q: q.value || undefined,
+				filters.active.value !== null ? filters.active.value : undefined,
+			q: filters.q.value || undefined,
 			page: page.value,
 			pageSize: pageSize.value,
-			sortField: "createdAt",
-			sortOrder: "asc",
+			sortField: sortField.value,
+			sortOrder: sortOrder.value,
 		});
 		users.value = response.principals;
 		totalRecords.value = response.total;
 	} catch (error) {
-		toast.error("Error", getErrorMessage(error, "Request failed"));
+		console.error("Failed to fetch users:", error);
 	} finally {
 		loading.value = false;
-		initialLoading.value = false;
 	}
 }
 
-async function loadRoles() {
-	try {
-		availableRoles.value = (await rolesApi.list()).items;
-	} catch (error) {
-		console.error("Failed to load roles:", error);
-	}
+function addUser() {
+	void router.push({
+		path: "/client-administration/users/new",
+		query: route.query,
+	});
 }
 
-function onPage(event: { page: number; rows: number }) {
-	page.value = event.page;
-	pageSize.value = event.rows;
-	loadUsers();
+function viewUser(user: User) {
+	void router.push({
+		path: `/client-administration/users/${user.id}`,
+		query: route.query,
+	});
 }
 
-function clearFilters() {
-	q.value = "";
-	selectedStatus.value = null;
-	clientFilter.value = null;
+function editUser(user: User) {
+	void router.push({
+		path: `/client-administration/users/${user.id}`,
+		query: { ...route.query, edit: "true" },
+	});
 }
 
-function clientName(id: string | null): string {
+function clientName(id: string | null | undefined): string {
 	return id ? getClientLabel(id) : "—";
 }
 
 function formatDate(dateStr: string | undefined | null) {
 	return dateStr ? new Date(dateStr).toLocaleDateString() : "—";
-}
-
-// ── Create user ─────────────────────────────────────────────────────────────
-const showCreate = ref(false);
-const createForm = ref({ email: "", name: "", password: "", clientId: "" });
-const createSaving = ref(false);
-
-function openCreate() {
-	createForm.value = {
-		email: "",
-		name: "",
-		password: "",
-		clientId: defaultClientId.value,
-	};
-	showCreate.value = true;
-}
-
-async function submitCreate() {
-	const f = createForm.value;
-	if (!f.email.trim() || !f.name.trim()) {
-		toast.error("Error", "Name and email are required");
-		return;
-	}
-	if (!f.clientId) {
-		toast.error("Error", "Select a client");
-		return;
-	}
-	createSaving.value = true;
-	try {
-		await usersApi.createClientUser({
-			email: f.email.trim(),
-			name: f.name.trim(),
-			password: f.password || undefined,
-			clientId: f.clientId,
-		});
-		toast.success("User created", `${f.name} was added`);
-		showCreate.value = false;
-		await loadUsers();
-	} catch (error) {
-		toast.error("Create failed", getErrorMessage(error, "Request failed"));
-	} finally {
-		createSaving.value = false;
-	}
-}
-
-// ── Manage roles ────────────────────────────────────────────────────────────
-const showRoles = ref(false);
-const rolesUser = ref<User | null>(null);
-const roleAssignments = ref<RoleAssignment[]>([]);
-const appGrants = ref<ApplicationAccessGrant[]>([]);
-const selectedRoleNames = ref<string[]>([]);
-const rolesSaving = ref(false);
-
-// Roles the admin may assign: application-scoped roles for an application the
-// target user can reach (or already-assigned ones, so they stay visible). This
-// mirrors the platform detail page and the backend's assertAssignableRoles —
-// platform roles and out-of-reach app roles never appear.
-const assignableRoleOptions = computed(() => {
-	const accessibleCodes = new Set(appGrants.value.map((g) => g.applicationCode));
-	const assignedNames = new Set(roleAssignments.value.map((r) => r.roleName));
-	return availableRoles.value
-		.filter((r) => accessibleCodes.has(r.applicationCode) || assignedNames.has(r.name))
-		.map((r) => ({ label: r.displayName, value: r.name }));
-});
-
-async function openRoles(user: User) {
-	rolesUser.value = user;
-	roleAssignments.value = [];
-	appGrants.value = [];
-	selectedRoleNames.value = [];
-	showRoles.value = true;
-	try {
-		const [roles, apps] = await Promise.all([
-			usersApi.getRoles(user.id),
-			usersApi.getApplicationAccess(user.id),
-		]);
-		roleAssignments.value = roles.roles;
-		appGrants.value = apps.applications;
-		const assignable = new Set(assignableRoleOptions.value.map((o) => o.value));
-		selectedRoleNames.value = roles.roles
-			.map((r) => r.roleName)
-			.filter((n) => assignable.has(n));
-	} catch (error) {
-		toast.error("Error", getErrorMessage(error, "Request failed"));
-	}
-}
-
-async function saveRoles() {
-	if (!rolesUser.value) return;
-	rolesSaving.value = true;
-	try {
-		// A SET of the roles this admin manages; the backend preserves the user's
-		// existing platform / other-application roles automatically.
-		await usersApi.assignRoles(rolesUser.value.id, selectedRoleNames.value);
-		toast.success("Roles updated", `Roles saved for ${rolesUser.value.name}`);
-		showRoles.value = false;
-		await loadUsers();
-	} catch (error) {
-		toast.error("Save failed", getErrorMessage(error, "Request failed"));
-	} finally {
-		rolesSaving.value = false;
-	}
-}
-
-// Bulk CSV import is handled by the shared <UserImportDialog> component
-// (in the header), which reloads the list on @imported.
-
-// ── Manage applications ─────────────────────────────────────────────────────
-const showApps = ref(false);
-const appsUser = ref<User | null>(null);
-const currentApps = ref<ApplicationAccessGrant[]>([]);
-const availableApps = ref<AvailableApplication[]>([]);
-const selectedAppIds = ref<string[]>([]);
-const appsSaving = ref(false);
-
-// The available-applications endpoint is already bounded server-side to the
-// applications the admin's client can access, so the picker only ever offers
-// grantable apps.
-const appOptions = computed(() =>
-	availableApps.value.map((a) => ({ label: a.name || a.code, value: a.id })),
-);
-
-async function openApps(user: User) {
-	appsUser.value = user;
-	currentApps.value = [];
-	availableApps.value = [];
-	selectedAppIds.value = [];
-	showApps.value = true;
-	try {
-		const [granted, available] = await Promise.all([
-			usersApi.getApplicationAccess(user.id),
-			usersApi.getAvailableApplications(user.id),
-		]);
-		currentApps.value = granted.applications;
-		availableApps.value = available.applications;
-		// Preselect only the grants this admin can manage (within the client's
-		// applications); any out-of-reach grants are preserved server-side.
-		const availIds = new Set(available.applications.map((a) => a.id));
-		selectedAppIds.value = granted.applications
-			.map((g) => g.applicationId)
-			.filter((id) => availIds.has(id));
-	} catch (error) {
-		toast.error("Error", getErrorMessage(error, "Request failed"));
-	}
-}
-
-async function saveApps() {
-	if (!appsUser.value) return;
-	appsSaving.value = true;
-	try {
-		await usersApi.assignApplicationAccess(appsUser.value.id, selectedAppIds.value);
-		toast.success(
-			"Applications updated",
-			`Application access saved for ${appsUser.value.name}`,
-		);
-		showApps.value = false;
-		await loadUsers();
-	} catch (error) {
-		toast.error("Save failed", getErrorMessage(error, "Request failed"));
-	} finally {
-		appsSaving.value = false;
-	}
-}
-
-// ── Reset password / 2FA ────────────────────────────────────────────────────
-const showReset = ref(false);
-const resetUser = ref<User | null>(null);
-const resetPassword = ref("");
-const resetBusy = ref(false);
-
-function openReset(user: User) {
-	resetUser.value = user;
-	resetPassword.value = "";
-	showReset.value = true;
-}
-
-async function submitReset() {
-	if (!resetUser.value) return;
-	if (resetPassword.value.length < 8) {
-		toast.error("Error", "Password must be at least 8 characters");
-		return;
-	}
-	resetBusy.value = true;
-	try {
-		await usersApi.resetPassword(resetUser.value.id, resetPassword.value);
-		toast.success("Password reset", `New password set for ${resetUser.value.name}`);
-		showReset.value = false;
-	} catch (error) {
-		toast.error("Reset failed", getErrorMessage(error, "Request failed"));
-	} finally {
-		resetBusy.value = false;
-	}
-}
-
-async function sendReset(user: User) {
-	try {
-		const r = await usersApi.sendPasswordReset(user.id);
-		toast.success("Reset email sent", r.message);
-	} catch (error) {
-		toast.error("Send failed", getErrorMessage(error, "Request failed"));
-	}
-}
-
-async function resetTwoFactor(user: User) {
-	try {
-		const r = await usersApi.resetTwoFactor(user.id);
-		toast.success("2FA reset", r.message);
-	} catch (error) {
-		toast.error("Reset failed", getErrorMessage(error, "Request failed"));
-	}
-}
-
-async function toggleActive(user: User) {
-	try {
-		if (user.active) {
-			await usersApi.deactivate(user.id);
-			toast.success("Deactivated", `${user.name} deactivated`);
-		} else {
-			await usersApi.activate(user.id);
-			toast.success("Activated", `${user.name} activated`);
-		}
-		await loadUsers();
-	} catch (error) {
-		toast.error("Error", getErrorMessage(error, "Request failed"));
-	}
 }
 </script>
 
@@ -359,68 +137,13 @@ async function toggleActive(user: User) {
           :default-client-id="defaultClientId"
           @imported="loadUsers"
         />
-        <Button label="Add User" icon="pi pi-user-plus" @click="openCreate" />
+        <Button label="Add User" icon="pi pi-user-plus" @click="addUser" />
       </div>
     </header>
 
-    <!-- Filters -->
-    <div class="fc-card filter-card">
-      <div class="filter-row">
-        <div class="filter-group">
-          <label>Search</label>
-          <IconField>
-            <InputIcon class="pi pi-search" />
-            <InputText v-model="q" placeholder="Search by name or email..." class="filter-input" />
-          </IconField>
-        </div>
-
-        <div v-if="isMultiClient" class="filter-group">
-          <label>Client</label>
-          <Select
-            v-model="clientFilter"
-            :options="clientOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Clients"
-            :showClear="true"
-            class="filter-input"
-          />
-        </div>
-
-        <div class="filter-group">
-          <label>Status</label>
-          <Select
-            v-model="selectedStatus"
-            :options="statusOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="All Statuses"
-            :showClear="true"
-            class="filter-input"
-          />
-        </div>
-
-        <div class="filter-actions">
-          <Button
-            v-if="hasActiveFilters"
-            label="Clear Filters"
-            icon="pi pi-filter-slash"
-            text
-            severity="secondary"
-            @click="clearFilters"
-          />
-        </div>
-      </div>
-    </div>
-
     <!-- Table -->
     <div class="fc-card table-card">
-      <div v-if="initialLoading" class="loading-container">
-        <ProgressSpinner strokeWidth="3" />
-      </div>
-
       <DataTable
-        v-else
         :value="users"
         :loading="loading"
         :paginator="true"
@@ -435,13 +158,54 @@ async function toggleActive(user: User) {
         size="small"
         @page="onPage"
       >
-        <Column field="name" header="Name" style="width: 20%">
+        <template #header>
+          <FcTableToolbar
+            v-model:search="filters.q.value"
+            search-placeholder="Search by name or email..."
+            :active-filter-count="activeFilterCount"
+            :has-active-filters="listState.hasActiveFilters.value"
+            @clear-all="clearAll"
+          >
+            <template #filters>
+              <FcFormField v-if="isMultiClient" label="Client">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.clientId.value"
+                    :options="clientOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All Clients"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Status">
+                <template #default="{ id: fieldId }">
+                  <Select
+                    :id="fieldId"
+                    v-model="filters.active.value"
+                    :options="statusFilterOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All statuses"
+                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+            </template>
+          </FcTableToolbar>
+        </template>
+
+        <Column field="name" header="Name" style="width: 22%">
           <template #body="{ data }">
             <span class="user-name">{{ data.name }}</span>
           </template>
         </Column>
 
-        <Column field="email" header="Email" style="width: 24%">
+        <Column field="email" header="Email" style="width: 26%">
           <template #body="{ data }">
             <span class="user-email">{{ data.email || '—' }}</span>
           </template>
@@ -455,11 +219,14 @@ async function toggleActive(user: User) {
 
         <Column field="active" header="Status" style="width: 10%">
           <template #body="{ data }">
-            <Tag :value="data.active ? 'Active' : 'Inactive'" :severity="data.active ? 'success' : 'danger'" />
+            <Tag
+              :value="data.active ? 'Active' : 'Inactive'"
+              :severity="data.active ? 'success' : 'danger'"
+            />
           </template>
         </Column>
 
-        <Column field="roles" header="Roles" style="width: 16%">
+        <Column field="roles" header="Roles" style="width: 15%">
           <template #body="{ data }">
             <div class="roles-container">
               <Tag
@@ -482,56 +249,24 @@ async function toggleActive(user: User) {
           </template>
         </Column>
 
-        <Column header="Actions" style="width: 6%">
+        <Column header="Actions" style="width: 5%">
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
-                icon="pi pi-shield"
+                v-tooltip.top="'View'"
+                icon="pi pi-eye"
                 text
                 rounded
                 severity="secondary"
-                @click="openRoles(data)"
-                v-tooltip.top="'Manage roles'"
+                @click="viewUser(data)"
               />
               <Button
-                icon="pi pi-th-large"
+                v-tooltip.top="'Edit'"
+                icon="pi pi-pencil"
                 text
                 rounded
                 severity="secondary"
-                @click="openApps(data)"
-                v-tooltip.top="'Manage applications'"
-              />
-              <Button
-                icon="pi pi-key"
-                text
-                rounded
-                severity="secondary"
-                @click="openReset(data)"
-                v-tooltip.top="'Reset password'"
-              />
-              <Button
-                icon="pi pi-envelope"
-                text
-                rounded
-                severity="secondary"
-                @click="sendReset(data)"
-                v-tooltip.top="'Send reset email'"
-              />
-              <Button
-                icon="pi pi-mobile"
-                text
-                rounded
-                severity="secondary"
-                @click="resetTwoFactor(data)"
-                v-tooltip.top="'Reset 2FA (re-trigger onboarding)'"
-              />
-              <Button
-                :icon="data.active ? 'pi pi-ban' : 'pi pi-check-circle'"
-                text
-                rounded
-                :severity="data.active ? 'danger' : 'success'"
-                @click="toggleActive(data)"
-                v-tooltip.top="data.active ? 'Deactivate' : 'Activate'"
+                @click="editUser(data)"
               />
             </div>
           </template>
@@ -541,197 +276,34 @@ async function toggleActive(user: User) {
           <div class="empty-message">
             <i class="pi pi-users"></i>
             <span>No users found</span>
-            <Button v-if="hasActiveFilters" label="Clear filters" link @click="clearFilters" />
+            <Button
+              v-if="listState.hasActiveFilters.value"
+              label="Clear filters"
+              link
+              @click="clearAll"
+            />
           </div>
         </template>
       </DataTable>
     </div>
 
-    <!-- Create user dialog -->
-    <Dialog v-model:visible="showCreate" header="Add User" modal :style="{ width: '30rem' }">
-      <div class="dialog-form">
-        <div class="field">
-          <label for="cu-name">Name</label>
-          <InputText id="cu-name" v-model="createForm.name" class="w-full" />
-        </div>
-        <div class="field">
-          <label for="cu-email">Email</label>
-          <InputText id="cu-email" v-model="createForm.email" class="w-full" />
-        </div>
-        <div class="field">
-          <label for="cu-password">Password</label>
-          <Password
-            id="cu-password"
-            v-model="createForm.password"
-            toggleMask
-            :feedback="false"
-            inputClass="w-full"
-            class="w-full"
-          />
-          <small class="hint">Leave blank to require the user to set it via a reset email.</small>
-        </div>
-        <div v-if="isMultiClient" class="field">
-          <label for="cu-client">Client</label>
-          <Select
-            id="cu-client"
-            v-model="createForm.clientId"
-            :options="clientOptions"
-            optionLabel="label"
-            optionValue="value"
-            class="w-full"
-          />
-        </div>
-      </div>
-      <template #footer>
-        <Button label="Cancel" text severity="secondary" @click="showCreate = false" />
-        <Button label="Create" icon="pi pi-check" :loading="createSaving" @click="submitCreate" />
-      </template>
-    </Dialog>
-
-    <!-- Manage roles dialog -->
-    <Dialog
-      v-model:visible="showRoles"
-      :header="rolesUser ? `Roles — ${rolesUser.name}` : 'Roles'"
-      modal
-      :style="{ width: '34rem' }"
-    >
-      <div class="dialog-form">
-        <p class="dialog-note">
-          Only roles for applications this user's client can access are shown. Platform roles are
-          managed by platform administrators.
-        </p>
-        <MultiSelect
-          v-model="selectedRoleNames"
-          :options="assignableRoleOptions"
-          optionLabel="label"
-          optionValue="value"
-          display="chip"
-          filter
-          placeholder="Select roles"
-          class="w-full"
-          :showToggleAll="false"
-        />
-        <p v-if="assignableRoleOptions.length === 0" class="hint">
-          No assignable roles — this client has no applications with assignable roles.
-        </p>
-      </div>
-      <template #footer>
-        <Button label="Cancel" text severity="secondary" @click="showRoles = false" />
-        <Button label="Save Roles" icon="pi pi-check" :loading="rolesSaving" @click="saveRoles" />
-      </template>
-    </Dialog>
-
-    <!-- Manage applications dialog -->
-    <Dialog
-      v-model:visible="showApps"
-      :header="appsUser ? `Applications — ${appsUser.name}` : 'Applications'"
-      modal
-      :style="{ width: '34rem' }"
-    >
-      <div class="dialog-form">
-        <p class="dialog-note">
-          Grant this user access to applications your client is entitled to.
-        </p>
-        <MultiSelect
-          v-model="selectedAppIds"
-          :options="appOptions"
-          optionLabel="label"
-          optionValue="value"
-          display="chip"
-          filter
-          placeholder="Select applications"
-          class="w-full"
-          :showToggleAll="false"
-        />
-        <p v-if="appOptions.length === 0" class="hint">
-          No applications available — your client has no applications to grant.
-        </p>
-      </div>
-      <template #footer>
-        <Button label="Cancel" text severity="secondary" @click="showApps = false" />
-        <Button
-          label="Save Applications"
-          icon="pi pi-check"
-          :loading="appsSaving"
-          @click="saveApps"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Reset password dialog -->
-    <Dialog
-      v-model:visible="showReset"
-      :header="resetUser ? `Reset password — ${resetUser.name}` : 'Reset password'"
-      modal
-      :style="{ width: '28rem' }"
-    >
-      <div class="dialog-form">
-        <div class="field">
-          <label for="rp-pw">New password</label>
-          <Password
-            id="rp-pw"
-            v-model="resetPassword"
-            toggleMask
-            :feedback="true"
-            inputClass="w-full"
-            class="w-full"
-          />
-        </div>
-        <p class="hint">
-          Or close this and use “Send reset email” to let the user choose their own password.
-        </p>
-      </div>
-      <template #footer>
-        <Button label="Cancel" text severity="secondary" @click="showReset = false" />
-        <Button label="Set Password" icon="pi pi-check" :loading="resetBusy" @click="submitReset" />
-      </template>
-    </Dialog>
+    <!-- Drawer outlet: detail/create child routes render over this list -->
+    <RouterView v-slot="{ Component }">
+      <component :is="Component" @changed="loadUsers" />
+    </RouterView>
   </div>
 </template>
 
 <style scoped>
-.filter-card {
-  margin-bottom: 24px;
-}
-
-.filter-row {
+.header-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-end;
-}
-
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 200px;
-}
-
-.filter-group label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.filter-input {
-  width: 100%;
-}
-
-.filter-actions {
-  margin-left: auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .table-card {
   padding: 0;
   overflow: hidden;
-}
-
-.loading-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 60px;
 }
 
 .user-name {
@@ -772,7 +344,7 @@ async function toggleActive(user: User) {
 
 .action-buttons {
   display: flex;
-  gap: 2px;
+  gap: 4px;
 }
 
 .empty-message {
@@ -793,77 +365,6 @@ async function toggleActive(user: User) {
   margin-bottom: 12px;
 }
 
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-top: 8px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.dialog-note {
-  font-size: 13px;
-  color: #64748b;
-  margin: 0;
-}
-
-.hint {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.w-full {
-  width: 100%;
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.import-toolbar {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.file-input {
-  font-size: 13px;
-}
-
-.error-text {
-  margin: 0;
-  font-size: 13px;
-  color: #b91c1c;
-}
-
-.import-results {
-  border-top: 1px solid #e2e8f0;
-  padding-top: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.import-summary {
-  display: flex;
-  gap: 8px;
-}
-
-.import-table {
-  font-size: 13px;
-}
-
 :deep(.p-datatable .p-datatable-thead > tr > th) {
   background: #f8fafc;
   color: #475569;
@@ -871,21 +372,5 @@ async function toggleActive(user: User) {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-@media (max-width: 1024px) {
-  .filter-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-group {
-    min-width: 100%;
-  }
-
-  .filter-actions {
-    margin-left: 0;
-    margin-top: 8px;
-  }
 }
 </style>

@@ -166,8 +166,7 @@ function outcomeOk(outcome: string): boolean {
 
     <div class="profile-grid">
       <!-- User Info Card -->
-      <div class="fc-card">
-        <h2 class="section-title">User Information</h2>
+      <FcFormSection title="User Information">
         <div class="profile-info">
           <div class="avatar-large">
             {{ authStore.userInitials }}
@@ -185,30 +184,31 @@ function outcomeOk(outcome: string): boolean {
             </div>
           </div>
         </div>
-      </div>
+      </FcFormSection>
 
       <!-- Account Settings Card -->
-      <div class="fc-card">
-        <h2 class="section-title">Account Settings</h2>
-        <div class="settings-form">
-          <div class="form-field">
-            <label>Display Name</label>
-            <InputText :value="authStore.displayName" disabled class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Email</label>
-            <InputText :value="authStore.user?.email" disabled class="w-full" />
-          </div>
-          <div class="form-actions">
-            <Button
-              label="Change Password"
-              icon="pi pi-key"
-              outlined
-              @click="openChangePassword"
-            />
-          </div>
+      <FcFormSection title="Account Settings">
+        <div class="fc-form-grid">
+          <FcFormField label="Display Name" span>
+            <template #default="{ id: fieldId }">
+              <InputText :id="fieldId" :value="authStore.displayName" disabled />
+            </template>
+          </FcFormField>
+          <FcFormField label="Email" span>
+            <template #default="{ id: fieldId }">
+              <InputText :id="fieldId" :value="authStore.user?.email" disabled />
+            </template>
+          </FcFormField>
         </div>
-      </div>
+        <FcFormActions>
+          <Button
+            label="Change Password"
+            icon="pi pi-key"
+            outlined
+            @click="openChangePassword"
+          />
+        </FcFormActions>
+      </FcFormSection>
 
       <!-- Passkeys Card -->
       <PasskeysSection />
@@ -217,8 +217,7 @@ function outcomeOk(outcome: string): boolean {
       <TwoFactorSection />
 
       <!-- Security Card -->
-      <div class="fc-card">
-        <h2 class="section-title">Security</h2>
+      <FcFormSection title="Security">
         <div class="security-info">
           <div class="security-item">
             <div class="security-icon">
@@ -231,7 +230,7 @@ function outcomeOk(outcome: string): boolean {
             <Button label="View" outlined size="small" @click="openSessions" />
           </div>
         </div>
-      </div>
+      </FcFormSection>
     </div>
 
     <!-- Change Password dialog -->
@@ -242,56 +241,67 @@ function outcomeOk(outcome: string): boolean {
       :style="{ width: '28rem' }"
     >
       <div class="cp-form">
-        <div class="cp-field">
-          <label for="cp-current">Current password</label>
-          <Password
-            id="cp-current"
-            v-model="cpCurrent"
-            toggleMask
-            :feedback="false"
-            inputClass="w-full"
-            class="w-full"
-          />
-        </div>
-        <div class="cp-field">
-          <label for="cp-new">New password</label>
-          <Password id="cp-new" v-model="cpNew" toggleMask inputClass="w-full" class="w-full" />
-        </div>
-        <div class="cp-field">
-          <label for="cp-confirm">Confirm new password</label>
-          <Password
-            id="cp-confirm"
-            v-model="cpConfirm"
-            toggleMask
-            :feedback="false"
-            inputClass="w-full"
-            class="w-full"
-          />
-        </div>
+        <FcFormField label="Current password">
+          <template #default="{ id: fieldId }">
+            <Password
+              :inputId="fieldId"
+              v-model="cpCurrent"
+              toggleMask
+              :feedback="false"
+              inputClass="w-full"
+              class="w-full"
+            />
+          </template>
+        </FcFormField>
+        <FcFormField label="New password">
+          <template #default="{ id: fieldId }">
+            <Password
+              :inputId="fieldId"
+              v-model="cpNew"
+              toggleMask
+              inputClass="w-full"
+              class="w-full"
+            />
+          </template>
+        </FcFormField>
+        <FcFormField label="Confirm new password">
+          <template #default="{ id: fieldId }">
+            <Password
+              :inputId="fieldId"
+              v-model="cpConfirm"
+              toggleMask
+              :feedback="false"
+              inputClass="w-full"
+              class="w-full"
+            />
+          </template>
+        </FcFormField>
 
-        <div v-if="cpMfaRequired" class="cp-field cp-mfa">
-          <label for="cp-code">Two-factor code</label>
-          <InputText
-            id="cp-code"
-            v-model="cpCode"
-            placeholder="Enter your code"
-            class="w-full"
-            autocomplete="one-time-code"
-          />
-          <small v-if="cpHasTotpFactor" class="cp-hint">
-            Enter the code from your authenticator app{{ cpHasEmailFactor ? ", or send an email code below." : "." }}
-          </small>
-          <small v-else-if="cpHasEmailFactor" class="cp-hint">We sent a code to your email.</small>
-          <Button
-            v-if="cpHasEmailFactor"
-            label="Send email code"
-            icon="pi pi-envelope"
-            text
-            size="small"
-            class="cp-send"
-            @click="sendEmailCode"
-          />
-        </div>
+        <FcFormField v-if="cpMfaRequired" label="Two-factor code" class="cp-mfa">
+          <template #default="{ id: fieldId }">
+            <div class="cp-mfa-body">
+              <InputText
+                :id="fieldId"
+                v-model="cpCode"
+                placeholder="Enter your code"
+                autocomplete="one-time-code"
+              />
+              <small v-if="cpHasTotpFactor" class="cp-hint">
+                Enter the code from your authenticator app{{ cpHasEmailFactor ? ", or send an email code below." : "." }}
+              </small>
+              <small v-else-if="cpHasEmailFactor" class="cp-hint">We sent a code to your email.</small>
+              <Button
+                v-if="cpHasEmailFactor"
+                label="Send email code"
+                icon="pi pi-envelope"
+                text
+                size="small"
+                class="cp-send"
+                @click="sendEmailCode"
+              />
+            </div>
+          </template>
+        </FcFormField>
 
         <p v-if="cpError" class="cp-error">{{ cpError }}</p>
       </div>
@@ -364,13 +374,10 @@ function outcomeOk(outcome: string): boolean {
   gap: 24px;
 }
 
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #243b53;
-  margin: 0 0 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e2e8f0;
+/* The grid's gap provides spacing; the section's own bottom margin would
+   otherwise make its card shorter than plain-card neighbours in the row. */
+.profile-grid .fc-form-section {
+  margin-bottom: 0;
 }
 
 .profile-info {
@@ -413,28 +420,6 @@ function outcomeOk(outcome: string): boolean {
 
 .role-tag {
   font-size: 12px;
-}
-
-.settings-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-field label {
-  font-size: 14px;
-  font-weight: 500;
-  color: #334e68;
-}
-
-.form-actions {
-  margin-top: 8px;
 }
 
 .security-info {
@@ -491,21 +476,15 @@ function outcomeOk(outcome: string): boolean {
   padding-top: 8px;
 }
 
-.cp-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.cp-field label {
-  font-size: 14px;
-  font-weight: 500;
-  color: #334e68;
-}
-
 .cp-mfa {
   border-top: 1px solid #e2e8f0;
   padding-top: 16px;
+}
+
+.cp-mfa-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .cp-hint {
@@ -526,10 +505,6 @@ function outcomeOk(outcome: string): boolean {
   border: 1px solid #fecaca;
   border-radius: 6px;
   padding: 8px 12px;
-}
-
-.w-full {
-  width: 100%;
 }
 
 .sessions-loading {

@@ -15,11 +15,23 @@ import {
 import { clientsApi, type Client } from "@/api/clients";
 import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
+import { useClientOptions } from "@/composables/useClientOptions";
+import { useConfirm } from "primevue/useconfirm";
 
 const props = defineProps<{
 	userId: string;
 	/** Open the info card in edit mode once loaded (?edit=true deep link) */
 	autoEdit?: boolean;
+	/**
+	 * Client-administrator hosting (drawer under /client-administration/users).
+	 * Bounds the body to what a non-anchor admin may see/do: no scope/client
+	 * re-association, no client-access section (its listing is anchor-only on
+	 * the backend), no all-applications toggle, no delete. Client labels
+	 * resolve via the shared filter-options cache instead of paging the full
+	 * client list, and the app picker preselects only grants inside the
+	 * admin's available set.
+	 */
+	clientScoped?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -33,6 +45,12 @@ const emit = defineEmits<{
 
 /** Doubles as the host's dirty flag: an open edit form counts as dirty. */
 const editMode = defineModel<boolean>("dirty", { default: false });
+
+const confirm = useConfirm();
+
+// clientScoped label lookups only — the full client list stays unloaded.
+const { ensureLoaded: ensureClientOptions, getLabel: getClientOptionLabel } =
+	useClientOptions();
 
 const user = ref<User | null>(null);
 const clients = ref<Client[]>([]);
@@ -87,6 +105,11 @@ const deleteLoading = ref(false);
 const showSendResetDialog = ref(false);
 const sendingReset = ref(false);
 
+// Reset two-factor (internal-auth users only): clears enrolled factors,
+// recovery codes, pending PINs and trusted devices — re-triggers 2FA
+// onboarding at next sign-in (lost-device recovery).
+const resettingTwoFactor = ref(false);
+
 // Direct password reset (admin sets a new password for the user).
 // Used when the user can't receive the email (e.g. lost inbox access).
 const showResetPasswordDialog = ref(false);
@@ -132,6 +155,15 @@ const userType = computed(() => {
 const homeClient = computed(() => {
 	if (!user.value?.clientId) return null;
 	return clients.value.find((c) => c.id === user.value?.clientId);
+});
+
+// Home-client display name. Client admins can't page the full client list, so
+// clientScoped mode resolves the label from the shared filter-options cache;
+// the platform mode keeps the clients-array lookup.
+const homeClientName = computed(() => {
+	if (!user.value?.clientId) return undefined;
+	if (props.clientScoped) return getClientOptionLabel(user.value.clientId);
+	return homeClient.value?.name;
 });
 
 const grantedClients = computed(() => {
@@ -229,13 +261,23 @@ watch(
 	async (value) => {
 		if (!value) return;
 		resetState();
-		await Promise.all([loadUser(), loadClients(), loadAvailableRoles()]);
+		await Promise.all([
+			loadUser(),
+			// Client admins cannot page the full client list — labels resolve
+			// via the shared filter-options cache instead.
+			props.clientScoped
+				? ensureClientOptions().catch((error) =>
+						console.error("Failed to load client options:", error),
+					)
+				: loadClients(),
+			loadAvailableRoles(),
+		]);
 		if (user.value) {
-			await Promise.all([
-				loadClientGrants(),
-				loadRoleAssignments(),
-				loadApplicationAccess(),
-			]);
+			const detailLoads = [loadRoleAssignments(), loadApplicationAccess()];
+			// The client-access grant listing is anchor-only on the backend
+			// (RequireAnchor), and the section is hidden in clientScoped mode.
+			if (!props.clientScoped) detailLoads.push(loadClientGrants());
+			await Promise.all(detailLoads);
 			// Check if we should start in edit mode
 			if (props.autoEdit) {
 				startEdit();
@@ -484,6 +526,29 @@ async function sendPasswordReset() {
 	}
 }
 
+function confirmResetTwoFactor() {
+	confirm.require({
+		message: `Reset two-factor authentication for "${user.value?.name}"? Enrolled factors, recovery codes and trusted devices are cleared; 2FA onboarding re-triggers at their next sign-in.`,
+		header: "Reset Two-Factor",
+		icon: "pi pi-exclamation-triangle",
+		acceptLabel: "Reset 2FA",
+		acceptClass: "p-button-danger",
+		accept: () => void resetTwoFactor(),
+	});
+}
+
+async function resetTwoFactor() {
+	resettingTwoFactor.value = true;
+	try {
+		const result = await usersApi.resetTwoFactor(props.userId);
+		toast.success("2FA reset", result.message);
+	} catch {
+		// errors surface via the global error toast
+	} finally {
+		resettingTwoFactor.value = false;
+	}
+}
+
 function openResetPasswordDialog() {
 	resetPasswordNew.value = "";
 	resetPasswordConfirm.value = "";
@@ -662,14 +727,28 @@ function getRoleDisplay(roleName: string) {
 // ========== Application Access Functions ==========
 
 async function openAppPicker() {
-	// Load available applications if not already loaded
-	if (availableApplications.value.length === 0) {
+	if (props.clientScoped) {
+		// A client admin's available set is bounded server-side to the client's
+		// applications. Always load it, then preselect only grants inside that
+		// set — an out-of-reach grant must not ride along in the assignment SET
+		// (the backend preserves it automatically).
 		await loadAvailableApplications();
+		const availIds = new Set(availableApplications.value.map((a) => a.id));
+		selectedAppIds.value = new Set(
+			applicationAccessGrants.value
+				.map((a) => a.applicationId)
+				.filter((id) => availIds.has(id)),
+		);
+	} else {
+		// Load available applications if not already loaded
+		if (availableApplications.value.length === 0) {
+			await loadAvailableApplications();
+		}
+		// Initialize selected apps from current grants
+		selectedAppIds.value = new Set(
+			applicationAccessGrants.value.map((a) => a.applicationId),
+		);
 	}
-	// Initialize selected apps from current grants
-	selectedAppIds.value = new Set(
-		applicationAccessGrants.value.map((a) => a.applicationId),
-	);
 	appSearchQuery.value = "";
 	showAppPickerDialog.value = true;
 }
@@ -781,7 +860,7 @@ function formatDate(dateStr: string | null | undefined) {
         <FcDetailField
           v-if="user.scope === 'CLIENT'"
           label="Client"
-          :value="homeClient?.name"
+          :value="homeClientName"
         />
         <FcDetailField label="Created" :value="formatDate(user.createdAt)" />
       </div>
@@ -793,7 +872,11 @@ function formatDate(dateStr: string | null | undefined) {
             <InputText :id="fieldId" v-model="editName" />
           </template>
         </FcFormField>
-        <FcFormField label="Type">
+        <!-- Scope/client re-association is anchor territory: clientScoped
+             hides both controls (edit is name-only). startEdit still seeds
+             editScope/editClientId, so saveUser's no-change comparison holds
+             and setClientAssociation is never called. -->
+        <FcFormField v-if="!clientScoped" label="Type">
           <template #default="{ id: fieldId }">
             <Select
               :id="fieldId"
@@ -805,7 +888,7 @@ function formatDate(dateStr: string | null | undefined) {
           </template>
         </FcFormField>
         <FcFormField
-          v-if="editScope === 'CLIENT' || editScope === 'PARTNER'"
+          v-if="!clientScoped && (editScope === 'CLIENT' || editScope === 'PARTNER')"
           :label="editScope === 'PARTNER' ? 'Client to grant' : 'Client'"
           span
         >
@@ -824,8 +907,10 @@ function formatDate(dateStr: string | null | undefined) {
       </div>
     </FcFormSection>
 
-    <!-- Client Access -->
-    <FcFormSection title="Client Access" flat>
+    <!-- Client Access (hidden for client admins: the grant listing is
+         anchor-only on the backend and cross-client access is out of a
+         client admin's remit) -->
+    <FcFormSection v-if="!clientScoped" title="Client Access" flat>
       <template v-if="!isAnchorUser" #actions>
         <Button label="Add Client" icon="pi pi-plus" text @click="showAddClientDialog = true" />
       </template>
@@ -934,8 +1019,10 @@ function formatDate(dateStr: string | null | undefined) {
         <Button label="Manage Applications" icon="pi pi-pencil" text @click="openAppPicker" />
       </template>
 
-      <!-- All-applications toggle: the application-axis analogue of an anchor. -->
-      <div class="all-apps-toggle">
+      <!-- All-applications toggle: the application-axis analogue of an anchor.
+           Hidden for client admins — only an all-applications administrator
+           may grant it (backend-enforced). -->
+      <div v-if="!clientScoped" class="all-apps-toggle">
         <ToggleSwitch
           v-model="allApplications"
           inputId="allApplications"
@@ -1000,6 +1087,21 @@ function formatDate(dateStr: string | null | undefined) {
           />
         </div>
 
+        <div v-if="user.idpType === 'INTERNAL'" class="action-item">
+          <div class="action-info">
+            <strong>Reset Two-Factor</strong>
+            <p>Clear enrolled factors, recovery codes and trusted devices — re-triggers 2FA onboarding at next sign-in.</p>
+          </div>
+          <Button
+            label="Reset 2FA"
+            icon="pi pi-mobile"
+            severity="secondary"
+            outlined
+            :loading="resettingTwoFactor"
+            @click="confirmResetTwoFactor"
+          />
+        </div>
+
         <div class="action-item">
           <div class="action-info">
             <strong>{{ user.active ? 'Deactivate User' : 'Activate User' }}</strong>
@@ -1021,7 +1123,7 @@ function formatDate(dateStr: string | null | undefined) {
           />
         </div>
 
-        <div class="action-item">
+        <div v-if="!clientScoped" class="action-item">
           <div class="action-info">
             <strong>Delete User</strong>
             <p>Permanently remove this user. Cannot be undone.</p>
