@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
 import { ref, computed } from "vue";
-import { useRouter } from "vue-router";
 import {
 	identityProvidersApi,
 	type CreateIdentityProviderRequest,
 	type IdentityProviderType,
 } from "@/api/identity-providers";
 import { getErrorMessage } from "@/utils/errors";
+import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
+import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
-const router = useRouter();
+const emit = defineEmits<{
+	changed: [];
+}>();
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -28,6 +31,20 @@ const form = ref({
 });
 
 const newAllowedDomain = ref("");
+
+// Cheap dirty check: anything typed into the identifying fields counts.
+const dirty = computed(
+	() =>
+		form.value.code !== "" ||
+		form.value.name !== "" ||
+		form.value.type !== "OIDC",
+);
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { goToList, replaceToDetail } = useDrawerRoute({
+	listPath: "/authentication/identity-providers",
+	dirty,
+});
 
 const typeOptions = [
 	{
@@ -106,8 +123,12 @@ async function createProvider() {
 		};
 
 		const created = await identityProvidersApi.create(requestData);
-		toast.success("Success", `Identity provider "${created.name}" created successfully`);
-		router.push(`/authentication/identity-providers/${created.id}`);
+		toast.success(
+			"Success",
+			`Identity provider "${created.name}" created successfully`,
+		);
+		emit("changed");
+		replaceToDetail(created.id);
 	} catch (e: unknown) {
 		error.value = getErrorMessage(e, "Failed to create identity provider");
 	} finally {
@@ -117,20 +138,13 @@ async function createProvider() {
 </script>
 
 <template>
-  <div class="page-container">
-    <header class="page-header">
-      <div>
-        <Button
-          icon="pi pi-arrow-left"
-          text
-          class="back-button"
-          @click="router.push('/authentication/identity-providers')"
-        />
-        <h1 class="page-title">Create Identity Provider</h1>
-        <p class="page-subtitle">Configure a new identity provider for federated authentication.</p>
-      </div>
-    </header>
-
+  <EntityDrawer
+    ref="drawer"
+    title="Create Identity Provider"
+    subtitle="Configure a new identity provider for federated authentication"
+    :dirty="dirty"
+    @close="goToList()"
+  >
     <Message
       v-if="error"
       severity="error"
@@ -141,8 +155,8 @@ async function createProvider() {
       {{ error }}
     </Message>
 
-    <div class="fc-card">
-      <div class="form-content">
+    <FcFormSection title="Provider" flat>
+      <div class="field-stack">
         <div class="field">
           <label for="code">Code *</label>
           <InputText
@@ -189,137 +203,131 @@ async function createProvider() {
             </template>
           </Select>
         </div>
+      </div>
+    </FcFormSection>
 
-        <template v-if="form.type === 'OIDC'">
-          <div class="field checkbox-field">
-            <Checkbox id="multiTenant" v-model="form.oidcMultiTenant" :binary="true" />
-            <label for="multiTenant" class="checkbox-label">Multi-Tenant Mode</label>
-          </div>
-          <small class="field-help">
-            Enable for providers like Azure AD where the issuer varies per tenant
-          </small>
-
-          <div class="field">
-            <label for="issuerUrl">Issuer URL *</label>
-            <InputText
-              id="issuerUrl"
-              v-model="form.oidcIssuerUrl"
-              :placeholder="
-                form.oidcMultiTenant
-                  ? 'https://login.microsoftonline.com/organizations/v2.0'
-                  : 'https://login.example.com'
-              "
-              class="w-full"
-            />
-            <small class="field-help">
-              {{
-                form.oidcMultiTenant
-                  ? 'Base URL for authorization/token endpoints (e.g., .../organizations/v2.0 or .../common/v2.0)'
-                  : 'The OpenID Connect issuer URL'
-              }}
-            </small>
-          </div>
-
-          <div v-if="form.oidcMultiTenant" class="field">
-            <label for="issuerPattern">Issuer Pattern</label>
-            <InputText
-              id="issuerPattern"
-              v-model="form.oidcIssuerPattern"
-              placeholder="https://login.microsoftonline.com/{tenantId}/v2.0"
-              class="w-full"
-            />
-            <small class="field-help">
-              Pattern for validating token issuer. Use {tenantId} as placeholder. Leave empty to
-              auto-derive from Issuer URL.
-            </small>
-          </div>
-
-          <div class="field">
-            <label for="clientId">Client ID *</label>
-            <InputText
-              id="clientId"
-              v-model="form.oidcClientId"
-              placeholder="Your OAuth client ID"
-              class="w-full"
-            />
-          </div>
-
-          <div class="field">
-            <label for="clientSecret">Client Secret</label>
-            <InputText
-              id="clientSecret"
-              v-model="form.oidcClientSecretRef"
-              type="password"
-              placeholder="Your OAuth client secret"
-              class="w-full"
-            />
-            <small class="field-help">Required for confidential clients</small>
-          </div>
-        </template>
+    <FcFormSection v-if="form.type === 'OIDC'" title="OIDC Configuration" flat>
+      <div class="field-stack">
+        <div class="field checkbox-field">
+          <Checkbox id="multiTenant" v-model="form.oidcMultiTenant" :binary="true" />
+          <label for="multiTenant" class="checkbox-label">Multi-Tenant Mode</label>
+        </div>
+        <small class="field-help">
+          Enable for providers like Azure AD where the issuer varies per tenant
+        </small>
 
         <div class="field">
-          <label>Allowed Email Domains</label>
-          <div class="domain-input">
-            <InputText
-              v-model="newAllowedDomain"
-              placeholder="example.com"
-              class="flex-grow"
-              @keyup.enter="addAllowedDomain"
-            />
-            <Button
-              icon="pi pi-plus"
-              @click="addAllowedDomain"
-              :disabled="!newAllowedDomain.trim()"
-            />
-          </div>
-          <div v-if="form.allowedEmailDomains.length > 0" class="domain-list">
-            <Chip
-              v-for="domain in form.allowedEmailDomains"
-              :key="domain"
-              :label="domain"
-              removable
-              @remove="removeAllowedDomain(domain)"
-            />
-          </div>
+          <label for="issuerUrl">Issuer URL *</label>
+          <InputText
+            id="issuerUrl"
+            v-model="form.oidcIssuerUrl"
+            :placeholder="
+              form.oidcMultiTenant
+                ? 'https://login.microsoftonline.com/organizations/v2.0'
+                : 'https://login.example.com'
+            "
+            class="w-full"
+          />
           <small class="field-help">
-            Restrict which email domains can authenticate. Leave empty to allow all domains.
+            {{
+              form.oidcMultiTenant
+                ? 'Base URL for authorization/token endpoints (e.g., .../organizations/v2.0 or .../common/v2.0)'
+                : 'The OpenID Connect issuer URL'
+            }}
           </small>
         </div>
 
-        <div class="form-actions">
-          <Button
-            label="Cancel"
-            text
-            @click="router.push('/authentication/identity-providers')"
-            :disabled="loading"
+        <div v-if="form.oidcMultiTenant" class="field">
+          <label for="issuerPattern">Issuer Pattern</label>
+          <InputText
+            id="issuerPattern"
+            v-model="form.oidcIssuerPattern"
+            placeholder="https://login.microsoftonline.com/{tenantId}/v2.0"
+            class="w-full"
           />
-          <Button
-            label="Create Identity Provider"
-            icon="pi pi-plus"
-            @click="createProvider"
-            :loading="loading"
-            :disabled="!isValid"
+          <small class="field-help">
+            Pattern for validating token issuer. Use {tenantId} as placeholder. Leave empty to
+            auto-derive from Issuer URL.
+          </small>
+        </div>
+
+        <div class="field">
+          <label for="clientId">Client ID *</label>
+          <InputText
+            id="clientId"
+            v-model="form.oidcClientId"
+            placeholder="Your OAuth client ID"
+            class="w-full"
           />
         </div>
+
+        <SecretRefInput
+          v-model="form.oidcClientSecretRef"
+          label="Client Secret"
+          help-text="Required for confidential clients"
+        />
       </div>
-    </div>
-  </div>
+    </FcFormSection>
+
+    <FcFormSection title="Allowed Email Domains" flat>
+      <div class="field">
+        <div class="domain-input">
+          <InputText
+            v-model="newAllowedDomain"
+            placeholder="example.com"
+            class="flex-grow"
+            @keyup.enter="addAllowedDomain"
+          />
+          <Button
+            icon="pi pi-plus"
+            :disabled="!newAllowedDomain.trim()"
+            @click="addAllowedDomain"
+          />
+        </div>
+        <div v-if="form.allowedEmailDomains.length > 0" class="domain-list">
+          <Chip
+            v-for="domain in form.allowedEmailDomains"
+            :key="domain"
+            :label="domain"
+            removable
+            @remove="removeAllowedDomain(domain)"
+          />
+        </div>
+        <small class="field-help">
+          Restrict which email domains can authenticate. Leave empty to allow all domains.
+        </small>
+      </div>
+    </FcFormSection>
+
+    <template #footer>
+      <FcFormActions :bordered="false">
+        <Button
+          label="Cancel"
+          text
+          :disabled="loading"
+          @click="drawer?.close()"
+        />
+        <Button
+          label="Create Identity Provider"
+          icon="pi pi-plus"
+          :loading="loading"
+          :disabled="!isValid"
+          @click="createProvider"
+        />
+      </FcFormActions>
+    </template>
+  </EntityDrawer>
 </template>
 
 <style scoped>
-.back-button {
-  margin-right: 8px;
-}
-
 .error-message {
   margin-bottom: 16px;
 }
 
-.form-content {
+.field-stack {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  max-width: 600px;
 }
 
 .field {
@@ -380,15 +388,6 @@ async function createProvider() {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
 }
 
 .w-full {

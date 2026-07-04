@@ -86,16 +86,20 @@ const router = createRouter({
 					path: "clients",
 					name: "clients",
 					component: () => import("@/pages/clients/ClientListPage.vue"),
-				},
-				{
-					path: "clients/new",
-					name: "client-create",
-					component: () => import("@/pages/clients/ClientCreatePage.vue"),
-				},
-				{
-					path: "clients/:id",
-					name: "client-detail",
-					component: () => import("@/pages/clients/ClientDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "client-create",
+							component: () =>
+								import("@/pages/clients/ClientCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "client-detail",
+							component: () =>
+								import("@/pages/clients/ClientDetailDrawer.vue"),
+						},
+					],
 				},
 				// Users (platform / anchor scope — full user administration).
 				// Detail/create render in a right-side drawer over the list; children
@@ -181,22 +185,24 @@ const router = createRouter({
 						import(
 							"@/pages/authentication/identity-providers/IdentityProviderListPage.vue"
 						),
-				},
-				{
-					path: "authentication/identity-providers/new",
-					name: "identity-provider-create",
-					component: () =>
-						import(
-							"@/pages/authentication/identity-providers/IdentityProviderCreatePage.vue"
-						),
-				},
-				{
-					path: "authentication/identity-providers/:id",
-					name: "identity-provider-detail",
-					component: () =>
-						import(
-							"@/pages/authentication/identity-providers/IdentityProviderDetailPage.vue"
-						),
+					children: [
+						{
+							path: "new",
+							name: "identity-provider-create",
+							component: () =>
+								import(
+									"@/pages/authentication/identity-providers/IdentityProviderCreateDrawer.vue"
+								),
+						},
+						{
+							path: ":id",
+							name: "identity-provider-detail",
+							component: () =>
+								import(
+									"@/pages/authentication/identity-providers/IdentityProviderDetailDrawer.vue"
+								),
+						},
+					],
 				},
 				// Authentication - Email Domain Mappings
 				// Detail/create render in a right-side drawer over the list
@@ -354,18 +360,20 @@ const router = createRouter({
 					name: "connections",
 					component: () =>
 						import("@/pages/connections/ConnectionListPage.vue"),
-				},
-				{
-					path: "connections/new",
-					name: "connection-create",
-					component: () =>
-						import("@/pages/connections/ConnectionCreatePage.vue"),
-				},
-				{
-					path: "connections/:id",
-					name: "connection-detail",
-					component: () =>
-						import("@/pages/connections/ConnectionDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "connection-create",
+							component: () =>
+								import("@/pages/connections/ConnectionCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "connection-detail",
+							component: () =>
+								import("@/pages/connections/ConnectionDetailDrawer.vue"),
+						},
+					],
 				},
 				// Dispatch Pools
 				{
@@ -373,18 +381,20 @@ const router = createRouter({
 					name: "dispatch-pools",
 					component: () =>
 						import("@/pages/dispatch-pools/DispatchPoolListPage.vue"),
-				},
-				{
-					path: "dispatch-pools/new",
-					name: "dispatch-pool-create",
-					component: () =>
-						import("@/pages/dispatch-pools/DispatchPoolCreatePage.vue"),
-				},
-				{
-					path: "dispatch-pools/:id",
-					name: "dispatch-pool-detail",
-					component: () =>
-						import("@/pages/dispatch-pools/DispatchPoolDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "dispatch-pool-create",
+							component: () =>
+								import("@/pages/dispatch-pools/DispatchPoolCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "dispatch-pool-detail",
+							component: () =>
+								import("@/pages/dispatch-pools/DispatchPoolDetailDrawer.vue"),
+						},
+					],
 				},
 				// Dispatch Jobs
 				{
