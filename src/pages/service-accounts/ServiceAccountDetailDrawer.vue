@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
 import {
@@ -16,23 +16,34 @@ import { connectionsApi, type Connection } from "@/api/connections";
 import type { PrincipalScope } from "@/api/users";
 import { rolesApi, type Role } from "@/api/roles";
 import { clientsApi, type Client } from "@/api/clients";
-import { useReturnTo } from "@/composables/useReturnTo";
+import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
+import { useDrawerRoute } from "@/composables/useDrawerRoute";
+
+const emit = defineEmits<{
+	changed: [];
+}>();
 
 const route = useRoute();
-const { returnTo } = useReturnTo();
 const confirm = useConfirm();
 
-const serviceAccountId = route.params['id'] as string;
+// Edit mode — doubles as the drawer's dirty flag.
+const editMode = ref(false);
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/identity/service-accounts",
+	dirty: editMode,
+});
 
 const serviceAccount = ref<ServiceAccount | null>(null);
 const clients = ref<Client[]>([]);
 const roleAssignments = ref<RoleAssignment[]>([]);
 const availableRoles = ref<Role[]>([]);
 const loading = ref(true);
+const loadError = ref<string | null>(null);
 const saving = ref(false);
 
-// Edit mode
-const editMode = ref(false);
+// Edit form
 const editName = ref("");
 const editDescription = ref("");
 const editScope = ref<PrincipalScope>("ANCHOR");
@@ -126,28 +137,63 @@ const hasRoleChanges = computed(() => {
 	return false;
 });
 
-onMounted(async () => {
-	await Promise.all([
-		loadServiceAccount(),
-		loadClients(),
-		loadAvailableRoles(),
-	]);
-	if (serviceAccount.value) {
-		await Promise.all([
-			loadRoleAssignments(),
-			loadConnections(),
-			loadApplicationAccess(),
-		]);
-		if (route.query['edit'] === "true") {
-			startEdit();
+// Static lookups (clients, roles) are row-independent — load them once and
+// keep them across row switches.
+let staticLoaded = false;
+
+// Reactive param: the drawer instance is reused when switching between rows,
+// so all per-account state resets and reloads whenever the id changes.
+watch(
+	id,
+	async (value) => {
+		if (!value) return;
+		resetState();
+		const staticLoads: Promise<void>[] = [];
+		if (!staticLoaded) {
+			staticLoads.push(loadClients(), loadAvailableRoles());
+			staticLoaded = true;
 		}
-	}
-	loading.value = false;
-});
+		await Promise.all([loadServiceAccount(), ...staticLoads]);
+		if (serviceAccount.value) {
+			await Promise.all([
+				loadRoleAssignments(),
+				loadConnections(),
+				loadApplicationAccess(),
+			]);
+			if (route.query['edit'] === "true") {
+				startEdit();
+			}
+		}
+		loading.value = false;
+	},
+	{ immediate: true },
+);
+
+function resetState() {
+	serviceAccount.value = null;
+	loading.value = true;
+	loadError.value = null;
+	editMode.value = false;
+	showRegenerateTokenDialog.value = false;
+	showRegenerateSecretDialog.value = false;
+	showRolePickerDialog.value = false;
+	showAppPickerDialog.value = false;
+	showDeleteDialog.value = false;
+	showCreateConnectionDialog.value = false;
+	newToken.value = null;
+	newSecret.value = null;
+	roleAssignments.value = [];
+	applicationAccessGrants.value = [];
+	availableApplications.value = [];
+	allApplications.value = false;
+	connections.value = [];
+}
 
 async function loadServiceAccount() {
+	const said = id.value;
+	if (!said) return;
 	try {
-		serviceAccount.value = await serviceAccountsApi.get(serviceAccountId);
+		serviceAccount.value = await serviceAccountsApi.get(said);
 		editName.value = serviceAccount.value.name;
 		editDescription.value = serviceAccount.value.description || "";
 		// The wire only ever carries ANCHOR/PARTNER/CLIENT; the generated type
@@ -156,7 +202,7 @@ async function loadServiceAccount() {
 		editClientIds.value = serviceAccount.value.clientIds || [];
 	} catch (error) {
 		console.error("Failed to fetch service account:", error);
-		returnTo("/identity/service-accounts");
+		loadError.value = "Service account not found";
 	}
 }
 
@@ -179,8 +225,10 @@ async function loadAvailableRoles() {
 }
 
 async function loadRoleAssignments() {
+	const said = id.value;
+	if (!said) return;
 	try {
-		const response = await serviceAccountsApi.getRoles(serviceAccountId);
+		const response = await serviceAccountsApi.getRoles(said);
 		roleAssignments.value = response.roles;
 	} catch (error) {
 		console.error("Failed to fetch role assignments:", error);
@@ -235,6 +283,7 @@ async function onToggleAllApplications(value: boolean) {
 				? "Granted access to all applications"
 				: "Restricted to specific applications",
 		);
+		emit("changed");
 	} catch (e: unknown) {
 		allApplications.value = !value;
 	} finally {
@@ -297,6 +346,7 @@ async function saveApps() {
 		}
 
 		toast.success("Success", detail);
+		emit("changed");
 	} catch (e: unknown) {
 	} finally {
 		savingApps.value = false;
@@ -312,6 +362,8 @@ function getAppDisplay(appId: string) {
 }
 
 async function loadConnections() {
+	const said = id.value;
+	if (!said) return;
 	loadingConnections.value = true;
 	try {
 		const clientScope = serviceAccount.value?.clientIds?.[0];
@@ -319,7 +371,7 @@ async function loadConnections() {
 			clientScope ? { clientId: clientScope } : {},
 		);
 		connections.value = response.connections.filter(
-			(c) => c.serviceAccountId === serviceAccountId,
+			(c) => c.serviceAccountId === said,
 		);
 	} catch (error) {
 		console.error("Failed to fetch connections:", error);
@@ -342,18 +394,18 @@ function confirmPauseConnection(connection: Connection) {
 	});
 }
 
-async function pauseConnection(id: string) {
+async function pauseConnection(connectionId: string) {
 	try {
-		await connectionsApi.pause(id);
+		await connectionsApi.pause(connectionId);
 		toast.success("Success", "Connection paused");
 		await loadConnections();
 	} catch (e: unknown) {
 	}
 }
 
-async function activateConnection(id: string) {
+async function activateConnection(connectionId: string) {
 	try {
-		await connectionsApi.activate(id);
+		await connectionsApi.activate(connectionId);
 		toast.success("Success", "Connection activated");
 		await loadConnections();
 	} catch (e: unknown) {
@@ -381,6 +433,8 @@ function cancelEdit() {
 }
 
 async function saveServiceAccount() {
+	const said = id.value;
+	if (!said) return;
 	if (!editName.value.trim()) {
 		toast.error("Error", "Name is required");
 		return;
@@ -388,7 +442,7 @@ async function saveServiceAccount() {
 
 	saving.value = true;
 	try {
-		await serviceAccountsApi.update(serviceAccountId, {
+		await serviceAccountsApi.update(said, {
 			name: editName.value,
 			description: editDescription.value || undefined,
 			scope: editScope.value,
@@ -400,6 +454,7 @@ async function saveServiceAccount() {
 		serviceAccount.value!.clientIds = editClientIds.value;
 		editMode.value = false;
 		toast.success("Success", "Service account updated successfully");
+		emit("changed");
 	} catch (e: unknown) {
 	} finally {
 		saving.value = false;
@@ -407,9 +462,11 @@ async function saveServiceAccount() {
 }
 
 async function regenerateToken() {
+	const said = id.value;
+	if (!said) return;
 	saving.value = true;
 	try {
-		const response = await serviceAccountsApi.regenerateToken(serviceAccountId);
+		const response = await serviceAccountsApi.regenerateToken(said);
 		newToken.value = response.authToken ?? null;
 		showRegenerateTokenDialog.value = true;
 		toast.success("Success", "Auth token regenerated");
@@ -420,10 +477,11 @@ async function regenerateToken() {
 }
 
 async function regenerateSecret() {
+	const said = id.value;
+	if (!said) return;
 	saving.value = true;
 	try {
-		const response =
-			await serviceAccountsApi.regenerateSecret(serviceAccountId);
+		const response = await serviceAccountsApi.regenerateSecret(said);
 		newSecret.value = response.signingSecret ?? null;
 		showRegenerateSecretDialog.value = true;
 		toast.success("Success", "Signing secret regenerated");
@@ -461,11 +519,13 @@ function removeSelectedRole(roleName: string) {
 }
 
 async function saveRoles() {
+	const said = id.value;
+	if (!said) return;
 	savingRoles.value = true;
 	try {
 		const roles = Array.from(selectedRoleNames.value);
 		const response: RolesAssignedResponse =
-			await serviceAccountsApi.assignRoles(serviceAccountId, roles);
+			await serviceAccountsApi.assignRoles(said, roles);
 		roleAssignments.value = response.roles;
 		if (serviceAccount.value) {
 			serviceAccount.value.roles = roles;
@@ -484,6 +544,7 @@ async function saveRoles() {
 		}
 
 		toast.success("Success", detail);
+		emit("changed");
 	} catch (e: unknown) {
 	} finally {
 		savingRoles.value = false;
@@ -506,7 +567,7 @@ function getClientName(clientId: string): string {
 function getClientNames(clientIds: string[]): string {
 	if (!clientIds || clientIds.length === 0)
 		return "All clients (no restriction)";
-	return clientIds.map((id) => getClientName(id)).join(", ");
+	return clientIds.map((cid) => getClientName(cid)).join(", ");
 }
 
 function formatDate(dateStr: string | null | undefined) {
@@ -514,16 +575,16 @@ function formatDate(dateStr: string | null | undefined) {
 	return new Date(dateStr).toLocaleDateString();
 }
 
-function goBack() {
-	returnTo("/identity/service-accounts");
-}
-
 async function deleteServiceAccount() {
+	const said = id.value;
+	if (!said) return;
 	deleting.value = true;
 	try {
-		await serviceAccountsApi.delete(serviceAccountId);
+		await serviceAccountsApi.delete(said);
 		toast.success("Success", "Service account deleted successfully");
-		returnTo("/identity/service-accounts");
+		emit("changed");
+		editMode.value = false;
+		void drawer.value?.close(true);
 	} catch (e: unknown) {
 	} finally {
 		deleting.value = false;
@@ -533,85 +594,48 @@ async function deleteServiceAccount() {
 </script>
 
 <template>
-  <div class="page-container">
-    <div v-if="loading" class="loading-container">
-      <ProgressSpinner strokeWidth="3" />
-    </div>
+  <EntityDrawer
+    ref="drawer"
+    :title="serviceAccount?.name || 'Service Account'"
+    :subtitle="serviceAccount?.code"
+    size="wide"
+    :loading="loading"
+    :error="loadError"
+    :dirty="editMode"
+    @close="goToList()"
+  >
+    <template v-if="serviceAccount" #header-extra>
+      <Tag
+        :value="serviceAccount.active ? 'Active' : 'Inactive'"
+        :severity="serviceAccount.active ? 'success' : 'danger'"
+      />
+    </template>
 
-    <template v-else-if="serviceAccount">
-      <header class="page-header">
-        <div class="header-left">
-          <Button
-            icon="pi pi-arrow-left"
-            text
-            rounded
-            severity="secondary"
-            @click="goBack"
-            v-tooltip.right="'Back to service accounts'"
-          />
-          <div>
-            <h1 class="page-title">{{ serviceAccount.name }}</h1>
-            <p class="page-subtitle">
-              <code>{{ serviceAccount.code }}</code>
-            </p>
-          </div>
-          <Tag
-            :value="serviceAccount.active ? 'Active' : 'Inactive'"
-            :severity="serviceAccount.active ? 'success' : 'danger'"
-          />
-        </div>
-        <div class="header-right">
-          <Button
-            label="Delete"
-            icon="pi pi-trash"
-            severity="danger"
-            outlined
-            @click="showDeleteDialog = true"
-          />
-        </div>
-      </header>
-
-      <!-- Service Account Information Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Service Account Information</h2>
+    <template v-if="serviceAccount">
+      <!-- Service Account Information -->
+      <FcFormSection title="Service Account Information" flat>
+        <template #actions>
           <Button v-if="!editMode" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
-          <div v-else class="edit-actions">
+          <template v-else>
             <Button label="Cancel" text @click="cancelEdit" />
-            <Button label="Save" icon="pi pi-check" :loading="saving" @click="saveServiceAccount" />
-          </div>
-        </div>
-
-        <div class="info-grid">
-          <div class="info-item">
-            <label>Name</label>
-            <InputText v-if="editMode" v-model="editName" class="w-full" />
-            <span v-else>{{ serviceAccount.name }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Code</label>
-            <code>{{ serviceAccount.code }}</code>
-          </div>
-
-          <div class="info-item span-2">
-            <label>Description</label>
-            <Textarea v-if="editMode" v-model="editDescription" rows="2" class="w-full" />
-            <span v-else>{{ serviceAccount.description || '—' }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Scope</label>
-            <Select
-              v-if="editMode"
-              v-model="editScope"
-              :options="scopeOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
+            <Button
+              label="Save"
+              icon="pi pi-check"
+              :loading="saving"
+              @click="saveServiceAccount"
             />
+          </template>
+        </template>
+
+        <!-- View mode -->
+        <div v-if="!editMode" class="fc-detail-grid">
+          <FcDetailField label="Name" :value="serviceAccount.name" />
+          <FcDetailField label="Code">
+            <code>{{ serviceAccount.code }}</code>
+          </FcDetailField>
+          <FcDetailField label="Description" :value="serviceAccount.description" span />
+          <FcDetailField label="Scope">
             <Tag
-              v-else
               :value="serviceAccount.scope || 'N/A'"
               :severity="
                 serviceAccount.scope === 'ANCHOR'
@@ -621,50 +645,62 @@ async function deleteServiceAccount() {
                     : 'warn'
               "
             />
-          </div>
-
-          <div
-            class="info-item span-2"
-            v-if="editMode ? editScope !== 'ANCHOR' : serviceAccount.scope !== 'ANCHOR'"
-          >
-            <label>Client Access</label>
-            <MultiSelect
-              v-if="editMode"
-              v-model="editClientIds"
-              :options="clientOptions"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Select clients..."
-              display="chip"
-              filter
-              class="w-full"
-            />
-            <span v-else>{{ getClientNames(serviceAccount.clientIds) }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Auth Type</label>
+          </FcDetailField>
+          <FcDetailField
+            v-if="serviceAccount.scope !== 'ANCHOR'"
+            label="Client Access"
+            :value="getClientNames(serviceAccount.clientIds)"
+            span
+          />
+          <FcDetailField label="Auth Type">
             <Tag :value="serviceAccount.authType || 'BEARER'" severity="secondary" />
-          </div>
-
-          <div class="info-item">
-            <label>Created</label>
-            <span>{{ formatDate(serviceAccount.createdAt) }}</span>
-          </div>
-
-          <div class="info-item">
-            <label>Last Used</label>
-            <span>{{ formatDate(serviceAccount.lastUsedAt) }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Webhook Credentials Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Webhook Credentials</h2>
+          </FcDetailField>
+          <FcDetailField label="Created" :value="formatDate(serviceAccount.createdAt)" />
+          <FcDetailField label="Last Used" :value="formatDate(serviceAccount.lastUsedAt)" />
         </div>
 
+        <!-- Edit mode -->
+        <div v-else class="fc-form-grid">
+          <FcFormField label="Name" required>
+            <template #default="{ id: fieldId }">
+              <InputText :id="fieldId" v-model="editName" />
+            </template>
+          </FcFormField>
+          <FcFormField label="Scope">
+            <template #default="{ id: fieldId }">
+              <Select
+                :id="fieldId"
+                v-model="editScope"
+                :options="scopeOptions"
+                optionLabel="label"
+                optionValue="value"
+              />
+            </template>
+          </FcFormField>
+          <FcFormField label="Description" span>
+            <template #default="{ id: fieldId }">
+              <Textarea :id="fieldId" v-model="editDescription" rows="2" />
+            </template>
+          </FcFormField>
+          <FcFormField v-if="editScope !== 'ANCHOR'" label="Client Access" span>
+            <template #default="{ id: fieldId }">
+              <MultiSelect
+                :id="fieldId"
+                v-model="editClientIds"
+                :options="clientOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Select clients..."
+                display="chip"
+                filter
+              />
+            </template>
+          </FcFormField>
+        </div>
+      </FcFormSection>
+
+      <!-- Webhook Credentials -->
+      <FcFormSection title="Webhook Credentials" flat>
         <div class="credentials-section">
           <p class="credentials-info">
             Credentials are encrypted and cannot be viewed. You can regenerate them if needed.
@@ -694,14 +730,13 @@ async function deleteServiceAccount() {
             </div>
           </div>
         </div>
-      </div>
+      </FcFormSection>
 
-      <!-- Roles Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Roles</h2>
+      <!-- Roles -->
+      <FcFormSection title="Roles" flat>
+        <template #actions>
           <Button label="Manage Roles" icon="pi pi-pencil" text @click="openRolePicker" />
-        </div>
+        </template>
 
         <div v-if="roleAssignments.length === 0" class="no-roles-notice">
           <p>No roles assigned to this service account.</p>
@@ -731,20 +766,18 @@ async function deleteServiceAccount() {
             </template>
           </Column>
         </DataTable>
-      </div>
+      </FcFormSection>
 
-      <!-- Application Access Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Application Access</h2>
+      <!-- Application Access -->
+      <FcFormSection title="Application Access" flat>
+        <template v-if="!allApplications" #actions>
           <Button
-            v-if="!allApplications"
             label="Manage Applications"
             icon="pi pi-pencil"
             text
             @click="openAppPicker"
           />
-        </div>
+        </template>
 
         <!-- All-applications toggle: the application-axis analogue of an anchor. -->
         <div class="all-apps-toggle">
@@ -779,19 +812,18 @@ async function deleteServiceAccount() {
             </Column>
           </DataTable>
         </template>
-      </div>
+      </FcFormSection>
 
-      <!-- Connections Card -->
-      <div class="fc-card">
-        <div class="card-header">
-          <h2 class="card-title">Connections</h2>
+      <!-- Connections -->
+      <FcFormSection title="Connections" flat>
+        <template #actions>
           <Button
             label="New Connection"
             icon="pi pi-plus"
             text
             @click="showCreateConnectionDialog = true"
           />
-        </div>
+        </template>
 
         <ProgressSpinner v-if="loadingConnections" strokeWidth="3" style="width: 32px; height: 32px" />
 
@@ -846,16 +878,33 @@ async function deleteServiceAccount() {
             </template>
           </Column>
         </DataTable>
-      </div>
+      </FcFormSection>
+
+      <!-- Danger Zone -->
+      <FcFormSection title="Danger Zone" flat>
+        <div class="action-items">
+          <div class="action-item">
+            <div class="action-info">
+              <strong>Delete Service Account</strong>
+              <p>Permanently delete this service account and its credentials. Cannot be undone.</p>
+            </div>
+            <Button
+              label="Delete"
+              icon="pi pi-trash"
+              severity="danger"
+              outlined
+              @click="showDeleteDialog = true"
+            />
+          </div>
+        </div>
+      </FcFormSection>
 
       <ConnectionCreateDialog
         v-model:visible="showCreateConnectionDialog"
-        :service-account-id="serviceAccountId"
+        :service-account-id="serviceAccount.id"
         :client-id="serviceAccount?.clientIds?.[0]"
         @created="onConnectionCreated"
       />
-
-      <ConfirmDialog />
     </template>
 
     <!-- Regenerate Token Dialog -->
@@ -1102,82 +1151,10 @@ async function deleteServiceAccount() {
         />
       </template>
     </Dialog>
-  </div>
+  </EntityDrawer>
 </template>
 
 <style scoped>
-.loading-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 60px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.fc-card {
-  margin-bottom: 24px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
-.edit-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-}
-
-.info-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.info-item.span-2 {
-  grid-column: span 2;
-}
-
-.info-item label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.info-item span,
-.info-item code {
-  font-size: 14px;
-  color: #1e293b;
-}
-
 .credentials-section {
   padding: 16px;
   background: #f8fafc;
@@ -1271,10 +1248,6 @@ async function deleteServiceAccount() {
   font-family: monospace;
 }
 
-.w-full {
-  width: 100%;
-}
-
 .no-connections-notice {
   text-align: center;
   padding: 24px;
@@ -1304,6 +1277,35 @@ async function deleteServiceAccount() {
   text-overflow: ellipsis;
   white-space: nowrap;
   display: inline-block;
+}
+
+/* Danger zone action row */
+.action-items {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.action-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.action-info strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.action-info p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
 }
 
 /* Dual-pane role picker styles */
@@ -1580,14 +1582,6 @@ async function deleteServiceAccount() {
 }
 
 @media (max-width: 768px) {
-  .info-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .info-item.span-2 {
-    grid-column: span 1;
-  }
-
   .role-picker,
   .app-picker {
     flex-direction: column;

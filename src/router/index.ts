@@ -68,18 +68,20 @@ const router = createRouter({
 					name: "applications",
 					component: () =>
 						import("@/pages/applications/ApplicationListPage.vue"),
-				},
-				{
-					path: "applications/new",
-					name: "application-create",
-					component: () =>
-						import("@/pages/applications/ApplicationCreatePage.vue"),
-				},
-				{
-					path: "applications/:id",
-					name: "application-detail",
-					component: () =>
-						import("@/pages/applications/ApplicationDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "application-create",
+							component: () =>
+								import("@/pages/applications/ApplicationCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "application-detail",
+							component: () =>
+								import("@/pages/applications/ApplicationDetailDrawer.vue"),
+						},
+					],
 				},
 				// Clients
 				{
@@ -137,18 +139,20 @@ const router = createRouter({
 					name: "service-accounts",
 					component: () =>
 						import("@/pages/service-accounts/ServiceAccountListPage.vue"),
-				},
-				{
-					path: "identity/service-accounts/new",
-					name: "service-account-create",
-					component: () =>
-						import("@/pages/service-accounts/ServiceAccountCreatePage.vue"),
-				},
-				{
-					path: "identity/service-accounts/:id",
-					name: "service-account-detail",
-					component: () =>
-						import("@/pages/service-accounts/ServiceAccountDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "service-account-create",
+							component: () =>
+								import("@/pages/service-accounts/ServiceAccountCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "service-account-detail",
+							component: () =>
+								import("@/pages/service-accounts/ServiceAccountDetailDrawer.vue"),
+						},
+					],
 				},
 				// Authorization - Roles
 				{
@@ -247,18 +251,20 @@ const router = createRouter({
 					name: "oauth-clients",
 					component: () =>
 						import("@/pages/authentication/OAuthClientListPage.vue"),
-				},
-				{
-					path: "authentication/oauth-clients/new",
-					name: "oauth-client-create",
-					component: () =>
-						import("@/pages/authentication/OAuthClientCreatePage.vue"),
-				},
-				{
-					path: "authentication/oauth-clients/:id",
-					name: "oauth-client-detail",
-					component: () =>
-						import("@/pages/authentication/OAuthClientDetailPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "oauth-client-create",
+							component: () =>
+								import("@/pages/authentication/OAuthClientCreateDrawer.vue"),
+						},
+						{
+							path: ":id",
+							name: "oauth-client-detail",
+							component: () =>
+								import("@/pages/authentication/OAuthClientDetailDrawer.vue"),
+						},
+					],
 				},
 				// Legacy redirects
 				{

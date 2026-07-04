@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
 import { ref, computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
 import {
 	serviceAccountsApi,
 	type CreateServiceAccountResponse,
 } from "@/api/service-accounts";
 import type { PrincipalScope } from "@/api/users";
 import { clientsApi, type Client } from "@/api/clients";
+import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
+import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
-const router = useRouter();
+const emit = defineEmits<{
+	changed: [];
+}>();
 
 const code = ref("");
 const name = ref("");
@@ -18,6 +21,21 @@ const scope = ref<PrincipalScope>("ANCHOR");
 const selectedClientIds = ref<string[]>([]);
 const clients = ref<Client[]>([]);
 const saving = ref(false);
+
+// Once the account exists the drawer must never block navigation — the
+// secret-once credentials dialog is the only remaining step.
+const created = ref(false);
+const dirty = computed(
+	() =>
+		!created.value &&
+		(!!name.value || !!code.value || !!description.value),
+);
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { goToList, replaceToDetail } = useDrawerRoute({
+	listPath: "/identity/service-accounts",
+	dirty,
+});
 
 const scopeOptions = [
 	{ label: "Anchor (all clients)", value: "ANCHOR" },
@@ -91,7 +109,8 @@ async function createServiceAccount() {
 						: undefined,
 			});
 
-		// Store credentials and show dialog
+		// Store credentials and show the secret-once dialog; navigation waits
+		// until the user confirms they copied the credentials.
 		createdCredentials.value = {
 			clientId: response.oauth.clientId,
 			clientSecret: response.oauth.clientSecret,
@@ -99,6 +118,8 @@ async function createServiceAccount() {
 			signingSecret: response.webhook.signingSecret,
 		};
 		createdServiceAccountId.value = response.serviceAccount.id;
+		created.value = true;
+		emit("changed");
 		showCredentialsDialog.value = true;
 
 		toast.success("Success", "Service account created successfully");
@@ -116,114 +137,99 @@ function copyToClipboard(text: string, label: string) {
 function closeDialogAndNavigate() {
 	showCredentialsDialog.value = false;
 	if (createdServiceAccountId.value) {
-		router.push(`/identity/service-accounts/${createdServiceAccountId.value}`);
+		replaceToDetail(createdServiceAccountId.value);
 	} else {
-		router.push("/identity/service-accounts");
+		goToList();
 	}
-}
-
-function goBack() {
-	router.push("/identity/service-accounts");
 }
 </script>
 
 <template>
-  <div class="page-container">
-    <header class="page-header">
-      <div class="header-left">
-        <Button
-          icon="pi pi-arrow-left"
-          text
-          rounded
-          severity="secondary"
-          @click="goBack"
-          v-tooltip.right="'Back to service accounts'"
-        />
-        <div>
-          <h1 class="page-title">Create Service Account</h1>
-          <p class="page-subtitle">Create a new service account with webhook credentials</p>
-        </div>
+  <EntityDrawer
+    ref="drawer"
+    title="Create Service Account"
+    subtitle="Create a new service account with webhook credentials"
+    :dirty="dirty"
+    @close="goToList()"
+  >
+    <FcFormSection title="Basic Information" flat>
+      <div class="fc-form-grid">
+        <FcFormField
+          label="Name"
+          required
+          span
+          help="A human-readable name for this service account"
+        >
+          <template #default="{ id: fieldId }">
+            <InputText
+              :id="fieldId"
+              v-model="name"
+              placeholder="My Service Account"
+              @blur="generateCode"
+            />
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          label="Code"
+          required
+          span
+          help="Unique identifier (lowercase, alphanumeric with dashes). Example: tms-service"
+        >
+          <template #default="{ id: fieldId }">
+            <InputText :id="fieldId" v-model="code" placeholder="my-service-account" />
+          </template>
+        </FcFormField>
+
+        <FcFormField label="Description" span>
+          <template #default="{ id: fieldId }">
+            <Textarea
+              :id="fieldId"
+              v-model="description"
+              placeholder="Optional description..."
+              rows="3"
+            />
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          label="Scope"
+          required
+          span
+          help="Determines which clients this service account can access."
+        >
+          <template #default="{ id: fieldId }">
+            <Select
+              :id="fieldId"
+              v-model="scope"
+              :options="scopeOptions"
+              optionLabel="label"
+              optionValue="value"
+            />
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          v-if="scope !== 'ANCHOR'"
+          label="Client Access"
+          span
+          help="Select which clients this service account can access."
+        >
+          <template #default="{ id: fieldId }">
+            <MultiSelect
+              :id="fieldId"
+              v-model="selectedClientIds"
+              :options="clientOptions"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Select clients..."
+              display="chip"
+              filter
+            />
+          </template>
+        </FcFormField>
       </div>
-    </header>
-
-    <div class="fc-card form-card">
-      <div class="form-section">
-        <h2 class="section-title">Basic Information</h2>
-
-        <div class="form-group">
-          <label for="name">Name <span class="required">*</span></label>
-          <InputText
-            id="name"
-            v-model="name"
-            placeholder="My Service Account"
-            class="w-full"
-            @blur="generateCode"
-          />
-          <small class="help-text">A human-readable name for this service account</small>
-        </div>
-
-        <div class="form-group">
-          <label for="code">Code <span class="required">*</span></label>
-          <InputText id="code" v-model="code" placeholder="my-service-account" class="w-full" />
-          <small class="help-text">
-            Unique identifier (lowercase, alphanumeric with dashes). Example: tms-service
-          </small>
-        </div>
-
-        <div class="form-group">
-          <label for="description">Description</label>
-          <Textarea
-            id="description"
-            v-model="description"
-            placeholder="Optional description..."
-            rows="3"
-            class="w-full"
-          />
-        </div>
-
-        <div class="form-group">
-          <label for="scope">Scope <span class="required">*</span></label>
-          <Select
-            id="scope"
-            v-model="scope"
-            :options="scopeOptions"
-            optionLabel="label"
-            optionValue="value"
-            class="w-full"
-          />
-          <small class="help-text">
-            Determines which clients this service account can access.
-          </small>
-        </div>
-
-        <div class="form-group" v-if="scope !== 'ANCHOR'">
-          <label for="clients">Client Access</label>
-          <MultiSelect
-            id="clients"
-            v-model="selectedClientIds"
-            :options="clientOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="Select clients..."
-            display="chip"
-            filter
-            class="w-full"
-          />
-          <small class="help-text"> Select which clients this service account can access. </small>
-        </div>
-      </div>
-
-      <div class="form-actions">
-        <Button label="Cancel" text severity="secondary" @click="goBack" />
-        <Button
-          label="Create Service Account"
-          icon="pi pi-check"
-          :disabled="!isValid"
-          :loading="saving"
-          @click="createServiceAccount"
-        />
-      </div>
-    </div>
+    </FcFormSection>
 
     <!-- Credentials Dialog (shown once after creation) -->
     <Dialog
@@ -322,47 +328,29 @@ function goBack() {
         />
       </template>
     </Dialog>
-  </div>
+
+    <template #footer>
+      <FcFormActions :bordered="false">
+        <Button
+          label="Cancel"
+          severity="secondary"
+          outlined
+          :disabled="saving"
+          @click="drawer?.close()"
+        />
+        <Button
+          label="Create Service Account"
+          icon="pi pi-check"
+          :disabled="!isValid"
+          :loading="saving"
+          @click="createServiceAccount"
+        />
+      </FcFormActions>
+    </template>
+  </EntityDrawer>
 </template>
 
 <style scoped>
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.form-card {
-  max-width: 600px;
-}
-
-.form-section {
-  margin-bottom: 24px;
-}
-
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 20px 0;
-}
-
-.form-group {
-  margin-bottom: 20px;
-}
-
-.form-group label {
-  display: block;
-  font-size: 14px;
-  font-weight: 500;
-  color: #1e293b;
-  margin-bottom: 6px;
-}
-
-.form-group .required {
-  color: #ef4444;
-}
-
 .help-text {
   display: block;
   font-size: 12px;
@@ -375,18 +363,6 @@ function goBack() {
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding-top: 20px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.w-full {
-  width: 100%;
 }
 
 /* Credentials Dialog */
@@ -478,11 +454,5 @@ function goBack() {
 
 .credentials-group .credential-value {
   background: #f1f5f9;
-}
-
-@media (max-width: 768px) {
-  .form-card {
-    max-width: 100%;
-  }
 }
 </style>
