@@ -105,6 +105,13 @@ function viewRole(role: Role) {
 	});
 }
 
+function editRole(role: Role) {
+	// Straight to the full-page permission-catalogue editor.
+	void router.push(
+		`/authorization/roles/${encodeURIComponent(role.name)}/edit`,
+	);
+}
+
 function openCreateDialog() {
 	createForm.value = {
 		applicationCode:
@@ -307,6 +314,15 @@ function getSourceLabel(source: RoleSource) {
                 severity="secondary"
                 v-tooltip.left="'View role'"
                 @click="viewRole(data)"
+              />
+              <Button
+                v-if="data.source === 'DATABASE'"
+                icon="pi pi-pencil"
+                text
+                rounded
+                severity="secondary"
+                v-tooltip.left="'Edit role'"
+                @click="editRole(data)"
               />
               <Button
                 v-if="data.source === 'DATABASE'"

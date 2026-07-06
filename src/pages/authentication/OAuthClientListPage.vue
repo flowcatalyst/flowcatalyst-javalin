@@ -53,10 +53,10 @@ async function loadClients() {
 	}
 }
 
-function openDetail(id: string) {
+function openDetail(id: string, edit = false) {
 	void router.push({
 		path: `/authentication/oauth-clients/${id}`,
-		query: route.query,
+		query: edit ? { ...route.query, edit: "true" } : route.query,
 	});
 }
 
@@ -196,7 +196,7 @@ function formatDate(dateString: string) {
             {{ formatDate(data.createdAt) }}
           </template>
         </Column>
-        <Column header="Actions" style="width: 120px">
+        <Column header="Actions" style="width: 160px">
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
@@ -205,6 +205,13 @@ function formatDate(dateString: string) {
                 rounded
                 v-tooltip="'View Details'"
                 @click="openDetail(data.id)"
+              />
+              <Button
+                icon="pi pi-pencil"
+                text
+                rounded
+                v-tooltip="'Edit'"
+                @click="openDetail(data.id, true)"
               />
               <Button
                 :icon="data.active ? 'pi pi-ban' : 'pi pi-check-circle'"

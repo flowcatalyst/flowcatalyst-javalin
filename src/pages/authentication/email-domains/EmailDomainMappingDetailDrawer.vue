@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
 import { ref, computed, watch } from "vue";
+import { useRoute } from "vue-router";
 import {
 	emailDomainMappingsApi,
 	type EmailDomainMapping,
@@ -105,10 +106,15 @@ const isValid = computed(() => {
 });
 
 // Reactive param: the drawer instance is reused when switching between rows.
+const route = useRoute();
 watch(
 	id,
-	(value) => {
-		if (value) void loadData(value);
+	async (value) => {
+		if (!value) return;
+		await loadData(value);
+		if (mapping.value && route.query["edit"] === "true") {
+			startEditing();
+		}
 	},
 	{ immediate: true },
 );

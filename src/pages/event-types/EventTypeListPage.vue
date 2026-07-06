@@ -45,10 +45,10 @@ const { filters: tableFilters, activeFilterCount, clearAll } = useTableFilters(
 
 onMounted(() => initialize());
 
-function viewEventType(eventType: EventType) {
+function viewEventType(eventType: EventType, edit = false) {
 	void router.push({
 		path: `/event-types/${eventType.id}`,
-		query: route.query,
+		query: edit ? { ...route.query, edit: "true" } : route.query,
 	});
 }
 
@@ -287,16 +287,26 @@ function getSchemaStatusSeverity(status: string) {
           </template>
         </Column>
 
-        <Column style="width: 5%">
+        <Column style="width: 8%">
           <template #body="{ data }">
-            <Button
-              icon="pi pi-chevron-right"
-              rounded
-              text
-              severity="secondary"
-              v-tooltip.left="'View details'"
-              @click.stop="viewEventType(data)"
-            />
+            <div class="action-buttons">
+              <Button
+                icon="pi pi-pencil"
+                rounded
+                text
+                severity="secondary"
+                v-tooltip.left="'Edit'"
+                @click.stop="viewEventType(data, true)"
+              />
+              <Button
+                icon="pi pi-chevron-right"
+                rounded
+                text
+                severity="secondary"
+                v-tooltip.left="'View details'"
+                @click.stop="viewEventType(data)"
+              />
+            </div>
           </template>
         </Column>
 
@@ -321,6 +331,13 @@ function getSchemaStatusSeverity(status: string) {
 .header-actions {
   display: flex;
   gap: 8px;
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  justify-content: flex-end;
 }
 
 .table-card {

@@ -69,6 +69,11 @@ function viewProcess(p: Process) {
 	void router.push({ path: `/processes/${p.id}`, query: route.query });
 }
 
+function editProcess(p: Process) {
+	// Straight to the full-page Mermaid editor.
+	void router.push(`/processes/${p.id}/edit`);
+}
+
 function openCreate() {
 	// Full-page editor route — no drawer, so no filter-query carry needed.
 	void router.push("/processes/create");
@@ -212,6 +217,29 @@ function openCreate() {
           </template>
         </Column>
 
+        <Column header="Actions" style="width: 100px">
+          <template #body="{ data }">
+            <div class="action-buttons">
+              <Button
+                icon="pi pi-eye"
+                text
+                rounded
+                severity="secondary"
+                v-tooltip.left="'View'"
+                @click.stop="viewProcess(data)"
+              />
+              <Button
+                icon="pi pi-pencil"
+                text
+                rounded
+                severity="secondary"
+                v-tooltip.left="'Edit'"
+                @click.stop="editProcess(data)"
+              />
+            </div>
+          </template>
+        </Column>
+
         <template #empty>
           <div class="empty-message">
             <i class="pi pi-inbox"></i>
@@ -233,6 +261,12 @@ function openCreate() {
 .header-actions {
   display: flex;
   gap: 8px;
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
 }
 
 .table-card {

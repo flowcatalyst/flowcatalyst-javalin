@@ -49,10 +49,10 @@ async function loadProviders() {
 	}
 }
 
-function openDetail(id: string) {
+function openDetail(id: string, edit = false) {
 	void router.push({
 		path: `/authentication/identity-providers/${id}`,
-		query: route.query,
+		query: edit ? { ...route.query, edit: "true" } : route.query,
 	});
 }
 
@@ -178,7 +178,7 @@ function formatDate(dateString: string) {
             {{ formatDate(data.createdAt) }}
           </template>
         </Column>
-        <Column header="Actions" style="width: 100px">
+        <Column header="Actions" style="width: 140px">
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
@@ -187,6 +187,13 @@ function formatDate(dateString: string) {
                 text
                 rounded
                 @click="openDetail(data.id)"
+              />
+              <Button
+                v-tooltip="'Edit'"
+                icon="pi pi-pencil"
+                text
+                rounded
+                @click="openDetail(data.id, true)"
               />
               <Button
                 v-tooltip="'Delete'"
