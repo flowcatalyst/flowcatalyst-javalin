@@ -129,6 +129,9 @@ function formatDate(dateStr: string | undefined | null) {
         currentPageReportTemplate="Showing {first} to {last} of {totalRecords} service accounts"
         stripedRows
         size="small"
+        rowHover
+        :rowClass="() => 'clickable-row'"
+        @row-click="(e) => viewServiceAccount(e.data)"
       >
         <template #header>
           <FcTableToolbar
@@ -227,20 +230,12 @@ function formatDate(dateStr: string | undefined | null) {
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
-                v-tooltip.top="'View'"
-                icon="pi pi-eye"
-                text
-                rounded
-                severity="secondary"
-                @click="viewServiceAccount(data)"
-              />
-              <Button
                 v-tooltip.top="'Edit'"
                 icon="pi pi-pencil"
                 text
                 rounded
                 severity="secondary"
-                @click="editServiceAccount(data)"
+                @click.stop="editServiceAccount(data)"
               />
             </div>
           </template>

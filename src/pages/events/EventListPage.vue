@@ -191,6 +191,9 @@ function truncateId(id: string | undefined): string {
         stripedRows
         emptyMessage="No events found"
         tableStyle="min-width: 60rem"
+        rowHover
+        :rowClass="() => 'clickable-row'"
+        @row-click="(e) => viewEventDetail(e.data)"
       >
         <template #header>
           <FcTableToolbar
@@ -318,17 +321,6 @@ function truncateId(id: string | undefined): string {
         <Column field="time" header="Time" style="width: 12rem">
           <template #body="{ data }">
             <span class="text-sm">{{ formatDate(data.time) }}</span>
-          </template>
-        </Column>
-        <Column header="Actions" style="width: 6rem">
-          <template #body="{ data }">
-            <Button
-              icon="pi pi-eye"
-              text
-              rounded
-              v-tooltip="'View details'"
-              @click="viewEventDetail(data)"
-            />
           </template>
         </Column>
       </DataTable>

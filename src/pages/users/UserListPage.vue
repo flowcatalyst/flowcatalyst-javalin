@@ -177,9 +177,12 @@ function formatDate(dateStr: string | undefined | null) {
         :showCurrentPageReport="true"
         currentPageReportTemplate="Showing {first} to {last} of {totalRecords} users"
         stripedRows
+        rowHover
+        :rowClass="() => 'clickable-row'"
         size="small"
         @page="onPage"
         @sort="onSort"
+        @row-click="(e) => viewUser(e.data)"
       >
         <template #header>
           <FcTableToolbar
@@ -307,24 +310,16 @@ function formatDate(dateStr: string | undefined | null) {
           </template>
         </Column>
 
-        <Column header="Actions" style="width: 5%">
+        <Column header="Actions" style="width: 60px">
           <template #body="{ data }">
             <div class="action-buttons">
-              <Button
-                v-tooltip.top="'View'"
-                icon="pi pi-eye"
-                text
-                rounded
-                severity="secondary"
-                @click="viewUser(data)"
-              />
               <Button
                 v-tooltip.top="'Edit'"
                 icon="pi pi-pencil"
                 text
                 rounded
                 severity="secondary"
-                @click="editUser(data)"
+                @click.stop="editUser(data)"
               />
             </div>
           </template>

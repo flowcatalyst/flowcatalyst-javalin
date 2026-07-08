@@ -138,6 +138,7 @@ function formatDate(s?: string): string {
         :rows-per-page-options="[10, 20, 50, 100]"
         data-key="id"
         row-hover
+        :rowClass="() => 'clickable-row'"
         selection-mode="single"
         stripedRows
         @row-click="onRowClick"
@@ -215,18 +216,6 @@ function formatDate(s?: string): string {
             <span class="text-sm">{{ formatDate(data.lastFiredAt) }}</span>
           </template>
         </Column>
-        <Column header="" style="width: 4rem">
-          <template #body="{ data }">
-            <Button
-              icon="pi pi-arrow-right"
-              severity="secondary"
-              text
-              rounded
-              @click.stop="viewJob(data)"
-            />
-          </template>
-        </Column>
-
         <template #empty>
           <div class="empty-message">
             <span>No scheduled jobs found</span>

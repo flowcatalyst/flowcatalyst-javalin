@@ -155,6 +155,11 @@ html {
 	scrollbar-gutter: stable;
 }
 
+/* Rows that open the record drawer on click */
+.p-datatable .clickable-row {
+	cursor: pointer;
+}
+
 /* PrimeVue's blockScroll also pads the body by the scrollbar width — with the
    gutter permanently reserved above, that padding would narrow the content by
    ~15px on every drawer open (the "judder"). Neutralize it. */

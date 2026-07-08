@@ -110,6 +110,7 @@ function openCreate() {
         :showCurrentPageReport="true"
         currentPageReportTemplate="Showing {first} to {last} of {totalRecords} processes"
         size="small"
+        rowHover
         @row-click="(e) => viewProcess(e.data)"
         :rowClass="() => 'clickable-row'"
       >
@@ -217,17 +218,9 @@ function openCreate() {
           </template>
         </Column>
 
-        <Column header="Actions" style="width: 100px">
+        <Column header="Actions" style="width: 60px">
           <template #body="{ data }">
             <div class="action-buttons">
-              <Button
-                icon="pi pi-eye"
-                text
-                rounded
-                severity="secondary"
-                v-tooltip.left="'View'"
-                @click.stop="viewProcess(data)"
-              />
               <Button
                 icon="pi pi-pencil"
                 text

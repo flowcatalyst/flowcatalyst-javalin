@@ -163,6 +163,7 @@ function getSchemaStatusSeverity(status: string) {
         :showCurrentPageReport="true"
         currentPageReportTemplate="Showing {first} to {last} of {totalRecords} event types"
         size="small"
+        rowHover
         @row-click="(e) => viewEventType(e.data)"
         :rowClass="() => 'clickable-row'"
       >
@@ -287,7 +288,7 @@ function getSchemaStatusSeverity(status: string) {
           </template>
         </Column>
 
-        <Column style="width: 8%">
+        <Column style="width: 5%">
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
@@ -297,14 +298,6 @@ function getSchemaStatusSeverity(status: string) {
                 severity="secondary"
                 v-tooltip.left="'Edit'"
                 @click.stop="viewEventType(data, true)"
-              />
-              <Button
-                icon="pi pi-chevron-right"
-                rounded
-                text
-                severity="secondary"
-                v-tooltip.left="'View details'"
-                @click.stop="viewEventType(data)"
               />
             </div>
           </template>

@@ -140,6 +140,9 @@ function formatDate(dateString: string) {
         :rows="100"
         :rowsPerPageOptions="[50, 100, 250, 500]"
         stripedRows
+        rowHover
+        :rowClass="() => 'clickable-row'"
+        @row-click="(e) => openDetail(e.data.id)"
       >
         <template #header>
           <FcTableToolbar
@@ -196,22 +199,15 @@ function formatDate(dateString: string) {
             {{ formatDate(data.createdAt) }}
           </template>
         </Column>
-        <Column header="Actions" style="width: 160px">
+        <Column header="Actions" style="width: 120px">
           <template #body="{ data }">
             <div class="action-buttons">
-              <Button
-                icon="pi pi-eye"
-                text
-                rounded
-                v-tooltip="'View Details'"
-                @click="openDetail(data.id)"
-              />
               <Button
                 icon="pi pi-pencil"
                 text
                 rounded
                 v-tooltip="'Edit'"
-                @click="openDetail(data.id, true)"
+                @click.stop="openDetail(data.id, true)"
               />
               <Button
                 :icon="data.active ? 'pi pi-ban' : 'pi pi-check-circle'"
@@ -219,7 +215,7 @@ function formatDate(dateString: string) {
                 rounded
                 :severity="data.active ? 'warn' : 'success'"
                 v-tooltip="data.active ? 'Deactivate' : 'Activate'"
-                @click="toggleActive(data)"
+                @click.stop="toggleActive(data)"
               />
               <Button
                 icon="pi pi-trash"
@@ -227,7 +223,7 @@ function formatDate(dateString: string) {
                 rounded
                 severity="danger"
                 v-tooltip="'Delete'"
-                @click="confirmDelete(data)"
+                @click.stop="confirmDelete(data)"
               />
             </div>
           </template>

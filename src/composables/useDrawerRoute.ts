@@ -1,6 +1,7 @@
 import { computed, type Ref } from "vue";
 import {
 	onBeforeRouteLeave,
+	onBeforeRouteUpdate,
 	useRoute,
 	useRouter,
 	type LocationQuery,
@@ -93,6 +94,17 @@ export function useDrawerRoute(options: DrawerRouteOptions) {
 	}
 
 	onBeforeRouteLeave(async () => {
+		if (approved) return true;
+		if (!options.dirty?.value) return true;
+		return confirmDiscardChanges(confirm);
+	});
+
+	// The drawer is non-modal, so the list stays clickable while it's open:
+	// switching rows is a same-record param update (leave guard doesn't fire).
+	// Prompt before discarding an open edit form on a row switch.
+	onBeforeRouteUpdate(async (to, from) => {
+		const key = options.paramKey ?? "id";
+		if (to.params[key] === from.params[key]) return true;
 		if (approved) return true;
 		if (!options.dirty?.value) return true;
 		return confirmDiscardChanges(confirm);

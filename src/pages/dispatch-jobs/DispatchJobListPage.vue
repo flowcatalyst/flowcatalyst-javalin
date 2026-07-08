@@ -406,10 +406,9 @@ function formatCode(code: string | undefined): {
             <span class="text-sm">{{ formatDate(data.createdAt) }}</span>
           </template>
         </Column>
-        <Column header="Actions" style="width: 8rem">
+        <Column header="Actions" style="width: 6rem">
           <template #body="{ data }">
             <div class="action-buttons">
-              <Button icon="pi pi-eye" text rounded size="small" v-tooltip="'View details'" />
               <Button
                 icon="pi pi-replay"
                 text

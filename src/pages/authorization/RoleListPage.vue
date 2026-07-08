@@ -221,6 +221,7 @@ function getSourceLabel(source: RoleSource) {
         size="small"
         @row-click="(e) => viewRole(e.data)"
         :rowHover="true"
+        :rowClass="() => 'clickable-row'"
       >
         <template #header>
           <FcTableToolbar
@@ -304,17 +305,9 @@ function getSourceLabel(source: RoleSource) {
           </template>
         </Column>
 
-        <Column header="Actions" style="width: 10%">
+        <Column header="Actions" style="width: 7%">
           <template #body="{ data }">
             <div class="action-buttons" @click.stop>
-              <Button
-                icon="pi pi-eye"
-                text
-                rounded
-                severity="secondary"
-                v-tooltip.left="'View role'"
-                @click="viewRole(data)"
-              />
               <Button
                 v-if="data.source === 'DATABASE'"
                 icon="pi pi-pencil"

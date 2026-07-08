@@ -138,6 +138,9 @@ function getEventTypesLabel(sub: Subscription) {
         :rows="100"
         :rowsPerPageOptions="[50, 100, 250, 500]"
         stripedRows
+        rowHover
+        :rowClass="() => 'clickable-row'"
+        @row-click="(e) => openDetail(e.data.id)"
       >
         <template #header>
           <FcTableToolbar
@@ -223,21 +226,14 @@ function getEventTypesLabel(sub: Subscription) {
             {{ formatDate(data.createdAt) }}
           </template>
         </Column>
-        <Column header="Actions" style="width: 120px">
+        <Column header="Actions" style="width: 80px">
           <template #body="{ data }">
-            <Button
-              v-tooltip="'View'"
-              icon="pi pi-eye"
-              text
-              rounded
-              @click="openDetail(data.id)"
-            />
             <Button
               v-tooltip="'Edit'"
               icon="pi pi-pencil"
               text
               rounded
-              @click="openDetail(data.id, true)"
+              @click.stop="openDetail(data.id, true)"
             />
           </template>
         </Column>

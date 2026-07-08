@@ -57,12 +57,16 @@ defineExpose({
 </script>
 
 <template>
+  <!-- Non-modal peek panel: the list stays scrollable and clickable underneath
+       (clicking another row switches the drawer via the reactive :id param).
+       dismissable stays off — an outside-click listener would close the drawer
+       before a row click could navigate. Close = X, Escape, or browser Back. -->
   <Drawer
     :visible="visible"
     position="right"
-    :modal="true"
-    :block-scroll="true"
-    :dismissable="!dirty"
+    :modal="false"
+    :block-scroll="false"
+    :dismissable="false"
     class="entity-drawer"
     :class="size === 'wide' ? 'entity-drawer-wide' : 'entity-drawer-default'"
     @update:visible="onVisibleUpdate"
@@ -171,6 +175,12 @@ defineExpose({
 
 .p-drawer.entity-drawer.entity-drawer-wide {
   width: min(800px, calc(100vw - 24px));
+}
+
+/* No modal mask anymore — a stronger shadow separates the panel from the
+   still-active page underneath */
+.p-drawer.entity-drawer {
+  box-shadow: -8px 0 32px rgba(15, 23, 42, 0.18);
 }
 
 .p-drawer.entity-drawer .p-drawer-header {
