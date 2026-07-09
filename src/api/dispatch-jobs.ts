@@ -9,6 +9,7 @@ import { apiFetch } from "./client";
 import type {
 	DispatchJobFilterOptionsResponse,
 	DispatchJobRead as GenDispatchJobRead,
+	RequeueResponse,
 } from "./generated";
 
 // Response types alias the generated contract (api/openapi.lock.json) so
@@ -52,5 +53,14 @@ export const dispatchJobsApi = {
 	},
 	filterOptions(): Promise<DispatchJobFilterOptions> {
 		return apiFetch(`/dispatch-jobs/filter-options`);
+	},
+	// Reset jobs to PENDING so the scheduler re-dispatches them. Returns the
+	// number actually reset (tenant-scoped server-side). Used by the list
+	// page's per-row retry + bulk "requeue selected".
+	requeue(ids: string[]): Promise<RequeueResponse> {
+		return apiFetch(`/dispatch-jobs/requeue`, {
+			method: "POST",
+			body: JSON.stringify({ ids }),
+		});
 	},
 };

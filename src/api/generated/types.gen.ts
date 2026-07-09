@@ -360,7 +360,9 @@ export type AuthenticateCompleteRequest = {
 
 export type BatchEventItem = {
     causationId?: string;
+    clientCode?: string;
     clientId?: string;
+    contextData?: Array<ContextEntryDto>;
     correlationId?: string;
     data?: unknown;
     deduplicationId?: string;
@@ -424,7 +426,7 @@ export type BulkImportResult = {
     message?: string;
     row: number;
     /**
-     * created | exists | error
+     * created | exists | dropped | error
      */
     status: string;
 };
@@ -1647,6 +1649,14 @@ export type PrincipalRoleListResponse = {
     roles: Array<PrincipalRoleAssignmentDto>;
 };
 
+export type PrincipalVersionResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    updatedAt: string;
+};
+
 export type ProcessListResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1812,6 +1822,26 @@ export type RequestDto = {
     id: string;
     name: string;
     principalId: string;
+};
+
+export type RequeueRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Dispatch job ids to reset to PENDING for re-dispatch
+     */
+    ids: Array<string>;
+    [key: string]: unknown;
+};
+
+export type RequeueResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    requeued: number;
 };
 
 export type ResetPasswordRequest = {
@@ -2211,6 +2241,10 @@ export type SyncPrincipalInputRequest = {
     email: string;
     name: string;
     /**
+     * Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim; migrated on first login
+     */
+    passwordHash?: string;
+    /**
      * Role short names (prefixed with applicationCode)
      */
     roles?: Array<string>;
@@ -2359,6 +2393,49 @@ export type SyncSubscriptionsRequest = {
     readonly $schema?: string;
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown;
+};
+
+export type SyncUserInput = {
+    /**
+     * Whether the user is active (default true)
+     */
+    active?: boolean;
+    /**
+     * User's email address (unique identifier for matching)
+     */
+    email: string;
+    /**
+     * Display name
+     */
+    name: string;
+    /**
+     * Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim; migrated on first login. Omit to leave any existing password untouched.
+     */
+    passwordHash?: string;
+    /**
+     * Role names to assign (SDK_SYNC source; replaces this source's prior set)
+     */
+    roles?: Array<string>;
+};
+
+export type SyncUsersRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    principals: Array<SyncUserInput>;
+    [key: string]: unknown;
+};
+
+export type SyncUsersResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    created: number;
+    deleted: number;
+    syncedEmails: Array<string>;
+    updated: number;
 };
 
 export type UpdateAnchorDomainRequest = {
@@ -3629,6 +3706,10 @@ export type PrincipalRoleListResponseWritable = {
     roles: Array<PrincipalRoleAssignmentDto>;
 };
 
+export type PrincipalVersionResponseWritable = {
+    updatedAt: string;
+};
+
 export type ProcessListResponseWritable = {
     items: Array<ProcessResponseWritable>;
 };
@@ -3694,6 +3775,18 @@ export type RegisterCompleteRequestWritable = {
 
 export type RegisterCompleteResponseWritable = {
     credentialId: string;
+};
+
+export type RequeueRequestWritable = {
+    /**
+     * Dispatch job ids to reset to PENDING for re-dispatch
+     */
+    ids: Array<string>;
+    [key: string]: unknown;
+};
+
+export type RequeueResponseWritable = {
+    requeued: number;
 };
 
 export type ResetPasswordRequestWritable = {
@@ -3971,6 +4064,18 @@ export type SyncScheduledJobsResultResponseWritable = {
 export type SyncSubscriptionsRequestWritable = {
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown;
+};
+
+export type SyncUsersRequestWritable = {
+    principals: Array<SyncUserInput>;
+    [key: string]: unknown;
+};
+
+export type SyncUsersResponseWritable = {
+    created: number;
+    deleted: number;
+    syncedEmails: Array<string>;
+    updated: number;
 };
 
 export type UpdateAnchorDomainRequestWritable = {
@@ -6351,6 +6456,31 @@ export type ListDispatchJobsRawAliasResponses = {
 
 export type ListDispatchJobsRawAliasResponse = ListDispatchJobsRawAliasResponses[keyof ListDispatchJobsRawAliasResponses];
 
+export type RequeueDispatchJobsData = {
+    body: RequeueRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/dispatch-jobs/requeue';
+};
+
+export type RequeueDispatchJobsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type RequeueDispatchJobsError = RequeueDispatchJobsErrors[keyof RequeueDispatchJobsErrors];
+
+export type RequeueDispatchJobsResponses = {
+    /**
+     * OK
+     */
+    200: RequeueResponse;
+};
+
+export type RequeueDispatchJobsResponse = RequeueDispatchJobsResponses[keyof RequeueDispatchJobsResponses];
+
 export type GetDispatchJobData = {
     body?: never;
     path: {
@@ -8265,6 +8395,31 @@ export type CheckPrincipalEmailDomainResponses = {
 
 export type CheckPrincipalEmailDomainResponse = CheckPrincipalEmailDomainResponses[keyof CheckPrincipalEmailDomainResponses];
 
+export type SyncUsersData = {
+    body: SyncUsersRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/principals/sync';
+};
+
+export type SyncUsersErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SyncUsersError = SyncUsersErrors[keyof SyncUsersErrors];
+
+export type SyncUsersResponses = {
+    /**
+     * OK
+     */
+    200: SyncUsersResponse;
+};
+
+export type SyncUsersResponse2 = SyncUsersResponses[keyof SyncUsersResponses];
+
 export type CreateUserData = {
     body: CreateUserRequestWritable;
     path?: never;
@@ -8804,6 +8959,33 @@ export type SendPrincipalPasswordResetResponses = {
 };
 
 export type SendPrincipalPasswordResetResponse = SendPrincipalPasswordResetResponses[keyof SendPrincipalPasswordResetResponses];
+
+export type GetPrincipalVersionData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/principals/{id}/version';
+};
+
+export type GetPrincipalVersionErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetPrincipalVersionError = GetPrincipalVersionErrors[keyof GetPrincipalVersionErrors];
+
+export type GetPrincipalVersionResponses = {
+    /**
+     * OK
+     */
+    200: PrincipalVersionResponse;
+};
+
+export type GetPrincipalVersionResponse = GetPrincipalVersionResponses[keyof GetPrincipalVersionResponses];
 
 export type ListProcessesData = {
     body?: never;

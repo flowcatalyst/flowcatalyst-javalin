@@ -8,6 +8,7 @@ import {
 	type DispatchJobRead as DispatchJob,
 	type DispatchJobsListParams,
 } from "@/api/dispatch-jobs";
+import { toast } from "@/utils/errorBus";
 
 interface FilterOption {
 	label: string;
@@ -66,16 +67,55 @@ function buildParams(): DispatchJobsListParams {
 
 const dispatchJobs = ref<DispatchJob[]>([]);
 const loading = ref(false);
+// Bound to the DataTable's multiple-selection checkboxes (dataKey="id").
+const selectedJobs = ref<DispatchJob[]>([]);
+const requeuing = ref(false);
 
 async function load() {
 	loading.value = true;
 	try {
 		dispatchJobs.value = await dispatchJobsApi.list(buildParams());
+		// Drop selections that are no longer in the refreshed view.
+		const visible = new Set(dispatchJobs.value.map((j) => j.id));
+		selectedJobs.value = selectedJobs.value.filter((j) => visible.has(j.id));
 	} catch (error) {
 		console.error("Failed to load dispatch jobs:", error);
 	} finally {
 		loading.value = false;
 	}
+}
+
+// Reset the given jobs to PENDING so the scheduler re-dispatches them. The
+// server tenant-scopes the reset, so `requeued` may be < ids.length.
+async function requeueIds(ids: string[]) {
+	if (!ids.length || requeuing.value) return;
+	requeuing.value = true;
+	try {
+		const { requeued } = await dispatchJobsApi.requeue(ids);
+		toast.success(
+			"Requeued",
+			`${requeued} dispatch job${requeued === 1 ? "" : "s"} reset to PENDING`,
+		);
+		selectedJobs.value = [];
+		await load();
+	} catch (error) {
+		toast.error(
+			"Requeue failed",
+			error instanceof Error ? error.message : undefined,
+		);
+	} finally {
+		requeuing.value = false;
+	}
+}
+
+function requeueSelected() {
+	requeueIds(
+		selectedJobs.value.map((j) => j.id).filter((id): id is string => !!id),
+	);
+}
+
+function requeueOne(job: DispatchJob) {
+	if (job.id) requeueIds([job.id]);
 }
 
 // Search reload: debounced, replacing the old Enter-to-search.
@@ -253,6 +293,8 @@ function formatCode(code: string | undefined): {
 
     <div class="fc-card">
       <DataTable
+        v-model:selection="selectedJobs"
+        dataKey="id"
         :value="dispatchJobs"
         :loading="loading"
         stripedRows
@@ -270,6 +312,20 @@ function formatCode(code: string | undefined): {
             @clear-all="clearAllFilters"
           >
             <template #actions>
+              <Button
+                :label="
+                  selectedJobs.length
+                    ? `Requeue selected (${selectedJobs.length})`
+                    : 'Requeue selected'
+                "
+                icon="pi pi-replay"
+                size="small"
+                severity="secondary"
+                :disabled="!selectedJobs.length || requeuing"
+                :loading="requeuing"
+                @click="requeueSelected"
+                v-tooltip="'Reset the selected jobs to PENDING for re-dispatch'"
+              />
               <Select
                 v-model="pageSize"
                 :options="sizeOptions"
@@ -360,6 +416,7 @@ function formatCode(code: string | undefined): {
           </FcTableToolbar>
         </template>
 
+        <Column selectionMode="multiple" headerStyle="width: 3rem" />
         <Column field="id" header="Job ID" style="width: 10rem">
           <template #body="{ data }">
             <span class="font-mono text-sm">{{ data.id?.slice(0, 8) }}...</span>
@@ -414,8 +471,9 @@ function formatCode(code: string | undefined): {
                 text
                 rounded
                 size="small"
-                v-tooltip="'Retry'"
-                :disabled="data.status === 'COMPLETED' || data.status === 'PROCESSING'"
+                v-tooltip="'Requeue — reset to PENDING for re-dispatch'"
+                :disabled="requeuing"
+                @click="requeueOne(data)"
               />
             </div>
           </template>
