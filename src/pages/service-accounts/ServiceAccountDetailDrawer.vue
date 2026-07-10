@@ -18,6 +18,7 @@ import { rolesApi, type Role } from "@/api/roles";
 import { clientsApi, type Client } from "@/api/clients";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -28,12 +29,6 @@ const confirm = useConfirm();
 
 // Edit mode — doubles as the drawer's dirty flag.
 const editMode = ref(false);
-
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/identity/service-accounts",
-	dirty: editMode,
-});
 
 const serviceAccount = ref<ServiceAccount | null>(null);
 const clients = ref<Client[]>([]);
@@ -48,6 +43,19 @@ const editName = ref("");
 const editDescription = ref("");
 const editScope = ref<PrincipalScope>("ANCHOR");
 const editClientIds = ref<string[]>([]);
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	description: editDescription.value,
+	scope: editScope.value,
+	clientIds: editClientIds.value,
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/identity/service-accounts",
+	dirty: computed(() => editMode.value && dirty.value),
+});
 
 const scopeOptions = [
 	{ label: "Anchor (all clients)", value: "ANCHOR" },
@@ -174,6 +182,7 @@ function resetState() {
 	loading.value = true;
 	loadError.value = null;
 	editMode.value = false;
+	resetDirty();
 	showRegenerateTokenDialog.value = false;
 	showRegenerateSecretDialog.value = false;
 	showRolePickerDialog.value = false;
@@ -420,6 +429,7 @@ function startEdit() {
 	editScope.value = (serviceAccount.value?.scope as PrincipalScope) || "ANCHOR";
 	editClientIds.value = serviceAccount.value?.clientIds || [];
 	editMode.value = true;
+	markClean();
 }
 
 function cancelEdit() {
@@ -430,6 +440,7 @@ function cancelEdit() {
 	editScope.value = (serviceAccount.value?.scope as PrincipalScope) || "ANCHOR";
 	editClientIds.value = serviceAccount.value?.clientIds || [];
 	editMode.value = false;
+	resetDirty();
 }
 
 async function saveServiceAccount() {
@@ -453,6 +464,7 @@ async function saveServiceAccount() {
 		serviceAccount.value!.scope = editScope.value;
 		serviceAccount.value!.clientIds = editClientIds.value;
 		editMode.value = false;
+		resetDirty();
 		toast.success("Success", "Service account updated successfully");
 		emit("changed");
 	} catch (e: unknown) {
@@ -601,7 +613,7 @@ async function deleteServiceAccount() {
     size="wide"
     :loading="loading"
     :error="loadError"
-    :dirty="editMode"
+    :dirty="editMode && dirty"
     @close="goToList()"
   >
     <template v-if="serviceAccount" #header-extra>
@@ -617,10 +629,11 @@ async function deleteServiceAccount() {
         <template #actions>
           <Button v-if="!editMode" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
           <template v-else>
-            <Button label="Cancel" text @click="cancelEdit" />
+            <Button v-if="dirty" label="Discard" text @click="cancelEdit" />
             <Button
               label="Save"
               icon="pi pi-check"
+              :disabled="!dirty"
               :loading="saving"
               @click="saveServiceAccount"
             />

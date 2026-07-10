@@ -17,18 +17,13 @@ import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
 }>();
 
 const isEditing = ref(false);
-
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/authentication/email-domain-mappings",
-	dirty: isEditing,
-});
 
 const mapping = ref<EmailDomainMapping | null>(null);
 const provider = ref<IdentityProvider | null>(null);
@@ -51,6 +46,17 @@ const editForm = ref({
 	allowed2faMethods: [] as TwoFactorMethod[],
 	rememberDeviceEnabled: false,
 	rememberDeviceDays: 30,
+});
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	...editForm.value,
+	allowedRoleIds: rolePickerModel.value[1].map((r) => r.id),
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/authentication/email-domain-mappings",
+	dirty: computed(() => isEditing.value && dirty.value),
 });
 
 // 2FA only applies to internal-auth domains: the linked provider must be loaded
@@ -124,6 +130,7 @@ async function loadData(mappingId: string) {
 	loadError.value = null;
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 	try {
 		const [mappingData, clientsResponse, rolesResponse] = await Promise.all([
 			emailDomainMappingsApi.get(mappingId),
@@ -213,12 +220,14 @@ function startEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = true;
+	markClean();
 }
 
 function cancelEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 }
 
 function searchClients(event: { query: string }) {
@@ -299,6 +308,7 @@ async function saveChanges() {
 		}
 
 		isEditing.value = false;
+		resetDirty();
 		toast.success("Success", "Email domain mapping updated successfully");
 		emit("changed");
 	} catch (e: unknown) {
@@ -363,7 +373,7 @@ function getPrimaryClientName(): string {
     :subtitle="provider ? `Identity Provider: ${provider.name}` : undefined"
     :loading="loading"
     :error="loadError"
-    :dirty="isEditing"
+    :dirty="isEditing && dirty"
     @close="goToList()"
   >
     <template v-if="mapping && !isEditing" #header-extra>
@@ -665,12 +675,12 @@ function getPrimaryClientName(): string {
         <Button label="Edit" icon="pi pi-pencil" @click="startEditing" />
       </template>
       <FcFormActions v-else :bordered="false">
-        <Button label="Cancel" text :disabled="saving" @click="cancelEditing" />
+        <Button v-if="dirty" label="Discard" text :disabled="saving" @click="cancelEditing" />
         <Button
           label="Save Changes"
           icon="pi pi-check"
           :loading="saving"
-          :disabled="!isValid"
+          :disabled="!dirty || !isValid"
           @click="saveChanges"
         />
       </FcFormActions>

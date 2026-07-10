@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/api/subscriptions";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -19,17 +20,6 @@ const route = useRoute();
 const confirm = useConfirm();
 
 const editing = ref(false);
-
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/subscriptions",
-	dirty: editing,
-});
-
-const loading = ref(true);
-const loadError = ref<string | null>(null);
-const subscription = ref<Subscription | null>(null);
-const saving = ref(false);
 
 // Edit form
 const editName = ref("");
@@ -43,6 +33,30 @@ const editSequence = ref<number | null>(null);
 const editTimeoutSeconds = ref<number | null>(null);
 const editMode = ref<SubscriptionMode>("IMMEDIATE");
 
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	description: editDescription.value,
+	endpoint: editEndpoint.value,
+	connectionId: editConnectionId.value,
+	queue: editQueue.value,
+	maxAgeSeconds: editMaxAgeSeconds.value,
+	delaySeconds: editDelaySeconds.value,
+	sequence: editSequence.value,
+	timeoutSeconds: editTimeoutSeconds.value,
+	mode: editMode.value,
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/subscriptions",
+	dirty: computed(() => editing.value && dirty.value),
+});
+
+const loading = ref(true);
+const loadError = ref<string | null>(null);
+const subscription = ref<Subscription | null>(null);
+const saving = ref(false);
+
 const modeOptions = [
 	{ label: "Immediate", value: "IMMEDIATE" },
 	{ label: "Next on Error", value: "NEXT_ON_ERROR" },
@@ -55,6 +69,7 @@ watch(
 	async (value) => {
 		if (!value) return;
 		editing.value = false;
+		resetDirty();
 		await loadSubscription(value);
 		if (route.query["edit"] === "true") {
 			startEditing();
@@ -90,11 +105,13 @@ function startEditing() {
 		// Wire mode is plain string; the form narrows to the known wire values.
 		editMode.value = subscription.value.mode as SubscriptionMode;
 		editing.value = true;
+		markClean();
 	}
 }
 
 function cancelEditing() {
 	editing.value = false;
+	resetDirty();
 }
 
 async function saveChanges() {
@@ -117,6 +134,7 @@ async function saveChanges() {
 		});
 		await loadSubscription(subscriptionId);
 		editing.value = false;
+		resetDirty();
 		toast.success("Success", "Subscription updated");
 		emit("changed");
 	} catch {
@@ -240,7 +258,7 @@ function getScopeLabel(sub: Subscription) {
     size="wide"
     :loading="loading"
     :error="loadError"
-    :dirty="editing"
+    :dirty="editing && dirty"
     @close="goToList()"
   >
     <template v-if="subscription" #header-extra>
@@ -417,8 +435,8 @@ function getScopeLabel(sub: Subscription) {
 
     <template v-if="editing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" severity="secondary" outlined @click="cancelEditing" />
-        <Button label="Save" :loading="saving" @click="saveChanges" />
+        <Button v-if="dirty" label="Discard" severity="secondary" outlined @click="cancelEditing" />
+        <Button label="Save" :disabled="!dirty" :loading="saving" @click="saveChanges" />
       </FcFormActions>
     </template>
   </EntityDrawer>

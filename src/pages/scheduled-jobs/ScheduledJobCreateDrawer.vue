@@ -6,6 +6,7 @@ import {
 	type CreateScheduledJobBody,
 	type FilterOption,
 } from "@/api/scheduled-jobs";
+import { applicationsApi, type Application } from "@/api/applications";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
@@ -18,6 +19,7 @@ const form = ref<CreateScheduledJobBody>({
 	name: "",
 	description: "",
 	clientId: undefined,
+	applicationId: undefined,
 	crons: [""],
 	timezone: "UTC",
 	concurrent: false,
@@ -30,6 +32,7 @@ const form = ref<CreateScheduledJobBody>({
 const payloadJson = ref<string>("");
 const submitting = ref(false);
 const clientOptions = ref<FilterOption[]>([]);
+const applications = ref<Application[]>([]);
 
 // Cheap dirty check over the identity fields: anything typed counts.
 const dirty = computed(
@@ -52,6 +55,12 @@ onMounted(async () => {
 	} catch (err) {
 		console.error("Failed to load client list", err);
 	}
+	try {
+		const response = await applicationsApi.listApplicationsOnly(true);
+		applications.value = response.applications || [];
+	} catch (err) {
+		console.error("Failed to load application list", err);
+	}
 });
 
 function addCron() {
@@ -64,6 +73,13 @@ function removeCron(idx: number) {
 async function submit() {
 	if (!form.value.code.trim() || !form.value.name.trim()) {
 		toast.warn("Missing fields", "Code and name are required");
+		return;
+	}
+	if (!form.value.clientId) {
+		toast.warn(
+			"Missing scope",
+			"Choose Platform or a client — this can't be changed after creation",
+		);
 		return;
 	}
 	const cleanCrons = form.value.crons.map((c) => c.trim()).filter(Boolean);
@@ -89,6 +105,7 @@ async function submit() {
 			form.value.clientId === "platform" || !form.value.clientId
 				? null
 				: form.value.clientId,
+		applicationId: form.value.applicationId || null,
 		payload: parsedPayload,
 		description: form.value.description?.trim() || undefined,
 		targetUrl: form.value.targetUrl?.trim() || undefined,
@@ -137,7 +154,7 @@ async function submit() {
         </div>
 
         <div class="form-field">
-          <label>Scope</label>
+          <label>Scope <span class="required">*</span></label>
           <Select
             v-model="form.clientId"
             :options="[{ value: 'platform', label: 'Platform-scoped (anchor only)' }, ...clientOptions]"
@@ -146,6 +163,21 @@ async function submit() {
             placeholder="Select a client or platform"
             class="full-width"
           />
+          <small class="field-hint">Who owns this job — cannot be changed after creation.</small>
+        </div>
+
+        <div class="form-field">
+          <label>Application</label>
+          <Select
+            v-model="form.applicationId"
+            :options="applications"
+            option-label="name"
+            option-value="id"
+            placeholder="None"
+            show-clear
+            class="full-width"
+          />
+          <small class="field-hint">Optional — for filtering/display only.</small>
         </div>
 
         <div class="form-field">

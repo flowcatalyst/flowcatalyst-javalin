@@ -19,8 +19,9 @@ const loading = ref(false);
 const listState = useListState(
 	{
 		filters: {
-			clientId: { type: "string", key: "clientId" },
-			status: { type: "string", key: "status" },
+			clientIds: { type: "array", key: "clients" },
+			applicationIds: { type: "array", key: "applications" },
+			statuses: { type: "array", key: "statuses" },
 			search: { type: "string", key: "q" },
 		},
 		pageSize: 20,
@@ -36,14 +37,16 @@ const { filters, page, pageSize, onPage } = listState;
 const { activeFilterCount, clearAll } = useTableFilters(
 	listState,
 	[
-		{ field: "clientId", param: "clientId" },
-		{ field: "status", param: "status" },
+		{ field: "clientId", param: "clientIds" },
+		{ field: "application", param: "applicationIds" },
+		{ field: "status", param: "statuses" },
 	],
 	{ globalParam: "search" },
 );
 
 const filterOptions = ref<ScheduledJobsFilterOptions>({
 	clients: [],
+	applications: [],
 	statuses: [],
 });
 
@@ -59,8 +62,11 @@ async function load() {
 	loading.value = true;
 	try {
 		const result = await scheduledJobsApi.list({
-			clientId: filters.clientId.value || undefined,
-			status: filters.status.value || undefined,
+			clientIds: filters.clientIds.value.length ? filters.clientIds.value : undefined,
+			applicationIds: filters.applicationIds.value.length
+				? filters.applicationIds.value
+				: undefined,
+			statuses: filters.statuses.value.length ? filters.statuses.value : undefined,
 			search: filters.search.value || undefined,
 			page: page.value,
 			size: pageSize.value,
@@ -155,28 +161,39 @@ function formatDate(s?: string): string {
             <template #filters>
               <FcFormField label="Client">
                 <template #default="{ id: fieldId }">
-                  <Select
+                  <MultiSelect
                     :id="fieldId"
-                    v-model="filters.clientId.value"
+                    v-model="filters.clientIds.value"
                     :options="filterOptions.clients"
                     optionLabel="label"
                     optionValue="value"
                     placeholder="All clients"
-                    showClear
+                    appendTo="self"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Application">
+                <template #default="{ id: fieldId }">
+                  <MultiSelect
+                    :id="fieldId"
+                    v-model="filters.applicationIds.value"
+                    :options="filterOptions.applications"
+                    optionLabel="label"
+                    optionValue="value"
+                    placeholder="All applications"
                     appendTo="self"
                   />
                 </template>
               </FcFormField>
               <FcFormField label="Status">
                 <template #default="{ id: fieldId }">
-                  <Select
+                  <MultiSelect
                     :id="fieldId"
-                    v-model="filters.status.value"
+                    v-model="filters.statuses.value"
                     :options="filterOptions.statuses"
                     optionLabel="label"
                     optionValue="value"
                     placeholder="All statuses"
-                    showClear
                     appendTo="self"
                   />
                 </template>

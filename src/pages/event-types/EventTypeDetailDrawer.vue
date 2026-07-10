@@ -11,6 +11,7 @@ import {
 import SchemaViewerDialog from "./SchemaViewerDialog.vue";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -21,12 +22,6 @@ const router = useRouter();
 const confirm = useConfirm();
 
 const editing = ref(false);
-
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/event-types",
-	dirty: editing,
-});
 
 const loading = ref(true);
 const loadError = ref<string | null>(null);
@@ -45,6 +40,17 @@ function viewSchema(sv: SpecVersion) {
 // Edit form
 const editName = ref("");
 const editDescription = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	description: editDescription.value,
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/event-types",
+	dirty: computed(() => editing.value && dirty.value),
+});
 
 const canArchive = computed(() => {
 	const et = eventType.value;
@@ -70,6 +76,7 @@ watch(
 	async (value) => {
 		if (!value) return;
 		editing.value = false;
+		resetDirty();
 		viewerVisible.value = false;
 		viewerSpecVersion.value = null;
 		await loadEventType(value);
@@ -98,11 +105,13 @@ function startEditing() {
 		editName.value = eventType.value.name;
 		editDescription.value = eventType.value.description || "";
 		editing.value = true;
+		markClean();
 	}
 }
 
 function cancelEditing() {
 	editing.value = false;
+	resetDirty();
 }
 
 async function saveChanges() {
@@ -117,6 +126,7 @@ async function saveChanges() {
 		});
 		await loadEventType(eventTypeId);
 		editing.value = false;
+		resetDirty();
 		toast.success("Success", "Event type updated");
 		emit("changed");
 	} catch {
@@ -259,7 +269,7 @@ async function deleteEventType() {
     size="wide"
     :loading="loading"
     :error="loadError"
-    :dirty="editing"
+    :dirty="editing && dirty"
     @close="goToList()"
   >
     <template v-if="eventType" #header-extra>
@@ -432,8 +442,8 @@ async function deleteEventType() {
 
     <template v-if="editing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" severity="secondary" outlined @click="cancelEditing" />
-        <Button label="Save" :loading="saving" @click="saveChanges" />
+        <Button v-if="dirty" label="Discard" severity="secondary" outlined @click="cancelEditing" />
+        <Button label="Save" :disabled="!dirty" :loading="saving" @click="saveChanges" />
       </FcFormActions>
     </template>
   </EntityDrawer>

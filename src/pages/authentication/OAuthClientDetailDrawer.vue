@@ -7,6 +7,7 @@ import { applicationsApi, type Application } from "@/api/applications";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -16,13 +17,6 @@ const route = useRoute();
 
 // Edit mode
 const isEditing = ref(false);
-
-// No template ref on EntityDrawer: this drawer has no programmatic close
-// (delete lives on the list rows) — all closes go through goToList().
-const { id, goToList } = useDrawerRoute({
-	listPath: "/authentication/oauth-clients",
-	dirty: isEditing,
-});
 
 const client = ref<OAuthClient | null>(null);
 const applications = ref<Application[]>([]);
@@ -47,6 +41,17 @@ const editForm = ref({
 const newRedirectUri = ref("");
 const newPostLogoutRedirectUri = ref("");
 const newAllowedOrigin = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	...editForm.value,
+}));
+
+// No template ref on EntityDrawer: this drawer has no programmatic close
+// (delete lives on the list rows) — all closes go through goToList().
+const { id, goToList } = useDrawerRoute({
+	listPath: "/authentication/oauth-clients",
+	dirty: computed(() => isEditing.value && dirty.value),
+});
 
 // Secret rotation dialogs — local modals, so they stack above the drawer
 const showRotateSecretDialog = ref(false);
@@ -116,6 +121,7 @@ async function loadData(clientId: string) {
 	loadError.value = null;
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 	newRedirectUri.value = "";
 	newPostLogoutRedirectUri.value = "";
 	newAllowedOrigin.value = "";
@@ -172,12 +178,14 @@ function startEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = true;
+	markClean();
 }
 
 function cancelEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 }
 
 function addRedirectUri() {
@@ -264,6 +272,7 @@ async function saveChanges() {
 		client.value = await oauthClientsApi.get(targetId);
 		resetEditForm();
 		isEditing.value = false;
+		resetDirty();
 		toast.success("Success", "OAuth client updated successfully");
 		emit("changed");
 	} catch (e: unknown) {
@@ -342,7 +351,7 @@ function getClientTypeSeverity(clientType: string) {
     size="wide"
     :loading="loading"
     :error="loadError"
-    :dirty="isEditing"
+    :dirty="isEditing && dirty"
     @close="goToList()"
   >
     <template v-if="client && !isEditing" #header-extra>
@@ -659,13 +668,13 @@ function getClientTypeSeverity(clientType: string) {
 
     <template v-if="isEditing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" text @click="cancelEditing" :disabled="saving" />
+        <Button v-if="dirty" label="Discard" text @click="cancelEditing" :disabled="saving" />
         <Button
           label="Save Changes"
           icon="pi pi-check"
           @click="saveChanges"
           :loading="saving"
-          :disabled="!isValid"
+          :disabled="!dirty || !isValid"
         />
       </FcFormActions>
     </template>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@/api/applications";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -21,17 +22,6 @@ const confirm = useConfirm();
 
 const editing = ref(false);
 
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/applications",
-	dirty: editing,
-});
-
-const loading = ref(true);
-const loadError = ref<string | null>(null);
-const application = ref<Application | null>(null);
-const saving = ref(false);
-
 // Edit form
 const editName = ref("");
 const editDescription = ref("");
@@ -40,6 +30,27 @@ const editIconUrl = ref("");
 const editWebsite = ref("");
 const editLogo = ref("");
 const editLogoMimeType = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	description: editDescription.value,
+	defaultBaseUrl: editDefaultBaseUrl.value,
+	iconUrl: editIconUrl.value,
+	website: editWebsite.value,
+	logo: editLogo.value,
+	logoMimeType: editLogoMimeType.value,
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/applications",
+	dirty: computed(() => editing.value && dirty.value),
+});
+
+const loading = ref(true);
+const loadError = ref<string | null>(null);
+const application = ref<Application | null>(null);
+const saving = ref(false);
 
 // Service account provisioning
 const provisioning = ref(false);
@@ -73,6 +84,7 @@ watch(
  * next application into the reused drawer instance. */
 function resetTransientState() {
 	editing.value = false;
+	resetDirty();
 	showCredentialsDialog.value = false;
 	provisionedCredentials.value = null;
 	showLoginClientDialog.value = false;
@@ -107,11 +119,13 @@ function startEditing() {
 		editLogo.value = application.value.logo || "";
 		editLogoMimeType.value = application.value.logoMimeType || "";
 		editing.value = true;
+		markClean();
 	}
 }
 
 function cancelEditing() {
 	editing.value = false;
+	resetDirty();
 }
 
 async function saveChanges() {
@@ -131,6 +145,7 @@ async function saveChanges() {
 		});
 		await loadApplication(appId);
 		editing.value = false;
+		resetDirty();
 		toast.success("Success", "Application updated");
 		emit("changed");
 	} catch {
@@ -306,7 +321,7 @@ function formatDate(dateString: string) {
     size="wide"
     :loading="loading"
     :error="loadError"
-    :dirty="editing"
+    :dirty="editing && dirty"
     @close="goToList()"
   >
     <template v-if="application" #header-extra>
@@ -555,8 +570,8 @@ function formatDate(dateString: string) {
 
     <template v-if="editing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" severity="secondary" outlined @click="cancelEditing" />
-        <Button label="Save" :loading="saving" @click="saveChanges" />
+        <Button v-if="dirty" label="Discard" severity="secondary" outlined @click="cancelEditing" />
+        <Button label="Save" :disabled="!dirty" :loading="saving" @click="saveChanges" />
       </FcFormActions>
     </template>
   </EntityDrawer>

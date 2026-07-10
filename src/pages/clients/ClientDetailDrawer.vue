@@ -7,6 +7,7 @@ import { clientsApi, type Client, type ClientApplication } from "@/api/clients";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -17,19 +18,23 @@ const confirm = useConfirm();
 
 const editing = ref(false);
 
+// Edit form
+const editName = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+}));
+
 const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
 const { id, goToList } = useDrawerRoute({
 	listPath: "/clients",
-	dirty: editing,
+	dirty: computed(() => editing.value && dirty.value),
 });
 
 const loading = ref(true);
 const loadError = ref<string | null>(null);
 const client = ref<Client | null>(null);
 const saving = ref(false);
-
-// Edit form
-const editName = ref("");
 
 // Applications picker: [available, enabled]
 const applications = ref<[ClientApplication[], ClientApplication[]]>([[], []]);
@@ -45,6 +50,7 @@ watch(
 	async (value) => {
 		if (!value) return;
 		editing.value = false;
+		resetDirty();
 		applications.value = [[], []];
 		await Promise.all([loadClient(value), loadApplications(value)]);
 		if (route.query["edit"] === "true") {
@@ -109,11 +115,13 @@ function startEditing() {
 	if (client.value) {
 		editName.value = client.value.name;
 		editing.value = true;
+		markClean();
 	}
 }
 
 function cancelEditing() {
 	editing.value = false;
+	resetDirty();
 }
 
 async function saveChanges() {
@@ -127,6 +135,7 @@ async function saveChanges() {
 		});
 		await loadClient(clientId);
 		editing.value = false;
+		resetDirty();
 		toast.success("Success", "Client updated");
 		emit("changed");
 	} catch {
@@ -229,7 +238,7 @@ function formatDate(dateString: string) {
     :subtitle="client?.identifier"
     :loading="loading"
     :error="loadError"
-    :dirty="editing"
+    :dirty="editing && dirty"
     @close="goToList()"
   >
     <template v-if="client" #header-extra>
@@ -352,8 +361,8 @@ function formatDate(dateString: string) {
 
     <template v-if="editing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" severity="secondary" outlined @click="cancelEditing" />
-        <Button label="Save" :loading="saving" @click="saveChanges" />
+        <Button v-if="dirty" label="Discard" severity="secondary" outlined @click="cancelEditing" />
+        <Button label="Save" :disabled="!dirty" :loading="saving" @click="saveChanges" />
       </FcFormActions>
     </template>
   </EntityDrawer>

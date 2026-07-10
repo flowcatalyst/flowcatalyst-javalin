@@ -9,6 +9,7 @@ import {
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -17,12 +18,6 @@ const emit = defineEmits<{
 const route = useRoute();
 
 const isEditing = ref(false);
-
-const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
-const { id, goToList } = useDrawerRoute({
-	listPath: "/authentication/identity-providers",
-	dirty: isEditing,
-});
 
 const provider = ref<IdentityProvider | null>(null);
 const loading = ref(true);
@@ -41,6 +36,16 @@ const editForm = ref({
 	allowedEmailDomains: [] as string[],
 });
 const newAllowedDomain = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	...editForm.value,
+}));
+
+const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
+const { id, goToList } = useDrawerRoute({
+	listPath: "/authentication/identity-providers",
+	dirty: computed(() => isEditing.value && dirty.value),
+});
 
 // Delete dialog
 const showDeleteDialog = ref(false);
@@ -73,6 +78,7 @@ async function loadProvider(providerId: string) {
 	loadError.value = null;
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 	showDeleteDialog.value = false;
 	newAllowedDomain.value = "";
 	try {
@@ -105,12 +111,14 @@ function startEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = true;
+	markClean();
 }
 
 function cancelEditing() {
 	resetEditForm();
 	saveError.value = null;
 	isEditing.value = false;
+	resetDirty();
 }
 
 function addAllowedDomain() {
@@ -160,6 +168,7 @@ async function saveChanges() {
 		);
 		provider.value = updated;
 		isEditing.value = false;
+		resetDirty();
 		toast.success("Success", "Identity provider updated successfully");
 		emit("changed");
 	} catch (e: unknown) {
@@ -207,7 +216,7 @@ function getTypeSeverity(type: string) {
     :subtitle="provider ? provider.code : undefined"
     :loading="loading"
     :error="loadError"
-    :dirty="isEditing"
+    :dirty="isEditing && dirty"
     @close="goToList()"
   >
     <template v-if="provider && !isEditing" #header-extra>
@@ -421,12 +430,12 @@ function getTypeSeverity(type: string) {
         <Button label="Edit" icon="pi pi-pencil" @click="startEditing" />
       </template>
       <FcFormActions v-else :bordered="false">
-        <Button label="Cancel" text :disabled="saving" @click="cancelEditing" />
+        <Button v-if="dirty" label="Discard" text :disabled="saving" @click="cancelEditing" />
         <Button
           label="Save Changes"
           icon="pi pi-check"
           :loading="saving"
-          :disabled="!isValid"
+          :disabled="!dirty || !isValid"
           @click="saveChanges"
         />
       </FcFormActions>

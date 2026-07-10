@@ -34,6 +34,8 @@ export interface ScheduledJob {
 	id: string;
 	clientId?: string | null;
 	clientName?: string | null;
+	applicationId?: string | null;
+	applicationName?: string | null;
 	code: string;
 	name: string;
 	description?: string;
@@ -104,12 +106,14 @@ export interface FilterOption {
 
 export interface ScheduledJobsFilterOptions {
 	clients: FilterOption[];
+	applications: FilterOption[];
 	statuses: FilterOption[];
 }
 
 export interface ListJobsParams {
-	clientId?: string;
-	status?: ScheduledJobStatus | string;
+	clientIds?: string[];
+	applicationIds?: string[];
+	statuses?: (ScheduledJobStatus | string)[];
 	search?: string;
 	page?: number;
 	size?: number;
@@ -129,6 +133,7 @@ export interface CreateScheduledJobBody {
 	name: string;
 	description?: string;
 	clientId?: string | null;
+	applicationId?: string | null;
 	crons: string[];
 	timezone?: string;
 	payload?: unknown;

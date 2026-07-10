@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
 import { connectionsApi, type Connection } from "@/api/connections";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 
 const emit = defineEmits<{
 	changed: [];
@@ -16,10 +17,21 @@ const confirm = useConfirm();
 
 const editing = ref(false);
 
+// Edit form
+const editName = ref("");
+const editDescription = ref("");
+const editExternalId = ref("");
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	description: editDescription.value,
+	externalId: editExternalId.value,
+}));
+
 const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
 const { id, goToList } = useDrawerRoute({
 	listPath: "/connections",
-	dirty: editing,
+	dirty: computed(() => editing.value && dirty.value),
 });
 
 const loading = ref(true);
@@ -27,17 +39,13 @@ const loadError = ref<string | null>(null);
 const connection = ref<Connection | null>(null);
 const saving = ref(false);
 
-// Edit form
-const editName = ref("");
-const editDescription = ref("");
-const editExternalId = ref("");
-
 // Reactive param: the drawer instance is reused when switching between rows.
 watch(
 	id,
 	async (value) => {
 		if (!value) return;
 		editing.value = false;
+		resetDirty();
 		await loadConnection(value);
 		if (route.query["edit"] === "true") {
 			startEditing();
@@ -65,11 +73,13 @@ function startEditing() {
 		editDescription.value = connection.value.description || "";
 		editExternalId.value = connection.value.externalId || "";
 		editing.value = true;
+		markClean();
 	}
 }
 
 function cancelEditing() {
 	editing.value = false;
+	resetDirty();
 }
 
 async function saveChanges() {
@@ -85,6 +95,7 @@ async function saveChanges() {
 		});
 		await loadConnection(connectionId);
 		editing.value = false;
+		resetDirty();
 		toast.success("Success", "Connection updated");
 		emit("changed");
 	} catch {
@@ -196,7 +207,7 @@ function getScopeLabel(conn: Connection) {
     size="default"
     :loading="loading"
     :error="loadError"
-    :dirty="editing"
+    :dirty="editing && dirty"
     @close="goToList()"
   >
     <template v-if="connection" #header-extra>
@@ -303,8 +314,8 @@ function getScopeLabel(conn: Connection) {
 
     <template v-if="editing" #footer>
       <FcFormActions :bordered="false">
-        <Button label="Cancel" severity="secondary" outlined @click="cancelEditing" />
-        <Button label="Save" :loading="saving" @click="saveChanges" />
+        <Button v-if="dirty" label="Discard" severity="secondary" outlined @click="cancelEditing" />
+        <Button label="Save" :disabled="!dirty" :loading="saving" @click="saveChanges" />
       </FcFormActions>
     </template>
   </EntityDrawer>

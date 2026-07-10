@@ -16,6 +16,7 @@ import { clientsApi, type Client } from "@/api/clients";
 import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import { useClientOptions } from "@/composables/useClientOptions";
+import { useDirtyForm } from "@/composables/useDirtyForm";
 import { useConfirm } from "primevue/useconfirm";
 
 const props = defineProps<{
@@ -43,8 +44,14 @@ const emit = defineEmits<{
 	loaded: [user: User | null];
 }>();
 
-/** Doubles as the host's dirty flag: an open edit form counts as dirty. */
-const editMode = defineModel<boolean>("dirty", { default: false });
+// Whether the main edit form is open — drives which template branch renders.
+const editing = ref(false);
+/**
+ * The host's real dirty flag: true only once the main edit form is open AND
+ * has actual unsaved changes (see `dirty` below), not merely for being open.
+ * Kept in sync by the watcher after `dirty` is declared.
+ */
+const dirtyModel = defineModel<boolean>("dirty", { default: false });
 
 const confirm = useConfirm();
 
@@ -63,6 +70,21 @@ const saving = ref(false);
 const editName = ref("");
 const editScope = ref<"ANCHOR" | "PARTNER" | "CLIENT" | null>(null);
 const editClientId = ref<string | null>(null);
+
+const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
+	name: editName.value,
+	scope: editScope.value,
+	clientId: editClientId.value,
+}));
+
+// Propagate real dirty state to the host (see `dirtyModel` above): only
+// while actually editing, and only once fields have actually changed.
+watch(
+	() => editing.value && dirty.value,
+	(value) => {
+		dirtyModel.value = value;
+	},
+);
 
 const scopeOptions = [
 	{ label: "Anchor", value: "ANCHOR" },
@@ -298,7 +320,8 @@ function resetState() {
 	applicationAccessGrants.value = [];
 	availableApplications.value = [];
 	allApplications.value = false;
-	editMode.value = false;
+	editing.value = false;
+	resetDirty();
 	showAddClientDialog.value = false;
 	showRolePickerDialog.value = false;
 	showAppPickerDialog.value = false;
@@ -417,7 +440,8 @@ function startEdit() {
 	// is plain string (spec has no enums).
 	editScope.value = (user.value?.scope ?? null) as PrincipalScope | null;
 	editClientId.value = user.value?.clientId ?? null;
-	editMode.value = true;
+	editing.value = true;
+	markClean();
 }
 
 function cancelEdit() {
@@ -426,7 +450,8 @@ function cancelEdit() {
 	// is plain string (spec has no enums).
 	editScope.value = (user.value?.scope ?? null) as PrincipalScope | null;
 	editClientId.value = user.value?.clientId ?? null;
-	editMode.value = false;
+	editing.value = false;
+	resetDirty();
 }
 
 async function saveUser() {
@@ -478,7 +503,8 @@ async function saveUser() {
 			}
 		}
 
-		editMode.value = false;
+		editing.value = false;
+		resetDirty();
 		toast.success("Success", "User updated successfully");
 		emit("changed");
 		emit("loaded", user.value);
@@ -833,15 +859,15 @@ function formatDate(dateStr: string | null | undefined) {
     <!-- User Information -->
     <FcFormSection title="User Information" flat>
       <template #actions>
-        <Button v-if="!editMode" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
+        <Button v-if="!editing" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
         <template v-else>
-          <Button label="Cancel" text @click="cancelEdit" />
-          <Button label="Save" icon="pi pi-check" :loading="saving" @click="saveUser" />
+          <Button v-if="dirty" label="Discard" text @click="cancelEdit" />
+          <Button label="Save" icon="pi pi-check" :disabled="!dirty" :loading="saving" @click="saveUser" />
         </template>
       </template>
 
       <!-- View mode -->
-      <div v-if="!editMode" class="fc-detail-grid">
+      <div v-if="!editing" class="fc-detail-grid">
         <FcDetailField label="Name" :value="user.name" />
         <FcDetailField label="Email" :value="user.email" />
         <FcDetailField
