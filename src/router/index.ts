@@ -168,6 +168,16 @@ const router = createRouter({
 						},
 					],
 				},
+				// Developer Users — designate existing users as developers and
+				// manage their self-service API credentials. Granting the role is
+				// anchor-only (it's a platform role); matches User Management/Roles.
+				{
+					path: "identity/developer-users",
+					name: "developer-users",
+					component: () =>
+						import("@/pages/developer/DeveloperUsersListPage.vue"),
+					meta: { scope: "anchor" },
+				},
 				// Authorization - Roles
 				{
 					path: "authorization/roles",

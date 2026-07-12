@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/utils/errorBus";
 import { getErrorMessage } from "@/utils/errors";
+import { useConfirm } from "primevue/useconfirm";
 import {
 	changePassword,
 	sendChangePasswordEmailCode,
 } from "@/api/changePassword";
+import { usersApi } from "@/api/users";
 import PasskeysSection from "@/components/PasskeysSection.vue";
 import TwoFactorSection from "@/components/TwoFactorSection.vue";
 
 const authStore = useAuthStore();
+const confirm = useConfirm();
 
 // ── Change password ─────────────────────────────────────────────────────────
 const showChangePassword = ref(false);
@@ -153,6 +156,92 @@ function deviceLabel(ua?: string): string {
 function outcomeOk(outcome: string): boolean {
 	return outcome.toUpperCase() === "SUCCESS";
 }
+
+// ── Developer API access (self-service client_credentials) ───────────────
+// Matches internal/platform/seed/permissions.go's permDeveloperAPICredentialManage
+// — granted only via the seeded "platform:developer" role.
+const DEV_CREDENTIAL_PERMISSION = "platform:developer:api-credential:manage";
+
+const canManageDevCredential = computed(() =>
+	(authStore.user?.permissions || []).includes(DEV_CREDENTIAL_PERMISSION),
+);
+
+const oauthTokenUrl = computed(() => `${window.location.origin}/oauth/token`);
+
+const devCredentialLoading = ref(true);
+const hasDevCredential = ref(false);
+const devCredentialUpdatedAt = ref<string | null>(null);
+const devCredentialBusy = ref(false);
+const showDevSecretDialog = ref(false);
+const newDevSecret = ref<string | null>(null);
+
+onMounted(async () => {
+	if (!canManageDevCredential.value || !authStore.user) {
+		devCredentialLoading.value = false;
+		return;
+	}
+	try {
+		const p = await usersApi.get(authStore.user.id);
+		hasDevCredential.value = p.hasDeveloperCredential;
+		devCredentialUpdatedAt.value = p.developerCredentialUpdatedAt ?? null;
+	} catch (e) {
+		toast.error("Error", getErrorMessage(e, "Could not load your developer credential status."));
+	} finally {
+		devCredentialLoading.value = false;
+	}
+});
+
+async function rotateDevCredential() {
+	if (!authStore.user) return;
+	devCredentialBusy.value = true;
+	try {
+		const response = await usersApi.setDeveloperCredential(authStore.user.id);
+		newDevSecret.value = response.clientSecret ?? null;
+		hasDevCredential.value = true;
+		devCredentialUpdatedAt.value = new Date().toISOString();
+		showDevSecretDialog.value = true;
+		toast.success("Success", "Developer client secret updated");
+	} catch (e) {
+		toast.error("Error", getErrorMessage(e, "Could not set your developer credential."));
+	} finally {
+		devCredentialBusy.value = false;
+	}
+}
+
+function confirmRevokeDevCredential() {
+	confirm.require({
+		message: "Revoke your developer client secret? Any scripts using it will stop working immediately.",
+		header: "Revoke Credential",
+		icon: "pi pi-exclamation-triangle",
+		acceptClass: "p-button-danger",
+		accept: () => revokeDevCredential(),
+	});
+}
+
+async function revokeDevCredential() {
+	if (!authStore.user) return;
+	devCredentialBusy.value = true;
+	try {
+		await usersApi.revokeDeveloperCredential(authStore.user.id);
+		hasDevCredential.value = false;
+		devCredentialUpdatedAt.value = null;
+		toast.success("Revoked", "Developer client secret revoked");
+	} catch (e) {
+		toast.error("Error", getErrorMessage(e, "Could not revoke your developer credential."));
+	} finally {
+		devCredentialBusy.value = false;
+	}
+}
+
+function copyDevSecret(text: string) {
+	navigator.clipboard.writeText(text);
+	toast.info("Copied", "Client secret copied to clipboard");
+}
+
+function formatDevCredentialDate(iso: string | null): string {
+	if (!iso) return "Never";
+	return new Date(iso).toLocaleString();
+}
 </script>
 
 <template>
@@ -215,6 +304,50 @@ function outcomeOk(outcome: string): boolean {
 
       <!-- Two-Factor Authentication Card -->
       <TwoFactorSection />
+
+      <!-- Developer API Access Card -->
+      <FcFormSection v-if="canManageDevCredential" title="Developer API Access">
+        <div v-if="devCredentialLoading" class="dev-cred-loading">
+          <ProgressSpinner strokeWidth="3" style="width: 24px; height: 24px" />
+        </div>
+        <div v-else class="dev-cred-body">
+          <p class="dev-cred-intro">
+            Mint a client_credentials token as yourself to call this environment from local
+            scripts or services — no OAuth client, no Docker stack, just your own secret.
+          </p>
+          <div class="dev-cred-status">
+            <Tag
+              :value="hasDevCredential ? 'Credential set' : 'No credential set'"
+              :severity="hasDevCredential ? 'success' : 'secondary'"
+            />
+            <span class="dev-cred-updated">Last rotated: {{ formatDevCredentialDate(devCredentialUpdatedAt) }}</span>
+          </div>
+          <div class="dev-cred-curl">
+            <code>curl -X POST {{ oauthTokenUrl }} \</code><br />
+            <code>&nbsp;&nbsp;-d grant_type=client_credentials \</code><br />
+            <code>&nbsp;&nbsp;-d client_id={{ authStore.user?.id }} \</code><br />
+            <code>&nbsp;&nbsp;-d client_secret=&lt;your secret&gt;</code>
+          </div>
+          <FcFormActions>
+            <Button
+              v-if="hasDevCredential"
+              label="Revoke"
+              icon="pi pi-ban"
+              outlined
+              severity="danger"
+              :loading="devCredentialBusy"
+              @click="confirmRevokeDevCredential"
+            />
+            <Button
+              :label="hasDevCredential ? 'Rotate Secret' : 'Set Secret'"
+              icon="pi pi-key"
+              outlined
+              :loading="devCredentialBusy"
+              @click="rotateDevCredential"
+            />
+          </FcFormActions>
+        </div>
+      </FcFormSection>
 
       <!-- Security Card -->
       <FcFormSection title="Security">
@@ -313,6 +446,34 @@ function outcomeOk(outcome: string): boolean {
           :loading="cpBusy"
           @click="submitChangePassword"
         />
+      </template>
+    </Dialog>
+
+    <!-- Developer client secret reveal dialog -->
+    <Dialog
+      v-model:visible="showDevSecretDialog"
+      header="Developer Client Secret"
+      modal
+      :style="{ width: '34rem' }"
+    >
+      <div class="dev-secret-dialog">
+        <p class="dev-secret-warning">
+          <i class="pi pi-exclamation-triangle"></i>
+          Copy this secret now. It will not be shown again.
+        </p>
+        <div class="dev-secret-value">
+          <code>{{ newDevSecret }}</code>
+          <Button
+            icon="pi pi-copy"
+            text
+            rounded
+            v-tooltip.top="'Copy'"
+            @click="copyDevSecret(newDevSecret!)"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Done" @click="showDevSecretDialog = false" />
       </template>
     </Dialog>
 
@@ -529,5 +690,78 @@ function outcomeOk(outcome: string): boolean {
   text-align: center;
   padding: 24px;
   color: #94a3b8;
+}
+
+.dev-cred-loading {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+}
+
+.dev-cred-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dev-cred-intro {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.dev-cred-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dev-cred-updated {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.dev-cred-curl {
+  padding: 12px;
+  background: #0f172a;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.dev-cred-curl code {
+  color: #e2e8f0;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.dev-secret-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dev-secret-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #f59e0b;
+  font-size: 14px;
+  margin: 0;
+}
+
+.dev-secret-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.dev-secret-value code {
+  flex: 1;
+  font-size: 12px;
+  word-break: break-all;
 }
 </style>

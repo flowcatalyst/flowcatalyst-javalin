@@ -202,7 +202,7 @@ function formatDate(s?: string): string {
           </FcTableToolbar>
         </template>
 
-        <Column header="Code" field="code" style="width: 22%">
+        <Column header="Code" field="code" style="width: 20%">
           <template #body="{ data }">
             <span class="font-mono text-sm">{{ data.code }}</span>
             <div v-if="data.hasActiveInstance" class="active-flag">
@@ -210,14 +210,20 @@ function formatDate(s?: string): string {
             </div>
           </template>
         </Column>
-        <Column header="Name" field="name" style="width: 18%" />
-        <Column header="Scope" style="width: 14%">
+        <Column header="Name" field="name" style="width: 15%" />
+        <Column header="Client" style="width: 12%">
           <template #body="{ data }">
             <span v-if="data.clientName">{{ data.clientName }}</span>
             <span v-else class="scope-platform">Platform</span>
           </template>
         </Column>
-        <Column header="Crons" style="width: 18%">
+        <Column header="Application" style="width: 12%">
+          <template #body="{ data }">
+            <span v-if="data.applicationName">{{ data.applicationName }}</span>
+            <span v-else class="scope-platform">—</span>
+          </template>
+        </Column>
+        <Column header="Crons" style="width: 16%">
           <template #body="{ data }">
             <span class="font-mono text-sm">{{ formatCrons(data.crons) }}</span>
             <div class="text-muted text-xs">{{ data.timezone }}</div>
@@ -228,7 +234,7 @@ function formatDate(s?: string): string {
             <Tag :value="data.status" :severity="statusSeverity(data.status)" />
           </template>
         </Column>
-        <Column header="Last Fired" style="width: 14%">
+        <Column header="Last Fired" style="width: 12%">
           <template #body="{ data }">
             <span class="text-sm">{{ formatDate(data.lastFiredAt) }}</span>
           </template>

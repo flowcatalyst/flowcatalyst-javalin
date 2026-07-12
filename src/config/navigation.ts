@@ -45,6 +45,12 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				route: "/identity/service-accounts",
 			},
 			{
+				label: "Developer Users",
+				icon: "pi pi-code",
+				route: "/identity/developer-users",
+				scope: "anchor",
+			},
+			{
 				label: "Identity Providers",
 				icon: "pi pi-id-card",
 				route: "/authentication/identity-providers",

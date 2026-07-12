@@ -6,6 +6,7 @@ import type {
 	BulkImportResult,
 	CheckEmailDomainResponse,
 	ClientAccessGrantResponse,
+	DeveloperUserListResponse as GenDeveloperUserListResponse,
 	PrincipalAvailableApplication,
 	PrincipalAvailableApplicationsResponse,
 	PrincipalListResponse,
@@ -13,6 +14,7 @@ import type {
 	PrincipalRoleAssignmentDto,
 	RolesAssignedResponse as GenRolesAssignedResponse,
 	SetApplicationAccessResponse,
+	SetDeveloperCredentialResponse as GenSetDeveloperCredentialResponse,
 } from "./generated";
 
 // Request-side string unions the forms rely on. The generated response
@@ -39,6 +41,8 @@ export type AvailableApplicationsResponse =
 export type EmailDomainCheckResponse = CheckEmailDomainResponse;
 export type BulkImportResultRow = BulkImportResult;
 export type BulkImportResponse = GenBulkImportResponse;
+export type DeveloperUserListResponse = GenDeveloperUserListResponse;
+export type SetDeveloperCredentialResponse = GenSetDeveloperCredentialResponse;
 
 export interface CreateUserRequest {
 	email: string;
@@ -298,6 +302,32 @@ export const usersApi = {
 		return apiFetch("/principals/bulk-import", {
 			method: "POST",
 			body: JSON.stringify({ clientId, users }),
+		});
+	},
+
+	// Self-service developer API credentials (client_credentials, principal-as-client_id)
+
+	/** Every USER principal currently holding the developer role. */
+	listDeveloperUsers(): Promise<DeveloperUserListResponse> {
+		return apiFetch("/principals/developer-users");
+	},
+
+	/**
+	 * Create or rotate a principal's developer client_credentials secret.
+	 * Callable on your own id (if you hold the developer role) or, by a user
+	 * administrator, on someone else's. The plaintext secret is only ever
+	 * returned in this response — never again.
+	 */
+	setDeveloperCredential(id: string): Promise<SetDeveloperCredentialResponse> {
+		return apiFetch(`/principals/${id}/developer-credential`, {
+			method: "POST",
+		});
+	},
+
+	/** Revoke a principal's developer client_credentials secret. */
+	revokeDeveloperCredential(id: string): Promise<void> {
+		return apiFetch(`/principals/${id}/developer-credential`, {
+			method: "DELETE",
 		});
 	},
 };

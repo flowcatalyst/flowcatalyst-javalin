@@ -1020,6 +1020,7 @@ export type CreateScheduledJobRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationId?: string;
     clientId?: string;
     code: string;
     concurrent: boolean;
@@ -1127,6 +1128,15 @@ export type CreatedResponse = {
      */
     readonly $schema?: string;
     id: string;
+};
+
+export type DeveloperUserListResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    principals: Array<PrincipalResponse>;
+    total: number;
 };
 
 export type DispatchJobFilterOptionsResponse = {
@@ -1622,8 +1632,10 @@ export type PrincipalResponse = {
     active: boolean;
     clientId?: string;
     createdAt: string;
+    developerCredentialUpdatedAt?: string;
     email?: string;
     grantedClientIds: Array<string>;
+    hasDeveloperCredential: boolean;
     id: string;
     idpType?: string;
     isAnchorUser: boolean;
@@ -1955,6 +1967,7 @@ export type ScheduledJobResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationId?: string;
     clientId?: string;
     code: string;
     concurrent: boolean;
@@ -2063,6 +2076,15 @@ export type SetApplicationAccessResponse = {
     allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     removed: number;
+};
+
+export type SetDeveloperCredentialResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientSecret?: string;
+    id: string;
 };
 
 export type SetPropertyRequest = {
@@ -3343,6 +3365,7 @@ export type CreateRoleRequestWritable = {
 };
 
 export type CreateScheduledJobRequestWritable = {
+    applicationId?: string;
     clientId?: string;
     code: string;
     concurrent: boolean;
@@ -3413,6 +3436,11 @@ export type CreateUserRequestWritable = {
 
 export type CreatedResponseWritable = {
     id: string;
+};
+
+export type DeveloperUserListResponseWritable = {
+    principals: Array<PrincipalResponseWritable>;
+    total: number;
 };
 
 export type DispatchJobFilterOptionsResponseWritable = {
@@ -3690,8 +3718,10 @@ export type PrincipalResponseWritable = {
     active: boolean;
     clientId?: string;
     createdAt: string;
+    developerCredentialUpdatedAt?: string;
     email?: string;
     grantedClientIds: Array<string>;
+    hasDeveloperCredential: boolean;
     id: string;
     idpType?: string;
     isAnchorUser: boolean;
@@ -3849,6 +3879,7 @@ export type ScheduledJobInstanceResponseWritable = {
 };
 
 export type ScheduledJobResponseWritable = {
+    applicationId?: string;
     clientId?: string;
     code: string;
     concurrent: boolean;
@@ -3919,6 +3950,11 @@ export type SetApplicationAccessResponseWritable = {
     allApplications: boolean;
     applications: Array<ApplicationAccessResponse>;
     removed: number;
+};
+
+export type SetDeveloperCredentialResponseWritable = {
+    clientSecret?: string;
+    id: string;
 };
 
 export type SetPropertyRequestWritable = {
@@ -8395,6 +8431,31 @@ export type CheckPrincipalEmailDomainResponses = {
 
 export type CheckPrincipalEmailDomainResponse = CheckPrincipalEmailDomainResponses[keyof CheckPrincipalEmailDomainResponses];
 
+export type ListDeveloperUsersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/principals/developer-users';
+};
+
+export type ListDeveloperUsersErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type ListDeveloperUsersError = ListDeveloperUsersErrors[keyof ListDeveloperUsersErrors];
+
+export type ListDeveloperUsersResponses = {
+    /**
+     * OK
+     */
+    200: DeveloperUserListResponse;
+};
+
+export type ListDeveloperUsersResponse = ListDeveloperUsersResponses[keyof ListDeveloperUsersResponses];
+
 export type SyncUsersData = {
     body: SyncUsersRequestWritable;
     path?: never;
@@ -8769,6 +8830,60 @@ export type DeactivatePrincipalResponses = {
 };
 
 export type DeactivatePrincipalResponse = DeactivatePrincipalResponses[keyof DeactivatePrincipalResponses];
+
+export type RevokePrincipalDeveloperCredentialData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/principals/{id}/developer-credential';
+};
+
+export type RevokePrincipalDeveloperCredentialErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type RevokePrincipalDeveloperCredentialError = RevokePrincipalDeveloperCredentialErrors[keyof RevokePrincipalDeveloperCredentialErrors];
+
+export type RevokePrincipalDeveloperCredentialResponses = {
+    /**
+     * No Content
+     */
+    204: void;
+};
+
+export type RevokePrincipalDeveloperCredentialResponse = RevokePrincipalDeveloperCredentialResponses[keyof RevokePrincipalDeveloperCredentialResponses];
+
+export type SetPrincipalDeveloperCredentialData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/principals/{id}/developer-credential';
+};
+
+export type SetPrincipalDeveloperCredentialErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SetPrincipalDeveloperCredentialError = SetPrincipalDeveloperCredentialErrors[keyof SetPrincipalDeveloperCredentialErrors];
+
+export type SetPrincipalDeveloperCredentialResponses = {
+    /**
+     * OK
+     */
+    200: SetDeveloperCredentialResponse;
+};
+
+export type SetPrincipalDeveloperCredentialResponse = SetPrincipalDeveloperCredentialResponses[keyof SetPrincipalDeveloperCredentialResponses];
 
 export type ResetPrincipalTwoFactorData = {
     body?: never;
