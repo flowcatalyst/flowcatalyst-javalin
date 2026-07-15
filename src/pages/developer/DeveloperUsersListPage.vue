@@ -68,6 +68,13 @@ async function searchUsers(event: { query: string }) {
 	}
 }
 
+function initials(name: string): string {
+	const parts = name.trim().split(/\s+/);
+	const first = parts[0]?.[0] ?? "";
+	const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
+	return (first + last).toUpperCase() || "?";
+}
+
 async function onUserSelect(event: { value: User }) {
 	const user = event.value;
 	granting.value = true;
@@ -278,8 +285,9 @@ function copyToClipboard(text: string) {
     <Dialog
       v-model:visible="showGrantDialog"
       header="Grant Developer Role"
-      :style="{ width: '480px' }"
+      :style="{ width: '560px' }"
       :modal="true"
+      class="grant-dialog"
     >
       <p class="dialog-help">
         Search for an existing user to grant the developer role. They'll be able to set their own API credential from their Profile page, or you can set one for them below.
@@ -289,15 +297,22 @@ function copyToClipboard(text: string) {
         optionLabel="name"
         placeholder="Search by name or email..."
         :loading="granting"
-        class="full-width"
+        class="full-width grant-search"
+        panelClass="grant-search-panel"
         @complete="searchUsers"
         @item-select="onUserSelect"
       >
         <template #option="slotProps">
           <div class="user-option">
-            <span class="user-option-name">{{ slotProps.option.name }}</span>
-            <span class="user-option-email">{{ slotProps.option.email }}</span>
+            <div class="user-option-avatar">{{ initials(slotProps.option.name) }}</div>
+            <div class="user-option-text">
+              <span class="user-option-name">{{ slotProps.option.name }}</span>
+              <span class="user-option-email">{{ slotProps.option.email }}</span>
+            </div>
           </div>
+        </template>
+        <template #empty>
+          <div class="user-option-empty">No matching users</div>
         </template>
       </AutoComplete>
       <template #footer>
@@ -387,19 +402,54 @@ function copyToClipboard(text: string) {
 }
 
 .dialog-help {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
   font-size: 13px;
   color: #64748b;
+  line-height: 1.5;
 }
 
 .full-width {
   width: 100%;
 }
 
+/* PrimeVue 4's AutoComplete inner <input> doesn't inherit the root's width
+   on its own — same fix as ClientSelect.vue / main.css's .fc-form-field
+   rule, applied here since this dialog isn't inside an .fc-form-field. */
+.grant-search :deep(.p-autocomplete-input) {
+  width: 100%;
+}
+
+.grant-search :deep(.p-autocomplete-input) {
+  height: 44px;
+  font-size: 14px;
+}
+
 .user-option {
   display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.user-option-avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0967d2 0%, #47a3f3 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.user-option-text {
+  display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  min-width: 0;
 }
 
 .user-option-name {
@@ -408,6 +458,12 @@ function copyToClipboard(text: string) {
 
 .user-option-email {
   font-size: 12px;
+  color: #64748b;
+}
+
+.user-option-empty {
+  padding: 10px 4px;
+  font-size: 13px;
   color: #64748b;
 }
 
