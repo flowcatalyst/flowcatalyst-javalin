@@ -1642,6 +1642,7 @@ export type PrincipalResponse = {
     name: string;
     roles: Array<string>;
     scope: string;
+    twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
 };
@@ -3728,6 +3729,7 @@ export type PrincipalResponseWritable = {
     name: string;
     roles: Array<string>;
     scope: string;
+    twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
 };

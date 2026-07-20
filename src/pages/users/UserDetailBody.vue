@@ -148,6 +148,24 @@ const canResetPassword = computed(() => user.value?.idpType === "INTERNAL");
 
 const isAnchorUser = computed(() => user.value?.isAnchorUser ?? false);
 
+// Confirmed second factors on the account (from the principal detail read).
+// Empty ⇒ no 2FA enrolled — which is the case that gets a self-service
+// "Forgot password" diverted to admin approval instead of an email.
+const twoFactorMethods = computed(() => user.value?.twoFactorMethods ?? []);
+const hasTwoFactor = computed(() => twoFactorMethods.value.length > 0);
+const twoFactorSummary = computed(() => {
+	if (!hasTwoFactor.value) return "None";
+	return twoFactorMethods.value
+		.map((m) =>
+			m === "TOTP"
+				? "Authenticator app"
+				: m === "EMAIL_PIN"
+					? "Email code"
+					: m,
+		)
+		.join(", ");
+});
+
 const userType = computed(() => {
 	if (!user.value) return null;
 
@@ -1115,14 +1133,23 @@ function formatDate(dateStr: string | null | undefined) {
 
         <div v-if="user.idpType === 'INTERNAL'" class="action-item">
           <div class="action-info">
-            <strong>Reset Two-Factor</strong>
-            <p>Clear enrolled factors, recovery codes and trusted devices — re-triggers 2FA onboarding at next sign-in.</p>
+            <strong>
+              Two-Factor Authentication
+              <Tag
+                :value="twoFactorSummary"
+                :severity="hasTwoFactor ? 'success' : 'secondary'"
+                class="tfa-status-tag"
+              />
+            </strong>
+            <p v-if="hasTwoFactor">Enrolled factors, recovery codes and trusted devices — reset to clear them and re-trigger 2FA onboarding at next sign-in.</p>
+            <p v-else>No second factor enrolled. Without an authenticator app, a self-service "Forgot password" is diverted to admin approval instead of emailing a reset link.</p>
           </div>
           <Button
             label="Reset 2FA"
             icon="pi pi-mobile"
             severity="secondary"
             outlined
+            :disabled="!hasTwoFactor"
             :loading="resettingTwoFactor"
             @click="confirmResetTwoFactor"
           />
@@ -1620,6 +1647,12 @@ function formatDate(dateStr: string | null | undefined) {
 .action-info strong {
   display: block;
   margin-bottom: 4px;
+}
+
+.tfa-status-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  vertical-align: middle;
 }
 
 .action-info p {
