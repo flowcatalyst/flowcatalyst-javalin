@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/utils/errorBus";
 import { getErrorMessage } from "@/utils/errors";
+import { passwordPolicyError } from "@/utils/passwordPolicy";
 import { useConfirm } from "primevue/useconfirm";
 import {
 	changePassword,
@@ -42,8 +43,12 @@ function openChangePassword() {
 
 async function submitChangePassword() {
 	cpError.value = "";
-	if (cpNew.value.length < 8) {
-		cpError.value = "New password must be at least 8 characters.";
+	const policyErr = passwordPolicyError(cpNew.value, {
+		email: authStore.user?.email,
+		name: authStore.user?.name,
+	});
+	if (policyErr) {
+		cpError.value = policyErr;
 		return;
 	}
 	if (cpNew.value !== cpConfirm.value) {

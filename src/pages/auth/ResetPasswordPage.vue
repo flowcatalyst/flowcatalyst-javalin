@@ -9,6 +9,7 @@ import { validateResetToken, confirmPasswordReset } from "@/api/auth";
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
 import type { TwoFactorMethod } from "@/api/twofactor";
 import { getErrorMessage } from "@/utils/errors";
+import { passwordPolicyError } from "@/utils/passwordPolicy";
 
 const route = useRoute();
 const router = useRouter();
@@ -59,21 +60,17 @@ async function checkToken() {
 	}
 }
 
-// Password schema — same rules as the rest of the app (8+ chars, upper, lower, digit, special)
+// Password schema — mirrors the server policy (passwordPolicyError): length
+// bounds + not-a-common-password. The server additionally rejects passwords
+// derived from the account's email/name (unknown to this page — the reset
+// token doesn't expose it); that error surfaces via submitError on confirm.
 const passwordSchema = toTypedSchema(
 	z
 		.object({
-			password: z
-				.string()
-				.min(8, "Password must be at least 8 characters")
-				.max(128, "Password must be at most 128 characters")
-				.regex(/[A-Z]/, "Password must contain at least one uppercase letter")
-				.regex(/[a-z]/, "Password must contain at least one lowercase letter")
-				.regex(/[0-9]/, "Password must contain at least one number")
-				.regex(
-					/[^A-Za-z0-9]/,
-					"Password must contain at least one special character",
-				),
+			password: z.string().superRefine((pw, ctx) => {
+				const err = passwordPolicyError(pw);
+				if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
+			}),
 			confirmPassword: z.string(),
 		})
 		.refine((data) => data.password === data.confirmPassword, {
@@ -199,7 +196,7 @@ const onSubmit = handleSubmit(async (values) => {
               <Password
                 id="password"
                 v-model="passwordValue"
-                placeholder="At least 12 characters"
+                placeholder="At least 8 characters"
                 :disabled="pageState === 'submitting'"
                 :invalid="!!passwordError"
                 :feedback="true"

@@ -4,6 +4,7 @@ import { toast } from "@/utils/errorBus";
 import { useAuthStore } from "@/stores/auth";
 import { useClientOptions } from "@/composables/useClientOptions";
 import { usersApi } from "@/api/users";
+import { passwordPolicyError } from "@/utils/passwordPolicy";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
@@ -68,6 +69,16 @@ async function createUser() {
 	if (!clientId.value) {
 		toast.error("Error", "Select a client");
 		return;
+	}
+	if (password.value) {
+		const policyErr = passwordPolicyError(password.value, {
+			email: email.value,
+			name: name.value,
+		});
+		if (policyErr) {
+			toast.error("Weak password", policyErr);
+			return;
+		}
 	}
 
 	saving.value = true;

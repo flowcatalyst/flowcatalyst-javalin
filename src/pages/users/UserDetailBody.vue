@@ -15,6 +15,7 @@ import {
 import { clientsApi, type Client } from "@/api/clients";
 import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
+import { passwordPolicyError } from "@/utils/passwordPolicy";
 import { useClientOptions } from "@/composables/useClientOptions";
 import { useDirtyForm } from "@/composables/useDirtyForm";
 import { useConfirm } from "primevue/useconfirm";
@@ -236,7 +237,10 @@ const availableClients = computed(() => {
 // Already-assigned roles stay visible so the user can revoke them even if
 // the app access was later removed.
 const assignableRoles = computed(() => {
-	if (user.value?.scope === "ANCHOR") {
+	// "All applications" makes every app accessible, so the explicit-grant
+	// filter below must not apply — its grant list may be empty, which used to
+	// make every role unselectable for client users with all-apps access.
+	if (user.value?.scope === "ANCHOR" || allApplications.value) {
 		return availableRoles.value;
 	}
 	const accessibleCodes = new Set(
@@ -607,8 +611,12 @@ async function resetPasswordDirect() {
 		resetPasswordError.value = "Password is required";
 		return;
 	}
-	if (resetPasswordNew.value.length < 8) {
-		resetPasswordError.value = "Password must be at least 8 characters";
+	const policyErr = passwordPolicyError(resetPasswordNew.value, {
+		email: user.value.email,
+		name: user.value.name,
+	});
+	if (policyErr) {
+		resetPasswordError.value = policyErr;
 		return;
 	}
 	if (resetPasswordNew.value !== resetPasswordConfirm.value) {
