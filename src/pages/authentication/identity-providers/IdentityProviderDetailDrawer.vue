@@ -6,6 +6,7 @@ import {
 	identityProvidersApi,
 	type IdentityProvider,
 } from "@/api/identity-providers";
+import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -34,12 +35,29 @@ const editForm = ref({
 	oidcMultiTenant: false,
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
+	syncRolesFromIdp: false,
 });
 const newAllowedDomain = ref("");
 
+// Role allow-list picker: [availableRoles, selectedRoles].
+const allRoles = ref<Role[]>([]);
+const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
+
 const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
 	...editForm.value,
+	allowedRoleIds: rolePickerModel.value[1].map((r) => r.id),
 }));
+
+// Domains present on the provider but removed in the edit form fall back to
+// internal (password) auth on save — confirmed via a dialog first.
+const removedDomains = computed(() => {
+	if (!provider.value) return [] as string[];
+	const desired = new Set(editForm.value.allowedEmailDomains);
+	return (provider.value.allowedEmailDomains || []).filter(
+		(d) => !desired.has(d),
+	);
+});
+const showReleaseDialog = ref(false);
 
 const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
 const { id, goToList } = useDrawerRoute({
@@ -82,7 +100,12 @@ async function loadProvider(providerId: string) {
 	showDeleteDialog.value = false;
 	newAllowedDomain.value = "";
 	try {
-		provider.value = await identityProvidersApi.get(providerId);
+		const [providerData, rolesResponse] = await Promise.all([
+			identityProvidersApi.get(providerId),
+			rolesApi.list(),
+		]);
+		provider.value = providerData;
+		allRoles.value = rolesResponse.items;
 		resetEditForm();
 	} catch (e) {
 		provider.value = null;
@@ -103,8 +126,22 @@ function resetEditForm() {
 			oidcMultiTenant: provider.value.oidcMultiTenant,
 			oidcIssuerPattern: provider.value.oidcIssuerPattern || "",
 			allowedEmailDomains: [...(provider.value.allowedEmailDomains || [])],
+			syncRolesFromIdp: provider.value.syncRolesFromIdp ?? false,
 		};
+		const allowedRoleIds = new Set(provider.value.allowedRoleIds || []);
+		rolePickerModel.value = [
+			allRoles.value.filter((r) => !allowedRoleIds.has(r.id)),
+			allRoles.value.filter((r) => allowedRoleIds.has(r.id)),
+		];
 	}
+}
+
+function getAllowedRoleNames(): string[] {
+	if (!provider.value?.allowedRoleIds?.length) return [];
+	return provider.value.allowedRoleIds.map((roleId) => {
+		const role = allRoles.value.find((r) => r.id === roleId);
+		return role?.displayName || role?.name || roleId;
+	});
 }
 
 function startEditing() {
@@ -138,9 +175,19 @@ function removeAllowedDomain(domain: string) {
 		editForm.value.allowedEmailDomains.filter((d) => d !== domain);
 }
 
-async function saveChanges() {
+function saveChanges() {
 	if (!provider.value || !isValid.value) return;
+	// Removing a domain flips its users back to password auth — confirm.
+	if (removedDomains.value.length > 0) {
+		showReleaseDialog.value = true;
+		return;
+	}
+	void applyChanges();
+}
 
+async function applyChanges() {
+	if (!provider.value) return;
+	showReleaseDialog.value = false;
 	saving.value = true;
 	saveError.value = null;
 
@@ -160,6 +207,10 @@ async function saveChanges() {
 				updateData["oidcClientSecretRef"] =
 					editForm.value.oidcClientSecretRef.trim();
 			}
+			updateData["syncRolesFromIdp"] = editForm.value.syncRolesFromIdp;
+			updateData["allowedRoleIds"] = rolePickerModel.value[1].map(
+				(r) => r.id,
+			);
 		}
 
 		const updated = await identityProvidersApi.update(
@@ -373,8 +424,63 @@ function getTypeSeverity(type: string) {
         </div>
       </FcFormSection>
 
-      <!-- Allowed Email Domains -->
-      <FcFormSection title="Allowed Email Domains" flat>
+      <!-- Role Sync -->
+      <FcFormSection v-if="provider.type === 'OIDC'" title="Role Sync" flat>
+        <!-- View mode -->
+        <div v-if="!isEditing" class="fc-detail-grid">
+          <FcDetailField label="Sync Roles from IDP">
+            <Tag
+              :value="provider.syncRolesFromIdp ? 'Enabled' : 'Disabled'"
+              :severity="provider.syncRolesFromIdp ? 'success' : 'secondary'"
+            />
+          </FcDetailField>
+          <FcDetailField v-if="provider.syncRolesFromIdp" label="Allowed Roles" span>
+            <div v-if="(provider.allowedRoleIds?.length ?? 0) > 0" class="role-chips">
+              <Chip v-for="roleName in getAllowedRoleNames()" :key="roleName" :label="roleName" />
+            </div>
+            <span v-else class="text-muted">All mapped roles allowed</span>
+          </FcDetailField>
+        </div>
+
+        <!-- Edit mode -->
+        <div v-else class="field-stack">
+          <div class="field checkbox-field">
+            <Checkbox id="syncRoles" v-model="editForm.syncRolesFromIdp" :binary="true" />
+            <label for="syncRoles" class="checkbox-label">Sync Roles from IDP</label>
+          </div>
+          <small class="field-help">
+            When enabled, roles from the provider's token are synchronized at
+            every login. Synced roles are filtered by the allowed roles below.
+          </small>
+
+          <div v-if="editForm.syncRolesFromIdp" class="field">
+            <label>Allowed Roles</label>
+            <PickList
+              v-model="rolePickerModel"
+              dataKey="id"
+              breakpoint="960px"
+              :showSourceControls="false"
+              :showTargetControls="false"
+            >
+              <template #sourceheader>Available Roles</template>
+              <template #targetheader>Allowed Roles</template>
+              <template #item="{ item }">
+                <div class="role-item">
+                  <span class="role-name">{{ item.displayName || item.name }}</span>
+                  <span class="role-app">{{ item.applicationCode }}</span>
+                </div>
+              </template>
+            </PickList>
+            <small class="field-help">
+              Restrict which roles this provider may grant. Leave empty to
+              allow all mapped roles.
+            </small>
+          </div>
+        </div>
+      </FcFormSection>
+
+      <!-- Email Domains -->
+      <FcFormSection title="Email Domains" flat>
         <!-- View mode -->
         <template v-if="!isEditing">
           <div v-if="provider.allowedEmailDomains?.length > 0" class="domain-list">
@@ -384,7 +490,7 @@ function getTypeSeverity(type: string) {
               :label="domain"
             />
           </div>
-          <span v-else class="text-muted">All domains allowed</span>
+          <span v-else class="text-muted">No domains routed to this provider</span>
         </template>
 
         <!-- Edit mode -->
@@ -412,7 +518,9 @@ function getTypeSeverity(type: string) {
             />
           </div>
           <small class="field-help">
-            Restrict which email domains can authenticate. Leave empty to allow all domains.
+            The set of domains routed to this provider. Added domains are
+            mapped (or re-linked from their current provider); removed domains
+            fall back to internal password authentication.
           </small>
         </div>
       </FcFormSection>
@@ -457,7 +565,8 @@ function getTypeSeverity(type: string) {
       </p>
 
       <Message severity="warn" :closable="false">
-        Email domain mappings using this provider will need to be updated.
+        Deletion is blocked while email domains still route to this provider —
+        move or delete those mappings first.
       </Message>
     </div>
 
@@ -469,6 +578,37 @@ function getTypeSeverity(type: string) {
         severity="danger"
         :loading="deleteLoading"
         @click="deleteProvider"
+      />
+    </template>
+  </Dialog>
+
+  <!-- Domain-release Confirmation Dialog -->
+  <Dialog
+    v-model:visible="showReleaseDialog"
+    header="Remove Email Domains"
+    modal
+    :style="{ width: '480px' }"
+  >
+    <div class="dialog-content">
+      <p>The following domains will stop using this provider:</p>
+      <div class="domain-list">
+        <Chip v-for="domain in removedDomains" :key="domain" :label="domain" />
+      </div>
+      <Message severity="warn" :closable="false">
+        These domains fall back to internal password authentication. Users who
+        were provisioned through SSO must reset their password before they can
+        log in again, and roles synced from this provider will be removed.
+      </Message>
+    </div>
+
+    <template #footer>
+      <Button label="Cancel" text :disabled="saving" @click="showReleaseDialog = false" />
+      <Button
+        label="Save and Release Domains"
+        icon="pi pi-check"
+        severity="warn"
+        :loading="saving"
+        @click="applyChanges"
       />
     </template>
   </Dialog>
@@ -568,5 +708,34 @@ function getTypeSeverity(type: string) {
 
 .w-full {
   width: 100%;
+}
+
+.role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.role-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.role-item .role-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.role-item .role-app {
+  font-size: 12px;
+  color: #64748b;
+  font-family: monospace;
+}
+
+:deep(.p-picklist-list) {
+  min-height: 160px;
+  max-height: 240px;
 }
 </style>

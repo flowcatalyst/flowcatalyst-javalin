@@ -853,7 +853,14 @@ export type CreateIdentityProviderRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Email domains to route to this provider; mappings are created (or claimed from their current provider) in Email Domain management
+     */
     allowedEmailDomains?: Array<string>;
+    /**
+     * Platform roles (by id) this provider may confer via role sync; empty = no restriction
+     */
+    allowedRoleIds?: Array<string>;
     /**
      * IDP code (e.g. internal, entra)
      */
@@ -867,6 +874,14 @@ export type CreateIdentityProviderRequest = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    /**
+     * Client to link on mappings that are new or not yet linked to a primary client
+     */
+    primaryClientId?: string;
+    /**
+     * Reconcile users' IDP_SYNC roles from the token's roles claim at login
+     */
+    syncRolesFromIdp?: boolean;
     /**
      * IDP type (INTERNAL or OIDC)
      */
@@ -895,7 +910,6 @@ export type CreateMappingRequest = {
      * Permitted 2FA methods (TOTP, EMAIL_PIN). ≥1 required when require2fa is set.
      */
     allowed2faMethods?: Array<string>;
-    allowedRoleIds?: Array<string>;
     /**
      * DNS-like email domain (e.g. example.com)
      */
@@ -911,7 +925,6 @@ export type CreateMappingRequest = {
      * Scope of mapping (ANCHOR, PARTNER, CLIENT)
      */
     scopeType: string;
-    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
@@ -1415,7 +1428,11 @@ export type IdentityProviderResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Domains currently routed to this provider (derived from email-domain mappings)
+     */
     allowedEmailDomains: Array<string>;
+    allowedRoleIds: Array<string>;
     code: string;
     createdAt: string;
     hasClientSecret: boolean;
@@ -1425,6 +1442,7 @@ export type IdentityProviderResponse = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
 };
@@ -1492,7 +1510,6 @@ export type MappingResponse = {
     readonly $schema?: string;
     additionalClientIds: Array<string>;
     allowed2faMethods: Array<string>;
-    allowedRoleIds: Array<string>;
     createdAt: string;
     emailDomain: string;
     grantedClientIds: Array<string>;
@@ -1505,13 +1522,39 @@ export type MappingResponse = {
     require2fa: boolean;
     requiredOidcTenantId?: string;
     scopeType: string;
-    syncRolesFromIdp: boolean;
     updatedAt: string;
 };
 
 export type MetadataDto = {
     key: string;
     value: string;
+};
+
+export type MoveProviderRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Target identity provider id
+     */
+    identityProviderId: string;
+    [key: string]: unknown;
+};
+
+export type MoveProviderResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    emailDomain: string;
+    fromIdentityProviderId: string;
+    mappingId: string;
+    toIdentityProviderId: string;
+    /**
+     * OIDC-provisioned users converted back to internal auth (0 when moving to an OIDC provider)
+     */
+    usersReset: number;
 };
 
 export type NoteResponse = {
@@ -2559,13 +2602,22 @@ export type UpdateIdentityProviderRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Desired set of domains routed to this provider; additions are mapped/claimed, removals fall back to internal auth
+     */
     allowedEmailDomains?: Array<string>;
+    allowedRoleIds?: Array<string>;
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
+    /**
+     * Client to link on mappings that are new or not yet linked to a primary client
+     */
+    primaryClientId?: string;
+    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
@@ -2576,15 +2628,12 @@ export type UpdateMappingRequest = {
     readonly $schema?: string;
     additionalClientIds?: Array<string>;
     allowed2faMethods?: Array<string>;
-    allowedRoleIds?: Array<string>;
     grantedClientIds?: Array<string>;
-    identityProviderId?: string;
     primaryClientId?: string;
     rememberDeviceDays?: number;
     rememberDeviceEnabled?: boolean;
     require2fa?: boolean;
     requiredOidcTenantId?: string;
-    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
@@ -3231,7 +3280,14 @@ export type CreateEventTypeRequestWritable = {
 };
 
 export type CreateIdentityProviderRequestWritable = {
+    /**
+     * Email domains to route to this provider; mappings are created (or claimed from their current provider) in Email Domain management
+     */
     allowedEmailDomains?: Array<string>;
+    /**
+     * Platform roles (by id) this provider may confer via role sync; empty = no restriction
+     */
+    allowedRoleIds?: Array<string>;
     /**
      * IDP code (e.g. internal, entra)
      */
@@ -3245,6 +3301,14 @@ export type CreateIdentityProviderRequestWritable = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    /**
+     * Client to link on mappings that are new or not yet linked to a primary client
+     */
+    primaryClientId?: string;
+    /**
+     * Reconcile users' IDP_SYNC roles from the token's roles claim at login
+     */
+    syncRolesFromIdp?: boolean;
     /**
      * IDP type (INTERNAL or OIDC)
      */
@@ -3265,7 +3329,6 @@ export type CreateMappingRequestWritable = {
      * Permitted 2FA methods (TOTP, EMAIL_PIN). ≥1 required when require2fa is set.
      */
     allowed2faMethods?: Array<string>;
-    allowedRoleIds?: Array<string>;
     /**
      * DNS-like email domain (e.g. example.com)
      */
@@ -3281,7 +3344,6 @@ export type CreateMappingRequestWritable = {
      * Scope of mapping (ANCHOR, PARTNER, CLIENT)
      */
     scopeType: string;
-    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
@@ -3602,7 +3664,11 @@ export type IdentityProviderListResponseWritable = {
 };
 
 export type IdentityProviderResponseWritable = {
+    /**
+     * Domains currently routed to this provider (derived from email-domain mappings)
+     */
     allowedEmailDomains: Array<string>;
+    allowedRoleIds: Array<string>;
     code: string;
     createdAt: string;
     hasClientSecret: boolean;
@@ -3612,6 +3678,7 @@ export type IdentityProviderResponseWritable = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
 };
@@ -3638,7 +3705,6 @@ export type MappingListResponseWritable = {
 export type MappingResponseWritable = {
     additionalClientIds: Array<string>;
     allowed2faMethods: Array<string>;
-    allowedRoleIds: Array<string>;
     createdAt: string;
     emailDomain: string;
     grantedClientIds: Array<string>;
@@ -3651,8 +3717,26 @@ export type MappingResponseWritable = {
     require2fa: boolean;
     requiredOidcTenantId?: string;
     scopeType: string;
-    syncRolesFromIdp: boolean;
     updatedAt: string;
+};
+
+export type MoveProviderRequestWritable = {
+    /**
+     * Target identity provider id
+     */
+    identityProviderId: string;
+    [key: string]: unknown;
+};
+
+export type MoveProviderResponseWritable = {
+    emailDomain: string;
+    fromIdentityProviderId: string;
+    mappingId: string;
+    toIdentityProviderId: string;
+    /**
+     * OIDC-provisioned users converted back to internal auth (0 when moving to an OIDC provider)
+     */
+    usersReset: number;
 };
 
 export type OAuthClientListResponseWritable = {
@@ -4178,28 +4262,34 @@ export type UpdateEventTypeRequestWritable = {
 };
 
 export type UpdateIdentityProviderRequestWritable = {
+    /**
+     * Desired set of domains routed to this provider; additions are mapped/claimed, removals fall back to internal auth
+     */
     allowedEmailDomains?: Array<string>;
+    allowedRoleIds?: Array<string>;
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
+    /**
+     * Client to link on mappings that are new or not yet linked to a primary client
+     */
+    primaryClientId?: string;
+    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
 export type UpdateMappingRequestWritable = {
     additionalClientIds?: Array<string>;
     allowed2faMethods?: Array<string>;
-    allowedRoleIds?: Array<string>;
     grantedClientIds?: Array<string>;
-    identityProviderId?: string;
     primaryClientId?: string;
     rememberDeviceDays?: number;
     rememberDeviceEnabled?: boolean;
     require2fa?: boolean;
     requiredOidcTenantId?: string;
-    syncRolesFromIdp?: boolean;
     [key: string]: unknown;
 };
 
@@ -7009,6 +7099,33 @@ export type UpdateEmailDomainMappingResponses = {
 };
 
 export type UpdateEmailDomainMappingResponse = UpdateEmailDomainMappingResponses[keyof UpdateEmailDomainMappingResponses];
+
+export type MoveEmailDomainMappingProviderData = {
+    body: MoveProviderRequestWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/email-domain-mappings/{id}/move-provider';
+};
+
+export type MoveEmailDomainMappingProviderErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type MoveEmailDomainMappingProviderError = MoveEmailDomainMappingProviderErrors[keyof MoveEmailDomainMappingProviderErrors];
+
+export type MoveEmailDomainMappingProviderResponses = {
+    /**
+     * OK
+     */
+    200: MoveProviderResponse;
+};
+
+export type MoveEmailDomainMappingProviderResponse = MoveEmailDomainMappingProviderResponses[keyof MoveEmailDomainMappingProviderResponses];
 
 export type ListEventTypesData = {
     body?: never;

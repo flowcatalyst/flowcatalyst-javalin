@@ -32,22 +32,20 @@ export interface CreateEmailDomainMappingRequest {
 	additionalClientIds?: string[];
 	grantedClientIds?: string[];
 	requiredOidcTenantId?: string;
-	allowedRoleIds?: string[];
-	syncRolesFromIdp?: boolean;
 	require2fa?: boolean;
 	allowed2faMethods?: TwoFactorMethod[];
 	rememberDeviceEnabled?: boolean;
 	rememberDeviceDays?: number;
 }
 
+// Role-sync config (allowedRoleIds / syncRolesFromIdp) lives on the identity
+// provider, not the mapping. Re-pointing a mapping to another provider goes
+// through moveProvider(), not update().
 export interface UpdateEmailDomainMappingRequest {
-	scopeType?: ScopeType;
 	primaryClientId?: string;
 	additionalClientIds?: string[];
 	grantedClientIds?: string[];
 	requiredOidcTenantId?: string;
-	allowedRoleIds?: string[];
-	syncRolesFromIdp?: boolean;
 	require2fa?: boolean;
 	allowed2faMethods?: TwoFactorMethod[];
 	rememberDeviceEnabled?: boolean;
@@ -109,4 +107,26 @@ export const emailDomainMappingsApi = {
 			method: "DELETE",
 		});
 	},
+
+	// Re-points the domain to a different identity provider via the move use
+	// case. Moving to an internal provider converts the domain's
+	// OIDC-provisioned users back to internal auth (usersReset reports how
+	// many); moving to an OIDC provider flips routing at the next login.
+	moveProvider(
+		id: string,
+		identityProviderId: string,
+	): Promise<MoveProviderResponse> {
+		return apiFetch(`/email-domain-mappings/${id}/move-provider`, {
+			method: "POST",
+			body: JSON.stringify({ identityProviderId }),
+		});
+	},
 };
+
+export interface MoveProviderResponse {
+	mappingId: string;
+	emailDomain: string;
+	fromIdentityProviderId: string;
+	toIdentityProviderId: string;
+	usersReset: number;
+}

@@ -13,7 +13,6 @@ import {
 	type IdentityProvider,
 } from "@/api/identity-providers";
 import { clientsApi, type Client } from "@/api/clients";
-import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -27,21 +26,18 @@ const isEditing = ref(false);
 
 const mapping = ref<EmailDomainMapping | null>(null);
 const provider = ref<IdentityProvider | null>(null);
+const providers = ref<IdentityProvider[]>([]);
 const clients = ref<Client[]>([]);
-const allRoles = ref<Role[]>([]);
 const loading = ref(true);
 const saving = ref(false);
 const loadError = ref<string | null>(null);
 const saveError = ref<string | null>(null);
 
-// Role picker state: [availableRoles, selectedRoles]
-const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
-
 const editForm = ref({
+	identityProviderId: "" as string,
 	scopeType: "CLIENT" as ScopeType,
 	primaryClientId: null as string | null,
 	requiredOidcTenantId: "" as string,
-	syncRolesFromIdp: false,
 	require2fa: false,
 	allowed2faMethods: [] as TwoFactorMethod[],
 	rememberDeviceEnabled: false,
@@ -50,7 +46,6 @@ const editForm = ref({
 
 const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
 	...editForm.value,
-	allowedRoleIds: rolePickerModel.value[1].map((r) => r.id),
 }));
 
 const drawer = ref<InstanceType<typeof EntityDrawer> | null>(null);
@@ -79,6 +74,26 @@ const selectedPrimaryClient = ref<Client | null>(null);
 // Delete dialog
 const showDeleteDialog = ref(false);
 const deleteLoading = ref(false);
+
+// Provider-move confirmation. Re-pointing a domain changes how its users
+// authenticate, so the save flow detours through this dialog when the
+// provider select was touched.
+const showMoveDialog = ref(false);
+const providerChanged = computed(
+	() =>
+		!!mapping.value &&
+		editForm.value.identityProviderId !== mapping.value.identityProviderId,
+);
+const targetProvider = computed(
+	() =>
+		providers.value.find((p) => p.id === editForm.value.identityProviderId) ||
+		null,
+);
+// Moving to a non-OIDC provider converts the domain's SSO-provisioned users
+// back to password auth (they must reset their passwords).
+const moveToInternal = computed(
+	() => providerChanged.value && targetProvider.value?.type !== "OIDC",
+);
 
 const scopeTypeOptions = [
 	{
@@ -132,19 +147,19 @@ async function loadData(mappingId: string) {
 	isEditing.value = false;
 	resetDirty();
 	try {
-		const [mappingData, clientsResponse, rolesResponse] = await Promise.all([
-			emailDomainMappingsApi.get(mappingId),
-			clientsApi.list(),
-			rolesApi.list(),
-		]);
+		const [mappingData, clientsResponse, providersResponse] = await Promise.all(
+			[
+				emailDomainMappingsApi.get(mappingId),
+				clientsApi.list(),
+				identityProvidersApi.list(),
+			],
+		);
 		mapping.value = mappingData;
 		clients.value = clientsResponse.clients;
-		allRoles.value = rolesResponse.items;
-
-		// Load the identity provider
-		provider.value = await identityProvidersApi.get(
-			mappingData.identityProviderId,
-		);
+		providers.value = providersResponse.identityProviders;
+		provider.value =
+			providers.value.find((p) => p.id === mappingData.identityProviderId) ||
+			(await identityProvidersApi.get(mappingData.identityProviderId));
 
 		resetEditForm();
 	} catch (e) {
@@ -158,12 +173,12 @@ async function loadData(mappingId: string) {
 function resetEditForm() {
 	if (mapping.value) {
 		editForm.value = {
+			identityProviderId: mapping.value.identityProviderId,
 			// Wire values are ANCHOR | PARTNER | CLIENT; the spec types them as
 			// plain string, so narrow at the form boundary.
 			scopeType: mapping.value.scopeType as ScopeType,
 			primaryClientId: mapping.value.primaryClientId || null,
 			requiredOidcTenantId: mapping.value.requiredOidcTenantId || "",
-			syncRolesFromIdp: mapping.value.syncRolesFromIdp ?? false,
 			require2fa: mapping.value.require2fa ?? false,
 			// Wire values are TOTP | EMAIL_PIN; spec types them as plain string.
 			allowed2faMethods: [
@@ -179,42 +194,12 @@ function resetEditForm() {
 		} else {
 			selectedPrimaryClient.value = null;
 		}
-
-		// Set up role picker
-		const allowedRoleIds = new Set(mapping.value.allowedRoleIds || []);
-		const selectedRoles = allRoles.value.filter((r) =>
-			allowedRoleIds.has(r.id),
-		);
-		const availableRoles = allRoles.value.filter(
-			(r) => !allowedRoleIds.has(r.id),
-		);
-		rolePickerModel.value = [availableRoles, selectedRoles];
 	}
 }
 
 const isOidcMultiTenant = computed(() => {
 	return provider.value?.oidcMultiTenant === true;
 });
-
-const isExternalIdp = computed(() => {
-	return provider.value?.type === "OIDC";
-});
-
-const showRolePicker = computed(() => {
-	return isExternalIdp.value && editForm.value.scopeType !== "ANCHOR";
-});
-
-const showRoleDisplay = computed(() => {
-	return isExternalIdp.value && mapping.value?.scopeType !== "ANCHOR";
-});
-
-function getAllowedRoleNames(): string[] {
-	if (!mapping.value?.allowedRoleIds?.length) return [];
-	return mapping.value.allowedRoleIds.map((roleId) => {
-		const role = allRoles.value.find((r) => r.id === roleId);
-		return role?.displayName || role?.name || roleId;
-	});
-}
 
 function startEditing() {
 	resetEditForm();
@@ -248,13 +233,41 @@ function clearPrimaryClient() {
 	selectedPrimaryClient.value = null;
 }
 
-async function saveChanges() {
+function saveChanges() {
 	if (!mapping.value || !isValid.value) return;
+	// A provider change is a real auth-method change — confirm before applying.
+	if (providerChanged.value) {
+		showMoveDialog.value = true;
+		return;
+	}
+	void applyChanges();
+}
 
+async function applyChanges() {
+	if (!mapping.value) return;
+	showMoveDialog.value = false;
 	saving.value = true;
 	saveError.value = null;
 
 	try {
+		const mappingId = mapping.value.id;
+
+		// Provider move first, through the dedicated use case (direction-aware
+		// side effects: moving to internal converts SSO-provisioned users back
+		// to password auth).
+		if (providerChanged.value) {
+			const moved = await emailDomainMappingsApi.moveProvider(
+				mappingId,
+				editForm.value.identityProviderId,
+			);
+			if (moved.usersReset > 0) {
+				toast.success(
+					"Provider changed",
+					`${moved.usersReset} SSO-provisioned user${moved.usersReset === 1 ? "" : "s"} converted to password sign-in (password reset required)`,
+				);
+			}
+		}
+
 		const updateData: Record<string, unknown> = {
 			scopeType: editForm.value.scopeType,
 		};
@@ -271,16 +284,6 @@ async function saveChanges() {
 				editForm.value.requiredOidcTenantId || "";
 		}
 
-		// Include allowed roles (send the selected roles' IDs)
-		if (showRolePicker.value) {
-			updateData["allowedRoleIds"] = rolePickerModel.value[1].map((r) => r.id);
-		}
-
-		// Include syncRolesFromIdp for external IDPs with non-ANCHOR scope
-		if (showRolePicker.value) {
-			updateData["syncRolesFromIdp"] = editForm.value.syncRolesFromIdp;
-		}
-
 		// 2FA settings (internal-auth domains only).
 		if (show2faControls.value) {
 			updateData["require2fa"] = editForm.value.require2fa;
@@ -292,12 +295,14 @@ async function saveChanges() {
 			updateData["rememberDeviceDays"] = editForm.value.rememberDeviceDays;
 		}
 
-		const mappingId = mapping.value.id;
 		await emailDomainMappingsApi.update(mappingId, updateData);
 		// PUT returns 204 No Content (empty body), so re-fetch the mapping to
 		// refresh the view with the saved values.
 		const refreshed = await emailDomainMappingsApi.get(mappingId);
 		mapping.value = refreshed;
+		provider.value =
+			providers.value.find((p) => p.id === refreshed.identityProviderId) ||
+			provider.value;
 
 		// Update the selected client display
 		if (refreshed.primaryClientId) {
@@ -415,10 +420,21 @@ function getPrimaryClientName(): string {
             <span class="domain-value">{{ mapping.emailDomain }}</span>
             <small class="fc-field-help">Email domain cannot be changed</small>
           </FcDetailField>
-          <FcDetailField label="Identity Provider">
-            {{ provider?.name || 'Unknown' }}
-            <small class="fc-field-help">Identity provider cannot be changed</small>
-          </FcDetailField>
+          <FcFormField
+            label="Identity Provider"
+            required
+            help="Changing the provider moves this domain's users to a different sign-in method — you'll be asked to confirm"
+          >
+            <template #default="{ id: fieldId }">
+              <Select
+                :id="fieldId"
+                v-model="editForm.identityProviderId"
+                :options="providers"
+                optionLabel="name"
+                optionValue="id"
+              />
+            </template>
+          </FcFormField>
 
           <FcFormField label="Scope Type" required>
             <template #default="{ id: fieldId }">
@@ -499,70 +515,6 @@ function getPrimaryClientName(): string {
           >
             Partner users can be granted access to multiple clients after login.
           </Message>
-        </div>
-      </FcFormSection>
-
-      <!-- Role Mapping -->
-      <FcFormSection
-        v-if="isEditing ? showRolePicker : showRoleDisplay"
-        title="Role Mapping"
-        flat
-      >
-        <!-- View mode -->
-        <div v-if="!isEditing" class="fc-detail-grid">
-          <FcDetailField label="Allowed Roles" span>
-            <div v-if="(mapping.allowedRoleIds?.length ?? 0) > 0" class="role-chips">
-              <Chip v-for="roleName in getAllowedRoleNames()" :key="roleName" :label="roleName" />
-            </div>
-            <span v-else class="muted">All roles allowed</span>
-          </FcDetailField>
-          <FcDetailField label="Sync Roles from IDP">
-            <Tag
-              :value="mapping.syncRolesFromIdp ? 'Enabled' : 'Disabled'"
-              :severity="mapping.syncRolesFromIdp ? 'success' : 'secondary'"
-            />
-          </FcDetailField>
-        </div>
-
-        <!-- Edit mode -->
-        <div v-else class="fc-form-grid">
-          <FcFormField
-            label="Allowed Roles"
-            span
-            help="Restrict which roles users from this domain can be assigned. Move roles to the right to allow them. Leave empty to allow all roles."
-          >
-            <PickList
-              v-model="rolePickerModel"
-              dataKey="id"
-              breakpoint="960px"
-              :showSourceControls="false"
-              :showTargetControls="false"
-            >
-              <template #sourceheader>Available Roles</template>
-              <template #targetheader>Allowed Roles</template>
-              <template #item="{ item }">
-                <div class="role-item">
-                  <span class="role-name">{{ item.displayName || item.name }}</span>
-                  <span class="role-app">{{ item.applicationCode }}</span>
-                </div>
-              </template>
-            </PickList>
-          </FcFormField>
-
-          <FcFormField
-            label="Sync Roles from IDP"
-            span
-            help="When enabled, roles from the external IDP token will be synchronized during OIDC login. Synced roles are filtered by the allowed roles list above."
-          >
-            <template #default="{ id: fieldId }">
-              <div class="toggle-row">
-                <ToggleSwitch :inputId="fieldId" v-model="editForm.syncRolesFromIdp" />
-                <span class="toggle-label">{{
-                  editForm.syncRolesFromIdp ? 'Enabled' : 'Disabled'
-                }}</span>
-              </div>
-            </template>
-          </FcFormField>
         </div>
       </FcFormSection>
 
@@ -717,6 +669,44 @@ function getPrimaryClientName(): string {
       />
     </template>
   </Dialog>
+
+  <!-- Provider-move Confirmation Dialog -->
+  <Dialog
+    v-model:visible="showMoveDialog"
+    header="Change Identity Provider"
+    modal
+    :style="{ width: '480px' }"
+  >
+    <div class="dialog-content">
+      <p>
+        Move <strong>{{ mapping?.emailDomain }}</strong> from
+        <strong>{{ provider?.name || 'its current provider' }}</strong> to
+        <strong>{{ targetProvider?.name || 'the selected provider' }}</strong>?
+      </p>
+
+      <Message v-if="moveToInternal" severity="warn" :closable="false">
+        Users provisioned through SSO will be converted to password sign-in:
+        they must reset their password before they can log in again, and roles
+        synced from the identity provider will be removed.
+      </Message>
+      <Message v-else severity="warn" :closable="false">
+        From their next login, users on this domain will sign in through
+        {{ targetProvider?.name || 'the new provider' }}. Password login for
+        this domain will be disabled.
+      </Message>
+    </div>
+
+    <template #footer>
+      <Button label="Cancel" text :disabled="saving" @click="showMoveDialog = false" />
+      <Button
+        label="Move Domain"
+        icon="pi pi-arrow-right-arrow-left"
+        severity="warn"
+        :loading="saving"
+        @click="applyChanges"
+      />
+    </template>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -784,24 +774,6 @@ function getPrimaryClientName(): string {
   gap: 8px;
 }
 
-.role-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-}
-
-.role-item .role-name {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.role-item .role-app {
-  font-size: 12px;
-  color: #64748b;
-  font-family: monospace;
-}
-
 .toggle-row {
   display: flex;
   align-items: center;
@@ -824,14 +796,5 @@ function getPrimaryClientName(): string {
 .toggle-label {
   font-size: 14px;
   color: #475569;
-}
-
-:deep(.p-picklist) {
-  max-width: 100%;
-}
-
-:deep(.p-picklist-list) {
-  min-height: 160px;
-  max-height: 240px;
 }
 </style>

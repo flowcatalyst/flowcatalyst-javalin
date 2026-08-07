@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import {
 	identityProvidersApi,
 	type CreateIdentityProviderRequest,
 	type IdentityProviderType,
 } from "@/api/identity-providers";
+import { clientsApi, type Client } from "@/api/clients";
+import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -28,9 +30,53 @@ const form = ref({
 	oidcMultiTenant: false,
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
+	primaryClientId: null as string | null,
+	syncRolesFromIdp: false,
 });
 
 const newAllowedDomain = ref("");
+
+// Role allow-list picker: [availableRoles, selectedRoles]. Which platform
+// roles this provider may confer via role sync; empty = no restriction.
+const allRoles = ref<Role[]>([]);
+const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
+
+// Optional client linked on new/unclaimed domain mappings.
+const clients = ref<Client[]>([]);
+const filteredClients = ref<Client[]>([]);
+const selectedClient = ref<Client | null>(null);
+
+onMounted(async () => {
+	try {
+		const [rolesResponse, clientsResponse] = await Promise.all([
+			rolesApi.list(),
+			clientsApi.list(),
+		]);
+		allRoles.value = rolesResponse.items;
+		rolePickerModel.value = [[...rolesResponse.items], []];
+		clients.value = clientsResponse.clients;
+	} catch {
+		// list-load errors surface via the global error toast
+	}
+});
+
+function searchClients(event: { query: string }) {
+	const query = event.query.toLowerCase();
+	filteredClients.value = clients.value.filter(
+		(c) =>
+			c.name.toLowerCase().includes(query) ||
+			c.identifier.toLowerCase().includes(query),
+	);
+}
+
+function onClientSelect(event: { value: Client }) {
+	form.value.primaryClientId = event.value.id;
+}
+
+function clearClient() {
+	form.value.primaryClientId = null;
+	selectedClient.value = null;
+}
 
 // Cheap dirty check: anything typed into the identifying fields counts.
 const dirty = computed(
@@ -108,6 +154,16 @@ async function createProvider() {
 				form.value.allowedEmailDomains.length > 0
 					? form.value.allowedEmailDomains
 					: undefined,
+			primaryClientId: form.value.primaryClientId ?? undefined,
+			...(form.value.type === "OIDC"
+				? {
+						syncRolesFromIdp: form.value.syncRolesFromIdp,
+						allowedRoleIds:
+							rolePickerModel.value[1].length > 0
+								? rolePickerModel.value[1].map((r) => r.id)
+								: undefined,
+					}
+				: {}),
 			...(form.value.type === "OIDC"
 				? {
 						oidcIssuerUrl:
@@ -269,33 +325,100 @@ async function createProvider() {
       </div>
     </FcFormSection>
 
-    <FcFormSection title="Allowed Email Domains" flat>
-      <div class="field">
-        <div class="domain-input">
-          <InputText
-            v-model="newAllowedDomain"
-            placeholder="example.com"
-            class="flex-grow"
-            @keyup.enter="addAllowedDomain"
-          />
-          <Button
-            icon="pi pi-plus"
-            :disabled="!newAllowedDomain.trim()"
-            @click="addAllowedDomain"
-          />
+    <FcFormSection title="Email Domains" flat>
+      <div class="field-stack">
+        <div class="field">
+          <div class="domain-input">
+            <InputText
+              v-model="newAllowedDomain"
+              placeholder="example.com"
+              class="flex-grow"
+              @keyup.enter="addAllowedDomain"
+            />
+            <Button
+              icon="pi pi-plus"
+              :disabled="!newAllowedDomain.trim()"
+              @click="addAllowedDomain"
+            />
+          </div>
+          <div v-if="form.allowedEmailDomains.length > 0" class="domain-list">
+            <Chip
+              v-for="domain in form.allowedEmailDomains"
+              :key="domain"
+              :label="domain"
+              removable
+              @remove="removeAllowedDomain(domain)"
+            />
+          </div>
+          <small class="field-help">
+            Domains listed here are routed to this provider in Email Domain
+            management: unknown domains get a new mapping; domains mapped to
+            another provider are re-linked to this one (their existing client
+            and 2FA configuration is kept).
+          </small>
         </div>
-        <div v-if="form.allowedEmailDomains.length > 0" class="domain-list">
-          <Chip
-            v-for="domain in form.allowedEmailDomains"
-            :key="domain"
-            :label="domain"
-            removable
-            @remove="removeAllowedDomain(domain)"
-          />
+
+        <div class="field">
+          <label for="primaryClient">Primary Client</label>
+          <div class="client-select">
+            <AutoComplete
+              id="primaryClient"
+              v-model="selectedClient"
+              :suggestions="filteredClients"
+              optionLabel="name"
+              placeholder="Search for a client (optional)..."
+              @complete="searchClients"
+              @item-select="onClientSelect"
+            />
+            <Button
+              v-if="selectedClient"
+              icon="pi pi-times"
+              text
+              @click="clearClient"
+            />
+          </div>
+          <small class="field-help">
+            Linked on mappings that are new or not yet linked to a primary
+            client. A domain's existing client link is never overwritten.
+          </small>
+        </div>
+      </div>
+    </FcFormSection>
+
+    <FcFormSection v-if="form.type === 'OIDC'" title="Role Sync" flat>
+      <div class="field-stack">
+        <div class="field checkbox-field">
+          <Checkbox id="syncRoles" v-model="form.syncRolesFromIdp" :binary="true" />
+          <label for="syncRoles" class="checkbox-label">Sync Roles from IDP</label>
         </div>
         <small class="field-help">
-          Restrict which email domains can authenticate. Leave empty to allow all domains.
+          When enabled, roles from the provider's token are synchronized at
+          every login. Synced roles are filtered by the allowed roles below.
         </small>
+
+        <div v-if="form.syncRolesFromIdp" class="field">
+          <label>Allowed Roles</label>
+          <PickList
+            v-model="rolePickerModel"
+            dataKey="id"
+            breakpoint="960px"
+            :showSourceControls="false"
+            :showTargetControls="false"
+          >
+            <template #sourceheader>Available Roles</template>
+            <template #targetheader>Allowed Roles</template>
+            <template #item="{ item }">
+              <div class="role-item">
+                <span class="role-name">{{ item.displayName || item.name }}</span>
+                <span class="role-app">{{ item.applicationCode }}</span>
+              </div>
+            </template>
+          </PickList>
+          <small class="field-help">
+            Restrict which roles this provider may grant. Leave empty to allow
+            all mapped roles.
+          </small>
+        </div>
       </div>
     </FcFormSection>
 
@@ -392,5 +515,38 @@ async function createProvider() {
 
 .w-full {
   width: 100%;
+}
+
+.client-select {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.client-select .p-autocomplete {
+  flex: 1;
+}
+
+.role-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.role-item .role-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.role-item .role-app {
+  font-size: 12px;
+  color: #64748b;
+  font-family: monospace;
+}
+
+:deep(.p-picklist-list) {
+  min-height: 160px;
+  max-height: 240px;
 }
 </style>

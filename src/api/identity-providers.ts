@@ -24,7 +24,14 @@ export interface CreateIdentityProviderRequest {
 	oidcClientSecretRef?: string;
 	oidcMultiTenant?: boolean;
 	oidcIssuerPattern?: string;
+	// Domains listed here are materialized as email-domain mappings: created
+	// when unknown, re-pointed (claimed) when already mapped elsewhere.
 	allowedEmailDomains?: string[];
+	// Linked on mappings that are new or have no primary client yet; an
+	// existing client link is never overwritten.
+	primaryClientId?: string;
+	syncRolesFromIdp?: boolean;
+	allowedRoleIds?: string[];
 }
 
 export interface UpdateIdentityProviderRequest {
@@ -34,7 +41,12 @@ export interface UpdateIdentityProviderRequest {
 	oidcClientSecretRef?: string;
 	oidcMultiTenant?: boolean;
 	oidcIssuerPattern?: string;
+	// Desired set of domains routed to this provider. Additions are
+	// mapped/claimed; removals fall back to internal auth (password).
 	allowedEmailDomains?: string[];
+	primaryClientId?: string;
+	syncRolesFromIdp?: boolean;
+	allowedRoleIds?: string[];
 }
 
 export const identityProvidersApi = {

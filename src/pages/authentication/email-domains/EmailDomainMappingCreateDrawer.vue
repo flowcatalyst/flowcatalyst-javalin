@@ -12,7 +12,6 @@ import {
 	type IdentityProvider,
 } from "@/api/identity-providers";
 import { clientsApi, type Client } from "@/api/clients";
-import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -23,13 +22,9 @@ const emit = defineEmits<{
 
 const providers = ref<IdentityProvider[]>([]);
 const clients = ref<Client[]>([]);
-const allRoles = ref<Role[]>([]);
 const loading = ref(false);
 const dataLoading = ref(true);
 const error = ref<string | null>(null);
-
-// Role picker state: [availableRoles, selectedRoles]
-const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
 
 // Form state
 const form = ref({
@@ -38,7 +33,6 @@ const form = ref({
 	scopeType: "CLIENT" as ScopeType,
 	primaryClientId: null as string | null,
 	requiredOidcTenantId: "" as string,
-	syncRolesFromIdp: false,
 	require2fa: false,
 	allowed2faMethods: [] as TwoFactorMethod[],
 	rememberDeviceEnabled: false,
@@ -74,14 +68,6 @@ function toggle2faMethod(method: TwoFactorMethod, on: boolean) {
 
 const isSelectedProviderMultiTenant = computed(() => {
 	return selectedProvider.value?.oidcMultiTenant === true;
-});
-
-const isExternalIdp = computed(() => {
-	return selectedProvider.value?.type === "OIDC";
-});
-
-const showRolePicker = computed(() => {
-	return isExternalIdp.value && form.value.scopeType !== "ANCHOR";
 });
 
 // Selection state
@@ -136,17 +122,12 @@ onMounted(async () => {
 async function loadData() {
 	dataLoading.value = true;
 	try {
-		const [providersResponse, clientsResponse, rolesResponse] =
-			await Promise.all([
-				identityProvidersApi.list(),
-				clientsApi.list(),
-				rolesApi.list(),
-			]);
+		const [providersResponse, clientsResponse] = await Promise.all([
+			identityProvidersApi.list(),
+			clientsApi.list(),
+		]);
 		providers.value = providersResponse.identityProviders;
 		clients.value = clientsResponse.clients;
-		allRoles.value = rolesResponse.items;
-		// Initialize role picker with all roles available, none selected
-		rolePickerModel.value = [[...rolesResponse.items], []];
 	} catch {
 		// list-load errors surface via the global error toast
 	} finally {
@@ -196,13 +177,6 @@ async function createMapping() {
 				form.value.requiredOidcTenantId.trim()
 					? form.value.requiredOidcTenantId.trim()
 					: undefined,
-			allowedRoleIds:
-				showRolePicker.value && rolePickerModel.value[1].length > 0
-					? rolePickerModel.value[1].map((r) => r.id)
-					: undefined,
-			syncRolesFromIdp: showRolePicker.value
-				? form.value.syncRolesFromIdp
-				: undefined,
 			require2fa: show2faControls.value ? form.value.require2fa : undefined,
 			allowed2faMethods:
 				show2faControls.value && form.value.require2fa
@@ -377,46 +351,6 @@ async function createMapping() {
       </div>
     </FcFormSection>
 
-    <FcFormSection v-if="showRolePicker" title="Role Mapping" flat>
-      <div class="fc-form-grid">
-        <FcFormField
-          label="Allowed Roles"
-          span
-          help="Restrict which roles users from this domain can be assigned. Move roles to the right to allow them. Leave empty to allow all roles."
-        >
-          <PickList
-            v-model="rolePickerModel"
-            dataKey="id"
-            breakpoint="960px"
-            :showSourceControls="false"
-            :showTargetControls="false"
-          >
-            <template #sourceheader>Available Roles</template>
-            <template #targetheader>Allowed Roles</template>
-            <template #item="{ item }">
-              <div class="role-item">
-                <span class="role-name">{{ item.displayName || item.name }}</span>
-                <span class="role-app">{{ item.applicationCode }}</span>
-              </div>
-            </template>
-          </PickList>
-        </FcFormField>
-
-        <FcFormField
-          label="Sync Roles from IDP"
-          span
-          help="When enabled, roles from the external IDP token will be synchronized during OIDC login. Synced roles are filtered by the allowed roles list above."
-        >
-          <template #default="{ id: fieldId }">
-            <div class="toggle-row">
-              <ToggleSwitch :inputId="fieldId" v-model="form.syncRolesFromIdp" />
-              <span class="toggle-label">{{ form.syncRolesFromIdp ? 'Enabled' : 'Disabled' }}</span>
-            </div>
-          </template>
-        </FcFormField>
-      </div>
-    </FcFormSection>
-
     <!-- Two-factor authentication (internal-auth domains only) -->
     <FcFormSection v-if="show2faControls" title="Two-Factor Authentication" flat>
       <div class="fc-form-grid">
@@ -561,24 +495,6 @@ async function createMapping() {
   color: #64748b;
 }
 
-.role-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-}
-
-.role-item .role-name {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.role-item .role-app {
-  font-size: 12px;
-  color: #64748b;
-  font-family: monospace;
-}
-
 .toggle-row {
   display: flex;
   align-items: center;
@@ -601,14 +517,5 @@ async function createMapping() {
 .toggle-label {
   font-size: 14px;
   color: #475569;
-}
-
-:deep(.p-picklist) {
-  max-width: 100%;
-}
-
-:deep(.p-picklist-list) {
-  min-height: 160px;
-  max-height: 240px;
 }
 </style>
