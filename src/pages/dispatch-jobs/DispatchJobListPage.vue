@@ -30,11 +30,57 @@ const listState = useListState({
 		codes: { type: "array", key: "codes" },
 		statuses: { type: "array", key: "statuses" },
 		search: { type: "string", key: "q" },
+		// Created-at range, URL-synced as YYYY-MM-DD.
+		from: { type: "string", key: "from" },
+		to: { type: "string", key: "to" },
 	},
 	pageSize: 200,
+	sortField: "createdAt",
+	sortOrder: "desc",
 });
-const { filters, pageSize, hasActiveFilters, clearFilters, syncToUrl, withSuppressed } =
-	listState;
+const {
+	filters,
+	pageSize,
+	hasActiveFilters,
+	clearFilters,
+	syncToUrl,
+	withSuppressed,
+	sortOrder,
+	onSort,
+} = listState;
+
+// Date-range picker models. DatePicker works in Dates; the URL-synced filter
+// refs hold YYYY-MM-DD strings — keep both in lockstep (filters are the
+// source of truth so deep links and clear-all behave).
+function parseDateFilter(v: string): Date | null {
+	if (!v) return null;
+	const d = new Date(`${v}T00:00:00`);
+	return Number.isNaN(d.getTime()) ? null : d;
+}
+function toDateFilter(d: Date | null): string {
+	if (!d) return "";
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+const dateFrom = ref<Date | null>(parseDateFilter(filters.from.value));
+const dateTo = ref<Date | null>(parseDateFilter(filters.to.value));
+watch([filters.from, filters.to], ([from, to]) => {
+	if (toDateFilter(dateFrom.value) !== from) dateFrom.value = parseDateFilter(from);
+	if (toDateFilter(dateTo.value) !== to) dateTo.value = parseDateFilter(to);
+});
+function onDateRangeChange() {
+	filters.from.value = toDateFilter(dateFrom.value);
+	filters.to.value = toDateFilter(dateTo.value);
+	syncToUrl();
+	load();
+}
+
+// DataTable sort events (server-side; only createdAt is sortable).
+function onSortChange(event: { sortField?: unknown; sortOrder?: number | null }) {
+	onSort(event as Parameters<typeof onSort>[0]);
+	syncToUrl();
+	load();
+}
 
 // Server-side filtering: the DataTable filter meta isn't bound — popup
 // inputs write the listState refs directly and load() serializes them
@@ -53,6 +99,22 @@ const { activeFilterCount } = useTableFilters(
 );
 
 function buildParams(): DispatchJobsListParams {
+	// The range filter is whole days: since = start of the "from" day,
+	// until = end of the "to" day, in the viewer's timezone.
+	const since = dateFrom.value
+		? new Date(
+				dateFrom.value.getFullYear(),
+				dateFrom.value.getMonth(),
+				dateFrom.value.getDate(),
+			).toISOString()
+		: undefined;
+	const until = dateTo.value
+		? new Date(
+				dateTo.value.getFullYear(),
+				dateTo.value.getMonth(),
+				dateTo.value.getDate() + 1,
+			).toISOString()
+		: undefined;
 	return {
 		size: pageSize.value,
 		clientIds: filters.clients.value.length ? filters.clients.value : undefined,
@@ -62,6 +124,9 @@ function buildParams(): DispatchJobsListParams {
 		aggregates: filters.aggregates.value.length ? filters.aggregates.value : undefined,
 		codes: filters.codes.value.length ? filters.codes.value : undefined,
 		source: filters.search.value || undefined,
+		since,
+		until,
+		sort: sortOrder.value === "asc" ? "createdAt.asc" : "createdAt.desc",
 	};
 }
 
@@ -298,14 +363,18 @@ function formatCode(code: string | undefined): {
         :value="dispatchJobs"
         :loading="loading"
         stripedRows
+        lazy
+        sortField="createdAt"
+        :sortOrder="sortOrder === 'asc' ? 1 : -1"
         emptyMessage="No dispatch jobs found"
         tableStyle="min-width: 60rem"
+        @sort="onSortChange"
       >
         <template #header>
           <FcTableToolbar
             v-model:search="filters.search.value"
             search-placeholder="Search by source..."
-            :active-filter-count="activeFilterCount"
+            :active-filter-count="activeFilterCount + (filters.from.value ? 1 : 0) + (filters.to.value ? 1 : 0)"
             :has-active-filters="hasActiveFilters"
             show-refresh
             @refresh="load"
@@ -412,6 +481,36 @@ function formatCode(code: string | undefined): {
                   />
                 </template>
               </FcFormField>
+              <FcFormField label="Created from">
+                <template #default="{ id: fieldId }">
+                  <DatePicker
+                    :id="fieldId"
+                    v-model="dateFrom"
+                    dateFormat="yy-mm-dd"
+                    placeholder="Any date"
+                    showIcon
+                    showButtonBar
+                    appendTo="self"
+                    :maxDate="dateTo ?? undefined"
+                    @update:modelValue="onDateRangeChange"
+                  />
+                </template>
+              </FcFormField>
+              <FcFormField label="Created to">
+                <template #default="{ id: fieldId }">
+                  <DatePicker
+                    :id="fieldId"
+                    v-model="dateTo"
+                    dateFormat="yy-mm-dd"
+                    placeholder="Any date"
+                    showIcon
+                    showButtonBar
+                    appendTo="self"
+                    :minDate="dateFrom ?? undefined"
+                    @update:modelValue="onDateRangeChange"
+                  />
+                </template>
+              </FcFormField>
             </template>
           </FcTableToolbar>
         </template>
@@ -458,7 +557,7 @@ function formatCode(code: string | undefined): {
             </span>
           </template>
         </Column>
-        <Column field="createdAt" header="Created" style="width: 10rem">
+        <Column field="createdAt" header="Created" sortable style="width: 10rem">
           <template #body="{ data }">
             <span class="text-sm">{{ formatDate(data.createdAt) }}</span>
           </template>
@@ -483,7 +582,8 @@ function formatCode(code: string | undefined): {
       <!-- No pagination — dispatch jobs ingest at high rates and "page 2"
            is meaningless. Adjust size or narrow filters to see more. -->
       <div class="result-summary">
-        Showing the {{ dispatchJobs.length }} most recent dispatch jobs
+        Showing {{ dispatchJobs.length }} dispatch jobs
+        ({{ sortOrder === 'asc' ? 'oldest' : 'newest' }} first)
         <span v-if="dispatchJobs.length === pageSize"> (size limit reached — narrow filters or increase size)</span>
       </div>
     </div>

@@ -6337,6 +6337,10 @@ export type ListDispatchJobsData = {
          * Free-text source filter
          */
         source?: string;
+        /**
+         * createdAt.asc | createdAt.desc (default)
+         */
+        sort?: string;
     };
     url: '/api/dispatch-jobs';
 };
@@ -6489,6 +6493,10 @@ export type ListDispatchJobsRawData = {
          * Free-text source filter
          */
         source?: string;
+        /**
+         * createdAt.asc | createdAt.desc (default)
+         */
+        sort?: string;
     };
     url: '/api/dispatch-jobs/list-raw';
 };
@@ -6562,6 +6570,10 @@ export type ListDispatchJobsRawAliasData = {
          * Free-text source filter
          */
         source?: string;
+        /**
+         * createdAt.asc | createdAt.desc (default)
+         */
+        sort?: string;
     };
     url: '/api/dispatch-jobs/raw';
 };

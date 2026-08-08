@@ -31,6 +31,12 @@ export interface DispatchJobsListParams {
 	aggregates?: string[] | undefined;
 	codes?: string[] | undefined;
 	source?: string | undefined;
+	/** RFC3339 lower bound on createdAt. */
+	since?: string | undefined;
+	/** RFC3339 upper bound on createdAt. */
+	until?: string | undefined;
+	/** createdAt sort direction; server default is newest-first. */
+	sort?: "createdAt.asc" | "createdAt.desc" | undefined;
 }
 
 function buildQuery(params: DispatchJobsListParams): string {
@@ -43,6 +49,9 @@ function buildQuery(params: DispatchJobsListParams): string {
 	if (params.aggregates?.length) qp.set("aggregates", params.aggregates.join(","));
 	if (params.codes?.length) qp.set("codes", params.codes.join(","));
 	if (params.source) qp.set("source", params.source);
+	if (params.since) qp.set("since", params.since);
+	if (params.until) qp.set("until", params.until);
+	if (params.sort) qp.set("sort", params.sort);
 	const s = qp.toString();
 	return s ? `?${s}` : "";
 }
