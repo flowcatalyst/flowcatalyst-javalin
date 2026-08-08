@@ -298,36 +298,9 @@ function getSeverity(
 	}
 }
 
-function getModeSeverity(
-	mode: string,
-):
-	| "success"
-	| "info"
-	| "warn"
-	| "danger"
-	| "secondary"
-	| "contrast"
-	| undefined {
-	switch (mode) {
-		case "IMMEDIATE":
-			return "success";
-		case "NEXT_ON_ERROR":
-			return "warn";
-		case "BLOCK_ON_ERROR":
-			return "danger";
-		default:
-			return "secondary";
-	}
-}
-
 function formatDate(dateStr: string | undefined): string {
 	if (!dateStr) return "-";
 	return new Date(dateStr).toLocaleString();
-}
-
-function formatAttempts(job: DispatchJob): string {
-	// The list row doesn't carry maxRetries on the wire (detail-only field).
-	return String(job.attemptCount);
 }
 
 function formatCode(code: string | undefined): {
@@ -538,16 +511,6 @@ function formatCode(code: string | undefined): {
         <Column field="status" header="Status" style="width: 8rem">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="getSeverity(data.status)" />
-          </template>
-        </Column>
-        <Column field="mode" header="Mode" style="width: 8rem">
-          <template #body="{ data }">
-            <Tag :value="data.mode || 'IMMEDIATE'" :severity="getModeSeverity(data.mode)" />
-          </template>
-        </Column>
-        <Column header="Attempts" style="width: 6rem">
-          <template #body="{ data }">
-            {{ formatAttempts(data) }}
           </template>
         </Column>
         <Column field="targetUrl" header="Target URL">
