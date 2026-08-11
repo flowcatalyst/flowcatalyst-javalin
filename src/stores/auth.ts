@@ -8,6 +8,8 @@ export interface User {
 	clientId: string | null;
 	roles: string[];
 	permissions: string[];
+	/** Account authenticates via a federated IdP — password self-service is hidden. */
+	ssoManaged: boolean;
 }
 
 export const useAuthStore = defineStore("auth", () => {

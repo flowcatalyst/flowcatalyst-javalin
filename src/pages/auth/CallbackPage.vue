@@ -73,6 +73,7 @@ onMounted(async () => {
 			clientId: userData.clientId,
 			roles: Array.from(userData.roles || []),
 			permissions: [],
+			ssoManaged: userData.ssoManaged ?? false,
 		});
 
 		// Redirect to intended destination

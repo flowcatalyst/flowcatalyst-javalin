@@ -19,6 +19,7 @@ interface LoginResponse {
 	roles: string[];
 	permissions?: string[];
 	clientId: string | null;
+	ssoManaged?: boolean;
 }
 
 // RawLoginResponse is the on-the-wire shape of /auth/login and the 2FA
@@ -65,6 +66,7 @@ function mapLoginResponseToUser(response: LoginResponse): User {
 		// Flat list of permission codes the backend resolved from the
 		// user's roles. Empty when the backend doesn't ship them.
 		permissions: response.permissions ?? [],
+		ssoManaged: response.ssoManaged ?? false,
 	};
 }
 

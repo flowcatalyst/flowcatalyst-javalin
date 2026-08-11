@@ -294,7 +294,11 @@ function formatDevCredentialDate(iso: string | null): string {
             </template>
           </FcFormField>
         </div>
-        <FcFormActions>
+        <p v-if="authStore.user?.ssoManaged" class="sso-managed-note">
+          <i class="pi pi-lock"></i>
+          Your password is managed by your organisation's identity provider.
+        </p>
+        <FcFormActions v-else>
           <Button
             label="Change Password"
             icon="pi pi-key"
@@ -630,6 +634,15 @@ function formatDevCredentialDate(iso: string | null): string {
 }
 
 .security-details p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.sso-managed-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   font-size: 13px;
   color: #64748b;
