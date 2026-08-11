@@ -1644,6 +1644,26 @@ export type PermissionResponse = {
     permission: string;
 };
 
+export type PortalUserRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    email: string;
+    name?: string;
+    [key: string]: unknown;
+};
+
+export type PortalUserResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    created: boolean;
+    invited: boolean;
+    principalId: string;
+};
+
 export type PrincipalAvailableApplication = {
     code: string;
     id: string;
@@ -3788,6 +3808,18 @@ export type PermissionResponseWritable = {
     description?: string;
     name: string;
     permission: string;
+};
+
+export type PortalUserRequestWritable = {
+    email: string;
+    name?: string;
+    [key: string]: unknown;
+};
+
+export type PortalUserResponseWritable = {
+    created: boolean;
+    invited: boolean;
+    principalId: string;
 };
 
 export type PrincipalAvailableApplicationsResponseWritable = {
@@ -8586,6 +8618,31 @@ export type ListDeveloperUsersResponses = {
 };
 
 export type ListDeveloperUsersResponse = ListDeveloperUsersResponses[keyof ListDeveloperUsersResponses];
+
+export type EnsurePortalUserData = {
+    body: PortalUserRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/principals/portal';
+};
+
+export type EnsurePortalUserErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type EnsurePortalUserError = EnsurePortalUserErrors[keyof EnsurePortalUserErrors];
+
+export type EnsurePortalUserResponses = {
+    /**
+     * OK
+     */
+    200: PortalUserResponse;
+};
+
+export type EnsurePortalUserResponse = EnsurePortalUserResponses[keyof EnsurePortalUserResponses];
 
 export type SyncUsersData = {
     body: SyncUsersRequestWritable;
