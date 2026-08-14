@@ -1,7 +1,7 @@
 /**
  * BFF Role & Permission contracts — local type stubs.
  *
- * These mirror the shapes returned by the Rust BFF endpoints.
+ * These mirror the shapes returned by the BFF endpoints.
  */
 
 export interface BffRole {
