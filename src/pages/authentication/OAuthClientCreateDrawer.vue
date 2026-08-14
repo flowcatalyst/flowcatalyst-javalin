@@ -209,6 +209,8 @@ async function createClient() {
 				form.value.applicationIds.length > 0
 					? form.value.applicationIds
 					: undefined,
+			portalClientId: form.value.portalClientId || undefined,
+			apiAccess: form.value.apiAccess || undefined,
 		});
 
 		toast.success("Success", `OAuth client "${response.client.clientName}" created successfully`);
