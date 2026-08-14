@@ -32,9 +32,11 @@ export interface CreateOAuthClientRequest {
 	defaultScopes?: string;
 	pkceRequired?: boolean;
 	applicationIds?: string[];
-	// Marks the client as a portal entry point owned by this tenant client:
-	// /oauth/authorize then requires an ACTIVE portal-user linkage.
+	// Marks the client as a portal entry point owned by this tenant client.
 	portalClientId?: string;
+	// Trusted first-party opt-in: interactive logins mint authority-bearing
+	// access tokens narrowed to the client's applications.
+	apiAccess?: boolean;
 }
 
 export interface UpdateOAuthClientRequest {
@@ -48,6 +50,7 @@ export interface UpdateOAuthClientRequest {
 	applicationIds?: string[];
 	// Empty string clears the portal flag; omitted keeps it.
 	portalClientId?: string;
+	apiAccess?: boolean;
 }
 
 export const oauthClientsApi = {

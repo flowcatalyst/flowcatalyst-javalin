@@ -938,6 +938,7 @@ export type CreateOAuthClientRequest = {
      */
     readonly $schema?: string;
     allowedOrigins?: Array<string>;
+    apiAccess?: boolean;
     applicationIds?: Array<string>;
     clientName: string;
     /**
@@ -1590,6 +1591,7 @@ export type OAuthClientResponse = {
     readonly $schema?: string;
     active: boolean;
     allowedOrigins: Array<string>;
+    apiAccess: boolean;
     applicationIds: Array<string>;
     applications: Array<OAuthClientApplicationRef>;
     clientId: string;
@@ -2707,6 +2709,7 @@ export type UpdateOAuthClientRequest = {
      */
     readonly $schema?: string;
     allowedOrigins?: Array<string>;
+    apiAccess?: boolean;
     applicationIds?: Array<string>;
     clientName?: string;
     defaultScopes?: Array<string>;
@@ -3418,6 +3421,7 @@ export type CreateMappingRequestWritable = {
 
 export type CreateOAuthClientRequestWritable = {
     allowedOrigins?: Array<string>;
+    apiAccess?: boolean;
     applicationIds?: Array<string>;
     clientName: string;
     /**
@@ -3817,6 +3821,7 @@ export type OAuthClientListResponseWritable = {
 export type OAuthClientResponseWritable = {
     active: boolean;
     allowedOrigins: Array<string>;
+    apiAccess: boolean;
     applicationIds: Array<string>;
     applications: Array<OAuthClientApplicationRef>;
     clientId: string;
@@ -4396,6 +4401,7 @@ export type UpdateMappingRequestWritable = {
 
 export type UpdateOAuthClientRequestWritable = {
     allowedOrigins?: Array<string>;
+    apiAccess?: boolean;
     applicationIds?: Array<string>;
     clientName?: string;
     defaultScopes?: Array<string>;

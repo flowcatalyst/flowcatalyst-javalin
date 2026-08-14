@@ -40,6 +40,7 @@ const editForm = ref({
 	pkceRequired: true,
 	applicationIds: [] as string[],
 	portalClientId: "" as string,
+	apiAccess: false,
 });
 const newRedirectUri = ref("");
 const newPostLogoutRedirectUri = ref("");
@@ -184,6 +185,7 @@ function resetEditForm() {
 			pkceRequired: client.value.pkceRequired ?? true,
 			applicationIds: [...(client.value.applicationIds || [])],
 			portalClientId: client.value.portalClientId || "",
+			apiAccess: client.value.apiAccess ?? false,
 		};
 	}
 }
@@ -279,6 +281,7 @@ async function saveChanges() {
 				pkceRequired: editForm.value.pkceRequired,
 				applicationIds: editForm.value.applicationIds,
 				portalClientId: editForm.value.portalClientId ?? "",
+				apiAccess: editForm.value.apiAccess,
 			},
 			// Handled inline below — don't also fire the global red banner.
 			{ suppressGlobalErrorToast: true },
@@ -471,6 +474,13 @@ function getClientTypeSeverity(clientType: string) {
             <span v-else class="text-muted">Not a portal client</span>
           </FcDetailField>
 
+          <FcDetailField label="API Access">
+            <Tag
+              :value="client.apiAccess ? 'Authority-bearing tokens' : 'Identity tokens only'"
+              :severity="client.apiAccess ? 'warn' : 'secondary'"
+            />
+          </FcDetailField>
+
           <FcDetailField label="Created" :value="formatDate(client.createdAt)" />
           <FcDetailField label="Last Updated" :value="formatDate(client.updatedAt)" />
         </div>
@@ -644,6 +654,20 @@ function getClientTypeSeverity(clientType: string) {
               portal gate.
             </small>
           </div>
+
+          <div class="field checkbox-field">
+            <Checkbox
+              id="apiAccessEdit"
+              v-model="editForm.apiAccess"
+              :binary="true"
+              :disabled="!!editForm.portalClientId"
+            />
+            <label for="apiAccessEdit" class="checkbox-label">API access (trusted first-party)</label>
+          </div>
+          <small class="field-help">
+            Interactive logins mint authority-bearing access tokens narrowed to the client's
+            applications. Not available for portal clients.
+          </small>
 
           <Message
             v-if="validationErrors.length > 0"

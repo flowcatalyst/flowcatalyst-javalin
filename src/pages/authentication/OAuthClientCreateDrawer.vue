@@ -29,6 +29,7 @@ const form = ref({
 	pkceRequired: true,
 	applicationIds: [] as string[],
 	portalClientId: "" as string,
+	apiAccess: false,
 });
 
 const newRedirectUri = ref("");
@@ -472,6 +473,21 @@ function closeSecretDialog() {
           client's ACTIVE portal users can authenticate through it.
         </small>
       </div>
+
+      <div class="field checkbox-field">
+        <Checkbox
+          id="apiAccess"
+          v-model="form.apiAccess"
+          :binary="true"
+          :disabled="!!form.portalClientId"
+        />
+        <label for="apiAccess" class="checkbox-label">API access (trusted first-party)</label>
+      </div>
+      <small class="field-help">
+        Interactive logins through this client mint authority-bearing access tokens, narrowed
+        to the client's associated applications. Leave off for third-party apps — they should
+        authenticate users from the id_token only. Not available for portal clients.
+      </small>
     </div>
 
     <template #footer>
