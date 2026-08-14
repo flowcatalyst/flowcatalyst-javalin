@@ -40,6 +40,7 @@ const newAllowedOrigin = ref("");
 const showSecretDialog = ref(false);
 const clientSecret = ref<string | null>(null);
 const createdClientId = ref<string | null>(null);
+const createdOAuthClientId = ref<string | null>(null);
 const created = ref(false);
 
 // Cheap dirty check: anything typed or selected counts. Grant types and
@@ -217,6 +218,7 @@ async function createClient() {
 			// CONFIDENTIAL: show the one-time secret dialog before navigating
 			// away — the modal stacks above the still-open drawer.
 			createdClientId.value = response.client.id;
+			createdOAuthClientId.value = response.client.clientId;
 			clientSecret.value = response.clientSecret;
 			showSecretDialog.value = true;
 		} else {
@@ -227,6 +229,13 @@ async function createClient() {
 		error.value = getErrorMessage(e, "Failed to create OAuth client");
 	} finally {
 		submitting.value = false;
+	}
+}
+
+function copyCreatedClientId() {
+	if (createdOAuthClientId.value) {
+		void navigator.clipboard.writeText(createdOAuthClientId.value);
+		toast.info("Copied", "Client ID copied to clipboard");
 	}
 }
 
@@ -492,6 +501,13 @@ function closeSecretDialog() {
         Copy this secret now. It will not be shown again.
       </Message>
 
+      <label class="secret-label">Client ID</label>
+      <div class="secret-display">
+        <code class="secret-code">{{ createdOAuthClientId }}</code>
+        <Button icon="pi pi-copy" text v-tooltip="'Copy Client ID'" @click="copyCreatedClientId" />
+      </div>
+
+      <label class="secret-label">Client Secret (shown once)</label>
       <div class="secret-display">
         <code class="secret-code">{{ clientSecret }}</code>
         <Button icon="pi pi-copy" text v-tooltip="'Copy to clipboard'" @click="copySecret" />
@@ -505,6 +521,12 @@ function closeSecretDialog() {
 </template>
 
 <style scoped>
+.secret-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin: 0.75rem 0 0.25rem;
+}
 .error-message {
   margin-bottom: 16px;
 }
