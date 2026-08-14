@@ -106,38 +106,17 @@ async function signIn() {
 <template>
   <div class="login-container" :style="{ background: themeStore.background }">
     <div class="login-content">
-      <!-- Logo and branding -->
+      <!-- Deliberately NO platform branding: the portal plane serves a
+           client's customers, not platform users. -->
       <div class="login-header">
-        <img
-          v-if="themeStore.theme.logoUrl"
-          :src="themeStore.theme.logoUrl"
-          class="logo-image"
-          alt="Logo"
-        />
-        <div
-          v-else-if="themeStore.theme.logoSvg"
-          class="logo-svg"
-          v-html="themeStore.theme.logoSvg"
-        />
-        <div v-else class="logo-container">
-          <svg class="logo-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M13 10V3L4 14h7v7l9-11h-7z"
-            />
-          </svg>
-        </div>
-        <h1 class="brand-name">{{ themeStore.theme.brandName }}</h1>
-        <p class="brand-subtitle">{{ themeStore.theme.brandSubtitle }}</p>
+        <h1 class="brand-name">Portal Login</h1>
       </div>
 
       <!-- Card -->
       <div class="login-card">
         <!-- Expired / missing flow -->
         <template v-if="step === 'expired'">
-          <h2 class="login-title">Portal login link expired</h2>
+          <h2 class="login-title">Sign-in link expired</h2>
           <p class="portal-message">
             This sign-in session has expired. Please return to the application
             and try again — it will bring you back here.
@@ -145,7 +124,7 @@ async function signIn() {
         </template>
 
         <template v-else>
-          <h2 class="login-title">Portal login</h2>
+          <h2 class="login-title">Sign in</h2>
           <p class="login-subtitle">
             {{ step === 'email'
               ? "Enter your email address to continue."
@@ -211,9 +190,7 @@ async function signIn() {
         </template>
       </div>
 
-      <p class="login-footer">
-        {{ themeStore.theme.footerText }}
-      </p>
+
     </div>
   </div>
 </template>
@@ -238,50 +215,11 @@ async function signIn() {
   margin-bottom: 32px;
 }
 
-.logo-container {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 72px;
-  height: 72px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  margin-bottom: 16px;
-}
-
-.logo-icon {
-  width: 40px;
-  height: 40px;
-  color: white;
-}
-
-.logo-image {
-  max-width: 200px;
-  max-height: 72px;
-  margin-bottom: 16px;
-  object-fit: contain;
-}
-
-.logo-svg {
-  margin-bottom: 16px;
-}
-
-.logo-svg :deep(svg) {
-  max-width: 200px;
-  max-height: 72px;
-}
-
 .brand-name {
   font-size: 32px;
   font-weight: 700;
   color: white;
   margin: 0;
-}
-
-.brand-subtitle {
-  color: #9fb3c8;
-  margin: 8px 0 0;
-  font-size: 16px;
 }
 
 .login-card {
@@ -385,10 +323,4 @@ async function signIn() {
   color: #0552b5;
 }
 
-.login-footer {
-  text-align: center;
-  color: #627d98;
-  font-size: 14px;
-  margin: 24px 0 0;
-}
 </style>
