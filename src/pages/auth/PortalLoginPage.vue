@@ -126,7 +126,7 @@ async function signIn() {
                 id="portalEmail"
                 v-model="email"
                 type="email"
-                autocomplete="email"
+                autocomplete="username"
                 autofocus
                 class="w-full"
               />
