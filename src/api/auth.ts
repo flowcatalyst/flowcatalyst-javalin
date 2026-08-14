@@ -275,7 +275,13 @@ export async function requestPasswordReset(email: string): Promise<void> {
 
 export async function validateResetToken(
 	token: string,
-): Promise<{ valid: boolean; reason?: string; requiresFactor?: boolean }> {
+): Promise<{
+	valid: boolean;
+	reason?: string;
+	requiresFactor?: boolean;
+	// Portal-identity token: the page shows portal framing (no platform brand).
+	portal?: boolean;
+}> {
 	try {
 		return await authFetch(
 			`/password-reset/validate?token=${encodeURIComponent(token)}`,

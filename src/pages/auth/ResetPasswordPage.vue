@@ -38,6 +38,13 @@ type PageState =
 
 const pageState = ref<PageState>("loading");
 const isInvite = computed(() => route.name === "set-password");
+// Portal-identity token (from validate): no platform branding anywhere.
+// While loading on the invite route we also stay neutral so a portal
+// invitee never sees a flash of platform identity.
+const isPortal = ref(false);
+const showPlatformBrand = computed(
+	() => !isPortal.value && !(isInvite.value && pageState.value === "loading"),
+);
 const invalidReason = ref<"expired" | "not_found" | "unknown">("not_found");
 const submitError = ref<string | null>(null);
 const enrollToken = ref("");
@@ -56,6 +63,8 @@ async function checkToken() {
 
 	try {
 		const result = await validateResetToken(token);
+		isPortal.value = result.portal ?? false;
+		if (isPortal.value) document.title = "Set your password";
 		if (result.valid) {
 			requiresFactor.value = result.requiresFactor ?? false;
 			pageState.value = "form";
@@ -150,8 +159,11 @@ const onSubmit = handleSubmit(async (values) => {
 <template>
   <div class="login-container" :style="{ background: themeStore.background }">
     <div class="login-content">
-      <!-- Logo and branding -->
-      <div class="login-header">
+      <!-- Logo and branding (suppressed for portal identities) -->
+      <div v-if="!showPlatformBrand" class="login-header">
+        <h1 class="brand-name">Portal</h1>
+      </div>
+      <div v-else class="login-header">
         <img
           v-if="themeStore.theme.logoUrl"
           :src="themeStore.theme.logoUrl"
@@ -297,7 +309,7 @@ const onSubmit = handleSubmit(async (values) => {
       </div>
 
       <!-- Footer -->
-      <p class="login-footer">
+      <p v-if="showPlatformBrand" class="login-footer">
         {{ themeStore.theme.footerText }}
       </p>
     </div>

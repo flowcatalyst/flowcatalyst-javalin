@@ -22,6 +22,7 @@ const error = ref<string | null>(null);
 const emailValid = computed(() => /.+@.+\..+/.test(email.value.trim()));
 
 onMounted(async () => {
+	document.title = "Portal Login";
 	await themeStore.loadTheme();
 	themeStore.applyThemeColors();
 	const flow = route.query["flow"];
