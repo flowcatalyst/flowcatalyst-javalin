@@ -293,6 +293,9 @@ export interface ConfirmPasswordResetResult {
 	// Server-validated post-set-password destination (portal invites chain
 	// back into the portal's OAuth login). Never derived from the URL.
 	redirectUri?: string | null;
+	// Marks a PORTAL-identity confirm: with no redirectUri the page must not
+	// bounce to the platform login (it cannot sign portal users in).
+	portal?: boolean;
 }
 
 export async function confirmPasswordReset(

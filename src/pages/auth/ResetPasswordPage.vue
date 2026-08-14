@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
@@ -10,6 +10,9 @@ import {
 	confirmPasswordReset,
 	setPostAuthRedirect,
 } from "@/api/auth";
+
+// Invite framing: the same page serves first-time invites (route
+// "set-password" — incl. portal identities) and self-service resets.
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
 import type { TwoFactorMethod } from "@/api/twofactor";
 import { getErrorMessage } from "@/utils/errors";
@@ -25,9 +28,16 @@ onMounted(async () => {
 	await checkToken();
 });
 
-type PageState = "loading" | "invalid" | "form" | "submitting" | "enroll";
+type PageState =
+	| "loading"
+	| "invalid"
+	| "form"
+	| "submitting"
+	| "enroll"
+	| "portalDone";
 
 const pageState = ref<PageState>("loading");
+const isInvite = computed(() => route.name === "set-password");
 const invalidReason = ref<"expired" | "not_found" | "unknown">("not_found");
 const submitError = ref<string | null>(null);
 const enrollToken = ref("");
@@ -120,6 +130,12 @@ const onSubmit = handleSubmit(async (values) => {
 			window.location.assign(result.redirectUri);
 			return;
 		}
+		if (result.portal) {
+			// A portal identity with no redirect must NOT land on the
+			// platform login — it cannot sign portal users in.
+			pageState.value = "portalDone";
+			return;
+		}
 		await router.replace({ name: "login", query: { reset: "success" } });
 	} catch (e: unknown) {
 		submitError.value = getErrorMessage(
@@ -166,21 +182,28 @@ const onSubmit = handleSubmit(async (values) => {
         <!-- Loading state -->
         <div v-if="pageState === 'loading'" class="loading-state">
           <div class="spinner"></div>
-          <p>Validating your reset link...</p>
+          <p>{{ isInvite ? "Validating your invite link..." : "Validating your reset link..." }}</p>
         </div>
 
         <!-- Invalid / expired token -->
         <template v-else-if="pageState === 'invalid'">
           <h2 class="login-title">Link invalid or expired</h2>
           <div class="error-message">
-            <p v-if="invalidReason === 'expired'">
+            <p v-if="invalidReason === 'expired' && isInvite">
+              This invite link has expired. Ask your administrator to send a new invite.
+            </p>
+            <p v-else-if="invalidReason === 'expired'">
               This password reset link has expired. Reset links are valid for 15 minutes.
+            </p>
+            <p v-else-if="isInvite">
+              This invite link is invalid or has already been used.
             </p>
             <p v-else>
               This password reset link is invalid or has already been used.
             </p>
           </div>
           <RouterLink
+            v-if="!isInvite"
             :to="{ name: 'forgot-password' }"
             class="action-link"
           >
@@ -194,9 +217,17 @@ const onSubmit = handleSubmit(async (values) => {
           <TwoFactorSetup :enroll-token="enrollToken" :allowed-methods="enrollMethods" />
         </template>
 
-        <!-- Reset form -->
+        <!-- Portal identity finished with no redirect configured -->
+        <template v-else-if="pageState === 'portalDone'">
+          <h2 class="login-title">Password set</h2>
+          <p class="portal-done-message">
+            Your password has been set. Return to your portal to sign in.
+          </p>
+        </template>
+
+        <!-- Set/reset form -->
         <template v-else>
-          <h2 class="login-title">Set a new password</h2>
+          <h2 class="login-title">{{ isInvite ? "Set your password" : "Set a new password" }}</h2>
 
           <div v-if="submitError" class="error-message">
             <p>{{ submitError }}</p>
@@ -274,6 +305,11 @@ const onSubmit = handleSubmit(async (values) => {
 </template>
 
 <style scoped>
+.portal-done-message {
+	margin: 0.5rem 0 0;
+	line-height: 1.5;
+}
+
 .login-container {
   min-height: 100vh;
   display: flex;

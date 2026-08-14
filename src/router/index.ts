@@ -48,6 +48,15 @@ const router = createRouter({
 						import("@/pages/auth/ResetPasswordPage.vue"),
 					beforeEnter: guestGuard,
 				},
+				// Invite framing of the same page ("set your password" —
+				// first-time invites, incl. portal identities). No guest
+				// guard: invitees are often not platform users at all.
+				{
+					path: "set-password",
+					name: "set-password",
+					component: () =>
+						import("@/pages/auth/ResetPasswordPage.vue"),
+				},
 				{
 					path: "",
 					redirect: "/auth/login",
