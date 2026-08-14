@@ -229,6 +229,12 @@ function getStatusSeverity(status: string) {
 function formatDate(dateString: string) {
 	return new Date(dateString).toLocaleString();
 }
+
+function copyClientId() {
+	if (!client.value) return;
+	void navigator.clipboard.writeText(client.value.id);
+	toast.info("Copied", "Client ID copied to clipboard");
+}
 </script>
 
 <template>
@@ -264,6 +270,19 @@ function formatDate(dateString: string) {
 
         <template v-else>
           <div class="fc-detail-grid">
+            <FcDetailField label="Client ID">
+              <span class="client-id-row">
+                <code>{{ client.id }}</code>
+                <Button
+                  icon="pi pi-copy"
+                  text
+                  rounded
+                  size="small"
+                  title="Copy client ID"
+                  @click="copyClientId"
+                />
+              </span>
+            </FcDetailField>
             <FcDetailField label="Identifier">
               <code>{{ client.identifier }}</code>
             </FcDetailField>
@@ -369,6 +388,12 @@ function formatDate(dateString: string) {
 </template>
 
 <style scoped>
+.client-id-row {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
 .loading-apps {
   display: flex;
   align-items: center;
