@@ -1,6 +1,6 @@
 // Package frontend embeds the built Vue SPA (frontend/dist) into the
 // Go binary and exposes it as an http.Handler. Sibling of
-// bin/fc-dev/src/main.rs::FrontendAssets in flowcatalyst-rust.
+// bin/fcdev/src/main.rs::FrontendAssets in flowcatalyst-rust.
 //
 // # Build dependency
 //
