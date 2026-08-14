@@ -875,6 +875,10 @@ export type CreateIdentityProviderRequest = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     /**
+     * Bind this IdP to a tenant client's portal plane (portal login flows may only use bound IdPs)
+     */
+    portalClientId?: string;
+    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -943,6 +947,7 @@ export type CreateOAuthClientRequest = {
     defaultScopes?: string;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
     redirectUris?: Array<string>;
@@ -1442,6 +1447,7 @@ export type IdentityProviderResponse = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    portalClientId?: string;
     syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
@@ -1594,6 +1600,7 @@ export type OAuthClientResponse = {
     grantTypes: Array<string>;
     id: string;
     pkceRequired: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
@@ -1644,13 +1651,45 @@ export type PermissionResponse = {
     permission: string;
 };
 
+export type PortalUserClientBody = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId: string;
+    [key: string]: unknown;
+};
+
+export type PortalUserListItem = {
+    createdAt: string;
+    email: string;
+    hasPassword: boolean;
+    identityId: string;
+    lastLoginAt?: string;
+    name: string;
+    source: string;
+    status: string;
+    updatedAt: string;
+};
+
+export type PortalUserListResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    portalUsers: Array<PortalUserListItem>;
+};
+
 export type PortalUserRequest = {
     /**
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    clientId: string;
     email: string;
     name?: string;
+    redirectUri?: string;
+    returnInviteLink?: boolean;
     [key: string]: unknown;
 };
 
@@ -1660,8 +1699,9 @@ export type PortalUserResponse = {
      */
     readonly $schema?: string;
     created: boolean;
+    identityId: string;
+    inviteUrl?: string;
     invited: boolean;
-    principalId: string;
 };
 
 export type PrincipalAvailableApplication = {
@@ -2634,6 +2674,10 @@ export type UpdateIdentityProviderRequest = {
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
     /**
+     * Empty string clears the portal binding
+     */
+    portalClientId?: string;
+    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -2668,6 +2712,7 @@ export type UpdateOAuthClientRequest = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
     scopes?: Array<string>;
@@ -3322,6 +3367,10 @@ export type CreateIdentityProviderRequestWritable = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     /**
+     * Bind this IdP to a tenant client's portal plane (portal login flows may only use bound IdPs)
+     */
+    portalClientId?: string;
+    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -3378,6 +3427,7 @@ export type CreateOAuthClientRequestWritable = {
     defaultScopes?: string;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
     redirectUris?: Array<string>;
@@ -3698,6 +3748,7 @@ export type IdentityProviderResponseWritable = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
+    portalClientId?: string;
     syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
@@ -3776,6 +3827,7 @@ export type OAuthClientResponseWritable = {
     grantTypes: Array<string>;
     id: string;
     pkceRequired: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
@@ -3810,16 +3862,29 @@ export type PermissionResponseWritable = {
     permission: string;
 };
 
+export type PortalUserClientBodyWritable = {
+    clientId: string;
+    [key: string]: unknown;
+};
+
+export type PortalUserListResponseWritable = {
+    portalUsers: Array<PortalUserListItem>;
+};
+
 export type PortalUserRequestWritable = {
+    clientId: string;
     email: string;
     name?: string;
+    redirectUri?: string;
+    returnInviteLink?: boolean;
     [key: string]: unknown;
 };
 
 export type PortalUserResponseWritable = {
     created: boolean;
+    identityId: string;
+    inviteUrl?: string;
     invited: boolean;
-    principalId: string;
 };
 
 export type PrincipalAvailableApplicationsResponseWritable = {
@@ -4306,6 +4371,10 @@ export type UpdateIdentityProviderRequestWritable = {
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
     /**
+     * Empty string clears the portal binding
+     */
+    portalClientId?: string;
+    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -4332,6 +4401,7 @@ export type UpdateOAuthClientRequestWritable = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
     scopes?: Array<string>;
@@ -8455,6 +8525,147 @@ export type GetCorsOriginResponses = {
 
 export type GetCorsOriginResponse = GetCorsOriginResponses[keyof GetCorsOriginResponses];
 
+export type ListPortalUsersData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Tenant client whose portal identities to list
+         */
+        clientId?: string;
+    };
+    url: '/api/portal-users';
+};
+
+export type ListPortalUsersErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type ListPortalUsersError = ListPortalUsersErrors[keyof ListPortalUsersErrors];
+
+export type ListPortalUsersResponses = {
+    /**
+     * OK
+     */
+    200: PortalUserListResponse;
+};
+
+export type ListPortalUsersResponse = ListPortalUsersResponses[keyof ListPortalUsersResponses];
+
+export type EnsurePortalUserData = {
+    body: PortalUserRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/portal-users';
+};
+
+export type EnsurePortalUserErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type EnsurePortalUserError = EnsurePortalUserErrors[keyof EnsurePortalUserErrors];
+
+export type EnsurePortalUserResponses = {
+    /**
+     * OK
+     */
+    200: PortalUserResponse;
+};
+
+export type EnsurePortalUserResponse = EnsurePortalUserResponses[keyof EnsurePortalUserResponses];
+
+export type DeletePortalUserData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: {
+        /**
+         * Tenant client whose portal identity to delete
+         */
+        clientId?: string;
+    };
+    url: '/api/portal-users/{id}';
+};
+
+export type DeletePortalUserErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type DeletePortalUserError = DeletePortalUserErrors[keyof DeletePortalUserErrors];
+
+export type DeletePortalUserResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type DeletePortalUserResponse = DeletePortalUserResponses[keyof DeletePortalUserResponses];
+
+export type ActivatePortalUserData = {
+    body: PortalUserClientBodyWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/portal-users/{id}/activate';
+};
+
+export type ActivatePortalUserErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type ActivatePortalUserError = ActivatePortalUserErrors[keyof ActivatePortalUserErrors];
+
+export type ActivatePortalUserResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type ActivatePortalUserResponse = ActivatePortalUserResponses[keyof ActivatePortalUserResponses];
+
+export type DeactivatePortalUserData = {
+    body: PortalUserClientBodyWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/portal-users/{id}/deactivate';
+};
+
+export type DeactivatePortalUserErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type DeactivatePortalUserError = DeactivatePortalUserErrors[keyof DeactivatePortalUserErrors];
+
+export type DeactivatePortalUserResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type DeactivatePortalUserResponse = DeactivatePortalUserResponses[keyof DeactivatePortalUserResponses];
+
 export type ListPrincipalsData = {
     body?: never;
     path?: never;
@@ -8618,31 +8829,6 @@ export type ListDeveloperUsersResponses = {
 };
 
 export type ListDeveloperUsersResponse = ListDeveloperUsersResponses[keyof ListDeveloperUsersResponses];
-
-export type EnsurePortalUserData = {
-    body: PortalUserRequestWritable;
-    path?: never;
-    query?: never;
-    url: '/api/principals/portal';
-};
-
-export type EnsurePortalUserErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type EnsurePortalUserError = EnsurePortalUserErrors[keyof EnsurePortalUserErrors];
-
-export type EnsurePortalUserResponses = {
-    /**
-     * OK
-     */
-    200: PortalUserResponse;
-};
-
-export type EnsurePortalUserResponse = EnsurePortalUserResponses[keyof EnsurePortalUserResponses];
 
 export type SyncUsersData = {
     body: SyncUsersRequestWritable;

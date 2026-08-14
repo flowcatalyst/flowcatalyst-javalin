@@ -4,6 +4,7 @@ import { ref, computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import { oauthClientsApi, type OAuthClient } from "@/api/oauth-clients";
 import { applicationsApi, type Application } from "@/api/applications";
+import { clientsApi, type Client } from "@/api/clients";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -20,6 +21,7 @@ const isEditing = ref(false);
 
 const client = ref<OAuthClient | null>(null);
 const applications = ref<Application[]>([]);
+const clients = ref<Client[]>([]);
 const loading = ref(true);
 const saving = ref(false);
 // `loadError` is the drawer-level (load) error — it replaces the whole body.
@@ -37,6 +39,7 @@ const editForm = ref({
 	defaultScopes: [] as string[],
 	pkceRequired: true,
 	applicationIds: [] as string[],
+	portalClientId: "" as string,
 });
 const newRedirectUri = ref("");
 const newPostLogoutRedirectUri = ref("");
@@ -133,6 +136,7 @@ async function loadData(clientId: string) {
 		const [clientData] = await Promise.all([
 			oauthClientsApi.get(clientId),
 			loadApplications(),
+			loadClients(),
 		]);
 		client.value = clientData;
 		resetEditForm();
@@ -159,6 +163,15 @@ async function loadApplications() {
 	}
 }
 
+async function loadClients() {
+	try {
+		const response = await clientsApi.list();
+		clients.value = response.clients || [];
+	} catch (e: unknown) {
+		console.error("Failed to load clients:", e);
+	}
+}
+
 function resetEditForm() {
 	if (client.value) {
 		editForm.value = {
@@ -170,6 +183,7 @@ function resetEditForm() {
 			defaultScopes: [...(client.value.defaultScopes || [])],
 			pkceRequired: client.value.pkceRequired ?? true,
 			applicationIds: [...(client.value.applicationIds || [])],
+			portalClientId: client.value.portalClientId || "",
 		};
 	}
 }
@@ -264,6 +278,7 @@ async function saveChanges() {
 				defaultScopes: editForm.value.defaultScopes,
 				pkceRequired: editForm.value.pkceRequired,
 				applicationIds: editForm.value.applicationIds,
+				portalClientId: editForm.value.portalClientId ?? "",
 			},
 			// Handled inline below — don't also fire the global red banner.
 			{ suppressGlobalErrorToast: true },
@@ -449,6 +464,13 @@ function getClientTypeSeverity(clientType: string) {
             <span v-else class="text-muted">No application restrictions</span>
           </FcDetailField>
 
+          <FcDetailField label="Portal Owner Client">
+            <span v-if="client.portalClientId">
+              {{ clients.find(c => c.id === client?.portalClientId)?.name || client.portalClientId }}
+            </span>
+            <span v-else class="text-muted">Not a portal client</span>
+          </FcDetailField>
+
           <FcDetailField label="Created" :value="formatDate(client.createdAt)" />
           <FcDetailField label="Last Updated" :value="formatDate(client.updatedAt)" />
         </div>
@@ -600,6 +622,26 @@ function getClientTypeSeverity(clientType: string) {
             <small class="field-help">
               Only users with access to these applications can authenticate. Leave empty for no
               restrictions.
+            </small>
+          </div>
+
+          <div class="field">
+            <label for="portalClient">Portal owner client</label>
+            <Select
+              id="portalClient"
+              v-model="editForm.portalClientId"
+              :options="clients"
+              optionLabel="name"
+              optionValue="id"
+              placeholder="Not a portal client"
+              showClear
+              filter
+              class="w-full"
+            />
+            <small class="field-help">
+              Marks this OAuth client as a portal entry point for the selected client: only that
+              client's ACTIVE portal users can authenticate through it. Clearing this removes the
+              portal gate.
             </small>
           </div>
 

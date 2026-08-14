@@ -32,6 +32,9 @@ export interface CreateOAuthClientRequest {
 	defaultScopes?: string;
 	pkceRequired?: boolean;
 	applicationIds?: string[];
+	// Marks the client as a portal entry point owned by this tenant client:
+	// /oauth/authorize then requires an ACTIVE portal-user linkage.
+	portalClientId?: string;
 }
 
 export interface UpdateOAuthClientRequest {
@@ -43,6 +46,8 @@ export interface UpdateOAuthClientRequest {
 	defaultScopes?: string[];
 	pkceRequired?: boolean;
 	applicationIds?: string[];
+	// Empty string clears the portal flag; omitted keeps it.
+	portalClientId?: string;
 }
 
 export const oauthClientsApi = {

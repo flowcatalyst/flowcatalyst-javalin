@@ -5,7 +5,11 @@ import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import { z } from "zod";
 import { useLoginThemeStore } from "@/stores/loginTheme";
-import { validateResetToken, confirmPasswordReset } from "@/api/auth";
+import {
+	validateResetToken,
+	confirmPasswordReset,
+	setPostAuthRedirect,
+} from "@/api/auth";
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
 import type { TwoFactorMethod } from "@/api/twofactor";
 import { getErrorMessage } from "@/utils/errors";
@@ -102,10 +106,18 @@ const onSubmit = handleSubmit(async (values) => {
 		);
 		if (result.status === "enrollment_required" && result.enrollToken) {
 			// Domain requires 2FA — set it up before finishing. TwoFactorSetup
-			// completes the session and redirects on its own.
+			// completes the session and redirects on its own; a portal
+			// invite's server-validated redirect is stashed for it to follow.
+			if (result.redirectUri) setPostAuthRedirect(result.redirectUri);
 			enrollToken.value = result.enrollToken;
 			enrollMethods.value = result.allowedMethods ?? [];
 			pageState.value = "enroll";
+			return;
+		}
+		if (result.redirectUri) {
+			// Portal invite: chain straight back into the portal's OAuth login
+			// (the redirect was validated server-side at invite time).
+			window.location.assign(result.redirectUri);
 			return;
 		}
 		await router.replace({ name: "login", query: { reset: "success" } });

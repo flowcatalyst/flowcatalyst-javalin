@@ -161,9 +161,32 @@ export function externalIdpRedirectUrl(loginUrl: string): string {
 	return url.toString();
 }
 
-// redirectAfterLogin performs the post-login navigation: OIDC interaction,
-// OAuth authorize round-trip, or the dashboard.
+// Post-auth redirect hand-off for flows with an interstitial (2FA
+// enrollment): the reset-password confirm response carries a
+// server-validated redirectUri, stashed here (NEVER read from the URL — that
+// would be an open redirect) and consumed by redirectAfterLogin once the
+// interstitial completes.
+const POST_AUTH_REDIRECT_KEY = "fc.post_auth_redirect";
+
+export function setPostAuthRedirect(uri: string): void {
+	sessionStorage.setItem(POST_AUTH_REDIRECT_KEY, uri);
+}
+
+function consumePostAuthRedirect(): string | null {
+	const uri = sessionStorage.getItem(POST_AUTH_REDIRECT_KEY);
+	if (uri !== null) sessionStorage.removeItem(POST_AUTH_REDIRECT_KEY);
+	return uri;
+}
+
+// redirectAfterLogin performs the post-login navigation: a stashed
+// server-validated portal redirect, OIDC interaction, OAuth authorize
+// round-trip, or the dashboard.
 export function redirectAfterLogin(): void {
+	const portalRedirect = consumePostAuthRedirect();
+	if (portalRedirect) {
+		window.location.href = portalRedirect;
+		return;
+	}
 	const urlParams = new URLSearchParams(window.location.search);
 	const interactionUid = urlParams.get("interaction");
 	if (interactionUid) {
@@ -267,6 +290,9 @@ export interface ConfirmPasswordResetResult {
 	message: string;
 	enrollToken?: string;
 	allowedMethods?: TwoFactorMethod[];
+	// Server-validated post-set-password destination (portal invites chain
+	// back into the portal's OAuth login). Never derived from the URL.
+	redirectUri?: string | null;
 }
 
 export async function confirmPasswordReset(

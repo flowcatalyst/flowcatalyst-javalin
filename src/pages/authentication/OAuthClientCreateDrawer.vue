@@ -3,6 +3,7 @@ import { toast } from "@/utils/errorBus";
 import { ref, computed, onMounted } from "vue";
 import { oauthClientsApi, type ClientType } from "@/api/oauth-clients";
 import { applicationsApi, type Application } from "@/api/applications";
+import { clientsApi, type Client } from "@/api/clients";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -12,6 +13,7 @@ const emit = defineEmits<{
 }>();
 
 const applications = ref<Application[]>([]);
+const clients = ref<Client[]>([]);
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
@@ -26,6 +28,7 @@ const form = ref({
 	defaultScopes: ["openid", "profile", "email"],
 	pkceRequired: true,
 	applicationIds: [] as string[],
+	portalClientId: "" as string,
 });
 
 const newRedirectUri = ref("");
@@ -94,7 +97,17 @@ const isValid = computed(() => {
 
 onMounted(async () => {
 	await loadApplications();
+	await loadClients();
 });
+
+async function loadClients() {
+	try {
+		const response = await clientsApi.list();
+		clients.value = response.clients || [];
+	} catch (e: unknown) {
+		console.error("Failed to load clients:", e);
+	}
+}
 
 async function loadApplications() {
 	try {
@@ -429,6 +442,25 @@ function closeSecretDialog() {
         <small class="field-help">
           Only users with access to these applications can authenticate. Leave empty for no
           restrictions.
+        </small>
+      </div>
+
+      <div class="field">
+        <label for="portalClient">Portal owner client</label>
+        <Select
+          id="portalClient"
+          v-model="form.portalClientId"
+          :options="clients"
+          optionLabel="name"
+          optionValue="id"
+          placeholder="Not a portal client"
+          showClear
+          filter
+          class="w-full"
+        />
+        <small class="field-help">
+          Marks this OAuth client as a portal entry point for the selected client: only that
+          client's ACTIVE portal users can authenticate through it.
         </small>
       </div>
     </div>

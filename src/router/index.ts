@@ -16,6 +16,14 @@ const router = createRouter({
 			name: "logout",
 			component: () => import("@/pages/auth/LogoutPage.vue"),
 		},
+		// Portal-plane login (no layout, NO guest guard: portal identities
+		// are a separate population — a signed-in platform user must still
+		// be able to open a portal sign-in link).
+		{
+			path: "/portal/login",
+			name: "portal-login",
+			component: () => import("@/pages/auth/PortalLoginPage.vue"),
+		},
 		// Auth routes (no layout, guest only)
 		{
 			path: "/auth",
@@ -167,6 +175,15 @@ const router = createRouter({
 								import("@/pages/service-accounts/ServiceAccountDetailDrawer.vue"),
 						},
 					],
+				},
+				// Portal Users — per-client management of the portal identity
+				// plane. Anchors pick a client; client admins holding the
+				// portal-administrator role see their own client(s).
+				{
+					path: "identity/portal-users",
+					name: "portal-users",
+					component: () =>
+						import("@/pages/portal/PortalUsersPage.vue"),
 				},
 				// Developer Users — designate existing users as developers and
 				// manage their self-service API credentials. Granting the role is

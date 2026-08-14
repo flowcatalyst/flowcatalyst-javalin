@@ -92,6 +92,11 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				scope: "client",
 			},
 			{
+				label: "Portal Users",
+				icon: "pi pi-globe",
+				route: "/identity/portal-users",
+			},
+			{
 				label: "Reset Approvals",
 				icon: "pi pi-shield",
 				route: "/authentication/reset-approvals",
