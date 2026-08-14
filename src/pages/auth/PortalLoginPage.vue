@@ -137,7 +137,7 @@ async function signIn() {
       <div class="login-card">
         <!-- Expired / missing flow -->
         <template v-if="step === 'expired'">
-          <h2 class="login-title">Sign-in link expired</h2>
+          <h2 class="login-title">Portal login link expired</h2>
           <p class="portal-message">
             This sign-in session has expired. Please return to the application
             and try again — it will bring you back here.
@@ -145,7 +145,7 @@ async function signIn() {
         </template>
 
         <template v-else>
-          <h2 class="login-title">Sign in</h2>
+          <h2 class="login-title">Portal login</h2>
           <p class="login-subtitle">
             {{ step === 'email'
               ? "Enter your email address to continue."
