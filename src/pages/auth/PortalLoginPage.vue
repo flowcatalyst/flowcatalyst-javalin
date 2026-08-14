@@ -77,6 +77,12 @@ async function continueWithEmail() {
 	}
 }
 
+function changeEmail() {
+	step.value = "email";
+	password.value = "";
+	error.value = null;
+}
+
 async function signIn() {
 	if (!password.value || submitting.value) return;
 	submitting.value = true;
@@ -100,6 +106,7 @@ async function signIn() {
 <template>
   <div class="login-container" :style="{ background: themeStore.background }">
     <div class="login-content">
+      <!-- Logo and branding -->
       <div class="login-header">
         <img
           v-if="themeStore.theme.logoUrl"
@@ -107,45 +114,80 @@ async function signIn() {
           class="logo-image"
           alt="Logo"
         />
-        <h1>Sign in</h1>
+        <div
+          v-else-if="themeStore.theme.logoSvg"
+          class="logo-svg"
+          v-html="themeStore.theme.logoSvg"
+        />
+        <div v-else class="logo-container">
+          <svg class="logo-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M13 10V3L4 14h7v7l9-11h-7z"
+            />
+          </svg>
+        </div>
+        <h1 class="brand-name">{{ themeStore.theme.brandName }}</h1>
+        <p class="brand-subtitle">{{ themeStore.theme.brandSubtitle }}</p>
       </div>
 
+      <!-- Card -->
       <div class="login-card">
+        <!-- Expired / missing flow -->
         <template v-if="step === 'expired'">
+          <h2 class="login-title">Sign-in link expired</h2>
           <p class="portal-message">
-            This sign-in link has expired. Please return to the application and
-            try again.
+            This sign-in session has expired. Please return to the application
+            and try again — it will bring you back here.
           </p>
         </template>
 
         <template v-else>
-          <form v-if="step === 'email'" @submit.prevent="continueWithEmail">
-            <div class="field">
+          <h2 class="login-title">Sign in</h2>
+          <p class="login-subtitle">
+            {{ step === 'email'
+              ? "Enter your email address to continue."
+              : "Enter your password to sign in." }}
+          </p>
+
+          <div v-if="error" class="error-message">
+            <p>{{ error }}</p>
+          </div>
+
+          <!-- Step 1: email -->
+          <form v-if="step === 'email'" class="login-form" @submit.prevent="continueWithEmail">
+            <div class="form-field">
               <label for="portalEmail">Email</label>
               <InputText
                 id="portalEmail"
                 v-model="email"
                 type="email"
                 autocomplete="username"
+                placeholder="you@company.com"
                 autofocus
-                class="w-full"
+                fluid
               />
             </div>
             <Button
               type="submit"
               label="Continue"
-              class="w-full"
+              class="login-button"
               :loading="submitting"
               :disabled="!emailValid"
             />
           </form>
 
-          <form v-else @submit.prevent="signIn">
-            <div class="field">
-              <label for="portalEmailRo">Email</label>
-              <InputText id="portalEmailRo" :model-value="email" disabled class="w-full" />
+          <!-- Step 2: password -->
+          <form v-else class="login-form" @submit.prevent="signIn">
+            <div class="identity-row">
+              <span class="identity-email">{{ email }}</span>
+              <button type="button" class="action-link identity-change" @click="changeEmail">
+                Change
+              </button>
             </div>
-            <div class="field">
+            <div class="form-field">
               <label for="portalPassword">Password</label>
               <Password
                 id="portalPassword"
@@ -153,77 +195,200 @@ async function signIn() {
                 :feedback="false"
                 toggle-mask
                 autocomplete="current-password"
-                input-class="w-full"
-                class="w-full"
+                placeholder="Your password"
+                autofocus
+                fluid
               />
             </div>
             <Button
               type="submit"
               label="Sign in"
-              class="w-full"
+              class="login-button"
               :loading="submitting"
               :disabled="!password"
             />
-            <Button
-              label="Use a different email"
-              text
-              class="w-full portal-back"
-              @click="step = 'email'; password = ''; error = null"
-            />
           </form>
-
-          <Message v-if="error" severity="error" :closable="false" class="portal-error">
-            {{ error }}
-          </Message>
         </template>
       </div>
+
+      <p class="login-footer">
+        {{ themeStore.theme.footerText }}
+      </p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .login-container {
-	min-height: 100vh;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 1rem;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--login-bg, linear-gradient(135deg, #102a43 0%, #0a1929 100%));
+  padding: 16px;
 }
+
 .login-content {
-	width: 100%;
-	max-width: 380px;
+  width: 100%;
+  max-width: 480px;
 }
+
 .login-header {
-	text-align: center;
-	margin-bottom: 1.5rem;
+  text-align: center;
+  margin-bottom: 32px;
 }
-.login-header h1 {
-	font-size: 1.25rem;
-	margin-top: 0.75rem;
+
+.logo-container {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  margin-bottom: 16px;
 }
+
+.logo-icon {
+  width: 40px;
+  height: 40px;
+  color: white;
+}
+
 .logo-image {
-	max-height: 48px;
+  max-width: 200px;
+  max-height: 72px;
+  margin-bottom: 16px;
+  object-fit: contain;
 }
+
+.logo-svg {
+  margin-bottom: 16px;
+}
+
+.logo-svg :deep(svg) {
+  max-width: 200px;
+  max-height: 72px;
+}
+
+.brand-name {
+  font-size: 32px;
+  font-weight: 700;
+  color: white;
+  margin: 0;
+}
+
+.brand-subtitle {
+  color: #9fb3c8;
+  margin: 8px 0 0;
+  font-size: 16px;
+}
+
 .login-card {
-	background: var(--p-surface-0, #fff);
-	border-radius: 8px;
-	padding: 1.5rem;
-	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  background: white;
+  border-radius: 16px;
+  padding: 40px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
 }
-.field {
-	margin-bottom: 1rem;
-	display: flex;
-	flex-direction: column;
-	gap: 0.35rem;
+
+.login-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #102a43;
+  margin: 0 0 8px;
 }
+
+.login-subtitle {
+  color: #64748b;
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+
 .portal-message {
-	text-align: center;
-	margin: 0.5rem 0;
+  color: #334e68;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
 }
-.portal-error {
-	margin-top: 1rem;
+
+.error-message {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
 }
-.portal-back {
-	margin-top: 0.5rem;
+
+.error-message p {
+  margin: 0;
+  color: #dc2626;
+  font-size: 14px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-field label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #334e68;
+}
+
+.identity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #f0f4f8;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.identity-email {
+  font-size: 14px;
+  color: #102a43;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-change {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.login-button {
+  width: 100%;
+}
+
+.action-link {
+  display: inline-block;
+  font-size: 14px;
+  color: var(--login-accent, #0967d2);
+  text-decoration: none;
+}
+
+.action-link:hover {
+  color: #0552b5;
+}
+
+.login-footer {
+  text-align: center;
+  color: #627d98;
+  font-size: 14px;
+  margin: 24px 0 0;
 }
 </style>
