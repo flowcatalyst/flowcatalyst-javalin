@@ -235,7 +235,7 @@ const onSubmit = handleSubmit(async (values) => {
 
           <form class="login-form" @submit.prevent="onSubmit">
             <div class="form-field">
-              <label for="password">New password</label>
+              <label for="password">{{ isInvite ? "Password" : "New password" }}</label>
               <Password
                 id="password"
                 v-model="passwordValue"
@@ -251,11 +251,11 @@ const onSubmit = handleSubmit(async (values) => {
             </div>
 
             <div class="form-field">
-              <label for="confirmPassword">Confirm new password</label>
+              <label for="confirmPassword">{{ isInvite ? "Confirm password" : "Confirm new password" }}</label>
               <Password
                 id="confirmPassword"
                 v-model="confirmPasswordValue"
-                placeholder="Repeat your new password"
+                :placeholder="isInvite ? 'Repeat your password' : 'Repeat your new password'"
                 :disabled="pageState === 'submitting'"
                 :invalid="!!confirmPasswordError"
                 :feedback="false"
@@ -288,7 +288,7 @@ const onSubmit = handleSubmit(async (values) => {
 
             <Button
               type="submit"
-              label="Reset password"
+              :label="isInvite ? 'Set password' : 'Reset password'"
               :loading="pageState === 'submitting'"
               class="w-full"
             />
