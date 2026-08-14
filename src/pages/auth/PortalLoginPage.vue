@@ -82,6 +82,29 @@ function changeEmail() {
 	step.value = "email";
 	password.value = "";
 	error.value = null;
+	resetSent.value = false;
+}
+
+const resetSent = ref(false);
+const resetSending = ref(false);
+
+async function forgotPassword() {
+	if (resetSending.value || resetSent.value) return;
+	resetSending.value = true;
+	error.value = null;
+	try {
+		await portalPost<{ message: string }>("/portal/auth/password-reset", {
+			flowId: flowId.value,
+			email: email.value.trim(),
+		});
+		resetSent.value = true;
+	} catch (e) {
+		if (step.value !== "expired") {
+			error.value = e instanceof Error ? e.message : "Something went wrong";
+		}
+	} finally {
+		resetSending.value = false;
+	}
 }
 
 async function signIn() {
@@ -187,6 +210,20 @@ async function signIn() {
               :loading="submitting"
               :disabled="!password"
             />
+            <div class="forgot-row">
+              <span v-if="resetSent" class="reset-sent">
+                If an account exists, a reset email has been sent.
+              </span>
+              <button
+                v-else
+                type="button"
+                class="action-link"
+                :disabled="resetSending"
+                @click="forgotPassword"
+              >
+                Forgot password?
+              </button>
+            </div>
           </form>
         </template>
       </div>
@@ -311,6 +348,23 @@ async function signIn() {
 
 .login-button {
   width: 100%;
+}
+
+.forgot-row {
+  text-align: center;
+  margin-top: -8px;
+}
+
+.forgot-row .action-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.reset-sent {
+  font-size: 14px;
+  color: #486581;
 }
 
 .action-link {
