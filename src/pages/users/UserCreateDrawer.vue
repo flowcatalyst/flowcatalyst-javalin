@@ -200,6 +200,14 @@ async function createUser() {
 			name: name.value,
 		};
 
+		// The backend defaults to CLIENT and never promotes scope from the
+		// email domain on its own — echo the domain check's derived scope so
+		// anchor/partner domains create what the form previewed.
+		if (domainCheck.value?.derivedScope) {
+			request.scope =
+				domainCheck.value.derivedScope as (typeof request)["scope"];
+		}
+
 		// Include the picked clientId when the backend signalled it's
 		// required (partner / unmapped-client domains).
 		if (requiresClient.value && clientId.value) {

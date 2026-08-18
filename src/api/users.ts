@@ -48,6 +48,13 @@ export interface CreateUserRequest {
 	email: string;
 	password?: string; // Optional - only required for INTERNAL auth users
 	name: string;
+	/**
+	 * Optional; defaults to CLIENT on the backend. ANCHOR/PARTNER are only
+	 * honoured when the email domain's setup backs them — send the
+	 * derivedScope from checkEmailDomain.
+	 */
+	scope?: PrincipalScope;
+	/** A clt_ id or the client's identifier slug (backend resolves either). */
 	clientId?: string;
 }
 

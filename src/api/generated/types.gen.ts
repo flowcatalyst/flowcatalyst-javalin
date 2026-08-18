@@ -1121,6 +1121,7 @@ export type CreateUserRequest = {
     enforcePasswordComplexity?: boolean;
     name: string;
     password?: string;
+    scope?: 'ANCHOR' | 'PARTNER' | 'CLIENT';
     [key: string]: unknown;
 };
 
@@ -1704,6 +1705,7 @@ export type PortalUserResponse = {
     identityId: string;
     inviteUrl?: string;
     invited: boolean;
+    ssoManaged?: boolean;
 };
 
 export type PrincipalAvailableApplication = {
@@ -3568,6 +3570,7 @@ export type CreateUserRequestWritable = {
     enforcePasswordComplexity?: boolean;
     name: string;
     password?: string;
+    scope?: 'ANCHOR' | 'PARTNER' | 'CLIENT';
     [key: string]: unknown;
 };
 
@@ -3890,6 +3893,7 @@ export type PortalUserResponseWritable = {
     identityId: string;
     inviteUrl?: string;
     invited: boolean;
+    ssoManaged?: boolean;
 };
 
 export type PrincipalAvailableApplicationsResponseWritable = {
