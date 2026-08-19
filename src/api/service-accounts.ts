@@ -9,6 +9,7 @@ import type {
 	RegenerateAuthTokenResponse,
 	RegenerateSigningSecretResponse,
 	RoleAssignmentDto,
+	ServiceAccountTokenResponse as GenServiceAccountTokenResponse,
 	ServiceAccountListResponse as GenServiceAccountListResponse,
 	ServiceAccountOAuthSecrets,
 	ServiceAccountResponse,
@@ -34,6 +35,7 @@ export type WebhookCredentials = ServiceAccountWebhookSecrets;
 export type CreateServiceAccountResponse = GenCreateServiceAccountResponse;
 export type RegenerateTokenResponse = RegenerateAuthTokenResponse;
 export type RegenerateSecretResponse = RegenerateSigningSecretResponse;
+export type ServiceAccountTokenResponse = GenServiceAccountTokenResponse;
 export type RoleAssignment = RoleAssignmentDto;
 export type RolesResponse = ServiceAccountRoleListResponse;
 export type RolesAssignedResponse = ServiceAccountRolesAssignedResponse;
@@ -144,6 +146,17 @@ export const serviceAccountsApi = {
 	 */
 	regenerateSecret(id: string): Promise<RegenerateSecretResponse> {
 		return apiFetch(`/service-accounts/${id}/regenerate-secret`, {
+			method: "POST",
+		});
+	},
+
+	/**
+	 * Mint a short-lived bearer token for the service account (anchor-only,
+	 * audited). Same claims as a client_credentials exchange; expires in an
+	 * hour and is never shown again — treat it as a live credential.
+	 */
+	mintToken(id: string): Promise<ServiceAccountTokenResponse> {
+		return apiFetch(`/service-accounts/${id}/token`, {
 			method: "POST",
 		});
 	},

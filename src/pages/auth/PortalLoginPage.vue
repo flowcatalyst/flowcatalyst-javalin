@@ -192,12 +192,15 @@ async function signIn() {
             </div>
             <div class="form-field">
               <label for="portalPassword">Password</label>
+              <!-- autocomplete must ride inputProps: PrimeVue Password sets
+                   inheritAttrs:false, so a plain attr never reaches the
+                   inner <input>. -->
               <Password
                 id="portalPassword"
                 v-model="password"
                 :feedback="false"
                 toggle-mask
-                autocomplete="current-password"
+                :inputProps="{ autocomplete: 'current-password' }"
                 placeholder="Your password"
                 autofocus
                 fluid

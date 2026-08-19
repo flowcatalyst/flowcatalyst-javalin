@@ -1449,11 +1449,14 @@ function formatDate(dateStr: string | null | undefined) {
       </Message>
       <div class="form-field">
         <label for="new-password">New password</label>
+        <!-- Admin sets ANOTHER user's password: new-password stops Chrome
+             autofilling the admin's own saved credential here. -->
         <Password
           id="new-password"
           v-model="resetPasswordNew"
           :feedback="false"
           toggleMask
+          :inputProps="{ autocomplete: 'new-password' }"
           inputClass="w-full"
           placeholder="At least 8 characters"
           :disabled="resettingPassword"
@@ -1466,6 +1469,7 @@ function formatDate(dateStr: string | null | undefined) {
           v-model="resetPasswordConfirm"
           :feedback="false"
           toggleMask
+          :inputProps="{ autocomplete: 'new-password' }"
           inputClass="w-full"
           :disabled="resettingPassword"
         />

@@ -76,6 +76,11 @@ const showRegenerateSecretDialog = ref(false);
 const newToken = ref<string | null>(null);
 const newSecret = ref<string | null>(null);
 
+// Admin-minted bearer token (POST /{id}/token) — live credential, shown once.
+const showMintTokenDialog = ref(false);
+const mintedToken = ref<string | null>(null);
+const mintingToken = ref(false);
+
 // Role picker dialog
 const showRolePickerDialog = ref(false);
 const roleSearchQuery = ref("");
@@ -185,12 +190,14 @@ function resetState() {
 	resetDirty();
 	showRegenerateTokenDialog.value = false;
 	showRegenerateSecretDialog.value = false;
+	showMintTokenDialog.value = false;
 	showRolePickerDialog.value = false;
 	showAppPickerDialog.value = false;
 	showDeleteDialog.value = false;
 	showCreateConnectionDialog.value = false;
 	newToken.value = null;
 	newSecret.value = null;
+	mintedToken.value = null;
 	roleAssignments.value = [];
 	applicationAccessGrants.value = [];
 	availableApplications.value = [];
@@ -473,6 +480,20 @@ async function saveServiceAccount() {
 	}
 }
 
+async function mintBearerToken() {
+	const said = id.value;
+	if (!said) return;
+	mintingToken.value = true;
+	try {
+		const response = await serviceAccountsApi.mintToken(said);
+		mintedToken.value = response.accessToken;
+		showMintTokenDialog.value = true;
+	} catch (e: unknown) {
+	} finally {
+		mintingToken.value = false;
+	}
+}
+
 async function regenerateToken() {
 	const said = id.value;
 	if (!said) return;
@@ -745,6 +766,30 @@ async function deleteServiceAccount() {
         </div>
       </FcFormSection>
 
+      <!-- API Access -->
+      <FcFormSection title="API Access" flat>
+        <div class="credentials-section">
+          <p class="credentials-info">
+            Mint a bearer token with this account's permissions — the same
+            token a client-credentials exchange returns, without needing the
+            client secret. Expires after 1 hour; the mint is audited.
+          </p>
+          <div class="credentials-actions">
+            <div class="credential-action">
+              <span class="credential-label">Bearer Token (1 hour)</span>
+              <Button
+                label="Generate Token"
+                icon="pi pi-key"
+                outlined
+                :loading="mintingToken"
+                :disabled="!serviceAccount?.active"
+                @click="mintBearerToken"
+              />
+            </div>
+          </div>
+        </div>
+      </FcFormSection>
+
       <!-- Roles -->
       <FcFormSection title="Roles" flat>
         <template #actions>
@@ -973,6 +1018,36 @@ async function deleteServiceAccount() {
       </div>
       <template #footer>
         <Button label="Done" @click="showRegenerateSecretDialog = false" />
+      </template>
+    </Dialog>
+
+    <!-- Minted Bearer Token Dialog -->
+    <Dialog
+      v-model:visible="showMintTokenDialog"
+      header="Bearer Token"
+      :style="{ width: '560px' }"
+      :modal="true"
+      @hide="mintedToken = null"
+    >
+      <div class="credential-dialog">
+        <p class="warning-text">
+          <i class="pi pi-exclamation-triangle"></i>
+          This token carries the service account's full permissions and
+          expires in 1 hour. Copy it now — it will not be shown again.
+        </p>
+        <div class="credential-value">
+          <code>{{ mintedToken }}</code>
+          <Button
+            icon="pi pi-copy"
+            text
+            rounded
+            @click="copyToClipboard(mintedToken!, 'Token')"
+            v-tooltip.top="'Copy'"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Done" @click="showMintTokenDialog = false" />
       </template>
     </Dialog>
 

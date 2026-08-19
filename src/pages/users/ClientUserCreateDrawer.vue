@@ -139,6 +139,7 @@ async function createUser() {
               v-model="password"
               toggleMask
               :feedback="false"
+              :inputProps="{ autocomplete: 'new-password' }"
             />
           </template>
         </FcFormField>

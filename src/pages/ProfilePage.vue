@@ -390,6 +390,7 @@ function formatDevCredentialDate(iso: string | null): string {
               v-model="cpCurrent"
               toggleMask
               :feedback="false"
+              :inputProps="{ autocomplete: 'current-password' }"
               inputClass="w-full"
               class="w-full"
             />
@@ -401,6 +402,7 @@ function formatDevCredentialDate(iso: string | null): string {
               :inputId="fieldId"
               v-model="cpNew"
               toggleMask
+              :inputProps="{ autocomplete: 'new-password' }"
               inputClass="w-full"
               class="w-full"
             />
@@ -413,6 +415,7 @@ function formatDevCredentialDate(iso: string | null): string {
               v-model="cpConfirm"
               toggleMask
               :feedback="false"
+              :inputProps="{ autocomplete: 'new-password' }"
               inputClass="w-full"
               class="w-full"
             />

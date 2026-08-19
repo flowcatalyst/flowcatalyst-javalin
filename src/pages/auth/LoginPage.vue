@@ -246,6 +246,7 @@ async function onPasskeyLogin() {
               id="email"
               v-model="emailValue"
               type="email"
+              autocomplete="username"
               placeholder="you@company.com"
               :disabled="isSubmitting"
               :invalid="!!emailError"
@@ -288,6 +289,7 @@ async function onPasskeyLogin() {
               :disabled="isSubmitting"
               :feedback="false"
               toggleMask
+              :inputProps="{ autocomplete: 'current-password' }"
               inputClass="w-full"
               class="w-full"
               @blur="passwordTouched = true"

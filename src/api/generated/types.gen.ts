@@ -2170,6 +2170,17 @@ export type ServiceAccountRolesAssignedResponse = {
     roles: Array<RoleAssignmentDto>;
 };
 
+export type ServiceAccountTokenResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    accessToken: string;
+    expiresIn: number;
+    scope?: string;
+    tokenType: string;
+};
+
 export type ServiceAccountWebhookSecrets = {
     authToken: string;
     signingSecret: string;
@@ -4135,6 +4146,13 @@ export type ServiceAccountRolesAssignedResponseWritable = {
     addedRoles: Array<string>;
     removedRoles: Array<string>;
     roles: Array<RoleAssignmentDto>;
+};
+
+export type ServiceAccountTokenResponseWritable = {
+    accessToken: string;
+    expiresIn: number;
+    scope?: string;
+    tokenType: string;
 };
 
 export type SetApplicationAccessResponseWritable = {
@@ -10981,6 +10999,33 @@ export type AssignServiceAccountRolesResponses = {
 };
 
 export type AssignServiceAccountRolesResponse = AssignServiceAccountRolesResponses[keyof AssignServiceAccountRolesResponses];
+
+export type MintServiceAccountTokenData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/service-accounts/{id}/token';
+};
+
+export type MintServiceAccountTokenErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type MintServiceAccountTokenError = MintServiceAccountTokenErrors[keyof MintServiceAccountTokenErrors];
+
+export type MintServiceAccountTokenResponses = {
+    /**
+     * OK
+     */
+    200: ServiceAccountTokenResponse;
+};
+
+export type MintServiceAccountTokenResponse = MintServiceAccountTokenResponses[keyof MintServiceAccountTokenResponses];
 
 export type ListSubscriptionsData = {
     body?: never;

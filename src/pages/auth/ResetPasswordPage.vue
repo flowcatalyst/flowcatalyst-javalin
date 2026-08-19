@@ -248,6 +248,10 @@ const onSubmit = handleSubmit(async (values) => {
           <form class="login-form" @submit.prevent="onSubmit">
             <div class="form-field">
               <label for="password">{{ isInvite ? "Password" : "New password" }}</label>
+              <!-- PrimeVue Password drops plain attrs (inheritAttrs:false) —
+                   autocomplete must go through inputProps to reach the input,
+                   or Chrome mis-classifies the field and autofills/reveals
+                   stored values instead of offering a new password. -->
               <Password
                 id="password"
                 v-model="passwordValue"
@@ -256,6 +260,7 @@ const onSubmit = handleSubmit(async (values) => {
                 :invalid="!!passwordError"
                 :feedback="true"
                 toggleMask
+                :inputProps="{ autocomplete: 'new-password' }"
                 inputClass="w-full"
                 class="w-full"
               />
@@ -272,6 +277,7 @@ const onSubmit = handleSubmit(async (values) => {
                 :invalid="!!confirmPasswordError"
                 :feedback="false"
                 toggleMask
+                :inputProps="{ autocomplete: 'new-password' }"
                 inputClass="w-full"
                 class="w-full"
               />
