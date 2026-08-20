@@ -1702,6 +1702,7 @@ export type PortalUserResponse = {
      */
     readonly $schema?: string;
     created: boolean;
+    hasPassword: boolean;
     identityId: string;
     inviteUrl?: string;
     invited: boolean;
@@ -3901,6 +3902,7 @@ export type PortalUserRequestWritable = {
 
 export type PortalUserResponseWritable = {
     created: boolean;
+    hasPassword: boolean;
     identityId: string;
     inviteUrl?: string;
     invited: boolean;

@@ -82,6 +82,29 @@ function openInviteDialog() {
 	showInviteDialog.value = true;
 }
 
+// Honest outcome copy: a re-ensure of an identity that already holds a
+// password deliberately sends nothing (the account is live) — say so
+// instead of implying an invite went out.
+function inviteOutcomeMessage(result: {
+	created: boolean;
+	invited: boolean;
+	ssoManaged?: boolean;
+	hasPassword: boolean;
+}): string {
+	if (result.created) {
+		if (result.invited) return "Portal user created and invited";
+		if (result.ssoManaged)
+			return "Portal user created — their organisation signs them in (no invite mail configured)";
+		return "Portal user created (no mailer configured — invite not sent)";
+	}
+	if (result.invited) return "Portal user already existed; invite re-sent";
+	if (result.hasPassword)
+		return "Portal user already has a password — nothing sent. They can sign in, or use Forgot password on the portal sign-in page.";
+	if (result.ssoManaged)
+		return "Portal user already existed — their organisation signs them in";
+	return "Portal user already existed";
+}
+
 async function sendInvite() {
 	if (!inviteEmailValid.value || inviting.value) return;
 	inviting.value = true;
@@ -93,12 +116,7 @@ async function sendInvite() {
 		});
 		toast.success(
 			"Success",
-			result.created
-				? result.invited
-					? "Portal user created and invited"
-					: "Portal user created (no mailer configured — invite not sent)"
-				: "Portal user already existed" +
-					(result.invited ? "; invite re-sent" : ""),
+			inviteOutcomeMessage(result),
 		);
 		showInviteDialog.value = false;
 		await loadPortalUsers();
