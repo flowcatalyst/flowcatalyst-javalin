@@ -31,6 +31,7 @@ const form = ref({
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
 	primaryClientId: null as string | null,
+	portalClientId: null as string | null,
 	syncRolesFromIdp: false,
 });
 
@@ -76,6 +77,19 @@ function onClientSelect(event: { value: Client }) {
 function clearClient() {
 	form.value.primaryClientId = null;
 	selectedClient.value = null;
+}
+
+// Portal binding: which tenant client's PORTAL this IdP serves. Portal
+// login flows and SSO-aware portal invites only ever use bound IdPs.
+const selectedPortalClient = ref<Client | null>(null);
+
+function onPortalClientSelect(event: { value: Client }) {
+	form.value.portalClientId = event.value.id;
+}
+
+function clearPortalClient() {
+	form.value.portalClientId = null;
+	selectedPortalClient.value = null;
 }
 
 // Cheap dirty check: anything typed into the identifying fields counts.
@@ -155,6 +169,10 @@ async function createProvider() {
 					? form.value.allowedEmailDomains
 					: undefined,
 			primaryClientId: form.value.primaryClientId ?? undefined,
+			portalClientId:
+				form.value.type === "OIDC"
+					? (form.value.portalClientId ?? undefined)
+					: undefined,
 			...(form.value.type === "OIDC"
 				? {
 						syncRolesFromIdp: form.value.syncRolesFromIdp,
@@ -380,6 +398,34 @@ async function createProvider() {
           <small class="field-help">
             Linked on mappings that are new or not yet linked to a primary
             client. A domain's existing client link is never overwritten.
+          </small>
+        </div>
+
+        <div v-if="form.type === 'OIDC'" class="field">
+          <label for="portalClient">Portal Binding</label>
+          <div class="client-select">
+            <AutoComplete
+              id="portalClient"
+              v-model="selectedPortalClient"
+              :suggestions="filteredClients"
+              optionLabel="name"
+              placeholder="Search for a client (optional)..."
+              @complete="searchClients"
+              @item-select="onPortalClientSelect"
+            />
+            <Button
+              v-if="selectedPortalClient"
+              icon="pi pi-times"
+              text
+              @click="clearPortalClient"
+            />
+          </div>
+          <small class="field-help">
+            Bind this provider to a tenant client's customer portal. Portal
+            logins for the domains above then route to this provider, and
+            portal invites skip the set-password step (the user signs in with
+            their organisation account instead). Without a binding this
+            provider serves employee logins only.
           </small>
         </div>
       </div>
