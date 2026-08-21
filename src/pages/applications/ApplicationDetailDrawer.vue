@@ -9,6 +9,7 @@ import {
 	type ServiceAccountCredentials,
 	type LoginClientCredentials,
 } from "@/api/applications";
+import { docsApi, type DocSummary } from "@/api/docs";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 import { useDirtyForm } from "@/composables/useDirtyForm";
@@ -101,11 +102,29 @@ async function loadApplication(applicationId: string) {
 	loadError.value = null;
 	try {
 		application.value = await applicationsApi.get(applicationId);
+		void loadAppDocs();
 	} catch {
 		application.value = null;
 		loadError.value = "Application not found";
 	} finally {
 		loading.value = false;
+	}
+}
+
+// Documentation the application synced (POST /api/applications/{code}/docs/sync),
+// shown here for its administrators and rendered in Platform → Documentation.
+const appDocs = ref<DocSummary[]>([]);
+
+async function loadAppDocs() {
+	appDocs.value = [];
+	const code = application.value?.code;
+	if (!code) return;
+	try {
+		const index = await docsApi.list();
+		appDocs.value =
+			index.applications.find((g) => g.applicationCode === code)?.docs ?? [];
+	} catch {
+		// Non-fatal: the drawer works without the docs section.
 	}
 }
 
@@ -454,6 +473,28 @@ function formatDate(dateString: string) {
             />
           </div>
         </template>
+      </FcFormSection>
+
+      <!-- Documentation (synced by the application's SDK) -->
+      <FcFormSection title="Documentation" flat>
+        <template v-if="appDocs.length > 0">
+          <div class="app-docs-list">
+            <router-link
+              v-for="d in appDocs"
+              :key="d.slug"
+              :to="`/platform/docs/${application.code}/${d.slug}`"
+              class="app-doc-link"
+            >
+              <i class="pi pi-book"></i>
+              {{ d.title }}
+            </router-link>
+          </div>
+        </template>
+        <p v-else class="app-docs-empty">
+          No documentation synced. The application can publish pages with
+          <code>POST /api/applications/{{ application.code }}/docs/sync</code> —
+          they render under Platform → Documentation.
+        </p>
       </FcFormSection>
 
       <!-- Login Client -->
@@ -848,5 +889,44 @@ function formatDate(dateString: string) {
   .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.app-docs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-doc-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--primary-color, #4f46e5);
+  text-decoration: none;
+  font-size: 13.5px;
+}
+
+.app-doc-link:hover {
+  background: var(--surface-hover, #f1f5f9);
+}
+
+.app-doc-link .pi {
+  font-size: 13px;
+  color: var(--text-color-secondary, #64748b);
+}
+
+.app-docs-empty {
+  color: var(--text-color-secondary, #64748b);
+  font-size: 13.5px;
+  margin: 0;
+}
+
+.app-docs-empty code {
+  background: var(--surface-ground, #f1f5f9);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
 }
 </style>
