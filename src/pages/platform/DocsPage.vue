@@ -73,12 +73,18 @@ async function loadDoc(source: string, slug: string) {
 		// render post-sanitize from the fence text).
 		const raw = marked.parse(doc.content, { async: false }) as string;
 		docHtml.value = DOMPurify.sanitize(raw);
-		await nextTick();
-		await renderMermaid();
 	} catch (e) {
 		docError.value = getErrorMessage(e, "Failed to load document");
 	} finally {
+		// The article is v-else-gated on docLoading: it must MOUNT before the
+		// mermaid pass can find the fences, so clear loading first, wait a
+		// tick, then upgrade. (Running the pass before this point silently
+		// did nothing — the classic reason diagrams show as raw text.)
 		docLoading.value = false;
+	}
+	if (!docError.value) {
+		await nextTick();
+		await renderMermaid();
 	}
 }
 
