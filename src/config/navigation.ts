@@ -127,6 +127,13 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				route: "/platform/audit-log",
 			},
 			{
+				label: "Documentation",
+				icon: "pi pi-book",
+				route: "/platform/docs",
+				// Platform reference docs — administrators to start.
+				scope: "anchor",
+			},
+			{
 				label: "Login Attempts",
 				icon: "pi pi-sign-in",
 				route: "/platform/login-attempts",

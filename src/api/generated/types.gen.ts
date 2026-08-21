@@ -1266,6 +1266,29 @@ export type DispatchPoolResponse = {
     updatedAt: string;
 };
 
+export type DocListResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    docs: Array<DocSummary>;
+};
+
+export type DocResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    content: string;
+    slug: string;
+    title: string;
+};
+
+export type DocSummary = {
+    slug: string;
+    title: string;
+};
+
 export type ErrorModel = {
     /**
      * A URL to the JSON Schema for this object.
@@ -3648,6 +3671,16 @@ export type DispatchPoolResponseWritable = {
     rateLimit?: number;
     status: string;
     updatedAt: string;
+};
+
+export type DocListResponseWritable = {
+    docs: Array<DocSummary>;
+};
+
+export type DocResponseWritable = {
+    content: string;
+    slug: string;
+    title: string;
 };
 
 export type ErrorModelWritable = {
@@ -7036,6 +7069,58 @@ export type SuspendDispatchPoolResponses = {
 };
 
 export type SuspendDispatchPoolResponse = SuspendDispatchPoolResponses[keyof SuspendDispatchPoolResponses];
+
+export type ListDocsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/docs';
+};
+
+export type ListDocsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type ListDocsError = ListDocsErrors[keyof ListDocsErrors];
+
+export type ListDocsResponses = {
+    /**
+     * OK
+     */
+    200: DocListResponse;
+};
+
+export type ListDocsResponse = ListDocsResponses[keyof ListDocsResponses];
+
+export type GetDocData = {
+    body?: never;
+    path: {
+        slug: string;
+    };
+    query?: never;
+    url: '/api/docs/{slug}';
+};
+
+export type GetDocErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetDocError = GetDocErrors[keyof GetDocErrors];
+
+export type GetDocResponses = {
+    /**
+     * OK
+     */
+    200: DocResponse;
+};
+
+export type GetDocResponse = GetDocResponses[keyof GetDocResponses];
 
 export type ListEmailDomainMappingsData = {
     body?: never;
