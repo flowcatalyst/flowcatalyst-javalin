@@ -495,9 +495,10 @@ const router = createRouter({
 					name: "audit-log",
 					component: () => import("@/pages/platform/AuditLogListPage.vue"),
 				},
-				// Platform - Documentation (embedded docs/*.md, admin-gated)
+				// Platform - Documentation: published platform pages + app-synced
+				// pages ({source} is "platform" or an application code).
 				{
-					path: "platform/docs/:slug?",
+					path: "platform/docs/:source?/:slug?",
 					name: "platform-docs",
 					component: () => import("@/pages/platform/DocsPage.vue"),
 				},

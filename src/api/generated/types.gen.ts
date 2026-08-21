@@ -97,6 +97,12 @@ export type AnchorDomainResponse = {
     updatedAt: string;
 };
 
+export type AppDocsGroup = {
+    applicationCode: string;
+    applicationName: string;
+    docs: Array<DocSummary>;
+};
+
 export type ApplicationAccessListResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1271,7 +1277,8 @@ export type DocListResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
-    docs: Array<DocSummary>;
+    applications: Array<AppDocsGroup>;
+    platform: Array<DocSummary>;
 };
 
 export type DocResponse = {
@@ -2343,6 +2350,27 @@ export type SyncDispatchPoolsRequest = {
      */
     readonly $schema?: string;
     pools: Array<SyncDispatchPoolInputRequest>;
+    [key: string]: unknown;
+};
+
+export type SyncDocInputRequest = {
+    /**
+     * The page body, Markdown (Mermaid fences render as diagrams)
+     */
+    content: string;
+    /**
+     * URL-safe page id, unique within the application (kebab-case)
+     */
+    slug: string;
+    title?: string;
+};
+
+export type SyncDocsRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    docs: Array<SyncDocInputRequest>;
     [key: string]: unknown;
 };
 
@@ -3674,7 +3702,8 @@ export type DispatchPoolResponseWritable = {
 };
 
 export type DocListResponseWritable = {
-    docs: Array<DocSummary>;
+    applications: Array<AppDocsGroup>;
+    platform: Array<DocSummary>;
 };
 
 export type DocResponseWritable = {
@@ -4259,6 +4288,11 @@ export type SyncDispatchPoolsRequestWritable = {
     [key: string]: unknown;
 };
 
+export type SyncDocsRequestWritable = {
+    docs: Array<SyncDocInputRequest>;
+    [key: string]: unknown;
+};
+
 export type SyncEventTypesRequestWritable = {
     eventTypes: Array<SyncEventTypeInputRequest>;
     [key: string]: unknown;
@@ -4783,6 +4817,36 @@ export type SyncDispatchPoolsResponses = {
 };
 
 export type SyncDispatchPoolsResponse = SyncDispatchPoolsResponses[keyof SyncDispatchPoolsResponses];
+
+export type SyncAppDocsData = {
+    body: SyncDocsRequestWritable;
+    path: {
+        /**
+         * Application code
+         */
+        appCode: string;
+    };
+    query?: never;
+    url: '/api/applications/{appCode}/docs/sync';
+};
+
+export type SyncAppDocsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SyncAppDocsError = SyncAppDocsErrors[keyof SyncAppDocsErrors];
+
+export type SyncAppDocsResponses = {
+    /**
+     * OK
+     */
+    200: SyncResultResponse;
+};
+
+export type SyncAppDocsResponse = SyncAppDocsResponses[keyof SyncAppDocsResponses];
 
 export type SyncEventTypesData = {
     body: SyncEventTypesRequestWritable;
@@ -7095,32 +7159,60 @@ export type ListDocsResponses = {
 
 export type ListDocsResponse = ListDocsResponses[keyof ListDocsResponses];
 
-export type GetDocData = {
+export type GetApplicationDocData = {
     body?: never;
     path: {
+        appCode: string;
         slug: string;
     };
     query?: never;
-    url: '/api/docs/{slug}';
+    url: '/api/docs/applications/{appCode}/{slug}';
 };
 
-export type GetDocErrors = {
+export type GetApplicationDocErrors = {
     /**
      * Error
      */
     default: ErrorModel;
 };
 
-export type GetDocError = GetDocErrors[keyof GetDocErrors];
+export type GetApplicationDocError = GetApplicationDocErrors[keyof GetApplicationDocErrors];
 
-export type GetDocResponses = {
+export type GetApplicationDocResponses = {
     /**
      * OK
      */
     200: DocResponse;
 };
 
-export type GetDocResponse = GetDocResponses[keyof GetDocResponses];
+export type GetApplicationDocResponse = GetApplicationDocResponses[keyof GetApplicationDocResponses];
+
+export type GetPlatformDocData = {
+    body?: never;
+    path: {
+        slug: string;
+    };
+    query?: never;
+    url: '/api/docs/platform/{slug}';
+};
+
+export type GetPlatformDocErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetPlatformDocError = GetPlatformDocErrors[keyof GetPlatformDocErrors];
+
+export type GetPlatformDocResponses = {
+    /**
+     * OK
+     */
+    200: DocResponse;
+};
+
+export type GetPlatformDocResponse = GetPlatformDocResponses[keyof GetPlatformDocResponses];
 
 export type ListEmailDomainMappingsData = {
     body?: never;

@@ -3,42 +3,54 @@ import { ref, computed, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { docsApi, type DocSummary } from "@/api/docs";
+import { docsApi, type DocListResponse } from "@/api/docs";
 import { getErrorMessage } from "@/utils/errors";
 
 const route = useRoute();
 const router = useRouter();
 
-const docs = ref<DocSummary[]>([]);
+const index = ref<DocListResponse | null>(null);
 const listLoading = ref(true);
 const listError = ref<string | null>(null);
 const filter = ref("");
 
 const docLoading = ref(false);
 const docError = ref<string | null>(null);
-const docTitle = ref("");
 const docHtml = ref("");
 const contentEl = ref<HTMLElement | null>(null);
 
+// Source is "platform" or an application code; together with the slug it
+// addresses one page: /platform/docs/{source}/{slug}.
+const activeSource = computed(() => (route.params["source"] as string) || null);
 const activeSlug = computed(() => (route.params["slug"] as string) || null);
 
-const filteredDocs = computed(() => {
+function matches(title: string, slug: string): boolean {
 	const q = filter.value.trim().toLowerCase();
-	if (!q) return docs.value;
-	return docs.value.filter(
-		(d) => d.title.toLowerCase().includes(q) || d.slug.toLowerCase().includes(q),
-	);
-});
+	if (!q) return true;
+	return title.toLowerCase().includes(q) || slug.toLowerCase().includes(q);
+}
+
+const filteredPlatform = computed(
+	() => index.value?.platform.filter((d) => matches(d.title, d.slug)) ?? [],
+);
+const filteredApplications = computed(
+	() =>
+		index.value?.applications
+			.map((g) => ({
+				...g,
+				docs: g.docs.filter((d) => matches(d.title, d.slug)),
+			}))
+			.filter((g) => g.docs.length > 0) ?? [],
+);
 
 async function loadList() {
 	listLoading.value = true;
 	listError.value = null;
 	try {
-		const res = await docsApi.list();
-		docs.value = res.docs;
-		// Land on the first doc when none is selected.
-		if (!activeSlug.value && res.docs.length > 0 && res.docs[0]) {
-			void router.replace(`/platform/docs/${res.docs[0].slug}`);
+		index.value = await docsApi.list();
+		const first = index.value.platform[0];
+		if (!activeSlug.value && first) {
+			void router.replace(`/platform/docs/platform/${first.slug}`);
 		}
 	} catch (e) {
 		listError.value = getErrorMessage(e, "Failed to load documentation");
@@ -47,16 +59,18 @@ async function loadList() {
 	}
 }
 
-async function loadDoc(slug: string) {
+async function loadDoc(source: string, slug: string) {
 	docLoading.value = true;
 	docError.value = null;
 	docHtml.value = "";
 	try {
-		const doc = await docsApi.get(slug);
-		docTitle.value = doc.title;
+		const doc =
+			source === "platform"
+				? await docsApi.getPlatform(slug)
+				: await docsApi.getApplication(source, slug);
 		// Render markdown → sanitize → inject; mermaid fences are upgraded to
 		// SVG afterwards (the sanitizer would mangle inline SVG, so diagrams
-		// are rendered post-sanitize from the fence text).
+		// render post-sanitize from the fence text).
 		const raw = marked.parse(doc.content, { async: false }) as string;
 		docHtml.value = DOMPurify.sanitize(raw);
 		await nextTick();
@@ -95,31 +109,34 @@ async function renderMermaid() {
 	}
 }
 
-// Cross-doc links: a markdown link to `some-doc.md` (with or without a
-// docs/ prefix) navigates in-app instead of 404ing against the SPA.
+// Cross-doc links: a markdown link to `some-doc.md` navigates within the
+// current source instead of 404ing; external links leave in a new tab.
 function onContentClick(event: MouseEvent) {
 	const anchor = (event.target as HTMLElement).closest("a");
 	if (!anchor) return;
 	const href = anchor.getAttribute("href") ?? "";
-	const match = href.match(/^(?:\.\/)?(?:docs\/)?([a-zA-Z0-9_-]+)\.md(?:#.*)?$/);
-	if (match?.[1]) {
+	const match = href.match(
+		/^(?:\.\/)?(?:docs\/)?(?:published\/)?(?:\d+-)?([a-zA-Z0-9_-]+)\.md(?:#.*)?$/,
+	);
+	if (match?.[1] && activeSource.value) {
 		event.preventDefault();
-		void router.push(`/platform/docs/${match[1]}`);
+		void router.push(`/platform/docs/${activeSource.value}/${match[1]}`);
 		return;
 	}
-	// External links leave the app in a new tab.
 	if (/^https?:\/\//.test(href)) {
 		event.preventDefault();
 		window.open(href, "_blank", "noopener");
 	}
 }
 
-watch(activeSlug, (slug) => {
-	if (slug) void loadDoc(slug);
+watch([activeSource, activeSlug], ([source, slug]) => {
+	if (source && slug) void loadDoc(source, slug);
 });
 
 void loadList();
-if (activeSlug.value) void loadDoc(activeSlug.value);
+if (activeSource.value && activeSlug.value) {
+	void loadDoc(activeSource.value, activeSlug.value);
+}
 </script>
 
 <template>
@@ -128,7 +145,7 @@ if (activeSlug.value) void loadDoc(activeSlug.value);
       <div>
         <h1 class="page-title">Documentation</h1>
         <p class="page-subtitle">
-          Platform reference docs, embedded with this build — always in step with the running version.
+          The platform's published docs plus each application's synced pages.
         </p>
       </div>
     </header>
@@ -142,15 +159,31 @@ if (activeSlug.value) void loadDoc(activeSlug.value);
           <i class="pi pi-spinner pi-spin"></i>
         </div>
         <nav v-else class="docs-list">
+          <div class="docs-group-label">Platform</div>
           <router-link
-            v-for="d in filteredDocs"
-            :key="d.slug"
-            :to="`/platform/docs/${d.slug}`"
+            v-for="d in filteredPlatform"
+            :key="`platform:${d.slug}`"
+            :to="`/platform/docs/platform/${d.slug}`"
             class="docs-link"
-            :class="{ active: d.slug === activeSlug }"
+            :class="{ active: activeSource === 'platform' && d.slug === activeSlug }"
           >
             {{ d.title }}
           </router-link>
+
+          <template v-for="g in filteredApplications" :key="g.applicationCode">
+            <div class="docs-group-label">{{ g.applicationName }}</div>
+            <router-link
+              v-for="d in g.docs"
+              :key="`${g.applicationCode}:${d.slug}`"
+              :to="`/platform/docs/${g.applicationCode}/${d.slug}`"
+              class="docs-link"
+              :class="{
+                active: activeSource === g.applicationCode && d.slug === activeSlug,
+              }"
+            >
+              {{ d.title }}
+            </router-link>
+          </template>
         </nav>
       </aside>
 
@@ -196,6 +229,20 @@ if (activeSlug.value) void loadDoc(activeSlug.value);
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.docs-group-label {
+  margin: 12px 0 4px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-color-secondary, #64748b);
+}
+
+.docs-group-label:first-child {
+  margin-top: 0;
 }
 
 .docs-link {
