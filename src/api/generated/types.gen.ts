@@ -875,10 +875,6 @@ export type CreateIdentityProviderRequest = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     /**
-     * Bind this IdP to a tenant client's portal plane (portal login flows may only use bound IdPs)
-     */
-    portalClientId?: string;
-    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -1449,7 +1445,6 @@ export type IdentityProviderResponse = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
-    portalClientId?: string;
     syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
@@ -2690,10 +2685,6 @@ export type UpdateIdentityProviderRequest = {
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
     /**
-     * Empty string clears the portal binding
-     */
-    portalClientId?: string;
-    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -3384,10 +3375,6 @@ export type CreateIdentityProviderRequestWritable = {
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
     /**
-     * Bind this IdP to a tenant client's portal plane (portal login flows may only use bound IdPs)
-     */
-    portalClientId?: string;
-    /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
     primaryClientId?: string;
@@ -3767,7 +3754,6 @@ export type IdentityProviderResponseWritable = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant: boolean;
-    portalClientId?: string;
     syncRolesFromIdp: boolean;
     type: string;
     updatedAt: string;
@@ -4399,10 +4385,6 @@ export type UpdateIdentityProviderRequestWritable = {
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
     oidcMultiTenant?: boolean;
-    /**
-     * Empty string clears the portal binding
-     */
-    portalClientId?: string;
     /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */

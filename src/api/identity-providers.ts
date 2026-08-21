@@ -30,9 +30,6 @@ export interface CreateIdentityProviderRequest {
 	// Linked on mappings that are new or have no primary client yet; an
 	// existing client link is never overwritten.
 	primaryClientId?: string;
-	// Binds this IdP to a tenant client's PORTAL plane: portal login flows
-	// (and SSO-aware portal invites) only ever use bound IdPs.
-	portalClientId?: string;
 	syncRolesFromIdp?: boolean;
 	allowedRoleIds?: string[];
 }
@@ -48,9 +45,6 @@ export interface UpdateIdentityProviderRequest {
 	// mapped/claimed; removals fall back to internal auth (password).
 	allowedEmailDomains?: string[];
 	primaryClientId?: string;
-	// Portal-plane binding. Omit = unchanged; empty string clears the
-	// binding; a client id sets it.
-	portalClientId?: string;
 	syncRolesFromIdp?: boolean;
 	allowedRoleIds?: string[];
 }

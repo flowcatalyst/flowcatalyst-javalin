@@ -7,7 +7,6 @@ import {
 	type IdentityProvider,
 } from "@/api/identity-providers";
 import { rolesApi, type Role } from "@/api/roles";
-import { clientsApi, type Client } from "@/api/clients";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -36,40 +35,9 @@ const editForm = ref({
 	oidcMultiTenant: false,
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
-	portalClientId: null as string | null,
 	syncRolesFromIdp: false,
 });
 const newAllowedDomain = ref("");
-
-// Portal binding picker. Which tenant client's PORTAL this IdP serves —
-// portal login flows and SSO-aware portal invites only use bound IdPs.
-const clients = ref<Client[]>([]);
-const filteredClients = ref<Client[]>([]);
-const selectedPortalClient = ref<Client | null>(null);
-
-function searchClients(event: { query: string }) {
-	const query = event.query.toLowerCase();
-	filteredClients.value = clients.value.filter(
-		(c) =>
-			c.name.toLowerCase().includes(query) ||
-			c.identifier.toLowerCase().includes(query),
-	);
-}
-
-function onPortalClientSelect(event: { value: Client }) {
-	editForm.value.portalClientId = event.value.id;
-}
-
-function clearPortalClient() {
-	editForm.value.portalClientId = null;
-	selectedPortalClient.value = null;
-}
-
-const portalClientName = computed(() => {
-	if (!provider.value?.portalClientId) return null;
-	const c = clients.value.find((x) => x.id === provider.value?.portalClientId);
-	return c ? c.name : provider.value.portalClientId;
-});
 
 // Role allow-list picker: [availableRoles, selectedRoles].
 const allRoles = ref<Role[]>([]);
@@ -132,14 +100,12 @@ async function loadProvider(providerId: string) {
 	showDeleteDialog.value = false;
 	newAllowedDomain.value = "";
 	try {
-		const [providerData, rolesResponse, clientsResponse] = await Promise.all([
+		const [providerData, rolesResponse] = await Promise.all([
 			identityProvidersApi.get(providerId),
 			rolesApi.list(),
-			clientsApi.list(),
 		]);
 		provider.value = providerData;
 		allRoles.value = rolesResponse.items;
-		clients.value = clientsResponse.clients;
 		resetEditForm();
 	} catch (e) {
 		provider.value = null;
@@ -160,13 +126,8 @@ function resetEditForm() {
 			oidcMultiTenant: provider.value.oidcMultiTenant,
 			oidcIssuerPattern: provider.value.oidcIssuerPattern || "",
 			allowedEmailDomains: [...(provider.value.allowedEmailDomains || [])],
-			portalClientId: provider.value.portalClientId ?? null,
 			syncRolesFromIdp: provider.value.syncRolesFromIdp ?? false,
 		};
-		selectedPortalClient.value = provider.value.portalClientId
-			? (clients.value.find((c) => c.id === provider.value?.portalClientId) ??
-				null)
-			: null;
 		const allowedRoleIds = new Set(provider.value.allowedRoleIds || []);
 		rolePickerModel.value = [
 			allRoles.value.filter((r) => !allowedRoleIds.has(r.id)),
@@ -250,9 +211,6 @@ async function applyChanges() {
 			updateData["allowedRoleIds"] = rolePickerModel.value[1].map(
 				(r) => r.id,
 			);
-			// Empty string clears the portal binding (omitting would leave it
-			// unchanged).
-			updateData["portalClientId"] = editForm.value.portalClientId ?? "";
 		}
 
 		const updated = await identityProvidersApi.update(
@@ -405,14 +363,6 @@ function getTypeSeverity(type: string) {
               {{ provider.hasClientSecret ? 'Configured' : 'Not configured' }}
             </span>
           </div>
-
-          <div class="field-group">
-            <label>Portal Binding</label>
-            <span v-if="portalClientName" class="field-value">{{ portalClientName }}</span>
-            <span v-else class="field-value text-muted">
-              Not bound — serves employee logins only
-            </span>
-          </div>
         </div>
 
         <!-- Edit mode -->
@@ -471,33 +421,6 @@ function getTypeSeverity(type: string) {
                 : 'Enter the client secret'
             "
           />
-
-          <div class="field">
-            <label for="portalClient">Portal Binding</label>
-            <div class="client-select">
-              <AutoComplete
-                id="portalClient"
-                v-model="selectedPortalClient"
-                :suggestions="filteredClients"
-                optionLabel="name"
-                placeholder="Search for a client (optional)..."
-                @complete="searchClients"
-                @item-select="onPortalClientSelect"
-              />
-              <Button
-                v-if="selectedPortalClient"
-                icon="pi pi-times"
-                text
-                @click="clearPortalClient"
-              />
-            </div>
-            <small class="field-help">
-              Bind this provider to a tenant client's customer portal. Portal
-              logins for this provider's domains then route here, and portal
-              invites skip the set-password step. Clearing the binding returns
-              portal users of these domains to password sign-in.
-            </small>
-          </div>
         </div>
       </FcFormSection>
 
@@ -708,16 +631,6 @@ function getTypeSeverity(type: string) {
   display: flex;
   flex-direction: column;
   gap: 20px;
-}
-
-.client-select {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.client-select .p-autocomplete {
-  flex: 1;
 }
 
 .field-group {
