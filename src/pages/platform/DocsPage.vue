@@ -107,12 +107,26 @@ async function renderMermaid() {
 			const { svg } = await mermaid.render(`doc-diagram-${i++}`, code);
 			const wrap = document.createElement("div");
 			wrap.className = "doc-diagram";
+			wrap.title = "Click to enlarge";
 			wrap.innerHTML = svg;
+			// Click-to-zoom: the inline diagram is constrained to the prose
+			// column, so a click opens the same SVG in a near-fullscreen
+			// dialog where it can breathe.
+			wrap.addEventListener("click", () => openDiagramZoom(svg));
 			pre.replaceWith(wrap);
 		} catch {
 			// Leave the fence as a code block if it doesn't parse.
 		}
 	}
+}
+
+// Diagram lightbox: the clicked diagram's SVG, shown near-fullscreen.
+const zoomVisible = ref(false);
+const zoomSvg = ref("");
+
+function openDiagramZoom(svg: string) {
+	zoomSvg.value = svg;
+	zoomVisible.value = true;
 }
 
 // Cross-doc links: a markdown link to `some-doc.md` navigates within the
@@ -208,6 +222,20 @@ if (activeSource.value && activeSlug.value) {
         ></article>
       </main>
     </div>
+
+    <!-- Diagram lightbox -->
+    <Dialog
+      v-model:visible="zoomVisible"
+      modal
+      dismissable-mask
+      :show-header="false"
+      class="doc-zoom-dialog"
+      :style="{ width: '94vw', maxWidth: '1600px' }"
+      @hide="zoomSvg = ''"
+    >
+      <!-- eslint-disable-next-line vue/no-v-html — mermaid output, rendered locally -->
+      <div class="doc-zoom" @click="zoomVisible = false" v-html="zoomSvg"></div>
+    </Dialog>
   </div>
 </template>
 
@@ -284,7 +312,8 @@ if (activeSource.value && activeSlug.value) {
   padding: 28px 32px;
 }
 
-/* Rendered markdown */
+/* Rendered markdown — prose stays at a readable measure; diagrams open
+   full-size via click-to-zoom instead of widening the column. */
 .docs-content {
   max-width: 76ch;
   line-height: 1.65;
@@ -362,11 +391,34 @@ if (activeSource.value && activeSlug.value) {
 .docs-content :deep(.doc-diagram) {
   margin: 1.2em 0;
   overflow-x: auto;
+  cursor: zoom-in;
+  border-radius: 6px;
+  transition: background-color 0.15s ease;
+}
+
+.docs-content :deep(.doc-diagram:hover) {
+  background: var(--surface-hover, #f8fafc);
 }
 
 .docs-content :deep(.doc-diagram svg) {
   max-width: 100%;
   height: auto;
+}
+
+.doc-zoom {
+  cursor: zoom-out;
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+.doc-zoom :deep(svg) {
+  width: 100%;
+  height: auto;
+  max-height: 86vh;
+  /* Mermaid inlines max-width at the diagram's natural size — the whole
+     point of the lightbox is to exceed it. */
+  max-width: 100% !important;
 }
 
 @media (max-width: 900px) {
