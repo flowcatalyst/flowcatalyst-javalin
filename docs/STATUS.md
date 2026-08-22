@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-22, evening)
 
-Reactor green: `usecase` 30 · `sdk` 40 · `server` ~306 · `fcdev` 40 tests.
-First commit `0343ade` on `main`.
+Reactor green: `usecase` 30 · `sdk` 40 · `server` 374 · `fcdev` 40 tests.
+Commits on `main`: `0343ade` bootstrap, `1618118` status/process docs, `9b8e69a` router Q1 ruling, `49c6ca7` Permission enum + sealed Mode/Spa/KeyRotation.
 
 | Unit | Spec | Port | Audit | Notes |
 |---|---|---|---|---|
@@ -20,10 +20,14 @@ First commit `0343ade` on `main`.
 | eventtype | `docs/spec/eventtype.md` | ✔ | ✔ | TEMPLATE aggregate |
 | connection | `docs/spec/connection.md` | ✔ | ✔ | |
 | dispatchpool | `docs/spec/dispatchpool.md` | ✔ | ✔ | |
-| role (+ permissions) | `docs/spec/role.md` | ✔ (report pending) | ☐ | audit next |
+| role (+ permissions) | `docs/spec/role.md` | ✔ | ☐ audit running | |
+| subscription, client, application | specs being written | ☐ port running (3 agents) | ☐ | |
+| `Permission` enum (Checks refactor), sealed `Server.Mode`/`Spa`/`SigningKeys.KeyRotation`, `Metrics.Running` | — | ✔ | — | owner-directed refactors, 2026-08-22 |
 | router | `docs/spec/router.md` (50 questions) | ☐ gated on owner rulings | ☐ | artifact published |
 
-Lockfile coverage (`LockfileCoverageTest`): 39 / 243 operations, zero drift.
+Lockfile coverage (`LockfileCoverageTest`): 39 / 243 operations before role/subscription/client/application land, zero drift.
+
+Router spec rulings so far: Q1 (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs queued siblings, group pending platform-side; failed message → human review → ignore/completed/resend → group re-queued). 49 pending.
 
 ## Next wave (in order)
 
