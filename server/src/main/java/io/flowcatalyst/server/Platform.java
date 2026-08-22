@@ -6,6 +6,8 @@ import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
+import io.flowcatalyst.platform.cors.CorsOriginRepository;
+import io.flowcatalyst.platform.cors.api.CorsOriginApi;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
@@ -14,9 +16,14 @@ import io.flowcatalyst.platform.eventtype.api.EventTypeApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.api.RoleApi;
+import io.flowcatalyst.platform.process.ProcessRepository;
+import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
+import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
+import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
+import io.flowcatalyst.platform.platformconfig.api.PlatformConfigApi;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.CorrelationId;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
@@ -105,6 +112,12 @@ public final class Platform {
         ClientApi.register(routes, new ClientApi.State(clientRepo, new ApplicationRepository(pool), new ClientConfigRepository(pool), uow));
         var subscriptionRepo = new SubscriptionRepository(pool);
         SubscriptionApi.register(routes, new SubscriptionApi.State(subscriptionRepo, uow));
+        var platformConfigRepo = new PlatformConfigRepository(pool);
+        PlatformConfigApi.register(routes, new PlatformConfigApi.State(platformConfigRepo, new ConfigAccessRepository(pool), uow));
+        var processRepo = new ProcessRepository(pool);
+        ProcessApi.register(routes, new ProcessApi.State(processRepo, uow));
+        var corsOriginRepo = new CorsOriginRepository(pool);
+        CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
