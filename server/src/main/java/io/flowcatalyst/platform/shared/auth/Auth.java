@@ -18,7 +18,7 @@ import java.util.Optional;
 ///
 /// ```java
 /// cfg.routes.post("/api/event-types", Auth.scoped(ctx -> {
-///     Checks.canWriteEventTypes(Auth.current());
+///     Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
 ///     var event = CreateEventType.of(repo).run(uow, cmd, Auth.executionContext());
 ///     ...
 /// }));

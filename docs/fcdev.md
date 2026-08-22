@@ -193,7 +193,7 @@ What `start` does, in order (`StartCommand`):
    subsystem toggles from the flags, `FC_DEFAULT_BROKER=postgres` unless set
    (`FC_DEFAULT_BROKER=none` turns the in-process queue off). Any other
    `FC_*` you export is honoured as in fc-server.
-9. **run** — `new Server(env, pool, Frontend.embedded(), registry).start()`:
+9. **run** — `new Server(env, new Server.Mode.Platform(pool), Frontend.embeddedOrNone(), registry).start()`:
    API on `--api-port`, `/health` `/ready` `/metrics` on `--metrics-port`,
    the SPA served for anything no API route claims. SIGINT/SIGTERM → stop the
    server (drains), close the pool, stop Postgres (`pg_ctl stop -m fast`),

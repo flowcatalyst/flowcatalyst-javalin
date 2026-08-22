@@ -25,6 +25,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.*;
+
 /// The `/api/connections` surface (spec §3). A write handler does exactly:
 /// coarse permission → command from DTO → `Operation.run` → response. Reads
 /// go straight to the repository and apply the client-scope visibility rule
@@ -68,48 +70,48 @@ public final class ConnectionApi {
 
     private static void list(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadConnections(ac);
+        Checks.require(ac, CONNECTION_VIEW);
         List<Connection> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), Connection::clientId);
         ctx.json(ConnectionListResponse.from(visible));
     }
 
     private static void getById(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadConnections(ac);
+        Checks.require(ac, CONNECTION_VIEW);
         ctx.json(ConnectionResponse.from(visible(ac, load(s, ctx.pathParam("id")))));
     }
 
     /// Answers with the full connection (re-read after the write), as the
     /// lockfile says — the SPA pushes it straight into a select (spec §3).
     private static void create(Context ctx, State s) {
-        Checks.canCreateConnections(Auth.current());
+        Checks.require(Auth.current(), CONNECTION_CREATE);
         var cmd = ctx.bodyAsClass(CreateConnectionRequest.class).toCommand();
         var event = CreateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(ConnectionResponse.from(load(s, event.connectionId())));
     }
 
     private static void update(Context ctx, State s) {
-        Checks.canUpdateConnections(Auth.current());
+        Checks.require(Auth.current(), CONNECTION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateConnectionRequest.class).toCommand(ctx.pathParam("id"));
         UpdateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Context ctx, State s) {
-        Checks.canDeleteConnections(Auth.current());
+        Checks.require(Auth.current(), CONNECTION_DELETE);
         DeleteConnection.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void pause(Context ctx, State s) {
-        Checks.canUpdateConnections(Auth.current());
+        Checks.require(Auth.current(), CONNECTION_UPDATE);
         String id = ctx.pathParam("id");
         PauseConnection.of(s.repo()).run(s.uow(), new PauseCommand(id), Auth.executionContext());
         ctx.json(ConnectionResponse.from(load(s, id)));
     }
 
     private static void activate(Context ctx, State s) {
-        Checks.canUpdateConnections(Auth.current());
+        Checks.require(Auth.current(), CONNECTION_UPDATE);
         String id = ctx.pathParam("id");
         ActivateConnection.of(s.repo()).run(s.uow(), new ActivateCommand(id), Auth.executionContext());
         ctx.json(ConnectionResponse.from(load(s, id)));

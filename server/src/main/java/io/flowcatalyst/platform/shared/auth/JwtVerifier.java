@@ -55,6 +55,13 @@ public final class JwtVerifier {
         public RsaKeys(RSAPublicKey current) {
             this(current, List.of());
         }
+
+        /// From a verification-key list in trial order — current first, then
+        /// any previous ([SigningKeys.KeyRotation#verificationKeys()]).
+        public static RsaKeys of(List<RSAPublicKey> verificationKeys) {
+            if (verificationKeys.isEmpty()) throw new IllegalArgumentException("no verification keys");
+            return new RsaKeys(verificationKeys.getFirst(), verificationKeys.subList(1, verificationKeys.size()));
+        }
     }
 
     /// HS256 (development only): the shared secret. Refused when empty.

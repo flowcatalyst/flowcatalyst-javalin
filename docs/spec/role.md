@@ -35,7 +35,7 @@ falls back to the full name when the prefix does not match.
 
 `hasPermission(p)` = any held code equals `p` or matches it with `*`
 segment wildcards (same segment count; `*` matches any segment). The
-matcher is the shared one (`platform.shared.auth.Permissions`).
+matcher is the shared one (`platform.shared.auth.Permission#grants`).
 
 Lenient enum read: unknown `source` → `DATABASE` (**accident?** — same
 masking as event types; kept).

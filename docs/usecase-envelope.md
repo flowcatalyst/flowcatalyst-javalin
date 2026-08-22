@@ -158,7 +158,7 @@ public final class CreateEventType {
 
 // platform/eventtype/api/EventTypeApi.java — the handler does: coarse permission → command → run → response
 app.post("/api/event-types", ctx -> {
-    Auth.canWriteEventTypes(Auth.current());                         // coarse gate, 403 if not
+    Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);  // coarse gate, 403 if not
     var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
     var event = CreateEventType.of(state.repo()).run(state.uow(), cmd, Auth.executionContext());
     ctx.status(201).json(new CreatedResponse(event.eventTypeId()));

@@ -11,39 +11,97 @@ import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 
 /// The single orchestrator fc-server and fcdev both call (Go `server.Run`):
 ///
-///   - build the API app and wire the platform aggregates (when `platformEnabled`)
+///   - build the API app and wire the platform aggregates ([Mode.Platform])
 ///   - mount the router HTTP surface under `routerHttpPrefix` (when `routerEnabled`)
 ///   - spawn the background subsystems (scheduler, stream, outbox, router engine, mcp, purger)
 ///   - bind the API + metrics (+ optional MCP) listeners
 ///   - on [#stop()] (SIGTERM / fcdev stop): stop accepting, drain, stop subsystems
 ///
-/// @param fallback the embedded SPA, served for anything no API route claims
-///                 (fc-server: only when the platform is enabled and the
-///                 frontend was built in; a router-only instance must not
-///                 serve the dashboard)
-public record Server(Env env, DataSource pool, Optional<Frontend> fallback, PrometheusRegistry registry) {
+/// @param mode what this instance is: the platform API over a database, a
+///             database-backed worker, or a router/MCP-only node — the pool
+///             travels inside the mode, so "platform enabled but no pool" is
+///             not a state this record can be in. The entry points derive it
+///             from `FC_PLATFORM_ENABLED` and the other toggles; the record
+///             refuses an [Env] that disagrees with it.
+/// @param spa  the embedded SPA, served for anything no API route claims
+///             ([Spa.Embedded]) or nothing at all ([Spa.None] — a router-only
+///             instance must not serve the dashboard)
+public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
     private static final Logger LOG = LoggerFactory.getLogger(Server.class);
     private static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(30);
 
     public Server {
         Objects.requireNonNull(env, "env");
-        Objects.requireNonNull(fallback, "fallback");
+        Objects.requireNonNull(mode, "mode");
+        Objects.requireNonNull(spa, "spa");
         Objects.requireNonNull(registry, "registry");
+        if (env.platformEnabled() != (mode instanceof Mode.Platform)) {
+            throw new IllegalArgumentException("FC_PLATFORM_ENABLED=" + env.platformEnabled()
+                    + " but the server mode is " + mode.getClass().getSimpleName());
+        }
+    }
+
+    /// What the instance runs, and therefore whether it owns a database pool.
+    public sealed interface Mode permits Mode.Platform, Mode.Worker, Mode.RouterOnly {
+
+        /// The platform API is served from `pool`; any enabled DB-backed
+        /// background subsystem shares it.
+        record Platform(DataSource pool) implements Mode {
+            public Platform {
+                Objects.requireNonNull(pool, "pool");
+            }
+        }
+
+        /// DB-backed background subsystems (scheduler, stream, outbox …)
+        /// without the platform API — the worker tier.
+        record Worker(DataSource pool) implements Mode {
+            public Worker {
+                Objects.requireNonNull(pool, "pool");
+            }
+        }
+
+        /// No database: the router and/or MCP surfaces only.
+        enum RouterOnly implements Mode {
+            INSTANCE
+        }
+
+        static Mode routerOnly() {
+            return RouterOnly.INSTANCE;
+        }
+    }
+
+    /// Whether the embedded Vue SPA is mounted as the catch-all.
+    public sealed interface Spa permits Spa.Embedded, Spa.None {
+
+        /// Serve `frontend` for every `GET` no API route claims.
+        record Embedded(Frontend frontend) implements Spa {
+            public Embedded {
+                Objects.requireNonNull(frontend, "frontend");
+            }
+        }
+
+        /// No SPA: unknown paths get the 404 envelope.
+        enum None implements Spa {
+            INSTANCE
+        }
+
+        static Spa none() {
+            return None.INSTANCE;
+        }
     }
 
     /// A started server: both listeners bound, subsystems running.
     public static final class Running {
         private final Javalin api;
-        private final Metrics metrics;
+        private final Metrics.Running metrics;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
-        private Running(Javalin api, Metrics metrics) {
+        private Running(Javalin api, Metrics.Running metrics) {
             this.api = api;
             this.metrics = metrics;
         }
@@ -92,8 +150,7 @@ public record Server(Env env, DataSource pool, Optional<Frontend> fallback, Prom
         }
 
         // ── listeners ───────────────────────────────────────────────────────
-        var metrics = new Metrics(env, registry);
-        metrics.start();
+        var metrics = new Metrics(env, registry).start();
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
         api.start(env.apiPort());
         LOG.info("api server listening addr=:{}", env.apiPort());
@@ -103,11 +160,6 @@ public record Server(Env env, DataSource pool, Optional<Frontend> fallback, Prom
     /// The fully wired (not yet started) API app — exposed so the contract
     /// tests can enumerate the registered routes without binding a port.
     Javalin buildApi() {
-        SigningKeys signingKeys = env.platformEnabled() ? SigningKeys.load(env) : null;
-        if (signingKeys != null && signingKeys.ephemeral()) {
-            LOG.warn("no JWT signing key configured — using an EPHEMERAL RSA key; tokens will not survive a restart");
-        }
-
         return Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
@@ -119,17 +171,32 @@ public record Server(Env env, DataSource pool, Optional<Frontend> fallback, Prom
 
             cfg.routes.get("/health", Health::handle);
 
-            if (env.platformEnabled()) {
-                if (pool == null) throw new IllegalStateException("platform enabled but no database pool");
-                new Platform(env, pool, signingKeys).register(cfg.routes);
+            switch (mode) {
+                case Mode.Platform(var pool) -> new Platform(env, pool, loadSigningKeys()).register(cfg.routes);
+                case Mode.Worker _, Mode.RouterOnly _ -> {
+                    // no platform API on this instance
+                }
             }
             if (env.routerEnabled()) {
                 // TODO(port): MountRouterHTTP under env.routerHttpPrefix() (BasicAuth, monitoring API,
                 //   dashboard, /metrics alias) + the router engine.
                 LOG.warn("router HTTP surface not yet ported; FC_ROUTER_ENABLED ignored");
             }
-            fallback.ifPresent(f -> f.register(cfg.routes));
+            switch (spa) {
+                case Spa.Embedded(var frontend) -> frontend.register(cfg.routes);
+                case Spa.None _ -> {
+                    // unknown paths get the 404 envelope
+                }
+            }
         });
+    }
+
+    private SigningKeys loadSigningKeys() {
+        var signingKeys = SigningKeys.load(env);
+        if (signingKeys.ephemeral()) {
+            LOG.warn("no JWT signing key configured — using an EPHEMERAL RSA key; tokens will not survive a restart");
+        }
+        return signingKeys;
     }
 
     /// A subsystem toggle from [Env] that has no implementation behind it yet.

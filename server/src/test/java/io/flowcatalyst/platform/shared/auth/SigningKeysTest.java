@@ -21,6 +21,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.InstanceOfAssertFactories.type;
 
 class SigningKeysTest {
 
@@ -51,7 +52,8 @@ class SigningKeysTest {
         assertThat(keys.ephemeral()).isFalse();
         assertThat(keys.privateKey().getModulus()).isEqualTo(((RSAPrivateCrtKey) pair.getPrivate()).getModulus());
         assertThat(keys.publicKey()).isEqualTo(pair.getPublic());
-        assertThat(keys.previous()).isEmpty();
+        assertThat(keys.rotation()).isInstanceOf(SigningKeys.KeyRotation.Single.class);
+        assertThat(keys.rotation().verificationKeys()).containsExactly(keys.current());
         assertThat(keys.privateKeyPem()).isEqualTo(pkcs8Pem.strip());
         assertThat(keys.current().pem()).isEqualTo(pkixPubPem);
     }
@@ -112,7 +114,7 @@ class SigningKeysTest {
         assertThat(keys.ephemeral()).isTrue();
         assertThat(keys.privateKey().getModulus().bitLength()).isEqualTo(2048);
         assertThat(keys.privateKeyPem()).startsWith("-----BEGIN RSA PRIVATE KEY-----\n").endsWith("-----END RSA PRIVATE KEY-----\n");
-        assertThat(keys.previous()).isEmpty();
+        assertThat(keys.rotation()).isInstanceOf(SigningKeys.KeyRotation.Single.class);
         assertThat(keys.kid()).hasSize(22);
 
         // a second load mints a different key — that's the point of the warning
@@ -145,15 +147,18 @@ class SigningKeysTest {
 
         var env = Map.of("FLOWCATALYST_JWT_PRIVATE_KEY", pkcs8Pem, "FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY", mangledPrev);
         var keys = SigningKeys.load(envWith(env), env);
-        assertThat(keys.previous()).isPresent();
-        assertThat(keys.previous().get().publicKey()).isEqualTo(previous.getPublic());
+        var rotating = assertThat(keys.rotation()).asInstanceOf(type(SigningKeys.KeyRotation.Rotating.class)).actual();
+        assertThat(rotating.current()).isEqualTo(keys.current());
+        assertThat(rotating.previous().publicKey()).isEqualTo(previous.getPublic());
         // kid of the previous key hashes the normalized env text as supplied (no trailing newline)
-        assertThat(keys.previous().get().kid()).isEqualTo(SigningKeys.keyId(prevPem.strip()));
-        assertThat(keys.previous().get().kid()).isNotEqualTo(keys.kid());
+        assertThat(rotating.previous().kid()).isEqualTo(SigningKeys.keyId(prevPem.strip()));
+        assertThat(rotating.previous().kid()).isNotEqualTo(keys.kid());
+        // verifiers and JWKS see current first, then previous
+        assertThat(keys.rotation().verificationKeys()).containsExactly(keys.current(), rotating.previous());
 
         // junk is dropped silently by Env
         var junk = Map.of("FLOWCATALYST_JWT_PRIVATE_KEY", pkcs8Pem, "FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY", "definitely-not-pem");
-        assertThat(SigningKeys.load(envWith(junk), junk).previous()).isEmpty();
+        assertThat(SigningKeys.load(envWith(junk), junk).rotation()).isInstanceOf(SigningKeys.KeyRotation.Single.class);
 
         // something that looks like a PEM but isn't one is fatal (Go: "load previous RSA key")
         var bad = Map.of("FLOWCATALYST_JWT_PRIVATE_KEY", pkcs8Pem, "FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY", "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----");

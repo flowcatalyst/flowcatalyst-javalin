@@ -5,18 +5,24 @@ item names its origin; items marked **owner** need Andrew's call.
 
 ## Design smells to fix (from the shared-code audit, 2026-08-22)
 
-- `Checks` is ~73 near-identical static one-liners over `Permissions`
-  string constants. Replace with a `Permission` enum (code, resource,
-  action) + `Checks.require(ac, Permission…)` / `requireAny(...)`; keep the
-  `canXxx` names as thin delegates until every aggregate is ported, then
-  delete them. Do after the eventtype audit lands (it uses `Checks`).
-- `Optional` record components: `SigningKeys.previous`, `Server.fallback`.
-  Use `List<PublicKeyEntry>` (0..1) and a sealed `Spa = Embedded | None`
-  (or `Frontend` nullable-with-doc). Touches `Platform`, `Main`, `fcdev`.
-- `Server` carries a nullable `pool` whose validity depends on
-  `env.platformEnabled()`; a sealed `Mode = Platform(pool) | RouterOnly`
-  makes the `IllegalStateException` in `buildApi` unrepresentable.
-- `Metrics.port()` NPEs before `start()` — adopt the `Running` handle shape.
+- ~~`Checks` is ~73 near-identical static one-liners over `Permissions`
+  string constants.~~ **Done (2026-08-22):** `Permission` enum (code /
+  context / resource / action, `parse`, the wildcard matcher) +
+  `Checks.require(ac, Permission)` / `requireAny(ac, Permission…)`; the
+  `can*` one-liners and `shared.auth.Permissions` are deleted. The seeder's
+  `seed.Permissions` stays the seeding catalogue; `PermissionTest` pins the
+  two sets equal.
+- ~~`Optional` record components: `SigningKeys.previous`, `Server.fallback`.~~
+  Done (owner: sealed types): `SigningKeys.KeyRotation = Single(current) |
+  Rotating(current, previous)` with `verificationKeys()`; `Server.Spa =
+  Embedded(frontend) | None` via `Frontend.embeddedOrNone()`.
+- ~~`Server` carries a nullable `pool` whose validity depends on
+  `env.platformEnabled()`~~ Done: `Server.Mode = Platform(pool) |
+  Worker(pool) | RouterOnly` (`Worker` = DB-backed subsystems without the
+  platform API, the shape `Main`'s `needsDb` already produced); the record
+  refuses an `Env` whose `FC_PLATFORM_ENABLED` disagrees with the mode.
+- ~~`Metrics.port()` NPEs before `start()`~~ Done: `Metrics.start()` returns
+  a `Metrics.Running` (`port()`, `stop()`).
 - `DomainEvent.eventType()` vs `EventMetadata.type()` — one datum, two names.
 - `Lockfile.json()` returns the mutable root while `bytes()` clones.
 - JFR events: `UnitOfWork.transact` (operation, command, outcome,

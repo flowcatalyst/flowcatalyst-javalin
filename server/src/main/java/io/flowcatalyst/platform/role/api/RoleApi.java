@@ -27,6 +27,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.*;
+
 /// The `/api/roles` surface (spec §3): the role CRUD, the per-role
 /// permission grants and the permission catalogue. A write handler does
 /// exactly: coarse permission → command from DTO → `Operation.run` →
@@ -94,70 +96,70 @@ public final class RoleApi {
     // ── Role handlers ──────────────────────────────────────────────────────
 
     private static void list(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleListResponse.from(s.roles().findAll()));
     }
 
     private static void create(Context ctx, State s) {
-        Checks.canWriteRoles(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(CreateRoleRequest.class).toCommand();
         var event = CreateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.roleId()));
     }
 
     private static void getById(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(resolveRole(s, ctx.pathParam("id"))));
     }
 
     private static void update(Context ctx, State s) {
-        Checks.canWriteRoles(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateRoleRequest.class).toCommand(resolveRole(s, ctx.pathParam("id")).id());
         UpdateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Context ctx, State s) {
-        Checks.canDeleteRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_DELETE);
         var cmd = new DeleteCommand(resolveRole(s, ctx.pathParam("id")).id());
         DeleteRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void getByCode(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         String code = ctx.pathParam("code");
         ctx.json(RoleResponse.from(s.roles().findByName(code).orElseThrow(() -> HttpError.notFound("Role", code))));
     }
 
     /// Bare JSON array; the source segment is parsed leniently (spec §3, open question 5).
     private static void listBySource(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(s.roles().findBySource(RoleSource.parse(ctx.pathParam("source")))));
     }
 
     /// Bare JSON array.
     private static void listByApplication(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(s.roles().findByApplicationId(ctx.pathParam("applicationId"))));
     }
 
     private static void applicationFilters(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(new ApplicationFilterListResponse(s.roles().applicationCodes()));
     }
 
     // ── Permission grants on a role (addressed by name) ────────────────────
 
     private static void listRolePermissions(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         String name = ctx.pathParam("roleName");
         Role role = s.roles().findByName(name).orElseThrow(() -> HttpError.notFound("Role", name));
         ctx.json(new RolePermissionListResponse(role.permissions()));
     }
 
     private static void grant(Context ctx, State s) {
-        Checks.canWriteRoles(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new GrantPermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
@@ -165,14 +167,14 @@ public final class RoleApi {
 
     /// The SDK shape: `{permission}` in the body — the same grant operation.
     private static void grantFromBody(Context ctx, State s) {
-        Checks.canWriteRoles(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(GrantPermissionRequest.class).toCommand(ctx.pathParam("roleName"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
     }
 
     private static void revoke(Context ctx, State s) {
-        Checks.canWriteRoles(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new RevokePermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         RevokePermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
@@ -181,12 +183,12 @@ public final class RoleApi {
     // ── Permission catalogue ───────────────────────────────────────────────
 
     private static void listPermissions(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(PermissionListResponse.from(s.permissions().findAll()));
     }
 
     private static void getPermission(Context ctx, State s) {
-        Checks.canReadRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_VIEW);
         String code = ctx.pathParam("permission");
         ctx.json(PermissionResponse.from(s.permissions().findByCode(code).orElseThrow(() -> HttpError.notFound("Permission", code))));
     }
@@ -195,7 +197,7 @@ public final class RoleApi {
     /// (spec §3, open question 4); committed through the unit of work so the
     /// write still goes through one transaction.
     private static void deletePermission(Context ctx, State s) {
-        Checks.canDeleteRoles(Auth.current());
+        Checks.require(Auth.current(), ROLE_DELETE);
         String code = ctx.pathParam("permission");
         s.uow().inTransaction(tx -> {
             s.permissions().deleteByCode(code, tx.dbTx());

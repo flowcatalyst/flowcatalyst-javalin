@@ -27,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
-import java.util.List;
 import java.util.Objects;
 
 /// `WirePlatform`: instantiates every subdomain's repository + operations +
@@ -103,9 +102,10 @@ public final class Platform {
     /// The bearer/cookie authenticator built from the signing keys: RS256,
     /// current + previous public key, issuer == audience == `FC_JWT_ISSUER`.
     private Authenticator buildAuthenticator() {
-        var previous = signingKeys.previous().map(p -> List.of(p.publicKey())).orElse(List.of());
-        var verifier = new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(),
-                new JwtVerifier.RsaKeys(signingKeys.publicKey(), previous)));
+        var verificationKeys = signingKeys.rotation().verificationKeys().stream()
+                .map(SigningKeys.PublicKeyEntry::publicKey)
+                .toList();
+        var verifier = new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(), JwtVerifier.RsaKeys.of(verificationKeys)));
         // TODO(port): DB-backed ClaimsResolver (authProvider.ResolveClaims) for the fc_session cookie path
         //   and role → permission flattening. Until then cookie sessions resolve to unauthenticated.
         return new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(env.authAllowTestHeaders()));

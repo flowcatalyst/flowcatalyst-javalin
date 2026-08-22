@@ -12,7 +12,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -38,7 +37,7 @@ class LockfileCoverageTest {
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
         Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
-        var server = new Server(env, TestPg.dataSource(), Optional.empty(), new PrometheusRegistry());
+        var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
         Javalin api = server.buildApi();
 
         Set<String> registered = new TreeSet<>();

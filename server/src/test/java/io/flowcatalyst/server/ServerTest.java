@@ -30,7 +30,7 @@ class ServerTest {
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
-        running = new Server(env, TestPg.dataSource(), Frontend.embedded(), new PrometheusRegistry()).start();
+        running = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Frontend.embeddedOrNone(), new PrometheusRegistry()).start();
     }
 
     @AfterAll

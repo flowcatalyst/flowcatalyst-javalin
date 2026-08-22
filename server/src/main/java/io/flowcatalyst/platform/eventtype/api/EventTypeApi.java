@@ -28,6 +28,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.*;
+
 /// The `/api/event-types` surface (spec §3). A write handler does exactly:
 /// coarse permission → command from DTO → `Operation.run` → response. Reads
 /// go straight to the repository and apply the client-scope visibility rule
@@ -74,48 +76,48 @@ public final class EventTypeApi {
 
     private static void list(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadEventTypes(ac);
+        Checks.require(ac, EVENT_TYPE_VIEW);
         List<EventType> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), EventType::clientId);
         ctx.json(new EventTypeListResponse(visible.stream().map(EventTypeResponse::from).toList()));
     }
 
     private static void getById(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadEventTypes(ac);
+        Checks.require(ac, EVENT_TYPE_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(EventTypeResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)))));
     }
 
     private static void getByCode(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadEventTypes(ac);
+        Checks.require(ac, EVENT_TYPE_VIEW);
         String code = ctx.pathParam("code");
         ctx.json(EventTypeResponse.from(visible(ac, s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("EventType", code)))));
     }
 
     private static void create(Context ctx, State s) {
-        Checks.canWriteEventTypes(Auth.current());
+        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
         var event = CreateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.eventTypeId()));
     }
 
     private static void update(Context ctx, State s) {
-        Checks.canWriteEventTypes(Auth.current());
+        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateEventTypeRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Context ctx, State s) {
-        Checks.canDeleteEventTypes(Auth.current());
+        Checks.require(Auth.current(), EVENT_TYPE_DELETE);
         DeleteEventType.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     /// Answers with the updated event type (re-read after the write), as the lockfile says.
     private static void addSchema(Context ctx, State s) {
-        Checks.canWriteEventTypes(Auth.current());
+        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         AddSchema.of(s.repo()).run(s.uow(), ctx.bodyAsClass(AddSchemaRequest.class).toCommand(id), Auth.executionContext());
         ctx.json(EventTypeResponse.from(s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id))));

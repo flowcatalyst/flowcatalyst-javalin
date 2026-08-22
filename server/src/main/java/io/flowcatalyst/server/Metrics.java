@@ -9,6 +9,7 @@ import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.Objects;
 
 /// The second listener (`FC_METRICS_PORT`, default 9090): `/health`,
 /// `/ready` and `/metrics` — the "is the binary up" surface every
@@ -20,12 +21,10 @@ public final class Metrics {
 
     private final Env env;
     private final PrometheusRegistry registry;
-    private final ExpositionFormats formats = ExpositionFormats.init();
-    private Javalin app;
 
     public Metrics(Env env, PrometheusRegistry registry) {
-        this.env = env;
-        this.registry = registry;
+        this.env = Objects.requireNonNull(env, "env");
+        this.registry = Objects.requireNonNull(registry, "registry");
     }
 
     /// The shared registry every subsystem registers its collectors with.
@@ -33,23 +32,36 @@ public final class Metrics {
         return registry;
     }
 
-    public void start() {
-        app = Javalin.create(cfg -> {
+    /// Binds the listener; the bound port and `stop()` live on the handle,
+    /// so there is no "started?" state to get wrong.
+    public Running start() {
+        var formats = ExpositionFormats.init();
+        var app = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
             cfg.routes.get("/health", Health::handle);
             cfg.routes.get("/ready", this::ready);
-            cfg.routes.get("/metrics", this::scrape);
+            cfg.routes.get("/metrics", ctx -> scrape(ctx, formats));
         }).start(env.metricsPort());
+        return new Running(app);
     }
 
-    public void stop() {
-        if (app != null) app.stop();
-    }
+    /// A bound metrics listener.
+    public static final class Running {
+        private final Javalin app;
 
-    /// The bound port (differs from the configured one when it was 0, e.g. in tests).
-    public int port() {
-        return app.port();
+        private Running(Javalin app) {
+            this.app = app;
+        }
+
+        /// The bound port (differs from the configured one when it was 0, e.g. in tests).
+        public int port() {
+            return app.port();
+        }
+
+        public void stop() {
+            app.stop();
+        }
     }
 
     /// `{"status":"ready", …every subsystem toggle…}` — keys in Go's
@@ -67,7 +79,7 @@ public final class Metrics {
         ctx.contentType("application/json").result(Json.writeLine(body));
     }
 
-    private void scrape(Context ctx) throws IOException {
+    private void scrape(Context ctx, ExpositionFormats formats) throws IOException {
         var writer = formats.findWriter(ctx.header("Accept"));
         var out = new ByteArrayOutputStream();
         writer.write(out, registry.scrape());

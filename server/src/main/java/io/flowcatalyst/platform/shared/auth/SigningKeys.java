@@ -28,7 +28,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -75,14 +74,14 @@ import java.util.regex.Pattern;
 /// @param privateKey    the RS256 signing key
 /// @param privateKeyPem the PEM the key was loaded from (or generated as) — what Go's
 ///                      `LoadSigningKeyOrEphemeral` returns; downstream issuers (MFA tokens) take it
-/// @param current       the matching public key with its Go-format PEM and kid
-/// @param previous      the validation-only previous public key, when configured
+/// @param rotation      the verification keys: the matching public key (Go-format PEM and kid)
+///                      alone, or together with the validation-only previous key when one is
+///                      configured
 /// @param ephemeral     true when no key was configured and one was minted at boot
 public record SigningKeys(
         RSAPrivateKey privateKey,
         String privateKeyPem,
-        PublicKeyEntry current,
-        Optional<PublicKeyEntry> previous,
+        KeyRotation rotation,
         boolean ephemeral
 ) {
 
@@ -94,8 +93,41 @@ public record SigningKeys(
     public SigningKeys {
         Objects.requireNonNull(privateKey, "privateKey");
         Objects.requireNonNull(privateKeyPem, "privateKeyPem");
-        Objects.requireNonNull(current, "current");
-        Objects.requireNonNull(previous, "previous");
+        Objects.requireNonNull(rotation, "rotation");
+    }
+
+    /// Which public keys verify tokens: just the current one, or the current
+    /// plus the previous one during a zero-downtime rotation. Both shapes
+    /// expose [#current()]; [#verificationKeys()] is the order verifiers try
+    /// and JWKS lists them — current first.
+    public sealed interface KeyRotation permits KeyRotation.Single, KeyRotation.Rotating {
+
+        /// The key tokens are signed with.
+        PublicKeyEntry current();
+
+        /// Current, then previous (when rotating).
+        default List<PublicKeyEntry> verificationKeys() {
+            return switch (this) {
+                case Single(var current) -> List.of(current);
+                case Rotating(var current, var previous) -> List.of(current, previous);
+            };
+        }
+
+        /// No previous key configured.
+        record Single(PublicKeyEntry current) implements KeyRotation {
+            public Single {
+                Objects.requireNonNull(current, "current");
+            }
+        }
+
+        /// `FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY` is set: `previous` still
+        /// verifies, never signs.
+        record Rotating(PublicKeyEntry current, PublicKeyEntry previous) implements KeyRotation {
+            public Rotating {
+                Objects.requireNonNull(current, "current");
+                Objects.requireNonNull(previous, "previous");
+            }
+        }
     }
 
     /// A verification key with the PEM text its `kid` is derived from.
@@ -111,13 +143,18 @@ public record SigningKeys(
         }
     }
 
+    /// The current public key with its PEM and kid.
+    public PublicKeyEntry current() {
+        return rotation.current();
+    }
+
     public RSAPublicKey publicKey() {
-        return current.publicKey();
+        return current().publicKey();
     }
 
     /// The current key's JWKS `kid`.
     public String kid() {
-        return current.kid();
+        return current().kid();
     }
 
     // ── loading ──────────────────────────────────────────────────────────
@@ -173,16 +210,18 @@ public record SigningKeys(
         var priv = parsePrivateKey(privateKeyPem);
         var pub = publicKeyOf(priv);
         var current = new PublicKeyEntry(pub, publicKeyPem(pub));
-        var previous = Optional.ofNullable(previousPublicKeyPem)
-                .filter(s -> !s.isBlank())
-                .map(pem -> {
-                    try {
-                        return new PublicKeyEntry(parsePublicKey(pem), pem);
-                    } catch (IllegalArgumentException e) {
-                        throw new IllegalArgumentException("load previous RSA key: invalid previous RSA public key: " + e.getMessage(), e);
-                    }
-                });
-        return new SigningKeys(priv, privateKeyPem, current, previous, ephemeral);
+        KeyRotation rotation = previousPublicKeyPem == null || previousPublicKeyPem.isBlank()
+                ? new KeyRotation.Single(current)
+                : new KeyRotation.Rotating(current, parsePrevious(previousPublicKeyPem));
+        return new SigningKeys(priv, privateKeyPem, rotation, ephemeral);
+    }
+
+    private static PublicKeyEntry parsePrevious(String pem) {
+        try {
+            return new PublicKeyEntry(parsePublicKey(pem), pem);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("load previous RSA key: invalid previous RSA public key: " + e.getMessage(), e);
+        }
     }
 
     // ── PEM normalization ────────────────────────────────────────────────

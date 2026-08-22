@@ -28,6 +28,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.*;
+
 /// The `/api/dispatch-pools` surface (spec §3). A write handler does exactly:
 /// coarse permission → command from DTO → `Operation.run` → response. Reads
 /// go straight to the repository and apply the client-scope visibility rule
@@ -73,52 +75,52 @@ public final class DispatchPoolApi {
 
     private static void list(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadDispatchPools(ac);
+        Checks.require(ac, DISPATCH_POOL_VIEW);
         List<DispatchPool> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), DispatchPool::clientId);
         ctx.json(DispatchPoolListResponse.from(visible));
     }
 
     private static void getById(Context ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.canReadDispatchPools(ac);
+        Checks.require(ac, DISPATCH_POOL_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(DispatchPoolResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("DispatchPool", id)))));
     }
 
     private static void create(Context ctx, State s) {
-        Checks.canWriteDispatchPools(Auth.current());
+        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         var cmd = ctx.bodyAsClass(CreateDispatchPoolRequest.class).toCommand();
         var event = CreateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.poolId()));
     }
 
     private static void update(Context ctx, State s) {
-        Checks.canWriteDispatchPools(Auth.current());
+        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         var cmd = ctx.bodyAsClass(UpdateDispatchPoolRequest.class).toCommand(ctx.pathParam("id"));
         UpdateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void archive(Context ctx, State s) {
-        Checks.canWriteDispatchPools(Auth.current());
+        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         ArchiveDispatchPool.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void suspend(Context ctx, State s) {
-        Checks.canWriteDispatchPools(Auth.current());
+        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         SuspendDispatchPool.of(s.repo()).run(s.uow(), new SuspendCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void activate(Context ctx, State s) {
-        Checks.canWriteDispatchPools(Auth.current());
+        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         ActivateDispatchPool.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Context ctx, State s) {
-        Checks.canDeleteDispatchPools(Auth.current());
+        Checks.require(Auth.current(), DISPATCH_POOL_DELETE);
         DeleteDispatchPool.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

@@ -142,13 +142,12 @@ public final class StartCommand implements Callable<Integer> {
 
             // ── the shared server ─────────────────────────────────────────
             Env serverEnv = devEnv(dev, opts, databaseUrl);
-            Optional<Frontend> spa = Frontend.embedded();
-            if (spa.isPresent()) {
-                LOG.info("embedded Vue SPA available");
-            } else {
-                LOG.warn("frontend not embedded — this flowcatalyst-server build carries no SPA; API only");
+            Server.Spa spa = Frontend.embeddedOrNone();
+            switch (spa) {
+                case Server.Spa.Embedded _ -> LOG.info("embedded Vue SPA available");
+                case Server.Spa.None _ -> LOG.warn("frontend not embedded — this flowcatalyst-server build carries no SPA; API only");
             }
-            Server.Running running = new Server(serverEnv, pool, spa, PrometheusRegistry.defaultRegistry).start();
+            Server.Running running = new Server(serverEnv, new Server.Mode.Platform(pool), spa, PrometheusRegistry.defaultRegistry).start();
             return new Started(running, pool, pg, ownsPid ? pidFile : null, pid);
         } catch (IOException | RuntimeException e) {
             if (pool != null) pool.close();

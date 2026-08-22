@@ -1437,7 +1437,17 @@ Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
      sibling; the stale-QUEUED poller returns the acked jobs to PENDING; a
      retry/cancel of the failed job releases the group). The failed head
      itself follows the retry policy (Q2) and is then marked failed.
-   → deliberate deviation from Go; conformance tests must pin both modes.
+   - Error resolution (Andrew, follow-up): a message that goes into error is
+     **reviewed by a human**, who sets it to *ignore*, *completed* or
+     *resend*; on that action the **group goes back onto the queue**. So the
+     failed head is never retried independently by the router: it is failed
+     (after the retry policy of Q2), surfaced for review, and the platform
+     re-queues the group when the reviewer resolves it — for `NEXT_ON_ERROR`
+     only the failed message waits for review while its siblings proceed; for
+     `BLOCK_ON_ERROR` the whole group waits (siblings ACKed off the broker,
+     pending platform-side) and is re-sent in order after resolution.
+   → deliberate deviation from Go; conformance tests must pin both modes and
+     the ignore/completed/resend → re-queue flow.
 2. There is **no terminal give-up**: a message failing with 5xx/transport retries forever (≥30 s apart, 3 HTTP attempts each) until 2xx/4xx, force-ack, or process exit. Keep infinite retry, or add a max-attempts / max-age dead-letter path? (§6.5)
 3. Each `Mediate` makes up to **3 HTTP attempts** (1 s, 2 s between) *and then* the pool retries on its own curve. Keep the double-layer (in-call retries + pool backoff), or collapse to one retry policy?
 4. Prod request timeout is **15 min** (`mediator.go:67`); with 3 in-call attempts one message can hold a worker ~45 min while the queue visibility (default 120 s) lapses repeatedly (redeliveries deduped). Keep 15 min? Wire `ExtendVisibility` at ~50 % of visibility timeout for long deliveries (implemented on all backends, never called), or keep it dead?

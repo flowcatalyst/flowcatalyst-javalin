@@ -79,6 +79,12 @@ public final class Frontend {
                 : Optional.of(new Frontend(loader));
     }
 
+    /// [#embedded()] as the [Server.Spa] the composition root wants: the SPA
+    /// when it was built in, [Server.Spa.None] otherwise.
+    public static Server.Spa embeddedOrNone() {
+        return embedded().<Server.Spa>map(Server.Spa.Embedded::new).orElse(Server.Spa.none());
+    }
+
     /// Mounts the fallback routes on `config.routes`. Call after every API
     /// route is registered (Javalin 7 registers routes inside
     /// `Javalin.create(config -> …)`).

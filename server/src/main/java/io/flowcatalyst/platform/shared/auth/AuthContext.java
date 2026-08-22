@@ -63,7 +63,7 @@ public record AuthContext(
 
     /// Holds the super-admin wildcard `platform:*:*:*`.
     public boolean isSuperAdmin() {
-        return hasPermission(Permissions.SUPER_ADMIN);
+        return hasPermission(Permission.SUPER_ADMIN);
     }
 
     /// Access to a specific tenant: anchors always; otherwise the id must be in [#clients].
@@ -81,8 +81,14 @@ public record AuthContext(
         return allApplications || applications.contains(applicationId);
     }
 
-    /// Whether a held permission satisfies `code` (wildcard-aware, see [Permissions#matches]).
+    /// Whether a held permission satisfies `permission` (wildcard-aware, see [Permission#matches]).
+    public boolean hasPermission(Permission permission) {
+        return permission.grantedBy(permissions);
+    }
+
+    /// [#hasPermission(Permission)] for a raw code — the token-scope path, where
+    /// the required side is a string the caller did not mint.
     public boolean hasPermission(String code) {
-        return Permissions.grants(permissions, code);
+        return Permission.grants(permissions, code);
     }
 }

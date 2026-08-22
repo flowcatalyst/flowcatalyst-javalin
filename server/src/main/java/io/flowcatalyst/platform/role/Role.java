@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.role;
 
-import io.flowcatalyst.platform.shared.auth.Permissions;
+import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.HasId;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -92,7 +92,7 @@ public record Role(
     /// Whether the role grants `permission`, honouring `*` segment wildcards
     /// in the held codes (the shared matcher, spec §1).
     public boolean hasPermission(String permission) {
-        return Permissions.grants(permissions, permission);
+        return Permission.grants(permissions, permission);
     }
 
     // ── Transitions (spec §2) ──────────────────────────────────────────────

@@ -114,15 +114,16 @@ rules it established (from its audit):
 
 ## 3. Authorization placement (locked)
 
-- Handler: coarse permission (`Checks.canWriteEventTypes(Auth.current())`, or
-  `requireAnchor`). Reads are gated in the handler only.
+- Handler: coarse permission (`Checks.require(Auth.current(), Permission.EVENT_TYPE_UPDATE)`,
+  `Checks.requireAny(…)` for an any-write / sync grouping, or `requireAnchor`).
+  Reads are gated in the handler only.
 - Use case: resource-level — may *this* principal act on *this* resource?
   `create` → in `authorize` against `cmd.clientId()`; `update/delete/status`
   → in `execute`, right after the load + not-found check.
   `Operation.Authorize.publicAccess()` when the resource has no per-instance
   dimension or the operation is reached from several differently-gated entry
   points (each entry point keeps its own gate).
-- No coarse `Checks.can*` / `requireAnchor` inside `operations/` — ever.
+- No coarse `Checks.require*` / `requireAnchor` inside `operations/` — ever.
 
 ## 4. Wire contract
 
@@ -210,9 +211,11 @@ Idiom checklist (steps 2 and 3):
 - Plus the hygiene list: Go-isms in names/shapes (`IDStr`, `FromContext`,
   empty-string-as-absent at API boundaries, `String[]`), defensive copies on
   record components holding collections/arrays, tightest visibility, `final`
-  by default, `Optional` only as a return type, `java.time`/`Duration`,
-  `ScopedValue` not `ThreadLocal`, parameterised SLF4J logging, `///` docs
-  that say *why*, AssertJ tests that read as sentences, `-Xlint:all` clean.
+  by default, no `Optional` record components — model absence with a sealed
+  type (`Spa.None`, `KeyRotation.Single`) or a list; `Optional` is a return
+  type only — `java.time`/`Duration`, `ScopedValue` not `ThreadLocal`,
+  parameterised SLF4J logging, `///` docs that say *why*, AssertJ tests that
+  read as sentences, `-Xlint:all` clean.
 
 Step 3 is a reviewer's job, not the author's second look — use a fresh
 reader (or agent) with the spec and the checklist.
