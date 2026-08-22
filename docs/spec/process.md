@@ -69,7 +69,7 @@ Wire shapes:
 | Schema | Fields | Notes |
 |---|---|---|
 | `CreateProcessRequest` | `code`*, `name`*, `description`, `body`, `diagramType`, `tags[]` | absent `body` ⇒ `""`; absent/blank `diagramType` ⇒ `mermaid`; absent `tags` ⇒ `[]` |
-| `UpdateProcessRequest` | `name`, `description`, `body`, `diagramType`, `tags[]` | **every field optional; absent = untouched.** `description: ""` stores the empty string (it cannot be reset to absent); `tags: []` clears the list |
+| `UpdateProcessRequest` | `name`, `description`, `body`, `diagramType`, `tags[]` | **every field optional; absent = untouched.** `description: ""` stores the empty string (it cannot be reset to absent); `tags: []` clears the list; `diagramType` is stored verbatim when present — a blank value is stored as `""` (**accident?** create and sync treat a blank diagram type as absent ⇒ default / keep; update does not) |
 | `SyncProcessInputRequest` | `code`*, `name`*, `description`, `body`, `diagramType`, `tags[]` | |
 | `ProcessResponse` | `id, code, name, description?, status, source, application, subdomain, processName, body, diagramType, tags[], createdBy?, createdAt, updatedAt` | optional fields omitted when null; `body` always present (may be `""`); `tags` always present (may be `[]`); timestamps RFC 3339 with 6 fractional digits, `Z` |
 | `ProcessListResponse` | `items[]` | no pagination |
@@ -137,7 +137,7 @@ per-row event, all with `operation = SyncProcessesCommand`.
 ## 8. Domain events
 
 Source is always `platform:admin`; spec version `1.0`; per-aggregate subject
-is `platform.process.{id}` **with message group `platform:process.{id}`**
+is `platform.process.{id}` **with message group `platform:process:{id}`**
 (unlike event types, which carry no group). `data` omits null fields.
 
 | Type | Subject | Message group | `data` fields |
@@ -172,6 +172,7 @@ it).
 6. Admin create / update trim `name`; sync stores it verbatim.
 7. Lenient enum reads mask bad rows.
 8. `/api/processes/sync` (body-scoped Laravel alias) — confirm still needed.
+9. Update stores a blank `diagramType` verbatim, while create and sync treat blank as absent — align update with the domain default (blank ⇒ untouched), or keep?
 
 ## 11. Deviations from the Go reference (deliberate)
 

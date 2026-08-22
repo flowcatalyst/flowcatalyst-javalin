@@ -69,6 +69,16 @@ rules it established (from its audit):
   Operations never `switch` on entity state; an execute phase is
   *load → transition → event → Plan*. A transition with a side result
   returns a small nested record (`SchemaFinalised(eventType, deprecatedVersion)`).
+- **A multi-field partial update is one `update(Changes)` transition.**
+  When an update command's fields are all optional ("absent = untouched"),
+  the aggregate exposes a nested `record Changes(...)` (null = untouched,
+  collections `List.copyOf`'d, doc stating what an empty list means) and one
+  `update(Changes)` transition that applies the non-null fields and
+  re-stamps `updatedAt`; the operation builds `new <Aggregate>.Changes(...)`
+  from the command and calls it. `withX` copies are for construction-time
+  defaults, not admin updates — a chain of `withX` cannot express
+  "absent = untouched" without `if`s in the operation. `Role.update` and
+  `Process.update` are the models.
 - **A command field that *selects* a transition is routed, not modelled.**
   When a command carries a value that chooses between existing intent-named
   transitions (an update's `status`), the execute phase switches

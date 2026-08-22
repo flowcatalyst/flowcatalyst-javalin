@@ -107,6 +107,8 @@ public record Process(
     }
 
     /// Applies the non-null [Changes]; `code`, `status` and `source` never change.
+    /// Values are taken verbatim — a blank `diagramType` is stored as given, unlike
+    /// create / sync where blank means absent (spec §3, open question 9).
     public Process update(Changes c) {
         return new Process(id, code,
                 c.name() != null ? c.name() : name,
