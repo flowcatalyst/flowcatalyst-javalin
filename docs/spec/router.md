@@ -1422,6 +1422,22 @@ Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
 **Delivery semantics**
 
 1. `NEXT_ON_ERROR` and `BLOCK_ON_ERROR` are implemented identically (head-of-line block the group). Keep them identical, or give `NEXT_ON_ERROR` "skip the failed head and continue" semantics? (`pool.go:270`, §2.6)
+   **Ruling (Andrew, 2026-08-22): give them different semantics.**
+   - `NEXT_ON_ERROR`: when the head of a message group fails, the group
+     continues with the next message — no head-of-line blocking. The failed
+     message is reported as failed (platform side) and is NOT retried in front
+     of its siblings. *(Sub-question open: is the failed head retried
+     independently — which breaks in-group order — or failed immediately and
+     left for the platform to resend? Interacts with Q2 retry budget.)*
+   - `BLOCK_ON_ERROR`: when the head fails, the rest of the group stays
+     pending **on the platform**, not in router memory: the router ACKs the
+     queued siblings of that group (removes them from the broker) instead of
+     holding them, because the platform will re-send the whole group once the
+     error is cleared (scheduler `blockedGroups` skips groups with a FAILED
+     sibling; the stale-QUEUED poller returns the acked jobs to PENDING; a
+     retry/cancel of the failed job releases the group). The failed head
+     itself follows the retry policy (Q2) and is then marked failed.
+   → deliberate deviation from Go; conformance tests must pin both modes.
 2. There is **no terminal give-up**: a message failing with 5xx/transport retries forever (≥30 s apart, 3 HTTP attempts each) until 2xx/4xx, force-ack, or process exit. Keep infinite retry, or add a max-attempts / max-age dead-letter path? (§6.5)
 3. Each `Mediate` makes up to **3 HTTP attempts** (1 s, 2 s between) *and then* the pool retries on its own curve. Keep the double-layer (in-call retries + pool backoff), or collapse to one retry policy?
 4. Prod request timeout is **15 min** (`mediator.go:67`); with 3 in-call attempts one message can hold a worker ~45 min while the queue visibility (default 120 s) lapses repeatedly (redeliveries deduped). Keep 15 min? Wire `ExtendVisibility` at ~50 % of visibility timeout for long deliveries (implemented on all backends, never called), or keep it dead?

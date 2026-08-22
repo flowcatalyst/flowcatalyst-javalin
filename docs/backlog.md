@@ -83,5 +83,4 @@ duplicates); `stop` 150 ms poll / 5 s post-SIGKILL wait are not flags.
 event-type names overwritten on every start (catalogue sync or accident?);
 bootstrap admin only when no anchor user exists; see the spec for the rest.
 
-**router** (`docs/spec/router.md`): pending — the spec is being written;
-its open-questions section is the review gate before any router Java.
+**router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Sub-question open on Q1: failed head retried independently vs failed immediately (ties to Q2). Remaining 49 pending.
