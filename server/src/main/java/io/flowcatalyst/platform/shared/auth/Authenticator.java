@@ -1,0 +1,230 @@
+package io.flowcatalyst.platform.shared.auth;
+
+import io.flowcatalyst.platform.shared.httperror.HttpError;
+import io.javalin.http.Context;
+import io.javalin.http.Handler;
+import org.slf4j.MDC;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+/// The platform's authentication middleware (Go `middleware.Authenticator`),
+/// a Javalin [Handler] for `cfg.routes.before(...)`.
+///
+/// Decision tree, per request:
+///
+/// 1. **Token extraction.** `Authorization` present →
+///    `Bearer <token>` (scheme case-insensitive) yields the token, *from
+///    header*; any other scheme yields **no token** and the cookie is NOT
+///    consulted (the request declared its intent). No `Authorization` →
+///    the `fc_session` cookie, *from cookie*, if present.
+/// 2. **Token present** → verify with [JwtVerifier] (RS256 current + previous
+///    keys, or HS256; `iss`, `aud`, `exp`, `nbf`, `sub`):
+///    - *from cookie*: the claims carry identity only; the mutable authority
+///      (scope, roles, clients, applications, permissions) is re-resolved via
+///      [ClaimsResolver#resolveSession] on every request. A verification
+///      failure, or an unknown / deactivated principal, **degrades to
+///      unauthenticated** — the browser replays a stale cookie on every call,
+///      including the public login routes.
+///    - *from header*: `token_use == "identity"` is rejected (an interactive
+///      login token carries no authority); a missing marker (legacy) is
+///      accepted. Permissions come from the `scope` claim, or — when the
+///      token carries roles but no scope — from
+///      [ClaimsResolver#flattenPermissions]. Any verification failure is a
+///      **401** with the `invalid_token` body + `WWW-Authenticate` header and
+///      the remaining handlers are skipped (unless `ignoreInvalidTokens`,
+///      which strips the token and proceeds unauthenticated).
+/// 3. **No token** and `allowTestHeaders` and `X-FC-Test-Principal` set →
+///    a dev-only context from `X-FC-Test-{Principal,Scope,Clients,Permissions,
+///    Roles,Email,Applications,All-Applications}`. Scope defaults to `CLIENT`;
+///    all-applications defaults to `true`, flips to `false` when an
+///    `X-FC-Test-Applications` list is given, and `X-FC-Test-All-Applications`
+///    overrides explicitly.
+/// 4. Otherwise the request proceeds **unauthenticated** — the per-handler
+///    [Checks] reject it with `UNAUTHENTICATED` (403).
+///
+/// On success the context is bound with [Auth#bind] and `principal_id` is put
+/// on the MDC; [Auth#scoped] then exposes it as [Auth#CURRENT] to route code.
+public final class Authenticator implements Handler {
+
+    /// Cookie carrying the platform JWT for browser sessions.
+    public static final String SESSION_COOKIE = "fc_session";
+
+    public static final String TEST_PRINCIPAL = "X-FC-Test-Principal";
+    public static final String TEST_SCOPE = "X-FC-Test-Scope";
+    public static final String TEST_CLIENTS = "X-FC-Test-Clients";
+    public static final String TEST_PERMISSIONS = "X-FC-Test-Permissions";
+    public static final String TEST_ROLES = "X-FC-Test-Roles";
+    public static final String TEST_EMAIL = "X-FC-Test-Email";
+    public static final String TEST_APPLICATIONS = "X-FC-Test-Applications";
+    public static final String TEST_ALL_APPLICATIONS = "X-FC-Test-All-Applications";
+
+    /// Go's `errIdentityTokenNotAPICredential`, verbatim.
+    public static final String IDENTITY_TOKEN_REJECTED =
+            "this access token was issued for interactive login and cannot authorize API requests; "
+                    + "obtain an API token via the client_credentials grant";
+
+    /// `allowTestHeaders` enables the `X-FC-Test-Principal` dev bypass (never
+    /// in production); `ignoreInvalidTokens` flips the bad-bearer 401 into
+    /// "strip and proceed unauthenticated".
+    public record Config(boolean allowTestHeaders, boolean ignoreInvalidTokens) {
+        public static final Config PRODUCTION = new Config(false, false);
+
+        public static Config of(boolean allowTestHeaders) {
+            return new Config(allowTestHeaders, false);
+        }
+    }
+
+    /// A token and where it came from.
+    record Extracted(String token, boolean fromCookie) {
+    }
+
+    /// What a presented token amounts to. `Anonymous` is the cookie path's
+    /// "valid token, no principal behind it"; `Rejected` carries the text the
+    /// 401 body shows when the caller is not allowed to degrade.
+    private sealed interface Outcome permits Authenticated, Anonymous, Rejected {
+    }
+
+    private record Authenticated(AuthContext context) implements Outcome {
+    }
+
+    private record Anonymous() implements Outcome {
+    }
+
+    private record Rejected(String reason) implements Outcome {
+    }
+
+    private final JwtVerifier verifier;
+    private final ClaimsResolver resolver;
+    private final Config config;
+
+    public Authenticator(JwtVerifier verifier, ClaimsResolver resolver, Config config) {
+        this.verifier = Objects.requireNonNull(verifier, "verifier");
+        this.resolver = Objects.requireNonNull(resolver, "resolver");
+        this.config = Objects.requireNonNull(config, "config");
+    }
+
+    @Override
+    public void handle(Context ctx) {
+        var extracted = extractToken(ctx);
+        if (extracted.isPresent()) {
+            var token = extracted.get();
+            switch (introspect(token)) {
+                case Authenticated(var ac) -> attach(ctx, ac);
+                case Anonymous() -> { }
+                case Rejected(var reason) -> {
+                    // A stale cookie is a graceful logout, not a 401: the browser replays it on every
+                    // call, including the public login routes. A bad bearer is the client's explicit claim.
+                    if (!token.fromCookie() && !config.ignoreInvalidTokens()) {
+                        HttpError.writeInvalidToken(ctx, reason);
+                        ctx.skipRemainingHandlers();
+                    }
+                }
+            }
+            return;
+        }
+        var testPrincipal = ctx.header(TEST_PRINCIPAL);
+        if (config.allowTestHeaders() && testPrincipal != null && !testPrincipal.isEmpty()) {
+            attach(ctx, buildTestAuthContext(ctx));
+        }
+    }
+
+    private static void attach(Context ctx, AuthContext ac) {
+        Auth.bind(ctx, ac);
+        MDC.put(CorrelationId.MDC_PRINCIPAL_KEY, ac.principalId());
+    }
+
+    /// The bearer (scheme case-insensitive, value trimmed) or the `fc_session`
+    /// cookie. A non-Bearer `Authorization` header yields nothing and blocks
+    /// the cookie fallback. An empty token counts as none.
+    static Optional<Extracted> extractToken(Context ctx) {
+        var h = ctx.header("Authorization");
+        if (h != null && !h.isEmpty()) {
+            var prefix = "Bearer ";
+            if (h.length() > prefix.length() && h.regionMatches(true, 0, prefix, 0, prefix.length())) {
+                var token = h.substring(prefix.length()).trim();
+                return token.isEmpty() ? Optional.empty() : Optional.of(new Extracted(token, false));
+            }
+            return Optional.empty();
+        }
+        var cookie = ctx.cookie(SESSION_COOKIE);
+        if (cookie != null) {
+            var token = cookie.trim();
+            return token.isEmpty() ? Optional.empty() : Optional.of(new Extracted(token, true));
+        }
+        return Optional.empty();
+    }
+
+    /// Verify, then project the claims onto an [AuthContext] according to
+    /// where the token came from.
+    private Outcome introspect(Extracted token) {
+        return switch (verifier.verify(token.token())) {
+            case JwtVerifier.Rejected(var reason) -> new Rejected(reason);
+            case JwtVerifier.Verified(var claims) -> token.fromCookie() ? session(claims) : bearer(claims);
+        };
+    }
+
+    private Outcome session(TokenClaims claims) {
+        return resolver.resolveSession(claims.subject())
+                .<Outcome>map(Authenticated::new)
+                .orElseGet(Anonymous::new);
+    }
+
+    private Outcome bearer(TokenClaims claims) {
+        if (TokenClaims.TOKEN_USE_IDENTITY.equals(claims.tokenUse())) {
+            return new Rejected(IDENTITY_TOKEN_REJECTED);
+        }
+        var perms = claims.permissions();
+        if (perms.isEmpty() && !claims.roles().isEmpty()) {
+            var derived = resolver.flattenPermissions(claims.roles());
+            if (derived != null && !derived.isEmpty()) perms = derived;
+        }
+        return new Authenticated(new AuthContext(
+                claims.subject(),
+                PrincipalType.parse(claims.principalType()),
+                Scope.parse(claims.tier()),
+                claims.email(),
+                claims.name(),
+                claims.clients(),
+                claims.roles(),
+                claims.applications(),
+                claims.allApplications(),
+                perms,
+                claims.tokenUse()));
+    }
+
+    /// The dev-only context from the `X-FC-Test-*` headers — only reachable
+    /// when `allowTestHeaders`.
+    static AuthContext buildTestAuthContext(Context ctx) {
+        var scopeHeader = header(ctx, TEST_SCOPE);
+        var scope = scopeHeader.isEmpty() ? Scope.CLIENT : Scope.parse(scopeHeader);
+        var apps = splitCsv(header(ctx, TEST_APPLICATIONS));
+        var allAppsHeader = header(ctx, TEST_ALL_APPLICATIONS);
+        var allApps = allAppsHeader.isEmpty() ? apps.isEmpty() : allAppsHeader.equals("true");
+        return new AuthContext(
+                header(ctx, TEST_PRINCIPAL),
+                scope,
+                header(ctx, TEST_EMAIL),
+                splitCsv(header(ctx, TEST_CLIENTS)),
+                splitCsv(header(ctx, TEST_ROLES)),
+                apps,
+                allApps,
+                splitCsv(header(ctx, TEST_PERMISSIONS)));
+    }
+
+    private static String header(Context ctx, String name) {
+        var v = ctx.header(name);
+        return v == null ? "" : v;
+    }
+
+    /// Comma-separated, empties dropped, remaining parts trimmed.
+    static List<String> splitCsv(String s) {
+        if (s == null || s.isEmpty()) return List.of();
+        return Arrays.stream(s.split(",", -1))
+                .filter(part -> !part.isEmpty())
+                .map(String::trim)
+                .toList();
+    }
+}

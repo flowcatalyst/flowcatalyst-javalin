@@ -1,0 +1,8 @@
+{
+  "aliases": {
+    "fcdev": {
+      "script-ref": "fcdev/fcdev.java",
+      "description": "FlowCatalyst developer monolith (Java): fc-server + embedded PostgreSQL with dev defaults. `fcdev start|stop|fresh|db upgrade|version`."
+    }
+  }
+}

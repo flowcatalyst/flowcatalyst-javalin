@@ -1,0 +1,316 @@
+# Seeder-owned rows from a fresh Go `fcdev start` (go-data.sql), ids/timestamps stripped.
+# Tab-separated; kind is the first column. NOT included (fcdev's MCP bootstrap, not the seeder):
+# iam_service_accounts mcp:local, the SERVICE principal + its role grant, oauth_clients + grant types.
+role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
+role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
+role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
+role	platform:iam-admin	Platform IAM Admin	Manages users, roles, and access control	CODE	platform	false
+role	platform:iam-readonly	Platform IAM Read-Only	View-only access to users and roles	CODE	platform	false
+role	platform:client-admin	Client Administrator	Manages users within the administrator's own client	CODE	platform	false
+role	platform:auth-admin	Platform Auth Admin	Manages authentication configuration	CODE	platform	false
+role	platform:auth-readonly	Platform Auth Read-Only	View-only access to authentication configuration	CODE	platform	false
+role	platform:ai-agent-readonly	AI Agent Read-Only	Read-only access to event types and subscriptions for AI agent integrations	CODE	platform	false
+role	platform:messaging-admin	Messaging Administrator	Manages event types, subscriptions, dispatch jobs, and scheduled jobs	CODE	platform	false
+role	platform:viewer	Platform Viewer	Read-only access across IAM, admin, and messaging	CODE	platform	false
+role	platform:portal-administrator	Portal Administrator	Manage the client's portal users: invite, suspend, and remove portal identities	CODE	platform	false
+role	platform:developer	Developer	Developer portal: API documentation, accessible event types, and a self-service API credential for local testing	CODE	platform	false
+role	platform:application-service	Application Service Account	Permissions for application service accounts (scoped to own application)	CODE	platform	false
+perm	platform:super-admin	platform:*:*:*
+perm	platform:admin	platform:admin:client:view
+perm	platform:admin	platform:admin:client:create
+perm	platform:admin	platform:admin:client:update
+perm	platform:admin	platform:admin:client:activate
+perm	platform:admin	platform:admin:client:suspend
+perm	platform:admin	platform:admin:client:deactivate
+perm	platform:admin	platform:admin:anchor-domain:view
+perm	platform:admin	platform:admin:anchor-domain:create
+perm	platform:admin	platform:admin:anchor-domain:update
+perm	platform:admin	platform:admin:anchor-domain:delete
+perm	platform:admin	platform:admin:application:view
+perm	platform:admin	platform:admin:application:create
+perm	platform:admin	platform:admin:application:update
+perm	platform:admin	platform:admin:application:delete
+perm	platform:admin	platform:admin:application:enable-client
+perm	platform:admin	platform:admin:application:disable-client
+perm	platform:admin	platform:admin:audit-log:view
+perm	platform:admin	platform:admin:audit-log:export
+perm	platform:admin	platform:admin:login-attempt:view
+perm	platform:admin	platform:admin:docs:view
+perm	platform:admin	platform:developer:application-openapi:manage
+perm	platform:admin-readonly	platform:admin:client:view
+perm	platform:admin-readonly	platform:admin:anchor-domain:view
+perm	platform:admin-readonly	platform:admin:application:view
+perm	platform:admin-readonly	platform:admin:audit-log:view
+perm	platform:admin-readonly	platform:admin:login-attempt:view
+perm	platform:admin-readonly	platform:admin:docs:view
+perm	platform:admin-readonly	platform:developer:application-openapi:view
+perm	platform:iam-admin	platform:iam:user:view
+perm	platform:iam-admin	platform:iam:user:create
+perm	platform:iam-admin	platform:iam:user:update
+perm	platform:iam-admin	platform:iam:user:delete
+perm	platform:iam-admin	platform:iam:user:activate
+perm	platform:iam-admin	platform:iam:user:deactivate
+perm	platform:iam-admin	platform:iam:user:assign-roles
+perm	platform:iam-admin	platform:iam:role:view
+perm	platform:iam-admin	platform:iam:role:create
+perm	platform:iam-admin	platform:iam:role:update
+perm	platform:iam-admin	platform:iam:role:delete
+perm	platform:iam-admin	platform:iam:client-access:grant
+perm	platform:iam-admin	platform:iam:client-access:revoke
+perm	platform:iam-admin	platform:iam:client-access:view
+perm	platform:iam-readonly	platform:iam:user:view
+perm	platform:iam-readonly	platform:iam:role:view
+perm	platform:iam-readonly	platform:iam:client-access:view
+perm	platform:client-admin	platform:iam:user:view
+perm	platform:client-admin	platform:iam:user:create
+perm	platform:client-admin	platform:iam:user:update
+perm	platform:client-admin	platform:iam:user:delete
+perm	platform:client-admin	platform:iam:user:activate
+perm	platform:client-admin	platform:iam:user:deactivate
+perm	platform:client-admin	platform:iam:user:assign-roles
+perm	platform:client-admin	platform:iam:role:view
+perm	platform:auth-admin	platform:auth:client-auth-config:view
+perm	platform:auth-admin	platform:auth:client-auth-config:create
+perm	platform:auth-admin	platform:auth:client-auth-config:update
+perm	platform:auth-admin	platform:auth:client-auth-config:delete
+perm	platform:auth-admin	platform:auth:oauth-client:view
+perm	platform:auth-admin	platform:auth:oauth-client:create
+perm	platform:auth-admin	platform:auth:oauth-client:update
+perm	platform:auth-admin	platform:auth:oauth-client:delete
+perm	platform:auth-admin	platform:auth:oauth-client:regenerate-secret
+perm	platform:auth-readonly	platform:auth:client-auth-config:view
+perm	platform:auth-readonly	platform:auth:oauth-client:view
+perm	platform:ai-agent-readonly	platform:messaging:event-type:view
+perm	platform:ai-agent-readonly	platform:messaging:subscription:view
+perm	platform:messaging-admin	platform:messaging:event-type:view
+perm	platform:messaging-admin	platform:messaging:event-type:create
+perm	platform:messaging-admin	platform:messaging:event-type:update
+perm	platform:messaging-admin	platform:messaging:event-type:delete
+perm	platform:messaging-admin	platform:messaging:event-type:archive
+perm	platform:messaging-admin	platform:messaging:event-type:manage-schema
+perm	platform:messaging-admin	platform:messaging:event-type:sync
+perm	platform:messaging-admin	platform:messaging:subscription:view
+perm	platform:messaging-admin	platform:messaging:subscription:create
+perm	platform:messaging-admin	platform:messaging:subscription:update
+perm	platform:messaging-admin	platform:messaging:subscription:delete
+perm	platform:messaging-admin	platform:messaging:subscription:sync
+perm	platform:messaging-admin	platform:messaging:dispatch-pool:view
+perm	platform:messaging-admin	platform:messaging:dispatch-pool:create
+perm	platform:messaging-admin	platform:messaging:dispatch-pool:update
+perm	platform:messaging-admin	platform:messaging:dispatch-pool:delete
+perm	platform:messaging-admin	platform:messaging:dispatch-pool:sync
+perm	platform:messaging-admin	platform:messaging:connection:view
+perm	platform:messaging-admin	platform:messaging:connection:create
+perm	platform:messaging-admin	platform:messaging:connection:update
+perm	platform:messaging-admin	platform:messaging:connection:delete
+perm	platform:messaging-admin	platform:messaging:event:view
+perm	platform:messaging-admin	platform:messaging:event:view-raw
+perm	platform:messaging-admin	platform:messaging:dispatch-job:view
+perm	platform:messaging-admin	platform:messaging:dispatch-job:view-raw
+perm	platform:messaging-admin	platform:messaging:scheduled-job:view
+perm	platform:messaging-admin	platform:messaging:scheduled-job:create
+perm	platform:messaging-admin	platform:messaging:scheduled-job:update
+perm	platform:messaging-admin	platform:messaging:scheduled-job:delete
+perm	platform:messaging-admin	platform:messaging:scheduled-job:pause
+perm	platform:messaging-admin	platform:messaging:scheduled-job:fire
+perm	platform:messaging-admin	platform:messaging:scheduled-job:sync
+perm	platform:messaging-admin	platform:messaging:scheduled-job-instance:view
+perm	platform:messaging-admin	platform:messaging:process:view
+perm	platform:messaging-admin	platform:messaging:process:create
+perm	platform:messaging-admin	platform:messaging:process:update
+perm	platform:messaging-admin	platform:messaging:process:delete
+perm	platform:messaging-admin	platform:messaging:process:archive
+perm	platform:messaging-admin	platform:messaging:process:sync
+perm	platform:viewer	platform:iam:user:view
+perm	platform:viewer	platform:iam:role:view
+perm	platform:viewer	platform:iam:client-access:view
+perm	platform:viewer	platform:admin:client:view
+perm	platform:viewer	platform:admin:application:view
+perm	platform:viewer	platform:messaging:event:view
+perm	platform:viewer	platform:messaging:event-type:view
+perm	platform:viewer	platform:messaging:subscription:view
+perm	platform:viewer	platform:messaging:dispatch-job:view
+perm	platform:viewer	platform:messaging:dispatch-pool:view
+perm	platform:viewer	platform:messaging:scheduled-job:view
+perm	platform:viewer	platform:messaging:scheduled-job-instance:view
+perm	platform:viewer	platform:messaging:process:view
+perm	platform:viewer	platform:admin:audit-log:view
+perm	platform:viewer	platform:admin:login-attempt:view
+perm	platform:portal-administrator	platform:iam:portal-user:view
+perm	platform:portal-administrator	platform:iam:portal-user:manage
+perm	platform:developer	platform:developer:application-openapi:view
+perm	platform:developer	platform:developer:api-credential:manage
+perm	platform:developer	platform:messaging:event-type:view
+perm	platform:developer	platform:messaging:process:view
+perm	platform:developer	platform:messaging:process:create
+perm	platform:developer	platform:messaging:process:update
+perm	platform:developer	platform:messaging:process:delete
+perm	platform:developer	platform:messaging:process:archive
+perm	platform:application-service	platform:application-service:event:create
+perm	platform:application-service	platform:application-service:event-type:view
+perm	platform:application-service	platform:application-service:event-type:create
+perm	platform:application-service	platform:application-service:event-type:update
+perm	platform:application-service	platform:application-service:event-type:delete
+perm	platform:application-service	platform:application-service:subscription:view
+perm	platform:application-service	platform:application-service:subscription:create
+perm	platform:application-service	platform:application-service:subscription:update
+perm	platform:application-service	platform:application-service:subscription:delete
+perm	platform:application-service	platform:application-service:role:view
+perm	platform:application-service	platform:application-service:role:create
+perm	platform:application-service	platform:application-service:role:update
+perm	platform:application-service	platform:application-service:role:delete
+perm	platform:application-service	platform:application-service:permission:view
+perm	platform:application-service	platform:application-service:permission:sync
+perm	platform:application-service	platform:application-service:scheduled-job-instance:write
+perm	platform:application-service	platform:application-service:docs:sync
+perm	platform:application-service	platform:application-service:scheduled-job:sync
+perm	platform:application-service	platform:application-service:process:view
+perm	platform:application-service	platform:application-service:process:sync
+eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:activated	User Activated	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:deactivated	User Deactivated	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:deleted	User Deleted	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:roles-assigned	User Roles Assigned	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:application-access-assigned	User Application Access Assigned	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:client-access-granted	User Client Access Granted	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:client-access-revoked	User Client Access Revoked	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:logged-in	User Logged In	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:password-reset-requested	User Password Reset Requested	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:user:password-reset-completed	User Password Reset Completed	CURRENT	UI	false	platform	iam	user
+eventtype	platform:iam:principals:synced	Principals Synced	CURRENT	UI	false	platform	iam	principals
+eventtype	platform:iam:serviceaccount:created	Serviceaccount Created	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:serviceaccount:updated	Serviceaccount Updated	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:serviceaccount:deleted	Serviceaccount Deleted	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:serviceaccount:roles-assigned	Serviceaccount Roles Assigned	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:serviceaccount:token-regenerated	Serviceaccount Token Regenerated	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:serviceaccount:secret-regenerated	Serviceaccount Secret Regenerated	CURRENT	UI	false	platform	iam	serviceaccount
+eventtype	platform:iam:client:created	Client Created	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:updated	Client Updated	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:activated	Client Activated	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:suspended	Client Suspended	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:deleted	Client Deleted	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:note-added	Client Note Added	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:role:created	Role Created	CURRENT	UI	false	platform	iam	role
+eventtype	platform:iam:role:updated	Role Updated	CURRENT	UI	false	platform	iam	role
+eventtype	platform:iam:role:deleted	Role Deleted	CURRENT	UI	false	platform	iam	role
+eventtype	platform:iam:roles:synced	Roles Synced	CURRENT	UI	false	platform	iam	roles
+eventtype	platform:iam:application:created	Application Created	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:updated	Application Updated	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:activated	Application Activated	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:deactivated	Application Deactivated	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:deleted	Application Deleted	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:service-account-provisioned	Application Service Account Provisioned	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:enabled-for-client	Application Enabled For Client	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:application:disabled-for-client	Application Disabled For Client	CURRENT	UI	false	platform	iam	application
+eventtype	platform:iam:anchor-domain:created	Anchor Domain Created	CURRENT	UI	false	platform	iam	anchor-domain
+eventtype	platform:iam:anchor-domain:deleted	Anchor Domain Deleted	CURRENT	UI	false	platform	iam	anchor-domain
+eventtype	platform:iam:auth-config:created	Auth Config Created	CURRENT	UI	false	platform	iam	auth-config
+eventtype	platform:iam:auth-config:updated	Auth Config Updated	CURRENT	UI	false	platform	iam	auth-config
+eventtype	platform:iam:auth-config:deleted	Auth Config Deleted	CURRENT	UI	false	platform	iam	auth-config
+eventtype	platform:admin:cors:origin-added	Cors Origin Added	CURRENT	UI	false	platform	admin	cors
+eventtype	platform:admin:cors:origin-deleted	Cors Origin Deleted	CURRENT	UI	false	platform	admin	cors
+eventtype	platform:admin:idp:created	Idp Created	CURRENT	UI	false	platform	admin	idp
+eventtype	platform:admin:idp:updated	Idp Updated	CURRENT	UI	false	platform	admin	idp
+eventtype	platform:admin:idp:deleted	Idp Deleted	CURRENT	UI	false	platform	admin	idp
+eventtype	platform:admin:edm:created	Edm Created	CURRENT	UI	false	platform	admin	edm
+eventtype	platform:admin:edm:updated	Edm Updated	CURRENT	UI	false	platform	admin	edm
+eventtype	platform:admin:edm:deleted	Edm Deleted	CURRENT	UI	false	platform	admin	edm
+eventtype	platform:admin:eventtype:created	Eventtype Created	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:updated	Eventtype Updated	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:archived	Eventtype Archived	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:deleted	Eventtype Deleted	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:schema-added	Eventtype Schema Added	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:schema-finalised	Eventtype Schema Finalised	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtype:schema-deprecated	Eventtype Schema Deprecated	CURRENT	UI	false	platform	admin	eventtype
+eventtype	platform:admin:eventtypes:synced	Event Types Synced	CURRENT	UI	false	platform	admin	eventtypes
+eventtype	platform:admin:connection:created	Connection Created	CURRENT	UI	false	platform	admin	connection
+eventtype	platform:admin:connection:updated	Connection Updated	CURRENT	UI	false	platform	admin	connection
+eventtype	platform:admin:connection:deleted	Connection Deleted	CURRENT	UI	false	platform	admin	connection
+eventtype	platform:admin:dispatch-pool:created	Dispatch Pool Created	CURRENT	UI	false	platform	admin	dispatch-pool
+eventtype	platform:admin:dispatch-pool:updated	Dispatch Pool Updated	CURRENT	UI	false	platform	admin	dispatch-pool
+eventtype	platform:admin:dispatch-pool:archived	Dispatch Pool Archived	CURRENT	UI	false	platform	admin	dispatch-pool
+eventtype	platform:admin:dispatch-pool:deleted	Dispatch Pool Deleted	CURRENT	UI	false	platform	admin	dispatch-pool
+eventtype	platform:admin:dispatch-pools:synced	Dispatch Pools Synced	CURRENT	UI	false	platform	admin	dispatch-pools
+eventtype	platform:admin:subscription:created	Subscription Created	CURRENT	UI	false	platform	admin	subscription
+eventtype	platform:admin:subscription:updated	Subscription Updated	CURRENT	UI	false	platform	admin	subscription
+eventtype	platform:admin:subscription:paused	Subscription Paused	CURRENT	UI	false	platform	admin	subscription
+eventtype	platform:admin:subscription:resumed	Subscription Resumed	CURRENT	UI	false	platform	admin	subscription
+eventtype	platform:admin:subscription:deleted	Subscription Deleted	CURRENT	UI	false	platform	admin	subscription
+eventtype	platform:admin:subscription:synced	Subscription Synced	CURRENT	UI	false	platform	admin	subscription
+schema	platform:iam:user:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"email":{"type":"string"},"emailDomain":{"type":"string"},"isAnchorUser":{"type":"boolean"},"name":{"type":"string"},"principalId":{"type":"string"},"scope":{"type":"string"}},"required":["principalId","email","emailDomain","name","scope","isAnchorUser"],"type":"object"}
+schema	platform:iam:user:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"email":{"type":["string","null"]},"name":{"type":["string","null"]},"principalId":{"type":"string"}},"required":["principalId"],"type":"object"}
+schema	platform:iam:user:activated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"principalId":{"type":"string"}},"required":["principalId"],"type":"object"}
+schema	platform:iam:user:deactivated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"principalId":{"type":"string"},"reason":{"type":["string","null"]}},"required":["principalId"],"type":"object"}
+schema	platform:iam:user:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"principalId":{"type":"string"}},"required":["principalId"],"type":"object"}
+schema	platform:iam:user:roles-assigned	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"added":{"items":{"type":"string"},"type":"array"},"principalId":{"type":"string"},"removed":{"items":{"type":"string"},"type":"array"},"roles":{"items":{"type":"string"},"type":"array"}},"required":["principalId","roles","added","removed"],"type":"object"}
+schema	platform:iam:user:application-access-assigned	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"added":{"items":{"type":"string"},"type":"array"},"applicationIds":{"items":{"type":"string"},"type":"array"},"removed":{"items":{"type":"string"},"type":"array"},"userId":{"type":"string"}},"required":["userId","applicationIds","added","removed"],"type":"object"}
+schema	platform:iam:user:client-access-granted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"principalId":{"type":"string"}},"required":["principalId","clientId"],"type":"object"}
+schema	platform:iam:user:client-access-revoked	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"principalId":{"type":"string"}},"required":["principalId","clientId"],"type":"object"}
+schema	platform:iam:user:logged-in	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":true,"properties":{"email":{"type":"string"},"federatedClaims":{"oneOf":[{"properties":{"accessToken":{"type":"object"},"idToken":{"type":"object"}},"required":["accessToken","idToken"],"type":"object"},{"type":"null"}]},"flowcatalystClaims":{"properties":{"applications":{"items":{"type":"string"},"type":"array"},"clients":{"items":{"type":"string"},"type":"array"},"email":{"type":"string"},"roles":{"items":{"type":"string"},"type":"array"},"type":{"type":"string"}},"required":["email","type","roles","clients","applications"],"type":"object"},"identityProviderCode":{"type":["string","null"]},"loginMethod":{"enum":["INTERNAL","OIDC"],"type":"string"},"userId":{"type":"string"}},"required":["userId","email","loginMethod","flowcatalystClaims"],"type":"object"}
+schema	platform:iam:user:password-reset-requested	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"email":{"type":"string"},"principalId":{"type":"string"}},"required":["principalId","email"],"type":"object"}
+schema	platform:iam:user:password-reset-completed	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"email":{"type":"string"},"principalId":{"type":"string"}},"required":["principalId","email"],"type":"object"}
+schema	platform:iam:principals:synced	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deactivated":{"minimum":0,"type":"integer"},"syncedEmails":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deactivated","syncedEmails"],"type":"object"}
+schema	platform:iam:serviceaccount:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":["string","null"]},"clientIds":{"items":{"type":"string"},"type":"array"},"code":{"type":"string"},"name":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code","name","clientIds"],"type":"object"}
+schema	platform:iam:serviceaccount:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientIdsAdded":{"items":{"type":"string"},"type":"array"},"clientIdsRemoved":{"items":{"type":"string"},"type":"array"},"description":{"type":["string","null"]},"name":{"type":["string","null"]},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","clientIdsAdded","clientIdsRemoved"],"type":"object"}
+schema	platform:iam:serviceaccount:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code"],"type":"object"}
+schema	platform:iam:serviceaccount:roles-assigned	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"rolesAdded":{"items":{"type":"string"},"type":"array"},"rolesRemoved":{"items":{"type":"string"},"type":"array"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","rolesAdded","rolesRemoved"],"type":"object"}
+schema	platform:iam:serviceaccount:token-regenerated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code"],"type":"object"}
+schema	platform:iam:serviceaccount:secret-regenerated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code"],"type":"object"}
+schema	platform:iam:client:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"description":{"type":["string","null"]},"identifier":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name","identifier"],"type":"object"}
+schema	platform:iam:client:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"description":{"type":["string","null"]},"name":{"type":["string","null"]}},"required":["clientId"],"type":"object"}
+schema	platform:iam:client:activated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"previousStatus":{"type":"string"}},"required":["clientId","previousStatus"],"type":"object"}
+schema	platform:iam:client:suspended	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"reason":{"type":"string"}},"required":["clientId","reason"],"type":"object"}
+schema	platform:iam:client:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"identifier":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name","identifier"],"type":"object"}
+schema	platform:iam:client:note-added	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"author":{"type":"string"},"category":{"type":"string"},"clientId":{"type":"string"},"text":{"type":"string"}},"required":["clientId","category","text","author"],"type":"object"}
+schema	platform:iam:role:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"code":{"type":"string"},"displayName":{"type":"string"},"permissions":{"items":{"type":"string"},"type":"array"},"roleId":{"type":"string"}},"required":["roleId","code","displayName","applicationCode","permissions"],"type":"object"}
+schema	platform:iam:role:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"description":{"type":["string","null"]},"displayName":{"type":["string","null"]},"permissionsAdded":{"items":{"type":"string"},"type":"array"},"permissionsRemoved":{"items":{"type":"string"},"type":"array"},"roleId":{"type":"string"}},"required":["roleId","permissionsAdded","permissionsRemoved"],"type":"object"}
+schema	platform:iam:role:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"roleId":{"type":"string"}},"required":["roleId","code"],"type":"object"}
+schema	platform:iam:roles:synced	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedNames":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedNames"],"type":"object"}
+schema	platform:iam:application:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"applicationType":{"type":"string"},"code":{"type":"string"},"name":{"type":"string"}},"required":["applicationId","code","name","applicationType"],"type":"object"}
+schema	platform:iam:application:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"description":{"type":["string","null"]},"name":{"type":["string","null"]}},"required":["applicationId"],"type":"object"}
+schema	platform:iam:application:activated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"code":{"type":"string"}},"required":["applicationId","code"],"type":"object"}
+schema	platform:iam:application:deactivated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"code":{"type":"string"}},"required":["applicationId","code"],"type":"object"}
+schema	platform:iam:application:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"code":{"type":"string"},"name":{"type":"string"}},"required":["applicationId","code","name"],"type":"object"}
+schema	platform:iam:application:service-account-provisioned	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"applicationId":{"type":"string"},"serviceAccountCode":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["applicationId","applicationCode","serviceAccountId","serviceAccountCode"],"type":"object"}
+schema	platform:iam:application:enabled-for-client	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"clientId":{"type":"string"},"configId":{"type":"string"}},"required":["applicationId","clientId","configId"],"type":"object"}
+schema	platform:iam:application:disabled-for-client	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationId":{"type":"string"},"clientId":{"type":"string"},"configId":{"type":"string"}},"required":["applicationId","clientId","configId"],"type":"object"}
+schema	platform:iam:anchor-domain:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"anchorDomainId":{"type":"string"},"domain":{"type":"string"}},"required":["anchorDomainId","domain"],"type":"object"}
+schema	platform:iam:anchor-domain:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"anchorDomainId":{"type":"string"},"domain":{"type":"string"}},"required":["anchorDomainId","domain"],"type":"object"}
+schema	platform:iam:auth-config:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"configType":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain","configType"],"type":"object"}
+schema	platform:iam:auth-config:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain"],"type":"object"}
+schema	platform:iam:auth-config:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain"],"type":"object"}
+schema	platform:admin:cors:origin-added	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"origin":{"type":"string"},"originId":{"type":"string"}},"required":["originId","origin"],"type":"object"}
+schema	platform:admin:cors:origin-deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"origin":{"type":"string"},"originId":{"type":"string"}},"required":["originId","origin"],"type":"object"}
+schema	platform:admin:idp:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"idpId":{"type":"string"},"idpType":{"type":"string"},"name":{"type":"string"}},"required":["idpId","code","name","idpType"],"type":"object"}
+schema	platform:admin:idp:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"idpId":{"type":"string"},"name":{"type":["string","null"]}},"required":["idpId"],"type":"object"}
+schema	platform:admin:idp:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"idpId":{"type":"string"}},"required":["idpId","code"],"type":"object"}
+schema	platform:admin:edm:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"emailDomain":{"type":"string"},"identityProviderId":{"type":"string"},"mappingId":{"type":"string"},"scopeType":{"type":"string"}},"required":["mappingId","emailDomain","identityProviderId","scopeType"],"type":"object"}
+schema	platform:admin:edm:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"emailDomain":{"type":"string"},"mappingId":{"type":"string"}},"required":["mappingId","emailDomain"],"type":"object"}
+schema	platform:admin:edm:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"emailDomain":{"type":"string"},"mappingId":{"type":"string"}},"required":["mappingId","emailDomain"],"type":"object"}
+schema	platform:admin:eventtype:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"aggregate":{"type":"string"},"application":{"type":"string"},"clientId":{"type":["string","null"]},"code":{"type":"string"},"description":{"type":["string","null"]},"eventName":{"type":"string"},"eventTypeId":{"type":"string"},"name":{"type":"string"},"subdomain":{"type":"string"}},"required":["eventTypeId","code","name","application","subdomain","aggregate","eventName"],"type":"object"}
+schema	platform:admin:eventtype:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"description":{"type":["string","null"]},"eventTypeId":{"type":"string"},"name":{"type":["string","null"]}},"required":["eventTypeId"],"type":"object"}
+schema	platform:admin:eventtype:archived	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"eventTypeId":{"type":"string"}},"required":["eventTypeId","code"],"type":"object"}
+schema	platform:admin:eventtype:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"eventTypeId":{"type":"string"}},"required":["eventTypeId","code"],"type":"object"}
+schema	platform:admin:eventtype:schema-added	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"eventTypeId":{"type":"string"},"mimeType":{"type":"string"},"schemaType":{"type":"string"},"version":{"type":"string"}},"required":["eventTypeId","version","mimeType","schemaType"],"type":"object"}
+schema	platform:admin:eventtype:schema-finalised	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"deprecatedVersion":{"type":["string","null"]},"eventTypeId":{"type":"string"},"version":{"type":"string"}},"required":["eventTypeId","version"],"type":"object"}
+schema	platform:admin:eventtype:schema-deprecated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"eventTypeId":{"type":"string"},"version":{"type":"string"}},"required":["eventTypeId","version"],"type":"object"}
+schema	platform:admin:eventtypes:synced	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
+schema	platform:admin:connection:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"connectionId":{"type":"string"},"endpoint":{"type":"string"},"name":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["connectionId","code","name","endpoint","serviceAccountId"],"type":"object"}
+schema	platform:admin:connection:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"connectionId":{"type":"string"},"endpoint":{"type":["string","null"]},"name":{"type":["string","null"]},"status":{"type":["string","null"]}},"required":["connectionId","code"],"type":"object"}
+schema	platform:admin:connection:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"connectionId":{"type":"string"}},"required":["connectionId","code"],"type":"object"}
+schema	platform:admin:dispatch-pool:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"dispatchPoolId":{"type":"string"},"name":{"type":"string"}},"required":["dispatchPoolId","code","name"],"type":"object"}
+schema	platform:admin:dispatch-pool:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"concurrency":{"minimum":0,"type":["integer","null"]},"dispatchPoolId":{"type":"string"},"name":{"type":["string","null"]},"rateLimit":{"minimum":0,"type":["integer","null"]}},"required":["dispatchPoolId"],"type":"object"}
+schema	platform:admin:dispatch-pool:archived	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"dispatchPoolId":{"type":"string"}},"required":["dispatchPoolId","code"],"type":"object"}
+schema	platform:admin:dispatch-pool:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"dispatchPoolId":{"type":"string"}},"required":["dispatchPoolId","code"],"type":"object"}
+schema	platform:admin:dispatch-pools:synced	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
+schema	platform:admin:subscription:created	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"connectionId":{"type":"string"},"eventTypes":{"items":{"type":"string"},"type":"array"},"name":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code","name","connectionId","eventTypes"],"type":"object"}
+schema	platform:admin:subscription:updated	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"eventTypesAdded":{"items":{"type":"string"},"type":"array"},"eventTypesRemoved":{"items":{"type":"string"},"type":"array"},"name":{"type":["string","null"]},"subscriptionId":{"type":"string"}},"required":["subscriptionId","eventTypesAdded","eventTypesRemoved"],"type":"object"}
+schema	platform:admin:subscription:paused	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
+schema	platform:admin:subscription:resumed	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
+schema	platform:admin:subscription:deleted	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
+schema	platform:admin:subscription:synced	v1	application/schema+json	JSON	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
+application	APPLICATION	platform	FlowCatalyst Platform	Core platform — its own OpenAPI document is published here as one of the applications	true
+process	platform:fulfilment:on-demand-flow	On-Demand Fulfilment Flow	CURRENT	CODE	platform	fulfilment	on-demand-flow	mermaid	{example,fulfilment,platform}
+idp	internal	Internal Authentication	INTERNAL	false	false
+edm	flowcatalyst.local	ANCHOR	false	false	false	30

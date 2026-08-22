@@ -1,0 +1,33 @@
+# Build
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Dev JWT keys / embedded Postgres data (fcdev)
+.jwt-keys/
+.fcdev/
+
+# Logs
+*.log
+
+# Claude Code local settings
+.claude/settings.local.json
