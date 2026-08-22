@@ -15,22 +15,75 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// factory — no database involved. There is no state machine (spec §2).
 class CorsOriginTest {
 
-    // ── Origin format ──────────────────────────────────────────────────────
+    // ── Origin format (spec §4 — the pinned table the CORS filter relies on) ──
 
-    @ParameterizedTest(name = "\"{0}\" → \"{1}\"")
+    @ParameterizedTest(name = "[{0}] \"{1}\" → \"{2}\"")
     @CsvSource({
-            "https://example.com, https://example.com",
-            "http://localhost:3000, http://localhost:3000",
-            "'  https://app.example.com  ', https://app.example.com",
-            "https://*.example.com, https://*.example.com",
-            "http://127.0.0.1:8080, http://127.0.0.1:8080",
-            "https://a, https://a"})
-    void originIsTrimmedAndKeptVerbatim(String raw, String expected) {
-        assertThat(Origin.parse(raw)).isEqualTo(new Origin(expected));
+            // scheme: http or https, lower-case
+            "scheme,   https://example.com,              https://example.com",
+            "scheme,   http://localhost,                 http://localhost",
+            // host: ASCII letters (case preserved), digits, '.', '-'
+            "host,     https://Example.COM,              https://Example.COM",
+            "host,     https://a,                        https://a",
+            "host,     https://1,                        https://1",
+            "host,     https://10.0.0.1,                 https://10.0.0.1",
+            "host,     https://a-b.c-d.example.com,      https://a-b.c-d.example.com",
+            "host,     https://example..com,             https://example..com",
+            // wildcard: '*' is an ordinary host character, anywhere
+            "wildcard, https://*.example.com,            https://*.example.com",
+            "wildcard, https://example.*,                https://example.*",
+            "wildcard, https://ex*ample.com,             https://ex*ample.com",
+            "wildcard, https://*,                        https://*",
+            // port: ':' + ASCII digits, no range check
+            "port,     http://localhost:3000,            http://localhost:3000",
+            "port,     https://*.example.com:8443,       https://*.example.com:8443",
+            "port,     https://example.com:0,            https://example.com:0",
+            "port,     https://example.com:65536,        https://example.com:65536",
+            // trim: surrounding whitespace is dropped, the rest kept verbatim
+            "trim,     '  https://app.example.com  ',    https://app.example.com",
+            "trim,     'https://app.example.com\t',      https://app.example.com"})
+    void originAcceptsSchemeHostPortAndTrims(String rule, String raw, String expected) {
+        assertThat(Origin.parse(raw)).as(rule).isEqualTo(new Origin(expected));
+    }
+
+    @ParameterizedTest(name = "[{0}] \"{1}\" is rejected")
+    @CsvSource({
+            // scheme
+            "scheme,   example.com",
+            "scheme,   ftp://example.com",
+            "scheme,   HTTPS://EXAMPLE.COM",
+            "scheme,   Https://example.com",
+            "scheme,   https:/example.com",
+            "scheme,   https://",
+            // host
+            "host,     https://exa mple.com",
+            "host,     https://-example.com",
+            "host,     https://example.com-",
+            "host,     https://.example.com",
+            "host,     https://example.com.",
+            "host,     https://*.",
+            "host,     https://a_b.example.com",
+            "host,     https://[::1]",
+            "host,     https://user@example.com",
+            "host,     https://user:pw@example.com",
+            // port
+            "port,     https://example.com:",
+            "port,     https://example.com:abc",
+            "port,     https://example.com:3000:4000",
+            "port,     https://example.com:٣",
+            // nothing after host[:port]
+            "suffix,   https://example.com/",
+            "suffix,   https://example.com:3000/",
+            "suffix,   https://example.com/path",
+            "suffix,   https://example.com?x=1",
+            "suffix,   https://example.com#frag"})
+    void originRejectsAnythingButSchemeHostPort(String rule, String raw) {
+        assertUseCaseError(() -> Origin.parse(raw), UseCaseError.Validation.class, "INVALID_ORIGIN_FORMAT");
+        assertThatThrownBy(() -> Origin.parse(raw)).as(rule).hasMessageContaining(Origin.FORMAT_MESSAGE);
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "   "})
+    @ValueSource(strings = {"", "   ", "\t\n"})
     void originRejectsBlank(String raw) {
         assertUseCaseError(() -> Origin.parse(raw), UseCaseError.Validation.class, "ORIGIN_REQUIRED");
     }
@@ -38,26 +91,6 @@ class CorsOriginTest {
     @Test
     void originRejectsNull() {
         assertUseCaseError(() -> Origin.parse(null), UseCaseError.Validation.class, "ORIGIN_REQUIRED");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {
-            "example.com",                  // no scheme
-            "ftp://example.com",            // wrong scheme
-            "HTTPS://EXAMPLE.COM",          // scheme is lower-case only
-            "https://example.com/path",     // path
-            "https://example.com/",         // trailing slash
-            "https://example.com?x=1",      // query
-            "https://example.com#frag",     // fragment
-            "https://exa mple.com",         // space in host
-            "https://-example.com",         // host cannot start with a hyphen
-            "https://example.com-",         // or end with one
-            "https://example.com:abc",      // non-numeric port
-            "https://",                     // no host
-            "https://user@example.com"})    // userinfo
-    void originRejectsAnythingButSchemeHostPort(String raw) {
-        assertUseCaseError(() -> Origin.parse(raw), UseCaseError.Validation.class, "INVALID_ORIGIN_FORMAT");
-        assertThatThrownBy(() -> Origin.parse(raw)).hasMessageContaining(Origin.FORMAT_MESSAGE);
     }
 
     // ── Factory ────────────────────────────────────────────────────────────

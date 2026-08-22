@@ -275,6 +275,13 @@ Rules promoted from audits (recurring findings become rules here):
   count-differs / mismatch / edge) — `EventTypeBinding.matches` +
   `SubscriptionTest.bindingMatchesWholeSegmentsOnly` is the model. A `null`
   input returns `false`; it is never coalesced to `""`.
+- **A parser another subsystem will match against is pinned like a
+  matcher.** When a parser record's accepted forms are what a later consumer
+  compares live input to (`Origin.parse` → the CORS filter, an event-type
+  pattern → routing), the spec carries a per-rule Accepted / Rejected table
+  and the entity test carries two grouped `@CsvSource` tables — accept and
+  reject — each with a rule-label column, so a regex change must edit a named
+  row, not a comment.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

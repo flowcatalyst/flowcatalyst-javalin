@@ -17,9 +17,13 @@ public record Origin(String value) {
     public static final String FORMAT_MESSAGE =
             "Origin must be a valid URL (e.g. https://example.com or http://localhost:3000)";
 
-    /// `http(s)://host[:port]` — host of ASCII letters, digits, `.`, `-` and
-    /// `*` (the `*` admits wildcard hosts; spec open question 1); no path,
-    /// query or fragment.
+    /// `http(s)://host[:port]`, the rules pinned in spec §4 (and by
+    /// `CorsOriginTest`): scheme `http` / `https` lower-case only; host of
+    /// ASCII letters (either case, preserved), digits, `.`, `-` and `*` (the
+    /// `*` admits wildcard hosts anywhere, even `https://*`; spec open
+    /// question 1), not starting or ending with `.` / `-`; optional `:` +
+    /// ASCII digits with no range check; nothing after — no path (not even
+    /// `/`), query, fragment or userinfo.
     private static final Pattern ORIGIN = Pattern.compile("^https?://[a-zA-Z0-9*]([a-zA-Z0-9*.-]*[a-zA-Z0-9*])?(:\\d+)?$");
 
     public Origin {
@@ -31,8 +35,8 @@ public record Origin(String value) {
     /// @throws UseCaseException validation `ORIGIN_REQUIRED` when blank,
     ///                          `INVALID_ORIGIN_FORMAT` when the trimmed form is not `scheme://host[:port]`
     public static Origin parse(String raw) {
-        String trimmed = (raw == null ? "" : raw).trim();
-        UseCaseException.requireNonBlank(trimmed, "ORIGIN_REQUIRED", "Origin is required");
+        UseCaseException.requireNonBlank(raw, "ORIGIN_REQUIRED", "Origin is required");
+        String trimmed = raw.trim();
         if (!ORIGIN.matcher(trimmed).matches()) {
             throw UseCaseException.validation("INVALID_ORIGIN_FORMAT", FORMAT_MESSAGE);
         }

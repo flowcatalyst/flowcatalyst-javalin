@@ -56,6 +56,14 @@ item names its origin; items marked **owner** need Andrew's call.
   (OQ 2). `ClientNote` is domain + JSONB + wire shape at once (tripwire test
   added).
 
+## From the cors audit
+- Origin host case-sensitivity vs browsers' lower-cased `Origin` header
+  (spec OQ 5); `*` admitted anywhere in the host — wildcard semantics should
+  become a pinned `Origin.matches(header)` on the aggregate when the CORS
+  filter is specced (owner decision: implement the filter).
+- Envelope: `validate` cannot hand its parsed value to `execute` (forces a
+  re-parse in every create) — consider a `Validated<C>` return later.
+
 ## From the subscription port
 - `DispatchMode` (IMMEDIATE / NEXT_ON_ERROR / BLOCK_ON_ERROR) currently lives in
   `io.flowcatalyst.platform.subscription`; the router (and the dispatch

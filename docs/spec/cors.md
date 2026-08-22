@@ -68,14 +68,22 @@ Wire shapes:
 | Add | trimmed `origin` matches `^https?://[a-zA-Z0-9*]([a-zA-Z0-9*.-]*[a-zA-Z0-9*])?(:\d+)?$` | `INVALID_ORIGIN_FORMAT` | `Origin must be a valid URL (e.g. https://example.com or http://localhost:3000)` |
 | Delete | `originId` non-blank | `ID_REQUIRED` | `Origin id is required` — see open question 2 |
 
-The origin format: `http` or `https` scheme (lower-case only), a host of ASCII letters, digits,
-`.`, `-` and `*` (the `*` admits wildcard hosts such as
-`https://*.example.com` — **load-bearing or accident?** nothing in the
-platform expands them today; see §9), optional `:port`, **no path, query or
-fragment** (`https://example.com/` is rejected). The format rule lives in
-one parser (`Origin.parse`) that trims, rejects blank, then matches; the add
-command's validate phase and the aggregate factory both use it, so the
-stored value is always the trimmed form.
+The format rule lives in one parser (`Origin.parse`) that rejects
+null/blank, trims, then matches the pattern; the add command's validate
+phase and the aggregate factory both use it, so the stored value is always
+the trimmed form. Because the future CORS filter (§9) will compare request
+`Origin` headers against these stored strings, the pattern's rules are
+pinned here and by `CorsOriginTest`'s accept / reject tables:
+
+| Rule | Accepted | Rejected |
+|---|---|---|
+| **Scheme** — `http` or `https`, lower-case only, followed by `://` | `https://example.com`, `http://localhost` | `example.com`, `ftp://…`, `HTTPS://…`, `Https://…`, `https:/…`, `https://` (no host) |
+| **Host** — one or more of ASCII letters, digits, `.`, `-`, `*`; may not start or end with `.` or `-`; letter case is **preserved** (see open question 5); consecutive dots are admitted | `https://Example.COM`, `https://a`, `https://1`, `https://10.0.0.1`, `https://a-b.c-d.example.com`, `https://example..com` | `https://exa mple.com`, `https://-example.com`, `https://example.com-`, `https://.example.com`, `https://example.com.`, `https://a_b.example.com`, `https://[::1]` (no IPv6 literals), `https://user@example.com` (no userinfo) |
+| **Wildcard** — `*` is an ordinary host character, allowed anywhere, including alone (open question 1; the parser does not expand it) | `https://*.example.com`, `https://example.*`, `https://ex*ample.com`, `https://*` | `https://*.` (ends with `.`) |
+| **Port** — optional `:` + one or more ASCII digits; no range or leading-zero check | `http://localhost:3000`, `https://*.example.com:8443`, `https://example.com:0`, `https://example.com:65536` | `https://example.com:` , `https://example.com:abc`, `https://example.com:3000:4000`, non-ASCII digits |
+| **Nothing after `host[:port]`** — no path (not even a trailing `/`), query or fragment | — | `https://example.com/`, `https://example.com:3000/`, `https://example.com/path`, `https://example.com?x=1`, `https://example.com#frag` |
+| **Trim** — leading/trailing whitespace is dropped before matching and storage; interior whitespace is a host error | `'  https://app.example.com  '` → `https://app.example.com` | — |
+| **Blank** — `null`, `""`, whitespace-only → `ORIGIN_REQUIRED`, not `INVALID_ORIGIN_FORMAT` | — | — |
 
 Malformed JSON body → 400 `INVALID_JSON` (transport).
 
@@ -168,3 +176,10 @@ What the filter will need:
    is specified, not here.
 4. `description` `""` vs `null` on the wire are stored as given — normalise
    to `null`?
+5. The host keeps its letter case and uniqueness is case-sensitive:
+   `https://Example.com` and `https://example.com` are two rows. Browsers
+   serialise the `Origin` header with a lower-case host, so the upper-case
+   row would never match an exact-string filter (§9). Normalise the host to
+   lower-case in the parser (a wire-visible change: the stored/returned
+   origin would differ from what was posted), or leave it to the filter's
+   matching rule?
