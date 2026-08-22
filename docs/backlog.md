@@ -41,6 +41,20 @@ item names its origin; items marked **owner** need Andrew's call.
   is the one write on the surface outside `Operation.run` (spec OQ 4);
   `seed.RoleDefinition.source` is a `String` not `RoleSource`.
 
+## From the application audit
+- `ApplicationRepository.clientExists` / `servicePrincipalIdFor` are
+  temporary cross-ownership reads (tnt_clients / iam_principals) — replace
+  with `ClientRepository.findById(..).isPresent()` and a principal read once
+  principal lands. `ProvisionServiceAccount` / `provision-login-client`
+  not ported until serviceaccount + principal + OAuth client exist.
+
+## From the subscription port
+- `DispatchMode` (IMMEDIATE / NEXT_ON_ERROR / BLOCK_ON_ERROR) currently lives in
+  `io.flowcatalyst.platform.subscription`; the router (and the dispatch
+  scheduler that publishes `Message.dispatchMode`) need the same enum — give
+  it a shared home (`io.flowcatalyst.platform.shared.messaging`?) when the
+  router lands; see router spec Q1 ruling for the semantics.
+
 ## Server API the fcdev module wished existed (fcdev agent)
 
 - `Server.Running.stop()` must stop and drain subsystems once they exist.

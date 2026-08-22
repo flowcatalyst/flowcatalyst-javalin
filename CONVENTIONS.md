@@ -80,6 +80,13 @@ rules it established (from its audit):
   `a:b:c:d` code, semver, cron…) is a record with `static parse(String)`
   throwing the validation error once, with one message set; the entity
   factory and the command's validate phase both call it.
+- **Platform-level aggregates use `Access.byId`.** An aggregate with no
+  client dimension (application, client, role) names its load-or-404 helper
+  `Access.byId(repo, id)` — not `loadScoped` — and its class doc states that
+  there is no per-resource scope to check, which is why every by-id write
+  declares `Authorize.publicAccess()`. Operations whose *resource* is
+  another aggregate's instance (a client id on the command) call
+  `Checks.checkScopeAccess(Auth.current(), cmd.clientId())` in `authorize`.
 - **`operations/Access.java`: `loadScoped(repo, id)`** = load-or-404 +
   `Checks.checkScopeAccess`. Every by-id write operation uses it — that is
   *why* those operations declare `Authorize.publicAccess()` (say so in a
