@@ -247,6 +247,10 @@ Rules promoted from audits (recurring findings become rules here):
   "Not authorised for application '<code>'") in its `authorize` phase —
   never a hand-written `if (ac == null) … if (!ac.canAccessApplication(…))`
   block in `operations/`.
+- **Read-side not-found lookups are one private helper per key kind in
+  the Api class** (`resolveRole(s, idOrName)`, `roleNamed(s, name)`), never an
+  inline `findBy…().orElseThrow(() -> HttpError.notFound(…))` repeated across
+  handlers; a route that is name-only by spec uses the name-only helper.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

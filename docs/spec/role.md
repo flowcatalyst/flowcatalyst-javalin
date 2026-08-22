@@ -272,6 +272,13 @@ Catalogue (`iam_permissions`): reads `ORDER BY code`; upsert `ON CONFLICT
 
 Assignment count = `COUNT(*) FROM iam_principal_roles WHERE role_name = ?`.
 
+Short-name resolution (for SDK-synced principal assignments, which carry the
+bare short name): the role whose `name` = `{application_code}:{shortName}`
+**and** whose `applicationId` is one of the caller's application ids; a
+blank short name or an empty application list resolves to nothing. No route
+on this surface uses it; admin-created rows (no `applicationId`) are never
+matched.
+
 ## 10. Open questions for the owner (summary)
 
 1. Grant/revoke are allowed on `CODE` roles while update/delete are refused.

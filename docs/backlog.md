@@ -30,6 +30,17 @@ item names its origin; items marked **owner** need Andrew's call.
   `Migrator.migrate`, `Server.Running` start/stop — plus the router's
   semantic points once the router exists.
 
+## From the role audit
+- Type-name clash: `io.flowcatalyst.platform.role.Permission` (catalogue
+  entry) vs `io.flowcatalyst.platform.shared.auth.Permission` (enum) —
+  rename the catalogue record (`PermissionDefinition`) when the BFF
+  "define permission" endpoint is ported.
+- `SyncPlatformRoles` N+1 `findByName`; `RoleRepository.persist` inserts
+  role-permission rows one at a time (batch); `Role.withPermissions` stamps
+  `updatedAt` while other copies don't; `DELETE /api/roles/permissions/{permission}`
+  is the one write on the surface outside `Operation.run` (spec OQ 4);
+  `seed.RoleDefinition.source` is a `String` not `RoleSource`.
+
 ## Server API the fcdev module wished existed (fcdev agent)
 
 - `Server.Running.stop()` must stop and drain subsystems once they exist.

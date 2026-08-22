@@ -66,12 +66,8 @@ public final class RoleRepository implements Persist<Role> {
         if (shortName == null || shortName.isEmpty() || applicationIds == null || applicationIds.isEmpty()) {
             return Optional.empty();
         }
-        return dsl.selectFrom(T)
-                .where(T.APPLICATION_ID.in(applicationIds)
-                        .and(T.NAME.eq(DSL.concat(T.APPLICATION_CODE, DSL.inline(":" + shortName)))))
-                .limit(1)
-                .fetchOptional()
-                .map(row -> toEntity(row, permissionsFor(List.of(row.getId())).getOrDefault(row.getId(), List.of())));
+        return findOne(T.APPLICATION_ID.in(applicationIds)
+                .and(T.NAME.eq(DSL.concat(T.APPLICATION_CODE, DSL.inline(":" + shortName)))));
     }
 
     /// Every role, by name.

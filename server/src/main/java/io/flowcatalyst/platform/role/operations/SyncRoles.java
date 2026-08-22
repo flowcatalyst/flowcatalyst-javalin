@@ -8,7 +8,7 @@ import io.flowcatalyst.platform.role.operations.RoleEvents.RoleDeleted;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleUpdated;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RolesSynced;
 import io.flowcatalyst.platform.shared.auth.Auth;
-import io.flowcatalyst.platform.shared.auth.AuthContext;
+import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncDelete;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncSave;
@@ -48,16 +48,7 @@ public final class SyncRoles {
                         throw UseCaseException.validation("ROLES_REQUIRED", "At least one role must be provided");
                     }
                 })
-                .authorize(cmd -> {
-                    AuthContext ac = Auth.current();
-                    if (ac == null) {
-                        throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
-                    }
-                    if (!ac.canAccessApplication(cmd.applicationId())) {
-                        throw UseCaseException.authorization("FORBIDDEN",
-                                "Not authorised for application '" + cmd.applicationCode() + "'");
-                    }
-                })
+                .authorize(cmd -> Checks.checkApplicationAccess(Auth.current(), cmd.applicationId(), cmd.applicationCode()))
                 .execute((cmd, ec) -> {
                     Map<String, Role> existingByName = repo.findByApplicationId(cmd.applicationId()).stream()
                             .collect(Collectors.toMap(Role::name, Function.identity(), (a, _) -> a, LinkedHashMap::new));

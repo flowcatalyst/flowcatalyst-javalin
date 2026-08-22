@@ -128,8 +128,7 @@ public final class RoleApi {
 
     private static void getByCode(Context ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
-        String code = ctx.pathParam("code");
-        ctx.json(RoleResponse.from(s.roles().findByName(code).orElseThrow(() -> HttpError.notFound("Role", code))));
+        ctx.json(RoleResponse.from(roleNamed(s, ctx.pathParam("code"))));
     }
 
     /// Bare JSON array; the source segment is parsed leniently (spec §3, open question 5).
@@ -153,16 +152,14 @@ public final class RoleApi {
 
     private static void listRolePermissions(Context ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
-        String name = ctx.pathParam("roleName");
-        Role role = s.roles().findByName(name).orElseThrow(() -> HttpError.notFound("Role", name));
-        ctx.json(new RolePermissionListResponse(role.permissions()));
+        ctx.json(new RolePermissionListResponse(roleNamed(s, ctx.pathParam("roleName")).permissions()));
     }
 
     private static void grant(Context ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new GrantPermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
-        ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
+        ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
     }
 
     /// The SDK shape: `{permission}` in the body — the same grant operation.
@@ -170,14 +167,14 @@ public final class RoleApi {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(GrantPermissionRequest.class).toCommand(ctx.pathParam("roleName"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
-        ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
+        ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
     }
 
     private static void revoke(Context ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new RevokePermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         RevokePermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
-        ctx.json(RoleResponse.from(resolveRole(s, cmd.roleName())));
+        ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
     }
 
     // ── Permission catalogue ───────────────────────────────────────────────
@@ -215,6 +212,11 @@ public final class RoleApi {
         return s.roles().findById(idOrName)
                 .or(() -> s.roles().findByName(idOrName))
                 .orElseThrow(() -> HttpError.notFound("Role", idOrName));
+    }
+
+    /// The name-only routes (`by-code`, `{roleName}/permissions…`): no id fallback.
+    private static Role roleNamed(State s, String name) {
+        return s.roles().findByName(name).orElseThrow(() -> HttpError.notFound("Role", name));
     }
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
