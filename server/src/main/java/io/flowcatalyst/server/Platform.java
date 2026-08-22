@@ -1,5 +1,10 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.client.api.ClientApi;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ClientConfigRepository;
+import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
@@ -10,6 +15,8 @@ import io.flowcatalyst.platform.role.PermissionRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.api.RoleApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
+import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.CorrelationId;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
@@ -92,6 +99,12 @@ public final class Platform {
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
         var roleRepo = new RoleRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, new PermissionRepository(pool), uow));
+        var applicationRepo = new ApplicationRepository(pool);
+        ApplicationApi.register(routes, new ApplicationApi.State(applicationRepo, new ClientConfigRepository(pool), roleRepo, uow));
+        var clientRepo = new ClientRepository(pool);
+        ClientApi.register(routes, new ClientApi.State(clientRepo, new ApplicationRepository(pool), new ClientConfigRepository(pool), uow));
+        var subscriptionRepo = new SubscriptionRepository(pool);
+        SubscriptionApi.register(routes, new SubscriptionApi.State(subscriptionRepo, uow));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);

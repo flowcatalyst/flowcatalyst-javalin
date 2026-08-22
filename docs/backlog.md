@@ -48,6 +48,14 @@ item names its origin; items marked **owner** need Andrew's call.
   principal lands. `ProvisionServiceAccount` / `provision-login-client`
   not ported until serviceaccount + principal + OAuth client exist.
 
+## From the client audit
+- Two "access to this client" gates with different wire codes:
+  `ClientApi.requireAnchorOrClientAccess` → `FORBIDDEN` (spec-pinned) vs
+  `Checks.requireClientAccess` → `SCOPE_FORBIDDEN` — owner ruling when a
+  second surface needs it. `deactivate` parses a body only to validate it
+  (OQ 2). `ClientNote` is domain + JSONB + wire shape at once (tripwire test
+  added).
+
 ## From the subscription port
 - `DispatchMode` (IMMEDIATE / NEXT_ON_ERROR / BLOCK_ON_ERROR) currently lives in
   `io.flowcatalyst.platform.subscription`; the router (and the dispatch

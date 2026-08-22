@@ -258,6 +258,15 @@ Rules promoted from audits (recurring findings become rules here):
   the Api class** (`resolveRole(s, idOrName)`, `roleNamed(s, name)`), never an
   inline `findBy…().orElseThrow(() -> HttpError.notFound(…))` repeated across
   handlers; a route that is name-only by spec uses the name-only helper.
+- **A JSON column is a foreign shape — pin the read, not just the write.**
+  When an aggregate stores a collection as JSONB (`tnt_clients.notes`), the
+  repository test inserts a raw row in the shapes another writer may have
+  produced (other RFC 3339 offsets / fractions, omitted optional keys,
+  `NULL`) and asserts it reads back; asserting only what we ourselves wrote
+  does not protect the schema-compat boundary.
+- **If a parser record exists, the factory takes the parsed type**
+  (`Client.create(String name, ClientIdentifier id)`), never re-parsing a raw
+  string inside the aggregate — the type carries the proof.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape
