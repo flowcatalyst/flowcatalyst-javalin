@@ -45,9 +45,6 @@ import java.util.Objects;
 /// | DELETE | `/api/platform-config/access/{id}` | 204 |
 public final class PlatformConfigApi {
 
-    /// What a non-anchor sees in place of a `SECRET` value (spec §4).
-    static final String MASKED_VALUE = "***";
-
     private PlatformConfigApi() {
     }
 
@@ -88,8 +85,10 @@ public final class PlatformConfigApi {
         ctx.json(ConfigResponse.from(visible(ac, configAt(s, coordinate))));
     }
 
-    /// Answers with the value as re-read after the write, at the coordinate
-    /// the command addressed (unmasked — spec §4, open question 5).
+    /// No handler gate: the write-access rule is resource-level (the target
+    /// application is a command field) and runs in [SetProperty]'s authorize
+    /// phase (spec §6). Answers with the value as re-read after the write, at
+    /// the coordinate the command addressed (unmasked — spec §4, open question 5).
     private static void set(Context ctx, State s) {
         var cmd = ctx.bodyAsClass(SetPropertyRequest.class).toCommand(coordinate(ctx));
         SetProperty.of(s.configs(), s.grants()).run(s.uow(), cmd, Auth.executionContext());
@@ -144,9 +143,9 @@ public final class PlatformConfigApi {
                 .orElseThrow(() -> HttpError.notFound("Config", coordinate.path()));
     }
 
-    /// A `SECRET` value is masked for everyone but anchors.
+    /// A `SECRET` value is masked for everyone but anchors (spec §4).
     private static PlatformConfig visible(AuthContext ac, PlatformConfig c) {
-        return c.isSecret() && !ac.isAnchor() ? c.withValue(MASKED_VALUE) : c;
+        return c.isSecret() && !ac.isAnchor() ? c.masked() : c;
     }
 
     /// The wire's "absent" for optional strings is `null` or `""`; inside the JVM it is `null`.

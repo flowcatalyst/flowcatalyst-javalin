@@ -32,6 +32,18 @@ class PlatformConfigTest {
         assertThat(c.clientId()).isEqualTo("cli_123");
     }
 
+    /// The whole derivation rule (spec §1.1): scope is a function of the
+    /// client id's presence, never chosen on its own.
+    @ParameterizedTest(name = "clientId={0} → {1}")
+    @CsvSource(nullValues = "<null>", value = {
+            "<null>,  GLOBAL",
+            "cli_123, CLIENT"})
+    void scopeIsDerivedFromThePresenceOfAClientId(String clientId, ConfigScope expected) {
+        var c = ConfigCoordinate.of("platform", "smtp", "host", clientId);
+        assertThat(c.scope()).isEqualTo(expected);
+        assertThat(PlatformConfig.create(c, "v").scope()).as("the entity carries the derived scope").isEqualTo(expected);
+    }
+
     // ── Config value ───────────────────────────────────────────────────────
 
     @Test
@@ -80,12 +92,14 @@ class PlatformConfigTest {
     }
 
     @Test
-    void withValueOnlyChangesTheValue() {
-        var c = PlatformConfig.create(GLOBAL, "hunter2").set("hunter2", ConfigValueType.SECRET, null);
-        var masked = c.withValue("***");
-        assertThat(masked.value()).isEqualTo("***");
+    void maskedReplacesOnlyTheValueWithTheMask() {
+        var c = PlatformConfig.create(GLOBAL, "hunter2").set("hunter2", ConfigValueType.SECRET, "smtp");
+        var masked = c.masked();
+        assertThat(masked.value()).isEqualTo(PlatformConfig.MASKED_VALUE).isEqualTo("***");
         assertThat(masked.valueType()).isEqualTo(ConfigValueType.SECRET);
+        assertThat(masked.description()).isEqualTo("smtp");
         assertThat(masked.updatedAt()).isEqualTo(c.updatedAt());
+        assertThat(masked.id()).isEqualTo(c.id());
     }
 
     // ── Access grant ───────────────────────────────────────────────────────

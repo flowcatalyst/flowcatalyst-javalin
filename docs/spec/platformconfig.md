@@ -36,6 +36,13 @@ unique (`uq_app_platform_config_key`). The lookup key used everywhere is
 `(applicationCode, section, property, clientId?)` with scope derived; a
 `GLOBAL` lookup matches `client_id IS NULL`.
 
+**Caveat (load-bearing or accident?):** the unique index treats `NULL`s as
+distinct, so for `GLOBAL` rows (`client_id IS NULL`) the database does *not*
+enforce the coordinate's uniqueness — only the set operation's
+find-by-coordinate-then-upsert does. Two concurrent first sets of the same
+`GLOBAL` coordinate can therefore both insert, after which a lookup at that
+coordinate fails (more than one row). Owner question 10.
+
 Lenient enum reads: unknown `scope` → `GLOBAL`; unknown `valueType` →
 `PLAIN` — on stored rows **and** on the `valueType` a set command carries
 (`"BANANA"` is silently stored as `PLAIN`). **accident?** Kept.
@@ -220,3 +227,7 @@ returning `Optional<PlatformConfig>` for exactly that; nothing else is needed.
 9. `PUT` with a body-only `clientId` now answers 200 with the client value
    (Go: 500 after the write). Confirm the fix is wanted rather than the
    body field being dropped.
+10. `uq_app_platform_config_key` does not enforce uniqueness for `GLOBAL`
+    rows (`client_id IS NULL`, NULLs distinct): concurrent first sets of one
+    coordinate can both insert. Accept the race, or add a `NULLS NOT DISTINCT`
+    unique index (schema change)?

@@ -282,6 +282,15 @@ Rules promoted from audits (recurring findings become rules here):
   and the entity test carries two grouped `@CsvSource` tables — accept and
   reject — each with a rule-label column, so a regex change must edit a named
   row, not a comment.
+- **`HttpError` constructors are handler-layer only.** Code under
+  `operations/` raises `UseCaseException.authorization / validation /
+  resourceNotFound / conflict` directly; `HttpError.forbidden /
+  unauthenticated / notFound / badRequest` are the Api's spellings of the same
+  thing and are never imported into an operations package.
+- **A DB-backed, per-resource access rule is one public helper in
+  `operations/Access`** (`requireRead(repo, ac, key)` / `requireWrite(…)`),
+  called by the read handlers and by the write operation's `authorize` phase;
+  the handler never re-derives "anchor or grant".
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

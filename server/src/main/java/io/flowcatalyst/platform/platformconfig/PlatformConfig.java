@@ -38,6 +38,9 @@ public record PlatformConfig(
     /// The value type of a config that was never given one (spec §1.1).
     public static final ConfigValueType DEFAULT_VALUE_TYPE = ConfigValueType.PLAIN;
 
+    /// What a non-anchor sees in place of a `SECRET` value (spec §1.1, §4).
+    public static final String MASKED_VALUE = "***";
+
     public PlatformConfig {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(applicationCode, "applicationCode");
@@ -78,10 +81,12 @@ public record PlatformConfig(
                 newValueType == null ? valueType : newValueType, newValue, newDescription, createdAt, Instant.now());
     }
 
-    /// A copy whose value is `replacement` — the read side's masking of
-    /// secrets, kept out of the persisted state.
-    public PlatformConfig withValue(String replacement) {
+    /// A copy whose value is [#MASKED_VALUE] — the read side's view of a
+    /// secret for non-anchors (spec §4). Not a transition: nothing else
+    /// changes, and the copy is never persisted; *who* sees the masked copy
+    /// is the Api's rule.
+    public PlatformConfig masked() {
         return new PlatformConfig(id, applicationCode, section, property, scope, clientId,
-                valueType, replacement, description, createdAt, updatedAt);
+                valueType, MASKED_VALUE, description, createdAt, updatedAt);
     }
 }

@@ -64,6 +64,12 @@ item names its origin; items marked **owner** need Andrew's call.
 - Envelope: `validate` cannot hand its parsed value to `execute` (forces a
   re-parse in every create) — consider a `Validated<C>` return later.
 
+## From the platformconfig audit
+- GLOBAL config-coordinate uniqueness is not DB-enforced (NULLs-distinct
+  unique index) → concurrent first sets race; fix = `NULLS NOT DISTINCT`
+  index (schema change, **owner**; spec OQ 10). Audit row stores SECRET
+  values in clear (spec OQ 4, **owner**).
+
 ## From the subscription port
 - `DispatchMode` (IMMEDIATE / NEXT_ON_ERROR / BLOCK_ON_ERROR) currently lives in
   `io.flowcatalyst.platform.subscription`; the router (and the dispatch
