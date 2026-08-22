@@ -3,8 +3,9 @@ package io.flowcatalyst.platform.subscription;
 /// How the router orders deliveries within a message group for one
 /// subscription: `IMMEDIATE` (no ordering), `NEXT_ON_ERROR` (FIFO, a failure
 /// releases the next), `BLOCK_ON_ERROR` (FIFO, a failure blocks the group).
-/// The constant name is the stored and wire string. Shared with the router
-/// in spirit; it lives here until the data plane lands and claims it.
+/// The constant name is the stored and wire string. This is the router's
+/// enum too; it lives here only until the data plane lands, when it moves to
+/// a shared `messaging` package and this aggregate imports it (spec §9a).
 public enum DispatchMode {
     IMMEDIATE, NEXT_ON_ERROR, BLOCK_ON_ERROR;
 

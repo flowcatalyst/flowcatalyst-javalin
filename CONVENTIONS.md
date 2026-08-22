@@ -267,6 +267,14 @@ Rules promoted from audits (recurring findings become rules here):
 - **If a parser record exists, the factory takes the parsed type**
   (`Client.create(String name, ClientIdentifier id)`), never re-parsing a raw
   string inside the aggregate — the type carries the proof.
+- **A matcher is a pinned table.** A predicate other subsystems dispatch on
+  (a pattern `matches(code)`, a scope `canAccess…`) has one implementation on
+  the aggregate, its rules stated exhaustively in the spec (what is literal,
+  what is a wildcard, what empty/`null` input does), and a
+  `@ParameterizedTest` `@CsvSource` table grouped by rule (match /
+  count-differs / mismatch / edge) — `EventTypeBinding.matches` +
+  `SubscriptionTest.bindingMatchesWholeSegmentsOnly` is the model. A `null`
+  input returns `false`; it is never coalesced to `""`.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

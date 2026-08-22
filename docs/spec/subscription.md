@@ -39,7 +39,7 @@ accident?**).
 | `dispatchPoolId`, `dispatchPoolCode` | string, optional | admin: `dispatchPoolId` set verbatim (not validated, `dispatchPoolCode` never set — **accident?**); sync: both resolved from `dispatchPoolCode` (§7) |
 | `delaySeconds` | int | default `0` |
 | `sequence` | int | default `99`; nothing changes it. **accident?** |
-| `mode` | `IMMEDIATE` \| `NEXT_ON_ERROR` \| `BLOCK_ON_ERROR` | default `IMMEDIATE`; read **leniently** (unknown → `IMMEDIATE`) both from the row and from the create/update command — **load-bearing or accident?** (a typo in `mode` silently becomes `IMMEDIATE`) |
+| `mode` | `IMMEDIATE` \| `NEXT_ON_ERROR` \| `BLOCK_ON_ERROR` | default `IMMEDIATE`; read **leniently** (unknown → `IMMEDIATE`) both from the row and from the create/update command — **load-bearing or accident?** (a typo in `mode` silently becomes `IMMEDIATE`). The enum is the router's per-subscription dispatch mode (`DispatchMode`, see "Design notes") |
 | `timeoutSeconds` | int | default `30` |
 | `maxRetries` | int | default `3` |
 | `serviceAccountId` | string, optional | not validated |
@@ -68,10 +68,24 @@ did the same.)
 
 ### Matching (used by the fan-out, which is a separate subsystem)
 
-- A binding matches an event-type code when both have the **same number of
-  `:` segments** and each pattern segment is either `*` or equal to the
-  event's segment. `*` never spans segments (`orders:*` does not match
-  `orders:order:created:v1`), and there is no `**`.
+The fan-out contract; `EventTypeBinding.matches(code)` is its only
+implementation and `SubscriptionTest.bindingMatchesWholeSegmentsOnly` is its
+table. The exact rules:
+
+- The pattern and the event-type code are both split on **every** `:`
+  (empty segments count — `a::b` has three segments).
+- They match when they have the **same number of segments** and, position
+  by position, the pattern segment is exactly `*` or is **equal** to the
+  event's segment. Equality is literal and case-sensitive (`ORDERS` ≠
+  `orders`); there is no trimming.
+- `*` matches exactly one whole segment (an empty one included) and never
+  spans segments: `orders:*` does not match `orders:order:created`, and
+  `orders:order:*` does not match `orders:order:created:v1`; a pattern with
+  more segments than the code (`orders:order:created:*`) does not match
+  either.
+- Nothing else is special: a partial wildcard (`create*`) and `**` are
+  literals, so `orders:**` matches only the code `orders:**`.
+- A `null` event-type code matches no pattern.
 - A subscription matches an event type when **any** binding matches.
 - A subscription matches an event's client when it is platform-wide
   (`clientId` null — matches everything, including events with **no**
@@ -146,6 +160,14 @@ Validation is in this order; the first failure wins. A binding's
 blank values are accepted, and an **absent** one is stored as `""` (the
 junction columns are `NOT NULL`, `''` is allowed). **accident?**
 
+That `null → ""` is a **wire/DB mapping, not a domain value**: it is applied
+once, at the boundary where the wire shape becomes the aggregate — the admin
+DTOs (`EventTypeBindingDto.toEntity`, `ConfigEntryDto.toEntity`) and the
+sync row input (`SyncEventTypeBindingInput.toBinding`). The aggregate records
+(`EventTypeBinding.eventTypeCode`, `ConfigEntry.key/value`) require a
+non-null value and never coalesce; the repository writes and reads the
+column verbatim. Nothing inside the JVM treats `""` as "absent".
+
 Malformed JSON body → 400 `INVALID_JSON` (transport).
 
 ## 5. Authorization placement
@@ -181,7 +203,12 @@ a 500 `PERSIST`. **load-bearing or accident?**
 
 Input: `applicationId`, `applicationCode`, `subscriptions[]`,
 `removeUnlisted`. Existing rows = every subscription whose
-`application_code` equals `applicationCode` (any client, any status).
+`application_code` equals `applicationCode` (any client, any status),
+matched to input rows **by code alone**. Should two rows in that scope share
+a code (only possible when something other than sync stamps a client-bound
+admin row with the application code), the first in code order is the match
+and the other is treated as unlisted. **accident?** (sync never creates such
+a pair itself.)
 
 | Input row | Effect | Per-row event |
 |---|---|---|
@@ -240,9 +267,26 @@ the aggregate carries it, but a later persist never rewrites it);
 `updated_at` is stamped `now()` at persist time (not the aggregate's
 `updatedAt` — **accident?**, harmless). The junction rows are **replaced
 wholesale** on every persist (delete all, insert all — a rename of the
-subscription rewrites its bindings). Delete removes junction rows then the
-row. Reads hydrate both junctions in one `IN` query each. List reads order
-by `code`.
+subscription rewrites its bindings), on the **same connection and
+transaction** as the row upsert, the `msg_events` row and the `aud_logs` row
+— a reader never observes a subscription with no bindings between the
+delete and the insert, and a failed insert rolls the row change back too.
+Delete removes junction rows then the row, in that transaction. Reads
+hydrate both junctions in one `IN` query each. List reads order by `code`.
+
+## 9a. Design notes (not owner questions)
+
+- **`DispatchMode` needs a shared home.** `IMMEDIATE | NEXT_ON_ERROR |
+  BLOCK_ON_ERROR` is the router's per-subscription ordering mode; it is
+  declared in `io.flowcatalyst.platform.subscription` only because the
+  subscription is the first aggregate to store it. The router / dispatch
+  scheduler will need the identical enum (the SDK already carries its own
+  copy in `CreateDispatchJobDto.DispatchMode`). When the data plane lands,
+  move it to a shared package — `io.flowcatalyst.platform.shared.messaging`
+  (or a `messaging` package) — and have this aggregate import it; the
+  lenient `parse` and `requiresOrdering()` go with it. Not moved yet on
+  purpose: no second consumer exists in `server`. (Tracked in
+  `docs/backlog.md`, "From the subscription port".)
 
 ## 10. Open questions for the owner (summary)
 

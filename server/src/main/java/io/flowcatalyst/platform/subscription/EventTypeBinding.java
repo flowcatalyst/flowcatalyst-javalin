@@ -22,12 +22,16 @@ public record EventTypeBinding(String eventTypeId, String eventTypeCode, String 
         return new EventTypeBinding(null, eventTypeCode, null, null);
     }
 
-    /// Whether this pattern matches `code`: same number of `:` segments, and
-    /// every pattern segment is `*` or equal to the event's segment. `*`
-    /// never spans segments and there is no `**`.
+    /// The fan-out contract (spec §1 "Matching"): the pattern and `code` are
+    /// split on every `:` (empty segments count); they match when they have
+    /// the same number of segments and every pattern segment is exactly `*`
+    /// or is equal to the event's segment — a literal, case-sensitive
+    /// comparison. `*` never spans segments, a partial wildcard (`create*`)
+    /// is a literal, `**` is not special, and a `null` code matches nothing.
     public boolean matches(String code) {
+        if (code == null) return false;
         String[] pattern = eventTypeCode.split(":", -1);
-        String[] segments = (code == null ? "" : code).split(":", -1);
+        String[] segments = code.split(":", -1);
         if (pattern.length != segments.length) return false;
         for (int i = 0; i < pattern.length; i++) {
             if (!pattern[i].equals("*") && !pattern[i].equals(segments[i])) return false;

@@ -6,6 +6,7 @@ import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
@@ -26,10 +27,10 @@ class SubscriptionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "   "})
+    @NullAndEmptySource
+    @ValueSource(strings = {"   "})
     void codeRejectsBlank(String raw) {
         assertUseCaseError(() -> SubscriptionCode.parse(raw), UseCaseError.Validation.class, "CODE_REQUIRED");
-        assertUseCaseError(() -> SubscriptionCode.parse(null), UseCaseError.Validation.class, "CODE_REQUIRED");
     }
 
     @ParameterizedTest
@@ -48,10 +49,10 @@ class SubscriptionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "ftp://files.example.test", "hooks.example.test/orders", "https://", "HTTP://x"})
+    @NullAndEmptySource
+    @ValueSource(strings = {"ftp://files.example.test", "hooks.example.test/orders", "https://", "HTTP://x"})
     void endpointRejectsAnythingElse(String raw) {
         assertUseCaseError(() -> EndpointUrl.parse(raw), UseCaseError.Validation.class, "INVALID_ENDPOINT");
-        assertUseCaseError(() -> EndpointUrl.parse(null), UseCaseError.Validation.class, "INVALID_ENDPOINT");
     }
 
     // ── Create ─────────────────────────────────────────────────────────────
@@ -115,21 +116,40 @@ class SubscriptionTest {
 
     // ── Matching (spec §1) ─────────────────────────────────────────────────
 
+    /// The fan-out contract (spec §1 "Matching"): equal segment count, `*` is
+    /// one whole segment, everything else is a literal, case-sensitive match.
     @ParameterizedTest(name = "{0} vs {1} → {2}")
     @CsvSource({
+            // equal segment count — literal and wildcard segments
             "orders:order:created, orders:order:created, true",
             "orders:order:*,       orders:order:created, true",
+            "orders:*:created,     orders:order:created, true",
             "*:order:created,      orders:order:created, true",
             "*:*:*,                orders:order:created, true",
+            "*,                    orders, true",
+            // segment count differs — a trailing `*` never absorbs extra segments, nor does a missing one
             "orders:order:*,       orders:order:created:v1, false",
             "orders:*,             orders:order:created, false",
+            "*,                    orders:order, false",
+            "orders:order:created:*, orders:order:created, false",
+            "orders:order,         orders:order:created, false",
+            // mismatch — literals are exact, partial wildcards and `**` are literals, case matters
             "orders:order:created, orders:order:shipped, false",
             "orders:order:create*, orders:order:created, false",
+            "orders:**,            orders:order, false",
             "orders:order:created, ORDERS:order:created, false",
-            "*,                    orders, true",
-            "*,                    orders:order, false"})
+            // empty segments count
+            "orders::created,      orders::created, true",
+            "orders:*:created,     orders::created, true",
+            "orders::created,      orders:order:created, false"})
     void bindingMatchesWholeSegmentsOnly(String pattern, String code, boolean expected) {
         assertThat(EventTypeBinding.of(pattern).matches(code)).isEqualTo(expected);
+    }
+
+    @Test
+    void bindingNeverMatchesANullCode() {
+        assertThat(EventTypeBinding.of("*").matches(null)).isFalse();
+        assertThat(EventTypeBinding.of("").matches(null)).isFalse();
     }
 
     @Test
