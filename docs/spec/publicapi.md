@@ -13,9 +13,11 @@ owner ruling — until ruled on, the behaviour is kept.
 
 ## 1. Purpose and boundaries
 
-- Two `GET` routes the SPA calls **before login** (login, logout, forgot /
-  reset-password and portal-login pages, the app sidebar once signed in):
-  the feature flags + brand name, and the login-page theme.
+- Two documents, served on three `GET` routes, that the SPA calls **before
+  login** (login, logout, forgot / reset-password and portal-login pages,
+  the app sidebar once signed in): the feature flags + brand name (on
+  `/api/public/platform` and the legacy `/api/config/platform`), and the
+  login-page theme.
 - Mounted **outside the bearer/cookie authenticator**: an anonymous request
   (no `Authorization`, no cookie, no test headers) gets `200`. A stale
   session must never turn the login page's theme fetch into a 401.
@@ -34,16 +36,18 @@ owner ruling — until ruled on, the behaviour is kept.
 | Method / path | Inputs | Success | Body |
 |---|---|---|---|
 | `GET /api/public/platform` | — | 200 | `PlatformResponse` `{features: {messagingEnabled}, platformName}` |
+| `GET /api/config/platform` | — | 200 | the same `PlatformResponse`, same handler — the legacy path the SPA's `platformConfig` store fetches pre-login (§9 Q1, resolved) |
 | `GET /api/public/login-theme` | `clientId` query — **accepted and ignored** (§5) | 200 | `LoginThemeResponse` — every field optional, `{}` when nothing is configured |
 
 No error responses are produced by these handlers. Unknown `/api/public/…`
 paths fall through to the platform's 404 envelope like any other `/api/**`
 path.
 
-`GET /api/config/platform` — the Go binary also serves the `PlatformResponse`
-at this path, which is what the SPA's `platformConfig` store actually
+`GET /api/config/platform` is what the SPA's `platformConfig` store actually
 fetches (`router/guards.ts` → `loadConfig()` on first navigation, i.e. also
-on the login route). It is **not registered here**: see open question 1.
+on the login route); it is registered by `PublicApi` next to
+`/api/public/platform`, listed as public in `Platform.isPublicPath`, and
+excluded from lockfile drift in `LockfileCoverageTest` (§9 Q1).
 
 ## 3. Wire shapes
 
@@ -195,9 +199,10 @@ fixed `GLOBAL` coordinates.
    (b) `|| p.equals("/api/config/platform")` in `Platform.isPublicPath`
    (else the authenticator 401s it), and (c) `"/api/config/platform"` in
    `LockfileCoverageTest.OUTSIDE_LOCKFILE_PREFIXES` (else drift fails).
-   Until ruled, the SPA falls back to its defaults (`platformName`
-   "Flowcatalyst", `messagingEnabled` true) with a console warning. Add all
-   three, or change the SPA to `/api/public/platform`?
+   **Resolved (lead, 2026-08-23): all three added** — same handler, public
+   path, outside the lockfile (Go parity; the SPA's pre-login
+   `platformConfig` store depends on it). `PublicApiTest` pins the body and
+   the anonymous `200` on both paths.
 2. `?clientId=` on `/api/public/login-theme` is ignored — per-client login
    themes were never implemented server-side. Accident to keep ignoring, or
    a planned `CLIENT`-scoped lookup with GLOBAL fallback?
@@ -211,5 +216,3 @@ fixed `GLOBAL` coordinates.
 5. `messagingEnabled` is a hard-coded `true`. Keep static until a flag
    source exists?
 
-
-> **Resolved (lead, 2026-08-23):** `GET /api/config/platform` is now registered (same handler as `/api/public/platform`), listed as public in `Platform.isPublicPath`, and excluded from lockfile drift in `LockfileCoverageTest` — the SPA's pre-login `platformConfig` store depends on it (Go parity).

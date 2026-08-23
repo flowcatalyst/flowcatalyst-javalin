@@ -7,7 +7,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.util.Objects;
 
-/// The `/api/public` surface (spec `docs/spec/publicapi.md` §2): the two
+/// The `/api/public` surface (spec `docs/spec/publicapi.md` §2): the
 /// read-only routes the SPA fetches **before sign-in**. They are mounted
 /// outside the authenticator (`Platform.isPublicPath`) and outside the
 /// lockfile; the handlers consult no [io.flowcatalyst.platform.shared.auth.Auth]
@@ -17,6 +17,7 @@ import java.util.Objects;
 /// | Method | Path | Status |
 /// |---|---|---|
 /// | GET | `/api/public/platform` | 200 [PlatformResponse] |
+/// | GET | `/api/config/platform` | 200 [PlatformResponse] — legacy path the SPA's `platformConfig` store fetches (spec §9 Q1) |
 /// | GET | `/api/public/login-theme` | 200 [LoginThemeResponse] (`{}` when unconfigured) |
 public final class PublicApi {
 

@@ -19,11 +19,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The two `/api/public` routes end to end (spec §2–3): the payloads, the
+/// The public routes end to end (spec §2–3): the payloads, the
 /// defaults with no configuration, the verbatim echo of a stored theme — and,
 /// through the real `Server` with its authenticator wired, that an anonymous
 /// request (no bearer, no cookie, no test headers) still gets `200`.
@@ -81,6 +82,15 @@ class PublicApiTest {
         assertThat(json(http.get("/api/public/platform")).path("platformName").asText()).isEqualTo("Acme");
     }
 
+    @Test
+    void legacyConfigPathServesTheSamePlatformDocument() {
+        BrandingFixture.set(Branding.PLATFORM_NAME, "Acme");
+
+        var legacy = json(http.get("/api/config/platform"));
+        assertThat(legacy).as("spec §9 Q1: same handler, same body").isEqualTo(json(http.get("/api/public/platform")));
+        assertThat(legacy.path("platformName").asText()).isEqualTo("Acme");
+    }
+
     // ── GET /api/public/login-theme ────────────────────────────────────────
 
     @Test
@@ -133,7 +143,7 @@ class PublicApiTest {
         var running = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry()).start();
         try {
             var client = HttpClient.newHttpClient();
-            for (String path : new String[]{"/api/public/platform", "/api/public/login-theme"}) {
+            for (String path : List.of("/api/public/platform", "/api/config/platform", "/api/public/login-theme")) {
                 var r = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + running.apiPort() + path)).GET().build(),
                         HttpResponse.BodyHandlers.ofString());
                 assertThat(r.statusCode()).as("anonymous GET %s", path).isEqualTo(200);

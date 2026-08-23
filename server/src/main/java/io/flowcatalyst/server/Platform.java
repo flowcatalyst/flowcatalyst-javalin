@@ -105,8 +105,7 @@ public final class Platform {
         routes.before(authenticated(buildAuthenticator()));
 
         // ── public routes (outside the bearer middleware) ────────────────
-        // TODO(port): login endpoint public routes (/auth/login, /auth/logout), publicapi
-        //   (/api/public/*), password reset (/auth/password-reset/*), /oauth/authorize,
+        // TODO(port): login endpoint public routes (/auth/login, /auth/logout), password reset (/auth/password-reset/*), /oauth/authorize,
         //   POST /api/dispatch/process (HMAC job-token auth).
 
         // ── authenticated platform API ───────────────────────────────────

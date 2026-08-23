@@ -1,9 +1,21 @@
 package io.flowcatalyst.platform.publicapi;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+
+import org.slf4j.LoggerFactory;
+
+import javax.sql.DataSource;
+import java.io.PrintWriter;
+import java.sql.Connection;
+import java.sql.SQLException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,5 +101,78 @@ class BrandingTest {
     @Test
     void emailThemeIsAllDefaultsWithoutAnyRows() {
         assertThat(BRANDING.emailTheme()).isEqualTo(EmailTheme.defaults("Flowcatalyst"));
+    }
+
+    // ── Unavailable store (spec §1, §4 last row, open question 3) ──────────
+
+    @Test
+    void aFailedLookupReadsAsNothingConfiguredAndWarns() {
+        var log = (Logger) LoggerFactory.getLogger(Branding.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var down = new Branding(new PlatformConfigRepository(new UnavailableDataSource()));
+
+            assertThat(down.platformName()).isEqualTo(Branding.DEFAULT_PLATFORM_NAME);
+            assertThat(down.loginTheme()).isEqualTo(LoginTheme.EMPTY);
+            assertThat(down.emailTheme()).isEqualTo(EmailTheme.defaults(Branding.DEFAULT_PLATFORM_NAME));
+            assertThat(captured.list)
+                    .as("each failed lookup is a WARN, never an exception")
+                    .isNotEmpty()
+                    .allSatisfy(e -> {
+                        assertThat(e.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(e.getFormattedMessage()).contains("using defaults");
+                    });
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    /// A `DataSource` whose pool is gone: every `getConnection` fails the way
+    /// a dropped database does.
+    private static final class UnavailableDataSource implements DataSource {
+        @Override
+        public Connection getConnection() throws SQLException {
+            throw new SQLException("database unavailable", "08001");
+        }
+
+        @Override
+        public Connection getConnection(String username, String password) throws SQLException {
+            return getConnection();
+        }
+
+        @Override
+        public PrintWriter getLogWriter() {
+            return null;
+        }
+
+        @Override
+        public void setLogWriter(PrintWriter out) {
+        }
+
+        @Override
+        public void setLoginTimeout(int seconds) {
+        }
+
+        @Override
+        public int getLoginTimeout() {
+            return 0;
+        }
+
+        @Override
+        public java.util.logging.Logger getParentLogger() {
+            return java.util.logging.Logger.getGlobal();
+        }
+
+        @Override
+        public <T> T unwrap(Class<T> iface) throws SQLException {
+            throw new SQLException("not a wrapper");
+        }
+
+        @Override
+        public boolean isWrapperFor(Class<?> iface) {
+            return false;
+        }
     }
 }

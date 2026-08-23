@@ -357,6 +357,13 @@ Rules promoted from audits (recurring findings become rules here):
   directory entries) and loads through a `URLClassLoader`, once fresh and once
   with the jar already mounted as a zip filesystem — surefire only ever
   exercises the exploded-directory branch.
+- **A "degrade to defaults on infrastructure failure" rule is pinned with a
+  failing `DataSource`, not prose.** When a reader's spec says a DB failure
+  yields defaults + WARN instead of an error (`Branding`), its test
+  constructs the repository over a `DataSource` whose `getConnection`
+  throws, asserts the defaults, and captures the logger (Logback
+  `ListAppender`) to assert the WARN — otherwise the catch clause is dead
+  code to the suite.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

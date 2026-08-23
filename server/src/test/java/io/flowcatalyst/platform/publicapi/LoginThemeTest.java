@@ -59,6 +59,12 @@ class LoginThemeTest {
     }
 
     @Test
+    void logoHeightReadsLenientlyFromAJsonString() {
+        // spec §5 last row / open question 4: Jackson scalar coercion, kept until ruled on.
+        assertThat(LoginTheme.parse("{\"logoHeight\":\"48\"}").orElseThrow().logoHeight()).isEqualTo(48);
+    }
+
+    @Test
     void partialObjectLeavesTheRestAbsentAndKeepsEmptyStrings() {
         var theme = LoginTheme.parse("{\"brandName\":\"\",\"logoHeight\":40}").orElseThrow();
 
