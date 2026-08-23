@@ -332,6 +332,18 @@ Rules promoted from audits (recurring findings become rules here):
   or "first page") is decided in the Api's `after(ctx)` helper with
   `orElseThrow` / `orElse(null)`, so two lists can differ in policy without a
   second parser.
+- **Typed query parameters read through `apicommon.QueryParams`.** An
+  integer query parameter is read with `QueryParams.intParam(ctx, name)`
+  (throwing form) or `intParam(ctx, name, errors)` + `QueryParams.validation(errors)`
+  (accumulating form, one `details.errors` entry per bad parameter in the
+  route's documented order); a handler never hand-builds the
+  `{message, location: "query.<name>", value}` detail or the 400 `VALIDATION`
+  envelope. `PageQuery.from` and `EventApi.Page.from` are the models.
+- **A read scope is a required component, never a defaulted filter.** When
+  a repository read takes the caller's visibility (`Visibility.Everything |
+  Tenants`) alongside `ListFilter` columns, the record `requireNonNull`s it —
+  `null = no filter` applies to columns, not to whose view the query is; a
+  `none()` factory names `Everything` explicitly.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

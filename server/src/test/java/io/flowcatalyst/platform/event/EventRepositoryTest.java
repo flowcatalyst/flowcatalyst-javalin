@@ -24,6 +24,7 @@ import static io.flowcatalyst.platform.event.EventFixture.readRow;
 import static io.flowcatalyst.platform.event.EventFixture.application;
 import static io.flowcatalyst.platform.event.EventFixture.type;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The reads (spec §1, §3–7, §9): a sink row read whole from the write side,
 /// the same row after the projection, every list filter, the SQL-side
@@ -44,6 +45,8 @@ class EventRepositoryTest {
     private static final String CLIENT_B = "cli_" + EventFixture.RUN + "00000b";
 
     private static final Instant T0 = NOW.minusSeconds(600);
+    /// The anchor's view — every test that is not about scoping reads with it.
+    private static final Visibility ALL = new Visibility.Everything();
     private static String principal;
     private static String entity;
     private static String sinkRow;      // emitted + projected, platform-scoped
@@ -73,7 +76,7 @@ class EventRepositoryTest {
 
     /// Every row of this run: the `application` segment is the namespace.
     private static ListFilter inRun() {
-        return new ListFilter(null, null, null, null, null, null, null, null, null, List.of(APP), null, null, null);
+        return inRun(ALL);
     }
 
     private static ListFilter inRun(Visibility v) {
@@ -153,40 +156,40 @@ class EventRepositoryTest {
 
     @Test
     void equalityFiltersNarrowOnTheirColumn() {
-        assertThat(ids(repo.findWithFilters(new ListFilter(ORDER_CREATED, null, null, null, null, null, null, null, null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(ORDER_CREATED, null, null, null, null, null, null, null, null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(sinkRow, platformRow);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, "platform:admin", null, null, null, null, null, null, null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, "platform:admin", null, null, null, null, null, null, null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(sinkRowTwo, sinkRow);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, "platform.order." + entity, null, null, null, null, null, null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, "platform.order." + entity, null, null, null, null, null, null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(sinkRowTwo, sinkRow);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, CLIENT_A, null, null, null, null, null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, CLIENT_A, null, null, null, null, null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(rowA1, rowA2);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, "corr-direct-" + EventFixture.RUN, null, null, null, null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, "corr-direct-" + EventFixture.RUN, null, null, null, null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(platformRow);
     }
 
     @Test
     void listFiltersAreInListsAndTypeAndTypesBothApply() {
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, List.of(ORDER_SHIPPED, INVOICE_ISSUED), null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, List.of(ORDER_SHIPPED, INVOICE_ISSUED), null, List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(sinkRowTwo, rowA1, rowA2, rowB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(ORDER_CREATED, null, null, null, null, null, null, List.of(ORDER_SHIPPED), null, List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(ORDER_CREATED, null, null, null, null, null, null, List.of(ORDER_SHIPPED), null, List.of(APP), null, null, ALL), 100, 0)))
                 .as("type AND types").isEmpty();
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, List.of(CLIENT_A, CLIENT_B), List.of(APP), null, null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, List.of(CLIENT_A, CLIENT_B), List.of(APP), null, null, ALL), 100, 0)))
                 .containsExactly(rowA1, rowA2, rowB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of(APP), List.of("billing"), null, null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of(APP), List.of("billing"), null, ALL), 100, 0)))
                 .containsExactly(rowA2, rowB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of(APP), null, List.of("order"), null), 100, 0)))
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of(APP), null, List.of("order"), ALL), 100, 0)))
                 .containsExactly(sinkRowTwo, sinkRow, platformRow, rowA1);
-        assertThat(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of("app_none"), null, null, null), 100, 0)).isEmpty();
+        assertThat(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null, List.of("app_none"), null, null, ALL), 100, 0)).isEmpty();
     }
 
     @Test
     void sinceAndUntilAreInclusiveBoundsOnCreatedAt() {
-        var window = new ListFilter(null, null, null, null, null, T0.minusSeconds(20), T0.minusSeconds(10), null, null, List.of(APP), null, null, null);
+        var window = new ListFilter(null, null, null, null, null, T0.minusSeconds(20), T0.minusSeconds(10), null, null, List.of(APP), null, null, ALL);
         assertThat(ids(repo.findWithFilters(window, 100, 0))).containsExactly(rowA1, rowA2);
-        var since = new ListFilter(null, null, null, null, null, T0, null, null, null, List.of(APP), null, null, null);
+        var since = new ListFilter(null, null, null, null, null, T0, null, null, null, List.of(APP), null, null, ALL);
         assertThat(ids(repo.findWithFilters(since, 100, 0))).containsExactly(sinkRowTwo, sinkRow, platformRow);
-        var until = new ListFilter(null, null, null, null, null, null, T0.minusSeconds(30), null, null, List.of(APP), null, null, null);
+        var until = new ListFilter(null, null, null, null, null, null, T0.minusSeconds(30), null, null, List.of(APP), null, null, ALL);
         assertThat(ids(repo.findWithFilters(until, 100, 0))).containsExactly(rowB);
     }
 
@@ -208,6 +211,13 @@ class EventRepositoryTest {
                 .containsExactly(rowA1, rowA2);
         // no clients at all: platform-scoped rows only
         assertThat(ids(repo.findWithFilters(inRun(new Visibility.Tenants(List.of())), 100, 0))).containsExactly(sinkRowTwo, sinkRow, platformRow);
+    }
+
+    @Test
+    void aFilterMustStateWhoseViewItIs() {
+        assertThatThrownBy(() -> new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, null))
+                .as("visibility never defaults open").isInstanceOf(NullPointerException.class).hasMessage("visibility");
+        assertThat(ListFilter.none().visibility()).isInstanceOf(Visibility.Everything.class);
     }
 
     // ── Guards ─────────────────────────────────────────────────────────────

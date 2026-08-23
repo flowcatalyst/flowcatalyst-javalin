@@ -89,7 +89,9 @@ Timestamps: RFC 3339, 6 fractional digits, `Z`.
 | `offset` | `> 0` → `OFFSET`; else none |
 | any of `limit` / `size` / `offset` non-integer | 400 `VALIDATION` `validation failed` with `details.errors[{message: "invalid integer", location: "query.<name>", value}]` — one entry per bad parameter, in `limit, offset, size` order |
 
-Visibility (§8) is intersected with the filters in SQL.
+Visibility (§8) is intersected with the filters in SQL. The repository's
+filter carries the caller's visibility as a required component — there is no
+default view; every filtered read states whose it is.
 
 Ordering: `created_at DESC` — newest first; ties are in no defined order
 (open question 6).

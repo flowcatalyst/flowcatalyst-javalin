@@ -7,13 +7,12 @@ import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.EventRepository.Facet;
 import io.flowcatalyst.platform.event.EventRepository.ListFilter;
 import io.flowcatalyst.platform.event.EventRepository.Visibility;
+import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.flowcatalyst.sdk.usecase.UseCaseError;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.http.Context;
 import io.javalin.http.Handler;
 import io.javalin.router.JavalinDefaultRoutingApi;
@@ -23,7 +22,6 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -132,38 +130,21 @@ public final class EventApi {
     /// `limit` / `size` / `offset` as sent (0 = absent): `size` wins when
     /// positive; the repository's guard supplies the default and the
     /// over-max fallback (spec §3, open question 5). A non-integer value is
-    /// a 400 `VALIDATION` envelope listing every bad parameter.
+    /// the [QueryParams] 400 `VALIDATION` envelope listing every bad
+    /// parameter, in `limit, offset, size` order.
     record Page(int limit, int offset, int size) {
         static Page from(Context ctx) {
             var errors = new ArrayList<Map<String, Object>>();
-            int limit = intParam(ctx, "limit", errors);
-            int offset = intParam(ctx, "offset", errors);
-            int size = intParam(ctx, "size", errors);
-            if (!errors.isEmpty()) {
-                throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
-                        .withDetails(Map.of("errors", List.copyOf(errors))));
-            }
+            int limit = QueryParams.intParam(ctx, "limit", errors).orElse(0);
+            int offset = QueryParams.intParam(ctx, "offset", errors).orElse(0);
+            int size = QueryParams.intParam(ctx, "size", errors).orElse(0);
+            if (!errors.isEmpty()) throw QueryParams.validation(errors);
             return new Page(limit, offset, size);
         }
 
         /// The row cap handed to the repository: `size` when positive, else `limit`.
         int effectiveLimit() {
             return size > 0 ? size : limit;
-        }
-
-        private static int intParam(Context ctx, String name, List<Map<String, Object>> errors) {
-            String raw = queryParam(ctx, name);
-            if (raw == null) return 0;
-            try {
-                return Integer.parseInt(raw.trim());
-            } catch (NumberFormatException _) {
-                var detail = new LinkedHashMap<String, Object>();
-                detail.put("message", "invalid integer");
-                detail.put("location", "query." + name);
-                detail.put("value", raw);
-                errors.add(detail);
-                return 0;
-            }
         }
     }
 

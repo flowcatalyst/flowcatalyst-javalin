@@ -69,7 +69,9 @@ public final class EventRepository {
 
     /// Filters for [#findWithFilters] (spec §3); `null` = no filter on that
     /// column, and an empty list is no filter either. `since` / `until` are
-    /// inclusive bounds on `created_at` — the partition key.
+    /// inclusive bounds on `created_at` — the partition key. `visibility` is
+    /// not a filter but whose view this is (spec §8) and is required — a
+    /// caller states it, it never defaults open.
     public record ListFilter(String type, String source, String subject, String clientId, String correlationId,
                              Instant since, Instant until,
                              List<String> types, List<String> clientIds, List<String> applications,
@@ -81,12 +83,12 @@ public final class EventRepository {
             applications = applications == null ? List.of() : List.copyOf(applications);
             subdomains = subdomains == null ? List.of() : List.copyOf(subdomains);
             aggregates = aggregates == null ? List.of() : List.copyOf(aggregates);
-            visibility = visibility == null ? new Visibility.Everything() : visibility;
+            Objects.requireNonNull(visibility, "visibility");
         }
 
-        /// No filters, every row.
+        /// No filters, every row — the anchor's unfiltered view.
         public static ListFilter none() {
-            return new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, null);
+            return new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, new Visibility.Everything());
         }
     }
 
@@ -225,7 +227,8 @@ public final class EventRepository {
         return jsonb == null ? null : fromJsonText(jsonb.data(), column);
     }
 
-    /// A `NULL`/empty column is absent; malformed text is a programming error, not a 500 per row.
+    /// A `NULL`/empty column is absent; text that is not JSON is a data
+    /// fault surfaced as a failure (spec §9), never silently read as absent.
     private static JsonNode fromJsonText(String text, String column) {
         if (text == null || text.isBlank()) return null;
         try {
