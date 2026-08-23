@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.loginattempt;
 
 import io.flowcatalyst.db.generated.tables.IamLoginAttempts;
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.Record;
@@ -74,10 +75,11 @@ public final class LoginAttemptRepository {
     // ── Reads: admin list ──────────────────────────────────────────────────
 
     /// Up to `limit` attempts matching every non-null filter, newest first
-    /// (`attempted_at DESC, id DESC`), strictly after `after` when given.
-    /// The caller over-fetches by one to learn whether a next page exists.
-    public List<LoginAttempt> findPage(ListFilter f, LoginAttemptCursor after, int limit) {
-        if (limit < 1) throw new IllegalArgumentException("limit < 1: " + limit);
+    /// (`attempted_at DESC, id DESC`), strictly after `after` when given
+    /// (`null` = first page). The caller over-fetches by one to learn
+    /// whether a next page exists.
+    public List<LoginAttempt> findPage(ListFilter f, KeysetCursor after, int limit) {
+        requireLimit(limit);
         Condition where = DSL.noCondition();
         if (f.attemptType() != null) where = where.and(T.ATTEMPT_TYPE.eq(f.attemptType()));
         if (f.outcome() != null) where = where.and(T.OUTCOME.eq(f.outcome()));
@@ -85,7 +87,7 @@ public final class LoginAttemptRepository {
         if (f.principalId() != null) where = where.and(T.PRINCIPAL_ID.eq(f.principalId()));
         if (f.from() != null) where = where.and(T.ATTEMPTED_AT.ge(utc(f.from())));
         if (f.to() != null) where = where.and(T.ATTEMPTED_AT.le(utc(f.to())));
-        if (after != null) where = where.and(DSL.row(T.ATTEMPTED_AT, T.ID).lt(utc(after.attemptedAt()), after.id()));
+        if (after != null) where = where.and(DSL.row(T.ATTEMPTED_AT, T.ID).lt(utc(after.at()), after.id()));
         return dsl.selectFrom(T)
                 .where(where)
                 .orderBy(T.ATTEMPTED_AT.desc(), T.ID.desc())
@@ -96,7 +98,8 @@ public final class LoginAttemptRepository {
     /// The newest `limit` attempts for an identifier, `attempted_at DESC`
     /// (the session-history panel reads 20).
     public List<LoginAttempt> findRecentByIdentifier(String identifier, int limit) {
-        if (limit < 1) throw new IllegalArgumentException("limit < 1: " + limit);
+        Objects.requireNonNull(identifier, "identifier");
+        requireLimit(limit);
         return dsl.selectFrom(T)
                 .where(T.IDENTIFIER.eq(identifier))
                 .orderBy(T.ATTEMPTED_AT.desc(), T.ID.desc())
@@ -105,36 +108,50 @@ public final class LoginAttemptRepository {
     }
 
     // ── Reads: backoff ─────────────────────────────────────────────────────
+    // Every argument is required: a `null` identifier / ip / since is a
+    // programming error, never "no filter" (the policy skips the per-pair
+    // step when it has no IP — spec §5). Identifier equality is raw; the
+    // callers normalise (open question 6).
 
     /// When the identifier last logged in successfully; empty when never.
     /// Bounds the failure-counting window of the backoff (spec §5).
     public Optional<Instant> lastSuccessAt(String identifier) {
-        OffsetDateTime max = dsl.select(DSL.max(T.ATTEMPTED_AT)).from(T)
+        Objects.requireNonNull(identifier, "identifier");
+        var last = DSL.max(T.ATTEMPTED_AT);
+        OffsetDateTime lastAt = dsl.select(last).from(T)
                 .where(T.OUTCOME.eq(AttemptOutcome.SUCCESS.name()).and(T.IDENTIFIER.eq(identifier)))
-                .fetchOne(DSL.max(T.ATTEMPTED_AT));
-        return Optional.ofNullable(max).map(OffsetDateTime::toInstant);
+                .fetchSingle(last);
+        return Optional.ofNullable(lastAt).map(OffsetDateTime::toInstant);
     }
 
     /// Failures for the `(identifier, ip)` pair since `since` (inclusive):
     /// the count and the latest one. Drives the per-pair exponential backoff.
     public FailureStats failureStatsSince(String identifier, String ip, Instant since) {
+        Objects.requireNonNull(ip, "ip");
         var count = DSL.count();
         var last = DSL.max(T.ATTEMPTED_AT);
         Record row = dsl.select(count, last).from(T)
-                .where(failuresOf(identifier).and(T.IP_ADDRESS.eq(ip)).and(T.ATTEMPTED_AT.ge(utc(since))))
-                .fetchOne();
-        OffsetDateTime lastAt = row == null ? null : row.get(last);
-        return new FailureStats(row == null ? 0 : row.get(count), lastAt == null ? null : lastAt.toInstant());
+                .where(failuresOf(identifier, since).and(T.IP_ADDRESS.eq(ip)))
+                .fetchSingle(); // an ungrouped aggregate always yields exactly one row
+        OffsetDateTime lastAt = row.get(last);
+        return new FailureStats(row.get(count), lastAt == null ? null : lastAt.toInstant());
     }
 
     /// Failures for the identifier across every IP since `since` (inclusive).
     /// Drives the global ceiling.
     public int countFailuresSince(String identifier, Instant since) {
-        return dsl.fetchCount(T, failuresOf(identifier).and(T.ATTEMPTED_AT.ge(utc(since))));
+        return dsl.fetchCount(T, failuresOf(identifier, since));
     }
 
-    private static Condition failuresOf(String identifier) {
-        return T.OUTCOME.eq(AttemptOutcome.FAILURE.name()).and(T.IDENTIFIER.eq(identifier));
+    private static Condition failuresOf(String identifier, Instant since) {
+        Objects.requireNonNull(identifier, "identifier");
+        Objects.requireNonNull(since, "since");
+        return T.OUTCOME.eq(AttemptOutcome.FAILURE.name()).and(T.IDENTIFIER.eq(identifier)).and(T.ATTEMPTED_AT.ge(utc(since)));
+    }
+
+    /// `limit` is bounded by the caller (the API, the panel) — no silent correction (spec §5).
+    private static void requireLimit(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("limit < 1: " + limit);
     }
 
     // ── Row ↔ entity ───────────────────────────────────────────────────────

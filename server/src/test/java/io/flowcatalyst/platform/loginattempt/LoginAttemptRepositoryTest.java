@@ -195,6 +195,17 @@ class LoginAttemptRepositoryTest {
     }
 
     @Test
+    void identifierKeyedReadsRequireEveryArgument() {
+        // spec §5: null is a programming error, never "no filter"
+        assertThatThrownBy(() -> repo.findRecentByIdentifier(null, 5)).isInstanceOf(NullPointerException.class).hasMessage("identifier");
+        assertThatThrownBy(() -> repo.lastSuccessAt(null)).isInstanceOf(NullPointerException.class).hasMessage("identifier");
+        assertThatThrownBy(() -> repo.failureStatsSince(null, IP_A, BASE)).isInstanceOf(NullPointerException.class).hasMessage("identifier");
+        assertThatThrownBy(() -> repo.failureStatsSince(ADA, null, BASE)).isInstanceOf(NullPointerException.class).hasMessage("ip");
+        assertThatThrownBy(() -> repo.failureStatsSince(ADA, IP_A, null)).isInstanceOf(NullPointerException.class).hasMessage("since");
+        assertThatThrownBy(() -> repo.countFailuresSince(ADA, null)).isInstanceOf(NullPointerException.class).hasMessage("since");
+    }
+
+    @Test
     void failureStatsRefuseAnInconsistentShape() {
         assertThatThrownBy(() -> new FailureStats(-1, null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new FailureStats(0, BASE)).isInstanceOf(IllegalArgumentException.class);

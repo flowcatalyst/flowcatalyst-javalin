@@ -325,6 +325,13 @@ Rules promoted from audits (recurring findings become rules here):
 - **One spelling per encoding contract.** A package that wraps an encoding
   (`Base64Strict`) uses it everywhere, including `stored()`/canonical
   re-encoders.
+- **A keyset cursor is one record; its policy is the route's.** Every
+  cursor-paginated list uses `apicommon.KeysetCursor` `(at, id)` for its
+  position and the `<RFC 3339 UTC>|<id>` base64url token; `parse` returns
+  `Optional` and never throws. What a malformed token *means* (400 `CURSOR`,
+  or "first page") is decided in the Api's `after(ctx)` helper with
+  `orElseThrow` / `orElse(null)`, so two lists can differ in policy without a
+  second parser.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

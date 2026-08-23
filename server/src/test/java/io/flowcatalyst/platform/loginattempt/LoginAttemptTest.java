@@ -1,19 +1,18 @@
 package io.flowcatalyst.platform.loginattempt;
 
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The pure rules of the aggregate (spec §1, §4): the record's invariants,
-/// the lenient enum readers and the cursor's one encoding, without a database.
+/// the lenient enum readers and the row's keyset position, without a
+/// database. The cursor encoding itself is [KeysetCursor]'s, tested there.
 class LoginAttemptTest {
 
     private static final Instant T = Instant.parse("2026-08-22T10:11:12.123456Z");
@@ -35,8 +34,8 @@ class LoginAttemptTest {
     @Test
     void attemptIsStampedNowWithAGeneratedIdAndCarriesEveryDetailAsGiven() {
         Instant before = Instant.now();
-        var a = LoginAttempt.attempt(AttemptType.DEVELOPER_TOKEN, AttemptOutcome.FAILURE,
-                "ada@example.test", "prn_1", "10.0.0.1", "Mozilla", "Invalid credentials");
+        var a = LoginAttempt.attempt(AttemptType.DEVELOPER_TOKEN, AttemptOutcome.FAILURE, "Invalid credentials",
+                "ada@example.test", "prn_1", "10.0.0.1", "Mozilla");
         assertThat(a.id()).startsWith("lat_").hasSize(17);
         assertThat(a.attemptType()).isEqualTo(AttemptType.DEVELOPER_TOKEN);
         assertThat(a.outcome()).isEqualTo(AttemptOutcome.FAILURE);
@@ -50,7 +49,7 @@ class LoginAttemptTest {
 
     @Test
     void absentDetailsStayNull() {
-        var a = LoginAttempt.attempt(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, "ada@example.test", null, null, null, null);
+        var a = LoginAttempt.attempt(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, null, "ada@example.test", null, null, null);
         assertThat(a.principalId()).isNull();
         assertThat(a.ipAddress()).isNull();
         assertThat(a.userAgent()).isNull();
@@ -60,7 +59,7 @@ class LoginAttemptTest {
     @Test
     void cursorIsTheRowPosition() {
         var a = new LoginAttempt("lat_1", AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, null, null, null, null, null, T);
-        assertThat(a.cursor()).isEqualTo(new LoginAttemptCursor(T, "lat_1"));
+        assertThat(a.cursor()).isEqualTo(new KeysetCursor(T, "lat_1"));
     }
 
     // ── Lenient enum readers ───────────────────────────────────────────────
@@ -88,43 +87,5 @@ class LoginAttemptTest {
     })
     void outcomeReadsLeniently(String stored, AttemptOutcome expected) {
         assertThat(AttemptOutcome.parse(stored)).isEqualTo(expected);
-    }
-
-    // ── Cursor encoding ────────────────────────────────────────────────────
-
-    @Test
-    void cursorRoundTripsThroughItsOpaqueToken() {
-        var cursor = new LoginAttemptCursor(T, "lat_0ABC123XYZ456");
-        String token = cursor.encode();
-        assertThat(token).doesNotContain("=", "+", "/");
-        assertThat(new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8))
-                .isEqualTo("2026-08-22T10:11:12.123456Z|lat_0ABC123XYZ456");
-        assertThat(LoginAttemptCursor.parse(token)).contains(cursor);
-    }
-
-    @Test
-    void cursorAcceptsAnyFractionalPrecisionAnEarlierWriterMayHaveUsed() {
-        assertThat(LoginAttemptCursor.parse(token("2026-08-22T10:11:12.123456789Z|lat_1")))
-                .contains(new LoginAttemptCursor(Instant.parse("2026-08-22T10:11:12.123456789Z"), "lat_1"));
-        assertThat(LoginAttemptCursor.parse(token("2026-08-22T10:11:12Z|lat_1")))
-                .contains(new LoginAttemptCursor(Instant.parse("2026-08-22T10:11:12Z"), "lat_1"));
-        assertThat(LoginAttemptCursor.parse(token("2026-08-22T10:11:12.5Z|lat_1|with|bars")))
-                .as("only the first bar splits").contains(new LoginAttemptCursor(Instant.parse("2026-08-22T10:11:12.5Z"), "lat_1|with|bars"));
-    }
-
-    @ParameterizedTest(name = "token {0}")
-    @ValueSource(strings = {
-            "",                                   // nothing
-            "not base64 !!",                      // bad alphabet
-            "bm8tYmFy",                           // "no-bar"
-            "bm90LWEtdGltZXxsYXRfMQ",             // "not-a-time|lat_1"
-            "MjAyNi0wOC0yMiAxMDoxMToxMlp8bGF0XzE", // "2026-08-22 10:11:12Z|lat_1" (space, not T)
-    })
-    void malformedCursorIsNoCursor(String token) {
-        assertThat(LoginAttemptCursor.parse(token)).isEmpty();
-    }
-
-    private static String token(String raw) {
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 }

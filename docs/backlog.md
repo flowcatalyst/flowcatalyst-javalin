@@ -102,6 +102,28 @@ item names its origin; items marked **owner** need Andrew's call.
   fallback, closed external-scheme list, `encrypted:<non-base64>` rejection,
   `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
 
+## From the loginattempt audit
+- `AuditLogCursor` duplicates the new shared `apicommon.KeysetCursor`
+  (`(at, id)`, same token layout; `parse` → `Optional`, the 400 `CURSOR`
+  policy belongs at `AuditLogApi.after`). Migration is mechanical but
+  touches `AuditLog.cursor()`, `AuditLogRepository.findWithCursor`,
+  `AuditLogApi.after` and ~45 lines of `AuditLogTest` cursor tests (the
+  malformed table moves to `KeysetCursorTest`, which already carries it;
+  `AuditLogApiTest` already pins the 400) — do it in one pass, then delete
+  `AuditLogCursor`.
+- `pageSize` parsing (`absent → 50`, out of range → 50, non-integer →
+  `VALIDATION` `{message: "invalid integer", location: "query.pageSize",
+  value}`) and `queryParam` are copied verbatim between `AuditLogApi` and
+  `LoginAttemptApi`; with the `PageQuery.intParam` duplicate already listed
+  under the audit-log audit that is three copies — one `apicommon` helper
+  (`QueryParams.intOrDefault(ctx, name, default, max)` + the error shape).
+- `LoginAttempt.attempt(type, outcome, failureReason, identifier,
+  principalId, ipAddress, userAgent)` is seven positional arguments, five of
+  them `String` — an easy swap at the auth-port call sites. Consider two
+  intent-named factories (`success(type, identifier, principalId, ip, ua)` /
+  `failure(type, identifier, reason, principalId, ip, ua)`) or a small
+  `Details` record when the first caller lands.
+
 ## Server API the fcdev module wished existed (fcdev agent)
 
 - `Server.Running.stop()` must stop and drain subsystems once they exist.

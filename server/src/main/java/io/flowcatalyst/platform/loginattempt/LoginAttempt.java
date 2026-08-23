@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.loginattempt;
 
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.HasId;
 
@@ -33,18 +34,19 @@ public record LoginAttempt(
         Objects.requireNonNull(attemptedAt, "attemptedAt");
     }
 
-    /// A fresh attempt stamped `now`, with a generated `lat_` id. Every
-    /// optional detail is `null` when the caller does not know it; the
-    /// caller normalises the identifier (lower-case, trim) before recording
-    /// so it agrees with the backoff queries (spec §5, open question 6).
-    public static LoginAttempt attempt(AttemptType attemptType, AttemptOutcome outcome, String identifier,
-                                       String principalId, String ipAddress, String userAgent, String failureReason) {
+    /// A fresh attempt stamped `now`, with a generated `lat_` id; the details
+    /// follow the record's (spec §1 table) order. Every optional detail is
+    /// `null` when the caller does not know it; the caller normalises the
+    /// identifier (lower-case, trim) before recording so it agrees with the
+    /// backoff queries (spec §5, open question 6).
+    public static LoginAttempt attempt(AttemptType attemptType, AttemptOutcome outcome, String failureReason,
+                                       String identifier, String principalId, String ipAddress, String userAgent) {
         return new LoginAttempt(EntityType.LOGIN_ATTEMPT.generate(), attemptType, outcome, failureReason,
                 identifier, principalId, ipAddress, userAgent, Instant.now());
     }
 
     /// The keyset position of this row in the newest-first order (spec §4).
-    public LoginAttemptCursor cursor() {
-        return new LoginAttemptCursor(attemptedAt, id);
+    public KeysetCursor cursor() {
+        return new KeysetCursor(attemptedAt, id);
     }
 }

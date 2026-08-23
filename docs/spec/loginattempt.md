@@ -56,10 +56,12 @@ Wire shapes:
 | Schema | Fields (in order) | Notes |
 |---|---|---|
 | `LoginAttemptResponse` | `id, attemptType, outcome, failureReason, identifier, principalId, ipAddress, userAgent, attemptedAt` | **all nine keys are always present**: the optional ones are emitted as JSON `null`, `identifier` is emitted as `""` when the row has none (the lockfile types it as a non-null string); `attemptedAt` RFC 3339, 6 fractional digits, `Z` |
-| `LoginAttemptListResponse` | `items[]`, `hasMore`, `nextCursor?` | `items` never `null`; `nextCursor` omitted unless `hasMore` |
+| `LoginAttemptListResponse` | `items[]`, `hasMore`, `nextCursor?` | the standard cursor envelope (`apicommon.CursorResponse`, CONVENTIONS §4); `items` never `null`; `nextCursor` omitted unless `hasMore` |
 
 The `""`-for-absent `identifier` is a wire rule of the DTO only; inside the
-JVM the field is `null` (open question 2).
+JVM the field is `null` (open question 2). The other optionals are emitted
+as `null` by the DTO's explicit `ALWAYS` inclusion — the mapper's default
+would omit them.
 
 ## 3. The cursor list
 
@@ -79,16 +81,19 @@ more than `pageSize`, `hasMore = true`, the extra row is dropped and
 `hasMore = false` and `nextCursor` is omitted. An empty page has
 `hasMore = false`.
 
-## 4. Cursor format (`LoginAttemptCursor`)
+## 4. Cursor format (`apicommon.KeysetCursor`)
 
-A keyset position `(attemptedAt, id)`. Encoded as base64url **without
+A keyset position `(attemptedAt, id)` — the platform's one keyset-cursor
+record, shared with the audit list. Encoded as base64url **without
 padding** of the text `<attemptedAt as RFC 3339 UTC>|<id>`; decoding splits
 on the first `|`, parses the timestamp leniently (0–9 fractional digits, as
 either writer may have produced) and reports any failure — bad base64, no
-`|`, unparseable time — as "no cursor" to the caller, which the list route
-treats as the first page (§3). The encoder writes `ISO_INSTANT` (0/3/6/9
-fractional digits); the stored value has microsecond precision, so a round
-trip is exact. The next page is every row with
+`|`, unparseable time, an empty id after the `|` (no row has one, so it is
+never a position) — as "no cursor" to the caller. What "no cursor" *means*
+is the route's policy: this list serves the first page (§3); the audit list
+answers 400 `CURSOR`. The encoder writes `ISO_INSTANT` (0/3/6/9 fractional
+digits); the stored value has microsecond precision, so a round trip is
+exact. The next page is every row with
 `(attempted_at, id) < (cursor.attemptedAt, cursor.id)` in the same ordering.
 
 A cursor is opaque to clients: its only consumer is this endpoint.
@@ -110,7 +115,15 @@ does not come back to this package.
 
 Identifier matching is a plain string equality on the column: the callers
 normalise (lower-case, trim) before both recording and querying. The
-repository does not normalise (open question 6).
+repository does not normalise (open question 6). Every argument of the
+identifier-keyed reads is required: a `null` `identifier`, `ip` or `since`
+is a programming error (`NullPointerException`), never "no filter" — the
+backoff policy skips the per-pair step itself when it has no IP. `since`
+bounds are inclusive (`attempted_at >= since`); `failureStatsSince` counts
+only rows whose `ip_address` equals `ip` exactly (a row recorded without an
+IP never counts towards a pair). `lastSuccessAt` is an `Optional` return,
+`failureStatsSince` a `FailureStats(count, lastFailureAt)` record that
+refuses `count < 0` and a `lastFailureAt` without failures.
 
 How `loginbackoff` composes these (for the auth port; not implemented here):
 `lastSuccessAt` bounds the failure window (fallback: now − 30 days); with an

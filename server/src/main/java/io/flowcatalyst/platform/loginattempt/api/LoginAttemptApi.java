@@ -2,9 +2,10 @@ package io.flowcatalyst.platform.loginattempt.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.loginattempt.LoginAttempt;
-import io.flowcatalyst.platform.loginattempt.LoginAttemptCursor;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository.ListFilter;
+import io.flowcatalyst.platform.shared.apicommon.CursorResponse;
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
@@ -26,7 +27,7 @@ import java.util.Objects;
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
-/// | GET | `/api/login-attempts` | 200 [LoginAttemptListResponse] (cursor) |
+/// | GET | `/api/login-attempts` | 200 `LoginAttemptListResponse` = [CursorResponse] of [LoginAttemptResponse] |
 public final class LoginAttemptApi {
 
     /// The page size when `pageSize` is absent or out of `1..MAX_PAGE_SIZE` (spec §3, open question 3).
@@ -54,7 +55,7 @@ public final class LoginAttemptApi {
         Checks.requireAnchor(Auth.current());
         int size = pageSize(ctx);
         List<LoginAttempt> rows = s.repo().findPage(listFilter(ctx), after(ctx), size + 1);
-        ctx.json(LoginAttemptListResponse.page(rows, size));
+        ctx.json(page(rows, size));
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────
@@ -72,10 +73,21 @@ public final class LoginAttemptApi {
     }
 
     /// `after` → cursor, or `null` for the first page — also for a malformed
-    /// token (spec §3, open question 4).
-    private static LoginAttemptCursor after(Context ctx) {
+    /// token: this route's policy is "ignore", the audit list's is 400
+    /// `CURSOR` (spec §3, open question 4).
+    private static KeysetCursor after(Context ctx) {
         String token = queryParam(ctx, "after");
-        return token == null ? null : LoginAttemptCursor.parse(token).orElse(null);
+        return token == null ? null : KeysetCursor.parse(token).orElse(null);
+    }
+
+    /// From an over-fetched window of `size + 1` rows: the extra row only
+    /// proves a next page exists; the cursor is the last *returned* row's.
+    /// `items` is never `null`; `nextCursor` is omitted unless `hasMore` (spec §3).
+    private static CursorResponse<LoginAttemptResponse> page(List<LoginAttempt> rows, int size) {
+        boolean hasMore = rows.size() > size;
+        List<LoginAttempt> shown = hasMore ? rows.subList(0, size) : rows;
+        String next = hasMore && !shown.isEmpty() ? shown.getLast().cursor().encode() : null;
+        return new CursorResponse<>(shown.stream().map(LoginAttemptResponse::from).toList(), next, hasMore);
     }
 
     /// `pageSize`: absent → default; out of range → default (not clamped —
@@ -114,10 +126,14 @@ public final class LoginAttemptApi {
     }
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
+    // The list envelope `LoginAttemptListResponse` is the standard
+    // `{items, hasMore, nextCursor?}` — [CursorResponse], not a record here.
 
     /// The wire shape of one attempt: every key is always present — the
-    /// optionals as JSON `null`, `identifier` as `""` when the row has none
-    /// (the lockfile types it non-null; spec §2, open question 2).
+    /// optionals as JSON `null` (the mapper's default would omit them),
+    /// `identifier` as `""` when the row has none (the lockfile types it
+    /// non-null; spec §2, open question 2). Inside the JVM it is `null`:
+    /// this mapping is the DTO's alone.
     @JsonInclude(JsonInclude.Include.ALWAYS)
     public record LoginAttemptResponse(
             String id,
@@ -134,27 +150,6 @@ public final class LoginAttemptApi {
             return new LoginAttemptResponse(a.id(), a.attemptType().name(), a.outcome().name(), a.failureReason(),
                     a.identifier() == null ? "" : a.identifier(), a.principalId(), a.ipAddress(), a.userAgent(),
                     a.attemptedAt());
-        }
-    }
-
-    /// `{items, hasMore, nextCursor?}` — the cursor envelope. `items` is never
-    /// `null`; `nextCursor` is omitted unless `hasMore`.
-    public record LoginAttemptListResponse(
-            List<LoginAttemptResponse> items,
-            boolean hasMore,
-            @JsonInclude(JsonInclude.Include.NON_EMPTY) String nextCursor) {
-
-        public LoginAttemptListResponse {
-            items = items == null ? List.of() : List.copyOf(items);
-        }
-
-        /// From an over-fetched window of `size + 1` rows: the extra row only
-        /// proves a next page exists; the cursor is the last *returned* row's.
-        static LoginAttemptListResponse page(List<LoginAttempt> rows, int size) {
-            boolean hasMore = rows.size() > size;
-            List<LoginAttempt> shown = hasMore ? rows.subList(0, size) : rows;
-            String next = hasMore && !shown.isEmpty() ? shown.getLast().cursor().encode() : null;
-            return new LoginAttemptListResponse(shown.stream().map(LoginAttemptResponse::from).toList(), hasMore, next);
         }
     }
 }
