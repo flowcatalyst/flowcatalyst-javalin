@@ -97,7 +97,8 @@ A keyset position `(performedAt, id)`. Encoded as base64url **without
 padding** of the text `<performedAt as RFC 3339 UTC>|<id>`; decoding splits
 on the first `|`, parses the timestamp leniently (0–9 fractional digits, as
 both the Go and the Java writer may have produced), and treats any failure —
-bad base64, no `|`, unparseable time — as one validation error: 400 `CURSOR`
+bad base64, no `|`, unparseable time, an empty id after the `|` (no row has
+one, so it is never a position) — as one validation error: 400 `CURSOR`
 `invalid cursor`. The encoder writes the timestamp with `ISO_INSTANT`
 (0/3/6/9 fractional digits); the stored value has microsecond precision, so
 a round trip is exact. The next page is every row with

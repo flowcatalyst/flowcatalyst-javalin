@@ -171,6 +171,7 @@ class AuditLogApiTest {
         var env = json(size);
         assertThat(env.get("error").asText()).isEqualTo("VALIDATION");
         var detail = env.get("details").get("errors").get(0);
+        assertThat(detail.get("message").asText()).isEqualTo("invalid integer");
         assertThat(detail.get("location").asText()).isEqualTo("query.pageSize");
         assertThat(detail.get("value").asText()).isEqualTo("ten");
     }

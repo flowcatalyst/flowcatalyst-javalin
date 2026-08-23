@@ -11,6 +11,7 @@ import org.jooq.Field;
 import org.jooq.JSONB;
 import org.jooq.Record;
 import org.jooq.SQLDialect;
+import org.jooq.SelectOnConditionStep;
 import org.jooq.impl.DSL;
 
 import javax.sql.DataSource;
@@ -81,7 +82,7 @@ public final class AuditLogRepository {
     // ── Reads ──────────────────────────────────────────────────────────────
 
     public Optional<AuditLog> findById(String id) {
-        return dsl.select(T.fields()).select(P.NAME).from(T).leftJoin(P).on(P.ID.eq(T.PRINCIPAL_ID))
+        return logsWithPrincipal()
                 .where(T.ID.eq(id))
                 .fetchOptional()
                 .map(AuditLogRepository::toEntity);
@@ -101,7 +102,7 @@ public final class AuditLogRepository {
         if (after != null) {
             where = where.and(DSL.row(T.PERFORMED_AT, T.ID).lt(after.performedAt().atOffset(ZoneOffset.UTC), after.id()));
         }
-        return dsl.select(T.fields()).select(P.NAME).from(T).leftJoin(P).on(P.ID.eq(T.PRINCIPAL_ID))
+        return logsWithPrincipal()
                 .where(where)
                 .orderBy(T.PERFORMED_AT.desc(), T.ID.desc())
                 .limit(guard(limit, CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT))
@@ -118,7 +119,7 @@ public final class AuditLogRepository {
         if (f.clientId() != null) where = where.and(T.CLIENT_ID.eq(f.clientId()));
         if (f.since() != null) where = where.and(T.PERFORMED_AT.ge(f.since().atOffset(ZoneOffset.UTC)));
         if (f.until() != null) where = where.and(T.PERFORMED_AT.le(f.until().atOffset(ZoneOffset.UTC)));
-        return dsl.select(T.fields()).select(P.NAME).from(T).leftJoin(P).on(P.ID.eq(T.PRINCIPAL_ID))
+        return logsWithPrincipal()
                 .where(where)
                 .orderBy(T.PERFORMED_AT.desc())
                 .limit(guard(limit, FILTER_MAX_LIMIT, FILTER_DEFAULT_LIMIT))
@@ -133,6 +134,12 @@ public final class AuditLogRepository {
                 .orderBy(facet.column.asc())
                 .limit(guard(limit, FACET_MAX_LIMIT, FACET_DEFAULT_LIMIT))
                 .fetch(facet.column);
+    }
+
+    /// Every entity read starts here: the row plus the principal's name,
+    /// LEFT JOINed so rows without a (known) principal still read (spec §1).
+    private SelectOnConditionStep<Record> logsWithPrincipal() {
+        return dsl.select(T.fields()).select(P.NAME).from(T).leftJoin(P).on(P.ID.eq(T.PRINCIPAL_ID));
     }
 
     /// Out-of-range limits are corrected, not rejected (spec §7, open question 4).

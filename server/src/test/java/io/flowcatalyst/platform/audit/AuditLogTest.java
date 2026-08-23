@@ -77,6 +77,7 @@ class AuditLogTest {
             "bm8tYmFy",                           // "no-bar"
             "bm90LWEtdGltZXxhdWRfMQ",             // "not-a-time|aud_1"
             "MjAyNi0wOC0yMiAxMDoxMToxMlp8YXVkXzE", // "2026-08-22 10:11:12Z|aud_1" (space, not T)
+            "MjAyNi0wOC0yMlQxMDoxMToxMlp8",        // "2026-08-22T10:11:12Z|" (empty id)
     })
     void malformedCursorIsOneValidationError(String token) {
         assertThatThrownBy(() -> AuditLogCursor.parse(token))

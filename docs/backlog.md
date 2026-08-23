@@ -77,6 +77,14 @@ item names its origin; items marked **owner** need Andrew's call.
   it a shared home (`io.flowcatalyst.platform.shared.messaging`?) when the
   router lands; see router spec Q1 ruling for the semantics.
 
+## From the audit-log audit
+- Query-parameter parse errors (`{message, location: "query.<name>", value}`)
+  are built in both `PageQuery.intParam` and `AuditLogApi.pageSize` —
+  expose one helper in `apicommon` ("Query-parameter parse errors are one
+  helper"). `AuditLogRepository.ListFilter` has unused components
+  (`clientId/since/until/offset`, spec OQ 3). `AuditLog.operationJson` is a
+  mutable `JsonNode` in a record.
+
 ## From the encryption port
 - `fcdev` `DevBootstrap.ensureAppKeyFile` should call
   `Encryption.generateKey()` (bytes identical today; one source of truth).

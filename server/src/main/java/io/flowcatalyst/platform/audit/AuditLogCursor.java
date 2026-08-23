@@ -32,12 +32,14 @@ public record AuditLogCursor(Instant performedAt, String id) {
     /// the same layout with any number of fractional digits).
     ///
     /// @throws UseCaseException validation `CURSOR` `invalid cursor` for bad
-    ///                          base64, a missing `|`, or an unparseable timestamp
+    ///                          base64, a missing `|`, an unparseable timestamp
+    ///                          or an empty id (no row has one, so it is never
+    ///                          a position — spec §4)
     public static AuditLogCursor parse(String token) {
         try {
             String raw = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
             int bar = raw.indexOf('|');
-            if (bar < 0) throw invalid();
+            if (bar < 0 || bar == raw.length() - 1) throw invalid();
             return new AuditLogCursor(Instant.parse(raw.substring(0, bar)), raw.substring(bar + 1));
         } catch (IllegalArgumentException | DateTimeParseException _) {
             throw invalid();

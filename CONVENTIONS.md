@@ -301,6 +301,10 @@ Rules promoted from audits (recurring findings become rules here):
   `operations/Access`** (`requireRead(repo, ac, key)` / `requireWrite(…)`),
   called by the read handlers and by the write operation's `authorize` phase;
   the handler never re-derives "anchor or grant".
+- **A malformed-input parser rejects the empty component.** When a parser
+  record splits a token into parts (`<time>|<id>`, `a:b:c:d`), an empty part
+  is a malformation reported with the parser's one error, never accepted as
+  `""` — the pinned malformed table carries an "empty part" row.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape
