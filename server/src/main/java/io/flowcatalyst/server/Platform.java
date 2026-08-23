@@ -37,6 +37,9 @@ import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.api.PublicApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
+import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.scheduledjob.api.ScheduledJobApi;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
 import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
@@ -150,6 +153,8 @@ public final class Platform {
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
         DocsApi.register(routes, new DocsApi.State(new AppDocRepository(pool), applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
+        var scheduledJobRepo = new ScheduledJobRepository(pool);
+        ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
 
