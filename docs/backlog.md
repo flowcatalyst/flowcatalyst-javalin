@@ -108,10 +108,12 @@ item names its origin; items marked **owner** need Andrew's call.
   rulings in `docs/spec/dispatchjob.md` §11.
 
 ## From the dispatchjob audit
-- Two sibling sealed visibility types (`EventRepository.Visibility`,
+- ~~Two sibling sealed visibility types (`EventRepository.Visibility`,
   `DispatchJobRepository.AccessScope`) with the same anchor/clients builder
   duplicated in two Apis → one shared type (`AuthContext.visibility()` in
-  `shared/auth`) and one SQL predicate. `RequeueCommand` with `[null]` ids →
+  `shared/auth`) and one SQL predicate.~~ Done: `shared/auth/Visibility`
+  (`Everything | Tenants`), `AuthContext.visibility()`,
+  `shared/database/VisibilitySql.toCondition`. `RequeueCommand` with `[null]` ids →
   500 not 400 (**owner**: unknown id vs 400). `filter-options` facets not
   tenant-scoped (spec OQ 7, **owner**).
 
@@ -256,5 +258,7 @@ duplicates); `stop` 150 ms poll / 5 s post-SIGKILL wait are not flags.
 **seeder / password-hash** (`docs/spec/seeder.md`, `docs/spec/password-hash.md`):
 event-type names overwritten on every start (catalogue sync or accident?);
 bootstrap admin only when no anchor user exists; see the spec for the rest.
+
+**auth core** (`docs/spec/auth-core.md` §19, 29 questions; artifact published): top calls — `/oauth/token`/introspect/revoke/userinfo/discovery/JWKS mounted inside the Authenticator (Q4); `client_secret_basic` advertised but body-only creds (Q6); refresh-TTL config dead, 7 d compile-time (Q16); `expires_in` literal 3600 (Q15); `GlobalLockSecs` is only `Retry-After` (Q11); `PendingAuth` rows never consumed (Q3); `ratelimit.Prune` never called + 3 orphan buckets (Q12/Q18); RFC deviations 401-vs-400, envelope mix (Q7/Q27); `defaultScopes` string/array (Q9); `auth_time`=`iat`, `email_verified` always true (Q1/Q2). No Go tests for login/introspect/revoke/userinfo/change-password/login-history/stores/purger → conformance suite must cover.
 
 **router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Sub-question open on Q1: failed head retried independently vs failed immediately (ties to Q2). Remaining 49 pending.
