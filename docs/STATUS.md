@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-22, evening)
 
-Reactor green: `usecase` 30 · `sdk` 40 · `server` ~914 · `fcdev` 40 tests.
-Commits on `main` through `75349f7`; one commit per landed/audited unit.
+Reactor green: `usecase` 30 · `sdk` 40 · `server` ~1064 · `fcdev` 40 tests.
+Commits on `main` through `8511636`; one commit per landed/audited unit.
 
 | Unit | Spec | Port | Audit | Notes |
 |---|---|---|---|---|
@@ -29,20 +29,23 @@ Commits on `main` through `75349f7`; one commit per landed/audited unit.
 | platformconfig | `docs/spec/platformconfig.md` | ✔ | ✔ | |
 | audit (read) | `docs/spec/audit.md` | ✔ | ✔ | batch ingest route = sdk unit |
 | shared encryption | `docs/spec/encryption.md` | ✔ | ✔ | Go-minted golden vector |
-| emaildomainmapping | `docs/spec/emaildomainmapping.md` | ✔ | ☐ running | principal reset write flagged |
-| loginattempt | `docs/spec/loginattempt.md` | ✔ | ☐ running | backoff repo contract for auth |
-| identityprovider, event (read) | specs being written | ☐ running | ☐ | |
+| emaildomainmapping | `docs/spec/emaildomainmapping.md` | ✔ | ✔ | principal reset write flagged |
+| loginattempt | `docs/spec/loginattempt.md` | ✔ | ✔ | backoff repo contract for auth; shared `KeysetCursor` |
+| identityprovider | `docs/spec/identityprovider.md` | ✔ | ✔ | app key now via `Env` |
+| event (read) | `docs/spec/event.md` | ✔ | ✔ | ingest POSTs = sdk unit |
+| docs (appdocs + docsapi) | `docs/spec/docs.md` | ✔ | ✔ | published pages copied |
+| dispatchjob, publicapi, scheduledjob (+cron) | specs being written | ☐ running | ☐ | |
 | `Permission` enum (Checks refactor), sealed `Server.Mode`/`Spa`/`SigningKeys.KeyRotation`, `Metrics.Running` | — | ✔ | — | owner-directed refactors, 2026-08-22 |
 | router | `docs/spec/router.md` (50 questions) | ☐ gated on owner rulings | ☐ | artifact published |
 
-Lockfile coverage (`LockfileCoverageTest`): 113 / 243 operations (46%), zero drift.
+Lockfile coverage (`LockfileCoverageTest`): 126 / 243 operations (52%), zero drift.
 
 Router spec rulings so far: Q1 (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs queued siblings, group pending platform-side; failed message → human review → ignore/completed/resend → group re-queued). 49 pending.
 
 ## Next wave (in order)
 
-1. Port (spec → implement → audit), three at a time: identityprovider,
-   event (running); then
+1. Port (spec → implement → audit), three at a time: dispatchjob,
+   publicapi, scheduledjob (running); then
    identityprovider, loginattempt, audit, event, docs; then serviceaccount,
    scheduledjob, principal (security-critical — read carefully),
    portalusers, resetapproval, webauthn, sdksync (wires the `Sync*`
