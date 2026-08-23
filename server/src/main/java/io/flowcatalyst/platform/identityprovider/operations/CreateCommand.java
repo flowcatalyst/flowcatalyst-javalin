@@ -1,0 +1,40 @@
+package io.flowcatalyst.platform.identityprovider.operations;
+
+import java.util.List;
+
+/// The input DTO for [CreateIdentityProvider]. The record's simple name is
+/// the audit log's `operation` column, so it must stay `CreateCommand` — and
+/// because the audit stores it as JSON, `oidcClientSecretRef` must already
+/// be the at-rest form (spec §5), never a plaintext secret.
+///
+/// @param code                unique code (stored verbatim)
+/// @param name                display name
+/// @param type                `INTERNAL` | `OIDC` (lenient)
+/// @param oidcIssuerUrl       required when `OIDC`
+/// @param oidcClientId        required when `OIDC`
+/// @param oidcClientSecretRef at-rest secret ref; `null` / blank = no secret
+/// @param oidcMultiTenant     multi-tenant issuer flag
+/// @param oidcIssuerPattern   issuer regex, optional
+/// @param allowedEmailDomains domains to route to the new provider (created or claimed); `null` = none
+/// @param primaryClientId     client to link on mappings that are new or not yet linked; `null` = none
+/// @param syncRolesFromIdp    reconcile `IDP_SYNC` roles at login
+/// @param allowedRoleIds      roles the provider may confer; `null` / empty = no restriction
+public record CreateCommand(
+        String code,
+        String name,
+        String type,
+        String oidcIssuerUrl,
+        String oidcClientId,
+        String oidcClientSecretRef,
+        boolean oidcMultiTenant,
+        String oidcIssuerPattern,
+        List<String> allowedEmailDomains,
+        String primaryClientId,
+        boolean syncRolesFromIdp,
+        List<String> allowedRoleIds) {
+
+    public CreateCommand {
+        allowedEmailDomains = allowedEmailDomains == null ? null : List.copyOf(allowedEmailDomains);
+        allowedRoleIds = allowedRoleIds == null ? null : List.copyOf(allowedRoleIds);
+    }
+}

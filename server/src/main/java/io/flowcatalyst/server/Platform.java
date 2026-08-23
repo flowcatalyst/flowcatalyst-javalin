@@ -7,6 +7,8 @@ import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.api.AuditLogApi;
+import io.flowcatalyst.platform.event.EventRepository;
+import io.flowcatalyst.platform.event.api.EventApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
@@ -14,9 +16,15 @@ import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.api.DispatchPoolApi;
+import io.flowcatalyst.platform.docs.AppDocRepository;
+import io.flowcatalyst.platform.docs.PublishedDocs;
+import io.flowcatalyst.platform.docs.api.DocsApi;
 import io.flowcatalyst.platform.eventtype.api.EventTypeApi;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.emaildomainmapping.api.EmailDomainMappingApi;
+import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
+import io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption;
+import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.loginattempt.api.LoginAttemptApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
@@ -128,7 +136,12 @@ public final class Platform {
 
         var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
         EmailDomainMappingApi.register(routes, new EmailDomainMappingApi.State(emailDomainMappingRepo, uow));
+        var identityProviderRepo = new IdentityProviderRepository(pool);
+        IdentityProviderApi.register(routes, new IdentityProviderApi.State(identityProviderRepo, new EmailDomainMappingRepository(pool), uow,
+                ClientSecretEncryption.fromEnv(EnvReader.system())));
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
+        DocsApi.register(routes, new DocsApi.State(new AppDocRepository(pool), applicationRepo, PublishedDocs.load()));
+        EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
