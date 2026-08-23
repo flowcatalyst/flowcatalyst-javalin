@@ -305,6 +305,15 @@ Rules promoted from audits (recurring findings become rules here):
   record splits a token into parts (`<time>|<id>`, `a:b:c:d`), an empty part
   is a malformation reported with the parser's one error, never accepted as
   `""` — the pinned malformed table carries an "empty part" row.
+- **Carriers of key material, secrets or ciphertext mask `toString`** —
+  including records whose components are `SecretKey`/`PrivateKey` (JDK key
+  `toString`/`hashCode` leak key-derived bits), not just `String` secrets.
+- **Parse once, carry the facts.** When a helper needs two facts about one
+  input (bytes + "was prefixed"), return a small private record from a
+  single parse rather than re-deriving the second fact from the raw string.
+- **One spelling per encoding contract.** A package that wraps an encoding
+  (`Base64Strict`) uses it everywhere, including `stored()`/canonical
+  re-encoders.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

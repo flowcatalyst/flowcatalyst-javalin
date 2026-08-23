@@ -37,9 +37,12 @@ public sealed interface Decryption permits Decryption.Plaintext, Decryption.Exte
     enum Reason {
         /// Blank — no secret stored.
         EMPTY,
-        /// A bare value that is not an envelope at all (not base64 / too short): plaintext was stored.
+        /// A bare value that is not an envelope at all (not base64, or shorter than the smallest
+        /// envelope): plaintext was stored.
         NOT_ENCRYPTED,
-        /// Claims to be an envelope (`encrypted:` or base64) but is too short or not base64.
+        /// Claims to be an envelope (`encrypted:` prefix) but the payload is not base64 or is
+        /// shorter than the smallest envelope. A bare value never reports this — without the
+        /// prefix, "too short" means plaintext ([#NOT_ENCRYPTED]).
         MALFORMED,
         /// A well-formed envelope neither the current nor the previous key authenticates.
         NO_MATCHING_KEY

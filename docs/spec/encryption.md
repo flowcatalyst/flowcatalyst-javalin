@@ -182,7 +182,7 @@ an "already encrypted" claim.
 |---|---|
 | `encrypt` | always the current key, always v1 |
 | `decrypt` | current, then previous |
-| `needsReEncryption(stored)` | `true` iff the value is an inline envelope (prefixed or bare) that is **not** (v1 ∧ current key opens it): v0, previous-key, or unreadable envelopes; `false` for blank / external / literal / non-base64 plain (nothing inline to migrate). Go also says `true` for short base64 junk and `false` for anything undecodable **[owner?]** — unreadable envelopes are flagged in both |
+| `needsReEncryption(stored)` | `true` iff the value is an inline envelope (prefixed or bare) that is **not** (v1 ∧ current key opens it): v0, previous-key, or unreadable envelopes; `false` for blank / external / literal / non-base64 plain (nothing inline to migrate). The prefix is the claim: `encrypted:` + a payload shorter than 28 bytes is `true` (claims to be an envelope, cannot be read — `reEncrypt` then leaves it), `encrypted:` + non-base64 is not a secret ref at all and is `false`; a bare base64 string shorter than 28 bytes is plaintext, `false`. Go also says `true` for short base64 junk and `false` for anything undecodable **[owner?]** — unreadable envelopes are flagged in both |
 | `reEncrypt(stored)` | decrypt with any key, encrypt with current; `Optional.empty()` when the value is not a decryptable inline envelope (blank, external, literal, no key matches, malformed) — the migration job leaves those rows alone. The output keeps the input's shape: `encrypted:`-prefixed in → prefixed out, bare in → bare out **[owner?]** Go emits bare always (`ReEncrypt` = `Decrypt` ∘ `Encrypt`), silently dropping the prefix; Java preserves the column's convention |
 
 Rotation procedure: set `FLOWCATALYST_APP_KEY` = new, `…_PREVIOUS` = old,
@@ -203,7 +203,11 @@ run the re-encryption job (`needsReEncryption` → `reEncrypt`), unset
 
 - No AAD, no key id in the envelope; key selection is by trial (GCM tag).
 - Thread-safe, stateless apart from one `SecureRandom`; `Cipher` per call.
-- Never logs keys, plaintexts or envelopes.
+- Never logs keys, plaintexts or envelopes; `toString` of every carrier that
+  holds one (`Decryption.Plaintext`, `SecretRef.Plain` / `Literal` /
+  `Encrypted`, `KeyRotation.Single` / `Rotating`) is masked.
+- Random 96-bit nonces: the usual GCM bound (≈ 2^32 encryptions per key
+  before nonce collision becomes a concern) applies; rotate keys long before.
 - The envelope layouts, the base64 alphabet/padding and the `encrypted:` /
   external-scheme prefixes are a storage contract shared with existing rows,
   the Go binary (rollback) and the TS SDK — do not change them.

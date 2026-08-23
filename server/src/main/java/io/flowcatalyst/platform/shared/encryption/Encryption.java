@@ -66,6 +66,12 @@ public final class Encryption {
             public Single {
                 Objects.requireNonNull(current, "current");
             }
+
+            /// `SecretKeySpec#toString` prints a hash derived from the key bytes; keep it out of logs.
+            @Override
+            public String toString() {
+                return "Single[***]";
+            }
         }
 
         /// `FLOWCATALYST_APP_KEY_PREVIOUS` set: `previous` still decrypts, never encrypts.
@@ -73,6 +79,11 @@ public final class Encryption {
             public Rotating {
                 Objects.requireNonNull(current, "current");
                 Objects.requireNonNull(previous, "previous");
+            }
+
+            @Override
+            public String toString() {
+                return "Rotating[***]";
             }
         }
 
@@ -132,10 +143,12 @@ public final class Encryption {
         if (raw.length != KEY_BYTES) {
             throw new IllegalArgumentException("key must be " + KEY_BYTES + " bytes, got " + raw.length);
         }
-        return new SecretKeySpec(raw, "AES");
+        var key = new SecretKeySpec(raw, "AES"); // copies
+        Arrays.fill(raw, (byte) 0);
+        return key;
     }
 
-    public KeyRotation keys() {
+    KeyRotation keys() {
         return keys;
     }
 
@@ -200,11 +213,16 @@ public final class Encryption {
             case SecretRef.Encrypted(var envelope) -> open(envelope);
             case SecretRef.External ext -> new Decryption.External(ext);
             case SecretRef.Literal(var value) -> new Decryption.Plaintext(value);
-            case SecretRef.Plain(var value) -> Base64Strict.decode(value)
-                    .filter(bytes -> bytes.length >= MIN_V0)
+            case SecretRef.Plain(var value) -> bareEnvelope(value)
                     .<Decryption>map(this::open)
                     .orElseGet(() -> new Decryption.Failed(Decryption.Reason.NOT_ENCRYPTED));
         };
+    }
+
+    /// The legacy reading of a bare value: strict base64 of at least the smallest
+    /// envelope. Anything shorter is plaintext, not a malformed envelope.
+    private static Optional<byte[]> bareEnvelope(String value) {
+        return Base64Strict.decode(value).filter(bytes -> bytes.length >= MIN_V0);
     }
 
     /// Open an envelope with every key, v1 layout first when the version byte
@@ -224,13 +242,13 @@ public final class Encryption {
     /// `envelope[offset..offset+12)` is the nonce, the rest ciphertext+tag.
     private Optional<String> openWithAnyKey(byte[] envelope, int offset) {
         for (var key : keys.decryptionKeys()) {
-            var pt = open(key, envelope, offset);
+            var pt = openWith(key, envelope, offset);
             if (pt.isPresent()) return pt;
         }
         return Optional.empty();
     }
 
-    private static Optional<String> open(SecretKey key, byte[] envelope, int offset) {
+    private static Optional<String> openWith(SecretKey key, byte[] envelope, int offset) {
         try {
             var cipher = Cipher.getInstance(TRANSFORMATION);
             var nonce = Arrays.copyOfRange(envelope, offset, offset + NONCE_BYTES);
@@ -249,32 +267,40 @@ public final class Encryption {
     /// `true` when `stored` is an inline envelope (prefixed or bare) that is
     /// not a v1 envelope the **current** key opens — i.e. the rotation job
     /// should rewrite it. Blank, external, literal and non-envelope values
-    /// are `false`: nothing inline to migrate.
+    /// are `false`: nothing inline to migrate. An `encrypted:` value whose
+    /// payload is too short to be an envelope is `true` (it claims to be one
+    /// and cannot be read); a bare base64 string that short is plaintext, `false`.
     public boolean needsReEncryption(String stored) {
-        var envelope = inlineEnvelope(stored);
-        if (envelope.isEmpty()) return false;
-        var bytes = envelope.get();
-        if (bytes.length < MIN_V1 || bytes[0] != VERSION_1) return true;
-        return open(keys.current(), bytes, 1).isEmpty();
+        return inlineEnvelope(stored)
+                .map(inline -> !sealedByCurrentKeyV1(inline.envelope()))
+                .orElse(false);
     }
 
     /// Decrypt with any key and re-seal with the current one, keeping the
     /// input's shape (`encrypted:`-prefixed or bare). Empty when there is no
     /// decryptable inline envelope to migrate — the job leaves that row alone.
     public Optional<String> reEncrypt(String stored) {
-        if (inlineEnvelope(stored).isEmpty()) return Optional.empty();
-        return switch (decrypt(stored)) {
+        return inlineEnvelope(stored).flatMap(inline -> switch (open(inline.envelope())) {
             case Decryption.Plaintext(var pt) -> {
                 var blob = encrypt(pt);
-                yield Optional.of(stored.strip().startsWith(ENCRYPTED_PREFIX) ? ENCRYPTED_PREFIX + blob : blob);
+                yield Optional.of(inline.prefixed() ? ENCRYPTED_PREFIX + blob : blob);
             }
             case Decryption.External _, Decryption.Failed _ -> Optional.empty();
-        };
+        });
+    }
+
+    private boolean sealedByCurrentKeyV1(byte[] envelope) {
+        return envelope.length >= MIN_V1 && envelope[0] == VERSION_1
+                && openWith(keys.current(), envelope, 1).isPresent();
+    }
+
+    /// An inline envelope and the column convention it was stored under.
+    private record Inline(byte[] envelope, boolean prefixed) {
     }
 
     /// The envelope bytes of an `encrypted:` or bare-base64 value; empty for
-    /// every other shape.
-    private static Optional<byte[]> inlineEnvelope(String stored) {
+    /// every other shape, including an `encrypted:` value that does not parse.
+    private static Optional<Inline> inlineEnvelope(String stored) {
         SecretRef ref;
         try {
             ref = SecretRef.parse(stored);
@@ -282,8 +308,8 @@ public final class Encryption {
             return Optional.empty();
         }
         return switch (ref) {
-            case SecretRef.Encrypted(var envelope) -> Optional.of(envelope);
-            case SecretRef.Plain(var value) -> Base64Strict.decode(value).filter(b -> b.length >= MIN_V0);
+            case SecretRef.Encrypted(var envelope) -> Optional.of(new Inline(envelope, true));
+            case SecretRef.Plain(var value) -> bareEnvelope(value).map(b -> new Inline(b, false));
             case SecretRef.None _, SecretRef.External _, SecretRef.Literal _ -> Optional.empty();
         };
     }

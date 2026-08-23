@@ -1,7 +1,6 @@
 package io.flowcatalyst.platform.shared.encryption;
 
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 
@@ -80,7 +79,7 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
 
         @Override
         public String stored() {
-            return ENCRYPTED_PREFIX + Base64.getEncoder().encodeToString(envelope);
+            return ENCRYPTED_PREFIX + Base64Strict.encode(envelope);
         }
 
         @Override
