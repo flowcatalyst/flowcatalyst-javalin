@@ -5,6 +5,8 @@ import io.flowcatalyst.platform.client.api.ClientApi;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.api.ApplicationApi;
+import io.flowcatalyst.platform.audit.AuditLogRepository;
+import io.flowcatalyst.platform.audit.api.AuditLogApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
@@ -118,6 +120,7 @@ public final class Platform {
         ProcessApi.register(routes, new ProcessApi.State(processRepo, uow));
         var corsOriginRepo = new CorsOriginRepository(pool);
         CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow));
+        AuditLogApi.register(routes, new AuditLogApi.State(new AuditLogRepository(pool)));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
