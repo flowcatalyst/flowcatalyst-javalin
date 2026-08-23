@@ -31,7 +31,7 @@ class LockfileCoverageTest {
     /// Paths Go serves outside the lockfile (chi-mounted: auth/session/OAuth/BFF/public/SPA/spec).
     private static final List<String> OUTSIDE_LOCKFILE_PREFIXES = List.of(
             "/health", "/auth/", "/oauth/", "/.well-known/", "/portal/", "/bff/", "/api/me",
-            "/api/public/", "/api/dispatch/", "/api/dispatch-jobs/batch", "/api/audit-logs/batch",
+            "/api/public/", "/api/config/platform", "/api/dispatch/", "/api/dispatch-jobs/batch", "/api/audit-logs/batch",
             "/api/openapi.json", "/api/openapi.yaml", "/q/openapi", "/swagger-ui", "/mcp", "/router/");
 
     @Test

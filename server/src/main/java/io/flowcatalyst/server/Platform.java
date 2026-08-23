@@ -196,7 +196,7 @@ public final class Platform {
         String p = ctx.path();
         return p.equals("/auth/login") || p.equals("/auth/logout")
                 || p.startsWith("/auth/password-reset/")
-                || p.startsWith("/api/public/")
+                || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")
                 || p.equals("/api/dispatch/process")
                 || p.equals("/api/openapi.json") || p.equals("/api/openapi.yaml");
