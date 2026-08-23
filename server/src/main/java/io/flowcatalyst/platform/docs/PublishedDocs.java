@@ -12,9 +12,11 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.ProviderNotFoundException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -27,7 +29,8 @@ import java.util.stream.Stream;
 
 /// The platform's own documentation (spec §2): the curated `docs/published/`
 /// Markdown pages compiled into the jar, so the served docs always match the
-/// running build. Read once, lazily; the index is immutable afterwards.
+/// running build. Read once, when the composition root builds it (spec §2);
+/// the index is immutable afterwards.
 ///
 /// The `NN-` filename prefix fixes the reading order and is stripped from the
 /// slug; the title is the page's first `# ` heading, else the slug. Anything
@@ -79,7 +82,9 @@ public final class PublishedDocs {
                 String title = Markdown.firstHeading(read(loader, resource)).orElse(slug);
                 pages.add(new Page(resource, slug, title));
             }
-        } catch (IOException | URISyntaxException | UncheckedIOException e) {
+        } catch (IOException | URISyntaxException | UncheckedIOException
+                 | FileSystemNotFoundException | ProviderNotFoundException e) {
+            // The last two: a class-loader scheme NIO cannot mount (spec §2 — unreadable ⇒ empty, never a failed boot).
             LOG.warn("published docs under {} are unreadable; serving none", root, e);
             pages.clear();
         }
@@ -107,8 +112,9 @@ public final class PublishedDocs {
 
     // ── Classpath enumeration ─────────────────────────────────────────────
 
-    /// The `.md` file names directly under `root`, name-sorted, whether the
-    /// corpus sits in an exploded directory or inside a jar.
+    /// The `.md` file names directly under `root`, name-sorted (the spec's
+    /// filename order — `Files.list` itself is unordered), whether the corpus
+    /// sits in an exploded directory (`file:`) or inside a jar (`jar:`).
     private static List<String> listMarkdown(ClassLoader loader, String root) throws IOException, URISyntaxException {
         URL url = loader.getResource(root);
         if (url == null) return List.of();

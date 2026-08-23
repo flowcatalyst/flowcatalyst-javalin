@@ -29,7 +29,7 @@ transforms page content.
 | Slug | the filename without `.md` and without a leading `\d+-` prefix (`10-platform-overview.md` → `platform-overview`). Prefixed forms (`10-platform-overview`), paths (`published/…`) and traversal (`../x`) are **not** slugs — they are simply absent → 404 |
 | Title | the page's first line that, trimmed, starts with `# ` — the heading text trimmed; else the slug |
 | Content | the file bytes verbatim (UTF-8) |
-| Loading | once per process, lazily, memoised; an unreadable corpus yields an empty platform list rather than an error |
+| Loading | once per process — the composition root builds the index at startup and the handlers read the memoised result; an unreadable corpus (I/O failure, or a class-loader scheme NIO cannot mount) is logged and yields an empty platform list rather than a failed boot. The enumeration must work from an exploded directory (`file:`) *and* from inside the jar (`jar:`); the jar carries the `docs/published/` directory entry `maven-jar-plugin` writes |
 
 Current corpus (titles are read from the files, not hard-coded):
 
@@ -149,7 +149,7 @@ Pinned slug table (`AppDocSlug.parse`):
 
 | Rule | Accepted | Rejected |
 |---|---|---|
-| lowercase alnum + hyphen, starts alnum | `guide`, `getting-started`, `v2`, `2fa-setup`, `a` | `Getting-Started`, `-lead`, `has space`, `under_score`, `dots.md`, `` (empty), `   ` (blank) |
+| lowercase alnum + hyphen, starts alnum | `guide`, `getting-started`, `v2`, `2fa-setup`, `a` | `Getting-Started`, `-lead`, `has space`, `under_score`, `dots.md`, `` (empty), `   ` (blank), `null` |
 | trimmed before matching | `  guide  ` → `guide` | — |
 
 **Load-bearing or accident?** (5) The sync writes **no domain event and no
@@ -164,7 +164,9 @@ payload order — kept.
 ## 6. Tests
 
 - `PublishedDocsTest`: order starts at `platform-overview`; slugs carry no
-  prefix; titles from the first heading; bad slugs absent.
+  prefix; titles from the first heading; bad slugs absent; a jarred corpus
+  (fresh and already-mounted) indexes like the exploded directory; a missing
+  corpus is an empty index.
 - `AppDocTest`: slug accept/reject tables; title derivation table.
 - `AppDocRepositoryTest`: replace creates / updates in place (id + `created_at`
   kept) / deletes unlisted; order by position; orphan-safe spine.

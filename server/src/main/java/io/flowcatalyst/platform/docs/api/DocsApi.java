@@ -70,7 +70,7 @@ public final class DocsApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     private static List<DocSummary> platformSummaries(State s) {
-        return s.published().pages().stream().map(p -> new DocSummary(p.slug(), p.title())).toList();
+        return s.published().pages().stream().map(DocSummary::from).toList();
     }
 
     /// One group per application that has pages *and* still exists — an
@@ -103,6 +103,10 @@ public final class DocsApi {
     public record DocSummary(String slug, String title) {
         static DocSummary from(AppDoc.Summary s) {
             return new DocSummary(s.slug(), s.title());
+        }
+
+        static DocSummary from(PublishedDocs.Page p) {
+            return new DocSummary(p.slug(), p.title());
         }
     }
 

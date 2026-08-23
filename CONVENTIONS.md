@@ -351,6 +351,12 @@ Rules promoted from audits (recurring findings become rules here):
   (`Encryption.fromKeys`). Reading the process environment inside the
   composition root silently ignores environments loaded from a map or `.env`
   (fcdev).
+- **A classpath-enumerated corpus is tested from a jar, not just
+  `target/classes`.** When code lists resources under a classpath directory
+  (`getResource(dir)` → `file:`/`jar:`), its test packs a fixture jar (with
+  directory entries) and loads through a `URLClassLoader`, once fresh and once
+  with the jar already mounted as a zip filesystem — surefire only ever
+  exercises the exploded-directory branch.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

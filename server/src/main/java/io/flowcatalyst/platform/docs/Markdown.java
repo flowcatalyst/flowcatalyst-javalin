@@ -14,12 +14,10 @@ final class Markdown {
     /// empty when the content has no level-one heading.
     static Optional<String> firstHeading(String content) {
         if (content == null) return Optional.empty();
-        for (String line : content.split("\n", -1)) {
-            String trimmed = line.strip();
-            if (trimmed.startsWith("# ")) {
-                return Optional.of(trimmed.substring(2).strip());
-            }
-        }
-        return Optional.empty();
+        return content.lines()
+                .map(String::strip)
+                .filter(line -> line.startsWith("# "))
+                .findFirst()
+                .map(line -> line.substring(2).strip());
     }
 }

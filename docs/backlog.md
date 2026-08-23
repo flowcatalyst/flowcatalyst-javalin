@@ -159,6 +159,29 @@ item names its origin; items marked **owner** need Andrew's call.
   `failure(type, identifier, reason, principalId, ip, ua)`) or a small
   `Details` record when the first caller lands.
 
+## From the docs audit
+- `SyncAppDocs` is a `TxOperation` whose execute phase is one raw
+  `dbTx()` write (`AppDocRepository.replaceForApplication`) — no domain
+  event, no `aud_logs` row (spec §5, open question 5, kept as Go). Every
+  other sync (`SyncEventTypes`, roles…) emits a `<X>Synced` rollup; if the
+  owner wants the docs sync in the audit trail, add `AppDocsSynced` to a new
+  `operations/AppDocEvents.java` and emit it via `scoped.emitEvent` — the
+  repository call stays as is.
+- `AppDocRepository.replaceForApplication` reads the "existing" snapshot on
+  the pooled `DSLContext` while the caller's transaction is open (the same
+  shape as every `Operation` execute phase, which reads before the `Plan`'s
+  transaction). Two concurrent syncs of one application therefore race
+  last-writer-wins at row level (ON CONFLICT serialises the upserts; the
+  unlisted-slug delete can remove a row the other sync just inserted).
+  Harmless for a single SDK per application; a `SELECT … FOR UPDATE` on the
+  application's rows through `txDsl` would serialise them if it ever matters.
+- `PublishedDocs.listMarkdown` enumerates a classpath *directory*, which only
+  works where the class loader hands out a `file:` or `jar:` URL with a
+  directory entry (maven-jar-plugin does; a native image or an exotic loader
+  would serve an empty platform index, by design). A committed
+  `docs/published/index` manifest (one filename per line) would make the
+  corpus loader-independent at the cost of a second place to list pages.
+
 ## Server API the fcdev module wished existed (fcdev agent)
 
 - `Server.Running.stop()` must stop and drain subsystems once they exist.

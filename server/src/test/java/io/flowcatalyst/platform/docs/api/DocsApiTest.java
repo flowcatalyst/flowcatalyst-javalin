@@ -14,6 +14,8 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
@@ -151,13 +153,12 @@ class DocsApiTest {
         assertThat(doc.get("content").asText()).startsWith("# Platform Overview");
     }
 
-    @Test
-    void platformPageUnknownOrPrefixedOrTraversalSlugsAre404() {
-        for (String slug : List.of("10-platform-overview", "nope", "..%2Fembed.go")) {
-            var r = http.get("/api/docs/platform/" + slug, ANCHOR);
-            assertThat(r.statusCode()).as(slug).isEqualTo(404);
-            assertThat(json(r).get("error").asText()).isEqualTo("Doc_NOT_FOUND");
-        }
+    @ParameterizedTest(name = "''{0}'' is not a platform slug")
+    @ValueSource(strings = {"10-platform-overview", "nope", "..%2Fembed.go"})
+    void platformPageUnknownOrPrefixedOrTraversalSlugsAre404(String slug) {
+        var r = http.get("/api/docs/platform/" + slug, ANCHOR);
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).get("error").asText()).isEqualTo("Doc_NOT_FOUND");
     }
 
     @Test
