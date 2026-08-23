@@ -85,6 +85,14 @@ item names its origin; items marked **owner** need Andrew's call.
   (`clientId/since/until/offset`, spec OQ 3). `AuditLog.operationJson` is a
   mutable `JsonNode` in a record.
 
+## From the emaildomainmapping port
+- `EmailDomainMappingRepository.resetOidcUsersToInternal` writes
+  `iam_principals`/`iam_principal_roles` (move-provider to INTERNAL) — move
+  into the principal aggregate when it lands. Temporary IDP read lookups
+  there too. Seeded schema catalogue names `platform:admin:edm:*` while the
+  emitted type is `platform:admin:email-domain-mapping:*` (**owner**).
+  `/lookup` is ungated (spec OQ 1, **owner**).
+
 ## From the encryption port
 - `fcdev` `DevBootstrap.ensureAppKeyFile` should call
   `Encryption.generateKey()` (bytes identical today; one source of truth).

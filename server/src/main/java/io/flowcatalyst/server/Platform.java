@@ -15,6 +15,10 @@ import io.flowcatalyst.platform.connection.api.ConnectionApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.api.DispatchPoolApi;
 import io.flowcatalyst.platform.eventtype.api.EventTypeApi;
+import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
+import io.flowcatalyst.platform.emaildomainmapping.api.EmailDomainMappingApi;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.loginattempt.api.LoginAttemptApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.api.RoleApi;
@@ -121,6 +125,10 @@ public final class Platform {
         var corsOriginRepo = new CorsOriginRepository(pool);
         CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow));
         AuditLogApi.register(routes, new AuditLogApi.State(new AuditLogRepository(pool)));
+
+        var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
+        EmailDomainMappingApi.register(routes, new EmailDomainMappingApi.State(emailDomainMappingRepo, uow));
+        LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
