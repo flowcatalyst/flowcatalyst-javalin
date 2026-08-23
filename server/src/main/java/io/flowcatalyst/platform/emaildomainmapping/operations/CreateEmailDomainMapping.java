@@ -56,7 +56,7 @@ public final class CreateEmailDomainMapping {
     private static TwoFactorPolicy policyOf(CreateCommand cmd) {
         int days = cmd.rememberDeviceDays() == null || cmd.rememberDeviceDays() <= 0
                 ? TwoFactorPolicy.DEFAULT_REMEMBER_DEVICE_DAYS : cmd.rememberDeviceDays();
-        return new TwoFactorPolicy(cmd.require2fa(), MfaMethod.parseAll(cmd.allowed2faMethods()), cmd.rememberDeviceEnabled(), days);
+        return new TwoFactorPolicy(cmd.require2fa(), MfaMethod.parseAllStrict(cmd.allowed2faMethods()), cmd.rememberDeviceEnabled(), days);
     }
 
     private static List<String> orEmpty(List<String> ids) {

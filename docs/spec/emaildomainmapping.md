@@ -42,10 +42,14 @@ delete so migrated installs do not accumulate orphans.
 Client ids on the mapping are **not** validated against `tnt_clients`
 (**accident?** — kept).
 
-Lenient enum read: unknown stored `scope_type` → `ANCHOR` (**accident?** —
-masks corruption; kept, as everywhere). A stored `method` that is not
-`TOTP`/`EMAIL_PIN` fails the read (the Go reader passed it through
-verbatim) — **accident?**; such a row cannot be produced through this API.
+Lenient enum reads, as everywhere (**accident?** — masks corruption;
+kept): unknown stored `scope_type` → `ANCHOR`; a stored `method` that is
+not `TOTP`/`EMAIL_PIN` is **dropped** from `allowed2faMethods` on read
+(never an error — the Go reader passed it through verbatim; such a row
+cannot be produced through this API). Both enums keep the wire strict
+(`INVALID_SCOPE_TYPE`, `INVALID_2FA_METHOD`, §4): the stored reader and
+the wire reader are two methods on the enum, never one lenient reader
+used for both.
 
 The seeder creates one mapping for the bootstrap admin's domain
 (`ANCHOR`, internal IDP, 2FA off, `rememberDeviceDays 30`) — the table is
@@ -58,7 +62,7 @@ There is no status. Transitions:
 | Transition | Effect | Precondition / error |
 |---|---|---|
 | `create` | new `edm_` id, normalised domain, empty lists, `rememberDeviceDays = 30` | domain not already mapped → `DOMAIN_ALREADY_MAPPED` (409) |
-| `update` | replaces the grant / 2FA fields as listed in §1; `updatedAt = now` | resulting 2FA policy consistent (§4) |
+| `update` | one `update(Changes)` transition: replaces the grant / 2FA fields as listed in §1; `updatedAt = now` | resulting (merged) 2FA policy consistent (§4) |
 | `moveToProvider(target)` | `identityProviderId = target`; when the **target is `INTERNAL`**, every `USER` principal on the domain whose `idp_type = OIDC` is converted back to internal auth (`idp_type = INTERNAL`, `external_idp_id = NULL`, `IDP_SYNC`-sourced role rows removed); moving **toward an OIDC** provider touches no principal (the OIDC callback matches existing users by email) | target differs from current → `ALREADY_ON_PROVIDER` (409); target exists → `IdentityProvider_NOT_FOUND` (404) |
 | `delete` | hard delete of the row and every junction row (incl. legacy `allowed_roles`) | — |
 
@@ -125,6 +129,22 @@ with 6 fractional digits, `Z`.
 
 Rules are checked in the order listed. Malformed JSON body → 400
 `INVALID_JSON` (transport).
+
+The domain format is what login routing (`/lookup`, the future
+`/auth/check-domain`) matches live input against, so it is pinned here
+and by `EmailDomainMappingTest`'s accept / reject tables (one parser,
+`EmailDomain.parse`, used by the create command and the entity factory):
+
+| Rule | Accepted | Rejected |
+|---|---|---|
+| **Blank** — `null`, `""`, whitespace-only → `EMAIL_DOMAIN_REQUIRED`, not `INVALID_EMAIL_DOMAIN` | — | — |
+| **Trim** — leading/trailing whitespace (anything `String.trim` removes) dropped before matching and storage | `'  example.com  '` → `example.com` | — |
+| **Case** — lower-cased (`Locale.ROOT`) before matching and storage; uniqueness is on the lower-cased form | `Example.COM` → `example.com` | — |
+| **Dot** — at least one `.` | `a.b`, `sub.domain.example.co.uk`, `xn--bcher-kva.example` | `nodot`, `localhost` |
+| **Space** — no interior `' '` | — | `exam ple.com` |
+| **Slash** — no `/` (no paths, no schemes) | — | `example.com/path`, `https://example.com` |
+| **At** — no `@` (a domain, not an address) | — | `user@example.com`, `@example.com` |
+| **Edge** — nothing else is checked: labels, leading/trailing dots, underscores, interior tabs all pass (**accident?**) | `example.`, `.com`, `exa_mple.com`, `.` | — |
 
 ## 5. Authorization placement
 
@@ -210,6 +230,9 @@ kept because the move is incomplete without it (§2).
 6. The `email-domain-mapping:*` permissions exist but every route is
    anchor-only. Intended?
 7. `scopeType` is immutable (no route changes it). Intended?
-8. Lenient `scope_type` read; strict stored-method read. Keep?
+8. Lenient stored reads: unknown `scope_type` → `ANCHOR`; an unknown
+   stored `method` is dropped on read (the Go passed it through verbatim;
+   the alternative is to fail the read of every mapping on one bad junction
+   row). Keep the lenient drop?
 9. Seeded catalogue type `platform:admin:edm:*` vs emitted
    `platform:admin:email-domain-mapping:*`.

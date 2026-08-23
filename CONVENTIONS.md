@@ -117,6 +117,17 @@ rules it established (from its audit):
 - **Enums:** the constant name is the stored/wire string; `parse(String)`
   is the lenient reader; never `valueOf` on external input; switch on them
   exhaustively (no `default`) inside the aggregate.
+- **Two readers when the spec splits stored and wire.** When an enum's
+  stored value reads leniently (unknown → default, or unknown entries dropped
+  for a set-valued junction) but the wire rejects unknown values with a
+  pinned code, the enum carries both readers and nothing else does:
+  `parse(String)` / `readStored(List<String>)` — the lenient stored reader
+  the repository alone calls — and `parseStrict(String)` /
+  `parseAllStrict(List<String>)` — the wire reader that throws the
+  validation error once (code and message live on the enum), called by the
+  validate phase / DTO alone. `ScopeType` and `MfaMethod` are the models; a
+  single lenient `parse` remains right only where the spec says an unknown
+  wire value is not an error (`ApplicationType`, `DispatchMode`).
 - **API:** DTO ↔ entity mapping lives in `api/` as `Request.toCommand()` /
   `Response.from(entity)`; handlers are four lines; read-side rules
   (`visible(ac, et)`, `listFilter(ctx)`) are private helpers in the Api

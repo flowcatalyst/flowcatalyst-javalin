@@ -37,20 +37,4 @@ public record TwoFactorPolicy(boolean required, List<MfaMethod> allowedMethods, 
                     "at least one 2FA method must be allowed when require2fa is set");
         }
     }
-
-    public TwoFactorPolicy withRequired(boolean newRequired) {
-        return new TwoFactorPolicy(newRequired, allowedMethods, rememberDeviceEnabled, rememberDeviceDays);
-    }
-
-    public TwoFactorPolicy withAllowedMethods(List<MfaMethod> newMethods) {
-        return new TwoFactorPolicy(required, newMethods, rememberDeviceEnabled, rememberDeviceDays);
-    }
-
-    public TwoFactorPolicy withRememberDeviceEnabled(boolean enabled) {
-        return new TwoFactorPolicy(required, allowedMethods, enabled, rememberDeviceDays);
-    }
-
-    public TwoFactorPolicy withRememberDeviceDays(int days) {
-        return new TwoFactorPolicy(required, allowedMethods, rememberDeviceEnabled, days);
-    }
 }

@@ -413,6 +413,20 @@ class EmailDomainMappingOperationsTest {
 
     // ── Repository reads ───────────────────────────────────────────────────
 
+    /// The `method` junction is a foreign-writable column: a value outside
+    /// the closed set (hand-edited, or a future method this build predates)
+    /// must not take the read down — it is dropped (spec §1, open question 8).
+    @Test
+    void readsDropAnUnknownStoredMethodInsteadOfFailing() {
+        var seeded = runAsAnchor(CreateEmailDomainMapping.of(repo), new CreateCommand(domain("edm-read-mfa"), IDP, "ANCHOR", null,
+                null, null, null, true, List.of("TOTP"), false, null));
+        DB.insertInto(TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS).set(TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS.EMAIL_DOMAIN_MAPPING_ID, seeded.mappingId())
+                .set(TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS.METHOD, "SMS").execute();
+
+        assertThat(reload(seeded.mappingId()).twoFactor().allowedMethods()).containsExactly(MfaMethod.TOTP);
+        assertThat(repo.findAll()).extracting(EmailDomainMapping::id).contains(seeded.mappingId());
+    }
+
     @Test
     void readsFindByDomainByProviderAndAllInDomainOrder() {
         String target = identityProvider("OIDC");

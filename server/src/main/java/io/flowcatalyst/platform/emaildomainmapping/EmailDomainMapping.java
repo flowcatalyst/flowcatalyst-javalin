@@ -79,7 +79,44 @@ public record EmailDomainMapping(
                 additionalClientIds, grantedClientIds, requiredOidcTenantId, twoFactor, createdAt, Instant.now());
     }
 
-    /// Replaces the second-factor policy.
+    /// The admin update (spec §1 absent-value rules): `primaryClientId` and
+    /// `requiredOidcTenantId` are replaced wholesale (`null` clears); every
+    /// other non-null field of `changes` replaces the current value; the
+    /// resulting policy must be consistent. Domain, provider and scope are
+    /// not updatable — re-pointing goes through [#moveToProvider].
+    ///
+    /// @throws UseCaseException validation `2FA_METHOD_REQUIRED` (see [TwoFactorPolicy#checkConsistent])
+    public EmailDomainMapping update(Changes changes) {
+        TwoFactorPolicy policy = new TwoFactorPolicy(
+                changes.require2fa() == null ? twoFactor.required() : changes.require2fa(),
+                changes.allowed2faMethods() == null ? twoFactor.allowedMethods() : changes.allowed2faMethods(),
+                changes.rememberDeviceEnabled() == null ? twoFactor.rememberDeviceEnabled() : changes.rememberDeviceEnabled(),
+                changes.rememberDeviceDays() == null ? twoFactor.rememberDeviceDays() : changes.rememberDeviceDays());
+        policy.checkConsistent();
+        return new EmailDomainMapping(id, emailDomain, identityProviderId, scopeType,
+                changes.primaryClientId(),
+                changes.additionalClientIds() == null ? additionalClientIds : changes.additionalClientIds(),
+                changes.grantedClientIds() == null ? grantedClientIds : changes.grantedClientIds(),
+                changes.requiredOidcTenantId(),
+                policy, createdAt, Instant.now());
+    }
+
+    /// The fields an admin update may replace. `primaryClientId` and
+    /// `requiredOidcTenantId` are **wholesale**: `null` clears them (spec §1,
+    /// open question 3). Every other component is `null` = leave untouched;
+    /// an empty list clears that list; `rememberDeviceDays` is stored as
+    /// given, including `0` and negatives (spec §1, open question 4).
+    public record Changes(String primaryClientId, List<String> additionalClientIds, List<String> grantedClientIds,
+                          String requiredOidcTenantId, Boolean require2fa, List<MfaMethod> allowed2faMethods,
+                          Boolean rememberDeviceEnabled, Integer rememberDeviceDays) {
+        public Changes {
+            additionalClientIds = additionalClientIds == null ? null : List.copyOf(additionalClientIds);
+            grantedClientIds = grantedClientIds == null ? null : List.copyOf(grantedClientIds);
+            allowed2faMethods = allowed2faMethods == null ? null : List.copyOf(allowed2faMethods);
+        }
+    }
+
+    /// Replaces the second-factor policy (construction time — [#update] is the admin path).
     ///
     /// @throws UseCaseException validation `2FA_METHOD_REQUIRED` (see [TwoFactorPolicy#checkConsistent])
     public EmailDomainMapping withTwoFactor(TwoFactorPolicy policy) {
@@ -88,7 +125,7 @@ public record EmailDomainMapping(
                 additionalClientIds, grantedClientIds, requiredOidcTenantId, policy, createdAt, Instant.now());
     }
 
-    // ── Copies ─────────────────────────────────────────────────────────────
+    // ── Copies (construction-time defaults for the create chain; admin updates go through update(Changes)) ──
 
     public EmailDomainMapping withPrimaryClientId(String newPrimaryClientId) {
         return new EmailDomainMapping(id, emailDomain, identityProviderId, scopeType, newPrimaryClientId,

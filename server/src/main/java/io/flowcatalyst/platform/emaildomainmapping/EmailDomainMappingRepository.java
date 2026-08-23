@@ -110,16 +110,18 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
         }
     }
 
-    // ── Temporary cross-aggregate reads ────────────────────────────────────
-    // Read-only, by id, into tables owned by the identity-provider and
-    // principal aggregates; kept here so this package has no compile-time
-    // dependency on units that have not landed. Replace with those
-    // repositories once they exist (spec §8).
+    // ── TEMPORARY cross-aggregate access (spec §8) ─────────────────────────
+    // Reads into tables owned by the `identityprovider` aggregate, plus the
+    // move's one write into tables owned by the `principal` aggregate; kept
+    // here so this package has no compile-time dependency on units that have
+    // not landed. Each member names its future owner; replace with that
+    // aggregate's repository once it exists.
 
-    /// What this aggregate needs to know about an identity provider: its
-    /// display name (response enrichment) and whether it is the internal
-    /// (password) provider (the move's direction). Any type other than
-    /// `OIDC` reads as internal, as the provider aggregate's lenient reader does.
+    /// TEMPORARY (owner: the `identityprovider` aggregate) — what this
+    /// aggregate needs to know about an identity provider: its display name
+    /// (response enrichment) and whether it is the internal (password)
+    /// provider (the move's direction). Any type other than `OIDC` reads as
+    /// internal, as the provider aggregate's lenient reader does.
     public record IdentityProviderRef(String id, String name, String type) {
         public boolean isInternal() {
             return !"OIDC".equals(type);
@@ -132,7 +134,8 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                 .fetchOptional(r -> new IdentityProviderRef(r.value1(), r.value2(), r.value3()));
     }
 
-    /// Display names keyed by provider id for every id that exists.
+    /// TEMPORARY (owner: the `identityprovider` aggregate) — display names
+    /// keyed by provider id for every id that exists.
     public Map<String, String> identityProviderNames(Collection<String> ids) {
         if (ids.isEmpty()) return Map.of();
         return dsl.select(OAUTH_IDENTITY_PROVIDERS.ID, OAUTH_IDENTITY_PROVIDERS.NAME)
@@ -140,13 +143,16 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                 .fetchMap(OAUTH_IDENTITY_PROVIDERS.ID, OAUTH_IDENTITY_PROVIDERS.NAME);
     }
 
-    /// TEMPORARY — the move's principal reset (spec §2), the one write
-    /// outside this aggregate's tables: every `USER` principal on
-    /// `emailDomain` whose `idp_type` is `OIDC` is converted back to internal
-    /// auth (`idp_type = INTERNAL`, `external_idp_id = NULL`) and its
-    /// `IDP_SYNC`-sourced role rows are removed. Returns how many principals
-    /// were converted. To be replaced by the principal repository's persister
-    /// when that aggregate lands.
+    /// TEMPORARY (owner: the `principal` aggregate,
+    /// `io.flowcatalyst.platform.principal`) — the move's principal reset
+    /// (spec §2), the one write outside this aggregate's tables: every `USER`
+    /// principal on `emailDomain` whose `idp_type` is `OIDC` is converted back
+    /// to internal auth (`idp_type = INTERNAL`, `external_idp_id = NULL`) and
+    /// its `IDP_SYNC`-sourced role rows are removed. Returns how many
+    /// principals were converted. The string literals are that aggregate's
+    /// enum constants, spelled here until it lands; then this becomes a call
+    /// to its repository (a `resetToInternal(domain)` persister) and the
+    /// principal's own reader decides the `idp_type` semantics.
     public int resetOidcUsersToInternal(String emailDomain, DbTx tx) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
         List<String> ids = txDsl.update(IAM_PRINCIPALS)
@@ -236,7 +242,7 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                 row.getRequiredOidcTenantId(),
                 new TwoFactorPolicy(
                         row.getRequire_2fa(),
-                        MfaMethod.parseAll(j.methods.getOrDefault(id, List.of())),
+                        MfaMethod.readStored(j.methods.getOrDefault(id, List.of())),
                         row.getRememberDeviceEnabled(),
                         row.getRememberDeviceDays()),
                 row.getCreatedAt().toInstant(),

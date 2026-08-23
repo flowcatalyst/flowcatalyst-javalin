@@ -91,7 +91,8 @@ item names its origin; items marked **owner** need Andrew's call.
   into the principal aggregate when it lands. Temporary IDP read lookups
   there too. Seeded schema catalogue names `platform:admin:edm:*` while the
   emitted type is `platform:admin:email-domain-mapping:*` (**owner**).
-  `/lookup` is ungated (spec OQ 1, **owner**).
+  `/lookup` is ungated (spec OQ 1, **owner**). `EmailDomain.parse` accepts
+  `.`, `example.`, `.com`, `exa_mple.com` (pinned, **owner**).
 
 ## From the encryption port
 - `fcdev` `DevBootstrap.ensureAppKeyFile` should call

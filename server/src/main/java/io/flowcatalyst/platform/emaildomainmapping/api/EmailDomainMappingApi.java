@@ -75,7 +75,8 @@ public final class EmailDomainMappingApi {
 
     private static void list(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        ctx.json(MappingListResponse.from(s.repo().findAll(), s.repo()));
+        List<EmailDomainMapping> mappings = s.repo().findAll();
+        ctx.json(MappingListResponse.from(mappings, idpNames(s, mappings)));
     }
 
     /// No gate (spec §3): answers `{"found": false}` instead of 404 when unmapped.
@@ -91,8 +92,7 @@ public final class EmailDomainMappingApi {
 
     private static void getByDomain(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        String domain = requireDomain(ctx.pathParam("domain"), "domain path param is required");
-        EmailDomainMapping m = byDomain(s, domain);
+        EmailDomainMapping m = byDomain(s, ctx.pathParam("domain"));
         ctx.json(MappingResponse.from(m, idpName(s, m)));
     }
 
@@ -142,6 +142,7 @@ public final class EmailDomainMappingApi {
         return s.repo().findByEmailDomain(domain).orElseThrow(() -> HttpError.notFound("EmailDomainMapping", domain));
     }
 
+    /// The lookup's `domain` query parameter, which must be present and non-empty (spec §3).
     private static String requireDomain(String domain, String message) {
         if (domain == null || domain.isEmpty()) throw HttpError.badRequest("DOMAIN_REQUIRED", message);
         return domain;
@@ -150,6 +151,11 @@ public final class EmailDomainMappingApi {
     /// The mapping's provider display name, or `null` when the provider row does not exist.
     private static String idpName(State s, EmailDomainMapping m) {
         return s.repo().identityProvider(m.identityProviderId()).map(EmailDomainMappingRepository.IdentityProviderRef::name).orElse(null);
+    }
+
+    /// Every distinct provider's display name in one query (ids without a row are absent).
+    private static Map<String, String> idpNames(State s, List<EmailDomainMapping> mappings) {
+        return s.repo().identityProviderNames(mappings.stream().map(EmailDomainMapping::identityProviderId).distinct().toList());
     }
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
@@ -216,11 +222,9 @@ public final class EmailDomainMappingApi {
             mappings = mappings == null ? List.of() : List.copyOf(mappings);
         }
 
-        /// Resolves every distinct provider name in one query.
-        public static MappingListResponse from(List<EmailDomainMapping> mappings, EmailDomainMappingRepository repo) {
-            Map<String, String> names = repo.identityProviderNames(
-                    mappings.stream().map(EmailDomainMapping::identityProviderId).distinct().toList());
-            var items = mappings.stream().map(m -> MappingResponse.from(m, names.get(m.identityProviderId()))).toList();
+        /// `identityProviderNames` is display name by provider id; a missing key omits the name.
+        public static MappingListResponse from(List<EmailDomainMapping> mappings, Map<String, String> identityProviderNames) {
+            var items = mappings.stream().map(m -> MappingResponse.from(m, identityProviderNames.get(m.identityProviderId()))).toList();
             return new MappingListResponse(items, items.size());
         }
     }

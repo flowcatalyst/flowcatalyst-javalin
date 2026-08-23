@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.net.http.HttpResponse;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -308,7 +309,7 @@ class EmailDomainMappingApiTest {
         String id = create(domain("gate"), idp);
         String body = "{\"emailDomain\":\"" + domain("gate2") + "\",\"identityProviderId\":\"idp_x\",\"scopeType\":\"ANCHOR\"}";
 
-        for (var r : java.util.List.of(
+        for (var r : List.of(
                 http.get("/api/email-domain-mappings", CLIENT_SCOPED),
                 http.post("/api/email-domain-mappings", body, CLIENT_SCOPED),
                 http.get("/api/email-domain-mappings/by-domain/" + domain("gate"), CLIENT_SCOPED),
