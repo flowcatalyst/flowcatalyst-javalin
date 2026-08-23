@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-22, evening)
 
-Reactor green: `usecase` 30 · `sdk` 40 · `server` ~560 · `fcdev` 40 tests.
-Commits on `main` through `67d550f` (subscription audited); one commit per landed/audited unit.
+Reactor green: `usecase` 30 · `sdk` 40 · `server` ~914 · `fcdev` 40 tests.
+Commits on `main` through `75349f7`; one commit per landed/audited unit.
 
 | Unit | Spec | Port | Audit | Notes |
 |---|---|---|---|---|
@@ -24,18 +24,25 @@ Commits on `main` through `67d550f` (subscription audited); one commit per lande
 | subscription | `docs/spec/subscription.md` | ✔ | ✔ | `SyncSubscriptions` ported, sdksync route not wired |
 | client | `docs/spec/client.md` | ✔ | ✔ | uses application's repos for `/clients/{id}/applications*` |
 | application | `docs/spec/application.md` | ✔ | ✔ | provision-service-account / provision-login-client deferred |
-| process, cors, platformconfig | specs being written | ☐ port running (3 agents) | ☐ | |
+| process | `docs/spec/process.md` | ✔ | ✔ | |
+| cors | `docs/spec/cors.md` | ✔ | ✔ | CORS *filter* still to build (owner decision) |
+| platformconfig | `docs/spec/platformconfig.md` | ✔ | ✔ | |
+| audit (read) | `docs/spec/audit.md` | ✔ | ✔ | batch ingest route = sdk unit |
+| shared encryption | `docs/spec/encryption.md` | ✔ | ✔ | Go-minted golden vector |
+| emaildomainmapping | `docs/spec/emaildomainmapping.md` | ✔ | ☐ running | principal reset write flagged |
+| loginattempt | `docs/spec/loginattempt.md` | ✔ | ☐ running | backoff repo contract for auth |
+| identityprovider, event (read) | specs being written | ☐ running | ☐ | |
 | `Permission` enum (Checks refactor), sealed `Server.Mode`/`Spa`/`SigningKeys.KeyRotation`, `Metrics.Running` | — | ✔ | — | owner-directed refactors, 2026-08-22 |
 | router | `docs/spec/router.md` (50 questions) | ☐ gated on owner rulings | ☐ | artifact published |
 
-Lockfile coverage (`LockfileCoverageTest`): 76 / 243 operations (31%), zero drift.
+Lockfile coverage (`LockfileCoverageTest`): 113 / 243 operations (46%), zero drift.
 
 Router spec rulings so far: Q1 (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs queued siblings, group pending platform-side; failed message → human review → ignore/completed/resend → group re-queued). 49 pending.
 
 ## Next wave (in order)
 
-1. Port (spec → implement → audit), three at a time: process, cors,
-   platformconfig (running); then emaildomain,
+1. Port (spec → implement → audit), three at a time: identityprovider,
+   event (running); then
    identityprovider, loginattempt, audit, event, docs; then serviceaccount,
    scheduledjob, principal (security-critical — read carefully),
    portalusers, resetapproval, webauthn, sdksync (wires the `Sync*`
