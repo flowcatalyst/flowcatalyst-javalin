@@ -7,7 +7,7 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 ## Where we are (2026-08-22, evening)
 
 Reactor green: `usecase` 30 · `sdk` 40 · `server` ~1064 · `fcdev` 40 tests.
-Commits on `main` through `8511636`; one commit per landed/audited unit.
+Commits on `main` through `c948786`; one commit per landed/audited unit.
 
 | Unit | Spec | Port | Audit | Notes |
 |---|---|---|---|---|
@@ -34,11 +34,15 @@ Commits on `main` through `8511636`; one commit per landed/audited unit.
 | identityprovider | `docs/spec/identityprovider.md` | ✔ | ✔ | app key now via `Env` |
 | event (read) | `docs/spec/event.md` | ✔ | ✔ | ingest POSTs = sdk unit |
 | docs (appdocs + docsapi) | `docs/spec/docs.md` | ✔ | ✔ | published pages copied |
-| dispatchjob, publicapi, scheduledjob (+cron) | specs being written | ☐ running | ☐ | |
+| dispatchjob | `docs/spec/dispatchjob.md` | ✔ | ✔ | ignore/completed routes need lockfile addition (owner) |
+| publicapi + branding | `docs/spec/publicapi.md` | ✔ | ✔ | incl. legacy `/api/config/platform` |
+| shared `Visibility` (+`VisibilitySql`) | — | ✔ | — | replaces event/dispatchjob copies |
+| auth core (spec) | `docs/spec/auth-core.md` (29 Qs, artifact) | ☐ gated on owner | ☐ | |
+| scheduledjob (+cron), principal, auth-identity spec | running | ☐ | ☐ | |
 | `Permission` enum (Checks refactor), sealed `Server.Mode`/`Spa`/`SigningKeys.KeyRotation`, `Metrics.Running` | — | ✔ | — | owner-directed refactors, 2026-08-22 |
 | router | `docs/spec/router.md` (50 questions) | ☐ gated on owner rulings | ☐ | artifact published |
 
-Lockfile coverage (`LockfileCoverageTest`): 126 / 243 operations (52%), zero drift.
+Lockfile coverage (`LockfileCoverageTest`): 136 / 243 operations (56%), zero drift.
 
 Router spec rulings so far: Q1 (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs queued siblings, group pending platform-side; failed message → human review → ignore/completed/resend → group re-queued). 49 pending.
 
