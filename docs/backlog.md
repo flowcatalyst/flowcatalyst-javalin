@@ -77,6 +77,14 @@ item names its origin; items marked **owner** need Andrew's call.
   it a shared home (`io.flowcatalyst.platform.shared.messaging`?) when the
   router lands; see router spec Q1 ruling for the semantics.
 
+## From the encryption port
+- `fcdev` `DevBootstrap.ensureAppKeyFile` should call
+  `Encryption.generateKey()` (bytes identical today; one source of truth).
+- Owner questions in `docs/spec/encryption.md` ([owner?] tags): fatal vs
+  silent on a malformed key, whitespace stripping, v0-nonce-starting-0x01
+  fallback, closed external-scheme list, `encrypted:<non-base64>` rejection,
+  `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
+
 ## Server API the fcdev module wished existed (fcdev agent)
 
 - `Server.Running.stop()` must stop and drain subsystems once they exist.
