@@ -305,6 +305,18 @@ class EnvTest {
         assertThat(env.webauthnRpId()).isEqualTo("example.com");
     }
 
+    /// The field-encryption keys are read verbatim with no default, so an
+    /// environment loaded from a map (fcdev) configures encryption exactly
+    /// like the process environment does.
+    @Test
+    void appKeysAreReadVerbatimWithNoDefault() {
+        assertThat(Env.load(Map.of()).appKey()).as("unset = disabled").isEmpty();
+        assertThat(Env.load(Map.of()).appKeyPrevious()).isEmpty();
+        var env = load("FLOWCATALYST_APP_KEY", "current-key=", "FLOWCATALYST_APP_KEY_PREVIOUS", "previous-key=");
+        assertThat(env.appKey()).isEqualTo("current-key=");
+        assertThat(env.appKeyPrevious()).isEqualTo("previous-key=");
+    }
+
     @Test
     void webauthnOriginsDropBlanks() {
         assertThat(Env.webauthnOrigins(new EnvReader(Map.of("FC_WEBAUTHN_ORIGINS", " https://a , ,https://b,")))).isEqualTo(List.of("https://a", "https://b"));

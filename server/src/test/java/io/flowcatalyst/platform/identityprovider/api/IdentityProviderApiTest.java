@@ -177,6 +177,13 @@ class IdentityProviderApiTest {
         assertThat(json(put).get("oidcMultiTenant").asBoolean()).isTrue();
         assertThat(json(put).get("hasClientSecret").asBoolean()).as("untouched secret").isTrue();
 
+        // A rotated plaintext secret is sealed in the handler: stored encrypted, never in any UpdateCommand audit row.
+        var rotated = http.put("/api/identity-providers/" + id, "{\"oidcClientSecretRef\":\"rotated-plain\"}", ANCHOR);
+        assertThat(rotated.statusCode()).isEqualTo(200);
+        assertThat(ENCRYPTION.decrypt(storedSecret(id))).isEqualTo(new Decryption.Plaintext("rotated-plain"));
+        assertThat(DB.fetch("SELECT operation_json::text AS j FROM aud_logs WHERE entity_id = ? AND operation = 'UpdateCommand'", id))
+                .isNotEmpty().allSatisfy(row -> assertThat(row.get("j", String.class)).doesNotContain("rotated-plain"));
+
         var cleared = http.put("/api/identity-providers/" + id, "{\"oidcClientSecretRef\":\"\"}", ANCHOR);
         assertThat(cleared.statusCode()).isEqualTo(200);
         assertThat(json(cleared).get("hasClientSecret").asBoolean()).as("\"\" clears the secret").isFalse();

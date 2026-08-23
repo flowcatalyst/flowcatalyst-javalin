@@ -249,9 +249,14 @@ code).
 - The OIDC-user conversion uses the mapping repository's **temporary**
   `resetOidcUsersToInternal` (a raw write into `iam_principals` /
   `iam_principal_roles`) until the principal aggregate lands.
-- The encryption service is wired from `EnvReader.system()` in `Platform`
-  (`Env` does not carry the app key yet); `Optional<Encryption>` is modelled
-  as the sealed `ClientSecretEncryption` (`Enabled | Disabled`).
+- The encryption service is built in `Platform` from `Env.appKey()` /
+  `Env.appKeyPrevious()` (`Encryption.fromKeys`) — never from the process
+  environment directly, because fcdev loads its environment (and the app key
+  it generates) from a map; `Optional<Encryption>` is modelled as the sealed
+  `ClientSecretEncryption` (`Enabled | Disabled`) in `api/`. The type is one
+  field-specific message away from being the shared "disabled ⇒ reject
+  `Plain`" policy `encryption.md` §5 describes; it moves to
+  `shared.encryption` when a second secret-bearing aggregate needs it.
 
 ## 10. Open questions for the owner (summary)
 

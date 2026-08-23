@@ -14,6 +14,8 @@ import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
+import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.api.DispatchPoolApi;
 import io.flowcatalyst.platform.docs.AppDocRepository;
@@ -42,6 +44,7 @@ import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.CorrelationId;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
@@ -137,9 +140,13 @@ public final class Platform {
         var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
         EmailDomainMappingApi.register(routes, new EmailDomainMappingApi.State(emailDomainMappingRepo, uow));
         var identityProviderRepo = new IdentityProviderRepository(pool);
-        IdentityProviderApi.register(routes, new IdentityProviderApi.State(identityProviderRepo, new EmailDomainMappingRepository(pool), uow,
-                ClientSecretEncryption.fromEnv(EnvReader.system())));
+        // Built from `env`, not the process environment: fcdev loads its environment (and the app key it
+        // generates) from a map, so reading System.getenv() here would silently disable encryption there.
+        IdentityProviderApi.register(routes, new IdentityProviderApi.State(identityProviderRepo, emailDomainMappingRepo, uow,
+                ClientSecretEncryption.of(Encryption.fromKeys(env.appKey(), env.appKeyPrevious()))));
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
+        var dispatchJobRepo = new DispatchJobRepository(pool);
+        DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
         DocsApi.register(routes, new DocsApi.State(new AppDocRepository(pool), applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
 

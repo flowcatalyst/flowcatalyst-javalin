@@ -344,6 +344,13 @@ Rules promoted from audits (recurring findings become rules here):
   Tenants`) alongside `ListFilter` columns, the record `requireNonNull`s it —
   `null = no filter` applies to columns, not to whose view the query is; a
   `none()` factory names `Everything` explicitly.
+- **Subsystem knobs reach the composition root through `Env`, never
+  `EnvReader.system()`.** A `fromEnv(EnvReader)`-style factory is a
+  convenience for tests and raw-env callers; `Platform`/`Server` read the
+  value from the `Env` record (`env.appKey()`) and call a value-taking factory
+  (`Encryption.fromKeys`). Reading the process environment inside the
+  composition root silently ignores environments loaded from a map or `.env`
+  (fcdev).
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

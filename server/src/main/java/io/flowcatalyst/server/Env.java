@@ -1,6 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -26,8 +27,11 @@ import java.util.Map;
 /// Not here, on purpose: the JWT signing-key material itself
 /// ([io.flowcatalyst.platform.shared.auth.SigningKeys] reads the inline PEM
 /// variables), the log level/format ([Logging]), and the per-package
-/// `FromEnv`-style knobs (encryption, email, rate limiting, login backoff,
-/// scheduled-job scheduler) which belong to their own subsystems.
+/// `FromEnv`-style knobs (email, rate limiting, login backoff, scheduled-job
+/// scheduler) which belong to their own subsystems. The field-encryption
+/// keys *are* here ([#appKey()] / [#appKeyPrevious()]) so that every way of
+/// loading the environment — the process, a `.env` file, fcdev's map —
+/// reaches the encryption service the same way.
 public record Env(
         // ── listeners ──────────────────────────────────────────────────────
         // `FC_API_PORT` (alias `PORT`), default 8080: the unified API listener.
@@ -166,6 +170,13 @@ public record Env(
         // `FC_AUTH_ALLOW_TEST_HEADERS`, default false: enables the `X-FC-Test-Principal` dev fallback.
         boolean authAllowTestHeaders,
 
+        // ── field encryption ───────────────────────────────────────────────
+        // `FLOWCATALYST_APP_KEY`, no default: the AES-256-GCM key (`docs/spec/encryption.md` §1);
+        // `""` = field encryption disabled (plaintext secrets are refused, never stored raw).
+        String appKey,
+        // `FLOWCATALYST_APP_KEY_PREVIOUS`, no default: the previous key during rotation.
+        String appKeyPrevious,
+
         // ── MCP credentials ────────────────────────────────────────────────
         // `FLOWCATALYST_URL` (alias `FC_MCP_PLATFORM_URL`), no default.
         String mcpPlatformUrl,
@@ -281,6 +292,9 @@ public record Env(
                 e.get("FC_JWT_SIGNING_KEY_PATH"),
                 normalizedPreviousPublicKey(e),
                 e.bool("FC_AUTH_ALLOW_TEST_HEADERS", false),
+
+                e.get(Encryption.ENV_APP_KEY),
+                e.get(Encryption.ENV_APP_KEY_PREVIOUS),
 
                 e.firstSet("FLOWCATALYST_URL", "FC_MCP_PLATFORM_URL").orElse(""),
                 e.get("FLOWCATALYST_CLIENT_ID"),

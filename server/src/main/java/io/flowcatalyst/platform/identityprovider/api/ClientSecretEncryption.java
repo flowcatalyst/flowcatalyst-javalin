@@ -4,7 +4,6 @@ import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.encryption.SecretRef;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.flowcatalyst.server.EnvReader;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -15,8 +14,10 @@ import java.util.Optional;
 /// are already safe at rest (`encrypted:`, external refs, `literal:`) pass.
 /// The conversion runs in the handler, before the command is built, so the
 /// audit row never carries a plaintext secret. Models the "encryption may
-/// be absent" case (`Encryption.fromEnv` → `Optional`) as a sealed pair
-/// instead of an `Optional` component.
+/// be absent" case (`Encryption.fromKeys` → `Optional`) as a sealed pair
+/// instead of an `Optional` component; the composition root builds it from
+/// `Env.appKey()` / `Env.appKeyPrevious()`, never from the process
+/// environment directly (fcdev loads its environment from a map).
 public sealed interface ClientSecretEncryption permits ClientSecretEncryption.Enabled, ClientSecretEncryption.Disabled {
 
     /// Storable form of `incoming`: `null` stays `null` (absent); blank stays
@@ -26,11 +27,8 @@ public sealed interface ClientSecretEncryption permits ClientSecretEncryption.En
     ///         (an `encrypted:` claim whose payload is not base64) or `ENCRYPTION_NOT_CONFIGURED`
     String atRest(String incoming);
 
-    /// `FLOWCATALYST_APP_KEY` set → [Enabled]; unset → [Disabled]; malformed → fatal (`encryption.md` §1).
-    static ClientSecretEncryption fromEnv(EnvReader env) {
-        return of(Encryption.fromEnv(env));
-    }
-
+    /// A key configured → [Enabled]; none → [Disabled] (a malformed key never
+    /// gets this far: `Encryption.fromKeys` is fatal on one, `encryption.md` §1).
     static ClientSecretEncryption of(Optional<Encryption> encryption) {
         return encryption.<ClientSecretEncryption>map(Enabled::new).orElse(Disabled.INSTANCE);
     }

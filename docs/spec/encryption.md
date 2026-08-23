@@ -28,6 +28,13 @@ Items tagged **[owner?]** are "load-bearing or accident?" questions.
 **Ruling needed / [owner?]:** Java strips whitespace from **both** variables
 before decoding (superset of Go; nobody relies on a space-padded key failing).
 
+The server reads both variables once, through `io.flowcatalyst.server.Env`
+(`appKey` / `appKeyPrevious`, no defaults), and the composition root builds
+the service with `Encryption.fromKeys(current, previous)`; `fromEnv(EnvReader)`
+is the same reading for a caller holding a raw environment. Reading
+`System.getenv()` directly would silently disable encryption under fcdev,
+whose environment (and generated app key) is a map handed to `Env.load`.
+
 ### fcdev `app-key` file **[C]** (must agree with `DevBootstrap.ensureAppKeyFile`)
 
 | Item | Value |

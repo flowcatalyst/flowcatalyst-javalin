@@ -123,9 +123,19 @@ public final class Encryption {
     /// ([IllegalArgumentException]): a key that cannot decrypt is worse than
     /// no key. Both values are stripped of surrounding whitespace.
     public static Optional<Encryption> fromEnv(EnvReader env) {
-        var current = env.get(ENV_APP_KEY).strip();
+        return fromKeys(env.get(ENV_APP_KEY), env.get(ENV_APP_KEY_PREVIOUS));
+    }
+
+    /// [#fromEnv] over already-read values — what the composition root calls
+    /// with `Env.appKey()` / `Env.appKeyPrevious()`, so an environment loaded
+    /// from a map (fcdev, `.env`) configures encryption exactly like the
+    /// process environment does. `null` reads as unset; both values are
+    /// stripped; blank current key → empty (disabled); malformed → fatal.
+    public static Optional<Encryption> fromKeys(String currentBase64, String previousBase64) {
+        var current = currentBase64 == null ? "" : currentBase64.strip();
         if (current.isEmpty()) return Optional.empty();
-        return Optional.of(of(KeyRotation.of(current, env.get(ENV_APP_KEY_PREVIOUS).strip())));
+        var previous = previousBase64 == null ? "" : previousBase64.strip();
+        return Optional.of(of(KeyRotation.of(current, previous)));
     }
 
     /// A fresh 32-byte key as the padded standard-base64 string the

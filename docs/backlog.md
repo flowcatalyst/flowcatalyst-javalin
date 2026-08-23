@@ -107,6 +107,25 @@ item names its origin; items marked **owner** need Andrew's call.
   fallback, closed external-scheme list, `encrypted:<non-base64>` rejection,
   `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
 
+## From the identityprovider audit
+- `identityprovider/operations/DomainRouting.moveTo` restates the mapping
+  aggregate's "move a mapping to a provider" rule (re-point + emit
+  `provider-changed` + reset OIDC users when the target authenticates with
+  passwords) that `MoveEmailDomainMappingProvider` also spells out. Make it
+  one public helper in `emaildomainmapping.operations` — e.g.
+  `MoveMapping.to(scoped, repo, mapping, targetId, targetIsInternal, ec, auditCommand) → int usersReset`
+  — called by both (the mapping aggregate owns the rule; the IdP aggregate
+  only chooses the target). Do it when the mapping package is next touched.
+- `identityprovider/api/ClientSecretEncryption` (`Enabled | Disabled`,
+  `atRest(incoming)`) is the "disabled ⇒ reject `Plain`" policy
+  `docs/spec/encryption.md` §5 describes, bound to this aggregate only by its
+  two messages (`oidcClientSecretRef: …`, `cannot store OIDC client secret:
+  …`). When a second secret-bearing aggregate lands (OAuth client secrets,
+  webhook signing keys, TOTP), move it to `shared.encryption` as
+  `SecretRefPolicy` with a `what` parameter for the message and
+  `UseCaseException.validation` instead of the Api's `HttpError.badRequest`
+  spelling; delete the per-aggregate copy.
+
 ## From the loginattempt audit
 - ~~`AuditLogCursor` duplicates the new shared `apicommon.KeysetCursor`
   (`(at, id)`, same token layout; `parse` → `Optional`, the 400 `CURSOR`

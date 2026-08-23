@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.identityprovider.operations;
 
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomain;
+import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
@@ -10,6 +11,7 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.TxOperation;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import static java.util.stream.Collectors.toSet;
@@ -66,19 +68,23 @@ public final class UpdateIdentityProvider {
                     }
 
                     // Removals fall back to the internal provider — unless this *is* the internal provider.
-                    if (!ip.isSeededInternal()) {
-                        IdentityProvider internal = null;
-                        for (var m : current) {
-                            if (desiredSet.contains(m.emailDomain())) continue;
-                            if (internal == null) {
-                                internal = repo.findByCode(IdentityProvider.INTERNAL_CODE).orElseThrow(() -> UseCaseException.internal("SEED",
-                                        "internal identity provider missing; cannot release domain '" + m.emailDomain() + "'", null));
-                            }
+                    var stale = ip.isSeededInternal() ? List.<EmailDomainMapping>of()
+                            : current.stream().filter(m -> !desiredSet.contains(m.emailDomain())).toList();
+                    if (!stale.isEmpty()) {
+                        IdentityProvider internal = internalProvider(repo, stale.getFirst().emailDomain());
+                        for (var m : stale) {
                             usersReset += routing.moveTo(scoped, m, internal, ec, cmd);
                             released.add(m.emailDomain());
                         }
                     }
                     return new UpdateResult(ip.id(), ip.code(), created, claimed, released, usersReset);
                 });
+    }
+
+    /// The seeded internal provider a released domain falls back to; its
+    /// absence is a broken install, not a client error (spec §4, §6).
+    private static IdentityProvider internalProvider(IdentityProviderRepository repo, String releasingDomain) {
+        return repo.findByCode(IdentityProvider.INTERNAL_CODE).orElseThrow(() -> UseCaseException.internal("SEED",
+                "internal identity provider missing; cannot release domain '" + releasingDomain + "'", null));
     }
 }
