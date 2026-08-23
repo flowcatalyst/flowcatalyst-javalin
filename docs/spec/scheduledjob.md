@@ -107,7 +107,8 @@ Semantics, as robfig/cron v3 (`SpecSchedule.Next`):
 - **Day matching.** If *either* day-of-month or day-of-week carries the star
   flag (`*`/`?` with no step > 1), both must match (AND). If *both* are
   restricted, the day matches when either does (OR — classic cron).
-  `*/2` in day-of-month clears the star flag.
+  `*/2` in day-of-month clears the star flag (pinned: `0 0 0 */2 * 1` fires
+  on the next odd day *or* Monday, whichever is first).
 - **Next occurrence** is strictly after the given instant, at whole-second
   resolution, searched field by field (month → day → hour → minute →
   second) with carry; none within **5 years** → no occurrence (`0 0 0 30 2 *`
@@ -133,8 +134,10 @@ before the ruling yield no slot — **load-bearing** for stored data). An
 unknown zone name is evaluated as UTC (`ScheduledJob.zoneId()`).
 
 Pinned rows (`ScheduledJobTest.latestSlotInWindow*`): skip-to-latest,
-no-slot window, empty window, latest across two crons, lower bound
-exclusive, upper bound inclusive, zone conversion, unparseable skipped.
+no-slot window, empty window, inverted window (`after > upTo`), latest
+across two crons, lower bound exclusive, upper bound inclusive, zone
+conversion, unparseable skipped, one unparseable + one good (the good one
+fires).
 
 **load-bearing or accident?** The walk is forward from `after`: an
 every-second expression on a job whose window is months wide is O(slots)
@@ -298,7 +301,7 @@ row per per-row event, `operation = SyncScheduledJobsCommand`.
 
 | Where | What |
 |---|---|
-| Handler | coarse permission (§4 table); unauthenticated → 403 `UNAUTHENTICATED` |
+| Handler | coarse permission (§4 table); unauthenticated → 403 `UNAUTHENTICATED`; list visibility is the shared `Visibility` (`AuthContext.visibility()`: anchor → everything, else platform-scoped rows + own clients) ANDed in SQL via `VisibilitySql`; the explicit `clientId` query scope (`platform` literal / one client) is the repository's own `ClientFilter`, a different concept (what the caller asks for, not what it may see) |
 | Create — `authorize` | `checkScopeAccess(principal, cmd.clientId)`: client-bound needs access to that client; platform-scoped needs anchor / super-admin → else 403 `SCOPE_FORBIDDEN` (Go: anchor only, `FORBIDDEN` — **deviation**, the Java helper is shared) |
 | Update / Pause / Resume / Archive / Delete / FireNow — `execute`, after load + 404 | `Access.loadScoped` = `checkScopeAccess(principal, job.clientId)`; hence `Authorize.publicAccess()` |
 | Sync — `authorize` | `Checks.checkApplicationAccess(principal, applicationId, applicationCode)` (**deviation**: the Go scheduled-jobs sync handler resolved the app but did not call `requireAppAccess` as the other syncs do — **accident**; Java applies the promoted rule) **and** `checkScopeAccess(principal, cmd.clientId)` |

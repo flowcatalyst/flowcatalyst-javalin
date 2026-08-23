@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
 /// one [ScheduledJobsSynced] rollup carrying the affected ids.
 ///
 /// Authorization is resource-level on both dimensions: the application the
-/// sync is scoped to ([Access#checkApplicationAccess]) and the target client
+/// sync is scoped to (`Checks.checkApplicationAccess`) and the target client
 /// scope (`checkScopeAccess`); the coarse sync permission and the
 /// `appCode → id` resolution belong to the sdksync handler.
 public final class SyncScheduledJobs {
@@ -48,7 +48,7 @@ public final class SyncScheduledJobs {
                     cmd.jobs().forEach(SyncScheduledJobs::validateEntry);
                 })
                 .authorize(cmd -> {
-                    Access.checkApplicationAccess(cmd.applicationId(), cmd.applicationCode());
+                    Checks.checkApplicationAccess(Auth.current(), cmd.applicationId(), cmd.applicationCode());
                     Checks.checkScopeAccess(Auth.current(), cmd.clientId());
                 })
                 .execute((cmd, ec) -> {

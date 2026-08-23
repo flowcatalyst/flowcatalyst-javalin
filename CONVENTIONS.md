@@ -364,6 +364,15 @@ Rules promoted from audits (recurring findings become rules here):
   throws, asserts the defaults, and captures the logger (Logback
   `ListAppender`) to assert the WARN — otherwise the catch clause is dead
   code to the suite.
+- **Two client dimensions, two types.** A repository that takes both *whose
+  view* a read is and *which scope the caller asks for* models them
+  separately: `shared.auth.Visibility` (from `AuthContext.visibility()`,
+  applied with `VisibilitySql.toCondition`) for the former, and a
+  package-local sealed scope selector (`ClientFilter.Any | PlatformOnly |
+  Of(clientId)`, with a `scope(String)` factory where `null` = platform) for
+  the latter. The Api never builds a `Visibility` itself, and a
+  `platform`-literal query value maps to the scope selector, never to the
+  visibility.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

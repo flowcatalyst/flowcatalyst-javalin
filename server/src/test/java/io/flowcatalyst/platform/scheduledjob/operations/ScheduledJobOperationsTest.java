@@ -10,12 +10,12 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.ClientFilter;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.ListFilter;
-import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.Visibility;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobStatus;
 import io.flowcatalyst.platform.scheduledjob.TriggerKind;
 import io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.ScheduledJobCreated;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.auth.Scope;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -561,7 +561,7 @@ class ScheduledJobOperationsTest {
         runAsAnchor(CreateScheduledJob.of(repo), createCommand(code("list-other"), other));
         runAsAnchor(PauseScheduledJob.of(repo), new PauseCommand(inMine.scheduledJobId()));
 
-        var everything = new ListFilter(new ClientFilter.Any(), null, code("list-"), new Visibility.Everything());
+        var everything = new ListFilter(new ClientFilter.Any(), null, code("list-"), Visibility.Everything.INSTANCE);
         assertThat(repo.findWithFilters(everything, 10, 0)).extracting(ScheduledJob::code)
                 .containsExactly(code("list-mine"), code("list-other"), code("list-platform"));
         assertThat(repo.countWithFilters(everything)).isEqualTo(3);
@@ -573,13 +573,13 @@ class ScheduledJobOperationsTest {
                 .containsExactly(inMine.scheduledJobId(), platform.scheduledJobId());
         assertThat(repo.countWithFilters(tenant)).isEqualTo(2);
 
-        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.PlatformOnly(), null, code("list-"), new Visibility.Everything()), 10, 0))
+        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.PlatformOnly(), null, code("list-"), Visibility.Everything.INSTANCE), 10, 0))
                 .extracting(ScheduledJob::id).containsExactly(platform.scheduledJobId());
-        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Of(other), null, code("list-"), new Visibility.Everything()), 10, 0))
+        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Of(other), null, code("list-"), Visibility.Everything.INSTANCE), 10, 0))
                 .extracting(ScheduledJob::code).containsExactly(code("list-other"));
-        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Any(), "PAUSED", code("list-"), new Visibility.Everything()), 10, 0))
+        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Any(), "PAUSED", code("list-"), Visibility.Everything.INSTANCE), 10, 0))
                 .extracting(ScheduledJob::id).containsExactly(inMine.scheduledJobId());
-        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Any(), null, "Job " + code("list-other"), new Visibility.Everything()), 10, 0))
+        assertThat(repo.findWithFilters(new ListFilter(new ClientFilter.Any(), null, "Job " + code("list-other"), Visibility.Everything.INSTANCE), 10, 0))
                 .as("search matches name too").extracting(ScheduledJob::code).containsExactly(code("list-other"));
         assertThat(repo.findInScope(new ClientFilter.Of(mine))).extracting(ScheduledJob::id).containsExactly(inMine.scheduledJobId());
     }

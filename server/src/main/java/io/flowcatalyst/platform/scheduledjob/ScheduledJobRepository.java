@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobs;
 import io.flowcatalyst.db.generated.tables.records.MsgScheduledJobsRecord;
+import io.flowcatalyst.platform.shared.auth.Visibility;
+import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;
@@ -40,9 +42,12 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
     }
 
-    /// The client dimension of a list (spec §4): no filter, platform-scoped
-    /// rows only (`client_id IS NULL`, the wire's `clientId=platform`), or
-    /// one client's rows.
+    /// The client dimension of a list or a scope lookup (spec §4, §8). This
+    /// is *not* the caller's [Visibility] (which only narrows whose rows are
+    /// seen): it is the explicit scope the caller asks for — no filter, the
+    /// platform scope (`client_id IS NULL`, the wire's `clientId=platform`
+    /// literal and a sync's `clientId = null`), or one client's rows — so it
+    /// stays a package-local type alongside the shared one.
     public sealed interface ClientFilter {
         record Any() implements ClientFilter {
         }
@@ -62,23 +67,9 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
         }
     }
 
-    /// Whose view a list is (spec §4), enforced in SQL so `total` and the
-    /// page agree: everything (anchor) or platform-scoped rows plus the
-    /// caller's clients.
-    public sealed interface Visibility {
-        record Everything() implements Visibility {
-        }
-
-        /// `client_id IS NULL OR client_id IN (clientIds)`; an empty list is platform-scoped rows only.
-        record Tenants(List<String> clientIds) implements Visibility {
-            public Tenants {
-                clientIds = clientIds == null ? List.of() : List.copyOf(clientIds);
-            }
-        }
-    }
-
     /// Filters for [#findWithFilters] / [#countWithFilters]; `null` = no
-    /// filter on `status` / `search`; `client` and `visibility` are required
+    /// filter on `status` / `search`; `client` and `visibility` (whose view
+    /// this is, enforced in SQL so `total` and the page agree) are required
     /// — a caller states them, they never default open.
     ///
     /// @param status raw stored value (`ACTIVE` …); an unknown value matches nothing
@@ -129,11 +120,7 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
             String pattern = "%" + f.search() + "%";
             where = where.and(T.CODE.likeIgnoreCase(pattern).or(T.NAME.likeIgnoreCase(pattern)));
         }
-        where = where.and(switch (f.visibility()) {
-            case Visibility.Everything _ -> DSL.noCondition();
-            case Visibility.Tenants t -> T.CLIENT_ID.isNull().or(T.CLIENT_ID.in(t.clientIds()));
-        });
-        return where;
+        return where.and(VisibilitySql.toCondition(f.visibility(), T.CLIENT_ID));
     }
 
     private static Condition clientCondition(ClientFilter c) {

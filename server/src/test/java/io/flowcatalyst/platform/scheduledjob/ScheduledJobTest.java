@@ -290,7 +290,9 @@ class ScheduledJobTest {
             friday after today       | 0 0 0 * * 5             | 2026-05-29T10:00:30Z | 2026-06-05T00:00:00Z
             saturday                 | 0 0 0 * * 6             | 2026-05-29T10:00:30Z | 2026-05-30T00:00:00Z
             year end                 | 59 59 23 31 12 *        | 2026-05-29T10:00:30Z | 2026-12-31T23:59:59Z
-            stepped dom clears star  | 0 0 0 */2 * *           | 2026-05-29T10:00:30Z | 2026-05-31T00:00:00Z
+            range step               | 0 1-30/5 * * * *        | 2026-05-29T10:00:30Z | 2026-05-29T10:01:00Z
+            step one                 | */1 * * * * *           | 2026-05-29T10:00:30Z | 2026-05-29T10:00:31Z
+            stepped dom clears star  | 0 0 0 */2 * 1           | 2026-05-29T10:00:30Z | 2026-05-31T00:00:00Z
             leading plus (Atoi)      | +5 * * * * *            | 2026-05-29T10:00:30Z | 2026-05-29T10:01:05Z
             leading zero             | 05 * * * * *            | 2026-05-29T10:00:30Z | 2026-05-29T10:01:05Z
             extra whitespace         |   0   0  *  *  *  *     | 2026-05-29T10:00:30Z | 2026-05-29T11:00:00Z
@@ -319,6 +321,12 @@ class ScheduledJobTest {
     }
 
     @Test
+    void cronAcceptsTabsAndLeadingOrTrailingWhitespace() {
+        assertThat(CronExpression.parse("\t 0\t0 *\t* * *  \t").next(BASE.atZone(ZoneOffset.UTC)).map(t -> t.toInstant()))
+                .contains(Instant.parse("2026-05-29T11:00:00Z"));
+    }
+
+    @Test
     void cronKeepsTheTrimmedTextAsItsStoredForm() {
         assertThat(CronExpression.parse("  0 0 * * * *  ").expression()).isEqualTo("0 0 * * * *");
         assertThat(CronExpression.tryParse("* * * * *")).isEmpty();
@@ -336,6 +344,7 @@ class ScheduledJobTest {
             descriptor            | @daily                       | INVALID_CRON
             descriptor every      | @every 1h                    | INVALID_CRON
             per-expression zone   | TZ=Europe/Paris 0 0 * * * *  | INVALID_CRON
+            CRON_TZ prefix        | CRON_TZ=UTC 0 0 * * * *      | INVALID_CRON
             second above max      | 60 * * * * *                 | INVALID_CRON
             minute above max      | * 60 * * * *                 | INVALID_CRON
             hour above max        | * * 24 * * *                 | INVALID_CRON
@@ -344,6 +353,7 @@ class ScheduledJobTest {
             month below min       | * * * * 0 *                  | INVALID_CRON
             month above max       | * * * * 13 *                 | INVALID_CRON
             dow above max         | * * * * * 7                  | INVALID_CRON
+            dow range end above max | * * * * * 0-7              | INVALID_CRON
             L unsupported         | * * * * * L                  | INVALID_CRON
             W unsupported         | * * * W * *                  | INVALID_CRON
             hash unsupported      | * * * * * 1#2                | INVALID_CRON

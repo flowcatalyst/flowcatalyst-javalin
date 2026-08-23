@@ -9,7 +9,6 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.ClientFilter;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.ListFilter;
-import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository.Visibility;
 import io.flowcatalyst.platform.scheduledjob.operations.ArchiveCommand;
 import io.flowcatalyst.platform.scheduledjob.operations.ArchiveScheduledJob;
 import io.flowcatalyst.platform.scheduledjob.operations.CreateCommand;
@@ -232,12 +231,7 @@ public final class ScheduledJobApi {
         String clientId = queryParam(ctx, "clientId");
         ClientFilter client = clientId == null ? new ClientFilter.Any()
                 : clientId.equals("platform") ? new ClientFilter.PlatformOnly() : new ClientFilter.Of(clientId);
-        return new ListFilter(client, queryParam(ctx, "status"), queryParam(ctx, "search"), visibility(ac));
-    }
-
-    /// An anchor sees every row; anyone else platform-scoped rows plus its own clients'.
-    private static Visibility visibility(AuthContext ac) {
-        return ac.isAnchor() ? new Visibility.Everything() : new Visibility.Tenants(ac.clients());
+        return new ListFilter(client, queryParam(ctx, "status"), queryParam(ctx, "search"), ac.visibility());
     }
 
     /// Absent or empty query parameter → `null`.
