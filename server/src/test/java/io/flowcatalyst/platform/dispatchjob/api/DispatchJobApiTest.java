@@ -169,9 +169,15 @@ class DispatchJobApiTest {
                 .containsExactly(jobB, jobP);
         assertThat(ids(json(http.get("/api/dispatch-jobs?codes=" + CODE + "&since=garbage", ANCHOR))))
                 .as("unparseable since is ignored").hasSize(3);
-        var bad = http.get("/api/dispatch-jobs?codes=" + CODE + "&limit=ten", ANCHOR);
+        var bad = http.get("/api/dispatch-jobs?codes=" + CODE + "&limit=ten&size=1&offset=x", ANCHOR);
         assertThat(bad.statusCode()).isEqualTo(400);
-        assertThat(json(bad).get("error").asText()).isEqualTo("VALIDATION");
+        JsonNode err = json(bad);
+        assertThat(err.get("error").asText()).isEqualTo("VALIDATION");
+        JsonNode errors = err.get("details").get("errors");
+        assertThat(errors).as("every bad parameter, in limit, offset, size order").hasSize(2);
+        assertThat(errors.get(0).get("location").asText()).isEqualTo("query.limit");
+        assertThat(errors.get(0).get("value").asText()).isEqualTo("ten");
+        assertThat(errors.get(1).get("location").asText()).isEqualTo("query.offset");
     }
 
     @Test

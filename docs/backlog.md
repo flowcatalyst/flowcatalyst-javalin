@@ -107,6 +107,14 @@ item names its origin; items marked **owner** need Andrew's call.
   PROCESSING/QUEUED/COMPLETED too) and gated by *view* — precondition/gate
   rulings in `docs/spec/dispatchjob.md` §11.
 
+## From the dispatchjob audit
+- Two sibling sealed visibility types (`EventRepository.Visibility`,
+  `DispatchJobRepository.AccessScope`) with the same anchor/clients builder
+  duplicated in two Apis → one shared type (`AuthContext.visibility()` in
+  `shared/auth`) and one SQL predicate. `RequeueCommand` with `[null]` ids →
+  500 not 400 (**owner**: unknown id vs 400). `filter-options` facets not
+  tenant-scoped (spec OQ 7, **owner**).
+
 ## From the encryption port
 - `fcdev` `DevBootstrap.ensureAppKeyFile` should call
   `Encryption.generateKey()` (bytes identical today; one source of truth).

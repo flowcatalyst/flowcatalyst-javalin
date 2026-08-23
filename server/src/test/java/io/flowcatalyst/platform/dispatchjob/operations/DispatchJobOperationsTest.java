@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.List;
 
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
@@ -182,6 +183,6 @@ class DispatchJobOperationsTest {
         String done = seedWriteRow(Seed.of(code("op")).withStatus("COMPLETED"));
         assertThat(requeueAs(ANCHOR, done).requeued()).isEqualTo(1);
         assertThat(reload(done).status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(DispatchJobFixture.DB.fetchCount(DB.selectFrom("msg_dispatch_jobs").where("id = ?", done))).isEqualTo(1);
+        assertThat(DB.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(done))).as("upsert, not a second row").isEqualTo(1);
     }
 }

@@ -15,18 +15,18 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.flowcatalyst.sdk.usecase.UseCaseError;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.javalin.http.Context;
 import io.javalin.http.Handler;
 import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -139,8 +139,7 @@ public final class DispatchJobApi {
 
     /// Query params → filter (spec §4), plus the caller's SQL-side scope.
     private static ListFilter listFilter(Context ctx, AuthContext ac) {
-        int limit = intParam(ctx, "limit");
-        int size = intParam(ctx, "size");
+        Page page = Page.from(ctx);
         return new ListFilter(
                 queryParam(ctx, "status"),
                 queryParam(ctx, "clientId"),
@@ -151,8 +150,8 @@ public final class DispatchJobApi {
                 timestamp(queryParam(ctx, "since")),
                 timestamp(queryParam(ctx, "until")),
                 "createdAt.asc".equals(queryParam(ctx, "sort")),
-                size > 0 ? size : limit, // the SPA's `size` wins over the SDK's `limit`
-                intParam(ctx, "offset"),
+                page.effectiveLimit(),
+                page.offset(),
                 csv(queryParam(ctx, "clientIds")),
                 csv(queryParam(ctx, "statuses")),
                 csv(queryParam(ctx, "codes")),
@@ -173,29 +172,34 @@ public final class DispatchJobApi {
         return v == null || v.isEmpty() ? null : v;
     }
 
-    /// An RFC 3339 query value, or `null` when absent **or unparseable** (spec §4, open question 8).
-    private static Instant timestamp(String value) {
-        if (value == null) return null;
-        try {
-            return Instant.parse(value);
-        } catch (DateTimeParseException _) {
-            return null;
+    /// `limit` / `size` / `offset` as sent (0 = absent): `size` wins when
+    /// positive; the repository's guard supplies the default and the
+    /// over-max fallback (spec §4, §8). A non-integer value is the
+    /// [QueryParams] 400 `VALIDATION` envelope listing every bad parameter,
+    /// in `limit, offset, size` order.
+    record Page(int limit, int offset, int size) {
+        static Page from(Context ctx) {
+            var errors = new ArrayList<Map<String, Object>>();
+            int limit = QueryParams.intParam(ctx, "limit", errors).orElse(0);
+            int offset = QueryParams.intParam(ctx, "offset", errors).orElse(0);
+            int size = QueryParams.intParam(ctx, "size", errors).orElse(0);
+            if (!errors.isEmpty()) throw QueryParams.validation(errors);
+            return new Page(limit, offset, size);
+        }
+
+        /// The row cap handed to the repository: the SPA's `size` when positive, else the SDK's `limit`.
+        int effectiveLimit() {
+            return size > 0 ? size : limit;
         }
     }
 
-    /// An integer query value; absent → 0; non-integer → 400 `VALIDATION`.
-    private static int intParam(Context ctx, String name) {
-        String raw = queryParam(ctx, name);
-        if (raw == null) return 0;
+    /// RFC 3339 with any offset → instant; `null` or unparseable → `null` (spec §4, open question 8).
+    private static Instant timestamp(String raw) {
+        if (raw == null) return null;
         try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            var detail = new LinkedHashMap<String, Object>();
-            detail.put("message", "invalid integer");
-            detail.put("location", "query." + name);
-            detail.put("value", raw);
-            throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
-                    .withDetails(Map.of("errors", List.of(detail))));
+            return OffsetDateTime.parse(raw).toInstant();
+        } catch (DateTimeParseException _) {
+            return null;
         }
     }
 

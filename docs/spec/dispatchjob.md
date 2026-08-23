@@ -251,6 +251,12 @@ timestamps RFC 3339, 6 fractional digits, `Z`):
 | `limit`, `size` | row cap; `size` wins when > 0 | `<= 0` or `> 1000` → **100**; non-integer → 400 `VALIDATION` |
 | `offset` | `OFFSET` when > 0 | non-integer → 400 `VALIDATION` |
 
+A non-integer `limit` / `offset` / `size` is the shared `QueryParams`
+400 `VALIDATION` `validation failed` envelope with one
+`details.errors[] = {message: "invalid integer", location: "query.<name>", value}`
+entry per bad parameter, in `limit, offset, size` order (the events list's
+shape).
+
 Absent or empty query parameters filter nothing. Ordering is by
 `created_at` only (ties unordered — **accident?**; the audit list orders by
 `(performed_at, id)`).
@@ -360,15 +366,25 @@ the rollup writes one of each (`entity_type = Dispatchjobs`,
 | `Insert` / `InsertBatch` | ingest (`POST /api/dispatch-jobs/batch`, `dispatch_job_create`), stream fan-out | `ON CONFLICT (id, created_at) DO NOTHING`; `metadata` `[]` when empty; `created_at` defaults to now |
 | `MarkInProgress(id, createdAt)` | processing | `status='PROCESSING'`, `last_attempt_at = updated_at = now()` |
 | `MarkCompleted(id, createdAt, durationMillis)` | processing | `status='COMPLETED'`, `completed_at = updated_at = now()`, `duration_millis` |
-| `MarkFailed(id, createdAt, lastError, durationMillis)` | processing | `status='FAILED'`, `completed_at`, `duration_millis`, `last_error` |
+| `MarkFailed(id, createdAt, lastError, durationMillis)` | processing | `status='FAILED'`, `completed_at`, `duration_millis`, `last_error`, `updated_at` (§2) |
 | `ScheduleRetry(id, createdAt, scheduledFor, lastError)` | processing | `attempt_count+1`, `scheduled_for`, `last_error`, `last_attempt_at=now()`, `status='PENDING'` |
-| `Reschedule(id, createdAt, scheduledFor)` | processing (ack=false / 429 / blocked group) | `status='PENDING'`, `scheduled_for`, **no** attempt bump |
+| `Reschedule(id, createdAt, scheduledFor)` | processing (ack=false / 429 / blocked group) | `status='PENDING'`, `scheduled_for`, `updated_at`, **no** attempt bump (§2) |
 | `GroupBlocked(group)` | processing + scheduler poller | `EXISTS … WHERE message_group = ? AND status IN ('FAILED','ERROR')` |
 | `RecordAttempt(jobId, attempt)` | processing | untyped TSID id; `status` `SUCCESS`/`FAILURE` from the boolean |
 | `FindRecentRaw(limit)` | `/bff/debug/dispatch-jobs` | write table, newest first, cap 1000 → 100 |
 | poller claim `PENDING → QUEUED` (`FOR UPDATE SKIP LOCKED`), stale `QUEUED → PENDING` | scheduler | plain-SQL text blocks are allowed for the claim |
 
 All status flips carry `created_at` with `id` for partition pruning.
+
+What this table deliberately leaves to the data-plane spec (it is a column
+contract, not a behaviour spec): whether each flip is guarded by the current
+status (`… WHERE status = 'QUEUED'`) or unconditional; the poller's claim
+query (batch size, `ORDER BY`, the `scheduled_for IS NULL OR <= now()`
+predicate, the blocked-group hold-back, `LIMIT`); the stale-`QUEUED`
+threshold; `RecordAttempt`'s column list (incl. `error_stack_trace`); and
+whether `MarkCompleted` / `MarkFailed` are idempotent on a re-delivered
+callback. Each is a timing/guard constant the data-plane spec must table
+with "load-bearing or accident?".
 
 ## 11. Open questions for the owner (summary)
 

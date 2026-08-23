@@ -5,6 +5,7 @@ import io.flowcatalyst.sdk.tsid.Tsid;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.time.Instant;
 import java.util.List;
@@ -21,10 +22,15 @@ class DispatchJobTest {
 
     /// A `FAILED` job that consumed its budget and carries every terminal stamp.
     private static DispatchJob failedJob() {
+        return job(DispatchJobStatus.FAILED);
+    }
+
+    /// A job in `status` that consumed its budget and carries every terminal stamp.
+    private static DispatchJob job(DispatchJobStatus status) {
         return new DispatchJob(Tsid.generate(), "ext-1", DispatchJobKind.EVENT, "orders:fulfillment:shipment:shipped",
                 "orders", "shipment-1", "https://hook.example/in", Protocol.HTTP_WEBHOOK, "{\"a\":1}",
                 "application/json", true, "evt1", "corr-1", "cli_1", "sub_1", "sa_1", "dpl_1", "group-1",
-                DispatchMode.BLOCK_ON_ERROR, 3, 30, null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.FAILED,
+                DispatchMode.BLOCK_ON_ERROR, 3, 30, null, 3, RetryStrategy.EXPONENTIAL, status,
                 3, "boom", List.of(new DispatchJob.Metadata("k", "v")), "idem-1", CREATED, CREATED.plusSeconds(60),
                 CREATED.plusSeconds(30), CREATED.plusSeconds(3600), CREATED.plusSeconds(50), CREATED.plusSeconds(60), 1234L);
     }
@@ -56,19 +62,11 @@ class DispatchJobTest {
         assertThat(after.lastAttemptAt()).isEqualTo(before.lastAttemptAt());
     }
 
-    @Test
-    void requeueIsTotalSoAnyStatusResets() {
-        for (DispatchJobStatus status : DispatchJobStatus.values()) {
-            DispatchJob j = failedJob();
-            DispatchJob before = new DispatchJob(j.id(), j.externalId(), j.kind(), j.code(), j.source(), j.subject(),
-                    j.targetUrl(), j.protocol(), j.payload(), j.payloadContentType(), j.dataOnly(), j.eventId(),
-                    j.correlationId(), j.clientId(), j.subscriptionId(), j.serviceAccountId(), j.dispatchPoolId(),
-                    j.messageGroup(), j.mode(), j.sequence(), j.timeoutSeconds(), j.schemaId(), j.maxRetries(),
-                    j.retryStrategy(), status, j.attemptCount(), j.lastError(), j.metadata(), j.idempotencyKey(),
-                    j.createdAt(), j.updatedAt(), j.scheduledFor(), j.expiresAt(), j.lastAttemptAt(), j.completedAt(),
-                    j.durationMillis());
-            assertThat(before.requeue().status()).as("from %s", status).isEqualTo(DispatchJobStatus.PENDING);
-        }
+    /// Total — no precondition (spec §2, open question 2): every status, terminal or in flight, resets.
+    @ParameterizedTest(name = "requeue from {0} resets to PENDING")
+    @EnumSource(DispatchJobStatus.class)
+    void requeueIsTotalSoAnyStatusResets(DispatchJobStatus status) {
+        assertThat(job(status).requeue().status()).isEqualTo(DispatchJobStatus.PENDING);
     }
 
     @Test
