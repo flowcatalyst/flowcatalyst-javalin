@@ -266,15 +266,18 @@ non-anchor caller the filter additionally requires
 `client_id IS NULL OR client_id IN (<caller's clients>)`, so the caller's
 own `clientId`/`clientIds` can only narrow within its tenants. Anchors are
 unscoped. A non-anchor with no clients sees platform-scoped rows only.
-`AccessScope` is a sealed type (`Unscoped | Clients(ids)`), never a nullable
-list.
+The scope is the platform's one `Visibility` value (`shared/auth`, sealed:
+`Everything | Tenants(ids)`), built by `AuthContext.visibility()` and rendered
+by the one SQL predicate `VisibilitySql.toCondition` (`shared/database`) —
+never a nullable list; the repository's `ListFilter` requires it (the same
+type scopes the events list, `event.md` §8).
 
 ## 5. Authorization placement
 
 | Where | What |
 |---|---|
 | Handler | coarse gate (§3) |
-| Lists | SQL-side `AccessScope` from the caller (§4); by-event: in-memory `Checks.canAccessScope` per row |
+| Lists | SQL-side `Visibility` from the caller (`AuthContext.visibility()`, §4); by-event: in-memory `Checks.canAccessScope` per row |
 | Detail / raw / attempts | handler: 404 then `Checks.checkScopeAccess(caller, job.clientId)` |
 | Requeue — execute phase | `publicAccess` in `authorize`; per row, jobs the caller cannot access (`!Checks.canAccessScope`) are **silently skipped and not counted** (§6). Deviation from Go in one corner: Go scopes with `client_id = ANY(caller.clients)` which also drops platform-scoped (`NULL`) jobs for a **non-anchor super-admin**; `canAccessScope` lets a super-admin requeue them. **Owner: keep the platform's one scope predicate (this), or Go's?** |
 

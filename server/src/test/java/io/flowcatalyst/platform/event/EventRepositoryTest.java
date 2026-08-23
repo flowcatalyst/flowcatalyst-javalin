@@ -4,7 +4,7 @@ import io.flowcatalyst.platform.event.Event.ContextEntry;
 import io.flowcatalyst.platform.event.EventFixture.Payload;
 import io.flowcatalyst.platform.event.EventRepository.Facet;
 import io.flowcatalyst.platform.event.EventRepository.ListFilter;
-import io.flowcatalyst.platform.event.EventRepository.Visibility;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import org.junit.jupiter.api.BeforeAll;
@@ -46,7 +46,7 @@ class EventRepositoryTest {
 
     private static final Instant T0 = NOW.minusSeconds(600);
     /// The anchor's view — every test that is not about scoping reads with it.
-    private static final Visibility ALL = new Visibility.Everything();
+    private static final Visibility ALL = Visibility.Everything.INSTANCE;
     private static String principal;
     private static String entity;
     private static String sinkRow;      // emitted + projected, platform-scoped
@@ -198,7 +198,7 @@ class EventRepositoryTest {
     @Test
     void visibilityIsEnforcedInSqlAndIntersectsTheCallersClientFilters() {
         // anchor: everything
-        assertThat(ids(repo.findWithFilters(inRun(new Visibility.Everything()), 100, 0))).hasSize(6);
+        assertThat(ids(repo.findWithFilters(inRun(Visibility.Everything.INSTANCE), 100, 0))).hasSize(6);
         // tenant A: own rows + platform-scoped, never B
         var tenantA = new Visibility.Tenants(List.of(CLIENT_A));
         assertThat(ids(repo.findWithFilters(inRun(tenantA), 100, 0))).containsExactly(sinkRowTwo, sinkRow, platformRow, rowA1, rowA2);
@@ -217,7 +217,7 @@ class EventRepositoryTest {
     void aFilterMustStateWhoseViewItIs() {
         assertThatThrownBy(() -> new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, null))
                 .as("visibility never defaults open").isInstanceOf(NullPointerException.class).hasMessage("visibility");
-        assertThat(ListFilter.none().visibility()).isInstanceOf(Visibility.Everything.class);
+        assertThat(ListFilter.none().visibility()).isSameAs(Visibility.Everything.INSTANCE);
     }
 
     // ── Guards ─────────────────────────────────────────────────────────────

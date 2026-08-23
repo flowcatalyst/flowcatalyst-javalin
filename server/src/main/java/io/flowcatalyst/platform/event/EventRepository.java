@@ -8,6 +8,8 @@ import io.flowcatalyst.db.generated.tables.records.MsgEventsReadRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgEventsRecord;
 import io.flowcatalyst.platform.event.Event.ContextEntry;
 import io.flowcatalyst.platform.event.Event.Projection;
+import io.flowcatalyst.platform.shared.auth.Visibility;
+import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
@@ -51,22 +53,6 @@ public final class EventRepository {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
     }
 
-    /// Which rows a principal may see (spec §8), enforced in SQL so the
-    /// caller's own client filters can only narrow within it.
-    public sealed interface Visibility {
-        /// Every row — the anchor's view.
-        record Everything() implements Visibility {
-        }
-
-        /// Platform-scoped rows (`client_id IS NULL`) plus rows of these
-        /// clients; an empty list is platform-scoped rows only.
-        record Tenants(List<String> clientIds) implements Visibility {
-            public Tenants {
-                clientIds = clientIds == null ? List.of() : List.copyOf(clientIds);
-            }
-        }
-    }
-
     /// Filters for [#findWithFilters] (spec §3); `null` = no filter on that
     /// column, and an empty list is no filter either. `since` / `until` are
     /// inclusive bounds on `created_at` — the partition key. `visibility` is
@@ -88,7 +74,7 @@ public final class EventRepository {
 
         /// No filters, every row — the anchor's unfiltered view.
         public static ListFilter none() {
-            return new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, new Visibility.Everything());
+            return new ListFilter(null, null, null, null, null, null, null, null, null, null, null, null, Visibility.Everything.INSTANCE);
         }
     }
 
@@ -130,10 +116,7 @@ public final class EventRepository {
         if (f.subject() != null) where = where.and(R.SUBJECT.eq(f.subject()));
         if (f.clientId() != null) where = where.and(R.CLIENT_ID.eq(f.clientId()));
         if (!f.clientIds().isEmpty()) where = where.and(R.CLIENT_ID.in(f.clientIds()));
-        where = where.and(switch (f.visibility()) {
-            case Visibility.Everything _ -> DSL.noCondition();
-            case Visibility.Tenants t -> R.CLIENT_ID.isNull().or(R.CLIENT_ID.in(t.clientIds()));
-        });
+        where = where.and(VisibilitySql.toCondition(f.visibility(), R.CLIENT_ID)); // spec §8
         if (!f.applications().isEmpty()) where = where.and(R.APPLICATION.in(f.applications()));
         if (!f.subdomains().isEmpty()) where = where.and(R.SUBDOMAIN.in(f.subdomains()));
         if (!f.aggregates().isEmpty()) where = where.and(R.AGGREGATE.in(f.aggregates()));

@@ -6,7 +6,6 @@ import io.flowcatalyst.platform.event.Event;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.EventRepository.Facet;
 import io.flowcatalyst.platform.event.EventRepository.ListFilter;
-import io.flowcatalyst.platform.event.EventRepository.Visibility;
 import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -112,15 +111,10 @@ public final class EventApi {
                 csv(queryParam(ctx, "applications")),
                 csv(queryParam(ctx, "subdomains")),
                 csv(queryParam(ctx, "aggregates")),
-                visibility(ac));
+                ac.visibility());
     }
 
-    /// An anchor sees every row; anyone else platform-scoped rows plus its own clients' (spec §8).
-    private static Visibility visibility(AuthContext ac) {
-        return ac.isAnchor() ? new Visibility.Everything() : new Visibility.Tenants(ac.clients());
-    }
-
-    /// The one-row form of [#visibility] (spec §5): a client-scoped event
+    /// The one-row form of [AuthContext#visibility()] (spec §5): a client-scoped event
     /// outside the caller's clients is 403, not 404.
     private static Event visible(AuthContext ac, Event e) {
         if (e.isPlatformScoped() || ac.canAccessClient(e.clientId())) return e;

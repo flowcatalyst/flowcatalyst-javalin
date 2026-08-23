@@ -1,9 +1,9 @@
 package io.flowcatalyst.platform.dispatchjob;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.AccessScope;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.Facet;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ListFilter;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -23,6 +23,7 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seed;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedAttempt;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The reads and the upsert over directly seeded rows (spec §1, §4, §9):
 /// the detail read off the write table (incl. the JSONB metadata column in
@@ -50,9 +51,9 @@ class DispatchJobRepositoryTest {
         jobPlatform = seed(Seed.of(SCOPE_CODE).withCreatedAt(BASE.plusSeconds(1)).withSource("src" + RUN));
     }
 
-    private static ListFilter filter(AccessScope scope, List<String> codes, List<String> clientIds) {
+    private static ListFilter filter(Visibility visibility, List<String> codes, List<String> clientIds) {
         return new ListFilter(null, null, null, null, null, null, null, null, false, 0, 0,
-                clientIds, null, codes, null, null, null, scope);
+                clientIds, null, codes, null, null, null, visibility);
     }
 
     private static List<String> ids(List<DispatchJobProjection> rows) {
@@ -63,25 +64,25 @@ class DispatchJobRepositoryTest {
 
     @Test
     void anchorSeesEveryTenantAndPlatformScopedRows() {
-        var rows = repo.findWithFilters(filter(new AccessScope.Unscoped(), List.of(SCOPE_CODE), null));
+        var rows = repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(SCOPE_CODE), null));
         assertThat(ids(rows)).containsExactly(jobA, jobB, jobPlatform); // newest first
     }
 
     @Test
     void scopedCallerSeesOwnTenantPlusPlatformScopedNeverAnother() {
-        var rows = repo.findWithFilters(filter(new AccessScope.Clients(List.of(CLIENT_A)), List.of(SCOPE_CODE), null));
+        var rows = repo.findWithFilters(filter(new Visibility.Tenants(List.of(CLIENT_A)), List.of(SCOPE_CODE), null));
         assertThat(ids(rows)).containsExactly(jobA, jobPlatform);
     }
 
     @Test
     void scopedCallerFilteringForAnotherTenantGetsNothing() {
-        var rows = repo.findWithFilters(filter(new AccessScope.Clients(List.of(CLIENT_A)), List.of(SCOPE_CODE), List.of(CLIENT_B)));
+        var rows = repo.findWithFilters(filter(new Visibility.Tenants(List.of(CLIENT_A)), List.of(SCOPE_CODE), List.of(CLIENT_B)));
         assertThat(rows).as("cross-tenant filter must not leak another tenant's jobs").isEmpty();
     }
 
     @Test
     void scopedCallerWithNoClientsSeesPlatformScopedOnly() {
-        var rows = repo.findWithFilters(filter(new AccessScope.Clients(List.of()), List.of(SCOPE_CODE), null));
+        var rows = repo.findWithFilters(filter(new Visibility.Tenants(List.of()), List.of(SCOPE_CODE), null));
         assertThat(ids(rows)).containsExactly(jobPlatform);
     }
 
@@ -89,7 +90,7 @@ class DispatchJobRepositoryTest {
 
     @Test
     void filtersNarrowByEveryColumnAndSortFlipsTheOrder() {
-        var unscoped = new AccessScope.Unscoped();
+        var unscoped = Visibility.Everything.INSTANCE;
         assertThat(ids(repo.findWithFilters(new ListFilter("COMPLETED", null, null, null, SCOPE_CODE, null, null, null,
                 false, 0, 0, null, null, null, null, null, null, unscoped)))).containsExactly(jobB);
         assertThat(ids(repo.findWithFilters(new ListFilter(null, CLIENT_A, null, null, null, null, null, null,
@@ -110,11 +111,18 @@ class DispatchJobRepositoryTest {
 
     @Test
     void limitAndOffsetWindowTheListAndOutOfRangeLimitsFallBack() {
-        var unscoped = new AccessScope.Unscoped();
+        var unscoped = Visibility.Everything.INSTANCE;
         assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
                 false, 1, 1, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).containsExactly(jobB);
         assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
                 false, 5000, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).hasSize(3);
+    }
+
+    @Test
+    void aFilterMustStateWhoseViewItIs() {
+        assertThatThrownBy(() -> new ListFilter(null, null, null, null, null, null, null, null,
+                false, 0, 0, null, null, null, null, null, null, null))
+                .as("visibility never defaults open").isInstanceOf(NullPointerException.class).hasMessage("visibility");
     }
 
     @Test

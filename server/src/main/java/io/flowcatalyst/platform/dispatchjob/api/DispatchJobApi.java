@@ -6,7 +6,6 @@ import io.flowcatalyst.platform.dispatchjob.CodeFacets;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobProjection;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.AccessScope;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.Facet;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ListFilter;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueCommand;
@@ -158,12 +157,7 @@ public final class DispatchJobApi {
                 csv(queryParam(ctx, "applications")),
                 csv(queryParam(ctx, "subdomains")),
                 csv(queryParam(ctx, "aggregates")),
-                scope(ac));
-    }
-
-    /// Anchors are unscoped; everyone else sees platform-scoped rows plus their own clients'.
-    private static AccessScope scope(AuthContext ac) {
-        return ac.isAnchor() ? new AccessScope.Unscoped() : new AccessScope.Clients(ac.clients());
+                ac.visibility());
     }
 
     /// Absent or empty query parameter → `null`.

@@ -90,8 +90,9 @@ Timestamps: RFC 3339, 6 fractional digits, `Z`.
 | any of `limit` / `size` / `offset` non-integer | 400 `VALIDATION` `validation failed` with `details.errors[{message: "invalid integer", location: "query.<name>", value}]` — one entry per bad parameter, in `limit, offset, size` order |
 
 Visibility (§8) is intersected with the filters in SQL. The repository's
-filter carries the caller's visibility as a required component — there is no
-default view; every filtered read states whose it is.
+filter carries the caller's `Visibility` (the shared `shared/auth` type,
+`AuthContext.visibility()`) as a required component — there is no default
+view; every filtered read states whose it is.
 
 Ordering: `created_at DESC` — newest first; ties are in no defined order
 (open question 6).
@@ -147,7 +148,7 @@ Invalid limits are *corrected* by the repository rather than rejected.
 |---|---|
 | Handler | `Checks.require(Auth.current(), EVENT_VIEW)` on list, filter-options, get; `EVENT_VIEW_RAW` on `/list-raw` and `/raw` |
 | Use case | none — there are no use cases |
-| Resource-level (list) | **in SQL**: an anchor sees every row; any other principal sees platform-scoped rows (`client_id IS NULL`) plus rows whose `client_id` is in its client list — intersected with the caller's own `clientId`/`clientIds` filters, so those can only narrow within the principal's tenants, never reach across them. A non-anchor with an empty client list sees platform-scoped rows only |
+| Resource-level (list) | **in SQL**: an anchor sees every row; any other principal sees platform-scoped rows (`client_id IS NULL`) plus rows whose `client_id` is in its client list — intersected with the caller's own `clientId`/`clientIds` filters, so those can only narrow within the principal's tenants, never reach across them. A non-anchor with an empty client list sees platform-scoped rows only. Stated as the platform's one `Visibility` value (`shared/auth`: `Everything \| Tenants(ids)`, built by `AuthContext.visibility()`) and rendered by its one SQL predicate (`shared/database` `VisibilitySql.toCondition`); the same value scopes dispatch-job lists |
 | Resource-level (get) | the same rule applied to the one row (§5) |
 | Filter options | none (§4) |
 

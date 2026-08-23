@@ -8,6 +8,8 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobAttemptsRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsReadRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsRecord;
+import io.flowcatalyst.platform.shared.auth.Visibility;
+import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.subscription.DispatchMode;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
@@ -59,25 +61,12 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
     }
 
-    /// SQL-side tenant scoping of the list reads (spec §4): an anchor is
-    /// [Unscoped]; any other caller sees platform-scoped rows (`client_id IS
-    /// NULL`) plus the rows of its own [Clients] — possibly none.
-    public sealed interface AccessScope {
-        /// No scoping — anchor callers.
-        record Unscoped() implements AccessScope {
-        }
-
-        /// Platform-scoped rows plus these clients' rows.
-        record Clients(List<String> clientIds) implements AccessScope {
-            public Clients {
-                clientIds = clientIds == null ? List.of() : List.copyOf(clientIds);
-            }
-        }
-    }
-
     /// Filters for [#findWithFilters] (spec §4); `null` / empty list = no
     /// filter on that column. `since` / `until` are inclusive; `limit` and
     /// `offset` are guarded here; `sortAscending` flips the `created_at` order.
+    /// `visibility` is not a filter but whose view this is (SQL-side tenant
+    /// scoping, spec §4) and is required — a caller states it, it never
+    /// defaults open.
     public record ListFilter(
             String status,
             String clientId,
@@ -96,7 +85,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
             List<String> applications,
             List<String> subdomains,
             List<String> aggregates,
-            AccessScope scope) {
+            Visibility visibility) {
 
         public ListFilter {
             clientIds = clientIds == null ? List.of() : List.copyOf(clientIds);
@@ -105,7 +94,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
             applications = applications == null ? List.of() : List.copyOf(applications);
             subdomains = subdomains == null ? List.of() : List.copyOf(subdomains);
             aggregates = aggregates == null ? List.of() : List.copyOf(aggregates);
-            Objects.requireNonNull(scope, "scope");
+            Objects.requireNonNull(visibility, "visibility");
         }
     }
 
@@ -142,7 +131,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
 
     // ── Reads: projection ──────────────────────────────────────────────────
 
-    /// Projection rows matching every filter plus the caller's [AccessScope],
+    /// Projection rows matching every filter plus the caller's [Visibility] (spec §4),
     /// ordered by `created_at` (newest first unless `sortAscending`).
     public List<DispatchJobProjection> findWithFilters(ListFilter f) {
         Condition where = DSL.noCondition();
@@ -150,7 +139,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
         if (!f.statuses().isEmpty()) where = where.and(R.STATUS.in(f.statuses()));
         if (f.clientId() != null) where = where.and(R.CLIENT_ID.eq(f.clientId()));
         if (!f.clientIds().isEmpty()) where = where.and(R.CLIENT_ID.in(f.clientIds()));
-        where = where.and(scopeCondition(f.scope()));
+        where = where.and(VisibilitySql.toCondition(f.visibility(), R.CLIENT_ID));
         if (f.dispatchPoolId() != null) where = where.and(R.DISPATCH_POOL_ID.eq(f.dispatchPoolId()));
         if (f.subscriptionId() != null) where = where.and(R.SUBSCRIPTION_ID.eq(f.subscriptionId()));
         if (f.code() != null) where = where.and(R.CODE.eq(f.code()));
@@ -256,14 +245,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
-
-    /// `client_id IS NULL OR client_id IN (…)` for a scoped caller; nothing for an anchor.
-    private static Condition scopeCondition(AccessScope scope) {
-        return switch (scope) {
-            case AccessScope.Unscoped _ -> DSL.noCondition();
-            case AccessScope.Clients c -> R.CLIENT_ID.isNull().or(R.CLIENT_ID.in(c.clientIds()));
-        };
-    }
 
     /// Out-of-range limits are corrected, not rejected (spec §8).
     private static int guard(int limit, int max, int fallback) {

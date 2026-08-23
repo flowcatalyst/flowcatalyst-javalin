@@ -71,6 +71,13 @@ public record AuthContext(
         return isAnchor() || clients.contains(clientId);
     }
 
+    /// Whose view a tenant-scoped list read is: an anchor sees
+    /// [Visibility.Everything]; anyone else platform-scoped rows plus its own
+    /// [#clients] ([Visibility.Tenants]) — enforced in SQL by the repositories.
+    public Visibility visibility() {
+        return isAnchor() ? Visibility.Everything.INSTANCE : new Visibility.Tenants(clients);
+    }
+
     /// Restricted to an explicit application list (no all-applications access).
     public boolean isApplicationScoped() {
         return !allApplications;
