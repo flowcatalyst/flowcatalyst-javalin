@@ -99,6 +99,14 @@ item names its origin; items marked **owner** need Andrew's call.
   `/lookup` is ungated (spec OQ 1, **owner**). `EmailDomain.parse` accepts
   `.`, `example.`, `.com`, `exa_mple.com` (pinned, **owner**).
 
+## From the dispatchjob port (**owner**)
+- Router Q1 mapping: *resend* = `POST /api/dispatch-jobs/requeue`; *ignore*
+  (FAILED→CANCELLED) and *completed* (FAILED→COMPLETED) have NO routes in the
+  lockfile today — two new operations + lockfile routes needed (wire change:
+  bump lockfile, regen SDKs/frontend). `requeue()` is total (resets
+  PROCESSING/QUEUED/COMPLETED too) and gated by *view* — precondition/gate
+  rulings in `docs/spec/dispatchjob.md` §11.
+
 ## From the encryption port
 - `fcdev` `DevBootstrap.ensureAppKeyFile` should call
   `Encryption.generateKey()` (bytes identical today; one source of truth).
