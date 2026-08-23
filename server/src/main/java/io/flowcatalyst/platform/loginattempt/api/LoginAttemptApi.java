@@ -6,19 +6,16 @@ import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository.ListFilter;
 import io.flowcatalyst.platform.shared.apicommon.CursorResponse;
 import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
+import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
-import io.flowcatalyst.sdk.usecase.UseCaseError;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.http.Context;
 import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /// The `/api/login-attempts` surface (spec §2) — one read-only route. The
@@ -91,21 +88,9 @@ public final class LoginAttemptApi {
     }
 
     /// `pageSize`: absent → default; out of range → default (not clamped —
-    /// spec §3, open question 3); non-integer → 400 `VALIDATION`.
+    /// spec §3, open question 3); non-integer → 400 `VALIDATION` ([QueryParams]).
     private static int pageSize(Context ctx) {
-        String raw = queryParam(ctx, "pageSize");
-        if (raw == null) return DEFAULT_PAGE_SIZE;
-        int size;
-        try {
-            size = Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            var detail = new LinkedHashMap<String, Object>();
-            detail.put("message", "invalid integer");
-            detail.put("location", "query.pageSize");
-            detail.put("value", raw);
-            throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
-                    .withDetails(Map.of("errors", List.of(detail))));
-        }
+        int size = QueryParams.intParam(ctx, "pageSize").orElse(DEFAULT_PAGE_SIZE);
         return size < 1 || size > MAX_PAGE_SIZE ? DEFAULT_PAGE_SIZE : size;
     }
 

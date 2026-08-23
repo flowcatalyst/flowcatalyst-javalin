@@ -75,7 +75,7 @@ key order on the wire is Postgres's, not the command record's.)
 
 | Input | Rule |
 |---|---|
-| `pageSize` | absent → 50; `< 1` or `> 200` → **50** (not clamped to 200 — the lockfile's "capped at 200" wording and the code disagree: **load-bearing or accident?** open question 1); non-integer → 400 `VALIDATION` with `details.errors[{message: "invalid integer", location: "query.pageSize", value}]` |
+| `pageSize` | absent → 50; `< 1` or `> 200` → **50** (not clamped to 200 — the lockfile's "capped at 200" wording and the code disagree: **load-bearing or accident?** open question 1); non-integer → 400 `VALIDATION` with `details.errors[{message: "invalid integer", location: "query.pageSize", value}]` (`apicommon.QueryParams.intParam`) |
 | `after` | absent/empty → first page; otherwise an opaque cursor (§4); malformed → 400 `CURSOR` `invalid cursor` |
 | `entityType`, `entityId`, `principalId`, `operation` | equality filters; absent/empty → no filter |
 | `applicationIds`, `clientIds` | comma-separated; each part trimmed, blanks dropped; the remaining values form an `IN` filter; absent/empty/all-blank → no filter |
@@ -91,18 +91,23 @@ more than `pageSize`, `hasMore = true`, the extra row is dropped and
 
 `principalName` is joined for every row of every list.
 
-## 4. Cursor format (`AuditLogCursor`)
+## 4. Cursor format (`apicommon.KeysetCursor`)
 
-A keyset position `(performedAt, id)`. Encoded as base64url **without
-padding** of the text `<performedAt as RFC 3339 UTC>|<id>`; decoding splits
-on the first `|`, parses the timestamp leniently (0–9 fractional digits, as
-both the Go and the Java writer may have produced), and treats any failure —
-bad base64, no `|`, unparseable time, an empty id after the `|` (no row has
-one, so it is never a position) — as one validation error: 400 `CURSOR`
-`invalid cursor`. The encoder writes the timestamp with `ISO_INSTANT`
-(0/3/6/9 fractional digits); the stored value has microsecond precision, so
-a round trip is exact. The next page is every row with
-`(performed_at, id) < (cursor.performedAt, cursor.id)` in the same ordering.
+A keyset position `(performedAt, id)` — the platform's one keyset-cursor
+record (CONVENTIONS §8), shared with the login-attempt list; the audit list's
+pre-existing token bytes are unchanged by the move. Encoded as base64url
+**without padding** of the text `<performedAt as RFC 3339 UTC>|<id>`;
+decoding splits on the first `|`, parses the timestamp leniently (0–9
+fractional digits, as both the Go and the Java writer may have produced),
+and reports any failure — bad base64, no `|`, unparseable time, an empty id
+after the `|` (no row has one, so it is never a position) — as "no cursor"
+to the caller. What "no cursor" *means* is the route's policy, decided in
+`AuditLogApi.after`: this list answers 400 `CURSOR` `invalid cursor` (§3);
+the login-attempt list serves the first page. The encoder writes the
+timestamp with `ISO_INSTANT` (0/3/6/9 fractional digits); the stored value
+has microsecond precision, so a round trip is exact. The next page is every
+row with `(performed_at, id) < (cursor.performedAt, cursor.id)` in the same
+ordering.
 
 A cursor is opaque to clients: its only consumer is this endpoint.
 

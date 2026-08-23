@@ -2,16 +2,16 @@ package io.flowcatalyst.platform.audit.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.audit.AuditLog;
-import io.flowcatalyst.platform.audit.AuditLogCursor;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.AuditLogRepository.CursorFilter;
 import io.flowcatalyst.platform.audit.AuditLogRepository.Facet;
 import io.flowcatalyst.platform.audit.AuditLogRepository.ListFilter;
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
+import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
-import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.http.Context;
 import io.javalin.http.Handler;
@@ -19,9 +19,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -123,28 +121,18 @@ public final class AuditLogApi {
                 csv(queryParam(ctx, "clientIds")));
     }
 
-    /// `after` → cursor, or `null` for the first page; malformed → 400 `CURSOR`.
-    private static AuditLogCursor after(Context ctx) {
+    /// `after` → cursor, or `null` for the first page. This route's policy
+    /// for a malformed token (spec §3, §4): 400 `CURSOR` `invalid cursor`.
+    private static KeysetCursor after(Context ctx) {
         String token = queryParam(ctx, "after");
-        return token == null ? null : AuditLogCursor.parse(token);
+        return token == null ? null
+                : KeysetCursor.parse(token).orElseThrow(() -> UseCaseException.validation("CURSOR", "invalid cursor"));
     }
 
     /// `pageSize`: absent → default; out of range → default (not clamped —
-    /// spec §3, open question 1); non-integer → 400 `VALIDATION`.
+    /// spec §3, open question 1); non-integer → 400 `VALIDATION` ([QueryParams]).
     private static int pageSize(Context ctx) {
-        String raw = queryParam(ctx, "pageSize");
-        if (raw == null) return DEFAULT_PAGE_SIZE;
-        int size;
-        try {
-            size = Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            var detail = new LinkedHashMap<String, Object>();
-            detail.put("message", "invalid integer");
-            detail.put("location", "query.pageSize");
-            detail.put("value", raw);
-            throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
-                    .withDetails(Map.of("errors", List.of(detail))));
-        }
+        int size = QueryParams.intParam(ctx, "pageSize").orElse(DEFAULT_PAGE_SIZE);
         return size < 1 || size > MAX_PAGE_SIZE ? DEFAULT_PAGE_SIZE : size;
     }
 

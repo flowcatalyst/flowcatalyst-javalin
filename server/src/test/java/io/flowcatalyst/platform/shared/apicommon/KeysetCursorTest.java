@@ -12,8 +12,12 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// The one keyset-cursor encoding shared by the cursor lists: the token
-/// layout, the lenient timestamp read and the pinned malformed table.
+/// The one keyset-cursor encoding shared by the cursor lists (audit log,
+/// login attempts): the token layout — the audit list's pre-existing wire
+/// contract, unchanged by the migration — the lenient timestamp read and the
+/// pinned malformed table. What a malformed token *means* is each Api's
+/// policy and is pinned there (`AuditLogApiTest` 400 `CURSOR`,
+/// `LoginAttemptApiTest` first page).
 class KeysetCursorTest {
 
     private static final Instant T = Instant.parse("2026-08-22T10:11:12.123456Z");
@@ -28,9 +32,19 @@ class KeysetCursorTest {
         assertThat(KeysetCursor.parse(token)).contains(cursor);
     }
 
+    @Test
+    void theAuditListsPreMigrationTokenBytesAreUnchanged() {
+        // The exact token `AuditLogCursor.encode` produced for this position: the audit wire contract.
+        assertThat(new KeysetCursor(T, "aud_1").encode()).isEqualTo("MjAyNi0wOC0yMlQxMDoxMToxMi4xMjM0NTZafGF1ZF8x");
+        assertThat(new KeysetCursor(Instant.parse("2026-08-22T10:11:12Z"), "aud_1").encode())
+                .as("a whole-second instant renders without a fraction").isEqualTo("MjAyNi0wOC0yMlQxMDoxMToxMlp8YXVkXzE");
+    }
+
     @ParameterizedTest(name = "{0} reads as ({1}, {2})")
     @CsvSource(delimiter = ';', value = {
             "2026-08-22T10:11:12.123456789Z|lat_1; 2026-08-22T10:11:12.123456789Z; lat_1",      // nanos
+            "2026-08-22T10:11:12.123456Z|aud_1;    2026-08-22T10:11:12.123456Z;    aud_1",      // micros (what the encoder writes for a stored row)
+            "2026-08-22T10:11:12.12Z|aud_1;        2026-08-22T10:11:12.12Z;        aud_1",      // two digits (an earlier writer)
             "2026-08-22T10:11:12Z|lat_1;           2026-08-22T10:11:12Z;           lat_1",      // no fraction
             "2026-08-22T10:11:12.5Z|lat_1|with|bars; 2026-08-22T10:11:12.5Z;      lat_1|with|bars", // only the first bar splits
     })
@@ -44,7 +58,9 @@ class KeysetCursorTest {
             "not base64 !!",                      // bad alphabet
             "bm8tYmFy",                           // "no-bar"
             "bm90LWEtdGltZXxsYXRfMQ",             // "not-a-time|lat_1"
+            "bm90LWEtdGltZXxhdWRfMQ",             // "not-a-time|aud_1"
             "MjAyNi0wOC0yMiAxMDoxMToxMlp8bGF0XzE", // "2026-08-22 10:11:12Z|lat_1" (space, not T)
+            "MjAyNi0wOC0yMiAxMDoxMToxMlp8YXVkXzE", // "2026-08-22 10:11:12Z|aud_1" (space, not T)
             "MjAyNi0wOC0yMlQxMDoxMToxMlp8",        // "2026-08-22T10:11:12Z|" (empty id)
     })
     void malformedTokenIsReportedAsEmpty(String token) {

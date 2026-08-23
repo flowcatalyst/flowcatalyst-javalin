@@ -1,11 +1,8 @@
 package io.flowcatalyst.platform.shared.apicommon;
 
-import io.flowcatalyst.sdk.usecase.UseCaseError;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.http.Context;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -35,9 +32,9 @@ public record PageQuery(int page, int size, int limitAlias, int pageSizeAlias, i
         this(page, size, 0, 0, 0);
     }
 
-    /// Parses the query string. A non-integer value is a 400 `VALIDATION`
-    /// envelope with `details.errors = [{message, location: "query.<name>",
-    /// value}]`, the same shape huma produces for a bad query parameter.
+    /// Parses the query string. A non-integer value is the [QueryParams]
+    /// 400 `VALIDATION` envelope, one `details.errors` entry per bad
+    /// parameter in `page, size, limit, pageSize, page_size` order.
     public static PageQuery from(Context ctx) {
         var errors = new ArrayList<Map<String, Object>>();
         var page = intParam(ctx, "page", errors);
@@ -45,26 +42,13 @@ public record PageQuery(int page, int size, int limitAlias, int pageSizeAlias, i
         var limit = intParam(ctx, "limit", errors);
         var camel = intParam(ctx, "pageSize", errors);
         var snake = intParam(ctx, "page_size", errors);
-        if (!errors.isEmpty()) {
-            throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
-                    .withDetails(Map.of("errors", List.copyOf(errors))));
-        }
+        if (!errors.isEmpty()) throw QueryParams.validation(errors);
         return new PageQuery(page, size, limit, camel, snake);
     }
 
+    /// Absent (or bad, recorded in `errors`) reads as 0 — the record's "not sent".
     private static int intParam(Context ctx, String name, List<Map<String, Object>> errors) {
-        var raw = ctx.queryParam(name);
-        if (raw == null || raw.isEmpty()) return 0;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            var detail = new LinkedHashMap<String, Object>();
-            detail.put("message", "invalid integer");
-            detail.put("location", "query." + name);
-            detail.put("value", raw);
-            errors.add(detail);
-            return 0;
-        }
+        return QueryParams.intParam(ctx, name, errors).orElse(0);
     }
 
     /// Resolved 0-based page index (negative → 0).

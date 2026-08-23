@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.audit;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.sdk.usecase.HasId;
 
 import java.time.Instant;
@@ -36,8 +37,9 @@ public record AuditLog(
         if (operationJson != null && operationJson.isNull()) operationJson = null;
     }
 
-    /// The keyset position of this entry in the newest-first order (spec §4).
-    public AuditLogCursor cursor() {
-        return new AuditLogCursor(performedAt, id);
+    /// The keyset position `(performedAt, id)` of this entry in the
+    /// newest-first order (spec §4) — the platform's one cursor record.
+    public KeysetCursor cursor() {
+        return new KeysetCursor(performedAt, id);
     }
 }

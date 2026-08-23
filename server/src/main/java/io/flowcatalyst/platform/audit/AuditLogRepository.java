@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.IamPrincipals;
+import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
@@ -91,7 +92,7 @@ public final class AuditLogRepository {
     /// Up to `limit` entries matching every filter, newest first
     /// (`performed_at DESC, id DESC`), strictly after `after` when given.
     /// The caller over-fetches by one to learn whether a next page exists.
-    public List<AuditLog> findWithCursor(CursorFilter f, AuditLogCursor after, int limit) {
+    public List<AuditLog> findWithCursor(CursorFilter f, KeysetCursor after, int limit) {
         Condition where = DSL.noCondition();
         if (f.entityType() != null) where = where.and(T.ENTITY_TYPE.eq(f.entityType()));
         if (f.entityId() != null) where = where.and(T.ENTITY_ID.eq(f.entityId()));
@@ -100,7 +101,7 @@ public final class AuditLogRepository {
         if (!f.applicationIds().isEmpty()) where = where.and(T.APPLICATION_ID.in(f.applicationIds()));
         if (!f.clientIds().isEmpty()) where = where.and(T.CLIENT_ID.in(f.clientIds()));
         if (after != null) {
-            where = where.and(DSL.row(T.PERFORMED_AT, T.ID).lt(after.performedAt().atOffset(ZoneOffset.UTC), after.id()));
+            where = where.and(DSL.row(T.PERFORMED_AT, T.ID).lt(after.at().atOffset(ZoneOffset.UTC), after.id()));
         }
         return logsWithPrincipal()
                 .where(where)

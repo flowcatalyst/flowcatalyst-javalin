@@ -78,10 +78,15 @@ item names its origin; items marked **owner** need Andrew's call.
   router lands; see router spec Q1 ruling for the semantics.
 
 ## From the audit-log audit
-- Query-parameter parse errors (`{message, location: "query.<name>", value}`)
+- ~~Query-parameter parse errors (`{message, location: "query.<name>", value}`)
   are built in both `PageQuery.intParam` and `AuditLogApi.pageSize` —
   expose one helper in `apicommon` ("Query-parameter parse errors are one
-  helper"). `AuditLogRepository.ListFilter` has unused components
+  helper").~~ **Done (2026-08-23):** `apicommon.QueryParams.intParam(ctx,
+  name) → OptionalInt` (throwing form) / `intParam(ctx, name, errors)`
+  (accumulating form) + `QueryParams.validation(errors)`; `PageQuery.from`,
+  `AuditLogApi.pageSize` and `LoginAttemptApi.pageSize` use it —
+  `QueryParamsTest` / `PageQueryTest` / both Api tests pin the bytes.
+  Still open: `AuditLogRepository.ListFilter` has unused components
   (`clientId/since/until/offset`, spec OQ 3). `AuditLog.operationJson` is a
   mutable `JsonNode` in a record.
 
@@ -103,20 +108,31 @@ item names its origin; items marked **owner** need Andrew's call.
   `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
 
 ## From the loginattempt audit
-- `AuditLogCursor` duplicates the new shared `apicommon.KeysetCursor`
+- ~~`AuditLogCursor` duplicates the new shared `apicommon.KeysetCursor`
   (`(at, id)`, same token layout; `parse` → `Optional`, the 400 `CURSOR`
   policy belongs at `AuditLogApi.after`). Migration is mechanical but
   touches `AuditLog.cursor()`, `AuditLogRepository.findWithCursor`,
   `AuditLogApi.after` and ~45 lines of `AuditLogTest` cursor tests (the
   malformed table moves to `KeysetCursorTest`, which already carries it;
   `AuditLogApiTest` already pins the 400) — do it in one pass, then delete
-  `AuditLogCursor`.
-- `pageSize` parsing (`absent → 50`, out of range → 50, non-integer →
+  `AuditLogCursor`.~~ **Done (2026-08-23):** `AuditLog.cursor()` returns
+  `KeysetCursor`, `AuditLogRepository.findWithCursor(…, KeysetCursor, …)`,
+  `AuditLogApi.after` applies `parse(token).orElseThrow(CURSOR)`;
+  `AuditLogCursor` deleted; the audit token bytes are unchanged
+  (`KeysetCursorTest` pins the pre-migration tokens and the `aud_` rows of
+  the lenient / malformed tables).
+- ~~`pageSize` parsing (`absent → 50`, out of range → 50, non-integer →
   `VALIDATION` `{message: "invalid integer", location: "query.pageSize",
   value}`) and `queryParam` are copied verbatim between `AuditLogApi` and
   `LoginAttemptApi`; with the `PageQuery.intParam` duplicate already listed
   under the audit-log audit that is three copies — one `apicommon` helper
-  (`QueryParams.intOrDefault(ctx, name, default, max)` + the error shape).
+  (`QueryParams.intOrDefault(ctx, name, default, max)` + the error shape).~~
+  **Done (2026-08-23):** the parse + error shape is
+  `apicommon.QueryParams.intParam` (see the audit-log audit entry); the
+  `absent / out of range → 50` resolution stays a two-line policy in each
+  Api's `pageSize` (it is the route's default, not transport). The one-line
+  `queryParam` (absent/empty → `null`) is still duplicated — not worth a
+  helper.
 - `LoginAttempt.attempt(type, outcome, failureReason, identifier,
   principalId, ipAddress, userAgent)` is seven positional arguments, five of
   them `String` — an easy swap at the auth-port call sites. Consider two
