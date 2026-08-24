@@ -28,24 +28,33 @@ Source set read for this spec: `router/**` (incl. `api/**`), `common/**`,
 
 ---
 
-## 0. SPEC DRIFT — re-extract before porting (2026-08-24)
+## 0. Drift re-extraction — CLEARED 2026-08-24
 
-This spec was extracted at Go commit `1e9d465`. Three commits have landed in
-`../flowcatalyst-go` since, all inside this subsystem's boundary. **Sections
-2, 3, 6 and 7 are stale in the ways listed below; re-read these commits (and
-`docs/wire-contract.md`, which they change) before writing any router Java.**
+This spec was extracted at Go `1e9d465`. Three commits landed inside the
+subsystem afterwards; **all three have now been re-extracted into the
+sections below and this spec is current against Go `eff2a29`.** The owner
+confirms no router work is in flight, so this target is stable.
 
-| Go commit | What changed | Spec impact |
+| Go commit | What changed | Where it now lives |
 |---|---|---|
-| `f1fc427` dispatch: only BLOCK_ON_ERROR stops for a failed sibling | The scheduler poller's group-level skip is gone; the per-mode filter now holds back **only** `BLOCK_ON_ERROR`. IMMEDIATE carries no ordering; NEXT_ON_ERROR is ordered but the group moves on. | This *is* the Q1 ruling, now implemented upstream. §2.6 (`DispatchMode`) and §13 Q1 must be rewritten as settled behaviour, not an open question. |
-| `5bb46df` dispatch: hold back blocked-group jobs at delivery time | `/api/dispatch/process` now mirrors the poller: if the job's group is blocked, ACK the queue message and revert the job to `PENDING` **without** recording an attempt or spending retry budget; a DB error during check or revert NACKs instead, so a job is never left `QUEUED` with no queue message behind it. | New behaviour at the delivery callback, which the Java `dispatchprocessing` unit has not been written yet. Also affects `docs/spec/dispatchjob.md` §10 (`GroupBlocked` is now per-mode). |
-| `eff2a29` router: flushGroup — suppress a message group at the target's request | New mediation response field: a 2xx `{"ack": true, "flushGroup": true}` makes the router ACK the group's remaining messages **without delivering them**. `GroupFlushRegistry` is a per-message-group circuit breaker; suppression is TTL-bounded by `delaySeconds` (default 60 s, capped 5 min), self-healing, re-flush only extends. The check runs **before** the rate limiter, so a flushed group spends neither token nor slot. `ack:false` takes precedence. Ungrouped messages are a no-op. Also collapses three hand-rolled group derivations onto `common.Message.GroupID`. | §6.5 (status → outcome table) gains a `flushGroup` column; §2 gains `GroupFlushRegistry` and the group-flush state machine; §3 gains the pre-rate-limit check. This is a **wire contract** change, so the golden vectors and the mediation-response parser both move. |
+| `f1fc427` only `BLOCK_ON_ERROR` stops for a failed sibling | The poller's group-level skip is gone; the per-mode filter holds back `BLOCK_ON_ERROR` alone. | §2.6, rewritten as two columns of truth — see the warning below |
+| `5bb46df` hold back blocked-group jobs at delivery time | `/api/dispatch/process` mirrors the poller: ACK the queue message and revert the job to `PENDING` with no attempt and no retry budget; a DB error on either the check or the revert NACKs instead. | new §6.6b |
+| `eff2a29` `flushGroup` | New mediation-response field; `GroupFlushRegistry` as a per-group circuit breaker; the check runs **before** the rate limiter. Wire-contract change. | §2.4, new §2.11, §3.5 step 4, §6.5, new §6.6a |
 
-Nothing already ported to Java is invalidated by these commits — the platform
-CRUD aggregates are untouched. The stale parts are all in the not-yet-ported
-data plane.
+**Read §2.6 before writing any ordered-group code.** `f1fc427` implemented
+only the *platform* half of the Q1 ruling. The *router* half is untouched:
+`pool.go:272` still branches on `RequiresOrdering()` alone, so
+`NEXT_ON_ERROR` and `BLOCK_ON_ERROR` remain identical inside the pool. A
+Java router that mirrors the Go here will pass every Go-derived test and
+still be wrong.
 
----
+Re-extraction surfaced five new questions — **Q51–Q55** in §13, all on
+`flushGroup`. Q54 is the one that matters: `flushGroup` causes the router to
+**ACK messages it never delivered**, and nothing enforces the safety
+condition that makes that sound.
+
+Nothing already ported to Java is invalidated by these commits — the
+platform CRUD aggregates are untouched.
 
 ## 1. Purpose & boundaries
 
@@ -191,12 +200,14 @@ time, released on ACK / nack / pool-stop / flush / reap / force-ack).
 | `DelaySeconds` | int | server/breaker-requested delay; 0 when none |
 | `StatusCode` | int | HTTP status when known, else 0 |
 | `ErrorMessage` | string | diagnostic text |
+| `FlushGroup` | bool | **(eff2a29)** set when a 2xx body carried `{"flushGroup": true}` — the target delivered this message but asks the router to stop delivering the rest of its group. `DelaySeconds` on the same outcome sizes the suppression window. |
 
 Result kinds and the constructors that produce them:
 
 | Result | Constructor | Status | Delay | Produced when |
 |---|---|---|---|---|
-| `MediationSuccess` | `Success()` | 200 (hard-coded, even for 201/204) | 0 | 2xx without `{"ack":false}` |
+| `MediationSuccess` | `Success()` | 200 (hard-coded, even for 201/204) | 0, **or `delaySeconds` when `FlushGroup`** | 2xx without `{"ack":false}` |
+| `MediationSuccess` + `FlushGroup` | `Success()` then `out.FlushGroup = true` | 200 (hard-coded — **the flush branch does not copy the real status**, unlike the `Deferred` branch which does; accident? **Q51**) | `delaySeconds` from the body, else 0 | 2xx with `{"flushGroup": true}` and not `{"ack": false}` (`mediator.go:356-365`) |
 | `MediationErrorConfig` | `ErrorConfig(status,msg)` | status or 0 | 0 | 4xx except 429; unsupported mediation type; invalid target URL; payload marshal error |
 | `MediationErrorProcess` | `ErrorProcess(delay,msg)` | set to status for 5xx; 0 for the "unexpected status" branch | 30 | 5xx; any status <200 |
 | `MediationErrorConnection` | `ErrorConnection(msg)` | 0 | **30** (`common/mediation.go:59-62`) | transport error, timeout, request-build error |
@@ -251,19 +262,42 @@ Other config carriers:
 
 ### 2.6 `DispatchMode` [C] — `common/message.go:19-45`
 
-| Value | `RequiresOrdering()` | Router behaviour |
-|---|---|---|
-| `IMMEDIATE` (or absent / unknown string) | false | dispatched concurrently, one worker per message, bounded only by the pool semaphore |
-| `NEXT_ON_ERROR` | true | enqueued into the per-group FIFO; head-of-line blocking on retryable failure |
-| `BLOCK_ON_ERROR` | true | **identical** to `NEXT_ON_ERROR` — the router never distinguishes the two (`router/pool.go:270,496-499`) |
+Three values, parsed leniently (`ParseDispatchMode`: unknown → `IMMEDIATE`,
+`common/message_test.go:73-78`). `RequiresOrdering()` is true for
+`NEXT_ON_ERROR` and `BLOCK_ON_ERROR`.
 
-`ParseDispatchMode` is lenient (unknown → `IMMEDIATE`,
-`common/message_test.go:73-78`) but the wire path does not call it; the raw
-string is compared by `RequiresOrdering()`, which yields the same result.
+**Q1 is ruled (owner, 2026-08-22) and half-implemented upstream. Read this
+table as two columns of truth, because they disagree.**
 
-**load-bearing or accident?** `NEXT_ON_ERROR` by name suggests "on error,
-move on to the next message in the group"; the code blocks the group exactly
-like `BLOCK_ON_ERROR`. Keep identical, or implement the skip semantics?
+| Value | Ordering | Platform side (scheduler + delivery) — Go **as of `f1fc427`/`5bb46df`** | Router side — Go **still** | Java must implement |
+|---|---|---|---|---|
+| `IMMEDIATE` (or absent/unknown) | none | dispatched; never held by a failed sibling | concurrent, one worker per message, bounded by the pool semaphore | same |
+| `NEXT_ON_ERROR` | per-group FIFO | **keeps flowing** past a failed sibling (`poller.go:327-340`) | **blocks the group**, identical to `BLOCK_ON_ERROR` (`pool.go:272`) | **the ruling: the group continues past a failed head.** A deliberate deviation from the Go router |
+| `BLOCK_ON_ERROR` | strict FIFO | **held back** while a sibling is FAILED/ERROR, at both queue time and delivery time | blocks the group | blocks — and **ACKs the queued siblings** off the broker (the ruling), because the platform re-sends the group on resolution |
+
+So `f1fc427` implemented the *platform* half of the Q1 ruling — the poller's
+group-level skip is gone and the per-mode filter holds back `BLOCK_ON_ERROR`
+alone — while the *router* half is untouched: `pool.go:272` still branches
+only on `RequiresOrdering()`, so the two ordered modes remain
+indistinguishable inside the pool.
+
+**Consequence for the port, and it is the important one:** the platform-side
+behaviour can be ported straight across, but the router-side ordered-group
+handling must be written to the ruling, **not** to the Go. This is the
+spec's largest deliberate deviation and the conformance suite must pin both
+modes explicitly — a Java router that merely mirrors `pool.go` will pass
+every Go-derived test and still be wrong.
+
+Error resolution (the other half of the ruling): a failed message is never
+retried independently by the router. It follows the retry policy (Q3), is
+marked failed, and waits for a **human review** that sets it to *ignore*,
+*completed* or *resend*; on that action the **platform re-queues the
+group**. For `NEXT_ON_ERROR` only the failed message waits while its
+siblings proceed; for `BLOCK_ON_ERROR` the whole group waits, its queued
+siblings already ACKed off the broker, and is re-sent in order.
+
+Blocking dependency: this flow needs the dispatchjob *ignore* / *completed*
+routes, which require a **lockfile addition** (owner).
 
 ### 2.7 Warnings [C on `/warnings`, notifier] — `router/notification.go:16-72`
 
@@ -325,6 +359,61 @@ counters, reset on consumer rebuild).
 - `TrafficStatus` (`router/traffic.go:200-226`).
 
 ---
+
+
+### 2.11 `GroupFlushRegistry` [I, contract-adjacent] — `router/group_flush.go` (eff2a29)
+
+A **per-message-group circuit breaker**, the group-scoped sibling of the
+per-endpoint `BreakerRegistry`. One registry **per pool**, created in
+`NewPool` — so the same message-group id in two pools suppresses
+independently, and a flush in one pool never silences the other.
+
+Purpose: a target that cannot accept a message group right now (typically a
+record blocked behind an earlier failure) previously had to absorb every
+sibling one at a time, each costing a delivery, a rate-limit token and a
+concurrency slot. It can now answer one 2xx with `{"ack": true,
+"flushGroup": true}` and the router ACKs the group's remaining messages
+**without delivering them**.
+
+**Safety condition [C] — this must be documented for integrators.** Flushed
+messages are *never delivered*. The router ACKs them, which for every
+backend means they are gone from the broker. This is only sound because the
+**target** asked for it: it is asserting that it already owns the records
+being pointed at (the message-pointer pattern) and will re-drive them
+itself. **A target whose messages carry the only copy of the payload must
+never set `flushGroup`** — doing so is indistinguishable from data loss.
+
+| State | Entry | Exit | Effect on a message of that group |
+|---|---|---|---|
+| *Open* (not suppressed) | initial; also on expiry eviction; also `Clear(group)` | a `flushGroup` response for the group | delivered normally |
+| *Suppressed* | `Flush(group, ttl)` with `ttl` from the response | `now >= until[group]`, evicted lazily on the next `Suppressed()` read | **ACKed without any HTTP call**, no rate-limit token, no concurrency slot |
+
+Rules, each load-bearing:
+
+- **TTL, not an explicit resume.** Suppression is time-bounded and
+  self-healing: there is no "resume" protocol for the target to get wrong.
+  When the window lapses the next message of the group goes through as a
+  **probe** — the target either flushes again or delivery resumes on its own.
+- **TTL clamping.** `ttl <= 0` → `DefaultFlushTTL` **60 s**; `ttl >
+  MaxFlushTTL` → **5 min**. So a target cannot silence a group indefinitely.
+- **Extend-only.** `Flush` refuses to shorten a live window: if the stored
+  expiry is already later than the new one it returns `false` and changes
+  nothing. A probe landing mid-window can never pull the expiry in.
+- **Ungrouped is a no-op.** `Flush("")` returns false and `Suppressed("")`
+  returns false, so flushing can never create a bucket that swallows
+  unrelated ungrouped traffic. A `flushGroup` response for an ungrouped
+  message is logged at WARN and otherwise ignored (`pool.go:800-802`).
+- **`ack:false` takes precedence.** A target that wants the message back
+  cannot also discard its group — see §6.5 and the parse order in §6.6.
+
+Counters: `flushes` (one per accepted `Flush`, so extensions that change
+nothing are not counted) and `suppressed` (one per message ACKed without
+delivery), both read via `Stats()`.
+
+**Not wired to anything.** `SuppressedUntil`, `Clear` and `Stats` have
+**zero callers** outside tests — verified by grep. So the operator question
+the design explicitly anticipates ("why is this group quiet?") is currently
+unanswerable, and there is no override to lift a suppression early. **Q52.**
 
 ## 3. Topology & concurrency (as behaviour)
 
@@ -460,16 +549,28 @@ limiter atomically; `nil`/0 → unlimited (`pool.go:209-220`,
    restores a reaped entry; if a *different* broker copy of the same app id
    owns the pipeline → **ACK this copy with its own receipt handle** and
    return *duplicate* (`inflight_test.go:92-119`).
-4. **Rate limit**: if the bucket is empty right now, count one rate-limited
+4. **Flushed-group gate** [eff2a29]: if the message has a non-empty group and
+   that group is currently suppressed (§2.11), **ACK it and stop** — no HTTP
+   call, no metrics recorded, verdict *done*. Ordering here is the whole
+   point: this sits **before** the rate limiter, so a flushed group spends
+   neither a token nor a concurrency slot. Reading the registry also evicts
+   an expired entry, which is what turns the next message into a probe.
+5. **Rate limit**: if the bucket is empty right now, count one rate-limited
    event (same counter as HTTP 429 — **load-bearing or accident?**); then
    wait for a token; cancelled while waiting → mark retrying, verdict *retry*
    with `retryDelay(attempts, floor 5 s)`.
-5. **Mediate** (§6), timing the call.
-6. Resolve (table in §6.5): terminal outcomes ACK with the **freshest**
+6. **Mediate** (§6), timing the call.
+7. Resolve (table in §6.5): terminal outcomes ACK with the **freshest**
    receipt handle from the tracker (falling back to the dispatch-time
    handle) and release the entry; retryable outcomes mark the entry retrying
    and return *retry* with a computed backoff. Retryable outcomes **never
    touch the broker** (`guardrail_test.go:103-165`).
+
+A suppressed message (step 4) records **no pool metric at all** — not
+success, not transient, not rate-limited. It is visible only in the
+registry's own `suppressed` counter, which nothing reads (§2.11). So a pool
+whose groups are being flushed heavily looks *idle* on `/monitoring` and in
+Prometheus rather than busy-but-suppressed. **Q53.**
 
 ### 3.6 Invariants (each is a sentence the Java must keep true)
 
@@ -872,6 +973,8 @@ the rate-limited counter only).
 |---|---|---|---|---|---|---|---|
 | 2xx, body empty / not JSON / no `ack` / `ack:true` | Success (200, 0) | — | no | success | **ACK**, release entry | success(dur) | `mediator.go:332-350`, `pool.go:782-785` |
 | 2xx, JSON `{"ack":false[,"delaySeconds":N]}` | Deferred (status, N or 0) | — | no | neither | retry on **deferred curve** floored at N (cap 60 s); entry kept & marked retrying | transient(dur) | `mediator.go:337-348`, `pool.go:810-816`, `TestMediatorAckFalseIsDeferredWithoutInPipelineRetry` |
+| 2xx, JSON `{"ack":true,"flushGroup":true[,"delaySeconds":N]}` **(eff2a29)** | Success (200, N or 0) + `FlushGroup` | — | no | success | **ACK this message**, then suppress the rest of its group for N s (clamped 60 s default / 5 min max). Ungrouped → WARN, flush ignored, plain ACK | success(dur) | `mediator.go:356-365`, `pool.go:793-806` |
+| *(subsequent messages of a suppressed group)* **(eff2a29)** | **no outcome — no HTTP call made** | — | n/a | n/a | **ACK without delivery**, entry released; checked **before** the rate limiter so no token and no slot is spent | **none** (Q53) | `pool.go:760-771` |
 | 400 | ErrorConfig (400) | CONFIGURATION / ERROR "HTTP 400: Bad request" | no | **success** | **ACK** (drop), release | failure(dur) | `mediator.go:352-354` |
 | 401 / 403 | ErrorConfig | CONFIGURATION / ERROR "HTTP 40x: Auth error" | no | success | ACK | failure | `:356-358` |
 | 404 | ErrorConfig | CONFIGURATION / ERROR "HTTP 404: Not found" | no | success | ACK | failure | `:360-362`, `TestGuardrail_BreakerRecordsSuccessOn4xx` |
@@ -895,6 +998,71 @@ Effective per-attempt time budget for a dead 5xx target in prod:
 repeated forever (no max attempts, no dead-letter) until the target answers
 2xx/4xx, the message is force-acked, or the process stops. **load-bearing or
 accident?** — there is **no terminal give-up** in the router.
+
+### 6.6a Mediation response body — parse order [C] (eff2a29)
+
+The response body is inspected **only** when the status is 2xx, the body is
+non-empty, and it parses as JSON. Any other 2xx (empty body, non-JSON, JSON
+without these fields) is a plain success.
+
+```
+{ "ack": bool?, "delaySeconds": uint32?, "flushGroup": bool? }
+```
+
+Evaluated in this order, first match wins — the order **is** the contract:
+
+1. `ack` present and `false` → **Deferred**, `delaySeconds` (or 0) as the
+   floor, real status copied onto the outcome.
+2. `flushGroup` present and `true` → **Success with `FlushGroup`**,
+   `delaySeconds` (when present) sizing the suppression window.
+3. otherwise → plain **Success**.
+
+So **`ack:false` beats `flushGroup`**: a target that wants the message back
+cannot also discard its group. A body carrying both is treated purely as a
+deferral, and the flush is silently dropped — not an error, and not logged.
+
+`delaySeconds` is overloaded across the three cases: a *deferral floor* in
+case 1, a *suppression TTL* in case 2, ignored in case 3. Same field, three
+meanings, distinguished only by its siblings — worth pinning in the
+conformance suite rather than left to a reader of the JSON.
+
+### 6.6b The platform's own `/api/dispatch/process` as a target [C] (5bb46df, f1fc427)
+
+Dispatch jobs are delivered by the router to the platform's own endpoint, so
+the platform is a *client* of the §6.6a contract. Its response matrix is
+part of the data plane's behaviour and the Java must implement both sides.
+
+Order of checks in `processing.serve`, before any attempt is recorded:
+
+| Condition | Response | Router sees | Job left as |
+|---|---|---|---|
+| mode is `BLOCK_ON_ERROR`, group non-empty, and `GroupBlocked(group)` is true | `200 {"ack": true, "message": "group blocked"}` | success → **ACK**, message dropped from the broker | reverted to **PENDING** via `Reschedule(id, createdAt, now)` — **no attempt recorded, no retry budget spent** |
+| the `GroupBlocked` query errors | `500 {"ack": false, …}` | 5xx → NACK, queue redelivers | untouched (`QUEUED`) |
+| the revert itself errors | `500 {"ack": false, …}` | 5xx → NACK, queue redelivers | untouched — **deliberate**: ACKing here would leave the job `QUEUED` with no queue message behind it, recoverable only by the stale-`QUEUED` sweep |
+| otherwise | proceeds to `MarkInProgress` and normal delivery | — | `PROCESSING` |
+
+`GroupBlocked` is `EXISTS (SELECT 1 FROM msg_dispatch_jobs WHERE
+message_group = $1 AND status IN ('FAILED','ERROR'))`, served by
+`idx_dispatch_jobs_blocked_groups` — the same predicate the scheduler
+poller uses, which is what makes the two hold-backs agree.
+
+Two invariants worth stating as sentences, because both are easy to lose in
+a rewrite:
+
+- **A job is never left `QUEUED` with no queue message behind it.** Every
+  failure path on this route NACKs rather than ACKs, precisely to preserve
+  this. It is the reason the two error rows above answer 500 rather than
+  quietly succeeding.
+- **The hold-back costs no retry budget.** `Reschedule` bumps no attempt
+  count, so a group blocked for a long time does not exhaust its siblings'
+  retries while waiting. This is what makes "re-queue the group on
+  resolution" (§2.6) actually deliver them.
+
+Why this exists: the poller stops *queueing* jobs whose group holds a
+failed sibling, but messages already in the queue at the moment of failure
+would otherwise arrive here and deliver straight past it. Since `f1fc427`
+the gate is `BLOCK_ON_ERROR` only — `IMMEDIATE` and `NEXT_ON_ERROR` skip the
+query entirely, matching the poller's per-mode filter and the Q1 ruling.
 
 ### 6.6 Per-host connection behaviour (effective semantics)
 
@@ -1543,6 +1711,11 @@ Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
 49. Shutdown: drain waits only for aborted workers to unwind (≤60 s) — is the intended semantic "finish what's in flight, up to 60 s" (then the Java must *not* cancel workers at drain start), or "stop now and rely on redelivery" (then the 60 s drain is mostly moot)?
 50. Timing constants flagged ACC? in §5 (consumer pacing 2 s/1 s/1 s/500 ms; nack delays 5 s/10 s; host-pool watermarks; warning 8 h/1000; notifier 20/10 s; SQS pending-delete 15 min; dashboard 5 s): keep as-is for parity, or treat as free to tune in Java?
 
+51. **(eff2a29)** The `flushGroup` branch of the response parser builds `common.Success()`, which hard-codes `StatusCode: 200` — unlike the `ack:false` branch immediately above it, which copies the real status onto the outcome. So a target answering `202 {"flushGroup":true}` is recorded as 200. Accident (copy the real status, matching the deferral branch), or deliberate? (`mediator.go:356-365`, §2.4)
+52. **(eff2a29)** `GroupFlushRegistry.SuppressedUntil`, `.Clear` and `.Stats` have **no callers** outside tests. So an operator cannot ask "why is this group quiet?" — the question the TTL design explicitly anticipates — and cannot lift a suppression early. Expose them on the monitoring API and add an operator clear, or drop them as dead code? (§2.11; same class as Q48)
+53. **(eff2a29)** A message ACKed because its group is suppressed records **no pool metric at all** — not success, not transient, not rate-limited — and the registry's own `suppressed` counter is unread. A pool whose groups are being flushed heavily therefore looks *idle* rather than busy-but-suppressed, on `/monitoring` and in Prometheus alike. Add a suppressed counter to the pool metrics, or accept the blind spot? (§3.5, §6.5)
+54. **(eff2a29)** `flushGroup` lets a target cause the router to **ACK messages it never delivered**. The safety condition — that the target already owns the records and will re-drive them — is asserted in code comments and in `docs/wire-contract.md`, but nothing enforces it: a target that sets the flag while holding the only copy of the payload loses data indistinguishably from a bug. Is a guardrail wanted (e.g. honour `flushGroup` only for pools/targets opted in by config), or is the wire contract's warning sufficient? (§2.11)
+55. **(eff2a29)** The registry is **per pool**, so the same message-group id in two pools suppresses independently. Correct as-is (a group is only meaningful within the pool that orders it), or should suppression be global to the router? (§2.11)
 ---
 
 ## Appendix A — Environment variables the router reads (via `server/envcfg.go`)
