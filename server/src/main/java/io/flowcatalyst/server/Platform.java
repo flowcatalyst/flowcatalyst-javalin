@@ -32,6 +32,15 @@ import io.flowcatalyst.platform.loginattempt.api.LoginAttemptApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.api.RoleApi;
+import io.flowcatalyst.platform.principal.AnchorDomains;
+import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
+import io.flowcatalyst.platform.principal.InviteEmailer;
+import io.flowcatalyst.platform.principal.MfaService;
+import io.flowcatalyst.platform.principal.Notifier;
+import io.flowcatalyst.platform.principal.PasswordResetEmailer;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.api.PrincipalApi;
+import io.flowcatalyst.platform.principal.operations.DeveloperSecrets;
 import io.flowcatalyst.platform.process.ProcessRepository;
 import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.publicapi.Branding;
@@ -153,6 +162,15 @@ public final class Platform {
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
         DocsApi.register(routes, new DocsApi.State(new AppDocRepository(pool), applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
+        var principalRepo = new PrincipalRepository(pool);
+        // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
+        // the developer client-secret is encrypted under the app key from `env`, like the IdP secrets above.
+        PrincipalApi.register(routes, new PrincipalApi.State(principalRepo, new ClientAccessGrantRepository(pool), roleRepo,
+                applicationRepo, new ClientConfigRepository(pool), clientRepo, emailDomainMappingRepo, identityProviderRepo,
+                AnchorDomains.inDatabase(pool), PasswordResetEmailer.notConfigured(), InviteEmailer.logging(), Notifier.logging(),
+                MfaService.notConfigured(),
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()).map(DeveloperSecrets::withEncryption).orElseGet(DeveloperSecrets::unconfigured),
+                uow));
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
