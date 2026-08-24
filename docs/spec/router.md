@@ -304,7 +304,11 @@ above is live, load-bearing code, and a subscription's configured dispatch
 pool (its concurrency and rate limit) starts applying to dispatch jobs.
 Both are deliberate deviations and both need conformance tests.
 
-**Cutover warning — the pool config goes live for the first time.** Today
+**Cutover warning — the pool config goes live for the first time.**
+(Owner, 2026-08-24: the dispatch path is not meaningfully used in
+production yet, so this is currently theoretical — and that is exactly why
+it is being fixed now. Full change spec, Go and Java:
+`docs/spec/dispatch-propagation.md`.) Today
 *all* dispatch traffic shares `DEFAULT-POOL` at concurrency 20
 (`manager.go:24,538-539`), because every message arrives with an empty pool
 code. Once Java propagates `poolCode`, each subscription is governed by its
