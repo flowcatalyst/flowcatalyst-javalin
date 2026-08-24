@@ -61,28 +61,47 @@ Router spec rulings so far: Q1 (NEXT_ON_ERROR continues past a failed head; BLOC
 
 ## Next wave (in order)
 
-1. Port (spec → implement → audit), three at a time: dispatchjob,
-   publicapi, scheduledjob (running); then
-   identityprovider, loginattempt, audit, event, docs; then serviceaccount,
-   scheduledjob, principal (security-critical — read carefully),
-   portalusers, resetapproval, webauthn, sdksync (wires the `Sync*`
-   operations already ported), BFF dashboards, me, clientselection, sdk
-   batch endpoints, publicapi, appdocs/openapispecs.
-3. Auth subsystem: write `docs/spec/auth.md` FIRST (authservice/JWKS,
-   login + session cookie, OAuth provider, grant store, OIDC bridge, portal
-   auth, 2FA, backoff, rate limiting, password reset, encryption, email,
-   notifier) → owner review → implement → audit. Largest/riskiest corner.
-4. Data plane, each spec → review → implement → audit: router (spec done),
-   stream processor, outbox processor, dispatch scheduler, scheduled-job
-   scheduler (cron port), queue backends (SQS/Postgres/NATS), standby
-   (Redis), ALB, MCP, purger. `--enable-preview` on `server` when
-   `StructuredTaskScope` is used (keep localised).
-5. Cross-cutting: CORS filter from the allowlist, pagination standard (wire
-   change — owner), DB-backed `ClaimsResolver`, Secrets Manager DB mode,
-   JFR events, `Permission` enum refactor of `Checks`, fcdev stubs.
-6. Drop-in verification: side-by-side replay harness vs the Go binary,
+**Start here after a context restart:**
+
+1. **Audit `principal`** (`docs/process/agent-prompts.md` §2) and **add
+   `PrincipalApiTest`** — it is the only aggregate that landed without either,
+   and it is the security-critical one. Its §11 Q3 (existence oracle) wants a
+   ruling from the owner first.
+2. **Finish `sdksync`** — the `Api` + registration; every `Sync*` operation it
+   wires already exists and is audited. Unlocks 11 lockfile operations.
+   Register `openapispecs` with it.
+3. Remaining aggregates, three at a time (spec → implement → audit):
+   `serviceaccount` (14 ops), `anchor-domains` (4), `auth-configs` (4),
+   `idp-role-mappings` (3); then the SDK ingest batch endpoints
+   (`/api/events`, `/api/events/batch`, `/api/dispatch-jobs/batch`,
+   `/api/audit-logs/batch`) and the BFF dashboards / `me` / `clientselection`
+   (outside the lockfile).
+4. **Auth** — both specs are written and awaiting owner rulings:
+   `docs/spec/auth-core.md` (29 questions) and `docs/spec/auth-identity.md`
+   (25 questions + 15 observed Go defects). No auth Java until they are ruled.
+   `oauth-clients` (10 ops), `portal-users` (5), `webauthn` (6),
+   `reset-approvals` (3) all belong to these.
+5. **Data plane** — `docs/spec/router.md` **§0 first**: the Go has moved and
+   §2/§3/§6/§7 must be re-extracted (per-mode blocking, delivery-time
+   hold-back, the new `flushGroup` wire contract). Router rulings so far: Q1
+   (per-mode blocking + human review → ignore/completed/resend re-queues the
+   group), Q2 (no terminal give-up — the queue expires messages, backoff and
+   the breaker are the protection), Q3 (one named retry policy). Then stream
+   processor, outbox processor, dispatch scheduler, scheduled-job scheduler
+   loops, queue backends (SQS/Postgres/NATS), standby (Redis), ALB, MCP,
+   purger. `--enable-preview` on `server` when `StructuredTaskScope` lands,
+   kept localised.
+6. Cross-cutting: CORS filter from the allowlist (owner ruled: implement),
+   pagination standard (wire change — owner), DB-backed `ClaimsResolver`,
+   Secrets Manager DB mode, JFR events, fcdev stubs
+   (`init`/`mcp`/`outbox`/`upgrade`), the dispatchjob *ignore*/*completed*
+   routes the router Q1 ruling needs (lockfile addition — owner).
+7. Drop-in verification: side-by-side replay harness against the Go binary,
    frontend end-to-end through every BFF/auth route, cutover + rollback
-   rehearsal on a Go-created DB.
+   rehearsal on a Go-created database.
+
+**Standing rule:** re-check `git log` in `../flowcatalyst-go` before starting
+any unit — the Go repo is still moving.
 
 ## Owner rulings outstanding
 
