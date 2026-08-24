@@ -107,6 +107,38 @@ equivalent.
 
 ---
 
+## Fix 4 — cookie mint failure after a correct password answers 400 (Q10)
+
+**Defect.** `internal/platform/auth/login/endpoint.go:500` answers
+`httperror.BadRequest("MINT_FAILED", err.Error())` when the session cookie
+cannot be minted *after* the password has already been verified. The request
+was well-formed and the credentials were right; the failure is entirely
+server-side. A 400 tells the caller to fix something that is not wrong, and
+invites a retry that cannot succeed.
+
+**Fix.** Answer 500. `httperror` currently exposes only `Forbidden`,
+`BadRequest` and `NotFound` — add an `Internal(code, msg string, cause error)`
+constructor wrapping `usecase.Internal` (which `Status` already maps to 500),
+or construct the `usecase.Error` directly at the call site.
+
+**Do not leak the cause.** `err.Error()` must not go into the 500 body — log it
+and return a fixed message, consistent with how the rest of the platform
+handles internal failures.
+
+**Owner ruling:** 2026-08-24. Outstanding in Go as of that date (the file is not
+in the current working tree).
+
+---
+
+## Already done in Go (verified 2026-08-24, uncommitted working tree)
+
+| Question | Change | Where |
+|---|---|---|
+| Q7 — `invalid_grant` on the refresh grant should be 400, not 401 | Done. Returns `StatusBadRequest` for both the client-binding failure and an invalid/expired refresh token, with a comment citing RFC 6749 §5.2. The spec row was stale. | `token.go:656-668` |
+| Q8 — discovery advertised `RS256` even when running HS256 | Done. `IDTokenSigningAlgValuesSupported: []string{s.Auth.Algorithm()}`, so an HS256 deployment stops telling relying parties to verify RS256 against an empty JWKS. | `discovery.go` |
+
+---
+
 ## Porting note
 
 Once these land in Go, update `docs/spec/auth-core.md` §6.2 (mounting), §6.2a
