@@ -1,5 +1,8 @@
 package io.flowcatalyst.router.pool;
 
+import io.flowcatalyst.router.policy.RetryPolicy;
+import io.flowcatalyst.router.wire.MediationOutcome;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -107,57 +110,78 @@ final class OrderedGroups {
     /// per-mode rule at each site.
     sealed interface HeadFailure {
 
-        /// `NEXT_ON_ERROR`: the group carries on without the failed message.
-        /// The router does not retry it in front of its siblings; the
-        /// platform surfaces it for review and re-queues it on resolution.
+        /// Try the head again, in place, ahead of its siblings. Ordered
+        /// delivery's normal retry: the rejection budget is not yet spent.
+        record RetryHead(QueuedMessage head) implements HeadFailure {
+        }
+
+        /// The target is **unavailable**, so nothing is wrong with these
+        /// messages. Hand the head and every buffered sibling back to be
+        /// **NACKed to the broker**, which then owns the retry for as long as
+        /// it keeps them (Q2). The group is released, so nothing waits in
+        /// memory on an outage of unknown length.
+        record ReturnGroup(QueuedMessage head, List<QueuedMessage> siblings) implements HeadFailure {
+        }
+
+        /// `NEXT_ON_ERROR`, budget spent: **ACK the failed message** off the
+        /// broker and carry on with the next. The router does not retry it in
+        /// front of its siblings; the platform surfaces it for review and
+        /// re-queues it on resolution.
         record Continue(QueuedMessage failed) implements HeadFailure {
         }
 
-        /// `BLOCK_ON_ERROR`: the group stops and `siblings` must be **ACKed
-        /// off the broker** — they are not delivered, and the platform
+        /// `BLOCK_ON_ERROR`, budget spent: **ACK the failed message and every
+        /// sibling** off the broker, and stop the group. The platform
         /// re-sends the whole group in order once the failure is resolved.
         record BlockGroup(QueuedMessage failed, List<QueuedMessage> siblings) implements HeadFailure {
-        }
-
-        /// The head is retried in place, ahead of its siblings. This is what
-        /// both ordered modes do in Go, and after the ruling it is reachable
-        /// only for a head whose mode is neither ordered value — i.e. never
-        /// from the ordered drainer. Kept so the switch is total.
-        record RetryHead(QueuedMessage head) implements HeadFailure {
         }
     }
 
     /// Decides — and applies — what a failed head does to its group.
     ///
-    /// The head has already been polled, so `Continue` needs no state change;
-    /// `BlockGroup` empties the group and releases it. Both are done under
-    /// the lock with the read that chose between them, so a sibling arriving
-    /// concurrently cannot be left behind in a group nobody drains.
-    HeadFailure onHeadFailure(QueuedMessage head) {
+    /// @param head        the message just attempted, carrying the attempts
+    ///                    already made
+    /// @param outcome     what the delivery reported
+    /// @param rejectionBudget attempts a *rejected* head gets before it is
+    ///                    given up on. [RetryPolicy#burstSize] is the value
+    ///                    to pass, so the budget and the delivery burst stay
+    ///                    one constant rather than two kept in step.
+    ///
+    /// Unavailability skips the budget entirely: no number of retries makes a
+    /// down target reachable, and the broker is the better place to wait.
+    HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome, int rejectionBudget) {
+        if (outcome.targetUnavailable()) {
+            return new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
+        }
+        if (head.attempts() + 1 < rejectionBudget) {
+            return new HeadFailure.RetryHead(head);
+        }
         return switch (head.message().dispatchMode()) {
             case NEXT_ON_ERROR -> new HeadFailure.Continue(head);
-            case BLOCK_ON_ERROR -> new HeadFailure.BlockGroup(head, blockAndTakeSiblings(head.group()));
-            case IMMEDIATE -> new HeadFailure.RetryHead(head);
+            case BLOCK_ON_ERROR -> new HeadFailure.BlockGroup(head, takeAndReleaseGroup(head.group()));
+            // Not reachable from the ordered drainer — IMMEDIATE never enters
+            // a group — but the switch stays total rather than throwing.
+            case IMMEDIATE -> new HeadFailure.Continue(head);
         };
     }
 
-    /// Stops draining `group` and hands back every sibling still queued, so
-    /// the caller can ACK them off the broker.
+    /// Empties `group`, releases it, and returns what was queued in FIFO
+    /// order so the caller can act on the messages in the order they would
+    /// have been delivered.
     ///
-    /// The group is released, not merely paused: a later submit or redelivery
-    /// starts a fresh drainer. Siblings come back in FIFO order, so the
-    /// caller can account for them in the order they would have been
-    /// delivered.
-    private List<QueuedMessage> blockAndTakeSiblings(String group) {
+    /// Releasing rather than parking is deliberate: a later submit or
+    /// redelivery starts a fresh drainer, which is how both the platform's
+    /// re-send and the broker's redelivery get picked back up.
+    private List<QueuedMessage> takeAndReleaseGroup(String group) {
         lock.lock();
         try {
             var entry = groups.remove(group);
             if (entry == null) {
                 return List.of();
             }
-            var siblings = List.copyOf(entry.queue);
-            buffered -= siblings.size();
-            return siblings;
+            var queued = List.copyOf(entry.queue);
+            buffered -= queued.size();
+            return queued;
         } finally {
             lock.unlock();
         }

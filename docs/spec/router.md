@@ -296,13 +296,31 @@ two cases mean opposite things about the target:
 | Failure | Meaning | Ordered-head disposition |
 |---|---|---|
 | Transport error, timeout, unreachable host, **502 / 503 / 504**, unexpected status | The target is **down or not ready**. Nothing about this message is wrong. | **NACK the group** — head *and* buffered siblings go back to the broker, the group is released. The broker redelivers, indefinitely, until *it* expires them (Q2). Nothing is held in router memory across an outage of unknown length. |
-| **500** and other 5xx | The target **received and processed** the message and failed on it. Retrying it unchanged against a healthy target is unlikely to differ. | **ACK the head.** Then per mode: `BLOCK_ON_ERROR` also ACKs the siblings and blocks the group; `NEXT_ON_ERROR` leaves the siblings and continues with the next message. The platform surfaces the failure for review and re-queues on resolution. |
+| **500** and other 5xx | The target **received and processed** the message and failed on it. Most likely something is wrong with the pointer itself, not with the target. | **Retry the head up to 3 attempts** on the backoff curve — exactly one burst, at 0 s, 1 s and 2 s — which absorbs a transient application fault (a database blip, a deadlock, a dependency wobble) without becoming an infinite retry. Still failing after that: **ACK the head back to the broker**, discarding it. Then per mode: `BLOCK_ON_ERROR` also ACKs the siblings and blocks the group; `NEXT_ON_ERROR` leaves the siblings and continues with the next message. The platform surfaces the failure for review and re-queues on resolution. |
+
+The 3-attempt budget is `RetryPolicy.DELIVERY.burstSize()` — the same burst
+that structures every other delivery, not a second constant to keep in step.
+Without it, a 30-second database wobble on the platform's dispatch endpoint
+would convert every ordered message in flight into a FAILED job needing
+human review: nothing lost, but a self-healing transient turned into toil at
+exactly the moment the system is already unhappy.
 
 This resolves the tension between Q1 and Q2 that the earlier wording left
 open ("follows the retry policy … and is then marked failed", against Q2's
 no-terminal-give-up). Unavailability retries forever via the broker;
 rejection is handed to the platform immediately. Neither path holds a group
 in memory waiting on something with no bound.
+
+**The unavailable path retries at the broker's cadence, not ours.** Once the
+group is NACKed, redelivery timing belongs to the queue — and the nack delay
+is advisory at best: SQS's is effectively a no-op and NATS takes ack-wait
+from the URI (§7). So against a target down for an hour the group is
+re-attempted every visibility period rather than on the exponential curve,
+and the **per-endpoint circuit breaker** is what actually protects the
+target: it short-circuits the HTTP calls while the broker keeps redelivering.
+Anyone reading "retry indefinitely with backoff" should read it as
+"indefinitely, at the broker's period, with the breaker absorbing the load".
+A real backoff there would need visibility *extension*, not a nack delay.
 
 **Scope:** ordered heads only. IMMEDIATE messages keep Go's in-pipeline
 retry and still never touch the broker on a retryable outcome (§3.6), which

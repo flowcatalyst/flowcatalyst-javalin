@@ -1,11 +1,15 @@
 package io.flowcatalyst.router.pool;
 
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
+import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -20,7 +24,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Go router, which blocks the group for both ordered modes.
 class OrderedGroupsTest {
 
+    private static final int BUDGET = RetryPolicy.DELIVERY.burstSize();
+
     private final OrderedGroups groups = new OrderedGroups();
+
+    /// The target ran the message and failed on it.
+    private static MediationOutcome rejected() {
+        return new MediationOutcome.ErrorProcess(500, 30, "boom");
+    }
+
+    /// The target could not be reached or was not ready.
+    private static MediationOutcome unavailable(int status) {
+        return new MediationOutcome.ErrorProcess(status, 30, "gateway");
+    }
 
     @Test
     @DisplayName("messages in a group are drained in the order they arrived")
@@ -72,49 +88,106 @@ class OrderedGroupsTest {
     }
 
     @Test
-    @DisplayName("NEXT_ON_ERROR: a failed head does not hold its siblings")
-    void nextOnErrorContinues() {
+    @DisplayName("a rejected head is retried in place until its budget is spent")
+    void rejectedHeadRetriesWithinBudget() {
+        // 500 means the target ran the message and failed on it. Three
+        // attempts absorb a transient application fault — a database blip, a
+        // deadlock — without becoming an infinite retry.
+        offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
+        var head = groups.pollHead("orders").orElseThrow();
+
+        assertThat(groups.onHeadFailure(head, rejected(), BUDGET))
+                .isEqualTo(new HeadFailure.RetryHead(head));
+
+        var second = head.retrying();
+        assertThat(groups.onHeadFailure(second, rejected(), BUDGET))
+                .isEqualTo(new HeadFailure.RetryHead(second));
+    }
+
+    @Test
+    @DisplayName("NEXT_ON_ERROR: budget spent, the head is ACKed and the group continues")
+    void nextOnErrorContinuesOnceBudgetSpent() {
         // The ruling, and the deviation: Go blocks the group here.
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
+        var spent = head.retrying().retrying();
 
-        var disposition = groups.onHeadFailure(head);
+        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
 
-        assertThat(disposition).isEqualTo(new HeadFailure.Continue(head));
-        // b and c are still queued and still in order.
+        assertThat(disposition).isEqualTo(new HeadFailure.Continue(spent));
         assertThat(drainIds("orders")).containsExactly("b", "c");
     }
 
     @Test
-    @DisplayName("BLOCK_ON_ERROR: the group stops and its siblings come back to be ACKed")
+    @DisplayName("BLOCK_ON_ERROR: budget spent, head and siblings are ACKed and the group stops")
     void blockOnErrorHandsBackSiblings() {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
+        var spent = head.retrying().retrying();
 
-        var disposition = groups.onHeadFailure(head);
+        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
 
         assertThat(disposition).isInstanceOf(HeadFailure.BlockGroup.class);
         var blocked = (HeadFailure.BlockGroup) disposition;
-        assertThat(blocked.failed()).isEqualTo(head);
-        // In FIFO order, so the caller can account for them as they would
-        // have been delivered.
+        assertThat(blocked.failed()).isEqualTo(spent);
         assertThat(blocked.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
+    }
+
+    @Test
+    @DisplayName("an unavailable target returns the whole group to the broker, budget or not")
+    void unavailableReturnsTheGroupImmediately() {
+        // No number of retries makes a down target reachable, and nothing is
+        // wrong with these messages — so they go back to the broker on the
+        // first failure rather than burning the budget first.
+        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
+        var head = groups.pollHead("orders").orElseThrow();
+
+        var disposition = groups.onHeadFailure(head, unavailable(503), BUDGET);
+
+        assertThat(disposition).isInstanceOf(HeadFailure.ReturnGroup.class);
+        var returned = (HeadFailure.ReturnGroup) disposition;
+        assertThat(returned.head()).isEqualTo(head);
+        assertThat(returned.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
+        assertThat(groups.groupCount()).isZero();
+    }
+
+    @ParameterizedTest(name = "status {0} is unavailability: {1}")
+    @CsvSource({"500,false", "501,false", "502,true", "503,true", "504,true", "505,false", "0,true"})
+    void unavailabilityByStatus(int status, boolean unavailable) {
+        // 502/503/504 are the gateway's answer, not the application's. Status
+        // 0 means we could not tell, and we must not claim a message was
+        // rejected when we do not know it was seen.
+        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b");
+        var head = groups.pollHead("orders").orElseThrow();
+
+        var disposition = groups.onHeadFailure(head, new MediationOutcome.ErrorProcess(status, 30, "x"), BUDGET);
+
+        assertThat(disposition instanceof HeadFailure.ReturnGroup).isEqualTo(unavailable);
+    }
+
+    @Test
+    @DisplayName("a transport error is unavailability whatever the mode")
+    void transportErrorIsUnavailability() {
+        offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
+        var head = groups.pollHead("orders").orElseThrow();
+
+        assertThat(groups.onHeadFailure(head, new MediationOutcome.ErrorConnection(30, "refused"), BUDGET))
+                .isInstanceOf(HeadFailure.ReturnGroup.class);
     }
 
     @Test
     @DisplayName("blocking empties the group and releases it, rather than parking it")
     void blockingReleasesTheGroup() {
-        // The spec's phrase is "pending on the platform, not in router
-        // memory": a head in backoff may wait indefinitely (Q2), so holding
-        // siblings would pin unbounded memory and broker visibility.
+        // "pending on the platform, not in router memory": a head in backoff
+        // may wait indefinitely (Q2), so holding siblings would pin unbounded
+        // memory and broker visibility.
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
-        var head = groups.pollHead("orders").orElseThrow();
+        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
 
-        groups.onHeadFailure(head);
+        groups.onHeadFailure(spent, rejected(), BUDGET);
 
         assertThat(groups.buffered()).isZero();
         assertThat(groups.groupCount()).isZero();
-        // A redelivery after the platform re-sends starts a fresh drainer.
         assertThat(groups.offer(message("orders", "d", DispatchMode.BLOCK_ON_ERROR))).isTrue();
     }
 
@@ -122,9 +195,9 @@ class OrderedGroupsTest {
     @DisplayName("blocking a group with no siblings hands back nothing and still releases it")
     void blockingASoleMessage() {
         groups.offer(message("orders", "a", DispatchMode.BLOCK_ON_ERROR));
-        var head = groups.pollHead("orders").orElseThrow();
+        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
 
-        var disposition = groups.onHeadFailure(head);
+        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
 
         assertThat(((HeadFailure.BlockGroup) disposition).siblings()).isEmpty();
         assertThat(groups.groupCount()).isZero();
@@ -135,9 +208,9 @@ class OrderedGroupsTest {
     void blockingIsPerGroup() {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b");
         offerAll("invoices", DispatchMode.BLOCK_ON_ERROR, "x", "y");
-        var head = groups.pollHead("orders").orElseThrow();
+        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
 
-        groups.onHeadFailure(head);
+        groups.onHeadFailure(spent, rejected(), BUDGET);
 
         assertThat(drainIds("invoices")).containsExactly("x", "y");
     }
@@ -200,7 +273,7 @@ class OrderedGroupsTest {
         groups.reFront(head);
         assertThat(groups.buffered()).isEqualTo(3);
 
-        groups.onHeadFailure(groups.pollHead("orders").orElseThrow());
+        groups.onHeadFailure(groups.pollHead("orders").orElseThrow().retrying().retrying(), rejected(), BUDGET);
         assertThat(groups.buffered()).isOne();
     }
 

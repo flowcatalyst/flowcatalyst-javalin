@@ -13,6 +13,21 @@ public sealed interface MediationOutcome {
     /// which is why it is read through the specific record, never generically.
     int delaySeconds();
 
+    /// Whether the target could not be reached, or was reachable but not
+    /// ready to serve — as opposed to having taken the message and failed on
+    /// it.
+    ///
+    /// The distinction decides what happens to an ordered group
+    /// (`docs/spec/router.md` §2.6) and is a **deliberate deviation from
+    /// Go**, which classifies every 5xx identically. Unavailability says
+    /// nothing is wrong with the message, so it is returned to the broker and
+    /// retried for as long as the broker keeps it. A rejection says the
+    /// target ran this message and it failed, so it is retried a bounded
+    /// number of times and then handed to the platform.
+    default boolean targetUnavailable() {
+        return false;
+    }
+
     /// 2xx. ACK and release.
     ///
     /// [#flushGroup] is set when the body carried `{"flushGroup": true}`: the
@@ -55,11 +70,27 @@ public sealed interface MediationOutcome {
 
     /// 5xx, or a status below 200. Retryable; counts as a breaker failure.
     record ErrorProcess(int statusCode, int delaySeconds, String message) implements MediationOutcome {
+
+        /// 502, 503 and 504 are the gateway's answer, not the application's:
+        /// a proxy could not reach the app, or the app said it was not ready.
+        /// A status the router could not make sense of (`0`) is treated the
+        /// same way — we cannot claim the message was rejected when we do not
+        /// know that it was seen.
+        @Override
+        public boolean targetUnavailable() {
+            return statusCode == 0 || statusCode == 502 || statusCode == 503 || statusCode == 504;
+        }
     }
 
     /// Transport failure — timeout, DNS, refused, TLS, redirect loop.
-    /// Retryable; counts as a breaker failure.
+    /// Retryable; counts as a breaker failure. Always unavailability: we
+    /// never got far enough to learn anything about the message.
     record ErrorConnection(int delaySeconds, String message) implements MediationOutcome {
+
+        @Override
+        public boolean targetUnavailable() {
+            return true;
+        }
     }
 
     /// HTTP 429. Retryable, floored at the target's `Retry-After`, but
