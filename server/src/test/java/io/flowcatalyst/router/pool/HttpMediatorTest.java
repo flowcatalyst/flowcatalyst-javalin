@@ -187,18 +187,33 @@ class HttpMediatorTest {
         assertThat(outcome.targetUnavailable()).isEqualTo(unavailable);
     }
 
-    @Test
-    @DisplayName("a redirect is not followed, because it would drop the body")
-    void redirectsAreNotFollowed() throws Exception {
-        // 301/302/303 downgrade POST to GET and drop the body: the target
-        // would receive nothing and we would call it a success.
-        status.set(302);
+    @ParameterizedTest(name = "HTTP {0} is a permanent error, ACKed rather than retried")
+    @CsvSource({"301", "302", "303", "307", "308"})
+    void redirectsArePermanentErrors(int code) throws Exception {
+        // Owner ruling: a redirect is a misconfigured target, and retrying
+        // reproduces it forever. Following it is not an option either —
+        // 301/302/303 downgrade POST to GET and drop the body, so the target
+        // would receive nothing and we would record a success.
+        status.set(code);
         responseHeaders.put("Location", "http://127.0.0.1:1/elsewhere");
 
         var outcome = mediator.deliver(message("msg_1", null, null), true);
 
-        assertThat(outcome).isInstanceOf(MediationOutcome.ErrorProcess.class);
-        assertThat(outcome.targetUnavailable()).isTrue();
+        assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConfig.class);
+        assertThat(outcome.targetUnavailable()).isFalse();
+        assertThat(((MediationOutcome.ErrorConfig) outcome).message()).contains("misconfigured");
+    }
+
+    @Test
+    @DisplayName("a redirect keeps the breaker closed — the target answered us")
+    void redirectDoesNotOpenTheBreaker() throws Exception {
+        status.set(308);
+
+        for (int i = 0; i < 20; i++) {
+            mediator.deliver(message("msg_" + i, null, null), true);
+        }
+
+        assertThat(breakers.get(baseUrl).state()).isEqualTo(CircuitBreaker.State.CLOSED);
     }
 
     @Test

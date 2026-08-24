@@ -149,9 +149,25 @@ public final class HttpMediator implements Mediator {
         if (status >= 500) {
             return new MediationOutcome.ErrorProcess(status, SERVER_ERROR_DELAY_SECONDS, "HTTP " + status);
         }
-        // 1xx or 3xx reaching here means the target did something we do not
-        // understand. Status 0 is reserved for "we could not tell", so this
-        // keeps the real status while still classifying as unavailability.
+        if (status >= 300) {
+            // A redirect we will not follow is a **permanent** error: the
+            // target is misconfigured, and retrying reproduces it forever.
+            // Owner ruling 2026-08-24 — log it loudly and ACK, rather than
+            // retrying a message that can never be delivered as addressed.
+            //
+            // Following it instead is not an option: 301/302/303 downgrade
+            // POST to GET and drop the body, so the target would receive
+            // nothing and we would record a success (§13 Q5).
+            //
+            // TODO(warnings): this must also raise an ERROR-severity
+            // CONFIGURATION warning once the warning service lands (§2.7) —
+            // an ACK-drop that nobody is told about is a silent loss.
+            return new MediationOutcome.ErrorConfig(status,
+                    "HTTP " + status + ": redirect not followed — target misconfigured");
+        }
+        // A 1xx as a final status is not something we can interpret. Status 0
+        // is "we could not tell", which keeps it retryable: we must not claim
+        // a message was rejected when we do not know it was seen.
         return new MediationOutcome.ErrorProcess(0, SERVER_ERROR_DELAY_SECONDS, "unexpected status " + status);
     }
 
