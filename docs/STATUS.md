@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-24, evening)
 
-Reactor green, verified 2026-08-24: **1576 tests, 0 failures, 0 errors, 2
-skipped** — usecase 30 · sdk 40 · **server 1466** · fcdev 40. Coverage
+Reactor green, verified 2026-08-24: **server 1661**, 0 failures — plus
+usecase 30 · sdk 40 · fcdev 40. Coverage
 180/243 lockfile operations (74%), zero drift. Commits on `main`; one commit
 per landed/audited unit.
 
@@ -18,8 +18,52 @@ per landed/audited unit.
 **DIRECTION CHANGE (owner, 2026-08-24): the message router comes next.**
 Remaining platform work — the `principal` audit, `sdksync`, the remaining
 CRUD aggregates and auth — is **deferred**, not cancelled. It is all still
-listed under "Platform work, deferred" below and none of it is blocked; the
-router simply moved ahead of it. See "Next wave".
+listed under "Platform work, deferred" below and none of it is blocked.
+
+### Router progress (2026-08-24)
+
+Spec gate **cleared**: `docs/spec/router.md` is current against Go `eff2a29`
+(§0). Five units landed, 133 tests, all in the default `mvn test` run.
+
+| Unit | Package | Pins |
+|---|---|---|
+| Wire contract | `router.wire` | `Message` (both Go `omitempty` semantics), `DispatchMode`, `MediationType` (sealed, so an unsupported value reaches the ACK-drop instead of poisoning), `MediationOutcome`, response parse order, HMAC golden vector |
+| Retry policy | `router.policy` | The **Q3 collapse** — Go's two nested retry layers as one flattened schedule; `startsBurst`/`endsBurst` keep breaker accounting per burst |
+| Group flush | `router.policy` | Q54 TTL-bounded suppression, extend-only, per-pool |
+| Breaker + registry | `router.policy` | Failure-**rate** breaking, per-endpoint, idle retirement |
+| Rate limiter | `router.policy` | Token bucket; `await` reserves rather than polls |
+| Ordered groups | `router.pool` | The **Q1 ruling**, plus the failure-kind split |
+| Pool | `router.pool` | Workers, drainers, capacity, the delivery pipeline |
+| HTTP mediator | `router.pool` | Status → outcome, signing, breaker rules |
+
+**Rulings taken while building** (all recorded in `docs/spec/router.md`):
+
+- **Q16** — the Java scheduler propagates `dispatchMode` and `poolCode`.
+  Go publishes neither, so today every dispatch job is `IMMEDIATE` in
+  `DEFAULT-POOL` and the ordered path is dead code. Go fix half-done
+  (`7414bc5` mode; pool half correctly reverted in `7ed2dba` after a broken
+  claim query). Java spec: `docs/spec/dispatch-propagation.md`.
+- **Pool codes namespaced** `{clientIdentifier}-{code}`, fallback
+  `{clientIdentifier}-DEFAULT-POOL`, resolved at publish time; the router
+  synthesises `*-DEFAULT-POOL` pools on demand.
+- **Q51** — carry the real 2xx status. Java done; Go fix specced in
+  `docs/spec/router-fixes.md`.
+- **Q54** — honour `flushGroup` from any target; revisit logged in
+  `docs/improvements.md`.
+- **Ordered-head failure split by kind** — 502/503/504 and transport NACK
+  the whole group back to the broker (retry indefinitely, broker owns it);
+  500 retries 3× then ACKs, blocking or advancing the group per mode.
+
+**Watch items recorded, not solved:** the unavailable path retries at the
+*broker's* cadence (nack delay is advisory), so the breaker is what actually
+protects a downed target; and ACK-on-500 assumes the target re-drives what
+it rejected, true of the platform's dispatch endpoint but not of a
+third-party ordered target.
+
+**Next router units:** consumer/queue-backend contract (then SQS, Postgres,
+NATS — good delegation candidates), the in-flight tracker, `Manager`
+(routing, consumer loops, pool registry, config sync), observability
+(metrics, warnings, monitoring API), standby/leadership, ALB, shutdown.
 
 **Go reference state.** `../flowcatalyst-go` is on branch
 `fix/oauth-endpoint-compliance` at `f908c3b`, working tree clean. The owner
