@@ -954,7 +954,6 @@ export type CreateOAuthClientRequest = {
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
     redirectUris?: Array<string>;
-    scopes?: Array<string>;
     [key: string]: unknown;
 };
 
@@ -2774,7 +2773,6 @@ export type UpdateOAuthClientRequest = {
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
-    scopes?: Array<string>;
     [key: string]: unknown;
 };
 
@@ -3487,7 +3485,6 @@ export type CreateOAuthClientRequestWritable = {
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
     redirectUris?: Array<string>;
-    scopes?: Array<string>;
     [key: string]: unknown;
 };
 
@@ -4483,7 +4480,6 @@ export type UpdateOAuthClientRequestWritable = {
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
-    scopes?: Array<string>;
     [key: string]: unknown;
 };
 
