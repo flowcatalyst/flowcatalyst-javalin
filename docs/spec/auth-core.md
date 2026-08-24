@@ -542,9 +542,14 @@ Two layers, evaluated in order, per lower-cased identifier:
 2. **Per-identifier global ceiling** — `cutoff2 = max(now−GlobalWindow,
    cutoff)`; `count2 = failures for identifier since cutoff2` (any IP); if
    `count2 ≥ Ceiling` → deny `global_ceiling`, `RetryAfter = LockSecs`
-   (LB:139-155). Note: this is not a lock timer — the window keeps sliding,
-   so the caller is told "900" but is actually admitted once the hour-window
-   count drops below 100 — **Q11**.
+   (LB:139-155). **Q11 RULED (owner, 2026-08-24): make it a real lock.** In
+   Go today this is not a lock timer — the window keeps sliding, so the caller
+   is told "900" while the real gate is the hourly count, which usually keeps
+   denying well *past* 900 s and occasionally clears well before it. The
+   agreed behaviour is: deny while `over-ceiling AND now < max(lockEnds,
+   countEnds)`, advertising the later of the two, so the lock is enforced,
+   the hourly ceiling is retained, and `Retry-After` is honest. Design,
+   repository contract and test table: `docs/spec/login-backoff-lock.md`.
 
 The 2FA verify step reuses the same check (TF:166-168). Federated users are
 screened out before the check only by the SSO gate (LB:14-16).
@@ -751,7 +756,7 @@ immediately (no grace) — **Q14**.
 | 22 | Backoff `MaxDelaySecs` | 300 | LB:44 | C | Load-bearing. |
 | 23 | Backoff `GlobalWindowSecs` | 3600 | LB:45 | C | Load-bearing. |
 | 24 | Backoff `GlobalCeiling` | 100 | LB:46 | C | Load-bearing ("never trips on normal usage", LB:10-12). |
-| 25 | Backoff `GlobalLockSecs` | 900 (only the advertised Retry-After) | LB:47 | C | Accident-ish: not enforced as a lock (Q11). |
+| 25 | Backoff `GlobalLockSecs` | 900 | LB:47 | C | Load-bearing **after the Q11 fix**: the enforced minimum denial after a ceiling trip, and the advertised `Retry-After`. In Go as extracted it was the header value only, with nothing enforcing it — see `docs/spec/login-backoff-lock.md`. |
 | 26 | Backoff last-success fallback | now − 30 days | LB:110 | I | Accident (bounds the query); not observable. |
 | 27 | Backoff shift exponent cap | 31 | LB:59 | I | Overflow guard; not observable (LBT:32-34). |
 | 28 | Rate-limit buckets | `oauth_token_ip, oauth_token_client, oauth_authorize_ip, oauth_authorize_client, oauth_introspect_ip, oauth_revoke_ip, password_reset_ip, password_reset_email, check_domain_ip, portal_login` | RL:33-42 | C (storage keys) | Names appear in Redis keys/DB rows. `oauth_introspect_ip`, `oauth_revoke_ip`, `check_domain_ip` have **no policy and no caller** — accident/dead. **Q18** |
@@ -982,10 +987,10 @@ be this aggregate's junction.
 | Q6 | Keep `client_credentials` reading `client_id`/`client_secret` **only from the body** (Basic auth refused with "Missing client_id") although discovery advertises `client_secret_basic`? | yes | **Verified 2026-08-24** (`token.go:132-145`, `token.go:159-160`, `token.go:326-334`): `parseTokenRequest` reads form values only and never merges Basic; `authorization_code` and `refresh_token` *do* accept Basic via `authenticateClient` (`token.go:233-236`, Basic wins). So the inconsistency is confined to the `client_credentials` grant, and discovery advertising `client_secret_basic` is a promise that grant breaks. Recommended fix is to route `client_credentials` through `authenticateClient` like the other grants — **not** to drop Basic, which RFC 6749 §2.3.1 requires an authorization server to support and which third-party OIDC libraries default to. |
 | Q7 | **RULED (owner, 2026-08-24): 400, per RFC 6749 §5.2.** Verified 2026-08-24: **already done in the Go working tree** — `token.go:656-668` returns `StatusBadRequest` for `invalid_grant` on both the client-binding failure and the invalid/expired refresh token, with a comment citing §5.2 (every token-endpoint error is 400 except `invalid_client`, which MAY be 401). No further Go change; the spec row was stale. The Java port implements 400. |
 | Q8 | **RULED (owner, 2026-08-24): fix — advertise the algorithm actually in use.** Verified 2026-08-24: **already fixed in the Go working tree** — `discovery.go` now sets `IDTokenSigningAlgValuesSupported: []string{s.Auth.Algorithm()}`, so an HS256 (no-RSA-key) deployment stops telling relying parties to verify RS256 against an empty JWKS. The Java port reads the active signer the same way. |
-| Q9 | **RULED (owner, 2026-08-24): fix — arrays everywhere.** See `docs/spec/oauthapi-fixes.md` Fix 5 for the recommended path (document the array, accept the space-delimited string leniently and undocumented, update the SPA, then retire the string form and the legacy `scopes` alias). Superseded earlier note: Recommendation: make create *accept either* (string or array) and keep emitting an array everywhere — backward compatible, so no lockfile break and no SDK/frontend regeneration, while new callers see one consistent shape. If instead the asymmetry is to be removed outright, that is a breaking wire change and should ride with the pagination-standardisation batch, not alone. |
+| Q9 | **RULED (owner, 2026-08-24): fix — arrays everywhere. DONE in Go, verified 2026-08-24.** `defaultScopes` is now one wire name, `array<string>`, byte-identical across create, update and the response; the legacy `scopes` alias is gone (`b5b471d`, `f908c3b`). Two corrections to the recommended path are recorded in `docs/spec/oauthapi-fixes.md` Fix 5 — the lenient decoder cannot work under huma, and the deprecation window was collapsed to zero because no first-party caller sent the old form. Nothing to port: the Java side implements the strict array only. |
 | Q10 | **RULED (owner, 2026-08-24): 500.** The password was correct and the request was well-formed; a session cookie that cannot be minted is a server-side failure, and answering 400 tells the caller to fix a request that has nothing wrong with it (and invites a client to retry differently, which cannot help). **Still outstanding in Go** as of 2026-08-24: `internal/platform/auth/login/endpoint.go:500` calls `httperror.BadRequest("MINT_FAILED", err.Error())`. Note `httperror` has no `Internal` constructor (only `Forbidden`, `BadRequest`, `NotFound`) — add one wrapping `usecase.Internal`, or construct the `usecase.Error` directly, so `Status` maps it to 500. Do not put `err.Error()` in the body of a 500: log the cause, return a fixed message. |
-| Q11 | Keep `GlobalLockSecs` as an advertised Retry-After only (not an enforced lock)? | yes |
-| Q12 | Should Java run `Prune(MaxWindow)` for the Postgres rate-limit table on a schedule (Go defines it, never calls it)? | yes (add) |
+| Q11 | **RULED (owner, 2026-08-24): no — make it a real lock.** `GlobalLockSecs` was assigned to nothing but the `Retry-After` header, so the constant named a control that did not exist and the env var changed only a number the client is told. Fix: deny while `over-ceiling AND now < max(lockEnds, countEnds)`; `Retry-After` = the later of the two. Strictly stronger than today, and the header becomes true. Owner is making the same change in Go. Spec: `docs/spec/login-backoff-lock.md`. |
+| Q12 | **RULED (owner, 2026-08-24): fix — add it.** `PostgresStore.Prune` and the `Policies.MaxWindow()` that exists to feed it both have zero callers, so `iam_rate_limit_events` grows without bound and every limiter decision scans it. Go already has the janitor (`StartPurger`, 1-minute tick, four tables); the fix is a fifth sweep with retention `MaxWindow()`. Owner is making the same change in Go. Java has no periodic-task infrastructure yet, so this is a requirement on the auth port. Spec: `docs/spec/auth-retention.md`. |
 | Q13 | Keep "no refresh-family revocation on authorization-code replay"? | yes |
 | Q14 | Keep "no grace period" for the old client secret after rotate? | yes |
 | Q15 | Keep `expires_in: 3600` as a literal in responses rather than derived from the configured access TTL? | yes |

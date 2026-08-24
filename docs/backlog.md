@@ -327,3 +327,16 @@ Nothing ported so far is invalidated; re-extract §2/§3/§6/§7 before the rout
 port. Re-check for further drift at every data-plane unit.
 
 **router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Q1 sub-question resolved by the human-review flow (ignore/completed/resend re-queues the group). **Q2 ruled**: no terminal give-up — messages live until the queue expires them; backoff + circuit breaker are the protection. **Q3 ruled**: collapse the in-call retries and pool backoff into ONE named retry policy, behaviour-preserving, pinned by a conformance test. Remaining 47 pending.
+
+## `iam_login_attempts` has no retention (2026-08-24)
+
+Surfaced while fixing Q12. No `DELETE` exists for `iam_login_attempts`
+anywhere in the Go tree, yet the login backoff queries it with
+`since cutoff` on every attempt — an ever-growing index on the hot path.
+
+Unlike `iam_rate_limit_events` this may be a deliberate security audit
+trail, so it is a question rather than a defect. **Owner question:** keep
+as history (then it needs indexes sized independently of the table, and
+archival is separate), or purge on a retention of days — well above
+`GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
+limiter? See `docs/spec/auth-retention.md` §5.

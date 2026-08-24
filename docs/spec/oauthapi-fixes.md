@@ -132,49 +132,71 @@ in the current working tree).
 
 ## Fix 5 — `defaultScopes` is a string on create, an array everywhere else (Q9)
 
-**Current shapes** (lockfile + `internal/platform/auth/api/dto.go`):
+**DONE in Go — verified 2026-08-24** at `b5b471d` (make it an array, with a
+compat shim) and `f908c3b` (retire the shim and the legacy `scopes` alias),
+branch `fix/oauth-endpoint-compliance`, working tree clean.
 
-| Where | Schema | Notes |
-|---|---|---|
-| `CreateOAuthClientRequest.defaultScopes` | `{"type": "string"}` | space-delimited, split on whitespace (`dto.go:55-57`); the comment says the SPA sends it this way |
-| `UpdateOAuthClientRequest.defaultScopes` | `array<string>` | also accepts a legacy `scopes` array under a second name (`dto.go:86-88`) |
-| `OAuthClientResponse.defaultScopes` | `array<string>` | always emitted, no `omitempty` (`dto.go:142-143`) |
+**Final contract.** `defaultScopes` is the single wire name for a client's
+scope list, `{"items":{"type":"string"},"type":"array"}`, byte-identical on
+`CreateOAuthClientRequest`, `UpdateOAuthClientRequest` and
+`OAuthClientResponse`. The `scopes` alias is gone from both request DTOs
+along with the precedence logic that chose between the two.
 
-The entity itself holds `[]string`. So create is the only shape that disagrees
-with the entity, with update, and with the response.
+The defect this closed was worse than the asymmetry alone: a
+read-modify-write round trip (GET a client, change a field, POST it back)
+fed an array into a string field and silently corrupted the scope list.
 
-**Direction: arrays everywhere.** Fixing create is one change; converting update
-and the response to strings would be two changes and would fight the entity.
-Note this field is *not* the OAuth protocol `scope` parameter — that one stays a
-space-delimited string on `/oauth/authorize` and `/oauth/token`, as RFC 6749
-§3.3 requires. `defaultScopes` is an admin-CRUD field on the client resource,
-where an array is the natural JSON shape.
+### Correction 1 — the lenient decoder cannot work under huma
 
-**How, without a union type.** Do **not** type the request as
-`oneOf: [string, array<string>]`: unions generate unpleasant wrappers in the
-Java and TypeScript client generators, and four SDKs would carry it forever.
-Instead:
+The recommendation here was a `ScopeList` type with a custom
+`UnmarshalJSON` accepting either shape. **That is not implementable in this
+codebase**, and the owner established it empirically rather than by
+inspection: huma validates the parsed body against the registry schema
+*before* unmarshaling into the Go struct, and that registry schema is the
+same object the OpenAPI document is emitted from. Typing the field
+`array<string>` in the document therefore also types it `array<string>` for
+validation — a string body is rejected with `expected array at
+body.defaultScopes` (422) and the decoder never runs.
 
-1. Type `CreateOAuthClientRequest.defaultScopes` as `array<string>` in the
-   OpenAPI document — matching update and the response.
-2. Keep the server **leniently** accepting the space-delimited string at the
-   same field name, undocumented, via a small `ScopeList` type with a custom
-   `UnmarshalJSON` that takes either. Existing callers (the SPA, any external
-   integrator) keep working with no coordinated deploy.
-3. Update the SPA to send an array.
-4. Retire the string form (and, while there, the legacy `scopes` alias on
-   update) once the SPA is deployed and the deprecation window has passed.
+What delivered the intent was normalising the raw JSON **ahead of**
+validation: a `LegacyDefaultScopesCompat` middleware guarded on
+`POST /api/oauth-clients`, leaving the document genuinely strict while the
+string form kept working and appeared nowhere in the contract.
 
-That is "document the strict shape, accept the loose one quietly, then remove
-it" — generated clients stay clean, nothing breaks on the day of the change.
+**This generalises.** Any future "document the strict shape, accept the
+loose one quietly" change in Go must run before validation — a middleware
+or a body rewrite, never a decoder. The pagination-standardisation change
+is the next candidate. In **Java** the constraint does not apply: Javalin +
+Jackson deserialise first and JSON-schema validation is deferred, so a
+custom deserialiser would work there. That asymmetry is a reason to keep
+leniency decisions explicit per side rather than assuming the port mirrors
+the Go structure.
 
-**Cost to be aware of.** Step 1 changes `api/openapi.lock.json`, which means
-regenerating the TypeScript, Laravel and Java SDK models and the frontend's
-generated types. That is the same machinery the pagination-standardisation
-change needs, so **batch the two** if you would rather do one regeneration cycle
-than two.
+### Correction 2 — the deprecation window collapsed to zero
 
-**Owner ruling:** fix — 2026-08-24. Recommendation above; not yet started.
+The recommendation was to retire the string form after a deprecation
+window. In the event, `f908c3b` retired it the same day, on the evidence
+that no first-party caller sends the old form: the SPA and all three
+generated SDK client sets use `defaultScopes` array-shaped only. Released
+SDKs built against the old string form are the population that was
+exposed for the window's duration.
+
+One residual, recorded in the commit message and worth keeping visible:
+both request bodies are relaxed by `RelaxRequestBodies`, so a caller still
+sending `scopes` is **ignored rather than rejected** — a silent
+partial-success where the client believes it set scopes and did not.
+
+### Porting note
+
+**Nothing to port.** The Java side implements the strict array on all three
+DTOs and no compat path. `TestOAuthClientScopesWireNameIsUniform` is the Go
+invariant test; the Java equivalent belongs in the `oauthclient` aggregate's
+API test when it lands. The vendored lockfile in this repo has been synced
+to `f908c3b` (`server/src/main/resources/openapi/openapi.lock.json` and
+`sdk/openapi/openapi.json`, byte-identical to `api/openapi.lock.json`);
+`LockfileCoverageTest` passes — 178 paths / 243 operations / 231 schemas
+unchanged, the delta is schema-only and no ported Java code referenced the
+field.
 
 ---
 

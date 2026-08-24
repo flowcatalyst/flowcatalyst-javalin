@@ -2507,7 +2507,10 @@
             "type": "string"
           },
           "defaultScopes": {
-            "type": "string"
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "grantTypes": {
             "items": {
@@ -2531,12 +2534,6 @@
             "type": "string"
           },
           "redirectUris": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "scopes": {
             "items": {
               "type": "string"
             },
@@ -7988,12 +7985,6 @@
             "type": "array"
           },
           "redirectUris": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "scopes": {
             "items": {
               "type": "string"
             },
