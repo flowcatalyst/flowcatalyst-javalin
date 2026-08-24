@@ -27,6 +27,10 @@ class RotateOAuthClientSecretResponse
      */
     protected $clientSecret;
     /**
+     * @var \DateTime|null
+     */
+    protected $previousSecretExpiresAt;
+    /**
      * A URL to the JSON Schema for this object.
      *
      * @return string|null
@@ -82,6 +86,24 @@ class RotateOAuthClientSecretResponse
     {
         $this->initialized['clientSecret'] = true;
         $this->clientSecret = $clientSecret;
+        return $this;
+    }
+    /**
+     * @return \DateTime|null
+     */
+    public function getPreviousSecretExpiresAt(): ?\DateTime
+    {
+        return $this->previousSecretExpiresAt;
+    }
+    /**
+     * @param \DateTime|null $previousSecretExpiresAt
+     *
+     * @return self
+     */
+    public function setPreviousSecretExpiresAt(?\DateTime $previousSecretExpiresAt): self
+    {
+        $this->initialized['previousSecretExpiresAt'] = true;
+        $this->previousSecretExpiresAt = $previousSecretExpiresAt;
         return $this;
     }
 }

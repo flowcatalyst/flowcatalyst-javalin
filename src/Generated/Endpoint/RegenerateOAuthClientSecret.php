@@ -7,10 +7,12 @@ class RegenerateOAuthClientSecret extends \FlowCatalyst\Generated\Runtime\Client
     protected $id;
     /**
      * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody
      */
-    public function __construct(string $id)
+    public function __construct(string $id, ?\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody = null)
     {
         $this->id = $id;
+        $this->body = $requestBody;
     }
     use \FlowCatalyst\Generated\Runtime\Client\EndpointTrait;
     public function getMethod(): string
@@ -23,6 +25,9 @@ class RegenerateOAuthClientSecret extends \FlowCatalyst\Generated\Runtime\Client
     }
     public function getBody(\Symfony\Component\Serializer\SerializerInterface $serializer, $streamFactory = null): array
     {
+        if ($this->body instanceof \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest) {
+            return [['Content-Type' => ['application/json']], $serializer->serialize($this->body, 'json')];
+        }
         return [[], null];
     }
     public function getExtraHeaders(): array

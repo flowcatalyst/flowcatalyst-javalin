@@ -342,6 +342,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\RolesAssignedResponse::class => \FlowCatalyst\Generated\Normalizer\RolesAssignedResponseNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class => \FlowCatalyst\Generated\Normalizer\RotateOAuthClientSecretRequestNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class => \FlowCatalyst\Generated\Normalizer\RotateOAuthClientSecretResponseNormalizer::class,
         
         \FlowCatalyst\Generated\Model\ScheduledJobInstanceLogResponse::class => \FlowCatalyst\Generated\Normalizer\ScheduledJobInstanceLogResponseNormalizer::class,
@@ -680,6 +682,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\RolePermissionListResponse::class => false,
             \FlowCatalyst\Generated\Model\RoleResponse::class => false,
             \FlowCatalyst\Generated\Model\RolesAssignedResponse::class => false,
+            \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class => false,
             \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class => false,
             \FlowCatalyst\Generated\Model\ScheduledJobInstanceLogResponse::class => false,
             \FlowCatalyst\Generated\Model\ScheduledJobInstanceResponse::class => false,

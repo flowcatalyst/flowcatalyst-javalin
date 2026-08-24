@@ -11,7 +11,7 @@ use Symfony\Component\Serializer\Normalizer\DenormalizerInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareTrait;
 use Symfony\Component\Serializer\Normalizer\NormalizerInterface;
-class RotateOAuthClientSecretResponseNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
+class RotateOAuthClientSecretRequestNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
 {
     use DenormalizerAwareTrait;
     use NormalizerAwareTrait;
@@ -19,15 +19,15 @@ class RotateOAuthClientSecretResponseNormalizer implements DenormalizerInterface
     use ValidatorTrait;
     public function supportsDenormalization(mixed $data, string $type, ?string $format = null, array $context = []): bool
     {
-        return $type === \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class;
+        return $type === \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class;
     }
     public function supportsNormalization(mixed $data, ?string $format = null, array $context = []): bool
     {
-        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class;
+        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class;
     }
     public function denormalize(mixed $data, string $type, ?string $format = null, array $context = []): mixed
     {
-        $object = new \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse();
+        $object = new \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest();
         if (null === $data || false === \is_array($data)) {
             return $object;
         }
@@ -39,44 +39,40 @@ class RotateOAuthClientSecretResponseNormalizer implements DenormalizerInterface
         }
         if (\array_key_exists('$schema', $data) && $data['$schema'] !== null) {
             $object->setDollarSchema($data['$schema']);
+            unset($data['$schema']);
         }
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
-        if (\array_key_exists('clientId', $data) && $data['clientId'] !== null) {
-            $object->setClientId($data['clientId']);
+        if (\array_key_exists('graceSeconds', $data) && $data['graceSeconds'] !== null) {
+            $object->setGraceSeconds($data['graceSeconds']);
+            unset($data['graceSeconds']);
         }
-        elseif (\array_key_exists('clientId', $data) && $data['clientId'] === null) {
-            $object->setClientId(null);
+        elseif (\array_key_exists('graceSeconds', $data) && $data['graceSeconds'] === null) {
+            $object->setGraceSeconds(null);
         }
-        if (\array_key_exists('clientSecret', $data) && $data['clientSecret'] !== null) {
-            $object->setClientSecret($data['clientSecret']);
-        }
-        elseif (\array_key_exists('clientSecret', $data) && $data['clientSecret'] === null) {
-            $object->setClientSecret(null);
-        }
-        if (\array_key_exists('previousSecretExpiresAt', $data) && $data['previousSecretExpiresAt'] !== null) {
-            $object->setPreviousSecretExpiresAt(\DateTime::createFromFormat('Y-m-d\TH:i:sP', $data['previousSecretExpiresAt']));
-        }
-        elseif (\array_key_exists('previousSecretExpiresAt', $data) && $data['previousSecretExpiresAt'] === null) {
-            $object->setPreviousSecretExpiresAt(null);
+        foreach ($data as $key => $value) {
+            if (preg_match('/.*/', (string) $key)) {
+                $object[$key] = $value;
+            }
         }
         return $object;
     }
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
-        $dataArray['clientId'] = $data->getClientId();
-        if ($data->isInitialized('clientSecret') && null !== $data->getClientSecret()) {
-            $dataArray['clientSecret'] = $data->getClientSecret();
+        if ($data->isInitialized('graceSeconds') && null !== $data->getGraceSeconds()) {
+            $dataArray['graceSeconds'] = $data->getGraceSeconds();
         }
-        if ($data->isInitialized('previousSecretExpiresAt') && null !== $data->getPreviousSecretExpiresAt()) {
-            $dataArray['previousSecretExpiresAt'] = $data->getPreviousSecretExpiresAt()->format('Y-m-d\TH:i:sP');
+        foreach ($data as $key => $value) {
+            if (preg_match('/.*/', (string) $key)) {
+                $dataArray[$key] = $value;
+            }
         }
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array
     {
-        return [\FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class => false];
+        return [\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class => false];
     }
 }

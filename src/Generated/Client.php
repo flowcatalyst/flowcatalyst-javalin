@@ -1505,23 +1505,35 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     }
     /**
      * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
      * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
      */
-    public function regenerateOAuthClientSecret(string $id, string $fetch = self::FETCH_OBJECT)
+    public function regenerateOAuthClientSecret(string $id, ?\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
     {
-        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RegenerateOAuthClientSecret($id), $fetch);
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RegenerateOAuthClientSecret($id, $requestBody), $fetch);
     }
     /**
      * @param string $id
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\SuccessResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function revokeOAuthClientPreviousSecret(string $id, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RevokeOAuthClientPreviousSecret($id), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
      * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
      */
-    public function rotateOAuthClientSecret(string $id, string $fetch = self::FETCH_OBJECT)
+    public function rotateOAuthClientSecret(string $id, ?\FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
     {
-        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RotateOAuthClientSecret($id), $fetch);
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RotateOAuthClientSecret($id, $requestBody), $fetch);
     }
     /**
      * @param string $id
