@@ -200,6 +200,60 @@ field.
 
 ---
 
+## Fix 6 — `expires_in` is a literal, not the configured TTL (Q15)
+
+**Owner ruling 2026-08-24: fix — derive it.** Owner is making the same
+change in Go.
+
+**Defect.** The access-token lifetime is configuration —
+`AuthService.Config.AccessTokenExpirySecs` (`authservice.go:184`), which is
+what actually stamps the JWT `exp` via `generateTokenWithExpiry`
+(`:388/:398/:410`). Six response sites ignore it and write `3600`:
+
+| Site | Response | Token minted |
+|---|---|---|
+| `oauthapi/token.go:500` | `client_credentials` | `GenerateAccessTokenWithScope` |
+| `oauthapi/token.go:622` | `authorization_code` | access token |
+| `oauthapi/token.go:724` | `refresh_token` | access token |
+| `oauthapi/portal_token.go:72` | portal token exchange | access token |
+| `login/endpoint.go:326` | platform token refresh (`expiresIn`) | `GenerateAccessToken` |
+| `serviceaccount/api/api.go:347` | admin-minted SA token (`expiresIn`) | access token |
+
+All six mint an **access token**, so all six take the same TTL — there is
+no per-token-kind complication.
+
+**This is latent, not live.** `wire_services.go:86` sets
+`AccessTokenExpirySecs: 3600` as its own literal, and `DefaultConfig()`
+agrees, so today the advertised value and the real `exp` always match. The
+defect is the *coupling*: nothing connects the two, the constant is not
+env-driven, and the first person to shorten the TTL silently makes six
+responses lie. A client that trusts `expires_in` caches the token for an
+hour and then takes 401s for the remainder without a clue why — while the
+JWT's own `exp` claim, the real authority, said otherwise all along.
+
+**Fix.** Read the value from the same config that mints the token, at every
+one of the six sites. No wire shape changes: `expires_in` stays an integer
+in seconds and, at the current configuration, stays `3600`, so no SDK,
+lockfile or frontend regeneration is needed. Prefer passing the resolved
+number from the token-minting call rather than each handler reaching into
+config independently, so the two cannot drift again.
+
+**Worth doing at the same time:** make the TTL genuinely configurable
+(`wire_services.go:86` is currently a literal). Deriving `expires_in` is
+what makes that safe to do — the config is not really tunable today, since
+tuning it would start the lying.
+
+**Tests.** Configure a non-default TTL (e.g. 900), exercise each of the six
+responses, and assert `expires_in` equals the configured value **and**
+matches the `exp` claim of the token in the same response. Asserting the
+two agree is the assertion that would have caught this; asserting the
+literal is what let it through.
+
+**Java port.** Derive it from the start — the port must not reproduce the
+literal. `docs/spec/auth-core.md` constants row 2 records the coupling.
+
+---
+
 ## Already done in Go (verified 2026-08-24, uncommitted working tree)
 
 | Question | Change | Where |

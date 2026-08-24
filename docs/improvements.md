@@ -88,3 +88,90 @@ Smaller than the login-backoff issues (Q11, Q12): it requires the code to
 leak first, and the leak window is short. It is recorded here because it is
 exactly the case where the audit trail matters most, and because the
 mechanism to fix it is already built.
+
+---
+
+## No grace period on client-secret rotation (auth-core Q14)
+
+**Owner ruling 2026-08-24: keep current behaviour in the port; spec the
+grace period here as a later improvement.** Java reproduces the hard
+cutover exactly — this is not a port deviation.
+
+### Current behaviour, both sides
+
+`oauth_clients.client_secret_ref` is a single column holding one encrypted
+reference, and rotation overwrites it:
+
+```go
+// SetSecretRef records a rotated encrypted secret reference.
+func (c *OAuthClient) SetSecretRef(ref string) {
+    c.SecretRef = &ref          // overwrite, not append
+    c.UpdatedAt = time.Now().UTC()
+}
+```
+
+`RotateOAuthClientSecret` (`operations/oauth_client.go:317`) mints a secret,
+calls `SetSecretRef`, stashes the plaintext for one-shot retrieval, emits
+`OAuthClientSecretRotated`, and saves. Verification takes exactly one ref
+with no fallback (`verifyClientSecret`, decrypt-and-compare in constant
+time). There is no `previous_secret_ref` anywhere in the schema.
+
+So the instant rotate returns, every caller still presenting the old secret
+gets `401 Invalid client credentials`.
+
+### Why it is worth changing later
+
+Confidential clients are machine-to-machine: the secret lives in a config
+file or a secrets manager, in every replica. A hard cutover makes rotation
+a synchronised operation — mint, then every deployment holding the old
+secret is broken until redeployed. There is no window in which both work,
+so a fleet cannot be rolled gradually, and rolling *back* to the previous
+deployment restores a secret that no longer works.
+
+The practical consequence is that operators rotate rarely, which is the
+opposite of what rotation is for.
+
+### The change: two secrets, two ways to end the overlap
+
+**Additive schema** — `previous_secret_ref VARCHAR`,
+`previous_secret_expires_at TIMESTAMPTZ`, both nullable. Additive keeps the
+Go rollback path intact (Go ignores the columns), with one caveat worth
+stating: after a rollback, a client still on the old secret stops being
+accepted, because only the Java side knows to check `previous_secret_ref`.
+
+**Verification** — try `client_secret_ref`; if that fails and
+`previous_secret_expires_at > now()`, try `previous_secret_ref`. Both
+comparisons stay constant-time, and a failure of both must be
+indistinguishable from a single failure in timing and in the response.
+
+**Ending the overlap — both paths are required:**
+
+1. **Timed lapse.** Rotate moves current → previous with
+   `previous_secret_expires_at = now + grace`. Grace is configured, with a
+   sane default (24h); `graceSeconds: 0` on the rotate request reproduces
+   today's hard cutover, so the strict behaviour remains available rather
+   than being replaced.
+2. **Explicit immediate revoke.** A separate operation that clears
+   `previous_secret_ref` now, without minting anything. **This is the more
+   important of the two**: a leak is usually discovered *after* a routine
+   rotation, at which point the operator needs to kill the old credential
+   without disturbing the new one. Making it a parameter of rotate only
+   would force an unnecessary second rotation — and another fleet-wide
+   redeploy — at exactly the wrong moment.
+
+**Events** — `OAuthClientSecretRotated` already exists and carries the
+rotation; add one for the explicit revoke so the compromise response is
+auditable and distinguishable from a routine lapse.
+
+**Observability** — emit a signal whenever a request authenticates on the
+*previous* secret. That is the operator's answer to "who still has not
+redeployed?", visible while the window is open rather than as 401s after it
+closes. Without it the grace period trades a loud failure for a silent one.
+
+### The trade-off being accepted
+
+During the window there are two live credentials for one client. That is
+only a real weakness when rotating *because* the old secret leaked — which
+is precisely the case path 2 exists to serve. Keeping `graceSeconds: 0`
+available means the strict behaviour is a choice at the call site rather
+than a property of the platform.
