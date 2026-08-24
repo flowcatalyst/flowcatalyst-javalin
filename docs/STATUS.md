@@ -4,10 +4,18 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
-## Where we are (2026-08-22, evening)
+## Where we are (2026-08-24)
 
-Reactor green: `usecase` 30 · `sdk` 40 · `server` ~1064 · `fcdev` 40 tests.
-Commits on `main` through `c948786`; one commit per landed/audited unit.
+`server` ~1465 tests. Coverage 180/243 lockfile operations (74%), zero drift.
+Commits on `main`; one commit per landed/audited unit.
+
+**Orchestration model changed 2026-08-24** — see `Claude.md` and
+`docs/process/agent-prompts.md` §0: Opus 5 orchestrates (specs, scope,
+verification, debugging, commits), `sonnet` at medium effort writes the code.
+
+**Go drift**: `../flowcatalyst-go` has moved past the commit the router spec
+was extracted from — see `docs/spec/router.md` §0 and `docs/backlog.md`.
+Re-check `git log` in the Go repo before starting each data-plane unit.
 
 | Unit | Spec | Port | Audit | Notes |
 |---|---|---|---|---|
@@ -35,6 +43,11 @@ Commits on `main` through `c948786`; one commit per landed/audited unit.
 | event (read) | `docs/spec/event.md` | ✔ | ✔ | ingest POSTs = sdk unit |
 | docs (appdocs + docsapi) | `docs/spec/docs.md` | ✔ | ✔ | published pages copied |
 | dispatchjob | `docs/spec/dispatchjob.md` | ✔ | ✔ | ignore/completed routes need lockfile addition (owner) |
+| docs (appdocs + docsapi) | `docs/spec/docs.md` | ✔ | ✔ | published pages copied |
+| scheduledjob (+ cron) | `docs/spec/scheduledjob.md` | ✔ | ✔ | 6-field cron hand-ported, 75 pinned rows |
+| **principal** | `docs/spec/principal.md` | ✔ | ☐ **audit not run** | 31 routes, 39 operations; **no `PrincipalApiTest` yet**; emailer/notifier/MFA are stubs (spec §10) |
+| **openapispecs** | `docs/spec/openapispecs.md` | ✔ | ☐ | not registered — consumed by sdksync |
+| **sdksync** | `docs/spec/sdksync.md` | ◐ **5 DTO files only** | ☐ | no Api, not registered; the `Sync*` operations it wires all exist |
 | publicapi + branding | `docs/spec/publicapi.md` | ✔ | ✔ | incl. legacy `/api/config/platform` |
 | shared `Visibility` (+`VisibilitySql`) | — | ✔ | — | replaces event/dispatchjob copies |
 | auth core (spec) | `docs/spec/auth-core.md` (29 Qs, artifact) | ☐ gated on owner | ☐ | |
