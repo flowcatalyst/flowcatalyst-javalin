@@ -288,6 +288,33 @@ spec's largest deliberate deviation and the conformance suite must pin both
 modes explicitly — a Java router that merely mirrors `pool.go` will pass
 every Go-derived test and still be wrong.
 
+**Failure kind decides the disposition — RULED (owner, 2026-08-24).** A
+retryable failure is not one thing, and Go treats every 5xx identically
+(`ErrorProcess`, retried in-pipeline forever). Java splits it, because the
+two cases mean opposite things about the target:
+
+| Failure | Meaning | Ordered-head disposition |
+|---|---|---|
+| Transport error, timeout, unreachable host, **502 / 503 / 504**, unexpected status | The target is **down or not ready**. Nothing about this message is wrong. | **NACK the group** — head *and* buffered siblings go back to the broker, the group is released. The broker redelivers, indefinitely, until *it* expires them (Q2). Nothing is held in router memory across an outage of unknown length. |
+| **500** and other 5xx | The target **received and processed** the message and failed on it. Retrying it unchanged against a healthy target is unlikely to differ. | **ACK the head.** Then per mode: `BLOCK_ON_ERROR` also ACKs the siblings and blocks the group; `NEXT_ON_ERROR` leaves the siblings and continues with the next message. The platform surfaces the failure for review and re-queues on resolution. |
+
+This resolves the tension between Q1 and Q2 that the earlier wording left
+open ("follows the retry policy … and is then marked failed", against Q2's
+no-terminal-give-up). Unavailability retries forever via the broker;
+rejection is handed to the platform immediately. Neither path holds a group
+in memory waiting on something with no bound.
+
+**Scope:** ordered heads only. IMMEDIATE messages keep Go's in-pipeline
+retry and still never touch the broker on a retryable outcome (§3.6), which
+`guardrail_test.go` pins there and the Java conformance suite pins here.
+
+**Caveat to watch.** ACK-on-500 assumes the target re-drives what it
+rejected — true of the platform's own dispatch endpoint, which records the
+job FAILED for review. A third-party ordered webhook target that answers 500
+transiently would lose the message. Today the only ordered producer is the
+platform scheduler (Q16), so this is sound; it needs revisiting if ordered
+messages are ever pointed at a target that does not own the records.
+
 Error resolution (the other half of the ruling): a failed message is never
 retried independently by the router. It follows the retry policy (Q3), is
 marked failed, and waits for a **human review** that sets it to *ignore*,
