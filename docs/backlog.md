@@ -259,6 +259,17 @@ duplicates); `stop` 150 ms poll / 5 s post-SIGKILL wait are not flags.
 event-type names overwritten on every start (catalogue sync or accident?);
 bootstrap admin only when no anchor user exists; see the spec for the rest.
 
+**→ Change spec written: `docs/spec/oauthapi-fixes.md`** — three grouped fixes
+(userinfo + discovery route move; `client_credentials` accepting Basic;
+per-client rate limiting for Basic-only clients), each with its defect, fix,
+rationale and regression test. Owner approved 2026-08-24; **to be made in Go
+first**, then ported. Owner also asked whether Basic auth is wanted at all:
+kept for now because discovery already advertises it, RFC 6749 §2.3.1 makes it
+a MUST for an authorization server, and standard third-party OIDC libraries
+default to it — removing it is a separate deliberate decision that would also
+have to withdraw the discovery advertisement, and only makes sense once it is
+confirmed that no third party integrates directly (everyone via a FlowCatalyst SDK).
+
 **AUTH-CORE Q4 — real defect, fix landing in Go first (2026-08-24).**
 `/oauth/userinfo` sits inside the Authenticator group, which refuses any
 `token_use=identity` bearer; an ordinary (non-`APIAccess`) OIDC client's
