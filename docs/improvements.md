@@ -175,3 +175,66 @@ only a real weakness when rotating *because* the old secret leaked — which
 is precisely the case path 2 exists to serve. Keeping `graceSeconds: 0`
 available means the strict behaviour is a choice at the call site rather
 than a property of the platform.
+
+---
+
+## `flushGroup` is honoured from any target (router Q54)
+
+**Owner ruling 2026-08-24: honour the Go behaviour — correct for this
+deployment's context, where targets own the records they are pointed at.
+Logged here to revisit.** The Java port implements no gate.
+
+### Current behaviour, both sides
+
+A target answering a 2xx with `{"ack": true, "flushGroup": true}` causes the
+router to **ACK the remaining messages of that message group without
+delivering them** (`mediator.go:356-365`, `pool.go:760-806`). Suppression is
+TTL-bounded — `delaySeconds` on the same response, default 60 s, capped at
+5 min — and self-heals: the next message after the window probes the target.
+
+The saving is real and is the point of the feature: the check runs *before*
+the rate limiter, so a flushed group spends neither a rate-limit token nor a
+concurrency slot, where previously the target had to absorb every sibling
+one delivery at a time.
+
+### Why it is worth revisiting
+
+The safety condition is that the target **already owns the records** being
+pointed at (the message-pointer pattern) and will re-drive them itself.
+Flushed messages are never delivered and, once ACKed, are gone from the
+broker for every backend.
+
+Nothing enforces that condition. It is asserted in code comments and in
+`docs/wire-contract.md`, and honoured from **any** target that sets the
+flag. A target that sets it while holding the only copy of a payload loses
+data in a way that is indistinguishable from a bug: no error, no warning, no
+metric (see below), just messages that quietly stop arriving.
+
+The exposure is bounded by who can be a mediation target — targets are
+configured, not arbitrary — which is why honouring it is reasonable here.
+It becomes worth revisiting if targets are ever operated by parties who do
+not also own the underlying records, or if a target's implementation can be
+changed without the platform's knowledge.
+
+### If it is revisited, the shape
+
+Honour `flushGroup` only for pools or targets explicitly opted in by config,
+so the capability is granted rather than assumed. One config field, one
+check at the point the outcome is applied, and a line in the integrator
+documentation stating the ownership requirement as a precondition rather
+than a warning.
+
+### Related gaps, worth closing regardless (router Q52, Q53)
+
+These are not the safety question, but they are what makes the safety
+question hard to monitor:
+
+- A message ACKed because its group is suppressed records **no pool metric
+  at all** — not success, not transient, not rate-limited. A pool whose
+  groups are being flushed heavily looks *idle* on `/monitoring` and in
+  Prometheus rather than busy-but-suppressed. The registry's own
+  `suppressed` counter exists and nothing reads it.
+- `GroupFlushRegistry.SuppressedUntil`, `.Clear` and `.Stats` have no
+  callers outside tests, so an operator cannot ask "why is this group
+  quiet?" — the question the TTL design explicitly anticipates — and cannot
+  lift a suppression early.

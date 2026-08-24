@@ -296,11 +296,29 @@ group**. For `NEXT_ON_ERROR` only the failed message waits while its
 siblings proceed; for `BLOCK_ON_ERROR` the whole group waits, its queued
 siblings already ACKed off the broker, and is re-sent in order.
 
-**Before any of this is implemented, see Q16.** The scheduler publishes
-neither `dispatchMode` nor `poolCode`, so today *every* dispatch job reaches
-the router as `IMMEDIATE` in `DEFAULT-POOL` and the router's ordered path is
-never taken for them. Whether the Java propagates those fields decides
-whether the router half of the Q1 ruling is live code or dormant.
+**Q16 is ruled: the Java scheduler propagates `dispatchMode` and `poolCode`**
+(owner, 2026-08-24). Go publishes neither, so in Go every dispatch job reaches
+the router as `IMMEDIATE` in `DEFAULT-POOL` and the ordered path is never
+taken for them. In Java it *is* taken — so the router half of the Q1 ruling
+above is live, load-bearing code, and a subscription's configured dispatch
+pool (its concurrency and rate limit) starts applying to dispatch jobs.
+Both are deliberate deviations and both need conformance tests.
+
+**Cutover warning — the pool config goes live for the first time.** Today
+*all* dispatch traffic shares `DEFAULT-POOL` at concurrency 20
+(`manager.go:24,538-539`), because every message arrives with an empty pool
+code. Once Java propagates `poolCode`, each subscription is governed by its
+own pool's concurrency and rate limit. Any pool configured tighter than 20
+will make those subscriptions **slower than they are in Go**, not faster —
+the configuration has never actually been in force. Verify the configured
+pool limits against observed dispatch throughput during the cutover
+rehearsal; this is a behaviour change, not a bug fix, and it is the one that
+will show up as "the Java is slower".
+
+Note also that the two symptoms are independent, so a partial fix is not
+useful: propagating `poolCode` alone leaves everything unordered, and
+propagating `dispatchMode` alone leaves every subscription sharing one
+pool's concurrency and rate limit.
 
 Blocking dependency: this flow needs the dispatchjob *ignore* / *completed*
 routes, which require a **lockfile addition** (owner).
@@ -629,7 +647,9 @@ Prometheus rather than busy-but-suppressed. **Q53.**
     mediator**: success for 2xx and 4xx, failure for 5xx/transport, nothing
     for 429 / deferred / circuit-open. (`mediator.go:220-239`,
     `guardrail_test.go:204-257`)
-16. **VERIFIED 2026-08-24 — this one gates the ordered-group code.** The scheduler publishes with `messageGroupId` but **no `dispatchMode` and no `poolCode`**. `buildMessage` (`scheduler/dispatcher.go:81-94`) sets only `ID`, `MediationType`, `MediationTarget`, `AuthToken` and — when non-empty — `MessageGroupID`. Both dropped fields exist in the data: `dispatchClaim` carries `mode` and uses it platform-side, but `DispatchJobToken` (`poller.go:383-387`) narrows to `{JobID, MessageGroup, TargetURL}` before `buildMessage` ever sees it; and `msg_subscriptions` carries `dispatch_pool_id` / `dispatch_pool_code`, which nothing propagates onto the message.
+16. **RULED (owner, 2026-08-24): propagate both fields.** The Java scheduler puts `dispatchMode` and `poolCode` on every published message. This is a **deliberate deviation from Go**: the router's ordered path and per-pool routing become live for dispatch jobs, which means a subscription's configured dispatch pool (concurrency + rate limit) starts applying, and the **router half of the Q1 ruling becomes load-bearing code rather than dormant**. Conformance tests must pin both. Evidence that led to the ruling follows.
+
+    **VERIFIED 2026-08-24.** The scheduler publishes with `messageGroupId` but **no `dispatchMode` and no `poolCode`**. `buildMessage` (`scheduler/dispatcher.go:81-94`) sets only `ID`, `MediationType`, `MediationTarget`, `AuthToken` and — when non-empty — `MessageGroupID`. Both dropped fields exist in the data: `dispatchClaim` carries `mode` and uses it platform-side, but `DispatchJobToken` (`poller.go:383-387`) narrows to `{JobID, MessageGroup, TargetURL}` before `buildMessage` ever sees it; and `msg_subscriptions` carries `dispatch_pool_id` / `dispatch_pool_code`, which nothing propagates onto the message.
 
     Consequences, all verified rather than inferred:
     - `DispatchMode` is the zero value `""`, so `RequiresOrdering()` is false → **every dispatch job is dispatched as `IMMEDIATE`**. The router's per-group FIFO never engages for the platform's primary producer. The only sites that set `DispatchMode` on an outgoing message at all are two router **API** handlers (`handlers_misc.go:201`, `handlers_messages.go:107`) — operator-submitted messages, not production traffic.
@@ -1728,7 +1748,7 @@ Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
 51. **(eff2a29)** The `flushGroup` branch of the response parser builds `common.Success()`, which hard-codes `StatusCode: 200` — unlike the `ack:false` branch immediately above it, which copies the real status onto the outcome. So a target answering `202 {"flushGroup":true}` is recorded as 200. Accident (copy the real status, matching the deferral branch), or deliberate? (`mediator.go:356-365`, §2.4)
 52. **(eff2a29)** `GroupFlushRegistry.SuppressedUntil`, `.Clear` and `.Stats` have **no callers** outside tests. So an operator cannot ask "why is this group quiet?" — the question the TTL design explicitly anticipates — and cannot lift a suppression early. Expose them on the monitoring API and add an operator clear, or drop them as dead code? (§2.11; same class as Q48)
 53. **(eff2a29)** A message ACKed because its group is suppressed records **no pool metric at all** — not success, not transient, not rate-limited — and the registry's own `suppressed` counter is unread. A pool whose groups are being flushed heavily therefore looks *idle* rather than busy-but-suppressed, on `/monitoring` and in Prometheus alike. Add a suppressed counter to the pool metrics, or accept the blind spot? (§3.5, §6.5)
-54. **(eff2a29)** `flushGroup` lets a target cause the router to **ACK messages it never delivered**. The safety condition — that the target already owns the records and will re-drive them — is asserted in code comments and in `docs/wire-contract.md`, but nothing enforces it: a target that sets the flag while holding the only copy of the payload loses data indistinguishably from a bug. Is a guardrail wanted (e.g. honour `flushGroup` only for pools/targets opted in by config), or is the wire contract's warning sufficient? (§2.11)
+54. **RULED (owner, 2026-08-24): honour the Go behaviour — any target may flush.** Correct for this deployment's context, where targets own the records they are pointed at. **Logged to revisit** in `docs/improvements.md`: the router ACKs messages it never delivered on a target's say-so, and nothing enforces the safety condition that makes that sound, so a target holding the only copy of a payload loses data indistinguishably from a bug. No per-pool opt-in gate in the port. (§2.11)
 55. **(eff2a29)** The registry is **per pool**, so the same message-group id in two pools suppresses independently. Correct as-is (a group is only meaningful within the pool that orders it), or should suppression be global to the router? (§2.11)
 ---
 
