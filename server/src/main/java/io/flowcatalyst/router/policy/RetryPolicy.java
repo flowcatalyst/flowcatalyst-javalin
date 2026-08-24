@@ -96,6 +96,19 @@ public record RetryPolicy(List<Duration> burstSpacing, Duration minDelay, Durati
         return attempt % burstSize() == 0;
     }
 
+    /// Whether `attempt` is the last of its burst — the point at which a
+    /// burst's verdict is known and a failure may be recorded against the
+    /// circuit breaker.
+    ///
+    /// Go records one breaker outcome per `Mediate` call, *after* its in-call
+    /// retries, so three failed HTTP attempts are one breaker failure.
+    /// Recording each attempt would open every circuit three times faster
+    /// than today, which the Q3 ruling forbids. Successes are recorded
+    /// immediately regardless: a success ends the burst wherever it lands.
+    public boolean endsBurst(int attempt) {
+        return (attempt + 1) % burstSize() == 0;
+    }
+
     /// How long to wait before making `attempt` (0-based), given any delay
     /// the server asked for in seconds.
     ///

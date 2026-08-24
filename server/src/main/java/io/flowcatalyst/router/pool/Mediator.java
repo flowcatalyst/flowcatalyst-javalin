@@ -14,7 +14,18 @@ import io.flowcatalyst.router.wire.Message;
 @FunctionalInterface
 public interface Mediator {
 
+    /// Delivers `message` once.
+    ///
+    /// @param recordFailure whether a failure should count against the
+    ///        endpoint's circuit breaker. The breaker still *gates* every
+    ///        attempt — an open circuit short-circuits all of them — but it
+    ///        is only *told about* failures at a burst boundary, so a burst
+    ///        of three failed attempts is one breaker failure. Go achieves
+    ///        the same by recording once per `Mediate` call after its in-call
+    ///        retries; flattening that schedule (Q3) moves the decision here.
+    ///        Successes are always recorded: a success ends its burst wherever
+    ///        it lands.
     /// @throws InterruptedException if the calling thread is interrupted;
     ///         the pool treats this as shutdown, never as a delivery failure
-    MediationOutcome deliver(Message message) throws InterruptedException;
+    MediationOutcome deliver(Message message, boolean recordFailure) throws InterruptedException;
 }

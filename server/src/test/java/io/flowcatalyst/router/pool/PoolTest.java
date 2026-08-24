@@ -388,7 +388,7 @@ class PoolTest {
         }
 
         @Override
-        public MediationOutcome deliver(Message message) throws InterruptedException {
+        public MediationOutcome deliver(Message message, boolean recordFailure) throws InterruptedException {
             var id = message.id();
             attempts.computeIfAbsent(id, ignored -> new AtomicInteger()).incrementAndGet();
             delivered.add(id);

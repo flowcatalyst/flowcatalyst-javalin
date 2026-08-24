@@ -331,7 +331,7 @@ public final class Pool implements AutoCloseable {
         var startedAt = clock.instant();
         MediationOutcome outcome;
         try {
-            outcome = mediator.deliver(message.message());
+            outcome = mediator.deliver(message.message(), backoffs.delivery().endsBurst(message.attempts()));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Attempt.Failed(new MediationOutcome.ErrorConnection(0, "interrupted"));
