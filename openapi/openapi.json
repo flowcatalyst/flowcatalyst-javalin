@@ -2538,12 +2538,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
           }
         },
         "required": [
@@ -7991,12 +7985,6 @@
             "type": "array"
           },
           "redirectUris": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "scopes": {
             "items": {
               "type": "string"
             },

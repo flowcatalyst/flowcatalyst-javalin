@@ -69,10 +69,6 @@ class CreateOAuthClientRequest extends \ArrayObject
      */
     protected $redirectUris;
     /**
-     * @var list<string>|null
-     */
-    protected $scopes;
-    /**
      * A URL to the JSON Schema for this object.
      *
      * @return string|null
@@ -312,24 +308,6 @@ class CreateOAuthClientRequest extends \ArrayObject
     {
         $this->initialized['redirectUris'] = true;
         $this->redirectUris = $redirectUris;
-        return $this;
-    }
-    /**
-     * @return list<string>|null
-     */
-    public function getScopes(): ?array
-    {
-        return $this->scopes;
-    }
-    /**
-     * @param list<string>|null $scopes
-     *
-     * @return self
-     */
-    public function setScopes(?array $scopes): self
-    {
-        $this->initialized['scopes'] = true;
-        $this->scopes = $scopes;
         return $this;
     }
 }

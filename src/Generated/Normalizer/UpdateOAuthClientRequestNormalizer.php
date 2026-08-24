@@ -144,20 +144,9 @@ class UpdateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
         elseif (\array_key_exists('redirectUris', $data) && $data['redirectUris'] === null) {
             $object->setRedirectUris(null);
         }
-        if (\array_key_exists('scopes', $data) && $data['scopes'] !== null) {
-            $values_6 = [];
-            foreach ($data['scopes'] as $value_6) {
-                $values_6[] = $value_6;
-            }
-            $object->setScopes($values_6);
-            unset($data['scopes']);
-        }
-        elseif (\array_key_exists('scopes', $data) && $data['scopes'] === null) {
-            $object->setScopes(null);
-        }
-        foreach ($data as $key => $value_7) {
+        foreach ($data as $key => $value_6) {
             if (preg_match('/.*/', (string) $key)) {
-                $object[$key] = $value_7;
+                $object[$key] = $value_6;
             }
         }
         return $object;
@@ -219,16 +208,9 @@ class UpdateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
             }
             $dataArray['redirectUris'] = $values_5;
         }
-        if ($data->isInitialized('scopes') && null !== $data->getScopes()) {
-            $values_6 = [];
-            foreach ($data->getScopes() as $value_6) {
-                $values_6[] = $value_6;
-            }
-            $dataArray['scopes'] = $values_6;
-        }
-        foreach ($data as $key => $value_7) {
+        foreach ($data as $key => $value_6) {
             if (preg_match('/.*/', (string) $key)) {
-                $dataArray[$key] = $value_7;
+                $dataArray[$key] = $value_6;
             }
         }
         return $dataArray;
