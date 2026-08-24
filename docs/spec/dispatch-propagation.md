@@ -47,6 +47,22 @@ Propagating `poolCode` alone leaves everything unordered; propagating
 `dispatchMode` alone leaves every subscription sharing one pool's
 concurrency and rate limit.
 
+## 1a. Go status (2026-08-24)
+
+| Half | State | Commit |
+|---|---|---|
+| `dispatchMode` | **DONE.** `dispatchClaim.mode` already existed and was already selected; the token now carries it and `buildMessage` sets `DispatchMode: ParseDispatchMode(tok.Mode)`. Ordering is restored at the router. | `7414bc5` |
+| `poolCode` | **Outstanding, deliberately.** A first attempt selected `dispatch_pool_code` from `msg_dispatch_jobs`, where no such column exists (it is on `msg_subscriptions`); `pollOnce` failed every tick with SQLSTATE 42703 and the dispatch path stopped. Reverted. `PoolCode` stays unset, so every job routes to `DEFAULT-POOL` — the pre-existing behaviour, not a regression. | `7414bc5`, reverted in `7ed2dba` |
+
+**Testing lesson to carry into Java.** The break survived a full
+`go test ./internal/...` because `poller_pg_test.go` sits behind
+`//go:build integration`, so the four `TestPollOnce_*` cases that exercise
+the real migration schema reported "no tests to run". The DB-free
+`buildMessage` tests passed, including the strip-the-fix check. **The Java
+tests that guard the claim query must run in the default `mvn test`, not
+behind a profile** — a query this load-bearing cannot be guarded by a suite
+the normal run skips.
+
 ## 2. The fix (Go)
 
 **Do not add a join to the claim query.** The claim runs
