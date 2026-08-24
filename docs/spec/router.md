@@ -296,6 +296,12 @@ group**. For `NEXT_ON_ERROR` only the failed message waits while its
 siblings proceed; for `BLOCK_ON_ERROR` the whole group waits, its queued
 siblings already ACKed off the broker, and is re-sent in order.
 
+**Before any of this is implemented, see Q16.** The scheduler publishes
+neither `dispatchMode` nor `poolCode`, so today *every* dispatch job reaches
+the router as `IMMEDIATE` in `DEFAULT-POOL` and the router's ordered path is
+never taken for them. Whether the Java propagates those fields decides
+whether the router half of the Q1 ruling is live code or dormant.
+
 Blocking dependency: this flow needs the dispatchjob *ignore* / *completed*
 routes, which require a **lockfile addition** (owner).
 
@@ -623,8 +629,16 @@ Prometheus rather than busy-but-suppressed. **Q53.**
     mediator**: success for 2xx and 4xx, failure for 5xx/transport, nothing
     for 429 / deferred / circuit-open. (`mediator.go:220-239`,
     `guardrail_test.go:204-257`)
-16. **The breaker is keyed by the full target URL**; the host pool by
-    scheme/host/port. (`circuit_breaker.go:240-256`, `host_pool.go:34-41`)
+16. **VERIFIED 2026-08-24 — this one gates the ordered-group code.** The scheduler publishes with `messageGroupId` but **no `dispatchMode` and no `poolCode`**. `buildMessage` (`scheduler/dispatcher.go:81-94`) sets only `ID`, `MediationType`, `MediationTarget`, `AuthToken` and — when non-empty — `MessageGroupID`. Both dropped fields exist in the data: `dispatchClaim` carries `mode` and uses it platform-side, but `DispatchJobToken` (`poller.go:383-387`) narrows to `{JobID, MessageGroup, TargetURL}` before `buildMessage` ever sees it; and `msg_subscriptions` carries `dispatch_pool_id` / `dispatch_pool_code`, which nothing propagates onto the message.
+
+    Consequences, all verified rather than inferred:
+    - `DispatchMode` is the zero value `""`, so `RequiresOrdering()` is false → **every dispatch job is dispatched as `IMMEDIATE`**. The router's per-group FIFO never engages for the platform's primary producer. The only sites that set `DispatchMode` on an outgoing message at all are two router **API** handlers (`handlers_misc.go:201`, `handlers_messages.go:107`) — operator-submitted messages, not production traffic.
+    - `PoolCode` is empty, so every dispatch job routes to the synthesised **`DEFAULT-POOL`** (`manager.go:20,394-402,538-539`). A subscription's configured dispatch pool — and therefore its concurrency and rate limit — is inert for dispatch jobs.
+    - This is *why* `f1fc427` and `5bb46df` were both platform-side changes: ordering for dispatch jobs is enforced entirely by the poller's per-mode filter and the delivery-time hold-back, reading `job.Mode` from the database. The router is not part of it.
+
+    **Decision needed before the ordered-group code is written.** Either (a) the Java scheduler propagates `dispatchMode` and `poolCode` onto the published message, which activates the router's ordered path and per-pool routing and makes the router half of the Q1 ruling live and load-bearing; or (b) it does not, ordering stays a platform-side concern, and the router's ordered machinery applies only to other producers — in which case the Q1 router-side ruling (BLOCK_ON_ERROR ACKs its queued siblings) is unreachable for dispatch jobs and should say so. (a) appears to be the original intent, since both fields are modelled on both sides and only the publish step drops them; but it is a behaviour change and it is the owner's call. See §2.6.
+
+
 17. **Every submitted message resolves exactly once** (no loss, no double
     ack) under concurrent submit across both paths.
     (`guardrail_test.go:167-202`)
