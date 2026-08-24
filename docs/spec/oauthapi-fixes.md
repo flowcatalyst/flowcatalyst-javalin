@@ -130,6 +130,54 @@ in the current working tree).
 
 ---
 
+## Fix 5 — `defaultScopes` is a string on create, an array everywhere else (Q9)
+
+**Current shapes** (lockfile + `internal/platform/auth/api/dto.go`):
+
+| Where | Schema | Notes |
+|---|---|---|
+| `CreateOAuthClientRequest.defaultScopes` | `{"type": "string"}` | space-delimited, split on whitespace (`dto.go:55-57`); the comment says the SPA sends it this way |
+| `UpdateOAuthClientRequest.defaultScopes` | `array<string>` | also accepts a legacy `scopes` array under a second name (`dto.go:86-88`) |
+| `OAuthClientResponse.defaultScopes` | `array<string>` | always emitted, no `omitempty` (`dto.go:142-143`) |
+
+The entity itself holds `[]string`. So create is the only shape that disagrees
+with the entity, with update, and with the response.
+
+**Direction: arrays everywhere.** Fixing create is one change; converting update
+and the response to strings would be two changes and would fight the entity.
+Note this field is *not* the OAuth protocol `scope` parameter — that one stays a
+space-delimited string on `/oauth/authorize` and `/oauth/token`, as RFC 6749
+§3.3 requires. `defaultScopes` is an admin-CRUD field on the client resource,
+where an array is the natural JSON shape.
+
+**How, without a union type.** Do **not** type the request as
+`oneOf: [string, array<string>]`: unions generate unpleasant wrappers in the
+Java and TypeScript client generators, and four SDKs would carry it forever.
+Instead:
+
+1. Type `CreateOAuthClientRequest.defaultScopes` as `array<string>` in the
+   OpenAPI document — matching update and the response.
+2. Keep the server **leniently** accepting the space-delimited string at the
+   same field name, undocumented, via a small `ScopeList` type with a custom
+   `UnmarshalJSON` that takes either. Existing callers (the SPA, any external
+   integrator) keep working with no coordinated deploy.
+3. Update the SPA to send an array.
+4. Retire the string form (and, while there, the legacy `scopes` alias on
+   update) once the SPA is deployed and the deprecation window has passed.
+
+That is "document the strict shape, accept the loose one quietly, then remove
+it" — generated clients stay clean, nothing breaks on the day of the change.
+
+**Cost to be aware of.** Step 1 changes `api/openapi.lock.json`, which means
+regenerating the TypeScript, Laravel and Java SDK models and the frontend's
+generated types. That is the same machinery the pagination-standardisation
+change needs, so **batch the two** if you would rather do one regeneration cycle
+than two.
+
+**Owner ruling:** fix — 2026-08-24. Recommendation above; not yet started.
+
+---
+
 ## Already done in Go (verified 2026-08-24, uncommitted working tree)
 
 | Question | Change | Where |
