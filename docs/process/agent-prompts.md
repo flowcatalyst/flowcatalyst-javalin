@@ -12,6 +12,31 @@ you didn't write, wait 30 s and retry — another agent is mid-edit".
 
 ---
 
+## 0. Model routing (see `Claude.md`)
+
+| Role | Model / effort | Does |
+|---|---|---|
+| Orchestrator | Opus 5 | Reads the Go for *intent*, writes/reviews the specs, decides scope, verifies every subagent's output against the spec and `CONVENTIONS.md`, debugs compile/logic failures itself, owns the commits and the owner-question list. Writes little code. |
+| Port / audit subagents | `sonnet`, medium effort | High-volume file generation, boilerplate, mechanical refactors, test writing — always against an existing spec and the template aggregate. |
+| Spec-extraction subagents | `sonnet`, medium effort (large corpora) or Opus for the hardest corners | Semantic extraction only — prose and tables, never code. |
+
+Rules that follow from this:
+
+- **Never let a subagent loop on an error.** If a subagent reports a
+  compile failure or a red test it cannot explain in one pass, the
+  orchestrator takes the diagnosis, then hands back a *precise* edit list.
+  Diagnose once, centrally; edit cheaply, in parallel.
+- **A subagent is given the spec, the template, and the exact scope it owns**
+  (its package, its spec file, its registration lines) — never "port X, work
+  it out". Ambiguity is the orchestrator's to resolve before the agent starts.
+- **The orchestrator verifies against the requirement, not the diff.** Read
+  the spec and the lockfile; run the tests; check `LockfileCoverageTest` for
+  drift. Similarity to the Go is not evidence of correctness (CONVENTIONS §8).
+- Three port agents in parallel is the sustainable ceiling on this repo;
+  more than that and they collide on `Platform.java` and `target/`.
+
+---
+
 ## 1. Spec + port (one agent per aggregate, up to three in parallel)
 
 > You are porting the `<aggregate>` aggregate of
