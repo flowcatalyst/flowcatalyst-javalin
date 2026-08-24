@@ -259,6 +259,30 @@ duplicates); `stop` 150 ms poll / 5 s post-SIGKILL wait are not flags.
 event-type names overwritten on every start (catalogue sync or accident?);
 bootstrap admin only when no anchor user exists; see the spec for the rest.
 
+**AUTH-CORE Q4 — real defect, fix landing in Go first (2026-08-24).**
+`/oauth/userinfo` sits inside the Authenticator group, which refuses any
+`token_use=identity` bearer; an ordinary (non-`APIAccess`) OIDC client's
+authorization_code grant mints exactly that, so the canonical relying-party
+sequence is 401'd before the handler. Latent only because `APIAccess` clients
+get `token_use=api` and no FlowCatalyst SDK calls userinfo. Fix: move
+`RegisterUserinfoRoutes` to the public group (discovery too, as hardening).
+The Java port follows the corrected Go and adds a regression test for an
+identity token against userinfo. Note the Authenticator is **not** a gate —
+it attaches context and calls next; only an explicit unacceptable Bearer
+hard-fails. See `docs/spec/auth-core.md` Q4 for the full corrected analysis.
+
+**AUTH-CORE Q5/Q6 — Basic auth is NOT router-only** (checked 2026-08-24).
+Three unrelated things are called "basic auth": (1) the `/router/*` monitoring
+dashboard's operational HTTP Basic gate; (2) OAuth client authentication on
+`authorization_code` / `refresh_token` / introspect / revoke, which **does**
+accept Basic (and Basic wins); (3) the `client_credentials` grant, which reads
+the body only and refuses Basic with "Missing client_id" while discovery
+advertises `client_secret_basic`. Removing Basic would break RFC 6749 §2.3.1
+and standard third-party OIDC libraries. Recommended: route
+`client_credentials` through `authenticateClient` (three lines) and resolve the
+client id from Basic *before* the rate-limit decision so Basic-authenticating
+clients are per-client limited, not IP-only.
+
 **auth core** (`docs/spec/auth-core.md` §19, 29 questions; artifact published): top calls — `/oauth/token`/introspect/revoke/userinfo/discovery/JWKS mounted inside the Authenticator (Q4); `client_secret_basic` advertised but body-only creds (Q6); refresh-TTL config dead, 7 d compile-time (Q16); `expires_in` literal 3600 (Q15); `GlobalLockSecs` is only `Retry-After` (Q11); `PendingAuth` rows never consumed (Q3); `ratelimit.Prune` never called + 3 orphan buckets (Q12/Q18); RFC deviations 401-vs-400, envelope mix (Q7/Q27); `defaultScopes` string/array (Q9); `auth_time`=`iat`, `email_verified` always true (Q1/Q2). No Go tests for login/introspect/revoke/userinfo/change-password/login-history/stores/purger → conformance suite must cover.
 
 **auth identity** (`docs/spec/auth-identity.md` §19, 25 questions + §18 15 observed defects; artifact published): passkey sign-counter/`last_used_at` never persisted and `passkey:authenticated` never emitted (Q13); four expiring tables never purged (Q17); portal SSO consumes the flow at start (Q10); JIT `CLIENT_REQUIRED` when a CLIENT/PARTNER mapping has no primary client (Q6); all-dangling allowedRoleIds ⇒ every claim role rejected (Q8); `/auth/2fa/verify` ignores the domain's allowed-method list (Q12); admin reset tokens never `requires_factor`, approval queue dormant (Q14/Q19); SessionWriter 500 plain text + `OIDC_VERIFY` leaks lib text (Q5/Q3); legacy `?provider_id=` / GET check-domain (Q7/Q9); bridge OIDC client cache never invalidated (Q1).
