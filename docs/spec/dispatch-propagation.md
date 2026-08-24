@@ -78,44 +78,86 @@ Leave the poller's per-mode filter and the delivery-time hold-back exactly
 as they are. They read `job.Mode` from the database and stay correct; this
 change adds the router's participation, it does not replace theirs.
 
-## 3. Owner question — pool codes are not globally unique
+## 3. Pool code namespacing — RULED
 
-`msg_dispatch_pools` has a **unique index on `(code, client_id)`**, so two
-clients may each own a pool coded `FAST` with different concurrency and rate
-limits. The router's registry is keyed by **code alone**
-(`manager.go:534-535`), and its config merge treats one code with differing
-settings as a conflict to be rejected, not as two pools
-(`config_sync.go:167-176`, `conflictingPool`).
+**Owner ruling 2026-08-24: namespace by client.** The propagated code is
+`{clientIdentifier}-{poolCode}`, and the empty-pool fallback is
+`{clientIdentifier}-DEFAULT-POOL`.
 
-Today this is invisible, because no dispatch job carries a pool code at all.
-The moment codes are propagated it becomes reachable: two clients' traffic
-with the same pool code lands in one router pool, governed by whichever
-config source won.
+Why it was needed: `msg_dispatch_pools` is unique on `(code, client_id)`, so
+two clients may each own a pool coded `FAST` with different concurrency and
+rate limits. The router's registry is keyed by **code alone**
+(`manager.go:534-535`) and its config merge treats one code with differing
+settings as a *conflict to reject*, not as two pools (`conflictingPool`).
+Flat codes would therefore have merged two clients' traffic into one pool
+governed by whichever config source won. Unreachable today only because no
+job carries a code at all.
 
-**Question:** should the propagated code be namespaced (e.g.
-`<clientIdentifier>:<code>`) so pools cannot collide across clients, or is
-the deployment single-tenant enough in practice that a flat code space is
-correct? This must be answered before the fix ships — retrofitting a
-namespace later is a wire-visible change to every pool code in the router
-config.
+### Resolution chain (at publish time, in the scheduler)
 
-## 4. Adjacent finding — the configured `default` pool receives nothing
+Resolve the full code **when publishing**, never at routing time. The
+router then routes by the code it is given and needs to know nothing about
+clients — which is what keeps this change confined to the scheduler.
 
-`defaultPostgresRouterConfig` (`server/run.go:361-370`) synthesises a pool
-with code **`default`** at concurrency 4. The fallback for an empty pool
-code is **`DEFAULT-POOL`** at concurrency 20, which `Reconfigure` adds
-whenever it is absent (`manager.go:538-539`).
+| Job state | Published `poolCode` |
+|---|---|
+| `dispatch_pool_id` set, pool has a `client_identifier` | `{pool.client_identifier}-{pool.code}` |
+| `dispatch_pool_id` set, pool's `client_identifier` is NULL (platform-level pool) | `{pool.code}` — no prefix |
+| `dispatch_pool_id` NULL, job's `client_id` resolves to an identifier | `{clientIdentifier}-DEFAULT-POOL` |
+| neither (platform-level job) | `DEFAULT-POOL` — today's global fallback, unchanged |
 
-Since nothing sets `PoolCode`, in default-broker mode (fcdev, single-tenant
-deployments) the configured `default` pool receives **no traffic at all**
-and everything runs in the auto-added `DEFAULT-POOL`. An operator setting
-concurrency 4 gets 20.
+Two cached maps serve this, both refreshed on the `pausedCache` cadence:
+pool id → `(code, clientIdentifier)` and client id → identifier.
+`msg_dispatch_jobs` carries `client_id` but **not** `client_identifier`
+(only `msg_subscriptions` and `msg_dispatch_pools` carry the identifier),
+which is why the second map is needed.
 
-Fixing §2 does not fix this by itself: jobs will carry their real pool code,
-and `default` still matches nothing unless a pool is actually coded
-`default`. Either the synthesised config should use `DEFAULT-POOL` as its
-code, or the fallback should prefer a configured `default`. **Owner
-question**, tracked with §3.
+### The composed code is opaque — never split it
+
+`-` is not a safe delimiter to parse back: client identifiers and pool codes
+may both contain hyphens. Nothing may reconstruct the parts from the
+composed string. The one permitted structural read is a **suffix** test for
+`-DEFAULT-POOL`, which is unambiguous.
+
+### The router must synthesise per-client fallback pools
+
+`{clientIdentifier}-DEFAULT-POOL` codes will not exist in the router's
+config: **nothing in either repository emits `processingPools`** — the
+router polls an external service at `FLOWCATALYST_CONFIG_URL`, and the only
+in-process config is `defaultPostgresRouterConfig` for default-broker mode.
+So the port cannot assume those pools are configured.
+
+Without handling, every such message would take the unknown-code path
+(`manager.go:419-425`): routed to the global `DEFAULT-POOL` with a ROUTING
+warning per message — losing the per-client isolation this ruling exists to
+create, and spamming warnings.
+
+**Requirement:** the router synthesises a pool on demand for any code ending
+`-DEFAULT-POOL`, with the same defaults it already applies to the global
+`DEFAULT-POOL`, exactly as `Reconfigure` already auto-adds that one
+(`manager.go:538-539`). A config-supplied pool of the same code always
+wins. This is bounded by the number of clients, and it delivers the
+per-client concurrency isolation without a dependency on the external config
+service being updated first.
+
+## 4. Default-broker mode — RULED
+
+**Owner ruling 2026-08-24: the fallback is `{client-identifier}-DEFAULT-POOL`.**
+
+The finding: `defaultPostgresRouterConfig` (`server/run.go:361-370`)
+synthesises a pool coded **`default`** at concurrency 4, while the
+empty-code fallback is **`DEFAULT-POOL`** at concurrency 20, auto-added
+whenever absent. Since nothing sets `PoolCode`, the configured `default`
+pool receives **no traffic at all** in default-broker mode (fcdev,
+single-tenant) — an operator setting concurrency 4 silently gets 20.
+
+Under §3's chain this resolves itself for client-scoped jobs: they publish
+`{clientIdentifier}-DEFAULT-POOL` and land in their own synthesised pool.
+
+Still to change, because it is the no-client case: rename the pool in
+`defaultPostgresRouterConfig` from `default` to **`DEFAULT-POOL`** so the
+configured pool *is* the fallback pool and its concurrency takes effect.
+Otherwise `default` remains a pool that nothing can route to.
 
 ## 5. Tests
 
@@ -124,9 +166,18 @@ Go:
 - A claimed job with `mode = 'BLOCK_ON_ERROR'` publishes a message whose
   `dispatchMode` is `BLOCK_ON_ERROR`; with `mode = 'IMMEDIATE'`, the field
   is absent or `IMMEDIATE`.
-- A job whose pool has code `FAST` publishes `poolCode: "FAST"`; a job with
-  a NULL `dispatch_pool_id` publishes no `poolCode` and still routes to
+- A job whose pool is coded `FAST` for client `acme` publishes
+  `poolCode: "acme-FAST"`; the same code under client `globex` publishes
+  `globex-FAST`, and the two are governed by separate router pools with
+  their own concurrency — the collision this ruling exists to prevent.
+- A job with a NULL `dispatch_pool_id` but a resolvable client publishes
+  `{clientIdentifier}-DEFAULT-POOL`; a job with neither publishes
   `DEFAULT-POOL`.
+- A pool whose `client_identifier` is NULL publishes its bare code, with no
+  prefix.
+- The router synthesises a pool for an unseen `*-DEFAULT-POOL` code rather
+  than routing it to the global `DEFAULT-POOL` with a ROUTING warning; a
+  config-supplied pool of that code wins over the synthesised one.
 - An unknown mode string in the column publishes as `IMMEDIATE`, matching
   the poller filter's lenient parse.
 - The claim query's locking behaviour is unchanged — the existing
