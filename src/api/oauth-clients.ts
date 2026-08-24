@@ -29,7 +29,7 @@ export interface CreateOAuthClientRequest {
 	postLogoutRedirectUris?: string[];
 	allowedOrigins?: string[];
 	grantTypes: string[];
-	defaultScopes?: string;
+	defaultScopes?: string[];
 	pkceRequired?: boolean;
 	applicationIds?: string[];
 	// Marks the client as a portal entry point owned by this tenant client.

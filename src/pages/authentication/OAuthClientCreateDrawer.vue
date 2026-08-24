@@ -203,7 +203,10 @@ async function createClient() {
 					? form.value.allowedOrigins
 					: undefined,
 			grantTypes: form.value.grantTypes,
-			defaultScopes: form.value.defaultScopes.join(" ") || undefined,
+			defaultScopes:
+				form.value.defaultScopes.length > 0
+					? form.value.defaultScopes
+					: undefined,
 			pkceRequired: form.value.pkceRequired,
 			applicationIds:
 				form.value.applicationIds.length > 0

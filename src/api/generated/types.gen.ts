@@ -947,7 +947,7 @@ export type CreateOAuthClientRequest = {
      * PUBLIC or CONFIDENTIAL
      */
     clientType: string;
-    defaultScopes?: string;
+    defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
     portalClientId?: string;
@@ -3480,7 +3480,7 @@ export type CreateOAuthClientRequestWritable = {
      * PUBLIC or CONFIDENTIAL
      */
     clientType: string;
-    defaultScopes?: string;
+    defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
     portalClientId?: string;
