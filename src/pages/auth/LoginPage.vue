@@ -5,7 +5,10 @@ import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import { z } from "zod";
 import { useAuthStore } from "@/stores/auth";
-import { useLoginThemeStore } from "@/stores/loginTheme";
+import {
+	normalizeClientParam,
+	useLoginThemeStore,
+} from "@/stores/loginTheme";
 import {
 	checkEmailDomain,
 	checkSession,
@@ -33,7 +36,7 @@ const showResetSuccess = computed(() => route.query["reset"] === "success");
 
 // Load theme on mount
 onMounted(async () => {
-	await themeStore.loadTheme();
+	await themeStore.loadTheme(normalizeClientParam(route.query["client"]));
 	themeStore.applyThemeColors();
 });
 

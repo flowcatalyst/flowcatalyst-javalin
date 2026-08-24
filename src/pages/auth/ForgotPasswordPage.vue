@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
-import { useLoginThemeStore } from "@/stores/loginTheme";
+import {
+	normalizeClientParam,
+	useLoginThemeStore,
+} from "@/stores/loginTheme";
 import { requestPasswordReset } from "@/api/auth";
 import { getErrorMessage } from "@/utils/errors";
 
@@ -9,7 +12,7 @@ const route = useRoute();
 const themeStore = useLoginThemeStore();
 
 onMounted(async () => {
-	await themeStore.loadTheme();
+	await themeStore.loadTheme(normalizeClientParam(route.query["client"]));
 	themeStore.applyThemeColors();
 
 	// Pre-populate email from query param (set by LoginPage)

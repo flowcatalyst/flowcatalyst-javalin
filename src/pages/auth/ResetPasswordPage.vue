@@ -4,7 +4,10 @@ import { useRoute, useRouter } from "vue-router";
 import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import { z } from "zod";
-import { useLoginThemeStore } from "@/stores/loginTheme";
+import {
+	normalizeClientParam,
+	useLoginThemeStore,
+} from "@/stores/loginTheme";
 import {
 	validateResetToken,
 	confirmPasswordReset,
@@ -23,7 +26,7 @@ const router = useRouter();
 const themeStore = useLoginThemeStore();
 
 onMounted(async () => {
-	await themeStore.loadTheme();
+	await themeStore.loadTheme(normalizeClientParam(route.query["client"]));
 	themeStore.applyThemeColors();
 	await checkToken();
 });

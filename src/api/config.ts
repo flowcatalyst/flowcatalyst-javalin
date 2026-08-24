@@ -22,6 +22,26 @@ export interface LoginTheme {
 	customCss?: string | null;
 }
 
+/**
+ * The built-in platform look, used to seed a fresh theme form. Returns a
+ * new object each call so callers can edit it freely.
+ */
+export function defaultLoginTheme(): LoginTheme {
+	return {
+		brandName: "FlowCatalyst",
+		brandSubtitle: "Platform Administration",
+		logoUrl: null,
+		logoSvg: null,
+		logoHeight: 40,
+		primaryColor: "#102a43",
+		accentColor: "#0967d2",
+		backgroundColor: "#0a1929",
+		backgroundGradient: "linear-gradient(135deg, #102a43 0%, #0a1929 100%)",
+		footerText: "Secure access to your FlowCatalyst platform",
+		customCss: null,
+	};
+}
+
 // Response types alias the generated contract (api/openapi.lock.json) so
 // `vue-tsc` fails on backend drift. Aliased under the historical names so
 // pages keep their imports. (`clientId`/`description` are optional on the
@@ -101,22 +121,41 @@ export const configApi = {
 		});
 	},
 
-	// Helper specifically for login theme
-	getLoginThemeConfig(): Promise<string | null> {
-		return apiFetch<PlatformConfig>("/config/platform/login/theme")
+	// Helpers specifically for the login theme. Passing a clientId targets
+	// that client's CLIENT-scoped override; omitting it targets the
+	// platform-wide GLOBAL row. The public endpoint layers the former over
+	// the latter, so a client only needs to store what it changes.
+	getLoginThemeConfig(clientId?: string): Promise<string | null> {
+		return apiFetch<PlatformConfig>(
+			configUrl("platform", "login", "theme", clientId),
+		)
 			.then((response: PlatformConfig) => response.value)
 			.catch(() => null);
 	},
 
-	setLoginThemeConfig(theme: LoginTheme): Promise<PlatformConfig> {
-		return apiFetch("/config/platform/login/theme", {
+	setLoginThemeConfig(
+		theme: LoginTheme,
+		clientId?: string,
+	): Promise<PlatformConfig> {
+		return apiFetch(configUrl("platform", "login", "theme", clientId), {
 			method: "PUT",
 			body: JSON.stringify({
 				value: JSON.stringify(theme),
 				valueType: "PLAIN",
-				description: "Login page theme configuration",
+				description: clientId
+					? "Client login page theme configuration"
+					: "Login page theme configuration",
 			}),
 		});
+	},
+
+	// Drops a client's override so its login page falls back to the
+	// platform theme. A 404 means there was nothing to clear.
+	clearLoginThemeConfig(clientId: string): Promise<void> {
+		return apiFetch<void>(
+			configUrl("platform", "login", "theme", clientId),
+			{ method: "DELETE" },
+		).catch(() => undefined);
 	},
 
 	// Platform name — the brand shown in emails, the authenticator app (2FA
