@@ -113,7 +113,11 @@ public final class OutboxSink implements Sink {
         payload.put("entity_id", EventConventions.extractEntityId(event.subject()));
         payload.put("operation", SinkSupport.commandName(command));
         payload.put("operation_json", mapper.valueToTree(command));
-        payload.put("principal_id", SinkSupport.orEmpty(event.principalId()));
+        // event.metadata().principalId(), not event.principalId(): an audit records
+        // who acted, and going through the metadata directly keeps that true even if
+        // some DomainEvent record declares its own component that would otherwise
+        // shadow DomainEvent#principalId()'s inherited default.
+        payload.put("principal_id", SinkSupport.orEmpty(event.metadata().principalId()));
         payload.put("performed_at", PERFORMED_AT.format(SinkSupport.eventTime(event)));
         return toJson(payload);
     }

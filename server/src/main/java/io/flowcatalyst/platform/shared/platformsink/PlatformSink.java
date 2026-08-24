@@ -91,7 +91,13 @@ public final class PlatformSink implements Sink {
             ps.setString(3, EventConventions.extractEntityId(event.subject()));
             ps.setString(4, SinkSupport.commandName(command));
             ps.setString(5, commandJson);
-            ps.setString(6, SinkSupport.nullIfEmpty(event.principalId()));
+            // The actor always comes from the metadata directly, never from
+            // event.principalId(): metadata().principalId() is the single
+            // source of truth for who acted, and DomainEventContractTest
+            // enforces that no DomainEvent record may declare a "principalId"
+            // component that would shadow DomainEvent#principalId()'s default
+            // and silently substitute the event's subject for its actor.
+            ps.setString(6, SinkSupport.nullIfEmpty(event.metadata().principalId()));
             ps.setNull(7, Types.VARCHAR); // application_id
             ps.setNull(8, Types.VARCHAR); // client_id
             ps.setObject(9, utc(SinkSupport.eventTime(event)));

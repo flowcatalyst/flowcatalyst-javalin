@@ -526,10 +526,15 @@ class RoleOperationsTest {
 
         var first = Auth.runAs(anchorCtx, () -> SyncPlatformRoles.of(repo, withTest(catalogue, a, b))
                 .run(uow, new SyncPlatformRolesCommand(), EC));
-        assertThat(first.created() + first.updated()).as("every catalogue entry plus the two test roles is touched")
-                .isEqualTo(n + 2);
-        assertThat(first.created()).isGreaterThanOrEqualTo(2);
-        assertThat(first.total()).isEqualTo(n + 2);
+        // Not `created() + updated() == n + 2` / `total() == n + 2`: the shared database can
+        // already carry a non-CODE row for a real catalogue name (seeded by another test class),
+        // which the sync skips-with-warning rather than touching, so those exact totals aren't
+        // guaranteed on a dirty database (CONVENTIONS.md §6 — never assert table-wide counts).
+        // Assert on what this run owns instead: both test roles were newly created, and each is
+        // findable afterwards.
+        assertThat(first.created()).as("both new test roles were created (plus any new catalogue entries)")
+                .isGreaterThanOrEqualTo(2);
+        assertThat(first.total()).isGreaterThanOrEqualTo(2);
         assertThat(first.applicationCode()).isNull();
         assertThat(first.syncedCodes()).isEmpty();
         assertThat(first.subject()).isEqualTo(RoleEvents.SYNC_SUBJECT);
@@ -541,6 +546,8 @@ class RoleOperationsTest {
         assertThat(syncA.permissions()).containsExactly(application + ":thing:read:*");
         assertThat(syncA.applicationId()).isNull();
         assertThat(auditsFor(syncA.id(), "SyncPlatformRolesCommand")).hasSize(1);
+        var syncB = byName(application + ":sync-b");
+        assertThat(syncB.source()).as("both test roles land, not just sync-a").isEqualTo(RoleSource.CODE);
         var rollup = DB.fetch("SELECT data::text AS data FROM msg_events WHERE id = ?", first.eventId());
         var data = json(rollup.getFirst().get("data", String.class));
         assertThat(data.has("applicationCode")).isFalse();
@@ -551,10 +558,17 @@ class RoleOperationsTest {
         // every existing catalogue role is re-upserted, the drift is restored, and the
         // stale-but-assigned sync-b is skipped (warn, not an error).
         seedPrincipalHolding(application + ":sync-b");
+        // Same dirty-database caveat as above: a catalogue name already held by a non-CODE row
+        // (seeded by another test class) is skipped rather than re-upserted, so subtract those
+        // out instead of asserting the table-wide `n + 1` directly.
+        long nonCodeCollisions = catalogue.stream().map(RoleDefinition::name)
+                .filter(name -> repo.findByName(name).map(r -> r.source() != RoleSource.CODE).orElse(false))
+                .count();
         var second = Auth.runAs(anchorCtx, () -> SyncPlatformRoles.of(repo, withTest(catalogue, def(application, "sync-a", "Sync A v2")))
                 .run(uow, new SyncPlatformRolesCommand(), EC));
         assertThat(second.created()).isZero();
-        assertThat(second.updated()).as("every existing catalogue role is re-upserted").isEqualTo(n + 1);
+        assertThat(second.updated()).as("every still-CODE catalogue role plus sync-a is re-upserted")
+                .isEqualTo(n + 1 - nonCodeCollisions);
         assertThat(byName(application + ":sync-a").displayName()).as("drifted rows are updated from the catalogue")
                 .isEqualTo("Sync A v2");
         assertThat(repo.findByName(application + ":sync-b")).as("stale CODE role with live assignments survives").isPresent();

@@ -373,6 +373,16 @@ Rules promoted from audits (recurring findings become rules here):
   the latter. The Api never builds a `Visibility` itself, and a
   `platform`-literal query value maps to the scope selector, never to the
   visibility.
+- **An event record must never shadow a `DomainEvent` accessor.** The
+  interface's `principalId()` is the **actor** — who performed the operation.
+  An event whose *subject* is a principal names that component `userId` (or
+  `subjectId`), never `principalId`: a record component silently overrides the
+  interface default, and the audit trail then records who was acted on instead
+  of who acted. The same trap exists for `subject`, `messageGroup`, `source`,
+  `time` and every other default accessor. Sinks read the actor from
+  `event.metadata().principalId()` — the single source of truth — and
+  `DomainEventContractTest` fails the build if any event record reintroduces
+  the shadowing.
 - **Defaults are domain, not transport.** A default for an absent optional
   value (`concurrency ⇒ 10`) is applied by the operation/aggregate from a
   named constant on the aggregate; the DTO and handler map the wire shape

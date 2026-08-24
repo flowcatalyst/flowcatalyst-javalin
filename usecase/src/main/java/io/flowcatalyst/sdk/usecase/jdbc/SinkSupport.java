@@ -44,9 +44,16 @@ public final class SinkSupport {
     /// The `context_data` array every sink stores next to an event:
     /// `[{key: principalId, value}, {key: aggregateType, value}]`, in that
     /// order — the shape the Go and TypeScript sinks write.
+    ///
+    /// Reads the actor from `event.metadata()` directly rather than calling
+    /// `event.principalId()`: a `DomainEvent` implementation is free to
+    /// declare its own record component (naming the event's *subject*, not
+    /// its actor) that would otherwise shadow `DomainEvent#principalId()`'s
+    /// inherited default. Going through the metadata keeps this correct
+    /// regardless of what any given event record declares.
     public static List<Map<String, String>> contextData(DomainEvent event) {
         return List.of(
-                contextEntry("principalId", orEmpty(event.principalId())),
+                contextEntry("principalId", orEmpty(event.metadata().principalId())),
                 contextEntry("aggregateType", EventConventions.extractAggregateType(event.subject())));
     }
 

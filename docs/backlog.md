@@ -263,6 +263,25 @@ bootstrap admin only when no anchor user exists; see the spec for the rest.
 
 **auth identity** (`docs/spec/auth-identity.md` §19, 25 questions + §18 15 observed defects; artifact published): passkey sign-counter/`last_used_at` never persisted and `passkey:authenticated` never emitted (Q13); four expiring tables never purged (Q17); portal SSO consumes the flow at start (Q10); JIT `CLIENT_REQUIRED` when a CLIENT/PARTNER mapping has no primary client (Q6); all-dangling allowedRoleIds ⇒ every claim role rejected (Q8); `/auth/2fa/verify` ignores the domain's allowed-method list (Q12); admin reset tokens never `requires_factor`, approval queue dormant (Q14/Q19); SessionWriter 500 plain text + `OIDC_VERIFY` leaks lib text (Q5/Q3); legacy `?provider_id=` / GET check-domain (Q7/Q9); bridge OIDC client cache never invalidated (Q1).
 
+**principal** (`docs/spec/principal.md` §11, 12 questions — the security-critical
+aggregate; **audit pass not yet run, no `PrincipalApiTest` yet**). The one to
+rule on first: **Q3 — role / application-access / developer-credential
+mutations have no coarse handler gate and load the target before authorizing,
+so an unauthorised caller can distinguish "exists" from "does not exist"
+(existence oracle).** Also: Q1 `AssignRoles` rewrites every assignment as
+`ADMIN_ASSIGNED`, silently adopting IdP- and SDK-sourced rows; Q2
+`SyncPrincipals` strips `SDK_SYNC` roles from every USER not in the payload
+regardless of application; Q4 by-id reads check only `USER_VIEW`, not client
+scope; Q8 `SendPasswordReset` bypasses the envelope (no event, no audit).
+
+**AUDIT-TRAIL DEFECT FOUND AND FIXED (2026-08-24)** — fourteen `PrincipalEvents`
+records declared a record component `principalId` naming the event's *subject*,
+which silently overrode `DomainEvent.principalId()` (the *actor*). `aud_logs.principal_id`
+and `msg_events.context_data` therefore recorded who was acted on, not who
+acted, for every principal operation. Fixed by renaming the component to
+`userId`, reading the actor from `metadata()` in both sinks, and adding a guard
+test that fails if any event record ever shadows a `DomainEvent` accessor again.
+
 **GO DRIFT (2026-08-24)** — `../flowcatalyst-go` has moved past the commit the
 router spec was extracted from (`1e9d465`). Three commits change router/dispatch
 behaviour: `f1fc427` (only BLOCK_ON_ERROR holds a group — the Q1 ruling, now
