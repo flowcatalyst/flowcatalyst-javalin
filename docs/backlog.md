@@ -340,3 +340,11 @@ as history (then it needs indexes sized independently of the table, and
 archival is separate), or purge on a retention of days — well above
 `GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
 limiter? See `docs/spec/auth-retention.md` §5.
+
+## Deferred out of the port
+
+Platform improvements that are deliberately **not** porting work live in
+`docs/improvements.md` — currently auth-core Q13 (no refresh-family
+revocation on authorization-code replay). Nothing there blocks a port unit;
+Java reproduces the current Go behaviour and the improvement is a separate,
+later decision.
