@@ -28,6 +28,25 @@ Source set read for this spec: `router/**` (incl. `api/**`), `common/**`,
 
 ---
 
+## 0. SPEC DRIFT — re-extract before porting (2026-08-24)
+
+This spec was extracted at Go commit `1e9d465`. Three commits have landed in
+`../flowcatalyst-go` since, all inside this subsystem's boundary. **Sections
+2, 3, 6 and 7 are stale in the ways listed below; re-read these commits (and
+`docs/wire-contract.md`, which they change) before writing any router Java.**
+
+| Go commit | What changed | Spec impact |
+|---|---|---|
+| `f1fc427` dispatch: only BLOCK_ON_ERROR stops for a failed sibling | The scheduler poller's group-level skip is gone; the per-mode filter now holds back **only** `BLOCK_ON_ERROR`. IMMEDIATE carries no ordering; NEXT_ON_ERROR is ordered but the group moves on. | This *is* the Q1 ruling, now implemented upstream. §2.6 (`DispatchMode`) and §13 Q1 must be rewritten as settled behaviour, not an open question. |
+| `5bb46df` dispatch: hold back blocked-group jobs at delivery time | `/api/dispatch/process` now mirrors the poller: if the job's group is blocked, ACK the queue message and revert the job to `PENDING` **without** recording an attempt or spending retry budget; a DB error during check or revert NACKs instead, so a job is never left `QUEUED` with no queue message behind it. | New behaviour at the delivery callback, which the Java `dispatchprocessing` unit has not been written yet. Also affects `docs/spec/dispatchjob.md` §10 (`GroupBlocked` is now per-mode). |
+| `eff2a29` router: flushGroup — suppress a message group at the target's request | New mediation response field: a 2xx `{"ack": true, "flushGroup": true}` makes the router ACK the group's remaining messages **without delivering them**. `GroupFlushRegistry` is a per-message-group circuit breaker; suppression is TTL-bounded by `delaySeconds` (default 60 s, capped 5 min), self-healing, re-flush only extends. The check runs **before** the rate limiter, so a flushed group spends neither token nor slot. `ack:false` takes precedence. Ungrouped messages are a no-op. Also collapses three hand-rolled group derivations onto `common.Message.GroupID`. | §6.5 (status → outcome table) gains a `flushGroup` column; §2 gains `GroupFlushRegistry` and the group-flush state machine; §3 gains the pre-rate-limit check. This is a **wire contract** change, so the golden vectors and the mediation-response parser both move. |
+
+Nothing already ported to Java is invalidated by these commits — the platform
+CRUD aggregates are untouched. The stale parts are all in the not-yet-ported
+data plane.
+
+---
+
 ## 1. Purpose & boundaries
 
 ### 1.1 What the router is
@@ -1449,7 +1468,21 @@ Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
    → deliberate deviation from Go; conformance tests must pin both modes and
      the ignore/completed/resend → re-queue flow.
 2. There is **no terminal give-up**: a message failing with 5xx/transport retries forever (≥30 s apart, 3 HTTP attempts each) until 2xx/4xx, force-ack, or process exit. Keep infinite retry, or add a max-attempts / max-age dead-letter path? (§6.5)
+   **Ruling (Andrew, 2026-08-24): keep infinite retry — no dead-letter, no
+   max-attempts.** A message stays on the queue until the *queue* expires it
+   (broker retention/TTL is the terminal condition, not the router). Backoff
+   and the per-endpoint circuit breaker are the protection against a failing
+   target; the router never gives up on its own. The Java port must therefore
+   not introduce a max-attempts counter or a dead-letter path.
 3. Each `Mediate` makes up to **3 HTTP attempts** (1 s, 2 s between) *and then* the pool retries on its own curve. Keep the double-layer (in-call retries + pool backoff), or collapse to one retry policy?
+   **Ruling (Andrew, 2026-08-24): collapse to ONE retry policy**, provided the
+   observable behaviour is unchanged — same effective attempt spacing and the
+   same outcome/breaker/metric accounting a caller would see today. The Java
+   port expresses it as a single named retry-policy record (CONVENTIONS §8:
+   "panic-recovery scaffolding is deleted; the retry policies it guarded are
+   kept as explicit, named policy objects") rather than in-call attempts
+   nested inside pool backoff. A conformance test must pin the resulting
+   attempt schedule against the Go behaviour.
 4. Prod request timeout is **15 min** (`mediator.go:67`); with 3 in-call attempts one message can hold a worker ~45 min while the queue visibility (default 120 s) lapses repeatedly (redeliveries deduped). Keep 15 min? Wire `ExtendVisibility` at ~50 % of visibility timeout for long deliveries (implemented on all backends, never called), or keep it dead?
 5. Go's HTTP client **follows redirects** (301/302/303 downgrade POST→GET and drop the body; 307/308 replay). Java's default is *not* to follow. Should redirects be followed at all? If yes, which codes?
 6. `mediationType ≠ HTTP` and targets without a host / default port are **silently ACK-dropped** (no warning; breaker *success*). Keep silent, or raise a CONFIGURATION warning like 400/404?

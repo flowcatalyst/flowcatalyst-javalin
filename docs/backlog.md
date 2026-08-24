@@ -263,4 +263,13 @@ bootstrap admin only when no anchor user exists; see the spec for the rest.
 
 **auth identity** (`docs/spec/auth-identity.md` §19, 25 questions + §18 15 observed defects; artifact published): passkey sign-counter/`last_used_at` never persisted and `passkey:authenticated` never emitted (Q13); four expiring tables never purged (Q17); portal SSO consumes the flow at start (Q10); JIT `CLIENT_REQUIRED` when a CLIENT/PARTNER mapping has no primary client (Q6); all-dangling allowedRoleIds ⇒ every claim role rejected (Q8); `/auth/2fa/verify` ignores the domain's allowed-method list (Q12); admin reset tokens never `requires_factor`, approval queue dormant (Q14/Q19); SessionWriter 500 plain text + `OIDC_VERIFY` leaks lib text (Q5/Q3); legacy `?provider_id=` / GET check-domain (Q7/Q9); bridge OIDC client cache never invalidated (Q1).
 
-**router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Sub-question open on Q1: failed head retried independently vs failed immediately (ties to Q2). Remaining 49 pending.
+**GO DRIFT (2026-08-24)** — `../flowcatalyst-go` has moved past the commit the
+router spec was extracted from (`1e9d465`). Three commits change router/dispatch
+behaviour: `f1fc427` (only BLOCK_ON_ERROR holds a group — the Q1 ruling, now
+implemented upstream), `5bb46df` (delivery-time blocked-group hold-back at
+`/api/dispatch/process`), `eff2a29` (new `flushGroup` mediation response +
+`GroupFlushRegistry`, a wire-contract change). See `docs/spec/router.md` §0.
+Nothing ported so far is invalidated; re-extract §2/§3/§6/§7 before the router
+port. Re-check for further drift at every data-plane unit.
+
+**router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Q1 sub-question resolved by the human-review flow (ignore/completed/resend re-queues the group). **Q2 ruled**: no terminal give-up — messages live until the queue expires them; backoff + circuit breaker are the protection. **Q3 ruled**: collapse the in-call retries and pool backoff into ONE named retry policy, behaviour-preserving, pinned by a conformance test. Remaining 47 pending.
