@@ -2052,6 +2052,15 @@ export type RolesAssignedResponse = {
     roles: Array<PrincipalRoleAssignmentDto>;
 };
 
+export type RotateOAuthClientSecretRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    graceSeconds?: number;
+    [key: string]: unknown;
+};
+
 export type RotateOAuthClientSecretResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -2059,6 +2068,7 @@ export type RotateOAuthClientSecretResponse = {
     readonly $schema?: string;
     clientId: string;
     clientSecret?: string;
+    previousSecretExpiresAt?: string;
 };
 
 export type ScheduledJobInstanceLogResponse = {
@@ -4104,9 +4114,15 @@ export type RolesAssignedResponseWritable = {
     roles: Array<PrincipalRoleAssignmentDto>;
 };
 
+export type RotateOAuthClientSecretRequestWritable = {
+    graceSeconds?: number;
+    [key: string]: unknown;
+};
+
 export type RotateOAuthClientSecretResponseWritable = {
     clientId: string;
     clientSecret?: string;
+    previousSecretExpiresAt?: string;
 };
 
 export type ScheduledJobInstanceResponseWritable = {
@@ -8420,7 +8436,7 @@ export type DeactivateOAuthClientResponses = {
 export type DeactivateOAuthClientResponse = DeactivateOAuthClientResponses[keyof DeactivateOAuthClientResponses];
 
 export type RegenerateOAuthClientSecretData = {
-    body?: never;
+    body?: RotateOAuthClientSecretRequestWritable;
     path: {
         id: string;
     };
@@ -8446,8 +8462,35 @@ export type RegenerateOAuthClientSecretResponses = {
 
 export type RegenerateOAuthClientSecretResponse = RegenerateOAuthClientSecretResponses[keyof RegenerateOAuthClientSecretResponses];
 
-export type RotateOAuthClientSecretData = {
+export type RevokeOAuthClientPreviousSecretData = {
     body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/oauth-clients/{id}/revoke-previous-secret';
+};
+
+export type RevokeOAuthClientPreviousSecretErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type RevokeOAuthClientPreviousSecretError = RevokeOAuthClientPreviousSecretErrors[keyof RevokeOAuthClientPreviousSecretErrors];
+
+export type RevokeOAuthClientPreviousSecretResponses = {
+    /**
+     * OK
+     */
+    200: SuccessResponse;
+};
+
+export type RevokeOAuthClientPreviousSecretResponse = RevokeOAuthClientPreviousSecretResponses[keyof RevokeOAuthClientPreviousSecretResponses];
+
+export type RotateOAuthClientSecretData = {
+    body?: RotateOAuthClientSecretRequestWritable;
     path: {
         id: string;
     };
