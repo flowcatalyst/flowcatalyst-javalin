@@ -90,8 +90,15 @@ class OidcAuthController extends Controller
         $provider = $request->input('provider') ?? config('flowcatalyst.oidc.provider');
         $prompt = $request->input('prompt');
 
+        // Branded sign-in: name the FlowCatalyst client whose login theme the
+        // sign-in pages should wear. Purely cosmetic — the platform falls back
+        // to its own theme when this is absent or unrecognised, and it never
+        // affects who may sign in or what they may do. Per-request ?client=
+        // wins over the configured default, mirroring ?provider=.
+        $client = $request->input('client') ?? config('flowcatalyst.oidc.client');
+
         // Build authorization URL
-        $authUrl = $this->buildAuthorizationUrl($config, $state, $nonce, $codeChallenge, $provider, $prompt);
+        $authUrl = $this->buildAuthorizationUrl($config, $state, $nonce, $codeChallenge, $provider, $prompt, $client);
 
         return redirect()->away($authUrl);
     }
@@ -267,6 +274,7 @@ class OidcAuthController extends Controller
         string $codeChallenge,
         ?string $provider = null,
         ?string $prompt = null,
+        ?string $client = null,
     ): string {
         $baseUrl = rtrim($config['base_url'], '/');
         // Portal mode (flowcatalyst.oidc.portal): this app is a PORTAL for a
@@ -274,12 +282,15 @@ class OidcAuthController extends Controller
         // plane — a separate end-user population, no platform SSO reuse. The
         // token exchange and callback are identical; only the entry differs.
         // provider/prompt are meaningless there (the portal login page
-        // routes IdPs from the email domain) and are omitted.
+        // routes IdPs from the email domain) and are omitted. So is client:
+        // per-client login branding covers the platform sign-in pages only,
+        // never the portal identity plane.
         $portal = (bool) config('flowcatalyst.oidc.portal', false);
         $authorizeUrl = $baseUrl . ($portal ? '/portal/authorize' : '/oauth/authorize');
         if ($portal) {
             $provider = null;
             $prompt = null;
+            $client = null;
         }
 
         $params = [
@@ -297,6 +308,9 @@ class OidcAuthController extends Controller
         }
         if (!empty($prompt)) {
             $params['prompt'] = $prompt;
+        }
+        if (!empty($client)) {
+            $params['client'] = $client;
         }
 
         return $authorizeUrl . '?' . http_build_query($params);

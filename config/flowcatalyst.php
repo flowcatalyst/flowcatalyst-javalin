@@ -180,6 +180,24 @@ return [
 
         /*
         |----------------------------------------------------------------------
+        | Branded Sign-In (optional)
+        |----------------------------------------------------------------------
+        |
+        | FlowCatalyst client identifier (the URL-safe slug, e.g. "acme") whose
+        | login branding the sign-in pages should wear — logo, colours, brand
+        | name and footer, as configured under Clients -> Login Branding. A
+        | per-request ?client= query param on the login route overrides this
+        | default.
+        |
+        | This is purely cosmetic. It does not affect who may sign in or what
+        | they may access, and an absent or unrecognised value simply falls
+        | back to the platform-wide theme. Ignored in portal mode.
+        |
+        */
+        'client' => env('FLOWCATALYST_OIDC_CLIENT'),
+
+        /*
+        |----------------------------------------------------------------------
         | Portal Mode (optional)
         |----------------------------------------------------------------------
         |

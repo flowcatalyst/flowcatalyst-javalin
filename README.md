@@ -295,6 +295,7 @@ In local-sync mode, refresh also re-runs the role/permission sync.
 | `FLOWCATALYST_OIDC_PERMISSION_RESOLVER` | `token` | `token` (scope claim) or `api_me` (`/api/me`) |
 | `FLOWCATALYST_OIDC_AUTO_GUEST_REDIRECT` | `true` | redirect stock-`auth` guests into OIDC (only active with the bridge on) |
 | `FLOWCATALYST_OIDC_PROVIDER` | – | `idp_...` id: send logins straight to a named upstream IdP (`?provider=` overrides per request) |
+| `FLOWCATALYST_OIDC_CLIENT` | – | client identifier (slug) whose login branding the sign-in pages wear (`?client=` overrides per request); cosmetic only, ignored in portal mode |
 | `FLOWCATALYST_OIDC_PORTAL` | `false` | portal mode: log in through `/portal/authorize` (see [Portal identities](#portal-identities)) |
 | `FLOWCATALYST_OIDC_USER_MODEL` | `App\Models\User` | model upserted in `database` mode |
 | `FLOWCATALYST_OIDC_SYNC_ROLES` / `_SYNC_ROLE_PERMISSIONS` | `true` | mirror roles / their permissions to Spatie |
