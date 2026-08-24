@@ -94,18 +94,22 @@ class CreateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
             $object->setClientType(null);
         }
         if (\array_key_exists('defaultScopes', $data) && $data['defaultScopes'] !== null) {
-            $object->setDefaultScopes($data['defaultScopes']);
+            $values_2 = [];
+            foreach ($data['defaultScopes'] as $value_2) {
+                $values_2[] = $value_2;
+            }
+            $object->setDefaultScopes($values_2);
             unset($data['defaultScopes']);
         }
         elseif (\array_key_exists('defaultScopes', $data) && $data['defaultScopes'] === null) {
             $object->setDefaultScopes(null);
         }
         if (\array_key_exists('grantTypes', $data) && $data['grantTypes'] !== null) {
-            $values_2 = [];
-            foreach ($data['grantTypes'] as $value_2) {
-                $values_2[] = $value_2;
+            $values_3 = [];
+            foreach ($data['grantTypes'] as $value_3) {
+                $values_3[] = $value_3;
             }
-            $object->setGrantTypes($values_2);
+            $object->setGrantTypes($values_3);
             unset($data['grantTypes']);
         }
         elseif (\array_key_exists('grantTypes', $data) && $data['grantTypes'] === null) {
@@ -126,11 +130,11 @@ class CreateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
             $object->setPortalClientId(null);
         }
         if (\array_key_exists('postLogoutRedirectUris', $data) && $data['postLogoutRedirectUris'] !== null) {
-            $values_3 = [];
-            foreach ($data['postLogoutRedirectUris'] as $value_3) {
-                $values_3[] = $value_3;
+            $values_4 = [];
+            foreach ($data['postLogoutRedirectUris'] as $value_4) {
+                $values_4[] = $value_4;
             }
-            $object->setPostLogoutRedirectUris($values_3);
+            $object->setPostLogoutRedirectUris($values_4);
             unset($data['postLogoutRedirectUris']);
         }
         elseif (\array_key_exists('postLogoutRedirectUris', $data) && $data['postLogoutRedirectUris'] === null) {
@@ -144,30 +148,30 @@ class CreateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
             $object->setPrincipalId(null);
         }
         if (\array_key_exists('redirectUris', $data) && $data['redirectUris'] !== null) {
-            $values_4 = [];
-            foreach ($data['redirectUris'] as $value_4) {
-                $values_4[] = $value_4;
+            $values_5 = [];
+            foreach ($data['redirectUris'] as $value_5) {
+                $values_5[] = $value_5;
             }
-            $object->setRedirectUris($values_4);
+            $object->setRedirectUris($values_5);
             unset($data['redirectUris']);
         }
         elseif (\array_key_exists('redirectUris', $data) && $data['redirectUris'] === null) {
             $object->setRedirectUris(null);
         }
         if (\array_key_exists('scopes', $data) && $data['scopes'] !== null) {
-            $values_5 = [];
-            foreach ($data['scopes'] as $value_5) {
-                $values_5[] = $value_5;
+            $values_6 = [];
+            foreach ($data['scopes'] as $value_6) {
+                $values_6[] = $value_6;
             }
-            $object->setScopes($values_5);
+            $object->setScopes($values_6);
             unset($data['scopes']);
         }
         elseif (\array_key_exists('scopes', $data) && $data['scopes'] === null) {
             $object->setScopes(null);
         }
-        foreach ($data as $key => $value_6) {
+        foreach ($data as $key => $value_7) {
             if (preg_match('/.*/', (string) $key)) {
-                $object[$key] = $value_6;
+                $object[$key] = $value_7;
             }
         }
         return $object;
@@ -195,14 +199,18 @@ class CreateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
         $dataArray['clientName'] = $data->getClientName();
         $dataArray['clientType'] = $data->getClientType();
         if ($data->isInitialized('defaultScopes') && null !== $data->getDefaultScopes()) {
-            $dataArray['defaultScopes'] = $data->getDefaultScopes();
-        }
-        if ($data->isInitialized('grantTypes') && null !== $data->getGrantTypes()) {
             $values_2 = [];
-            foreach ($data->getGrantTypes() as $value_2) {
+            foreach ($data->getDefaultScopes() as $value_2) {
                 $values_2[] = $value_2;
             }
-            $dataArray['grantTypes'] = $values_2;
+            $dataArray['defaultScopes'] = $values_2;
+        }
+        if ($data->isInitialized('grantTypes') && null !== $data->getGrantTypes()) {
+            $values_3 = [];
+            foreach ($data->getGrantTypes() as $value_3) {
+                $values_3[] = $value_3;
+            }
+            $dataArray['grantTypes'] = $values_3;
         }
         if ($data->isInitialized('pkceRequired') && null !== $data->getPkceRequired()) {
             $dataArray['pkceRequired'] = $data->getPkceRequired();
@@ -211,32 +219,32 @@ class CreateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
             $dataArray['portalClientId'] = $data->getPortalClientId();
         }
         if ($data->isInitialized('postLogoutRedirectUris') && null !== $data->getPostLogoutRedirectUris()) {
-            $values_3 = [];
-            foreach ($data->getPostLogoutRedirectUris() as $value_3) {
-                $values_3[] = $value_3;
+            $values_4 = [];
+            foreach ($data->getPostLogoutRedirectUris() as $value_4) {
+                $values_4[] = $value_4;
             }
-            $dataArray['postLogoutRedirectUris'] = $values_3;
+            $dataArray['postLogoutRedirectUris'] = $values_4;
         }
         if ($data->isInitialized('principalId') && null !== $data->getPrincipalId()) {
             $dataArray['principalId'] = $data->getPrincipalId();
         }
         if ($data->isInitialized('redirectUris') && null !== $data->getRedirectUris()) {
-            $values_4 = [];
-            foreach ($data->getRedirectUris() as $value_4) {
-                $values_4[] = $value_4;
-            }
-            $dataArray['redirectUris'] = $values_4;
-        }
-        if ($data->isInitialized('scopes') && null !== $data->getScopes()) {
             $values_5 = [];
-            foreach ($data->getScopes() as $value_5) {
+            foreach ($data->getRedirectUris() as $value_5) {
                 $values_5[] = $value_5;
             }
-            $dataArray['scopes'] = $values_5;
+            $dataArray['redirectUris'] = $values_5;
         }
-        foreach ($data as $key => $value_6) {
+        if ($data->isInitialized('scopes') && null !== $data->getScopes()) {
+            $values_6 = [];
+            foreach ($data->getScopes() as $value_6) {
+                $values_6[] = $value_6;
+            }
+            $dataArray['scopes'] = $values_6;
+        }
+        foreach ($data as $key => $value_7) {
             if (preg_match('/.*/', (string) $key)) {
-                $dataArray[$key] = $value_6;
+                $dataArray[$key] = $value_7;
             }
         }
         return $dataArray;

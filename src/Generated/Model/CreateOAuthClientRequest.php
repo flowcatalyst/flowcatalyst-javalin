@@ -41,7 +41,7 @@ class CreateOAuthClientRequest extends \ArrayObject
      */
     protected $clientType;
     /**
-     * @var string|null
+     * @var list<string>|null
      */
     protected $defaultScopes;
     /**
@@ -189,18 +189,18 @@ class CreateOAuthClientRequest extends \ArrayObject
         return $this;
     }
     /**
-     * @return string|null
+     * @return list<string>|null
      */
-    public function getDefaultScopes(): ?string
+    public function getDefaultScopes(): ?array
     {
         return $this->defaultScopes;
     }
     /**
-     * @param string|null $defaultScopes
+     * @param list<string>|null $defaultScopes
      *
      * @return self
      */
-    public function setDefaultScopes(?string $defaultScopes): self
+    public function setDefaultScopes(?array $defaultScopes): self
     {
         $this->initialized['defaultScopes'] = true;
         $this->defaultScopes = $defaultScopes;
