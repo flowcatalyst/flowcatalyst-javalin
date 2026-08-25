@@ -4,6 +4,9 @@ import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.QueuedMessage;
+import io.flowcatalyst.router.config.PoolSpec;
+import io.flowcatalyst.router.config.QueueConfig;
+import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.queue.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,17 +47,32 @@ public final class RouterManager {
 
     private final Map<String, Pool> pools = new ConcurrentHashMap<>();
     private final Map<String, Consumer> consumers = new ConcurrentHashMap<>();
+
+    /// The configuration each running consumer was built from, so a change
+    /// can be detected without asking the consumer to describe itself.
+    private final Map<String, QueueConfig> queueConfigs = new ConcurrentHashMap<>();
     private final InFlightTracker tracker;
     private final Warnings warnings;
     private final Clock clock;
     private final PoolFactory poolFactory;
     private final AtomicLong batchCounter = new AtomicLong();
 
-    /// Builds a pool for a code the configuration did not define — used only
-    /// for the per-client fallback pools.
+    /// Concurrency given to a pool the configuration named without one
+    /// (spec constant 2).
+    public static final int DEFAULT_POOL_CONCURRENCY = 20;
+
+    /// Builds a pool from its configuration.
     @FunctionalInterface
     public interface PoolFactory {
-        Pool create(String poolCode);
+        Pool create(Pool.Config config);
+    }
+
+    /// Builds a consumer for a configured queue. Returning empty means the
+    /// queue could not be built — an unknown URI scheme, an unreachable
+    /// broker — and the reconfigure carries on with the rest.
+    @FunctionalInterface
+    public interface ConsumerFactory {
+        Optional<Consumer> create(QueueConfig config);
     }
 
     public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory) {
@@ -149,7 +167,8 @@ public final class RouterManager {
                 return Optional.of(pool);
             }
             if (code.endsWith(DEFAULT_POOL_SUFFIX)) {
-                return Optional.of(pools.computeIfAbsent(code, poolFactory::create));
+                return Optional.of(pools.computeIfAbsent(code,
+                        synthesised -> poolFactory.create(new Pool.Config(synthesised, DEFAULT_POOL_CONCURRENCY, 0))));
             }
             warnings.raise(Warnings.Severity.WARNING, "ROUTING",
                     "no pool for pool_code \"" + code + "\"; routed to " + DEFAULT_POOL);
@@ -161,6 +180,140 @@ public final class RouterManager {
     /// than pulling messages they would only have to hand straight back.
     public boolean anyPoolHasCapacity() {
         return pools.values().stream().anyMatch(pool -> pool.queueSize() < pool.config().queueCapacity());
+    }
+
+    /// Applies a new configuration to the running router.
+    ///
+    /// Pools and consumers are handled differently on purpose. A pool can be
+    /// **adjusted in place** — concurrency and rate limit are hot — so an
+    /// existing pool keeps its buffered work and its in-flight deliveries. A
+    /// consumer cannot: its identity is bound to a broker connection, so any
+    /// change means stop and rebuild, which aborts that queue's in-flight
+    /// deliveries and parks its ordered groups until redelivery resumes them.
+    /// That asymmetry is why a pool edit is cheap and a queue edit is not.
+    ///
+    /// A consumer that cannot be built does **not** abort the rest: the Go
+    /// aborts mid-way, leaving earlier changes applied and later queues
+    /// unstarted (§13 Q35, unruled). Here every queue is attempted and the
+    /// failures are reported, so a single bad URI cannot silently halve the
+    /// router. This is a deliberate deviation and the result records it.
+    ///
+    /// @return what changed, for the caller to log or surface
+    public ReconfigureResult reconfigure(RouterConfig config, ConsumerFactory consumerFactory) {
+        var wantedPools = wantedPools(config);
+        var removedPools = applyPools(wantedPools);
+        var consumerChanges = applyConsumers(config, consumerFactory);
+        return new ReconfigureResult(
+                wantedPools.size(), removedPools, consumerChanges.started(), consumerChanges.stopped(),
+                consumerChanges.failed());
+    }
+
+    /// What a reconfigure did.
+    ///
+    /// @param failedQueues queues that could not be built. Non-empty means the
+    ///                     router is running with less than its configuration
+    ///                     asks for, which is worth surfacing rather than
+    ///                     leaving in a log line.
+    public record ReconfigureResult(int pools, int poolsRemoved, int consumersStarted,
+                                    int consumersStopped, List<String> failedQueues) {
+
+        public ReconfigureResult {
+            failedQueues = List.copyOf(failedQueues);
+        }
+
+        public boolean complete() {
+            return failedQueues.isEmpty();
+        }
+    }
+
+    /// The pool set the configuration asks for, plus the global fallback.
+    ///
+    /// `DEFAULT-POOL` is always present: [#poolFor] falls back to it, and a
+    /// configuration that omits it would leave messages with nowhere to go.
+    private Map<String, PoolSpec> wantedPools(RouterConfig config) {
+        Map<String, PoolSpec> wanted = new java.util.LinkedHashMap<>();
+        config.processingPools().forEach(pool -> wanted.put(pool.code(), pool));
+        wanted.computeIfAbsent(DEFAULT_POOL,
+                code -> new PoolSpec(code, DEFAULT_POOL_CONCURRENCY, 0));
+        return wanted;
+    }
+
+    private int applyPools(Map<String, PoolSpec> wanted) {
+        var removed = 0;
+        for (var code : List.copyOf(pools.keySet())) {
+            if (!wanted.containsKey(code) && !code.endsWith(DEFAULT_POOL_SUFFIX)) {
+                // Synthesised per-client fallbacks are never in the config and
+                // must survive a reconfigure that does not mention them.
+                var pool = pools.remove(code);
+                if (pool != null) {
+                    pool.stop();
+                    removed++;
+                }
+            }
+        }
+        wanted.forEach((code, config) -> {
+            var existing = pools.get(code);
+            if (existing == null) {
+                pools.put(code, poolFactory.create(config.toRuntime()));
+                return;
+            }
+            // Rate limit is always reapplied; concurrency only when the
+            // configuration actually states one, so a zero does not silently
+            // shrink a running pool.
+            //
+            // Belt and braces: Pool.updateConcurrency rejects a non-positive
+            // value too, so removing this check changes nothing observable.
+            // It stays because the *intent* belongs at the call site — a
+            // reader here should not have to know how the pool defends
+            // itself to see that an unstated concurrency is left alone.
+            existing.updateRateLimit(config.rateLimitPerMinute());
+            if (config.statesConcurrency()) {
+                existing.updateConcurrency(config.concurrency());
+            }
+        });
+        return removed;
+    }
+
+    private ConsumerChanges applyConsumers(RouterConfig config, ConsumerFactory factory) {
+        Map<String, QueueConfig> wanted = new java.util.LinkedHashMap<>();
+        config.queues().forEach(queue -> wanted.put(queue.queueName(), queue));
+
+        var stopped = 0;
+        for (var entry : List.copyOf(queueConfigs.entrySet())) {
+            var running = wanted.get(entry.getKey());
+            if (running == null || !entry.getValue().sameConsumerTopology(running)) {
+                stopConsumer(entry.getKey());
+                stopped++;
+            }
+        }
+
+        var started = 0;
+        var failed = new java.util.ArrayList<String>();
+        for (var entry : wanted.entrySet()) {
+            if (consumers.containsKey(entry.getKey())) {
+                continue;
+            }
+            var built = factory.create(entry.getValue());
+            if (built.isEmpty()) {
+                failed.add(entry.getKey());
+                continue;
+            }
+            consumers.put(entry.getKey(), built.get());
+            queueConfigs.put(entry.getKey(), entry.getValue());
+            started++;
+        }
+        return new ConsumerChanges(started, stopped, List.copyOf(failed));
+    }
+
+    private void stopConsumer(String queueName) {
+        queueConfigs.remove(queueName);
+        var consumer = consumers.remove(queueName);
+        if (consumer != null) {
+            consumer.close();
+        }
+    }
+
+    private record ConsumerChanges(int started, int stopped, List<String> failed) {
     }
 
     private InFlightMessage inFlight(QueuedMessage message, String batchId) {

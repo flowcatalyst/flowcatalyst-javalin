@@ -55,7 +55,7 @@ class ConsumerLoopTest {
         pool = new Pool(new Pool.Config(RouterManager.DEFAULT_POOL, 4, 0), mediator, NO_OP_BROKER,
                 PoolMetrics.NO_OP, clock);
         var manager = new RouterManager(tracker, warnings, clock,
-                code -> new Pool(new Pool.Config(code, 4, 0), mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
         manager.registerPool(RouterManager.DEFAULT_POOL, pool);
         manager.registerConsumer(consumer);
         return manager;

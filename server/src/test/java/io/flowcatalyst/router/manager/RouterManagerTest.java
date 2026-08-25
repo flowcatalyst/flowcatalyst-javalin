@@ -37,8 +37,8 @@ class RouterManagerTest {
     private final RecordingConsumer source = new RecordingConsumer("queue-1");
 
     private final RouterManager manager =
-            new RouterManager(tracker, warnings, clock, code -> {
-                var recording = RecordingPool.of(code);
+            new RouterManager(tracker, warnings, clock, config -> {
+                var recording = RecordingPool.of(config.code());
                 created.add(recording);
                 return recording.pool();
             });
