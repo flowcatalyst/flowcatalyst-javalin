@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.time.Duration;
+import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
@@ -99,11 +100,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     public static final class Running {
         private final Javalin api;
         private final Metrics.Running metrics;
+        private final Router router;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
-        private Running(Javalin api, Metrics.Running metrics) {
+        private Running(Javalin api, Metrics.Running metrics, Router router) {
             this.api = api;
             this.metrics = metrics;
+            this.router = router;
         }
 
         public int apiPort() {
@@ -118,9 +121,16 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         /// within the grace period), then background subsystems.
         public void stop() {
             try {
+                // Listeners first so Jetty drains in-flight HTTP requests,
+                // then the router — which has its own drain and must not be
+                // torn down while the API is still accepting calls that
+                // inspect it.
                 api.stop();
                 metrics.stop();
-                // TODO(port): stop scheduler / stream / outbox / router / mcp and wait for them
+                if (router != null) {
+                    router.close();
+                }
+                // TODO(port): stop scheduler / stream / outbox / mcp and wait for them
                 LOG.info("server stopped");
             } finally {
                 stopped.countDown();
@@ -134,7 +144,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
-        Javalin api = buildApi();
+        // The router is started BEFORE the listeners bind, so a readiness
+        // probe never sees a server that is accepting traffic while its
+        // router is still deciding whether it holds leadership.
+        Router router = env.routerEnabled()
+                ? Router.start(env, mode instanceof Mode.Platform(var pool) ? pool
+                        : mode instanceof Mode.Worker(var pool) ? pool : null, Clock.systemUTC())
+                : null;
+
+        Javalin api = buildApi(router);
 
         // ── background subsystems ───────────────────────────────────────────
         // TODO(port): purger (platform), scheduler, scheduled-job scheduler, stream processor,
@@ -154,12 +172,16 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
         api.start(env.apiPort());
         LOG.info("api server listening addr=:{}", env.apiPort());
-        return new Running(api, metrics);
+        return new Running(api, metrics, router);
     }
 
     /// The fully wired (not yet started) API app — exposed so the contract
     /// tests can enumerate the registered routes without binding a port.
     Javalin buildApi() {
+        return buildApi(null);
+    }
+
+    Javalin buildApi(Router router) {
         return Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
@@ -177,10 +199,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                     // no platform API on this instance
                 }
             }
-            if (env.routerEnabled()) {
-                // TODO(port): MountRouterHTTP under env.routerHttpPrefix() (BasicAuth, monitoring API,
-                //   dashboard, /metrics alias) + the router engine.
-                LOG.warn("router HTTP surface not yet ported; FC_ROUTER_ENABLED ignored");
+            if (router != null) {
+                // TODO(port): BasicAuth on this surface (spec §9.7), the
+                //   dashboard HTML, and the /metrics alias. The monitoring
+                //   API and the engine behind it are wired.
+                io.flowcatalyst.router.api.RouterApi.register(cfg.routes,
+                        new io.flowcatalyst.router.api.RouterApi.State(
+                                router.manager(), router.tracker(), router.warnings(), router.breakers(),
+                                router.election(), router.electionConfig(), Version.current(),
+                                env.routerHttpPrefix(), null, router.poolMetrics()));
             }
             switch (spa) {
                 case Spa.Embedded(var frontend) -> frontend.register(cfg.routes);

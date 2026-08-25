@@ -52,6 +52,8 @@ public final class Router implements AutoCloseable {
     private final BreakerRegistry breakers;
     private final WarningStore warnings;
     private final Traffic traffic;
+    private final LeaderElection election;
+    private final LeaderElection.Config electionConfig;
     private final UnifiedJedis redisClient;
 
     /// One metrics collector per pool, created with the pool. The pool itself
@@ -62,6 +64,7 @@ public final class Router implements AutoCloseable {
 
     private Router(RouterServer server, RouterManager manager, InFlightTracker tracker,
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
+                   LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics) {
         this.server = server;
         this.manager = manager;
@@ -69,6 +72,8 @@ public final class Router implements AutoCloseable {
         this.breakers = breakers;
         this.warnings = warnings;
         this.traffic = traffic;
+        this.election = election;
+        this.electionConfig = electionConfig;
         this.redisClient = redisClient;
         this.poolMetrics.putAll(metrics);
     }
@@ -97,6 +102,14 @@ public final class Router implements AutoCloseable {
         return Map.copyOf(poolMetrics);
     }
 
+    public LeaderElection election() {
+        return election;
+    }
+
+    public LeaderElection.Config electionConfig() {
+        return electionConfig;
+    }
+
     /// Builds and starts the router.
     ///
     /// `dataSource` is required only for the Postgres queue backend; a
@@ -123,7 +136,8 @@ public final class Router implements AutoCloseable {
         brokerRef.set(new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker));
 
         var redisClient = redisFor(env);
-        var election = new LeaderElection(electionConfig(env), lockStore(env, redisClient), clock);
+        var electionConfig = electionConfig(env);
+        var election = new LeaderElection(electionConfig, lockStore(env, redisClient), clock);
         var traffic = trafficFor(env, clock);
 
         var server = new RouterServer(manager, tracker, election,
@@ -143,7 +157,7 @@ public final class Router implements AutoCloseable {
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
-        return new Router(server, manager, tracker, breakers, warnings, traffic, redisClient, metrics);
+        return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig, redisClient, metrics);
     }
 
     private static LeaderElection.Config electionConfig(Env env) {

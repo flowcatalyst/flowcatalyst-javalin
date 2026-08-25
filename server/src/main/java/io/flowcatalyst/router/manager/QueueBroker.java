@@ -3,7 +3,7 @@ package io.flowcatalyst.router.manager;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.Broker;
 import io.flowcatalyst.router.pool.QueuedMessage;
-import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.Acknowledger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,15 +29,21 @@ public final class QueueBroker implements Broker {
 
     private static final Logger log = LoggerFactory.getLogger(QueueBroker.class);
 
-    private final Function<String, Consumer> consumers;
+    /// Looks up the acknowledger for a queue id.
+    ///
+    /// Deliberately [Acknowledger] and not `Consumer`: the manager owns a
+    /// consumer's lifecycle, and closing one from here would take the queue
+    /// down for every other message in flight on it. Narrowing the type
+    /// makes that unavailable rather than merely discouraged.
+    private final Function<String, Acknowledger> consumers;
     private final InFlightTracker tracker;
 
-    public QueueBroker(Function<String, Consumer> consumers, InFlightTracker tracker) {
+    public QueueBroker(Function<String, Acknowledger> consumers, InFlightTracker tracker) {
         this.consumers = consumers;
         this.tracker = tracker;
     }
 
-    public QueueBroker(Map<String, Consumer> consumers, InFlightTracker tracker) {
+    public QueueBroker(Map<String, ? extends Acknowledger> consumers, InFlightTracker tracker) {
         this(consumers::get, tracker);
     }
 

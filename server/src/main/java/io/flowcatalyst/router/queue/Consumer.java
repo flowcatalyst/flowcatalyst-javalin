@@ -23,11 +23,12 @@ import java.util.Optional;
 ///   that is briefly unreachable cannot be allowed to fail a delivery that
 ///   already succeeded, nor to kill the worker holding the message.
 /// - After [#close] every [#poll] answers [PollResult.Stopped].
-public interface Consumer extends AutoCloseable {
+public interface Consumer extends Acknowledger, AutoCloseable {
 
     /// Stable name for this queue, used as `QueueIdentifier` on every polled
     /// message, as the key that routes an acknowledgement back here, and as a
     /// metrics label. Must not change over the consumer's life.
+    @Override
     String identifier();
 
     /// Takes up to `max` messages, blocking if the backend does.
@@ -46,6 +47,7 @@ public interface Consumer extends AutoCloseable {
     ///         message is finished with either way — but an **operator
     ///         force-acking a stuck message is entitled to know**, and the
     ///         only alternative is telling them something untrue.
+    @Override
     boolean ack(QueuedMessage message);
 
     /// Makes a delivery visible again after `delay`.
@@ -53,6 +55,7 @@ public interface Consumer extends AutoCloseable {
     /// **Advisory.** Some backends ignore the delay entirely — SQS lets the
     /// visibility timeout lapse instead, and NATS takes its ack-wait from the
     /// connection URI. No backend may treat a nack as an ack.
+    @Override
     void nack(QueuedMessage message, Duration delay);
 
     /// Broker-side depth, when the backend can report it cheaply enough to

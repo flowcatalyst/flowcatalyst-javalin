@@ -109,10 +109,22 @@ public final class RouterManager {
         return java.util.Set.copyOf(consumers.keySet());
     }
 
-    /// Drops every consumer without closing it — the caller has already
-    /// stopped them. Used on a leadership loss, where the pools and tracker
-    /// stay and only the sources go.
+    /// Drops every consumer. Used on a leadership loss, where the pools and
+    /// tracker stay and only the sources go.
+    ///
+    /// Closes them on the way out even though the only caller has already
+    /// done so. `close()` is idempotent on all three backends, and depending
+    /// on a caller to have closed first is a precondition invisible from the
+    /// call site — exactly the shape of the pool-lifecycle bug this codebase
+    /// already shipped once. Cheaper to be self-sufficient.
     public void forgetConsumers() {
+        consumers.values().forEach(consumer -> {
+            try {
+                consumer.close();
+            } catch (RuntimeException e) {
+                log.warn("closing consumer {} failed", consumer.identifier(), e);
+            }
+        });
         consumers.clear();
         queueConfigs.clear();
     }

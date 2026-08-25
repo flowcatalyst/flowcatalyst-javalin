@@ -39,6 +39,9 @@ class ConsumerLoopTest {
     private final ScriptedConsumer consumer = new ScriptedConsumer("queue-1");
     private final List<String> delivered = new CopyOnWriteArrayList<>();
     private final AtomicBoolean deliveryBlocked = new AtomicBoolean();
+
+    /// Keeps submitting so the pool stays at capacity; stopped after each test.
+    private Thread topUp;
     private Pool pool;
     private Thread loopThread;
 
@@ -65,6 +68,9 @@ class ConsumerLoopTest {
     void stopLoop() {
         if (loopThread != null) {
             loopThread.interrupt();
+        }
+        if (topUp != null) {
+            topUp.interrupt();
         }
         deliveryBlocked.set(false);
         if (pool != null) {
@@ -205,23 +211,30 @@ class ConsumerLoopTest {
         }
     };
 
-    /// Submits until the manager reports no capacity anywhere.
+    /// Keeps the pool at capacity for as long as the test needs it.
     ///
-    /// Awaits that condition rather than `queueSize >= capacity`: workers
-    /// decrement the waiting count as they claim slots, so the queue can
-    /// hover just below capacity indefinitely and an earlier version of this
-    /// timed out intermittently. The loop's gate reads
-    /// `anyPoolHasCapacity()`, so that is what the fixture should establish.
+    /// A single fill cannot hold: a worker that acquires a slot decrements
+    /// the waiting count, so with concurrency N the queue drops N below
+    /// capacity the moment workers engage and `anyPoolHasCapacity()` goes
+    /// true again. The "all pools full" state is only durable while messages
+    /// keep arriving — which is exactly what makes it worth pausing for in
+    /// production, and what this reproduces.
+    ///
+    /// An earlier version filled once and raced; it failed roughly one run in
+    /// four, and was twice misread as build contention.
     private void fillPool(RouterManager manager) {
         deliveryBlocked.set(true);
-        int submitted = 0;
-        int limit = pool.config().queueCapacity() * 4;
-        while (manager.anyPoolHasCapacity() && submitted < limit) {
-            pool.submit(message("filler-" + submitted++));
-        }
-        if (manager.anyPoolHasCapacity()) {
-            throw new AssertionError("could not exhaust pool capacity after " + submitted + " messages");
-        }
+        topUp = Thread.ofVirtual().start(() -> {
+            int n = 0;
+            while (!Thread.currentThread().isInterrupted()) {
+                if (manager.anyPoolHasCapacity()) {
+                    pool.submit(message("filler-" + n++));
+                } else {
+                    Thread.onSpinWait();
+                }
+            }
+        });
+        await(() -> !manager.anyPoolHasCapacity());
     }
 
     private static List<QueuedMessage> batch(String... ids) {

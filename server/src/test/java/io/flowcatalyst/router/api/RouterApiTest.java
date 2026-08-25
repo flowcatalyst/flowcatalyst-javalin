@@ -134,12 +134,32 @@ class RouterApiTest {
     /// received no bytes") — a `TestHttp`/OS-level race unrelated to routing.
     /// Firing one disposable request before the real assertions run keeps
     /// that race from occasionally failing a test outright.
+    /// Waits until a freshly bound connector actually serves a request.
+    ///
+    /// One attempt is not enough. `/health/live` is unconditionally
+    /// registered on every [RouterApi.State], so it is a safe probe — but a
+    /// connector that rejects the first request may reject the second, and
+    /// absorbing exactly one failure leaves the *next* call to fail instead,
+    /// with a body that parses to something without the field under test.
+    /// That produced a NullPointerException in full-suite runs and passed
+    /// standalone, which reads like an ordering bug and is not one.
+    ///
+    /// Retries until it genuinely answers, so a test that gets past this line
+    /// is talking to a server that works.
     private static void warmUp(TestHttp http) {
-        try {
-            http.get("/router/health/live");
-        } catch (RuntimeException ignored) {
-            // The point of the warm-up: absorb exactly this.
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        RuntimeException last = null;
+        while (System.nanoTime() < deadline) {
+            try {
+                if (http.get("/router/health/live").statusCode() == 200) {
+                    return;
+                }
+            } catch (RuntimeException e) {
+                last = e;
+            }
+            Thread.onSpinWait();
         }
+        throw new AssertionError("router test server never became ready", last);
     }
 
     // ── Health ────────────────────────────────────────────────────────────
