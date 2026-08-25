@@ -161,8 +161,10 @@ Ordered by what unblocks the most:
    caller's. **Still open:** the `WarningStore.AUTO_ACKNOWLEDGE_AGE` question
    (constant 45) — deliberately left, it needs an owner ruling, not a silent
    fix.
-2. **ELBv2 `TargetGroup`** — the one `TODO(port)` in `Router.java:242`.
-   `AlbTraffic`'s policy is ported and tested; only the AWS client is missing.
+2. ~~**ELBv2 `TargetGroup`**~~ **DONE 2026-08-25.** `Elbv2TargetGroup` wires
+   the three calls behind `AlbTraffic`'s already-tested policy, and `Traffic`
+   is now `AutoCloseable` so the SDK client is released on shutdown. **The
+   router has no `TODO(port)` left.**
 3. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
    Needs no Go changes and asserts six of seven fields.
 4. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`

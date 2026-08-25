@@ -150,6 +150,22 @@ public final class AlbTraffic implements Traffic {
                 config.targetId(), config.port(), config.drainTimeout());
     }
 
+    /// Closes the target group if it holds anything. Deregistration is a
+    /// separate step and deliberately not done here: [Router] deregisters and
+    /// waits for the drain *before* it stops the server, and folding that into
+    /// close would either duplicate the wait or move it after the listeners
+    /// have already gone.
+    @Override
+    public void close() {
+        if (targetGroup instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                log.warn("closing the target group client failed", e);
+            }
+        }
+    }
+
     @Override
     public Status status() {
         return new Status(true, registered.get(),

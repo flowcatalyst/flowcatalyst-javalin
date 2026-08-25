@@ -11,7 +11,7 @@ import java.util.Optional;
 /// not depend on it. An instance that cannot reach the load balancer should
 /// keep draining its queues rather than refuse to run — so every operation
 /// here records its failure and returns.
-public interface Traffic {
+public interface Traffic extends AutoCloseable {
 
     /// Start taking traffic. Idempotent.
     void register();
@@ -21,6 +21,17 @@ public interface Traffic {
     void deregister();
 
     Status status();
+
+    /// Releases whatever the implementation holds — an SDK client and its
+    /// connection pool, for the ELBv2 one.
+    ///
+    /// Defaulted because most implementations hold nothing, and narrowed to
+    /// throw nothing: a shutdown step that can throw a checked exception ends
+    /// up wrapped in a try/catch at every call site, and the first person to
+    /// find that tedious deletes the call rather than the catch.
+    @Override
+    default void close() {
+    }
 
     /// @param enabled    whether traffic management is configured at all
     /// @param registered whether this instance is currently in the target

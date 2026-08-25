@@ -19,6 +19,7 @@ import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
 import io.flowcatalyst.router.standby.RedisLockStore;
 import io.flowcatalyst.router.traffic.AlbTraffic;
+import io.flowcatalyst.router.traffic.Elbv2TargetGroup;
 import io.flowcatalyst.router.traffic.Traffic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -239,11 +240,13 @@ public final class Router implements AutoCloseable {
             }
             return Traffic.DISABLED;
         }
-        // TODO(port): the ELBv2 TargetGroup implementation. AlbTraffic's policy
-        // — when to register, how long to wait for a drain — is complete and
-        // tested; only the three AWS calls behind TargetGroup are missing.
-        LOG.warn("ALB target-group client not yet wired; traffic management disabled");
-        return Traffic.DISABLED;
+        var drainTimeout = env.albDeregDelaySec() > 0
+                ? Duration.ofSeconds(env.albDeregDelaySec())
+                : AlbTraffic.DEFAULT_DRAIN_TIMEOUT;
+        return new AlbTraffic(
+                new AlbTraffic.Config(env.albInstanceIp(), env.albPort(), drainTimeout),
+                Elbv2TargetGroup.create(env.albTargetGroupArn()),
+                clock);
     }
 
     /// Builds a consumer for a configured queue, choosing the backend by URI
@@ -278,7 +281,10 @@ public final class Router implements AutoCloseable {
     @Override
     public void close() {
         server.close();
+        // Deregister first and let the balancer drain, THEN release the
+        // client that did it.
         traffic.deregister();
+        traffic.close();
         if (redisClient != null) {
             redisClient.close();
         }
