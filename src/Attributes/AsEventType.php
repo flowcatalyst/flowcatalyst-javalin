@@ -24,6 +24,7 @@ use Attribute;
  *
  * The application code is automatically added from your config when synced.
  * For example, if your app code is "myapp", the event type becomes "myapp:orders:order:created".
+ * Set `application:` to override it per definition (see the constructor).
  *
  * Code format: {application}:{subdomain}:{aggregate}:{event}
  */

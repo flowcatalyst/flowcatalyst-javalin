@@ -30,6 +30,7 @@ use FlowCatalyst\DTOs\PermissionInput;
  *
  * The role name will be prefixed with your application code when synced.
  * For example, if your app code is "myapp", the role becomes "myapp:admin".
+ * Set `application:` to override it per definition (see the constructor).
  */
 #[Attribute(Attribute::TARGET_CLASS)]
 final class AsRole
@@ -47,6 +48,11 @@ final class AsRole
      *        permissions, #[AsPermission] class-strings (e.g. ViewPosts::class),
      *        or literal "app:context:aggregate:action" strings.
      * @param bool $clientManaged Whether clients can assign this role
+     * @param string|null $application Application code this role belongs to.
+     *        Overrides the global `application_code` / `application_map` during
+     *        sync — set it when one codebase defines roles for more than one
+     *        application. Also resolves the #[AsPermission] class-strings in
+     *        `permissions`. Null = resolve from the namespace map / default.
      */
     public function __construct(
         public readonly string $name,
@@ -54,6 +60,7 @@ final class AsRole
         public readonly ?string $description = null,
         public readonly array $permissions = [],
         public readonly bool $clientManaged = false,
+        public readonly ?string $application = null,
     ) {}
 
     /**

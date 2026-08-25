@@ -88,19 +88,18 @@ class SyncDefinitionsCommand extends Command
         $scannedData = $repository->all()->toArray();
         $groups = $this->groupByApplication($scannedData, $appCode);
 
+        // Definitions that resolve no application AND have no default can't be
+        // addressed to an application-scoped endpoint. Report and skip them,
+        // then sync whatever remains — an unplaceable definition must not block
+        // every other application in the same codebase.
+        if (isset($groups[''])) {
+            $this->reportUnplaceable($groups['']);
+            unset($groups['']);
+        }
+
         if ($groups === []) {
             $this->info('No definitions to sync.');
             return Command::SUCCESS;
-        }
-
-        // Definitions that resolve no application AND have no default can't be
-        // placed — fail with actionable guidance rather than silently dropping.
-        if (isset($groups[''])) {
-            $this->error('Application code not configured for some definitions. Either:');
-            $this->error('  - Set FLOWCATALYST_APP_CODE (or use --app) for the default, or');
-            $this->error('  - Map their namespace in flowcatalyst.definitions.application_map, or');
-            $this->error('  - Set application: on the attribute.');
-            return Command::FAILURE;
         }
 
         // OpenAPI document (when an explicit file is given) is application-level;
@@ -182,6 +181,52 @@ class SyncDefinitionsCommand extends Command
         }
 
         return $groups;
+    }
+
+    /**
+     * Report the definitions that resolved no application code — no
+     * `application:` on the attribute, no `definitions.application_map` match,
+     * and no default from --app / FLOWCATALYST_APP_CODE. They are skipped
+     * rather than fatal: there is no endpoint to address them to, but every
+     * other application still syncs.
+     *
+     * @param array<string, array<int, mixed>> $unplaceable
+     */
+    private function reportUnplaceable(array $unplaceable): void
+    {
+        $count = array_sum(array_map('count', $unplaceable));
+
+        $this->warn(sprintf('Skipped %d definition(s) with no application code:', $count));
+        foreach ($unplaceable as $category => $defs) {
+            foreach ($defs as $def) {
+                $this->line(sprintf('  - %s: %s', $category, $this->definitionLabel($def)));
+            }
+        }
+        $this->line('  To sync these, set FLOWCATALYST_APP_CODE (or --app), map their namespace in');
+        $this->line('  flowcatalyst.definitions.application_map, or set application: on the attribute.');
+        $this->newLine();
+    }
+
+    /**
+     * Best-effort label for a scanned definition — the declaring class, else
+     * whatever identifier its category carries.
+     */
+    private function definitionLabel(mixed $def): string
+    {
+        if (is_string($def)) {
+            return $def !== '' ? $def : '(unnamed)';
+        }
+
+        if (is_array($def)) {
+            foreach (['_class', 'code', 'name', 'permission'] as $key) {
+                $value = $def[$key] ?? null;
+                if (is_string($value) && $value !== '') {
+                    return $value;
+                }
+            }
+        }
+
+        return '(unnamed)';
     }
 
     /**

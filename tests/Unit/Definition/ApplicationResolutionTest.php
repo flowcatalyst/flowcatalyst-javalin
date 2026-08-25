@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace FlowCatalyst\Tests\Unit\Definition;
 
+use FlowCatalyst\Attributes\AsDispatchPool;
 use FlowCatalyst\Attributes\AsEventType;
+use FlowCatalyst\Attributes\AsProcess;
+use FlowCatalyst\Attributes\AsRole;
+use FlowCatalyst\Attributes\AsScheduledJob;
+use FlowCatalyst\Attributes\AsSubscription;
 use FlowCatalyst\Console\Commands\SyncDefinitionsCommand;
 use FlowCatalyst\Definition\DefinitionScanner;
 use FlowCatalyst\Sync\SyncDefinitionSet;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
@@ -38,7 +44,7 @@ final class ApplicationResolutionTest extends TestCase
         Container::setInstance(null);
     }
 
-    private function resolve(string $class, AsEventType $instance): ?string
+    private function resolve(string $class, object $instance): ?string
     {
         $m = new ReflectionMethod(DefinitionScanner::class, 'resolveApplication');
         $m->setAccessible(true);
@@ -81,6 +87,60 @@ final class ApplicationResolutionTest extends TestCase
 
         $this->assertSame(['billing', 'example', 'orders'], $keys);
         $this->assertSame('b', $groups['example']['eventTypes'][0]['code']);
+    }
+
+    /**
+     * Every definition attribute — not just AsEventType — accepts an
+     * `application:` override. The scanner picks it up generically (it looks
+     * for an `application` property), so a missing constructor param is the
+     * only thing that can break this.
+     *
+     * @return iterable<string, array{0: object}>
+     */
+    public static function attributesWithOverride(): iterable
+    {
+        yield 'event type' => [new AsEventType(
+            subdomain: 's', aggregate: 'a', event: 'e', name: 'N', application: 'billing'
+        )];
+        yield 'scheduled job' => [new AsScheduledJob(
+            code: 'partition-maintenance', name: 'N', crons: ['0 0 2 * * *'], application: 'billing'
+        )];
+        yield 'role' => [new AsRole(name: 'admin', application: 'billing')];
+        yield 'subscription' => [new AsSubscription(
+            code: 'c', name: 'N', connectionId: 'conn', queue: 'q',
+            dispatchPoolCode: 'default', application: 'billing'
+        )];
+        yield 'dispatch pool' => [new AsDispatchPool(code: 'default', application: 'billing')];
+        yield 'process' => [new AsProcess(
+            subdomain: 's', processName: 'p', name: 'N', application: 'billing'
+        )];
+    }
+
+    #[DataProvider('attributesWithOverride')]
+    public function test_every_attribute_honours_application_override(object $instance): void
+    {
+        // 'Acme\Orders\' maps to "orders" — the explicit override must win.
+        $this->assertSame('billing', $this->resolve('Acme\\Orders\\Anything', $instance));
+    }
+
+    /**
+     * `application` is a scanner-only routing axis: it decides which app's
+     * sync endpoint a definition is posted to, and must never ride along in
+     * the request body (the platform rejects unknown fields).
+     */
+    #[DataProvider('attributesWithOverride')]
+    public function test_application_never_leaks_into_the_payload(object $instance): void
+    {
+        $this->assertArrayNotHasKey('application', $instance->toArray());
+    }
+
+    public function test_attributes_default_to_null_so_env_default_applies(): void
+    {
+        // No `application:` and no namespace-map match → null, which the sync
+        // command replaces with --app / FLOWCATALYST_APP_CODE.
+        $job = new AsScheduledJob(code: 'nightly', name: 'N', crons: ['0 0 2 * * *']);
+        $this->assertNull($job->application);
+        $this->assertNull($this->resolve('App\\Jobs\\Nightly', $job));
     }
 
     public function test_internal_fields_are_stripped_from_payload(): void

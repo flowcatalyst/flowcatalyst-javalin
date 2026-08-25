@@ -393,9 +393,10 @@ for the full reference, including the programmatic `DefinitionSynchronizer`.
 separately — you don't have to drop to the programmatic API. The application is
 resolved in this order:
 
-1. an explicit `application:` on the attribute — `#[AsEventType(application: 'orders', …)]`;
+1. an explicit `application:` on the attribute — `#[AsScheduledJob(application: 'orders', …)]`.
+   Every definition attribute accepts it;
 2. a longest-prefix match in the `definitions.application_map` config;
-3. the default `FLOWCATALYST_APP_CODE`.
+3. the default `--app` / `FLOWCATALYST_APP_CODE`.
 
 The **map** is ideal when one codebase owns several apps, or when a package ships
 its own definitions and is its own application — the *consumer* maps the package's
@@ -411,6 +412,12 @@ namespace to whatever app code they registered (a package author can't hardcode 
 
 `scan` records the resolved app per definition; `sync` groups by it and pushes
 each application's catalog to its own `…/applications/{appCode}/…/sync` endpoint.
+
+Note that `--remove-unlisted` is full-replace *per application, per category*,
+and an application is only contacted when at least one definition resolves to
+it. Moving the last definition of a category out of an app therefore leaves the
+old rows in place rather than pruning them — see
+[`docs/syncing-definitions.md`](docs/syncing-definitions.md).
 
 ## Control Plane API
 

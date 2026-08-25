@@ -40,6 +40,65 @@ Optionally configure the scan paths in `config/flowcatalyst.php`:
 ],
 ```
 
+#### Which application a definition belongs to
+
+Every definition is synced to one application's endpoint. The code is resolved
+per definition, in this order:
+
+1. **`application:` on the attribute** — supported by *every* definition
+   attribute (`AsScheduledJob`, `AsEventType`, `AsRole`, `AsSubscription`,
+   `AsDispatchPool`, `AsProcess`, `AsPermission`).
+2. **Longest-prefix match** in `flowcatalyst.definitions.application_map` —
+   maps a namespace onto an application code, so a whole module inherits one.
+3. **The default** — `--app` on the command, else `FLOWCATALYST_APP_CODE`.
+
+So the common case needs nothing: set `FLOWCATALYST_APP_CODE` and every
+definition follows it. Reach for `application:` only when one codebase owns
+definitions for more than one application:
+
+```php
+#[AsScheduledJob(
+    code: MeasurementScheduledJobCode::PARTITION_MAINTENANCE->value,
+    name: 'Measurement partition maintenance',
+    crons: ['0 0 2 * * *'],
+    description: 'Create upcoming partitions and drop those outside retention.',
+    timezone: 'UTC',
+    concurrent: false,
+    tracksCompletion: true,
+    timeoutSeconds: 120,
+    application: 'measurement',   // overrides the map and FLOWCATALYST_APP_CODE
+)]
+class PartitionMaintenanceJob {}
+```
+
+Or map a whole namespace instead of annotating each class:
+
+```php
+'definitions' => [
+    'application_map' => [
+        'App\\Measurement\\' => 'measurement',
+        'App\\Billing\\'     => 'billing',
+    ],
+],
+```
+
+`flowcatalyst:sync` partitions the scanned definitions by resolved application
+and syncs each bucket to its own endpoint, reporting one block per application.
+A definition that resolves *no* application and has no default is reported and
+skipped — it never blocks the other applications from syncing.
+
+`application:` is a routing axis only. It decides which application's sync
+endpoint the definition is posted to (and, for codes that carry an application
+segment, which prefix is baked in) — it is never sent as a field in the request
+body.
+
+> **Caveat when moving definitions between applications.** `--remove-unlisted`
+> is full-replace *per application, per category*, and an application is only
+> contacted if at least one definition resolves to it. If you move the last
+> scheduled job out of `billing`, `billing` is not part of the next sync at all,
+> so its now-orphaned jobs are **not** pruned — they stay on the platform until
+> you remove them by hand or sync that application with an explicit `--app`.
+
 ### Step 2: Create Definition Classes
 
 Create PHP classes with FlowCatalyst attributes in your configured paths.

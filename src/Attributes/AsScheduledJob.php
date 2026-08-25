@@ -58,6 +58,11 @@ final class AsScheduledJob
      * @param int|null $deliveryMaxAttempts Webhook delivery retries (default 3)
      * @param string|null $targetUrl Override the callback URL (default: APP_URL + the SDK's /api/_fc/scheduled-jobs/process route)
      * @param string|null $clientId Client/tenant that owns this job. Null = platform-scoped (anchor only).
+     * @param string|null $application Application code this job belongs to.
+     *        Overrides the global `application_code` / `application_map` during
+     *        sync — set it when one codebase defines scheduled jobs for more
+     *        than one application. Null = resolve from the namespace map /
+     *        default.
      */
     public function __construct(
         public readonly string $code,
@@ -72,6 +77,7 @@ final class AsScheduledJob
         public readonly ?int $deliveryMaxAttempts = null,
         public readonly ?string $targetUrl = null,
         public readonly ?string $clientId = null,
+        public readonly ?string $application = null,
     ) {}
 
     /**

@@ -46,6 +46,11 @@ final class AsSubscription
      * @param int|null $timeoutSeconds Timeout for target response
      * @param int|null $maxRetries Maximum retry attempts
      * @param bool|null $dataOnly If true, only send event data (no envelope)
+     * @param string|null $application Application code this subscription belongs
+     *        to. Overrides the global `application_code` / `application_map`
+     *        during sync — set it when one codebase defines subscriptions for
+     *        more than one application. Null = resolve from the namespace map /
+     *        default.
      */
     public function __construct(
         public readonly string $code,
@@ -64,6 +69,7 @@ final class AsSubscription
         public readonly ?int $timeoutSeconds = null,
         public readonly ?int $maxRetries = null,
         public readonly ?bool $dataOnly = null,
+        public readonly ?string $application = null,
     ) {}
 
     /**
