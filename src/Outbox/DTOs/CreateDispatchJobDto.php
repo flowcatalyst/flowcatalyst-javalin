@@ -226,7 +226,7 @@ class CreateDispatchJobDto
 
     /**
      * Set the dispatch mode: IMMEDIATE, NEXT_ON_ERROR or BLOCK_ON_ERROR.
-     * Controls ordering within the message group; unset defaults to IMMEDIATE.
+     * Controls ordering within the message group; unset defaults to NEXT_ON_ERROR (in-sequence, moving on past a failure).
      */
     public function withMode(string $mode): self
     {
