@@ -23,7 +23,7 @@ listed under "Platform work, deferred" below and none of it is blocked.
 ### Router progress — data plane COMPLETE (2026-08-25)
 
 Spec gate cleared (`docs/spec/router.md` §0, current against Go `eff2a29`).
-**465 router tests**, all in the default `mvn test`, no profiles or tags.
+**565 router tests**, all in the default `mvn test`, no profiles or tags.
 
 | Package | What it holds |
 |---|---|
@@ -62,6 +62,43 @@ protects a downed target; and ACK-on-500 assumes the target re-drives what
 it rejected — true of the platform's dispatch endpoint, not of a third-party
 ordered target.
 
+### Hardening pass (2026-08-25)
+
+Four commits after the data plane landed, prompted by an architecture
+review. Three confirmed message-loss defects, all sharing a shape worth
+remembering: **the loss was invisible from the broker.** The message left,
+which is the normal thing to happen, so no counter, log or alert could
+distinguish it from a delivery — and in two of the three, a test existed
+that asserted the wrong thing and passed.
+
+| Defect | Why it was invisible |
+|---|---|
+| `MediationOutcome.targetUnavailable()` was a *defaulted* boolean and only two of seven outcomes overrode it, so `CircuitOpen`/`RateLimited`/`Deferred` inherited "the message is at fault" — an ordered group whose head met an open breaker was ACK-deleted, siblings and all | An ACK is what success looks like |
+| A worker interrupted mid-backoff returned without releasing in-flight ownership; the redelivery it relied on was then classified as a duplicate and dropped | No broker call at all, so nothing to observe |
+| `NatsQueue` and `SqsQueue` each opened an expensive resource and then did more work that can throw before anything owned it — and `QueueFactory` turns the throw into an empty `Optional`, so the reconfigure loop re-leaked on **every config poll** | A failed queue build is logged; the strand is not |
+
+Design consequences kept:
+
+- **No defaulted answers on `MediationOutcome`.** `disposition()` and
+  `statusCode()` are both abstract, so all seven records must answer and a
+  new outcome cannot inherit a wrong one. `OrderedGroups` switches on the
+  disposition rather than on a boolean.
+- **`Broker.release(message)`** is a third verb beside ack and nack: give up
+  ownership, say nothing to the broker. Nacking would race the broker's own
+  redelivery.
+- **JFR events at the choke points** (`observability.jfr`) — `MessageSettled`
+  on every message that leaves, carrying *who decided* as well as what was
+  done; `GroupDecision` with its blast radius; `Dispatch` as a duration
+  event. Tests read them back out of a real dumped recording, because a
+  `commit()` that runs proves nothing about what JFR persists.
+- **`Concurrently`** moved to its own package and now bounds `Pool.handBack`,
+  which fanned out with no deadline on the shutdown path.
+
+`StructuredTaskScope` for `Pool` was assessed and **rejected**: unbounded
+lifetime, work arriving from consumer poll threads, no join point, and
+`fork()` must be called by the scope owner. It belongs where the fan-out is
+bounded and joined, which is where it already is.
+
 ### Build and tooling notes (2026-08-25)
 
 - **`--enable-preview` is now genuinely enabled** — compiler args *and*
@@ -71,6 +108,9 @@ ordered target.
 - Docs now use `$(mise where graalvm)` instead of a hardcoded JDK path —
   `agent-prompts.md` is pasted into subagent prompts, so a point-release
   bump used to break every delegated agent.
+- `timeout(1)` is **not** on macOS. Use surefire's `-Dsurefire.timeout=<s>`
+  to bound a test that may hang; `timeout ... mvn` silently exits 127 and
+  looks like a passing mutation check.
 - **Concurrent Maven runs share `server/target/` and clobber each other.**
   Several "flaky" failures today were this, not real. An agent's completion
   notification does **not** mean its build has stopped — check for live

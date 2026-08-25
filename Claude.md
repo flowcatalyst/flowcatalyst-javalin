@@ -23,6 +23,7 @@ was broken:
 | `classify()` returns `Malformed` | nothing ever called `term()`, so the message redelivered for ever |
 | `dispatchMode` was populated | it was populated with a value that parsed back to `IMMEDIATE` |
 | consumers were started | they were started one at a time, not concurrently as claimed |
+| `targetUnavailable()` is true for a connection error | five of seven outcomes never overrode the default, so an open circuit ACK-deleted whole ordered groups |
 
 The habit that catches these: **after a test passes, break the code on
 purpose and confirm that same test fails.** If it still passes, the test is
@@ -40,6 +41,15 @@ Corollaries worth stating:
 - **A timing claim needs a timing assertion.** "Built concurrently" is not
   proven by a passing test; it is proven by elapsed time being closer to the
   slowest item than to their sum.
+- **A defaulted member on a sealed interface is untested by construction.**
+  An exhaustive `switch` protects against a missing *case*; nothing protects
+  against a wrong *default*, because the records that inherit it are exactly
+  the ones no test thought to name. If every implementation ought to have an
+  opinion, make the member abstract and let the compiler collect them.
+- **Mutation-check with a bounded runner.** `timeout` is not on macOS —
+  `timeout 60 mvn ...` exits 127 immediately and reads like a killed mutant.
+  Use `-Dsurefire.timeout=<seconds>`; a mutant that hangs the fork is a
+  killed mutant, but only if something actually timed it.
 - If a behaviour genuinely cannot be pinned cheaply, **say so** and leave it
   unasserted rather than writing something fragile that will be deleted the
   first time it flakes.
