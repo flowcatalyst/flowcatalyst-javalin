@@ -8,6 +8,7 @@ import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.RouterServer;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
+import io.flowcatalyst.router.observability.WarningNotifier;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
@@ -53,6 +54,10 @@ public final class Router implements AutoCloseable {
     private final BreakerRegistry breakers;
     private final WarningStore warnings;
     private final Traffic traffic;
+
+    /// Held only so shutdown can flush it — the last notices an instance
+    /// sends are the ones most likely to explain why it is going away.
+    private final Warnings notifier;
     private final LeaderElection election;
     private final LeaderElection.Config electionConfig;
     private final UnifiedJedis redisClient;
@@ -66,7 +71,8 @@ public final class Router implements AutoCloseable {
     private Router(RouterServer server, RouterManager manager, InFlightTracker tracker,
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
-                   UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics) {
+                   UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
+                   Warnings notifier) {
         this.server = server;
         this.manager = manager;
         this.tracker = tracker;
@@ -76,6 +82,7 @@ public final class Router implements AutoCloseable {
         this.election = election;
         this.electionConfig = electionConfig;
         this.redisClient = redisClient;
+        this.notifier = notifier;
         this.poolMetrics.putAll(metrics);
     }
 
@@ -118,11 +125,19 @@ public final class Router implements AutoCloseable {
     /// why a router-only instance can skip Postgres entirely.
     public static Router start(Env env, DataSource dataSource, Clock clock) {
         var warnings = new WarningStore(clock);
+        // The store is what the dashboard reads; the notifier is what reaches
+        // someone who is not looking at the dashboard. Raisers get both.
+        var notifier = WarningNotifier.create(env.routerNotifyWebhookUrl(),
+                Warnings.Severity.WARNING, clock);
+        if (notifier instanceof WarningNotifier started) {
+            started.start();
+        }
+        var warningSink = Warnings.tee(warnings, notifier);
         var tracker = new InFlightTracker(clock);
         var breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, clock);
         var mediator = new HttpMediator(HttpMediator.defaultClient(),
                 env.routerDevMode() ? HttpMediator.DEV_TIMEOUT : HttpMediator.PRODUCTION_TIMEOUT,
-                breakers, clock, warnings);
+                breakers, clock, warningSink);
 
         var metrics = new ConcurrentHashMap<String, PoolMetricsCollector>();
         // The broker is resolved per message from the queue it came from, so
@@ -133,7 +148,7 @@ public final class Router implements AutoCloseable {
             return new Pool(config, mediator, brokerRef.get(), metrics.get(config.code()), clock);
         };
 
-        var manager = new RouterManager(tracker, warnings, clock, poolFactory);
+        var manager = new RouterManager(tracker, warningSink, clock, poolFactory);
         brokerRef.set(new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker));
 
         var redisClient = redisFor(env);
@@ -143,7 +158,7 @@ public final class Router implements AutoCloseable {
 
         var server = new RouterServer(manager, tracker, election,
                 consumerFactory(dataSource), configSource(env),
-                warnings, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
+                warningSink, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
 
         // Traffic follows leadership: an instance that is not leading has
         // nothing useful to serve from the router surface.
@@ -158,7 +173,8 @@ public final class Router implements AutoCloseable {
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
-        return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig, redisClient, metrics);
+        return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
+                redisClient, metrics, notifier);
     }
 
     private static LeaderElection.Config electionConfig(Env env) {
@@ -285,6 +301,13 @@ public final class Router implements AutoCloseable {
         // client that did it.
         traffic.deregister();
         traffic.close();
+        if (notifier instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                LOG.warn("flushing the warning notifier failed", e);
+            }
+        }
         if (redisClient != null) {
             redisClient.close();
         }

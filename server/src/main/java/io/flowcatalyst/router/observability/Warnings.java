@@ -23,4 +23,25 @@ public interface Warnings {
 
     Warnings NO_OP = (severity, category, message) -> {
     };
+
+    /// Fans one warning out to several sinks — typically the [WarningStore]
+    /// the dashboard reads and a [WarningNotifier] that posts to a channel.
+    ///
+    /// Each sink is isolated: one that throws must not stop the others, and
+    /// must not propagate into the delivery path that raised the warning. A
+    /// warning is a side note about something that already went wrong, and it
+    /// has no business making that worse.
+    static Warnings tee(Warnings... sinks) {
+        var all = java.util.List.of(sinks);
+        return (severity, category, message) -> {
+            for (var sink : all) {
+                try {
+                    sink.raise(severity, category, message);
+                } catch (RuntimeException e) {
+                    org.slf4j.LoggerFactory.getLogger(Warnings.class)
+                            .warn("a warning sink threw; continuing with the others", e);
+                }
+            }
+        };
+    }
 }
