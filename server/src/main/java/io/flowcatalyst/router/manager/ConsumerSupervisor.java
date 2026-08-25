@@ -96,21 +96,22 @@ public final class ConsumerSupervisor {
 
     /// Rebuilds a stalled consumer.
     ///
-    /// The attempt counter is incremented **only on a successful rebuild**,
-    /// which is Go's behaviour and is questionable: a consumer that can never
-    /// be rebuilt therefore never escalates to CRITICAL, so the one failure
-    /// mode most deserving of attention is the quietest. Kept because the
-    /// question is unruled (§4.4, §13 Q28) — the alternative is a one-line
-    /// change here.
+    /// **Every attempt is counted, successful or not** (owner ruling
+    /// 2026-08-25, §13 Q28 — a deliberate deviation from Go).
+    ///
+    /// Go increments only on a *successful* rebuild, which inverts the
+    /// escalation it exists for: a consumer that can never be rebuilt — bad
+    /// credentials, a deleted queue, a wrong URI — would warn at WARNING
+    /// forever, once per tick, and never reach CRITICAL. The failure mode
+    /// most needing a human stayed the quietest, while one that kept
+    /// rebuilding and re-stalling escalated properly. The counter answers
+    /// "how many times has the platform tried and failed to fix this?", and
+    /// a failed rebuild is more of that, not less.
     ///
     /// @return the replacement, or empty when it could not be built
     public Optional<Consumer> restart(String queueName, QueueConfig config, Consumer stalled,
                                       RouterManager.ConsumerFactory factory) throws InterruptedException {
-        var attempt = restartAttempts(queueName) + 1;
-        warnings.raise(
-                attempt > CRITICAL_AFTER_ATTEMPTS ? Warnings.Severity.CRITICAL : Warnings.Severity.WARNING,
-                "CONSUMER_HEALTH",
-                "Consumer " + queueName + " is stalled, restart attempt " + attempt);
+        var attempt = attempts.computeIfAbsent(queueName, ignored -> new AtomicInteger()).incrementAndGet();
 
         Thread.sleep(restartDelay);
 
@@ -121,13 +122,26 @@ public final class ConsumerSupervisor {
         stalled.close();
 
         var replacement = factory.create(config);
+        // The two outcomes point at different causes and so read differently:
+        // a rebuild that keeps succeeding suggests broker or network health,
+        // one that cannot rebuild at all suggests configuration.
+        warnings.raise(severityFor(attempt), "CONSUMER_HEALTH", replacement.isPresent()
+                ? "Consumer " + queueName + " was stalled and has been rebuilt (attempt " + attempt + ")"
+                : "Consumer " + queueName + " is stalled and cannot be rebuilt (attempt " + attempt + ")");
+
         if (replacement.isEmpty()) {
-            log.warn("could not rebuild consumer {}; will try again on the next tick", queueName);
+            log.warn("could not rebuild consumer {} (attempt {}); will try again on the next tick",
+                    queueName, attempt);
             return Optional.empty();
         }
-        attempts.computeIfAbsent(queueName, ignored -> new AtomicInteger()).incrementAndGet();
         log.info("consumer {} rebuilt (attempt {})", queueName, attempt);
         return replacement;
+    }
+
+    /// Repeated restarts are the platform failing to fix itself, and past
+    /// some point that is not a warning any more.
+    private Warnings.Severity severityFor(int attempt) {
+        return attempt > CRITICAL_AFTER_ATTEMPTS ? Warnings.Severity.CRITICAL : Warnings.Severity.WARNING;
     }
 
     /// When a freshly started loop should be considered to have last polled,

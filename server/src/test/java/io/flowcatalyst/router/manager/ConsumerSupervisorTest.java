@@ -78,7 +78,7 @@ class ConsumerSupervisorTest {
         assertThat(stalled.closed).isTrue();
         assertThat(built).hasSize(1);
         assertThat(warnings.raised).singleElement().asString()
-                .contains("CONSUMER_HEALTH").contains("restart attempt 1");
+                .contains("CONSUMER_HEALTH").contains("attempt 1");
     }
 
     @Test
@@ -98,22 +98,38 @@ class ConsumerSupervisorTest {
     }
 
     @Test
-    @DisplayName("a failed rebuild does not count as an attempt — the Go behaviour, and questionable")
-    void failedRebuildDoesNotCount() throws Exception {
-        // A consumer that can NEVER be rebuilt therefore never escalates to
-        // CRITICAL, so the failure mode most deserving of attention is the
-        // quietest. Kept because Q28 is unruled; pinned so changing it is a
-        // decision rather than a slip.
-        IntStream.range(0, 5).forEach(i -> {
-            try {
-                supervisor.restart("q://1", config, new FakeConsumer("q://1"), queue -> Optional.empty());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        });
+    @DisplayName("a failed rebuild counts as an attempt, so a hopeless consumer still escalates")
+    void failedRebuildCountsAndEscalates() throws Exception {
+        // Q28 ruled: this is the case Go got backwards. A consumer that can
+        // never be rebuilt — bad credentials, deleted queue, wrong URI —
+        // would otherwise warn at WARNING forever and never reach CRITICAL,
+        // leaving the failure mode that most needs a human the quietest.
+        IntStream.range(0, ConsumerSupervisor.CRITICAL_AFTER_ATTEMPTS + 1).forEach(i -> restartFailing());
 
-        assertThat(supervisor.restartAttempts("q://1")).isZero();
-        assertThat(warnings.raised).allSatisfy(raised -> assertThat(raised).startsWith("WARNING"));
+        assertThat(supervisor.restartAttempts("q://1"))
+                .isEqualTo(ConsumerSupervisor.CRITICAL_AFTER_ATTEMPTS + 1);
+        assertThat(warnings.raised.getLast()).startsWith("CRITICAL");
+    }
+
+    @Test
+    @DisplayName("the warning says whether it rebuilt or could not, because the causes differ")
+    void warningDistinguishesTheOutcome() throws Exception {
+        // A rebuild that keeps succeeding points at broker or network health;
+        // one that cannot rebuild at all points at configuration.
+        supervisor.restart("q://1", config, new FakeConsumer("q://1"),
+                queue -> Optional.of(new FakeConsumer(queue.queueName())));
+        restartFailing();
+
+        assertThat(warnings.raised.getFirst()).contains("has been rebuilt");
+        assertThat(warnings.raised.getLast()).contains("cannot be rebuilt");
+    }
+
+    private void restartFailing() {
+        try {
+            supervisor.restart("q://1", config, new FakeConsumer("q://1"), queue -> Optional.empty());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test

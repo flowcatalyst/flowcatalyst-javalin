@@ -1655,7 +1655,9 @@ Each line: behaviour → pinning test (file in `router/` unless noted).
 25. Warning store add/get, acknowledge (false for unknown id), filter by severity, eviction keeps ≤ max, `Active` filters acked and by age → `warning_test.go`.
 26. Ordered head fails twice then succeeds: attempt order `m1,m1,m1,m2,m3`; no nacks; all acked → `pool_cascade_test.go: TestPoolOrderedRetryPreservesFIFO`.
 27. IMMEDIATE retries independently: m1 attempted 3 times, others unaffected, no nacks → `TestPoolImmediateRetriesIndependently`.
-28. Drainer cancelled while waiting for a slot leaves the group idle with the message re-fronted; a later submit resumes in FIFO; drained group entry is removed → `TestPoolOrderedGroupRecoversAfterCancelDuringSemWait`.
+28. **RULED (owner, 2026-08-25): count every restart attempt, successful or not.** Go increments the counter only on a *successful* rebuild, which inverts the escalation it exists for: a consumer that can never be rebuilt — bad credentials, a deleted queue, a wrong URI — warns at `WARNING` forever, once per tick, and never reaches `CRITICAL`, so the failure mode most needing a human stays the quietest while one that keeps rebuilding and re-stalling escalates properly. The counter answers "how many times has the platform tried and failed to fix this?", and a failed rebuild is more of that, not less. Java also distinguishes the two outcomes in the warning text ("has been rebuilt" vs "cannot be rebuilt") because they point at different causes — broker health versus configuration. Deliberate deviation; `ConsumerSupervisorTest` pins both.
+
+
 29. Drainer cancelled during backoff likewise → `TestPoolOrderedGroupRecoversAfterCancelDuringBackoff`.
 30. Success ACKs exactly once (`processDone`); 5xx → retry, no broker action, backoff ≥30 s; circuit-open → retry, no broker action, backoff ≥5 s; panic → retry, no broker action → `guardrail_test.go: TestGuardrail_Resolution*, _RetryOn*`.
 31. 600 concurrent submits across IMMEDIATE and ordered paths all resolve exactly once under `-race` → `TestGuardrail_ConcurrentSubmitNoRaceAndResolvesEach`.
