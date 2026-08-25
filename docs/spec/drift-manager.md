@@ -419,3 +419,13 @@ guaranteed by construction (an id-bearing value type, not a bare string plus
 a side map). No Java change is needed here; this is a case where the earlier
 Java design decision (carry `brokerMessageId` on `QueuedMessage` itself)
 independently avoided a defect Go had to discover and fix separately.
+
+
+---
+
+## RULED 2026-08-25 (owner)
+
+The Postgres quarantine divergence this document identified is decided:
+**`queue_messages_failed` as the table, keeping the LATEST failure.** Java
+already does both, so no Java change; the Go-side change is written up as
+Fix 2 in `docs/spec/router-fixes.md`.

@@ -57,3 +57,40 @@ is the one that regressed when `flushGroup` was added.
 **Java.** Already correct: `MediationOutcome.Success` carries the true
 status, and `MediationResponseTest.carriesRealStatus` pins both the plain
 and the flushing case. No Java change needed once Go lands.
+
+---
+
+## Fix 2 — the quarantine table and its conflict policy (owner ruling 2026-08-25)
+
+**Owner ruling: use `queue_messages_failed`, and keep the LATEST failure.**
+Java already does both; this is a Go-side change.
+
+**Divergence.** Both implementations move a malformed row out of the live
+queue table in one atomic statement and carry on with the batch — the same
+ruling (Q17), reached separately. Two details differ, and neither was
+documented until the 2026-08-25 re-extraction:
+
+| | Go (`31f22de`) | Java | Ruled |
+|---|---|---|---|
+| table | `queue_message_errors` | `queue_messages_failed` | **`queue_messages_failed`** |
+| error column | `error` | `error_message` | follow the table |
+| re-quarantine | `ON CONFLICT … DO NOTHING` → keeps the **first** failure | `ON CONFLICT … DO UPDATE` → keeps the **latest** | **latest** |
+| error text | unbounded | bounded to 1000 chars | Java's |
+
+**Why the table name matters more than it looks.** Two names means an
+operator has two places to look, and a rollback from Java to Go — or the
+reverse — silently changes where quarantined rows land. Rows written before
+the switch become invisible to the tooling that runs after it. That is a
+migration hazard, not a naming preference.
+
+**Why latest, not first.** A row that fails, is re-queued and fails again is
+almost always being *worked on*: someone changed the payload, or the schema,
+or the consumer. The most recent failure is the one that describes what is
+wrong now. `DO NOTHING` pins the record to the first attempt and silently
+discards every later diagnosis, which is precisely backwards for the case the
+table exists to serve.
+
+**Change in Go:** rename the table and its error column to match, and switch
+`ON CONFLICT (queue_name, id) DO NOTHING` to `DO UPDATE`. Bounding the stored
+error text is worth taking at the same time — an unbounded error string from a
+pathological payload is stored verbatim, once per queue row.
