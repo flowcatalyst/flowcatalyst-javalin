@@ -184,13 +184,38 @@ class WarningStoreTest {
         // Push it past the threshold.
         clock.advance(Duration.ofMinutes(2));
         store.cleanup();
+
+        // The assertion that was impossible before the owner's ruling. While
+        // AUTO_ACKNOWLEDGE_AGE equalled MAX_WARNING_AGE, the same cleanup()
+        // pass that acknowledged a warning also deleted it for being 8 hours
+        // old, so no caller could ever observe an auto-acknowledged warning
+        // and this test could only assert its ABSENCE — which would hold just
+        // as well if auto-acknowledge did nothing at all.
         var acked = store.snapshot().warnings().stream()
                 .filter(w -> w.id().equals(id)).findFirst();
-        // Because AUTO_ACKNOWLEDGE_AGE == MAX_WARNING_AGE (the documented
-        // "moot" case, constant 45), this same cleanup() call also deletes
-        // it for being past MAX_WARNING_AGE -- so it won't be found at all,
-        // which itself pins the "auto-ack is moot" behaviour.
-        assertThat(acked).isEmpty();
+        assertThat(acked).as("auto-acknowledged, and still here to be read").isPresent();
+        assertThat(acked.orElseThrow().acknowledged()).isTrue();
+        assertThat(store.unacknowledged()).as("no longer drives health").isEmpty();
+    }
+
+    @Test
+    @DisplayName("an auto-acknowledged warning stays visible until MAX_WARNING_AGE")
+    void autoAcknowledgedWarningsRemainVisible() {
+        // Acknowledging stops a warning driving health; it must not hide it.
+        // An operator arriving hours later still needs to see what happened.
+        store.raise(Severity.CRITICAL, "CONFIGURATION", "HTTP 501: not implemented");
+
+        clock.advance(WarningStore.AUTO_ACKNOWLEDGE_AGE.plusMinutes(1));
+        store.cleanup();
+
+        assertThat(store.count()).as("still in history").isEqualTo(1);
+        assertThat(store.critical())
+                .as("an acknowledged CRITICAL no longer holds the router Degraded")
+                .isEmpty();
+
+        clock.advance(WarningStore.MAX_WARNING_AGE);
+        store.cleanup();
+        assertThat(store.count()).as("dropped only once genuinely old").isZero();
     }
 
     @Test

@@ -39,13 +39,23 @@ public final class WarningStore implements Warnings {
     public static final Duration MAX_WARNING_AGE = Duration.ofHours(8);
     public static final int MAX_WARNINGS = 1000;
 
-    // TODO(Q45-ish): Go's AutoAcknowledgeAge defaults to MaxWarningAge (both
-    // 8h), so cleanup() auto-acks a warning in the very same pass that then
-    // deletes it for being past MaxWarningAge — auto-ack never has an
-    // observable effect on anything a caller could read in between.
-    // docs/spec/router.md constant 45 flags this as "makes auto-ack moot."
-    // Kept as-is rather than fixed silently.
-    public static final Duration AUTO_ACKNOWLEDGE_AGE = MAX_WARNING_AGE;
+    /// How long an unacknowledged warning holds the router's attention before
+    /// `cleanup()` marks it read on the operator's behalf.
+    ///
+    /// **Owner ruling 2026-08-25: one hour.** It must be shorter than
+    /// [#MAX_WARNING_AGE] to do anything at all — Go sets both to 8h, so
+    /// `cleanup()` auto-acknowledges a warning in the very same pass that then
+    /// deletes it for being 8 hours old, and nothing can ever read it in the
+    /// auto-acknowledged state (`docs/spec/router.md` constant 45, "makes
+    /// auto-ack moot"). The setting existed, had a test, and did nothing.
+    ///
+    /// One hour is the answer to a real operational question: how long should
+    /// a single unacknowledged CRITICAL keep the router reporting `Degraded`
+    /// when nobody has looked at it? Long enough to be noticed on a shift,
+    /// short enough not to mask the next genuine one. The warning stays
+    /// **visible in history for the full 8 hours** either way — acknowledging
+    /// it stops it driving health, it does not hide it.
+    public static final Duration AUTO_ACKNOWLEDGE_AGE = Duration.ofHours(1);
 
     /// The `Warnings` interface (which this class does not own) has no
     /// `source` parameter — every raiser shares one `Warnings` instance

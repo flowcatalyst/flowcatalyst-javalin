@@ -50,23 +50,30 @@ sections below and this spec is current against Go `eff2a29`.**
 > | `18f1460` | `manager.go` | **Q16.** Scheduler propagates the client-namespaced pool code. |
 > | `4f2d52c` | `mediator.go` | **501** as a terminal ACK. Java matched this on 2026-08-25 via the conformance corpus. |
 >
-> **MATERIAL DIVERGENCE FOUND WHILE CHECKING — needs an owner ruling.**
+> **RULED 2026-08-25 (owner): keep Java's behaviour.** Under
+> `BLOCK_ON_ERROR` with the head terminally failed, the untried siblings are
+> **ACKed off the broker**, not handed back.
 >
-> Under `BLOCK_ON_ERROR` with the head terminally failed, the two now do
-> different things to the *siblings*, which were never delivered and have
-> nothing wrong with them:
+> The reasoning, which turns on what the mode is *for*: `BLOCK_ON_ERROR`
+> exists to guarantee nothing behind a failure is applied before it. Go's
+> nack does not deliver that. Nacked messages return on the **broker's own
+> timer**, not "once the failure is resolved" as its comment claims — and by
+> then the head has been ACKed away, so the first sibling becomes the new
+> head and is delivered anyway. "Add item" lands on an order that was never
+> created. Java's ACK honours the contract; Go's silently breaks it.
 >
-> - **Go** (`8804827`) NACKs them back to the broker. They redeliver once the
->   failure is resolved; the broker holds them meanwhile.
-> - **Java** ACKs them off the broker, on the recorded Q1 ruling that "human
->   review re-queues the group". The messages are **deleted** and exist only
->   wherever the platform re-sends them from.
+> The messages are not lost: they remain as dispatch-job rows in the
+> platform's store, which is the system of record. And a terminal 500 on the
+> platform's own dispatch endpoint is close to hypothetical in practice.
 >
-> Java's is the riskier of the two by a wide margin: it destroys untried
-> messages and depends on a re-queue path that must exist and must be correct.
-> Go's needs nothing to exist. If the platform re-queue is real and trusted,
-> Java's is defensible; if it is not yet built, this is live data loss on every
-> blocked group. **Do not port around this — decide it.**
+> **Residual gap, worth knowing rather than acting on now:** nothing marks
+> those sibling jobs for review. Their rows stay `QUEUED`/`PROCESSING` rather
+> than `FAILED`, so they do not appear in a failed-jobs list, and
+> `RequeueDispatchJobs` re-sends only ids an operator names. The trace does
+> exist — every one of those ACKs emits a `MessageSettled` JFR event with
+> reason `rejected-group-blocked`, so the affected ids are recoverable from a
+> recording. Closing the gap properly means the platform learning that the
+> router dropped a group, which is platform work, not router work.
  The owner
 confirms no router work is in flight, so this target is stable.
 
