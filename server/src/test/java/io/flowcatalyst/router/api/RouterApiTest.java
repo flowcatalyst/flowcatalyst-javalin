@@ -1,0 +1,746 @@
+package io.flowcatalyst.router.api;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.shared.TestHttp;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.router.inflight.InFlightMessage;
+import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.manager.RouterManager;
+import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.WarningStore;
+import io.flowcatalyst.router.policy.BreakerRegistry;
+import io.flowcatalyst.router.policy.CircuitBreaker;
+import io.flowcatalyst.router.pool.Broker;
+import io.flowcatalyst.router.pool.Mediator;
+import io.flowcatalyst.router.pool.Pool;
+import io.flowcatalyst.router.pool.PoolMetrics;
+import io.flowcatalyst.router.pool.QueuedMessage;
+import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.QueueMetrics;
+import io.flowcatalyst.router.standby.LeaderElection;
+import io.flowcatalyst.router.standby.LockStore;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.net.http.HttpResponse;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// End-to-end HTTP coverage of the router monitoring API (`docs/spec/router.md`
+/// §9.1) against real [WarningStore]/[InFlightTracker]/[BreakerRegistry]/
+/// [RouterManager]/[LeaderElection] instances — no mocking of the components
+/// this module reads from, per `CONVENTIONS.md` §6.
+///
+/// `http` is a fully-wired instance; `bare` shares the same warnings/tracker
+/// but has `manager`/`breakers`/`election` all `null`, to exercise the
+/// provider-absent branches (spec §9.1: "503 for mutations/lookups, empty
+/// payload for lists").
+class RouterApiTest {
+
+    private static final Clock CLOCK = Clock.systemUTC();
+    private static final Mediator NO_OP_MEDIATOR = (msg, recordFailure) -> {
+        throw new UnsupportedOperationException("not exercised by these tests");
+    };
+    private static final Broker NO_OP_BROKER = new Broker() {
+        @Override
+        public void ack(QueuedMessage message) {
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+    };
+
+    private static WarningStore warnings;
+    private static InFlightTracker tracker;
+    private static BreakerRegistry breakers;
+    private static RouterManager manager;
+    private static Pool poolA;
+    private static RecordingConsumer consumerQ1;
+    private static TestHttp http;
+    private static TestHttp bare;
+
+    @BeforeAll
+    static void start() {
+        warnings = new WarningStore(CLOCK);
+        tracker = new InFlightTracker(CLOCK);
+        breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, CLOCK);
+        manager = new RouterManager(tracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        poolA = new Pool(new Pool.Config("POOL-A", 5, 100), NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        manager.registerPool("POOL-A", poolA);
+        consumerQ1 = new RecordingConsumer("queue-1");
+        manager.registerConsumer(consumerQ1);
+
+        var electionConfig = new LeaderElection.Config(true, "fc:test:leader", "instance-a",
+                Duration.ofSeconds(30), Duration.ofSeconds(10));
+        var election = new LeaderElection(electionConfig, new AlwaysAcquireStore(), CLOCK);
+        election.start();
+
+        var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
+                "test-version", "/router", null);
+        http = new TestHttp(cfg -> RouterApi.register(cfg.routes, state));
+
+        var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null);
+        bare = new TestHttp(cfg -> RouterApi.register(cfg.routes, bareState));
+    }
+
+    @AfterAll
+    static void stop() {
+        http.close();
+        bare.close();
+        poolA.close();
+    }
+
+    private static JsonNode json(HttpResponse<String> r) {
+        try {
+            return Json.MAPPER.readTree(r.body());
+        } catch (Exception e) {
+            throw new IllegalStateException("not JSON: " + r.body(), e);
+        }
+    }
+
+    private static String tag() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+    }
+
+    // ── Health ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /health reports the snake_case SimpleHealthResponse shape")
+    void healthShape() {
+        var r = http.get("/router/health");
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        // Pins the exact snake_case field names the spec's table requires.
+        assertThat(body.has("status")).isTrue();
+        assertThat(body.get("version").asText()).isEqualTo("test-version");
+        assertThat(body.has("active_warnings")).isTrue();
+        assertThat(body.has("critical_warnings")).isTrue();
+        assertThat(body.has("activeWarnings")).as("must be snake_case, not camelCase").isFalse();
+    }
+
+    @Test
+    @DisplayName("GET /q/health is the same handler as /health")
+    void healthAlias() {
+        assertThat(http.get("/router/q/health").statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("GET /health/live always answers 200 LIVE")
+    void liveness() {
+        var r = http.get("/router/health/live");
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(json(r).get("status").asText()).isEqualTo("LIVE");
+    }
+
+    @Test
+    @DisplayName("readiness and health status turn DEGRADED on an unacknowledged CRITICAL warning, and back on acknowledge")
+    void readinessDegradesOnCritical() {
+        var isolated = new WarningStore(CLOCK);
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
+                "v", "/router", null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            assertThat(isolatedHttp.get("/router/health/ready").statusCode())
+                    .as("healthy with no warnings").isEqualTo(200);
+            assertThat(json(isolatedHttp.get("/router/health/ready")).get("status").asText()).isEqualTo("READY");
+
+            isolated.raise(Warnings.Severity.CRITICAL, "CONFIGURATION", "boom-" + tag());
+
+            var ready = isolatedHttp.get("/router/health/ready");
+            assertThat(ready.statusCode()).as("critical warning -> 503 NOT_READY (spec §9.4)").isEqualTo(503);
+            assertThat(json(ready).get("status").asText()).isEqualTo("NOT_READY");
+
+            var health = json(isolatedHttp.get("/router/health"));
+            assertThat(health.get("status").asText()).isEqualTo("DEGRADED");
+            assertThat(health.get("critical_warnings").asInt()).isEqualTo(1);
+
+            var startup = isolatedHttp.get("/router/health/startup");
+            assertThat(startup.statusCode()).isEqualTo(503);
+
+            var id = isolated.unacknowledged().stream().findFirst().orElseThrow().id();
+            isolated.acknowledge(id);
+
+            assertThat(isolatedHttp.get("/router/health/ready").statusCode())
+                    .as("acknowledging the only critical warning clears DEGRADED").isEqualTo(200);
+        }
+    }
+
+    @Test
+    @DisplayName("WARNING and DEGRADED thresholds follow the active-warning count (spec §9.4 table)")
+    void warningThresholds() {
+        var isolated = new WarningStore(CLOCK);
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
+                "v", "/router", null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            for (int i = 0; i < 6; i++) {
+                isolated.raise(Warnings.Severity.WARNING, "ROUTING", "w" + i + "-" + tag());
+            }
+            var body = json(isolatedHttp.get("/router/health"));
+            assertThat(body.get("status").asText()).as("active > 5 -> WARNING").isEqualTo("WARNING");
+
+            for (int i = 6; i < 21; i++) {
+                isolated.raise(Warnings.Severity.WARNING, "ROUTING", "w" + i + "-" + tag());
+            }
+            assertThat(json(isolatedHttp.get("/router/health")).get("status").asText())
+                    .as("active > 20 -> DEGRADED even with zero criticals").isEqualTo("DEGRADED");
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/health reports totalPools from the manager and always-zero totalQueues/healthyQueues")
+    void monitoringHealth() {
+        var body = json(http.get("/router/monitoring/health"));
+        assertThat(body.has("timestamp")).isTrue();
+        assertThat(body.has("uptimeMillis")).isTrue();
+        var details = body.get("details");
+        assertThat(details.get("totalPools").asInt()).as("one pool registered").isEqualTo(1);
+        assertThat(details.get("healthyPools").asInt()).isEqualTo(1);
+        // Never-fed consumer model (spec §9.4) -> always 0, deliberately.
+        assertThat(details.get("totalQueues").asInt()).isZero();
+        assertThat(details.get("healthyQueues").asInt()).isZero();
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/consumer-health is always the empty-consumers shape")
+    void consumerHealthAlwaysEmpty() {
+        var body = json(http.get("/router/monitoring/consumer-health"));
+        assertThat(body.has("currentTimeMs")).isTrue();
+        assertThat(body.has("currentTime")).isTrue();
+        assertThat(body.get("consumers").isObject()).isTrue();
+        assertThat(body.get("consumers").isEmpty()).isTrue();
+    }
+
+    // ── Warnings ──────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("/warnings supports severity, category and acknowledged=false filters, WARN aliases WARNING, newest first")
+    void warningsFiltering() {
+        String t = tag();
+        warnings.raise(Warnings.Severity.WARNING, "ROUTING", "route-" + t);
+        warnings.raise(Warnings.Severity.ERROR, "CONFIGURATION", "cfg-" + t);
+        warnings.raise(Warnings.Severity.CRITICAL, "CONFIGURATION", "crit-" + t);
+
+        var all = json(http.get("/router/warnings?category=CONFIGURATION"));
+        var messages = new java.util.ArrayList<String>();
+        all.forEach(n -> messages.add(n.get("message").asText()));
+        assertThat(messages).as("category filter, case-insens.").contains("cfg-" + t, "crit-" + t)
+                .doesNotContain("route-" + t);
+
+        var warn = json(http.get("/router/warnings?severity=WARN"));
+        var warnMessages = new java.util.ArrayList<String>();
+        warn.forEach(n -> warnMessages.add(n.get("message").asText()));
+        assertThat(warnMessages).as("WARN is an alias of WARNING only").contains("route-" + t)
+                .doesNotContain("cfg-" + t, "crit-" + t);
+
+        var ackId = warnings.unacknowledged().stream()
+                .filter(n -> n.message().equals("route-" + t)).findFirst().orElseThrow().id();
+        warnings.acknowledge(ackId);
+        var unackedOnly = json(http.get("/router/warnings?acknowledged=false"));
+        var unackedMessages = new java.util.ArrayList<String>();
+        unackedOnly.forEach(n -> unackedMessages.add(n.get("message").asText()));
+        assertThat(unackedMessages).as("acknowledged=false filters to unacked only").doesNotContain("route-" + t)
+                .contains("cfg-" + t);
+    }
+
+    @Test
+    @DisplayName("/warnings/critical lists CRITICAL warnings whether acknowledged or not")
+    void criticalWarningsIncludeAcked() {
+        String t = tag();
+        warnings.raise(Warnings.Severity.CRITICAL, "CONFIGURATION", "critack-" + t);
+        var id = warnings.unacknowledged().stream()
+                .filter(n -> n.message().equals("critack-" + t)).findFirst().orElseThrow().id();
+        warnings.acknowledge(id);
+
+        var body = json(http.get("/router/warnings/critical"));
+        var messages = new java.util.ArrayList<String>();
+        body.forEach(n -> messages.add(n.get("message").asText()));
+        assertThat(messages).as("acked CRITICAL still shown here, unlike WarningStore#critical()")
+                .contains("critack-" + t);
+    }
+
+    @Test
+    @DisplayName("POST /warnings/{id}/acknowledge acknowledges once and 404s on an unknown or malformed id")
+    void acknowledgeWarning() {
+        warnings.raise(Warnings.Severity.INFO, "RESOURCE", "ack-me-" + tag());
+        var id = warnings.unacknowledged().stream()
+                .filter(n -> n.message().startsWith("ack-me-")).reduce((a, b) -> b).orElseThrow().id();
+
+        var ok = http.post("/router/warnings/" + id + "/acknowledge", null);
+        assertThat(ok.statusCode()).isEqualTo(200);
+        assertThat(json(ok).get("acknowledged").asBoolean()).isTrue();
+
+        var unknown = http.post("/router/warnings/" + UUID.randomUUID() + "/acknowledge", null);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+
+        var malformed = http.post("/router/warnings/not-a-uuid/acknowledge", null);
+        assertThat(malformed.statusCode()).as("a non-UUID id is also \"not found\", not a 500").isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("POST /monitoring/warnings/{id}/acknowledge is an alias of /warnings/{id}/acknowledge")
+    void monitoringAcknowledgeAlias() {
+        warnings.raise(Warnings.Severity.INFO, "RESOURCE", "alias-ack-" + tag());
+        var id = warnings.unacknowledged().stream()
+                .filter(n -> n.message().startsWith("alias-ack-")).findFirst().orElseThrow().id();
+        var r = http.post("/router/monitoring/warnings/" + id + "/acknowledge", null);
+        assertThat(r.statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("POST /warnings/acknowledge-all acknowledges every currently-unacknowledged warning")
+    void acknowledgeAll() {
+        var isolated = new WarningStore(CLOCK);
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
+                "v", "/router", null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            isolated.raise(Warnings.Severity.INFO, "RESOURCE", "a");
+            isolated.raise(Warnings.Severity.INFO, "RESOURCE", "b");
+
+            var r = isolatedHttp.post("/router/warnings/acknowledge-all", null);
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("acknowledged").asLong()).isEqualTo(2);
+            assertThat(isolated.unacknowledged()).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("/monitoring/warnings shows only unacknowledged warnings <=30 minutes old, newest first")
+    void monitoringWarningsWindow() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolated = new WarningStore(clock);
+        var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
+                "v", "/router", null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-one");
+            clock.advance(Duration.ofMinutes(31));
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-one");
+
+            var monitoring = json(isolatedHttp.get("/router/monitoring/warnings"));
+            var monMessages = new java.util.ArrayList<String>();
+            monitoring.forEach(n -> monMessages.add(n.get("message").asText()));
+            assertThat(monMessages).as("the >30min-old warning is excluded here").containsExactly("fresh-one");
+
+            // The plain /warnings/unacknowledged route has no age limit.
+            var plain = json(isolatedHttp.get("/router/warnings/unacknowledged"));
+            var plainMessages = new java.util.ArrayList<String>();
+            plain.forEach(n -> plainMessages.add(n.get("message").asText()));
+            assertThat(plainMessages).as("no age filter on the plain unacknowledged route")
+                    .containsExactlyInAnyOrder("old-one", "fresh-one");
+        }
+    }
+
+    // ── Circuit breakers ─────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("/monitoring/circuit-breakers reports per-target stats with the always-0 fields the spec pins")
+    void circuitBreakerList() {
+        String target = "https://target-" + tag() + ".example/hook";
+        var breaker = breakers.get(target);
+        breaker.recordSuccess();
+        breaker.recordFailure();
+
+        var body = json(http.get("/router/monitoring/circuit-breakers"));
+        var entry = body.get(target);
+        assertThat(entry).isNotNull();
+        assertThat(entry.get("state").asText()).isEqualTo("CLOSED");
+        assertThat(entry.get("successfulCalls").asLong()).isEqualTo(1);
+        assertThat(entry.get("failedCalls").asLong()).isEqualTo(1);
+        assertThat(entry.get("failureRate").asDouble()).isEqualTo(0.5);
+        // Spec: rejectedCalls and bufferSize are always 0.
+        assertThat(entry.get("rejectedCalls").asLong()).isZero();
+        assertThat(entry.get("bufferSize").asLong()).isZero();
+    }
+
+    @Test
+    @DisplayName("circuit-breakers list is {} when no registry is configured (provider-absent list rule)")
+    void circuitBreakerListBare() {
+        var body = json(bare.get("/router/monitoring/circuit-breakers"));
+        assertThat(body.isObject()).isTrue();
+        assertThat(body.isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/circuit-breakers/{name}/state: 200 for a known target, 404 unknown, 503 no registry")
+    void circuitBreakerState() {
+        String target = "https://state-" + tag() + ".example/hook";
+        breakers.get(target).recordSuccess();
+
+        var known = http.get("/router/monitoring/circuit-breakers/" + enc(target) + "/state");
+        assertThat(known.statusCode()).isEqualTo(200);
+        assertThat(json(known).get("state").asText()).isEqualTo("CLOSED");
+
+        var unknown = http.get("/router/monitoring/circuit-breakers/" + enc("https://never-seen.example") + "/state");
+        assertThat(unknown.statusCode()).isEqualTo(404);
+
+        var noRegistry = bare.get("/router/monitoring/circuit-breakers/" + enc(target) + "/state");
+        assertThat(noRegistry.statusCode()).isEqualTo(503);
+    }
+
+    @Test
+    @DisplayName("POST /monitoring/circuit-breakers/{name}/reset clears state and 404s on an unknown target")
+    void breakerReset() {
+        String target = "https://reset-" + tag() + ".example/hook";
+        var breaker = breakers.get(target);
+        breaker.recordFailure();
+        breaker.recordFailure();
+
+        var r = http.post("/router/monitoring/circuit-breakers/" + enc(target) + "/reset", null);
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("reset").asBoolean()).isTrue();
+        assertThat(body.get("name").asText()).isEqualTo(target);
+        assertThat(breaker.stats().failures()).as("reset clears cumulative counters").isZero();
+
+        var unknown = http.post("/router/monitoring/circuit-breakers/" + enc("https://gone.example") + "/reset", null);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("POST /monitoring/circuit-breakers/reset-all resets every registered breaker and reports the count")
+    void breakerResetAll() {
+        var isolatedBreakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, CLOCK);
+        isolatedBreakers.get("https://a.example").recordFailure();
+        isolatedBreakers.get("https://b.example").recordFailure();
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), isolatedBreakers,
+                null, null, "v", "/router", null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            var r = isolatedHttp.post("/router/monitoring/circuit-breakers/reset-all", null);
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("reset").asInt()).isEqualTo(2);
+        }
+
+        var noRegistry = bare.post("/router/monitoring/circuit-breakers/reset-all", null);
+        assertThat(noRegistry.statusCode()).isEqualTo(503);
+    }
+
+    private static String enc(String s) {
+        return java.net.URLEncoder.encode(s, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ── In-flight messages ───────────────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring/in-flight-messages sorts elapsed DESC, filters by poolCode/messageId case-insensitively, and limit<=0 -> 100")
+    void inFlightList() {
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("m1-" + t, "", "pool-x", "queue-1",
+                now.minusSeconds(5), now.minusSeconds(5), "", "b1", "rh1", 0));
+        tracker.register(new InFlightMessage("m2-" + t, "", "pool-x", "queue-1",
+                now.minusSeconds(50), now.minusSeconds(50), "", "b1", "rh2", 0));
+        tracker.register(new InFlightMessage("m3-" + t, "", "OTHER-POOL", "queue-1",
+                now.minusSeconds(20), now.minusSeconds(20), "", "b1", "rh3", 0));
+
+        var body = json(http.get("/router/monitoring/in-flight-messages?poolCode=pool-x&messageId=" + t + "&limit=0"));
+        assertThat(body.isArray()).isTrue();
+        assertThat(body.size()).as("poolCode filter is case-insensitive exact match; OTHER-POOL excluded").isEqualTo(2);
+        // Longest elapsed first.
+        assertThat(body.get(0).get("messageId").asText()).isEqualTo("m2-" + t);
+        assertThat(body.get(1).get("messageId").asText()).isEqualTo("m1-" + t);
+        assertThat(body.get(0).get("elapsedTimeMs").asLong()).isGreaterThan(body.get(1).get("elapsedTimeMs").asLong());
+        assertThat(body.get(0).has("brokerMessageId")).as("blank brokerMessageId is omitted (null), not \"\"").isFalse();
+
+        tracker.remove("m1-" + t);
+        tracker.remove("m2-" + t);
+        tracker.remove("m3-" + t);
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/in-flight-messages/check reports poolCode+queueId when tracked, false otherwise")
+    void inFlightCheck() {
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("chk-" + t, "", "POOL-A", "queue-1", now, now, "", "b1", "rh", 0));
+
+        var hit = json(http.get("/router/monitoring/in-flight-messages/check?messageId=chk-" + t));
+        assertThat(hit.get("inPipeline").asBoolean()).isTrue();
+        assertThat(hit.get("poolCode").asText()).isEqualTo("POOL-A");
+
+        var miss = json(http.get("/router/monitoring/in-flight-messages/check?messageId=never-" + t));
+        assertThat(miss.get("inPipeline").asBoolean()).isFalse();
+        assertThat(miss.has("poolCode")).as("absent, not null, when not tracked").isFalse();
+
+        tracker.remove("chk-" + t);
+    }
+
+    @Test
+    @DisplayName("POST /monitoring/in-flight-messages/check-batch answers true/false per id")
+    void inFlightCheckBatch() {
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("batch-hit-" + t, "", "POOL-A", "queue-1", now, now, "", "b1", "rh", 0));
+
+        var body = "{\"messageIds\":[\"batch-hit-" + t + "\",\"batch-miss-" + t + "\"]}";
+        var r = http.post("/router/monitoring/in-flight-messages/check-batch", body);
+        assertThat(r.statusCode()).isEqualTo(200);
+        var json = json(r);
+        assertThat(json.get("batch-hit-" + t).asBoolean()).isTrue();
+        assertThat(json.get("batch-miss-" + t).asBoolean()).isFalse();
+
+        tracker.remove("batch-hit-" + t);
+    }
+
+    @Test
+    @DisplayName("force-ack: acks on the freshest handle, releases the tracker entry, then 404s on a second call")
+    void forceAckSucceedsThen404s() {
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("ack-" + t, "brk-" + t, "POOL-A", "queue-1",
+                now.minusSeconds(3), now, "grp", "b1", "receipt-" + t, 2));
+
+        var r = http.post("/router/monitoring/in-flight-messages/ack-" + t + "/ack", null);
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("removed").asBoolean()).isTrue();
+        assertThat(body.get("brokerAcked").asBoolean())
+                .as("Consumer#ack is void/best-effort; Java always reports true (see class doc)").isTrue();
+        assertThat(body.get("queueId").asText()).isEqualTo("queue-1");
+        assertThat(body.get("poolCode").asText()).isEqualTo("POOL-A");
+        assertThat(body.get("wasMediating").asBoolean())
+                .as("no mediating-set tracker exists in Java; always false").isFalse();
+        assertThat(consumerQ1.acked.stream().anyMatch(m -> m.receiptHandle().equals("receipt-" + t))).isTrue();
+
+        var second = http.post("/router/monitoring/in-flight-messages/ack-" + t + "/ack", null);
+        assertThat(second.statusCode()).as("the entry is gone after the first force-ack").isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("force-ack is 503 with no manager wired, and 503 when the message's queue has no registered consumer")
+    void forceAckServiceUnavailable() {
+        var noManager = bare.post("/router/monitoring/in-flight-messages/anything/ack", null);
+        assertThat(noManager.statusCode()).isEqualTo(503);
+
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("ghost-" + t, "", "POOL-A", "ghost-queue-" + t,
+                now, now, "", "b1", "rh", 0));
+        var r = http.post("/router/monitoring/in-flight-messages/ghost-" + t + "/ack", null);
+        assertThat(r.statusCode()).as("tracked, but its queue has no registered consumer").isEqualTo(503);
+        tracker.remove("ghost-" + t);
+    }
+
+    // ── Pool update ──────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("PUT /monitoring/pools/{poolCode} applies both fields, 0 rate limit means unlimited, absent concurrency is unchanged")
+    void updatePoolBothFields() {
+        var r = http.put("/router/monitoring/pools/POOL-A", "{\"concurrency\":9,\"rate_limit_per_minute\":0}");
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("success").asBoolean()).isTrue();
+        assertThat(body.get("pool_code").asText()).isEqualTo("POOL-A");
+        assertThat(body.get("new_config").get("concurrency").asInt()).isEqualTo(9);
+        assertThat(body.get("new_config").get("rate_limit_per_minute").asInt()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("PUT with an absent field omits it from new_config rather than writing null")
+    void updatePoolAbsentFieldOmitted() {
+        var r = http.put("/router/monitoring/pools/POOL-A", "{\"concurrency\":3}");
+        assertThat(r.statusCode()).isEqualTo(200);
+        var newConfig = json(r).get("new_config");
+        assertThat(newConfig.has("concurrency")).isTrue();
+        assertThat(newConfig.has("rate_limit_per_minute")).as("absent field is dropped, not null").isFalse();
+    }
+
+    @Test
+    @DisplayName("PUT on an unknown pool is 404; with no manager wired it is 503")
+    void updatePoolNotFoundOrUnavailable() {
+        var notFound = http.put("/router/monitoring/pools/NO-SUCH-POOL", "{\"concurrency\":1}");
+        assertThat(notFound.statusCode()).isEqualTo(404);
+
+        var noManager = bare.put("/router/monitoring/pools/POOL-A", "{\"concurrency\":1}");
+        assertThat(noManager.statusCode()).isEqualTo(503);
+    }
+
+    // ── Standby / stream health / config ────────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring/standby-status reports the lock key (not the process UUID) as instance_id")
+    void standbyStatus() {
+        var body = json(http.get("/router/monitoring/standby-status"));
+        assertThat(body.get("enabled").asBoolean()).isTrue();
+        assertThat(body.get("is_leader").asBoolean()).isTrue();
+        assertThat(body.get("instance_id").asText()).as("the lock key, not LeaderElection#instanceId()'s UUID")
+                .isEqualTo("fc:test:leader");
+    }
+
+    @Test
+    @DisplayName("with no election wired, standby-status is the Go no-adapter default")
+    void standbyStatusDefault() {
+        var body = json(bare.get("/router/monitoring/standby-status"));
+        assertThat(body.get("enabled").asBoolean()).isFalse();
+        assertThat(body.get("is_leader").asBoolean()).isTrue();
+        assertThat(body.get("instance_id").asText()).isEqualTo("default");
+    }
+
+    @Test
+    @DisplayName("stream-health/live/ready are always NOT_CONFIGURED (no stream provider ported)")
+    void streamHealthNotConfigured() {
+        var health = json(http.get("/router/monitoring/stream-health"));
+        assertThat(health.get("enabled").asBoolean()).isFalse();
+        assertThat(health.get("status").asText()).isEqualTo("NOT_CONFIGURED");
+
+        assertThat(json(http.get("/router/monitoring/stream-health/live")).get("status").asText())
+                .isEqualTo("NOT_CONFIGURED");
+        assertThat(json(http.get("/router/monitoring/stream-health/ready")).get("status").asText())
+                .isEqualTo("NOT_CONFIGURED");
+    }
+
+    @Test
+    @DisplayName("GET /api/config never exposes secrets, only version and warning counts")
+    void localConfig() {
+        var body = json(http.get("/router/api/config"));
+        assertThat(body.get("version").asText()).isEqualTo("test-version");
+        assertThat(body.has("warnings_total")).isTrue();
+        assertThat(body.has("warnings_critical")).isTrue();
+    }
+
+    @Test
+    @DisplayName("POST /config/reload always succeeds with the no-reloader-wired note")
+    void configReload() {
+        var r = http.post("/router/config/reload", null);
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("success").asBoolean()).isTrue();
+        assertThat(body.get("note").asText()).isEqualTo("config watcher polls automatically");
+    }
+
+    // ── Dev mock targets ──────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("mock endpoints increment their own counters, and /api/test/stats reports them with snake_case keys")
+    void mockCounters() {
+        assertThat(http.post("/router/api/test/fast", null).statusCode()).isEqualTo(200);
+        assertThat(http.post("/router/api/test/success", null).statusCode()).isEqualTo(200);
+        assertThat(http.post("/router/api/test/fail", null).statusCode()).isEqualTo(500);
+        assertThat(http.post("/router/api/test/server-error", null).statusCode()).isEqualTo(500);
+        assertThat(http.post("/router/api/test/client-error", null).statusCode()).isEqualTo(400);
+        assertThat(http.post("/router/api/test/slow?delay_ms=10", null).statusCode()).isEqualTo(200);
+
+        var stats = json(http.get("/router/api/test/stats"));
+        assertThat(stats.get("fast").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.get("success").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.get("fail").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.get("server_error").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.get("client_error").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.get("slow").asLong()).isGreaterThanOrEqualTo(1);
+
+        var reset = http.post("/router/api/test/stats/reset", null);
+        assertThat(reset.statusCode()).isEqualTo(200);
+        assertThat(json(reset).get("reset").asBoolean()).isTrue();
+        assertThat(json(http.get("/router/api/test/stats")).get("fast").asLong()).isZero();
+    }
+
+    @Test
+    @DisplayName("/api/benchmark/* are aliases of the matching /api/test/* routes")
+    void benchmarkAliases() {
+        var before = json(http.get("/router/api/benchmark/stats")).get("fast").asLong();
+        assertThat(http.post("/router/api/benchmark/process", null).statusCode()).isEqualTo(200);
+        assertThat(json(http.get("/router/api/benchmark/stats")).get("fast").asLong()).isEqualTo(before + 1);
+    }
+
+    // ── Test doubles ─────────────────────────────────────────────────────
+
+    private static final class MutableClock extends Clock {
+        private volatile Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration d) {
+            now = now.plus(d);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
+    private static final class RecordingConsumer implements Consumer {
+        private final String id;
+        final List<QueuedMessage> acked = new CopyOnWriteArrayList<>();
+
+        RecordingConsumer(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) {
+            return PollResult.empty();
+        }
+
+        @Override
+        public void ack(QueuedMessage message) {
+            acked.add(message);
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public Optional<QueueMetrics> metrics() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    /// Always grants the lock to whoever asks — enough to make
+    /// [LeaderElection] leader without a real Redis.
+    private static final class AlwaysAcquireStore implements LockStore {
+        final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public boolean acquire(String key, String value, Duration ttl) {
+            calls.incrementAndGet();
+            return true;
+        }
+
+        @Override
+        public boolean refresh(String key, String value, Duration ttl) {
+            return true;
+        }
+
+        @Override
+        public void release(String key, String value) {
+        }
+
+        @Override
+        public void ping() {
+        }
+    }
+}
