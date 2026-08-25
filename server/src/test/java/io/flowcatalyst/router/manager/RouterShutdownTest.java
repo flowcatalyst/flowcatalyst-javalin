@@ -213,4 +213,104 @@ class RouterShutdownTest {
             closed = true;
         }
     }
+
+    @Test
+    @DisplayName("one hung consumer does not spend the whole budget while healthy ones wait")
+    void slowCloseDoesNotBlockTheOthers() throws Exception {
+        // Sequentially, eight consumers each taking a second is eight
+        // seconds. Concurrently it is one — and, more importantly, a single
+        // wedged broker costs the timeout once rather than once per queue.
+        var slow = new java.util.ArrayList<Consumer>();
+        var closedCount = new java.util.concurrent.atomic.AtomicInteger();
+        for (int i = 0; i < 8; i++) {
+            slow.add(new FakeConsumer("q-" + i) {
+                @Override
+                public void close() {
+                    sleepQuietly(Duration.ofMillis(400));
+                    super.close();
+                    closedCount.incrementAndGet();
+                }
+            });
+        }
+
+        long startedAt = System.nanoTime();
+        shutdown(Duration.ofSeconds(60)).shutdown(List.of(), slow, List.of());
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertThat(closedCount.get()).as("every consumer still closes").isEqualTo(8);
+        assertThat(elapsed).as("closed at once, not one after another").isLessThan(Duration.ofSeconds(2));
+    }
+
+    @Test
+    @DisplayName("a consumer that never returns from close cannot hold the process open")
+    void wedgedCloseIsBounded() {
+        // Best-effort: shutdown gives up on it and carries on, because a
+        // broker that will not answer must not prevent the process exiting.
+        var wedged = new FakeConsumer("wedged") {
+            @Override
+            public void close() {
+                sleepQuietly(Duration.ofMinutes(5));
+            }
+        };
+        var healthy = new FakeConsumer("healthy");
+
+        var bounded = new RouterShutdown(tracker, Duration.ofMillis(100), Duration.ofMillis(300));
+
+        long startedAt = System.nanoTime();
+        bounded.shutdown(List.of(), List.of(wedged, healthy), List.of());
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertThat(healthy.closed).as("a healthy consumer still closes").isTrue();
+        assertThat(elapsed).as("the wedged one is abandoned, not waited on")
+                .isLessThan(Duration.ofSeconds(3));
+    }
+
+    @Test
+    @DisplayName("a pool hands back everything it holds, however much that is")
+    void poolHandsBackAllBufferedMessages() {
+        // Hundreds of serial broker round-trips inside a shutdown budget was
+        // the reason to make this concurrent; the count is what must not
+        // change.
+        var nacked = new java.util.concurrent.ConcurrentHashMap<String, Boolean>();
+        var pool = new Pool(new Pool.Config("A", 1, 0),
+                (message, recordFailure) -> {
+                    sleepQuietly(Duration.ofMinutes(1)); // never completes
+                    return MediationOutcome.Success.of(200);
+                },
+                new Broker() {
+                    @Override
+                    public void ack(QueuedMessage message) {
+                    }
+
+                    @Override
+                    public void nack(QueuedMessage message, Duration delay) {
+                        nacked.put(message.id(), true);
+                    }
+                },
+                PoolMetrics.NO_OP, clock);
+
+        IntStream.range(0, 200).forEach(i -> pool.submit(ordered("g", "m" + i)));
+        awaitBuffered(pool, 150);
+
+        pool.stop();
+
+        assertThat(nacked).as("nothing buffered is silently dropped").hasSizeGreaterThanOrEqualTo(150);
+        pool.close();
+    }
+
+    private static void awaitBuffered(Pool pool, int atLeast) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (pool.queueSize() < atLeast && System.nanoTime() < deadline) {
+            sleepQuietly(Duration.ofMillis(5));
+        }
+    }
+
+    private static QueuedMessage ordered(String group, String id) {
+        return QueuedMessage.of(
+                new io.flowcatalyst.router.wire.Message(id, "", null, null,
+                        io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", group, false,
+                        io.flowcatalyst.router.wire.DispatchMode.BLOCK_ON_ERROR),
+                "b-" + id, "r-" + id, "q://1");
+    }
+
 }

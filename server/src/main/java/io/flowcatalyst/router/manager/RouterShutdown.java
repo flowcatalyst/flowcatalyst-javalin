@@ -40,17 +40,31 @@ public final class RouterShutdown {
     /// How often to re-check whether the drain is done (constant 37).
     static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(500);
 
+    /// Budget for one concurrent step — closing every consumer, stopping
+    /// every pool. Bounded so a wedged broker cannot hold the process open.
+    static final Duration STEP_TIMEOUT = Duration.ofSeconds(15);
+
     private final InFlightTracker tracker;
     private final Duration drainTimeout;
+    private final Duration stepTimeout;
     private final Supplier<Long> nanoTime;
 
     public RouterShutdown(InFlightTracker tracker, Duration drainTimeout) {
-        this(tracker, drainTimeout, System::nanoTime);
+        this(tracker, drainTimeout, STEP_TIMEOUT, System::nanoTime);
     }
 
-    RouterShutdown(InFlightTracker tracker, Duration drainTimeout, Supplier<Long> nanoTime) {
+    /// `stepTimeout` is injectable for the same reason `drainTimeout` is: it
+    /// is real elapsed time, and a test asserting that a wedged broker is
+    /// bounded should not have to wait out the production bound to prove it.
+    public RouterShutdown(InFlightTracker tracker, Duration drainTimeout, Duration stepTimeout) {
+        this(tracker, drainTimeout, stepTimeout, System::nanoTime);
+    }
+
+    RouterShutdown(InFlightTracker tracker, Duration drainTimeout, Duration stepTimeout,
+                   Supplier<Long> nanoTime) {
         this.tracker = tracker;
         this.drainTimeout = drainTimeout;
+        this.stepTimeout = stepTimeout;
         this.nanoTime = nanoTime;
     }
 
@@ -67,8 +81,13 @@ public final class RouterShutdown {
         // 1. Stop the sources. Interruption unwinds every poll loop and every
         //    blocking point beneath it; from here the in-flight set can only
         //    shrink, which is what makes the drain terminate.
+        //
+        //    Interrupting is instant, so it stays sequential. Closing is not
+        //    — a consumer close talks to its broker — so it runs concurrently:
+        //    one unreachable broker would otherwise spend the whole budget
+        //    while every healthy queue waited behind it.
         loops.forEach(Thread::interrupt);
-        consumers.forEach(RouterShutdown::closeQuietly);
+        Concurrently.forEach(consumers, RouterShutdown::closeQuietly, stepTimeout, "consumer close");
 
         // 2. Let what is already delivering finish.
         boolean drained = awaitDrain();
@@ -78,7 +97,11 @@ public final class RouterShutdown {
         //    own is not nacked out from under a worker that was about to
         //    succeed — an unnecessary redelivery is a duplicate somebody has
         //    to absorb.
-        pools.forEach(Pool::stop);
+        //
+        //    Concurrent for the same reason as the closes: stopping a pool
+        //    nacks every message it still holds, one broker round-trip each,
+        //    and a slow pool must not eat the budget of the others.
+        Concurrently.forEach(pools, Pool::stop, stepTimeout, "pool stop");
 
         int remaining = tracker.size();
         if (!drained) {

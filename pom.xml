@@ -275,8 +275,15 @@
           <configuration>
             <release>25</release>
             <compilerArgs>
-              <arg>-Xlint:all,-processing,-serial</arg>
+              <arg>-Xlint:all,-processing,-serial,-preview</arg>
               <arg>-parameters</arg>
+              <!-- StructuredTaskScope is a preview API in Java 25 (JEP 505).
+                   Note this PINS the runtime to exactly Java 25: a class file
+                   compiled with preview enabled refuses to load on any other
+                   release, so a JDK upgrade means recompiling, not just
+                   swapping the JVM. -preview above suppresses the per-use
+                   warning; the pin is the thing to remember, not the noise. -->
+              <arg>--enable-preview</arg>
             </compilerArgs>
           </configuration>
         </plugin>
@@ -284,6 +291,10 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.5.6</version>
+          <configuration>
+            <!-- Preview class files only load on a JVM that opts in too. -->
+            <argLine>--enable-preview</argLine>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

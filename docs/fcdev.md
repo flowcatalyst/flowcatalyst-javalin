@@ -43,7 +43,7 @@ JBang downloads Java 25 itself if needed (`//JAVA 25`), resolves
 artifact is not published, build and install it first:
 
 ```sh
-JAVA_HOME=~/.local/share/mise/installs/graalvm/25.0.1 mvn -q -pl fcdev -am -DskipTests install
+JAVA_HOME=$(mise where graalvm) mvn -q -pl fcdev -am -DskipTests install
 jbang fcdev/fcdev.java version                   # runs straight from ~/.m2
 ```
 

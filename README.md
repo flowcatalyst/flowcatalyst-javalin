@@ -14,7 +14,7 @@ threads, no DI container, no annotation magic.
 
 ## Build
 
-Java 25 is required (`JAVA_HOME=~/.local/share/mise/installs/graalvm/25.0.1` locally).
+Java 25 is required (`JAVA_HOME=$(mise where graalvm)` locally).
 
 ```sh
 mvn -q test                         # everything (embedded Postgres downloads on first run)

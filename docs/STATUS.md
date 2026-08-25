@@ -252,7 +252,7 @@ as Go has it; a ruling becomes a spec line + conformance test (+ a
 
 ## How to resume
 
-- Build: `JAVA_HOME=~/.local/share/mise/installs/graalvm/25.0.1 mvn -q test`
+- Build: `JAVA_HOME=$(mise where graalvm) mvn -q test`
   (first run downloads embedded PG 18).
 - Per-aggregate pipeline: `docs/process/agent-prompts.md`.
 - Reference Go repo: `../flowcatalyst-go` (read-only; never modified).

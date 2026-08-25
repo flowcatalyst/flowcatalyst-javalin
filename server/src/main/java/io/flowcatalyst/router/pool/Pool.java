@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -431,7 +432,16 @@ public final class Pool implements AutoCloseable {
     /// by another instance. Deliveries already in flight finish on their own.
     public void stop() {
         stopped = true;
-        groups.drainAll().forEach(message -> broker.nack(message, REJECTED_NACK_DELAY));
+        var buffered = groups.drainAll();
+        if (buffered.isEmpty()) {
+            return;
+        }
+        // Each nack is a broker round-trip, and a pool can be holding
+        // hundreds. In turn, that is hundreds of serial round-trips inside a
+        // shutdown budget; at once, it is one.
+        try (var handback = Executors.newVirtualThreadPerTaskExecutor()) {
+            buffered.forEach(message -> handback.execute(() -> broker.nack(message, REJECTED_NACK_DELAY)));
+        }
     }
 
     /// Stops, then waits briefly for in-flight deliveries to finish before

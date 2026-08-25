@@ -60,7 +60,7 @@ Forward-rolling and retention are a runtime concern (Go:
 ## Tests
 
 ```sh
-export JAVA_HOME=/Users/andrewgraaff/.local/share/mise/installs/graalvm/25.0.1
+export JAVA_HOME=$(mise where graalvm)
 mvn -q -B -pl server -Dtest='Migrator*,*Fingerprint*,*Adoption*' -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 

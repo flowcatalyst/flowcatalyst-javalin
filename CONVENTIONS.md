@@ -221,9 +221,17 @@ Idiom checklist (steps 2 and 3):
   `InterruptedException` is restored-and-exited at every blocking point,
   never swallowed.
 - Scatter-gather uses `StructuredTaskScope` with a completion policy — not
-  `CompletableFuture` chains, not hand-rolled latch choreography. (Preview
-  in Java 25: `--enable-preview` is enabled for the `server` module; keep
-  its use localised.)
+  `CompletableFuture` chains, not hand-rolled latch choreography. Preview in
+  Java 25 (JEP 505), and `--enable-preview` **is** enabled — in the compiler
+  args *and* surefire's `argLine`, both of which are needed: the compiler
+  emits preview class files and the JVM refuses to load them unless it opts
+  in too. (This convention previously claimed the flag was on when it was
+  not; it is now.)
+  **This pins the runtime to the Java 25 feature release.** A preview class
+  file records the class-file version of the JDK that produced it and will
+  not load on any other *feature* release — so 25.0.1 → 25.0.2 is fine, and
+  25 → 26 means recompiling rather than swapping the JVM. Keep preview use
+  localised so that recompile stays cheap.
 - Panic-recovery scaffolding is deleted — per-virtual-thread failure
   isolation makes it unnecessary. The retry policies it guarded are kept
   as explicit, named policy objects (records).
