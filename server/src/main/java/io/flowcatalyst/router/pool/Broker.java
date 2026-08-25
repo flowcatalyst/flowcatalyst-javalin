@@ -38,6 +38,21 @@ public interface Broker {
         nack(message, delay);
     }
 
+    /// Records that the message is being retried **in place**, so the
+    /// in-flight entry's attempt count advances.
+    ///
+    /// Not cosmetic. Two guards read that count and both are unreachable
+    /// while it stays at zero: the stall detector treats a legitimately
+    /// retrying message as stalled, and with force-nack enabled it hands the
+    /// message back to the queue while a worker is still retrying it — two
+    /// deliveries of the same message, from one broker.
+    ///
+    /// Defaulted, unlike [#disposition]-style members, because it carries no
+    /// decision: it is a notification, and an implementation with no tracker
+    /// has nothing to say. Only the real broker has state to advance.
+    default void retrying(QueuedMessage message) {
+    }
+
     /// Gives up ownership **without touching the broker**.
     ///
     /// The third thing that can happen to a message, and the one that is easy

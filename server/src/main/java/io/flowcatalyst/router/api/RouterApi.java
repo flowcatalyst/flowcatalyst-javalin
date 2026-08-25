@@ -53,11 +53,12 @@ import java.util.concurrent.atomic.AtomicLong;
 ///     needs `totalDeferred` and a 30-minute windowed history
 ///     (`router/broker_stats.go`), neither of which has a Java port.
 ///   - `POST /monitoring/broker-stats/refresh` — no broker-stats cache ported.
-///   - `GET /monitoring/mediating`, and the `MEDIATING` branch of
-///     `GET /monitoring/in-flight-messages/detail` — both need the live
-///     "currently inside a mediator call" set (`MediatingEntry`). Nothing in
-///     this module's scope tracks that, so `/monitoring/in-flight-messages/detail`
-///     is skipped outright rather than silently never reporting `MEDIATING`.
+///   - The `MEDIATING` branch of `GET /monitoring/in-flight-messages/detail`.
+///     `GET /monitoring/mediating` itself **is** now ported — [Pool] keeps the
+///     live set (`Pool.mediating()`), so the count and the rows come from one
+///     structure and cannot drift. The detail endpoint still needs the join
+///     between that set and the tracker entry, so it stays skipped rather than
+///     silently never reporting `MEDIATING`.
 ///   - `GET /monitoring/traffic-status` — no ALB/traffic-management runtime
 ///     ported (`Env.java` only parses the env vars).
 ///   - `GET/POST /messages`, `POST /api/seed/messages` — need a publisher
@@ -88,6 +89,9 @@ import java.util.concurrent.atomic.AtomicLong;
 /// supplies the per-pool [PoolMetricsCollector]. All three routes are fully
 /// wired to live data; no stand-ins remain here.
 public final class RouterApi {
+
+    /// Default page size for `/monitoring/mediating`, matching Go.
+    private static final int DEFAULT_MEDIATING_LIMIT = 200;
 
     private static final Instant STARTED_AT = Instant.now();
 
@@ -208,6 +212,7 @@ public final class RouterApi {
         routes.get(p + "/monitoring/consumer-health", ctx -> consumerHealth(ctx, s));
         routes.get(p + "/monitoring/pools", ctx -> monitoringPools(ctx, s));
         routes.get(p + "/monitoring/pool-stats", ctx -> poolStats(ctx, s));
+        routes.get(p + "/monitoring/mediating", ctx -> monitoringMediating(ctx, s));
 
         // ── Monitoring: warnings ─────────────────────────────────────────
         routes.get(p + "/monitoring/warnings", ctx -> monitoringWarnings(ctx, s));
@@ -326,6 +331,63 @@ public final class RouterApi {
                 : s.manager().pools().entrySet().stream().map(e -> wirePoolStats(e.getKey(), e.getValue(), s)).toList();
         ctx.json(new MonitoringResponse(h.status(), s.version(), healthReport, poolStats,
                 s.warnings().unacknowledged().size(), h.critical()));
+    }
+
+    /// `GET /monitoring/mediating` — what is inside a pool worker right now.
+    ///
+    /// Sorted longest-first, because the question this answers is "what is
+    /// stuck?" and the answer is always at the top. `limit` defaults to 200:
+    /// a pool wedged against a dead target has every worker occupied, and an
+    /// unbounded list of identical rows helps nobody.
+    private static void monitoringMediating(Context ctx, State s) {
+        if (s.manager() == null) {
+            ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
+            return;
+        }
+        ctx.json(mediatingRows(
+                s.manager().pools().values().stream().flatMap(pool -> pool.mediating().stream()).toList(),
+                ctx.queryParam("poolCode"),
+                parsePositiveInt(ctx.queryParam("limit"), DEFAULT_MEDIATING_LIMIT),
+                java.time.Instant.now()));
+    }
+
+    /// The filter/sort/limit, separated from the HTTP so the ordering can be
+    /// tested with input that is deliberately in the wrong order.
+    ///
+    /// Through the endpoint it cannot be: the rows arrive from a
+    /// `ConcurrentHashMap` whose iteration order happens to match the order
+    /// they were added, so an unsorted implementation passes anyway. The test
+    /// looked like it pinned the sort and did not.
+    static List<WireMediating> mediatingRows(java.util.Collection<io.flowcatalyst.router.pool.Mediating> rows,
+                                             String poolFilter, int limit, java.time.Instant now) {
+        return rows.stream()
+                .filter(row -> poolFilter == null || poolFilter.isBlank()
+                        || row.poolCode().equalsIgnoreCase(poolFilter))
+                .map(row -> new WireMediating(row.messageId(), row.poolCode(),
+                        row.group() == null ? "" : row.group(), row.queue(), row.target(),
+                        row.attempts(), Math.max(0, java.time.Duration.between(row.startedAt(), now).toMillis())))
+                .sorted(java.util.Comparator.comparingLong(WireMediating::elapsedTimeMs).reversed())
+                .limit(limit)
+                .toList();
+    }
+
+    private static int parsePositiveInt(String raw, int fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            // A junk limit is an operator typo, not a reason to 500 on a
+            // read-only dashboard call.
+            return fallback;
+        }
+    }
+
+    /// One row of `GET /monitoring/mediating`. Field names and order match Go.
+    public record WireMediating(String messageId, String poolCode, String group, String queue,
+                                String target, int attempts, long elapsedTimeMs) {
     }
 
     private static void monitoringPools(Context ctx, State s) {

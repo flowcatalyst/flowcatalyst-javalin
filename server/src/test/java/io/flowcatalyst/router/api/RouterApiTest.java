@@ -20,7 +20,9 @@ import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
+import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
+import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -325,6 +327,125 @@ class RouterApiTest {
         } finally {
             pool.close();
         }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/mediating shows what is in a worker, longest-stuck first")
+    void monitoringMediating() throws Exception {
+        // The question this endpoint exists for is "what is stuck?", which a
+        // count cannot answer: eight busy workers and eight workers wedged
+        // against one dead target are the same number and nothing alike.
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        var entered = new java.util.concurrent.CountDownLatch(2);
+        var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var held = new Pool(new Pool.Config("HELD-POOL", 4, 0), (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        }, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("HELD-POOL", held);
+        var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, Map.of());
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            // Staggered on purpose. Submitted together they enter their
+            // workers in the same millisecond, their elapsed times tie, and
+            // the ordering assertion below passes whether or not anything
+            // sorts — which is exactly what a decorative test looks like.
+            held.submit(message("stuck-1", "https://slow.test/a"));
+            await(() -> held.activeWorkers() == 1);
+            Thread.sleep(60);
+            held.submit(message("stuck-2", "https://slow.test/b"));
+            assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("both messages reached a worker").isTrue();
+
+            var body = json(isolatedHttp.get("/router/monitoring/mediating"));
+
+            assertThat(body.isArray()).isTrue();
+            assertThat(body.size()).isEqualTo(2);
+            var ids = new java.util.ArrayList<String>();
+            body.forEach(row -> ids.add(row.get("messageId").asText()));
+            assertThat(ids).containsExactlyInAnyOrder("stuck-1", "stuck-2");
+
+            var first = body.get(0);
+            assertThat(first.get("messageId").asText())
+                    .as("longest-stuck first: the answer to \"what is stuck\" is the top row")
+                    .isEqualTo("stuck-1");
+            // Go's field names, exactly — this is a wire contract.
+            assertThat(first.get("poolCode").asText()).isEqualTo("HELD-POOL");
+            assertThat(first.get("target").asText()).startsWith("https://slow.test/");
+            assertThat(first.has("queue")).isTrue();
+            assertThat(first.has("attempts")).isTrue();
+            assertThat(first.has("elapsedTimeMs")).isTrue();
+            // Longest-first: the answer to "what is stuck" is always the top row.
+            assertThat(first.get("elapsedTimeMs").asLong())
+                    .isGreaterThan(body.get(1).get("elapsedTimeMs").asLong());
+
+            // The count and the rows come from one structure, so they cannot
+            // disagree — which is the reason the counter was replaced.
+            assertThat(held.activeWorkers()).isEqualTo(body.size());
+
+            // A pool filter that matches nothing empties the list rather than
+            // quietly ignoring the filter.
+            assertThat(json(isolatedHttp.get("/router/monitoring/mediating?poolCode=OTHER")).size()).isZero();
+            assertThat(json(isolatedHttp.get("/router/monitoring/mediating?poolCode=held-pool")).size())
+                    .as("pool filter is case-insensitive, as in Go").isEqualTo(2);
+            // A junk limit is an operator typo on a read-only call, not a 500.
+            assertThat(json(isolatedHttp.get("/router/monitoring/mediating?limit=nonsense")).size()).isEqualTo(2);
+            assertThat(json(isolatedHttp.get("/router/monitoring/mediating?limit=1")).size()).isOne();
+        } finally {
+            gate.countDown();
+            held.close();
+        }
+
+        // Nothing in a worker once they finish — the set is never reaped, so
+        // a row outliving its delivery would be a leak, not a stale cache.
+        assertThat(held.activeWorkers()).isZero();
+        assertThat(json(bare.get("/router/monitoring/mediating")).isEmpty())
+                .as("no manager wired -> [] rather than an error").isTrue();
+    }
+
+    @Test
+    @DisplayName("mediating rows sort longest-first regardless of the order they arrive in")
+    void mediatingRowsSortLongestFirst() {
+        // Fed deliberately newest-first, which the endpoint itself cannot
+        // produce — its rows come out of a map in roughly insertion order, so
+        // an unsorted implementation passes there by luck.
+        var now = java.time.Instant.parse("2026-01-01T00:00:10Z");
+        var newest = new io.flowcatalyst.router.pool.Mediating("new", "P", "", "q", "t", 0,
+                java.time.Instant.parse("2026-01-01T00:00:09Z"));
+        var oldest = new io.flowcatalyst.router.pool.Mediating("old", "P", "", "q", "t", 0,
+                java.time.Instant.parse("2026-01-01T00:00:00Z"));
+        var middle = new io.flowcatalyst.router.pool.Mediating("mid", "P", "", "q", "t", 0,
+                java.time.Instant.parse("2026-01-01T00:00:05Z"));
+
+        var rows = RouterApi.mediatingRows(List.of(newest, middle, oldest), null, 200, now);
+
+        assertThat(rows).extracting(RouterApi.WireMediating::messageId)
+                .containsExactly("old", "mid", "new");
+        assertThat(rows.getFirst().elapsedTimeMs()).isEqualTo(10_000);
+        // The limit keeps the longest-stuck, not an arbitrary three.
+        assertThat(RouterApi.mediatingRows(List.of(newest, middle, oldest), null, 1, now))
+                .extracting(RouterApi.WireMediating::messageId).containsExactly("old");
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(5);
+        }
+        throw new AssertionError("condition not met within 5s");
+    }
+
+    private static QueuedMessage message(String id, String target) {
+        return QueuedMessage.of(
+                new Message(id, "", null, null, MediationType.HTTP, target, null, false,
+                        DispatchMode.IMMEDIATE),
+                "broker-" + id, "receipt-" + id, "queue-1");
     }
 
     @Test

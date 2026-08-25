@@ -119,25 +119,73 @@ class DeliverySeamTest {
     }
 
     @Test
-    @DisplayName("an unreachable target keeps an IMMEDIATE message and keeps owning it")
-    void unavailableTargetRetriesInPlaceAndKeepsOwnership() {
-        // The Q2 ruling: there is no terminal give-up. An IMMEDIATE message
-        // retries in this process for as long as it takes, so ownership must
-        // be HELD — the broker's visibility timeout will lapse and redeliver
-        // it, and that copy has to be recognised as a duplicate of live work
-        // and dropped rather than delivered a second time.
+    @DisplayName("an unreachable target hands an IMMEDIATE message back to the broker")
+    void unavailableTargetReturnsAnImmediateMessage() {
+        // This test previously asserted the OPPOSITE — that the message was
+        // retried in place for ever and ownership held — and justified it as
+        // the Q2 ruling. That was a misreading: Q2 says do not DISCARD a
+        // message, and handing it back to the broker is not discarding. It is
+        // the only action that restores the broker's authority over it.
+        //
+        // Holding it here instead means the broker's expiry, redelivery count
+        // and dead-letter queue can never act on it, the lapsed-visibility
+        // redelivery is dropped as a duplicate, and the message occupies a
+        // worker and a tracker entry for as long as the outage lasts.
         mediator.answer("m1", new MediationOutcome.ErrorConnection(30, "refused"));
 
         var p = pool(FAST);
         p.submit(register(message("m1", "receipt-m1")));
 
-        await(() -> mediator.attempts("m1") >= 3);
+        await(() -> !queue.nacked.isEmpty());
+        assertThat(queue.nacked).containsKey("receipt-m1");
         assertThat(queue.acked).isEmpty();
-        assertThat(queue.nacked).isEmpty();
-        assertThat(tracker.size()).isOne();
-        // And the lapsed-visibility redelivery is indeed dropped, not run.
-        assertThat(tracker.register(inFlight("m1", "receipt-m1-lapsed")))
-                .isInstanceOf(InFlightTracker.Registration.Redelivery.class);
+        // ONE attempt, not ten. Without this the test cannot tell the
+        // unreachable-target branch from the retry-budget cap, which also
+        // ends in a nack — it would pass with the branch deleted, which is
+        // exactly what a decorative test looks like.
+        assertThat(mediator.attempts("m1"))
+                .as("an unreachable target is not worth nine more tries in-process")
+                .isEqualTo(1);
+        // Ownership goes with it, or the redelivery this nack asks for is
+        // dropped as a duplicate of a delivery nobody is running.
+        await(() -> tracker.size() == 0);
+    }
+
+    @Test
+    @DisplayName("an endlessly deferring target eventually hands the message back")
+    void inPlaceRetriesAreBounded() {
+        // A 429 or ack:false forever is a healthy target that never accepts
+        // the message. Retrying in place is right — up to a point. Past the
+        // budget the message goes back so something outside this process can
+        // finally see it.
+        mediator.answer("m1", new MediationOutcome.RateLimited(1));
+
+        var p = pool(FAST);
+        p.submit(register(message("m1", "receipt-m1")));
+
+        await(() -> !queue.nacked.isEmpty());
+        assertThat(mediator.attempts("m1")).isEqualTo(Pool.MAX_IN_PIPELINE_ATTEMPTS);
+        assertThat(queue.acked).isEmpty();
+        await(() -> tracker.size() == 0);
+    }
+
+    @Test
+    @DisplayName("each in-place retry advances the tracker's attempt count")
+    void retriesAdvanceTheAttemptCount() {
+        // The count two guards read. While it stayed at zero the stall
+        // detector reported every legitimately retrying message as stalled,
+        // and with force-nack on would hand it back mid-retry — two live
+        // deliveries of one message from a single broker.
+        mediator.answer("m1", new MediationOutcome.RateLimited(1));
+
+        var p = pool(FAST);
+        p.submit(register(message("m1", "receipt-m1")));
+
+        await(() -> mediator.attempts("m1") >= 3);
+        assertThat(tracker.snapshot())
+                .as("the tracker must see the retries, not just the pool")
+                .singleElement()
+                .satisfies(entry -> assertThat(entry.attempts()).isGreaterThan(0));
     }
 
     @Test

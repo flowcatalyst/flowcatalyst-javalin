@@ -103,6 +103,11 @@ public final class QueueBroker implements Broker {
     }
 
     @Override
+    public void retrying(QueuedMessage message) {
+        tracker.markRetrying(message.id());
+    }
+
+    @Override
     public void release(QueuedMessage message) {
         // No broker call at all — just ownership.
         tracker.remove(message.id());

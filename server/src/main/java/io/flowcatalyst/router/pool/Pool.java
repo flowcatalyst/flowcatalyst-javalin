@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /// One processing pool: bounded concurrency, a rate limit, and delivery of
@@ -121,7 +122,16 @@ public final class Pool implements AutoCloseable {
     /// permit and, usually, an open socket. Distinct from [#queueSize], which
     /// counts what is *waiting*: together they answer "is this pool busy or
     /// backed up?", which one number alone cannot.
-    private final AtomicInteger activeWorkers = new AtomicInteger();
+    /// What is inside each worker right now, keyed by the **worker**, not by
+    /// message id: de-duplication lets two copies of one id coexist briefly,
+    /// and keying by id would silently collapse them into one row and one
+    /// count. One worker runs one mediation at a time, so the thread is the
+    /// natural identity.
+    private final ConcurrentHashMap<Thread, Mediating> mediating = new ConcurrentHashMap<>();
+
+    /// How many times a message may be retried IN PLACE before it is handed
+    /// back to the broker instead. Matches Go's `maxInPipelineAttempts`.
+    public static final int MAX_IN_PIPELINE_ATTEMPTS = 10;
 
     /// How long a stand-down will spend handing buffered messages back before
     /// giving up on the broker and letting redelivery do it instead.
@@ -163,7 +173,9 @@ public final class Pool implements AutoCloseable {
 
     /// Deliveries in progress right now.
     public int activeWorkers() {
-        return activeWorkers.get();
+        // Derived from the set rather than counted alongside it, so the number
+        // an operator sees and the rows they drill into cannot disagree.
+        return mediating.size();
     }
 
     /// Whether the pool's own rate limiter is holding messages back right
@@ -248,6 +260,28 @@ public final class Pool implements AutoCloseable {
             }
             var failure = (Attempt.Failed) attempt;
             var delay = backoffFor(message, failure.outcome());
+
+            // Nothing was learned about the message — the target could not be
+            // reached, or the breaker refused the call. Retrying it here just
+            // holds it in this process while the outage runs; the broker is
+            // where it belongs, and the backoff becomes its redelivery delay
+            // so it does not come straight back to the pool that gave up.
+            if (!failure.ourFault()
+                    && failure.outcome().disposition() == MediationOutcome.Disposition.RETURN_TO_BROKER) {
+                broker.nack(message, delay, "target-unavailable");
+                return;
+            }
+            // An in-place retry never returns the message, so while it loops
+            // the broker's expiry, redelivery count and dead-letter queue can
+            // never act on it — and the stall detector deliberately leaves
+            // retrying entries alone, so nothing warns either. Unbounded, a
+            // target answering 429 or ack:false for ever pins the message and
+            // its tracker entry for the life of the process, invisibly.
+            if (message.attempts() + 1 >= MAX_IN_PIPELINE_ATTEMPTS) {
+                broker.nack(message, delay, "retry-budget-exhausted");
+                return;
+            }
+            broker.retrying(message);
             message = message.retrying();
             immediateWaiting.incrementAndGet();
             try {
@@ -336,7 +370,7 @@ public final class Pool implements AutoCloseable {
     /// — the mediator threw, or the thread was interrupted mid-call.
     private Attempt failed(DispatchEvent event, QueuedMessage message, MediationOutcome outcome) {
         dispatched(event, message, outcome);
-        return new Attempt.Failed(outcome);
+        return new Attempt.Failed(outcome, true);
     }
 
     private void dispatched(DispatchEvent event, QueuedMessage message, MediationOutcome outcome) {
@@ -359,6 +393,7 @@ public final class Pool implements AutoCloseable {
         decided(group, message, outcome, failure);
         return switch (failure) {
             case HeadFailure.RetryHead retry -> {
+                broker.retrying(retry.head());
                 var next = retry.head().retrying();
                 groups.reFront(next);
                 yield sleepBackoff(group, backoffFor(retry.head(), outcome));
@@ -420,13 +455,15 @@ public final class Pool implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Attempt.Failed(new MediationOutcome.ErrorConnection(
-                    (int) RATE_LIMIT_CANCELLED_FLOOR.toSeconds(), "rate limit wait cancelled"));
+                    (int) RATE_LIMIT_CANCELLED_FLOOR.toSeconds(), "rate limit wait cancelled"), true);
         }
 
         var startedAt = clock.instant();
         var event = new DispatchEvent();
         MediationOutcome outcome;
-        activeWorkers.incrementAndGet();
+        var worker = Thread.currentThread();
+        mediating.put(worker, new Mediating(message.id(), config.code(), message.group(),
+                message.queueId(), message.message().mediationTarget(), message.attempts(), startedAt));
         event.begin();
         try {
             outcome = mediator.deliver(message.message(), backoffs.delivery().endsBurst(message.attempts()));
@@ -442,7 +479,7 @@ public final class Pool implements AutoCloseable {
                     (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "unexpected failure: " + e));
         } finally {
             event.end();
-            activeWorkers.decrementAndGet();
+            mediating.remove(worker);
         }
         var took = Duration.between(startedAt, clock.instant());
         var attempt = resolve(message, outcome, took);
@@ -469,25 +506,25 @@ public final class Pool implements AutoCloseable {
             }
             case MediationOutcome.Deferred deferred -> {
                 metrics.recordTransient(took);
-                yield new Attempt.Failed(deferred);
+                yield new Attempt.Failed(deferred, false);
             }
             case MediationOutcome.ErrorProcess process -> {
                 metrics.recordTransient(took);
-                yield new Attempt.Failed(process);
+                yield new Attempt.Failed(process, false);
             }
             case MediationOutcome.ErrorConnection connection -> {
                 metrics.recordFailure(took);
-                yield new Attempt.Failed(connection);
+                yield new Attempt.Failed(connection, false);
             }
             case MediationOutcome.RateLimited rateLimited -> {
                 // The target is throttling us, not failing: no breaker
                 // impact, and counted apart from our own limiter.
                 metrics.recordRateLimited();
-                yield new Attempt.Failed(rateLimited);
+                yield new Attempt.Failed(rateLimited, false);
             }
             // No metric: no call was made, so there is nothing to say about
             // the target that the breaker is not already saying.
-            case MediationOutcome.CircuitOpen circuitOpen -> new Attempt.Failed(circuitOpen);
+            case MediationOutcome.CircuitOpen circuitOpen -> new Attempt.Failed(circuitOpen, false);
         };
     }
 
@@ -506,6 +543,12 @@ public final class Pool implements AutoCloseable {
     private Duration backoffFor(QueuedMessage message, MediationOutcome outcome) {
         var policy = outcome instanceof MediationOutcome.Deferred ? backoffs.deferred() : backoffs.delivery();
         return policy.delayBefore(message.attempts() + 1, outcome.delaySeconds());
+    }
+
+    /// Everything inside a worker right now, newest-first order unspecified —
+    /// the caller sorts.
+    public java.util.List<Mediating> mediating() {
+        return java.util.List.copyOf(mediating.values());
     }
 
     /// Resizes concurrency, for the messages already queued as much as for
@@ -616,7 +659,23 @@ public final class Pool implements AutoCloseable {
 
         /// Retryable. What happens next depends on whether the message is
         /// ordered, which is the caller's business, not this method's.
-        record Failed(MediationOutcome outcome) implements Attempt {
+        /// @param ourFault whether the failure came from **inside this
+        ///                  process** — the mediator threw, or a wait was
+        ///                  interrupted — rather than from the target.
+        ///
+        ///                  It matters because Java models both as
+        ///                  `ErrorConnection`, and they deserve opposite
+        ///                  treatment: a target that cannot be reached should
+        ///                  go back to the broker, where something outside
+        ///                  this process can act on it, while our own
+        ///                  exception says nothing about the target and is
+        ///                  worth retrying right here. Handing the second one
+        ///                  back would turn every transient bug of ours into
+        ///                  broker churn.
+        ///
+        ///                  A required component, not a defaulted one: the
+        ///                  compiler makes every construction site answer.
+        record Failed(MediationOutcome outcome, boolean ourFault) implements Attempt {
         }
     }
 }
