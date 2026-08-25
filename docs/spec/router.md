@@ -32,7 +32,42 @@ Source set read for this spec: `router/**` (incl. `api/**`), `common/**`,
 
 This spec was extracted at Go `1e9d465`. Three commits landed inside the
 subsystem afterwards; **all three have now been re-extracted into the
-sections below and this spec is current against Go `eff2a29`.** The owner
+sections below and this spec is current against Go `eff2a29`.**
+
+> ### ⚠ RE-EXTRACTION OWED (2026-08-25) — the spec is NOT current
+>
+> Six router commits landed in Go after `eff2a29`. The spec was never
+> re-extracted, so §2/§3/§6 describe a Go that no longer exists, and — worse —
+> several rulings recorded here as **deliberate Java-vs-Go deviations have
+> since been adopted by Go**, which makes the deviation notes actively wrong.
+>
+> | Go commit | Touches | Effect on this spec |
+> |---|---|---|
+> | `7bbef5d` | `pool.go` | Splits unreachable-target from application-rejection on delivery failure — the ordered-head failure-kind ruling. Recorded here as a Java deviation; Go now does it. |
+> | `8804827` | `pool.go` | **Q1.** Makes `BLOCK_ON_ERROR` and `NEXT_ON_ERROR` actually differ. Recorded here as *the largest deliberate deviation* ("Go blocks the group for both modes"); that is no longer true. |
+> | `88b4549` | `manager.go`, `pool.go` | Passes the broker message id to Ack so SQS cannot forget a delete. |
+> | `31f22de` | `postgres.go` | **Q17.** Quarantines malformed rows — the ruling Java implemented. Go now does it too. |
+> | `18f1460` | `manager.go` | **Q16.** Scheduler propagates the client-namespaced pool code. |
+> | `4f2d52c` | `mediator.go` | **501** as a terminal ACK. Java matched this on 2026-08-25 via the conformance corpus. |
+>
+> **MATERIAL DIVERGENCE FOUND WHILE CHECKING — needs an owner ruling.**
+>
+> Under `BLOCK_ON_ERROR` with the head terminally failed, the two now do
+> different things to the *siblings*, which were never delivered and have
+> nothing wrong with them:
+>
+> - **Go** (`8804827`) NACKs them back to the broker. They redeliver once the
+>   failure is resolved; the broker holds them meanwhile.
+> - **Java** ACKs them off the broker, on the recorded Q1 ruling that "human
+>   review re-queues the group". The messages are **deleted** and exist only
+>   wherever the platform re-sends them from.
+>
+> Java's is the riskier of the two by a wide margin: it destroys untried
+> messages and depends on a re-queue path that must exist and must be correct.
+> Go's needs nothing to exist. If the platform re-queue is real and trusted,
+> Java's is defensible; if it is not yet built, this is live data loss on every
+> blocked group. **Do not port around this — decide it.**
+ The owner
 confirms no router work is in flight, so this target is stable.
 
 | Go commit | What changed | Where it now lives |
