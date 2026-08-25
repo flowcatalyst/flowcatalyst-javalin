@@ -54,13 +54,11 @@ public final class PostgresQueue implements Consumer {
                 FROM queue_messages m
                WHERE m.queue_name = ?
                  AND m.visible_at <= ?
-                 AND m.error_at IS NULL
                  AND NOT EXISTS (
                        SELECT 1 FROM queue_messages e
                         WHERE e.queue_name = m.queue_name
                           AND COALESCE(e.message_group_id, e.id) = COALESCE(m.message_group_id, m.id)
                           AND e.visible_at <= ?
-                          AND e.error_at IS NULL
                           AND (e.created_at < m.created_at
                                OR (e.created_at = m.created_at AND e.id < m.id))
                      )
@@ -78,13 +76,25 @@ public final class PostgresQueue implements Consumer {
              RETURNING t.id, t.payload
             """;
 
-    private static final String MARK_ERRORED_SQL = """
-            UPDATE queue_messages
-               SET error_at       = ?,
-                   error_message  = ?,
-                   receipt_handle = NULL
-             WHERE queue_name = ?
-               AND id = ?
+    /// Moves one unusable row out of the live table in a single statement,
+    /// so it can never be half-moved: either it is gone from `queue_messages`
+    /// and recorded in `queue_messages_failed`, or nothing happened.
+    private static final String MOVE_TO_FAILED_SQL = """
+            WITH moved AS (
+                DELETE FROM queue_messages
+                 WHERE queue_name = ?
+                   AND id = ?
+             RETURNING id, queue_name, message_group_id, payload, created_at, receive_count
+            )
+            INSERT INTO queue_messages_failed
+                (id, queue_name, message_group_id, payload, created_at, receive_count, failed_at, error_message)
+            SELECT id, queue_name, message_group_id, payload, created_at, receive_count, ?, ?
+              FROM moved
+            ON CONFLICT (queue_name, id) DO UPDATE
+                SET payload       = EXCLUDED.payload,
+                    failed_at     = EXCLUDED.failed_at,
+                    error_message = EXCLUDED.error_message,
+                    receive_count = EXCLUDED.receive_count
             """;
 
     private final DataSource dataSource;
@@ -129,14 +139,30 @@ public final class PostgresQueue implements Consumer {
                     PRIMARY KEY (queue_name, id)
                 )
                 """;
-        // Additive, so a rollback to Go is unaffected: its CREATE TABLE IF
-        // NOT EXISTS leaves these alone and its claim query simply ignores
-        // them — which does mean Go would re-claim an errored row and poison
-        // itself again, the behaviour Java is fixing.
-        final String addErrorColumns = """
-                ALTER TABLE queue_messages
-                    ADD COLUMN IF NOT EXISTS error_at      BIGINT,
-                    ADD COLUMN IF NOT EXISTS error_message TEXT
+        // Unusable messages are MOVED here rather than flagged in place, so
+        // the live table stays purely live work: no errored rows in its heap
+        // to vacuum around, and no error predicate in the claim query.
+        //
+        // It also makes a rollback to Go safe rather than merely tolerable.
+        // Go's claim has no notion of an error flag, so a flagged row left in
+        // queue_messages would be re-claimed and poison it again; a row that
+        // has been moved out is simply not there.
+        //
+        // The primary key is (queue_name, id) with an upsert on conflict, so
+        // an id that fails, is re-queued, and fails again records its latest
+        // failure rather than accumulating a row per attempt.
+        final String createFailedTable = """
+                CREATE TABLE IF NOT EXISTS queue_messages_failed (
+                    id               TEXT NOT NULL,
+                    queue_name       TEXT NOT NULL,
+                    message_group_id TEXT,
+                    payload          TEXT NOT NULL,
+                    created_at       BIGINT NOT NULL,
+                    receive_count    INTEGER,
+                    failed_at        BIGINT NOT NULL,
+                    error_message    TEXT,
+                    PRIMARY KEY (queue_name, id)
+                )
                 """;
         final String createIndex = """
                 CREATE INDEX IF NOT EXISTS idx_queue_visible
@@ -145,38 +171,34 @@ public final class PostgresQueue implements Consumer {
         try (Connection conn = dataSource.getConnection();
              Statement st = conn.createStatement()) {
             st.execute(createTable);
-            st.execute(addErrorColumns);
+            st.execute(createFailedTable);
             st.execute(createIndex);
         } catch (SQLException e) {
             throw new PostgresQueueException("failed to initialise queue_messages schema", e);
         }
     }
 
-    /// Records a row as unusable and takes it out of circulation, without
-    /// deleting it.
+    /// Moves an unusable row out of the live queue and into the failed table.
     ///
-    /// The payload is kept deliberately: it is the only evidence of *why* the
-    /// message was malformed, and a queue that silently discards what it
-    /// cannot parse gives an operator nothing to work from. The receipt
-    /// handle is cleared so the row does not look claimed, and `error_at`
-    /// keeps it out of every future claim.
+    /// The payload travels with it deliberately: it is the only evidence of
+    /// *why* the message was malformed, and a queue that silently discards
+    /// what it cannot parse leaves an operator nothing to work from.
     ///
-    /// Best-effort by design. If the marking itself fails, the row keeps its
-    /// pushed-out visibility and will be retried later — the same message
-    /// arriving twice is far better than a poll that dies and takes the whole
-    /// batch with it.
-    private void markErrored(String id, Exception cause) {
-        log.error("queue {}: message {} has a malformed payload; marking it errored and skipping it",
+    /// Best-effort by design. If the move fails, the row keeps its pushed-out
+    /// visibility and is retried later — the same message arriving twice is
+    /// far better than a poll that dies and takes the whole batch with it.
+    private void moveToFailed(String id, Exception cause) {
+        log.error("queue {}: message {} has a malformed payload; moving it to queue_messages_failed",
                 queueName, id, cause);
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(MARK_ERRORED_SQL)) {
-            ps.setLong(1, Instant.now().getEpochSecond());
-            ps.setString(2, truncate(cause.getMessage()));
-            ps.setString(3, queueName);
-            ps.setString(4, id);
+             PreparedStatement ps = conn.prepareStatement(MOVE_TO_FAILED_SQL)) {
+            ps.setString(1, queueName);
+            ps.setString(2, id);
+            ps.setLong(3, Instant.now().getEpochSecond());
+            ps.setString(4, truncate(cause.getMessage()));
             ps.executeUpdate();
         } catch (Exception e) {
-            log.warn("queue {}: could not mark message {} as errored", queueName, id, e);
+            log.warn("queue {}: could not move message {} to the failed table", queueName, id, e);
         }
     }
 
@@ -233,10 +255,11 @@ public final class PostgresQueue implements Consumer {
                         // time its visibility lapses, and every message behind it is
                         // never delivered. One bad row stops the queue permanently.
                         //
-                        // Marking beats deleting (SQS acks a malformed message away,
+                        // Moving beats deleting (SQS acks a malformed message away,
                         // NATS terms it): the payload stays for inspection, which is
-                        // the only way to find out why it was malformed.
-                        markErrored(id, e);
+                        // the only way to find out why it was malformed. It also
+                        // keeps the live table free of rows that will never run.
+                        moveToFailed(id, e);
                         continue;
                     }
                     messages.add(QueuedMessage.of(message, id, receipt + ":" + id, queueName));

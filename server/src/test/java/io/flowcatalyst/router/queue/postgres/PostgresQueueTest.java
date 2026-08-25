@@ -103,20 +103,33 @@ class PostgresQueueTest {
         }
     }
 
-    /// The recorded reason a row was rejected, or null when it was not.
-    private static String errorMessageOf(String queueName, String id) {
-        return columnOf(queueName, id, "error_message");
+    /// How many failed rows exist for a message — one, or none.
+    private static long failedRowCount(String queueName, String id) {
+        try (Connection conn = DS.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) FROM queue_messages_failed WHERE queue_name = ? AND id = ?")) {
+            ps.setString(1, queueName);
+            ps.setString(2, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    /// The stored payload — kept even when unparseable, because it is the
-    /// only evidence of why it was.
-    private static String payloadOf(String queueName, String id) {
-        return columnOf(queueName, id, "payload");
+    /// A column of the failed row, or null when the message was not moved.
+    private static String failedColumnOf(String queueName, String id, String column) {
+        return columnOf("queue_messages_failed", queueName, id, column);
     }
 
     private static String columnOf(String queueName, String id, String column) {
+        return columnOf("queue_messages", queueName, id, column);
+    }
+
+    private static String columnOf(String table, String queueName, String id, String column) {
         try (Connection conn = DS.getConnection(); PreparedStatement ps = conn.prepareStatement(
-                "SELECT " + column + " FROM queue_messages WHERE queue_name = ? AND id = ?")) {
+                "SELECT " + column + " FROM " + table + " WHERE queue_name = ? AND id = ?")) {
             ps.setString(1, queueName);
             ps.setString(2, id);
             try (ResultSet rs = ps.executeQuery()) {
@@ -249,12 +262,11 @@ class PostgresQueueTest {
     }
 
     @Test
-    @DisplayName("a malformed payload is marked errored, and the rest of the batch still delivers")
-    void malformedPayloadIsMarkedErrored() throws InterruptedException {
+    @DisplayName("a malformed payload is moved to the failed table, and the batch still delivers")
+    void malformedPayloadIsMovedToFailedTable() throws InterruptedException {
         // Q17 ruled (owner, 2026-08-25). Go fails the WHOLE poll here, and the
-        // row is already claimed — so it re-claims and re-fails forever and
-        // every message behind it is never delivered. One bad row would stop
-        // the queue permanently.
+        // row is already claimed by then — so it re-claims and re-fails
+        // forever and every message behind it is never delivered.
         String queue = freshQueue();
         String goodId = "good-" + UUID.randomUUID();
         String badId = "bad-" + UUID.randomUUID();
@@ -269,52 +281,46 @@ class PostgresQueueTest {
             // The good message is unaffected by its neighbour being unusable.
             assertThat(delivered.messages()).singleElement()
                     .extracting(QueuedMessage::id).isEqualTo(goodId);
-            assertThat(errorMessageOf(queue, badId))
-                    .as("the failure is recorded on the row, not just logged")
-                    .isNotNull();
-            // Kept, not deleted: the payload is the only evidence of why it
-            // was malformed.
-            assertThat(payloadOf(queue, badId)).isEqualTo("{not-json");
+            // Gone from the live table, so nothing can ever claim it again —
+            // including a rolled-back Go, which has no notion of an error flag.
+            assertThat(rowCount(queue, badId)).isZero();
+            // Kept in full: the payload is the only evidence of why it was
+            // malformed.
+            assertThat(failedColumnOf(queue, badId, "payload")).isEqualTo("{not-json");
+            assertThat(failedColumnOf(queue, badId, "error_message")).isNotNull();
+            assertThat(failedColumnOf(queue, badId, "failed_at")).isNotNull();
         }
     }
 
     @Test
-    @DisplayName("an errored row is never claimed again, however long the queue runs")
-    void erroredRowIsNeverClaimedAgain() throws InterruptedException {
+    @DisplayName("a moved row is never claimed again, however long the queue runs")
+    void movedRowIsNeverClaimedAgain() throws InterruptedException {
         String queue = freshQueue();
         String badId = "bad-" + UUID.randomUUID();
         long past = Instant.now().getEpochSecond() - 3600;
         insert(queue, badId, null, "{not-json", past, past);
 
-        // A one-second visibility, waited out, so the row really is eligible
-        // again on the second poll. That isolates error_at as the only thing
-        // keeping it out; with the default visibility the test would pass
-        // whether or not the guard existed. (Zero does not work: the spec
-        // substitutes 30s for it.) The wait is the database's clock, which is
-        // not injectable, so it is a real one.
         try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(1))) {
             consumer.poll(10);
             waitForVisibilityToLapse();
 
-            // Asserting "no message delivered" would prove nothing: a
-            // re-claimed malformed row is marked and skipped, so it yields no
-            // message either way. receive_count is what actually differs —
-            // it counts claims, and a poison loop increments it forever.
+            // Visibility has lapsed — this is exactly where the poison loop
+            // restarted in Go. The row is not there to be claimed.
             var second = (Consumer.PollResult.Delivered) consumer.poll(10);
             assertThat(second.messages()).isEmpty();
-            assertThat(columnOf(queue, badId, "receive_count"))
-                    .as("an errored row must never be claimed a second time")
+            assertThat(rowCount(queue, badId)).isZero();
+            assertThat(failedColumnOf(queue, badId, "receive_count"))
+                    .as("the failed row keeps the claim count it had when it failed")
                     .isEqualTo("1");
-            assertThat(rowCount(queue, badId)).isOne();
         }
     }
 
     @Test
-    @DisplayName("an errored row does not hold back its own message group")
-    void erroredRowDoesNotBlockItsGroup() throws InterruptedException {
-        // Ordering holds back later siblings behind an earlier one. If an
-        // errored row still counted as an earlier sibling, marking it would
-        // stop the queue in a subtler way than the poison loop did.
+    @DisplayName("a moved row does not hold back its own message group")
+    void movedRowDoesNotBlockItsGroup() throws InterruptedException {
+        // Ordering holds later siblings behind an earlier one. A malformed
+        // head left in place would stop the group in a subtler way than the
+        // poison loop did — moving it out removes the question entirely.
         String queue = freshQueue();
         String group = "grp-" + UUID.randomUUID();
         String badId = "a-bad-" + UUID.randomUUID();
@@ -323,20 +329,36 @@ class PostgresQueueTest {
         insert(queue, badId, group, "{not-json", now, now);
         insert(queue, goodId, group, io.flowcatalyst.platform.shared.json.Json.write(message(goodId, group)), now, now + 1);
 
-        // Waited out again, so the errored head is visible once more and
-        // would still count as an earlier sibling — holding the group back —
-        // unless error_at excludes it from the sibling check too.
         try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(1))) {
-            consumer.poll(10); // marks the bad head errored
+            consumer.poll(10); // moves the bad head out
             waitForVisibilityToLapse();
 
             var following = (Consumer.PollResult.Delivered) consumer.poll(10);
             assertThat(following.messages())
-                    .as("the good sibling must not be held back by an errored head")
+                    .as("the good sibling must not be held back by a failed head")
                     .singleElement()
                     .extracting(QueuedMessage::id).isEqualTo(goodId);
-            // And the errored head itself was not re-claimed to get there.
-            assertThat(columnOf(queue, badId, "receive_count")).isEqualTo("1");
+        }
+    }
+
+    @Test
+    @DisplayName("a message that fails twice records its latest failure, not a row per attempt")
+    void repeatedFailureUpserts() throws InterruptedException {
+        String queue = freshQueue();
+        String badId = "bad-" + UUID.randomUUID();
+        long now = Instant.now().getEpochSecond();
+        insert(queue, badId, null, "{not-json", now, now);
+
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
+            consumer.poll(10);
+            // Re-queued by an operator after a fix attempt, still malformed.
+            insert(queue, badId, null, "{still-not-json", now, now);
+            consumer.poll(10);
+
+            assertThat(failedRowCount(queue, badId))
+                    .as("one row per message, carrying its latest failure")
+                    .isOne();
+            assertThat(failedColumnOf(queue, badId, "payload")).isEqualTo("{still-not-json");
         }
     }
 
