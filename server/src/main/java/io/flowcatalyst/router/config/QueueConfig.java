@@ -81,6 +81,9 @@ public record QueueConfig(
     /// which is the only effect it has ever had.
     @JsonIgnore
     public boolean sameConsumerTopology(QueueConfig other) {
-        return other != null && equals(other);
+        // No null guard: equals(null) is false by contract, so one would only
+        // suggest null is meaningful here. It is not — a caller with no
+        // running config wants "different", which is what it gets.
+        return equals(other);
     }
 }

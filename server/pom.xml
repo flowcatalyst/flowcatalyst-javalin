@@ -105,6 +105,10 @@
       <artifactId>sqs</artifactId>
     </dependency>
     <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>elasticloadbalancingv2</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.nats</groupId>
       <artifactId>jnats</artifactId>
     </dependency>

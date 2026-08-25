@@ -50,13 +50,33 @@ class RouterServerTest {
         pools.forEach(Pool::close);
     }
 
+    private final List<String> nacked = new CopyOnWriteArrayList<>();
+
     private RouterManager manager() {
         Mediator mediator = (message, recordFailure) -> MediationOutcome.Success.of(200);
+        Broker recording = new Broker() {
+            @Override
+            public void ack(QueuedMessage message) {
+            }
+
+            @Override
+            public void nack(QueuedMessage message, Duration delay) {
+                nacked.add(message.id());
+            }
+        };
         return new RouterManager(tracker, warnings, clock, config -> {
-            var pool = new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
+            var pool = new Pool(config, mediator, recording, PoolMetrics.NO_OP, clock);
             pools.add(pool);
             return pool;
         });
+    }
+
+    private static QueuedMessage message(String id) {
+        return QueuedMessage.of(
+                new io.flowcatalyst.router.wire.Message(id, "", null, null,
+                        io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
+                        io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE),
+                "b-" + id, "r-" + id, "q://1");
     }
 
     private RouterServer server(LeaderElection.Config electionConfig, RouterConfig config) {
@@ -160,6 +180,31 @@ class RouterServerTest {
         assertThat(router.running()).isFalse();
         assertThat(router.activeLoops()).isZero();
         assertThat(built).allSatisfy(consumer -> assertThat(consumer.closed).isTrue());
+    }
+
+    @Test
+    @DisplayName("a pool still delivers after a failover and back")
+    void poolStillWorksAfterFailoverAndBack() {
+        // The test that matters, and the one the earlier version was missing:
+        // asserting the pool OBJECTS survive says nothing about whether they
+        // still work. Stopping a pool is permanent — `stopped` is never
+        // reset — so a stand-down that stopped its pools would regain
+        // leadership and quietly nack every message for ever.
+        var router = server(LeaderElection.Config.of("fc:leader"), config("q://1"));
+        router.start();
+        await(() -> router.activeLoops() == 1);
+        var pool = manager().pools().get(RouterManager.DEFAULT_POOL);
+
+        store.holder = "someone-else";
+        election.contendNow();          // lose it
+        store.holder = null;
+        election.contendNow();          // and get it back
+
+        await(() -> router.activeLoops() == 1);
+        var survivor = pools.getFirst();
+        survivor.submit(message("after-failover"));
+        await(() -> survivor.queueSize() == 0);
+        assertThat(nacked).as("a surviving pool must deliver, not hand back").doesNotContain("after-failover");
     }
 
     @Test

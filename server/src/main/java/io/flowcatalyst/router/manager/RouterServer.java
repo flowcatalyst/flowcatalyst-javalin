@@ -63,16 +63,22 @@ public final class RouterServer implements AutoCloseable {
     @FunctionalInterface
     public interface ConfigSource {
 
-        /// @return the configuration to apply, or empty when it is unchanged
-        ///         or unavailable — in either case the router keeps running
-        ///         what it already has rather than tearing itself down
+        /// @return the configuration to apply, or empty when it is
+        ///         **unavailable** — in which case the router keeps running
+        ///         what it already has rather than tearing itself down.
+        ///
+        /// A source may return the same configuration every time. Applying it
+        /// is idempotent: [RouterManager#reconfigure] leaves unchanged queues
+        /// and pools alone. That matters more than it sounds — after a
+        /// leadership loss the consumers have been forgotten, so a source
+        /// that suppressed "unchanged" configurations would regain
+        /// leadership and rebuild nothing.
         Optional<RouterConfig> fetch();
 
+        /// A configuration that never changes — the single-tenant and
+        /// default-broker cases, which have no config service.
         static ConfigSource fixed(RouterConfig config) {
-            var once = new java.util.concurrent.atomic.AtomicReference<>(config);
-            // Applied once; a later poll reports "unchanged" so a fixed
-            // config does not reconfigure on every tick.
-            return () -> Optional.ofNullable(once.getAndSet(null));
+            return () -> Optional.of(config);
         }
     }
 
@@ -202,8 +208,11 @@ public final class RouterServer implements AutoCloseable {
                 .map(manager::consumer)
                 .flatMap(Optional::stream)
                 .toList();
+        // standDown, not shutdown: the pools must survive so a later
+        // leadership gain has somewhere to put messages. Closing them here
+        // is a bug that only appears on failover BACK.
         new RouterShutdown(tracker, drainTimeout, TRANSITION_TIMEOUT)
-                .shutdown(List.copyOf(loops.values()), consumers, manager.pools().values());
+                .standDown(List.copyOf(loops.values()), consumers, manager.pools().values());
         loops.clear();
         manager.forgetConsumers();
     }

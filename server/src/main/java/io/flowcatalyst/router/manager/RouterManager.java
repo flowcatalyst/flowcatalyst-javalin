@@ -265,7 +265,10 @@ public final class RouterManager {
                 // must survive a reconfigure that does not mention them.
                 var pool = pools.remove(code);
                 if (pool != null) {
-                    pool.stop();
+                    // close, not stop: this pool is being discarded, so its
+                    // worker executor goes with it. Stopping alone would hand
+                    // back the buffers and leak the threads.
+                    pool.close();
                     removed++;
                 }
             }
@@ -299,8 +302,11 @@ public final class RouterManager {
 
         var stopped = 0;
         for (var entry : List.copyOf(queueConfigs.entrySet())) {
-            var running = wanted.get(entry.getKey());
-            if (running == null || !entry.getValue().sameConsumerTopology(running)) {
+            // Not wanted at all, or wanted differently — either way the
+            // running consumer is not the one we should have, so it goes.
+            // A queue the config dropped compares against null, which is
+            // "different" by the same rule as any other change.
+            if (!entry.getValue().sameConsumerTopology(wanted.get(entry.getKey()))) {
                 stopConsumer(entry.getKey());
                 stopped++;
             }

@@ -74,7 +74,24 @@ public final class RouterShutdown {
     /// @param loops     the poll-loop threads to interrupt
     /// @param consumers the queues to close
     /// @param pools     the pools to stop
+    /// Terminal: the process is exiting, so pools are **closed** — their
+    /// worker executors released along with their buffers.
     public Result shutdown(Collection<Thread> loops, Collection<Consumer> consumers, Collection<Pool> pools) {
+        return stop(loops, consumers, pools, Pool::close, "pool close");
+    }
+
+    /// Leadership loss: another instance is taking over, so buffered work
+    /// goes back to the broker but the pools **survive**.
+    ///
+    /// Closing them here would be a bug that only shows on failover *back*:
+    /// a stopped pool nacks everything for ever, so the router would regain
+    /// leadership and quietly refuse every message.
+    public Result standDown(Collection<Thread> loops, Collection<Consumer> consumers, Collection<Pool> pools) {
+        return stop(loops, consumers, pools, Pool::releaseBuffered, "pool release");
+    }
+
+    private Result stop(Collection<Thread> loops, Collection<Consumer> consumers, Collection<Pool> pools,
+                        java.util.function.Consumer<Pool> poolAction, String poolActionName) {
         int inFlightAtStart = tracker.size();
         log.info("router shutting down with {} messages in flight", inFlightAtStart);
 
@@ -101,7 +118,7 @@ public final class RouterShutdown {
         //    Concurrent for the same reason as the closes: stopping a pool
         //    nacks every message it still holds, one broker round-trip each,
         //    and a slow pool must not eat the budget of the others.
-        Concurrently.forEach(pools, Pool::stop, stepTimeout, "pool stop");
+        Concurrently.forEach(pools, poolAction, stepTimeout, poolActionName);
 
         int remaining = tracker.size();
         if (!drained) {

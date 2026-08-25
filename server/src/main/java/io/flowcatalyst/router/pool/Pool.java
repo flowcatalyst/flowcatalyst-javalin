@@ -456,14 +456,32 @@ public final class Pool implements AutoCloseable {
         limiter.reconfigure(requestsPerMinute);
     }
 
-    /// Stops accepting work and hands back everything still queued.
+    /// Hands back everything still queued **without** stopping the pool.
+    ///
+    /// This is the leadership-loss case: another instance is taking over, so
+    /// buffered work must go back to the broker — but this pool has to stay
+    /// usable, because leadership can return and rebuilding every pool on
+    /// each transition would make a failover far more disruptive than it
+    /// needs to be.
+    ///
+    /// Deliveries already in flight finish on their own.
+    public void releaseBuffered() {
+        handBack(groups.drainAll());
+    }
+
+    /// Stops accepting work **permanently** and hands back everything still
+    /// queued. A stopped pool nacks every later submission; there is no
+    /// resume, because the only caller that stops a pool is discarding it.
     ///
     /// Buffered messages are **nacked**, not dropped: they were accepted but
     /// never delivered, and the broker is where they must go to be picked up
     /// by another instance. Deliveries already in flight finish on their own.
     public void stop() {
         stopped = true;
-        var buffered = groups.drainAll();
+        handBack(groups.drainAll());
+    }
+
+    private void handBack(java.util.List<QueuedMessage> buffered) {
         if (buffered.isEmpty()) {
             return;
         }
