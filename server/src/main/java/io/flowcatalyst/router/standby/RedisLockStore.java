@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.standby;
 
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.params.SetParams;
 
 import java.time.Duration;
@@ -34,41 +34,36 @@ public final class RedisLockStore implements LockStore {
             end
             """;
 
-    private final JedisPool pool;
+    private final UnifiedJedis jedis;
 
-    public RedisLockStore(JedisPool pool) {
-        this.pool = pool;
+    /// Takes a [UnifiedJedis] — `JedisPooled` in production — rather than the
+    /// deprecated `JedisPool`. It pools internally, so there is no resource
+    /// to borrow and return per call, and no chance of leaking one.
+    public RedisLockStore(UnifiedJedis jedis) {
+        this.jedis = jedis;
     }
 
     @Override
     public boolean acquire(String key, String value, Duration ttl) {
-        try (var jedis = pool.getResource()) {
-            // NX makes this the atomic "take it only if free"; without it two
-            // instances starting together would both succeed.
-            var result = jedis.set(key, value, SetParams.setParams().nx().ex(ttl.toSeconds()));
-            return "OK".equals(result);
-        }
+        // NX makes this the atomic "take it only if free"; without it two
+        // instances starting together would both succeed.
+        var result = jedis.set(key, value, SetParams.setParams().nx().ex(ttl.toSeconds()));
+        return "OK".equals(result);
     }
 
     @Override
     public boolean refresh(String key, String value, Duration ttl) {
-        try (var jedis = pool.getResource()) {
-            var result = jedis.eval(REFRESH_IF_MINE, List.of(key), List.of(value, String.valueOf(ttl.toSeconds())));
-            return result instanceof Long extended && extended == 1L;
-        }
+        var result = jedis.eval(REFRESH_IF_MINE, List.of(key), List.of(value, String.valueOf(ttl.toSeconds())));
+        return result instanceof Long extended && extended == 1L;
     }
 
     @Override
     public void release(String key, String value) {
-        try (var jedis = pool.getResource()) {
-            jedis.eval(RELEASE_IF_MINE, List.of(key), List.of(value));
-        }
+        jedis.eval(RELEASE_IF_MINE, List.of(key), List.of(value));
     }
 
     @Override
     public void ping() {
-        try (var jedis = pool.getResource()) {
-            jedis.ping();
-        }
+        jedis.ping();
     }
 }

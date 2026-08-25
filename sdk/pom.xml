@@ -7,8 +7,16 @@
   <parent>
     <groupId>io.flowcatalyst</groupId>
     <artifactId>flowcatalyst-parent</artifactId>
+
     <version>0.0.1-SNAPSHOT</version>
   </parent>
+
+  <properties>
+    <!-- openapi-generator output uses a deprecated Jackson API. We neither
+         write it nor can fix it, so this module alone does not treat
+         warnings as errors. Every other module does. -->
+    <maven.compiler.failOnWarning>false</maven.compiler.failOnWarning>
+  </properties>
 
   <artifactId>flowcatalyst-sdk</artifactId>
   <packaging>jar</packaging>

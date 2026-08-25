@@ -120,7 +120,11 @@ final class FakeJetStreamMessage implements Message {
         return data;
     }
 
+    /// Deprecated upstream, but still abstract on `Message`, so a stub has
+    /// to implement it. Suppressed rather than left to trip the build's
+    /// warning gate over a method we are only obliged to declare.
     @Override
+    @SuppressWarnings("deprecation")
     public boolean isUtf8mode() {
         return false;
     }

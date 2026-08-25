@@ -175,7 +175,21 @@ public final class NatsQueue implements Consumer {
                 .build();
 
         List<QueuedMessage> delivered = new ArrayList<>();
-        try (FetchConsumer fetch = consumerContext.fetch(options)) {
+        // Closed by hand rather than with try-with-resources: FetchConsumer's
+        // close() declares InterruptedException, so an implicit close can
+        // throw one that masks whatever the body threw — including a
+        // *different* InterruptedException, which would make an interrupt
+        // during cleanup indistinguishable from one during the fetch.
+        // Closing in a finally, and swallowing only the close's own failure,
+        // keeps the body's outcome authoritative.
+        FetchConsumer fetch;
+        try {
+            fetch = consumerContext.fetch(options);
+        } catch (Exception e) {
+            log.warn("nats: fetch failed on queue {}", identifier, e);
+            return PollResult.empty();
+        }
+        try {
             io.nats.client.Message msg;
             while ((msg = fetch.nextMessage()) != null) {
                 handleFetched(msg, delivered);
@@ -183,16 +197,30 @@ public final class NatsQueue implements Consumer {
         } catch (InterruptedException e) {
             throw e;
         } catch (Exception e) {
-            // A real fetch error (a timeout waiting for messages is not an
-            // error here — it simply yields an empty batch, same as Go).
+            // A real fetch error. A timeout waiting for messages is not one —
+            // it simply yields an empty batch, same as Go.
             log.warn("nats: fetch failed on queue {}", identifier, e);
             return PollResult.empty();
+        } finally {
+            closeQuietly(fetch);
         }
 
         if (!delivered.isEmpty()) {
             polled.addAndGet(delivered.size());
         }
         return PollResult.of(delivered);
+    }
+
+    /// Closes a fetch without letting its failure replace the poll's own
+    /// outcome. An interrupt during close is restored rather than swallowed.
+    private void closeQuietly(FetchConsumer fetch) {
+        try {
+            fetch.close();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            log.warn("nats: closing fetch failed on queue {}", identifier, e);
+        }
     }
 
     /// Classifies one fetched message and acts on the verdict.

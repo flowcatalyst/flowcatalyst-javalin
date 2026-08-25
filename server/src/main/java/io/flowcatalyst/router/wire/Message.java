@@ -26,41 +26,37 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 /// began setting it (`docs/spec/dispatch-propagation.md`), and an absent
 /// value parses to [DispatchMode#IMMEDIATE] on the way in, so always writing
 /// it is compatible in both directions and removes a silent default.
+///
+/// @param id              application message id — a TSID or dispatch-job id.
+///                        The dedup key in the in-flight tracker, and the
+///                        sole content of the delivered body:
+///                        `{"messageId": "<id>"}`
+/// @param poolCode        pool to process in. Empty or unknown routes to the
+///                        router's fallback pool. Namespaced
+///                        `{clientIdentifier}-{poolCode}` by the producer,
+///                        and **opaque** — never split it back apart
+/// @param authToken       sent as `Authorization: Bearer <authToken>` when
+///                        non-null, **including when empty**
+/// @param signingSecret   when non-null the request is HMAC-signed; see
+///                        [WebhookSigner]
+/// @param mediationType   only [MediationType.Http] is deliverable; anything
+///                        else is ACK-dropped with a diagnostic
+/// @param mediationTarget absolute URL POSTed to, and the circuit-breaker key
+/// @param messageGroupId  FIFO group. Honoured only when [#dispatchMode]
+///                        requires ordering
+/// @param highPriority    carried and never acted on — the Go router reads it
+///                        nowhere (`docs/spec/router.md` §2.1, §13 Q14)
+/// @param dispatchMode    never null: an absent or unrecognised wire value is
+///                        [DispatchMode#IMMEDIATE]
 public record Message(
-
-        /// Application message id — a TSID or dispatch-job id. The dedup key
-        /// in the in-flight tracker, and the sole content of the delivered
-        /// body: `{"messageId": "<id>"}`.
         String id,
-
-        /// Pool to process in. Empty or unknown routes to the router's
-        /// fallback pool. Namespaced `{clientIdentifier}-{poolCode}` by the
-        /// producer, and **opaque** — see [#poolCode()].
         @JsonInclude(JsonInclude.Include.NON_EMPTY) String poolCode,
-
-        /// Sent as `Authorization: Bearer <authToken>` when non-null,
-        /// **including when empty**.
         String authToken,
-
-        /// When non-null the request is HMAC-signed. See [WebhookSigner].
         String signingSecret,
-
-        /// Only [MediationType.Http] is deliverable; anything else is
-        /// ACK-dropped with a diagnostic.
         MediationType mediationType,
-
-        /// Absolute URL POSTed to. Also the circuit-breaker key.
         String mediationTarget,
-
-        /// FIFO group. Honoured only when [#dispatchMode] requires ordering.
         String messageGroupId,
-
-        /// Carried and never acted on — the Go router reads it nowhere
-        /// (`docs/spec/router.md` §2.1, §13 Q14).
         @JsonInclude(JsonInclude.Include.NON_DEFAULT) boolean highPriority,
-
-        /// Never null: an absent or unrecognised wire value is
-        /// [DispatchMode#IMMEDIATE].
         DispatchMode dispatchMode) {
 
     /// Normalises the two fields that must never be null in the JVM, so no
