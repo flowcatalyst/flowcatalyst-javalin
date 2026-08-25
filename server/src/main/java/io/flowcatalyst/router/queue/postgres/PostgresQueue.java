@@ -280,7 +280,7 @@ public final class PostgresQueue implements Consumer {
     /// an unknown receipt handle — is logged, never thrown (the [Consumer]
     /// contract).
     @Override
-    public void ack(QueuedMessage message) {
+    public boolean ack(QueuedMessage message) {
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(
                      "DELETE FROM queue_messages WHERE receipt_handle = ? AND queue_name = ?")) {
@@ -289,11 +289,13 @@ public final class PostgresQueue implements Consumer {
             int rows = ps.executeUpdate();
             if (rows == 0) {
                 log.warn("ack: receipt handle not found on queue {}: {}", queueName, message.receiptHandle());
-                return;
+                return false;
             }
             acked.incrementAndGet();
+            return true;
         } catch (Exception e) {
             log.warn("ack failed on queue {} for receipt {}", queueName, message.receiptHandle(), e);
+            return false;
         }
     }
 

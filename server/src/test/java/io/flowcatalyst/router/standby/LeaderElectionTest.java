@@ -82,7 +82,7 @@ class LeaderElectionTest {
             assertThat(election.isLeader()).isTrue();
 
             store.failing = true;
-            election.contendForTest();
+            election.contendNow();
 
             assertThat(election.isLeader()).isFalse();
         }
@@ -97,7 +97,7 @@ class LeaderElectionTest {
             // This instance stalled long enough for the TTL to lapse and
             // another to take over.
             store.holder = "instance-b";
-            election.contendForTest();
+            election.contendNow();
 
             assertThat(election.isLeader()).isFalse();
         }
@@ -112,7 +112,7 @@ class LeaderElectionTest {
             assertThat(election.isLeader()).isFalse();
 
             store.holder = null; // the leader died and its key expired
-            election.contendForTest();
+            election.contendNow();
 
             assertThat(election.isLeader()).isTrue();
         }
@@ -141,8 +141,8 @@ class LeaderElectionTest {
             election.onChange(change -> changes.add(change.leader()));
             election.start();
 
-            election.contendForTest();
-            election.contendForTest();
+            election.contendNow();
+            election.contendNow();
 
             assertThat(changes).containsExactly(true);
         }
@@ -158,7 +158,7 @@ class LeaderElectionTest {
 
             clock.advance(Duration.ofSeconds(10));
             store.holder = "instance-b";
-            election.contendForTest();
+            election.contendNow();
 
             assertThat(changes).hasSize(2);
             assertThat(changes.getFirst().leader()).isTrue();

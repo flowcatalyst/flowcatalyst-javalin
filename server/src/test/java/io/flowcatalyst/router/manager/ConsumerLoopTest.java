@@ -315,7 +315,8 @@ class ConsumerLoopTest {
         }
 
         @Override
-        public void ack(QueuedMessage message) {
+        public boolean ack(QueuedMessage message) {
+            return true;
         }
 
         @Override

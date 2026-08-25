@@ -7,6 +7,7 @@ import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
@@ -19,6 +20,8 @@ import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
+import io.flowcatalyst.router.wire.MediationOutcome;
+import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -31,9 +34,12 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,6 +74,7 @@ class RouterApiTest {
     private static BreakerRegistry breakers;
     private static RouterManager manager;
     private static Pool poolA;
+    private static PoolMetricsCollector poolAMetrics;
     private static RecordingConsumer consumerQ1;
     private static TestHttp http;
     private static TestHttp bare;
@@ -79,7 +86,8 @@ class RouterApiTest {
         breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, CLOCK);
         manager = new RouterManager(tracker, Warnings.NO_OP, CLOCK,
                 cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
-        poolA = new Pool(new Pool.Config("POOL-A", 5, 100), NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        poolAMetrics = new PoolMetricsCollector(CLOCK);
+        poolA = new Pool(new Pool.Config("POOL-A", 5, 100), NO_OP_MEDIATOR, NO_OP_BROKER, poolAMetrics, CLOCK);
         manager.registerPool("POOL-A", poolA);
         consumerQ1 = new RecordingConsumer("queue-1");
         manager.registerConsumer(consumerQ1);
@@ -90,11 +98,13 @@ class RouterApiTest {
         election.start();
 
         var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
-                "test-version", "/router", null);
+                "test-version", "/router", null, Map.of("POOL-A", poolAMetrics));
         http = new TestHttp(cfg -> RouterApi.register(cfg.routes, state));
+        warmUp(http);
 
-        var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null);
+        var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null);
         bare = new TestHttp(cfg -> RouterApi.register(cfg.routes, bareState));
+        warmUp(bare);
     }
 
     @AfterAll
@@ -114,6 +124,22 @@ class RouterApiTest {
 
     private static String tag() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+    }
+
+    /// Absorbs a one-off flake reproduced independently of this suite:
+    /// `/health/live` is unconditionally registered on every [RouterApi.State],
+    /// so it is a harmless first request. A freshly bound Jetty connector
+    /// occasionally (~1/150 in a tight loop) drops the very first connection
+    /// on a JDK `HttpClient` ("EOF reached while reading" / "header parser
+    /// received no bytes") — a `TestHttp`/OS-level race unrelated to routing.
+    /// Firing one disposable request before the real assertions run keeps
+    /// that race from occasionally failing a test outright.
+    private static void warmUp(TestHttp http) {
+        try {
+            http.get("/router/health/live");
+        } catch (RuntimeException ignored) {
+            // The point of the warm-up: absorb exactly this.
+        }
     }
 
     // ── Health ────────────────────────────────────────────────────────────
@@ -151,8 +177,9 @@ class RouterApiTest {
     void readinessDegradesOnCritical() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null);
+                "v", "/router", null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
             assertThat(isolatedHttp.get("/router/health/ready").statusCode())
                     .as("healthy with no warnings").isEqualTo(200);
             assertThat(json(isolatedHttp.get("/router/health/ready")).get("status").asText()).isEqualTo("READY");
@@ -183,8 +210,9 @@ class RouterApiTest {
     void warningThresholds() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null);
+                "v", "/router", null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
             for (int i = 0; i < 6; i++) {
                 isolated.raise(Warnings.Severity.WARNING, "ROUTING", "w" + i + "-" + tag());
             }
@@ -221,6 +249,216 @@ class RouterApiTest {
         assertThat(body.has("currentTime")).isTrue();
         assertThat(body.get("consumers").isObject()).isTrue();
         assertThat(body.get("consumers").isEmpty()).isTrue();
+    }
+
+    // ── Pools ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring: snake_case outer/pool_stats fields, camelCase metrics, and the all-unacked vs <=30min active_warnings distinction")
+    void monitoringComposite() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedWarnings = new WarningStore(clock);
+        var isolatedTracker = new InFlightTracker(clock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, clock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+        var metricsCollector = new PoolMetricsCollector(clock);
+        var pool = new Pool(new Pool.Config("M-POOL", 4, 0), NO_OP_MEDIATOR, NO_OP_BROKER, metricsCollector, clock);
+        isolatedManager.registerPool("M-POOL", pool);
+        metricsCollector.recordSuccess(Duration.ofMillis(20));
+        metricsCollector.recordFailure(Duration.ofMillis(30));
+
+        isolatedWarnings.raise(Warnings.Severity.WARNING, "ROUTING", "old-unacked");
+        clock.advance(Duration.ofMinutes(31));
+        isolatedWarnings.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-unacked");
+
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, isolatedWarnings, null, null, null,
+                "v", "/router", null, Map.of("M-POOL", metricsCollector));
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var body = json(isolatedHttp.get("/router/monitoring"));
+            assertThat(body.has("pool_stats")).as("snake outer key").isTrue();
+            assertThat(body.has("poolStats")).as("must not be camelCase").isFalse();
+            assertThat(body.has("health_report")).isTrue();
+
+            // The distinction the spec calls out explicitly (§9.1 note).
+            assertThat(body.get("active_warnings").asInt())
+                    .as("top-level active_warnings = ALL unacknowledged, any age").isEqualTo(2);
+            assertThat(body.get("health_report").get("active_warnings").asInt())
+                    .as("health_report.active_warnings is unacked <=30min only").isEqualTo(1);
+
+            var entry = body.get("pool_stats").get(0);
+            assertThat(entry.get("pool_code").asText()).isEqualTo("M-POOL");
+            assertThat(entry.get("concurrency").asInt()).isEqualTo(4);
+            assertThat(entry.has("active_workers")).isTrue();
+            assertThat(entry.has("is_rate_limited")).isTrue();
+            assertThat(entry.has("rate_limit_per_minute")).as("0 requestsPerMinute -> unlimited -> omitted").isFalse();
+
+            var metrics = entry.get("metrics");
+            assertThat(metrics.has("totalSuccess")).as("nested metrics is camelCase, not snake").isTrue();
+            assertThat(metrics.has("total_success")).isFalse();
+            assertThat(metrics.get("totalSuccess").asLong()).isEqualTo(1);
+            assertThat(metrics.get("totalFailure").asLong()).isEqualTo(1);
+        } finally {
+            pool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/pools lists every pool's WirePoolStats, and [] with no manager wired")
+    void monitoringPools() {
+        var body = json(http.get("/router/monitoring/pools"));
+        assertThat(body.isArray()).isTrue();
+        boolean foundPoolA = false;
+        for (var entry : body) {
+            if ("POOL-A".equals(entry.get("pool_code").asText())) {
+                foundPoolA = true;
+                assertThat(entry.get("concurrency").asInt()).isEqualTo(5);
+                assertThat(entry.has("metrics")).isTrue();
+            }
+        }
+        assertThat(foundPoolA).as("POOL-A, registered in @BeforeAll, is in the list").isTrue();
+
+        var bareBody = json(bare.get("/router/monitoring/pools"));
+        assertThat(bareBody.isArray()).isTrue();
+        assertThat(bareBody.isEmpty()).as("empty payload for lists with no manager wired").isTrue();
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/pools' is_rate_limited reflects the pool's own live limiter, not target 429s")
+    void monitoringPoolsIsRateLimited() throws InterruptedException {
+        var delivered = new CountDownLatch(1);
+        Broker signalling = new Broker() {
+            @Override
+            public void ack(QueuedMessage message) {
+                delivered.countDown();
+            }
+
+            @Override
+            public void nack(QueuedMessage message, Duration delay) {
+                delivered.countDown();
+            }
+        };
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, signalling, PoolMetrics.NO_OP, CLOCK));
+        // rpm=1: the bucket starts full at exactly one token, so the single
+        // delivery below drains it to zero without waiting out real time.
+        var limitedPool = new Pool(new Pool.Config("RL-POOL", 1, 1), (msg, recordFailure) ->
+                MediationOutcome.Success.of(200), signalling, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("RL-POOL", limitedPool);
+        var unlimitedPool = new Pool(new Pool.Config("UNLIMITED-POOL", 1, 0), NO_OP_MEDIATOR, NO_OP_BROKER,
+                PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("UNLIMITED-POOL", unlimitedPool);
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var message = new Message("rl-" + tag(), "RL-POOL", null, null, null, "https://example.invalid/hook",
+                    "", false, null);
+            limitedPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
+            assertThat(delivered.await(2, TimeUnit.SECONDS)).as("the single token was spent").isTrue();
+
+            var body = json(isolatedHttp.get("/router/monitoring/pools"));
+            boolean limitedSeen = false;
+            boolean unlimitedSeen = false;
+            for (var entry : body) {
+                if ("RL-POOL".equals(entry.get("pool_code").asText())) {
+                    assertThat(entry.get("is_rate_limited").asBoolean())
+                            .as("the pool's own bucket is empty right now").isTrue();
+                    limitedSeen = true;
+                }
+                if ("UNLIMITED-POOL".equals(entry.get("pool_code").asText())) {
+                    assertThat(entry.get("is_rate_limited").asBoolean())
+                            .as("rpm=0 -> unlimited -> never rate limited").isFalse();
+                    unlimitedSeen = true;
+                }
+            }
+            assertThat(limitedSeen).isTrue();
+            assertThat(unlimitedSeen).isTrue();
+        } finally {
+            limitedPool.close();
+            unlimitedPool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/pool-stats?time_window= selects the matching PoolMetricsCollector window; unknown values fall back to all-time")
+    void poolStatsWindowSelection() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(clock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, clock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+        var metrics = new PoolMetricsCollector(clock);
+        var pool = new Pool(new Pool.Config("W-POOL", 2, 0), NO_OP_MEDIATOR, NO_OP_BROKER, metrics, clock);
+        isolatedManager.registerPool("W-POOL", pool);
+
+        metrics.recordSuccess(Duration.ofMillis(10));
+        metrics.recordSuccess(Duration.ofMillis(10));
+        clock.advance(Duration.ofMinutes(6)); // now outside the 5-minute window, still inside 30
+        metrics.recordSuccess(Duration.ofMillis(10));
+
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(clock), null, null, null,
+                "v", "/router", null, Map.of("W-POOL", metrics));
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var fiveMin = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=5min")).get("W-POOL");
+            assertThat(fiveMin.get("totalProcessed").asLong()).as("only the sample inside the 5min window")
+                    .isEqualTo(1);
+
+            var thirtyMin = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=30m")).get("W-POOL");
+            assertThat(thirtyMin.get("totalProcessed").asLong()).isEqualTo(3);
+
+            var allTime = json(isolatedHttp.get("/router/monitoring/pool-stats")).get("W-POOL");
+            assertThat(allTime.get("totalProcessed").asLong()).isEqualTo(3);
+
+            var unknown = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=bogus")).get("W-POOL");
+            assertThat(unknown.get("totalProcessed").asLong()).as("unknown value falls back to all-time")
+                    .isEqualTo(3);
+        } finally {
+            pool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/pool-stats reflects live activeWorkers, and availablePermits = concurrency - activeWorkers; {} with no manager wired")
+    void poolStatsActiveWorkersAndAvailablePermits() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Mediator blocking = (msg, recordFailure) -> {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return MediationOutcome.Success.of(200);
+        };
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, blocking, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var busyPool = new Pool(new Pool.Config("BUSY-POOL", 3, 0), blocking, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("BUSY-POOL", busyPool);
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var message = new Message("busy-" + tag(), "BUSY-POOL", null, null, null,
+                    "https://example.invalid/hook", "", false, null);
+            busyPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).as("delivery started").isTrue();
+
+            var body = json(isolatedHttp.get("/router/monitoring/pool-stats")).get("BUSY-POOL");
+            assertThat(body.get("activeWorkers").asInt()).isEqualTo(1);
+            assertThat(body.get("maxConcurrency").asInt()).isEqualTo(3);
+            assertThat(body.get("availablePermits").asInt()).as("concurrency - activeWorkers").isEqualTo(2);
+
+            release.countDown();
+        } finally {
+            busyPool.close();
+        }
+
+        assertThat(json(bare.get("/router/monitoring/pool-stats")).isEmpty())
+                .as("empty payload for lists with no manager wired").isTrue();
     }
 
     // ── Warnings ──────────────────────────────────────────────────────────
@@ -304,8 +542,9 @@ class RouterApiTest {
     void acknowledgeAll() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null);
+                "v", "/router", null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "a");
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "b");
 
@@ -322,8 +561,9 @@ class RouterApiTest {
         var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         var isolated = new WarningStore(clock);
         var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
-                "v", "/router", null);
+                "v", "/router", null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-one");
             clock.advance(Duration.ofMinutes(31));
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-one");
@@ -415,8 +655,9 @@ class RouterApiTest {
         isolatedBreakers.get("https://a.example").recordFailure();
         isolatedBreakers.get("https://b.example").recordFailure();
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), isolatedBreakers,
-                null, null, "v", "/router", null);
+                null, null, "v", "/router", null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
             var r = isolatedHttp.post("/router/monitoring/circuit-breakers/reset-all", null);
             assertThat(r.statusCode()).isEqualTo(200);
             assertThat(json(r).get("reset").asInt()).isEqualTo(2);
@@ -505,8 +746,6 @@ class RouterApiTest {
         assertThat(r.statusCode()).isEqualTo(200);
         var body = json(r);
         assertThat(body.get("removed").asBoolean()).isTrue();
-        assertThat(body.get("brokerAcked").asBoolean())
-                .as("Consumer#ack is void/best-effort; Java always reports true (see class doc)").isTrue();
         assertThat(body.get("queueId").asText()).isEqualTo("queue-1");
         assertThat(body.get("poolCode").asText()).isEqualTo("POOL-A");
         assertThat(body.get("wasMediating").asBoolean())
@@ -515,6 +754,43 @@ class RouterApiTest {
 
         var second = http.post("/router/monitoring/in-flight-messages/ack-" + t + "/ack", null);
         assertThat(second.statusCode()).as("the entry is gone after the first force-ack").isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("force-ack reports the Consumer#ack outcome honestly: brokerAcked=true with no error, or false with brokerAckError set")
+    void forceAckReportsTheRealBrokerOutcome() {
+        // Consumer#ack (io.flowcatalyst.router.queue.Consumer) returns
+        // whether the broker actually confirmed the removal — Postgres
+        // reports false on no matching row, SQS/NATS on a failed call or an
+        // unknown receipt. brokerAcked must be that real value, never a
+        // fabricated true (an operator force-acking a stuck message must not
+        // be told a delete is confirmed when it is not) nor a blanket false
+        // once the interface can in fact report success.
+        String okId = "ack-ok-" + tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage(okId, "", "POOL-A", "queue-1", now, now, "", "b1", "rh-ok", 0));
+
+        var okBody = json(http.post("/router/monitoring/in-flight-messages/" + okId + "/ack", null));
+        assertThat(okBody.has("brokerAcked")).as("required field, never omitted").isTrue();
+        assertThat(okBody.get("brokerAcked").asBoolean()).isTrue();
+        assertThat(okBody.has("brokerAckError")).as("absent on success, not null/empty").isFalse();
+
+        String failId = "ack-fail-" + tag();
+        tracker.register(new InFlightMessage(failId, "", "POOL-A", "queue-1", now, now, "", "b1", "rh-fail", 0));
+        consumerQ1.ackConfirms = false;
+        try {
+            var failBody = json(http.post("/router/monitoring/in-flight-messages/" + failId + "/ack", null));
+            assertThat(failBody.get("brokerAcked").asBoolean()).isFalse();
+            assertThat(failBody.get("brokerAckError").asText()).isNotBlank();
+            // The tracker entry is still released either way — a broker
+            // that didn't confirm the delete does not mean we keep owning it.
+            assertThat(failBody.get("removed").asBoolean()).isTrue();
+        } finally {
+            consumerQ1.ackConfirms = true;
+        }
+
+        assertThat(consumerQ1.acked.stream().anyMatch(m -> m.receiptHandle().equals("rh-ok"))).isTrue();
+        assertThat(consumerQ1.acked.stream().anyMatch(m -> m.receiptHandle().equals("rh-fail"))).isTrue();
     }
 
     @Test
@@ -686,6 +962,10 @@ class RouterApiTest {
         private final String id;
         final List<QueuedMessage> acked = new CopyOnWriteArrayList<>();
 
+        /// What `#ack` reports next — configurable so a test can pin both
+        /// the `brokerAcked:true` and `brokerAcked:false` force-ack branches.
+        volatile boolean ackConfirms = true;
+
         RecordingConsumer(String id) {
             this.id = id;
         }
@@ -701,8 +981,9 @@ class RouterApiTest {
         }
 
         @Override
-        public void ack(QueuedMessage message) {
+        public boolean ack(QueuedMessage message) {
             acked.add(message);
+            return ackConfirms;
         }
 
         @Override

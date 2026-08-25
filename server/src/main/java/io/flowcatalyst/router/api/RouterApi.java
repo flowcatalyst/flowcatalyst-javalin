@@ -5,6 +5,7 @@ import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
@@ -43,14 +44,6 @@ import java.util.concurrent.atomic.AtomicLong;
 /// Several §9.1 rows have **no such source yet** and are deliberately absent
 /// rather than faked:
 ///
-///   - `GET /monitoring`, `/monitoring/pools`, `/monitoring/pool-stats` —
-///     `WirePoolStats`/`DashboardPoolStats` need `activeWorkers`,
-///     `messageGroupCount`/`availablePermits` and `isRateLimited`. [Pool]
-///     exposes only `config()`, `queueSize()` and `flushRegistry()`; the
-///     semaphore, the ordered-group count and the rate limiter's current
-///     state are private with no accessor. Inventing zeros for fields the
-///     spec expects to be *live* would misrepresent the contract more than
-///     omitting the route.
 ///   - `GET /monitoring/queue-stats`, `GET /monitoring/queues` — both need
 ///     every configured queue's [io.flowcatalyst.router.queue.QueueMetrics].
 ///     [RouterManager] exposes only `consumer(String queueId)` (single
@@ -82,9 +75,35 @@ import java.util.concurrent.atomic.AtomicLong;
 /// it. `DELETE /warnings` and `DELETE /warnings/old` are the two exceptions
 /// that dropped for a different reason: [WarningStore] has no bulk-remove
 /// method, only `raise`/`acknowledge`/`cleanup`/the read accessors.
+///
+/// ### `GET /monitoring`, `/monitoring/pools`, `/monitoring/pool-stats`
+///
+/// [Pool] exposes `activeWorkers()`, `messageGroupCount()` and `rateLimited()`
+/// (the pool's *own* limiter holding messages back right now — distinct from
+/// a target answering 429, which is counted separately so conflating the two
+/// does not hide which side is the bottleneck), and [State#poolMetrics]
+/// supplies the per-pool [PoolMetricsCollector]. All three routes are fully
+/// wired to live data; no stand-ins remain here.
 public final class RouterApi {
 
     private static final Instant STARTED_AT = Instant.now();
+
+    /// What an untracked pool's metrics report (Go's `if s.Metrics != nil`
+    /// guard, `poolStatsToDashboard`) — a fresh pool with no [State#poolMetrics]
+    /// entry looks idle rather than absent.
+    private static final PoolMetricsCollector.WindowedMetrics ZERO_WINDOW =
+            new PoolMetricsCollector.WindowedMetrics(0, 0, 0, 0, 1.0, 0.0,
+                    PoolMetricsCollector.ProcessingTimeMetrics.EMPTY, Instant.EPOCH, 0);
+    private static final PoolMetricsCollector.Snapshot ZERO_METRICS =
+            new PoolMetricsCollector.Snapshot(0, 0, 0, 0, 1.0,
+                    PoolMetricsCollector.ProcessingTimeMetrics.EMPTY, ZERO_WINDOW, ZERO_WINDOW);
+
+    /// See `#forceAck`: paired with `brokerAcked:false` when
+    /// [io.flowcatalyst.router.queue.Consumer#ack] reports the broker did
+    /// **not** confirm the removal (still best-effort/never-throws, but now
+    /// honestly observable — see the interface's own javadoc).
+    private static final String BROKER_ACK_NOT_CONFIRMED =
+            "broker did not confirm the removal; the message may still redeliver";
 
     private RouterApi() {
     }
@@ -115,9 +134,19 @@ public final class RouterApi {
     /// @param prefix         mount prefix; `null`/blank defaults to `/router`
     /// @param mocks          counters for `/api/test/*`; owned entirely by
     ///                       this API, not read from elsewhere
+    /// @param poolMetrics    per-pool [PoolMetricsCollector], keyed the same
+    ///                       as `manager.pools()`. [Pool] does not expose its
+    ///                       own metrics collector (it is typed as the
+    ///                       [io.flowcatalyst.router.pool.PoolMetrics]
+    ///                       interface internally with no getter), so the
+    ///                       caller that built each pool passes its collector
+    ///                       here separately. A pool with no entry reports
+    ///                       zeroed metrics (matches Go's `if s.Metrics !=
+    ///                       nil` guard); `null`/omitted defaults to `Map.of()`
     public record State(RouterManager manager, InFlightTracker tracker, WarningStore warnings,
                         BreakerRegistry breakers, LeaderElection election, LeaderElection.Config electionConfig,
-                        String version, String prefix, MockCounters mocks) {
+                        String version, String prefix, MockCounters mocks,
+                        Map<String, PoolMetricsCollector> poolMetrics) {
 
         public State {
             Objects.requireNonNull(tracker, "tracker");
@@ -125,6 +154,7 @@ public final class RouterApi {
             version = version == null || version.isBlank() ? "dev" : version;
             prefix = prefix == null || prefix.isBlank() ? "/router" : prefix;
             mocks = mocks == null ? new MockCounters() : mocks;
+            poolMetrics = poolMetrics == null ? Map.of() : Map.copyOf(poolMetrics);
         }
     }
 
@@ -170,8 +200,11 @@ public final class RouterApi {
         routes.get(p + "/health/startup", ctx -> readiness(ctx, s));
 
         // ── Monitoring: health / consumer-health ────────────────────────
+        routes.get(p + "/monitoring", ctx -> monitoring(ctx, s));
         routes.get(p + "/monitoring/health", ctx -> monitoringHealth(ctx, s));
         routes.get(p + "/monitoring/consumer-health", ctx -> consumerHealth(ctx, s));
+        routes.get(p + "/monitoring/pools", ctx -> monitoringPools(ctx, s));
+        routes.get(p + "/monitoring/pool-stats", ctx -> poolStats(ctx, s));
 
         // ── Monitoring: warnings ─────────────────────────────────────────
         routes.get(p + "/monitoring/warnings", ctx -> monitoringWarnings(ctx, s));
@@ -268,6 +301,102 @@ public final class RouterApi {
         // HealthService (spec §9.1 row, §9.4). No consumer health tracker is
         // wired in Java at all, so this can never be non-empty.
         ctx.json(new ConsumerHealthResponse(Instant.now().toEpochMilli(), Instant.now(), Map.of()));
+    }
+
+    /// The composite view (spec §9.1): snake_case outer fields, a nested
+    /// snake_case `health_report`, and a `pool_stats` array whose *own*
+    /// fields are snake but whose `metrics` sub-object is camelCase — the
+    /// mixed casing is the contract, not an inconsistency.
+    ///
+    /// `active_warnings` here is **all** unacknowledged warnings at any age
+    /// (`s.warnings().unacknowledged()`), deliberately different from the
+    /// ≤30-minute count inside `health_report` (§9.1 note; both are pinned
+    /// by `RouterApiTest`).
+    private static void monitoring(Context ctx, State s) {
+        var h = healthSnapshot(s);
+        int poolsHealthy = s.manager() == null ? 0 : s.manager().pools().size();
+        // Same Issues rule as #monitoringHealth: only ever "N critical warnings".
+        List<String> issues = h.critical() > 0 ? List.of(h.critical() + " critical warnings") : List.of();
+        var healthReport = new WireHealthReport(h.status(), poolsHealthy, 0, 0, 0, h.active(), h.critical(), issues);
+        List<WirePoolStats> poolStats = s.manager() == null
+                ? List.of()
+                : s.manager().pools().entrySet().stream().map(e -> wirePoolStats(e.getKey(), e.getValue(), s)).toList();
+        ctx.json(new MonitoringResponse(h.status(), s.version(), healthReport, poolStats,
+                s.warnings().unacknowledged().size(), h.critical()));
+    }
+
+    private static void monitoringPools(Context ctx, State s) {
+        if (s.manager() == null) {
+            ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
+            return;
+        }
+        ctx.json(s.manager().pools().entrySet().stream().map(e -> wirePoolStats(e.getKey(), e.getValue(), s)).toList());
+    }
+
+    /// `WirePoolStats` for one pool.
+    private static WirePoolStats wirePoolStats(String code, Pool pool, State s) {
+        var collector = s.poolMetrics().get(code);
+        var snapshot = collector == null ? ZERO_METRICS : collector.snapshot();
+        int rpm = pool.config().requestsPerMinute();
+        Integer rateLimit = rpm == 0 ? null : rpm; // 0 -> unlimited -> omitted (Go `RateLimitPerMinute()` returns nil)
+        return new WirePoolStats(code, pool.config().concurrency(), pool.activeWorkers(), pool.queueSize(),
+                pool.config().queueCapacity(), pool.messageGroupCount(), rateLimit, pool.rateLimited(), snapshot);
+    }
+
+    /// `time_window=5min|5m|30min|30m` select a window; anything else
+    /// (absent, `all`, unknown) is all-time (Go `parseTimeWindow`).
+    private static void poolStats(Context ctx, State s) {
+        if (s.manager() == null) {
+            ctx.json(Map.of()); // empty payload for lists
+            return;
+        }
+        var window = parseTimeWindow(ctx.queryParam("time_window"));
+        Map<String, DashboardPoolStats> out = new LinkedHashMap<>();
+        s.manager().pools().forEach((code, pool) -> out.put(code, dashboardPoolStats(pool, s.poolMetrics().get(code), window)));
+        ctx.json(out);
+    }
+
+    private static Duration parseTimeWindow(String raw) {
+        if (raw == null) {
+            return Duration.ZERO;
+        }
+        return switch (raw.trim()) {
+            case "5min", "5m" -> Duration.ofMinutes(5);
+            case "30min", "30m" -> Duration.ofMinutes(30);
+            default -> Duration.ZERO;
+        };
+    }
+
+    private static DashboardPoolStats dashboardPoolStats(Pool pool, PoolMetricsCollector collector, Duration window) {
+        long succeeded = 0;
+        long failed = 0;
+        long rateLimited = 0;
+        double successRate = 1.0;
+        double avgMs = 0;
+        if (collector != null) {
+            var snap = collector.snapshot();
+            PoolMetricsCollector.WindowedMetrics w =
+                    Duration.ofMinutes(5).equals(window) ? snap.last5Min()
+                            : Duration.ofMinutes(30).equals(window) ? snap.last30Min() : null;
+            if (w != null) {
+                succeeded = w.successCount();
+                failed = w.failureCount();
+                rateLimited = w.rateLimitedCount();
+                successRate = w.successRate();
+                avgMs = w.processingTime().avgMs();
+            } else {
+                succeeded = snap.totalSuccess();
+                failed = snap.totalFailure();
+                rateLimited = snap.totalRateLimited();
+                successRate = snap.successRate();
+                avgMs = snap.processingTime().avgMs();
+            }
+        }
+        int concurrency = pool.config().concurrency();
+        int active = pool.activeWorkers();
+        int available = Math.max(concurrency - active, 0);
+        return new DashboardPoolStats(pool.config().code(), succeeded + failed, succeeded, failed, rateLimited,
+                successRate, active, available, concurrency, pool.queueSize(), pool.config().queueCapacity(), avgMs);
     }
 
     private record HealthSnapshot(String status, int active, int critical) {
@@ -495,11 +624,12 @@ public final class RouterApi {
     /// `wasMediating` is always `false`: nothing in this module's scope
     /// tracks the live "currently mediating" set (see class doc).
     ///
-    /// `brokerAcked` is always `true` and `brokerAckError` is never set:
-    /// [io.flowcatalyst.router.queue.Consumer#ack] is documented
-    /// best-effort/never-throws with no return value, so the outcome the Go
-    /// `AckErr` field reports is not observable through the Java interface.
-    /// Deliberate choice, not a bug — see the interface's own javadoc.
+    /// `brokerAcked`/`brokerAckError`: [io.flowcatalyst.router.queue.Consumer#ack]
+    /// now returns whether the broker confirmed the removal (still
+    /// best-effort/never-throws — see the interface's own javadoc, which
+    /// names exactly this force-ack case as the reason). `brokerAcked` is
+    /// the real outcome; `brokerAckError` is set only when it is `false`, so
+    /// an operator is never told a delete is confirmed when it is not.
     private static void forceAck(Context ctx, State s) {
         if (s.manager() == null) {
             serviceUnavailable(ctx, "in-flight ack not configured");
@@ -526,11 +656,12 @@ public final class RouterApi {
                 new Message(entry.messageId(), entry.poolCode(), null, null, null, "", entry.messageGroupId(),
                         false, null),
                 entry.brokerMessageId(), entry.receiptHandle(), entry.queueIdentifier(), entry.attempts());
-        consumer.get().ack(ackTarget);
+        boolean brokerAcked = consumer.get().ack(ackTarget);
         s.tracker().remove(entry.messageId());
         long elapsedMs = entry.elapsedSeconds(Instant.now()) * 1000;
-        ctx.json(new ForceAckResponse(messageId, true, true, null, entry.queueIdentifier(), entry.poolCode(),
-                elapsedMs, false));
+        ctx.json(new ForceAckResponse(messageId, true, brokerAcked,
+                brokerAcked ? null : BROKER_ACK_NOT_CONFIRMED, entry.queueIdentifier(), entry.poolCode(), elapsedMs,
+                false));
     }
 
     // ── Pool update ──────────────────────────────────────────────────────
@@ -725,6 +856,46 @@ public final class RouterApi {
     }
 
     public record ConsumerHealthResponse(long currentTimeMs, Instant currentTime, Map<String, Object> consumers) {
+    }
+
+    /// `GET /monitoring`. Snake outer + nested `health_report`/`pool_stats`.
+    public record MonitoringResponse(String status, String version,
+                                     @JsonProperty("health_report") WireHealthReport healthReport,
+                                     @JsonProperty("pool_stats") List<WirePoolStats> poolStats,
+                                     @JsonProperty("active_warnings") int activeWarnings,
+                                     @JsonProperty("critical_warnings") int criticalWarnings) {
+    }
+
+    public record WireHealthReport(String status, @JsonProperty("pools_healthy") int poolsHealthy,
+                                   @JsonProperty("pools_unhealthy") int poolsUnhealthy,
+                                   @JsonProperty("consumers_healthy") int consumersHealthy,
+                                   @JsonProperty("consumers_unhealthy") int consumersUnhealthy,
+                                   @JsonProperty("active_warnings") int activeWarnings,
+                                   @JsonProperty("critical_warnings") int criticalWarnings, List<String> issues) {
+    }
+
+    /// One pool's stats for `GET /monitoring`/`GET /monitoring/pools`: snake
+    /// outer fields, camelCase `metrics` (the real [PoolMetricsCollector.Snapshot]
+    /// shape, including the Java-only `totalSuppressed`/`suppressedCount`
+    /// counters `PoolMetricsCollector`'s own javadoc documents as a
+    /// deliberate addition over the Go shape).
+    public record WirePoolStats(@JsonProperty("pool_code") String poolCode, int concurrency,
+                                @JsonProperty("active_workers") int activeWorkers,
+                                @JsonProperty("queue_size") int queueSize,
+                                @JsonProperty("queue_capacity") int queueCapacity,
+                                @JsonProperty("message_group_count") int messageGroupCount,
+                                @JsonProperty("rate_limit_per_minute") Integer rateLimitPerMinute,
+                                @JsonProperty("is_rate_limited") boolean isRateLimited,
+                                PoolMetricsCollector.Snapshot metrics) {
+    }
+
+    /// `GET /monitoring/pool-stats` map value — camelCase throughout, and
+    /// distinct from [WirePoolStats]: no `isRateLimited`, but `totalRateLimited`
+    /// and `availablePermits` instead.
+    public record DashboardPoolStats(String poolCode, long totalProcessed, long totalSucceeded, long totalFailed,
+                                     long totalRateLimited, double successRate, int activeWorkers,
+                                     int availablePermits, int maxConcurrency, int queueSize, int maxQueueCapacity,
+                                     double averageProcessingTimeMs) {
     }
 
     public record WireWarning(String id, String category, String severity, String message, String source,

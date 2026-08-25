@@ -257,7 +257,7 @@ public final class SqsQueue implements Consumer {
     }
 
     @Override
-    public void ack(QueuedMessage message) {
+    public boolean ack(QueuedMessage message) {
         try {
             String receiptHandle = message.receiptHandle();
             synchronized (mapLock) {
@@ -270,10 +270,12 @@ public final class SqsQueue implements Consumer {
                 }
             }
             deleteAndCount(receiptHandle);
+            return true;
         } catch (RuntimeException e) {
             // Ack must never throw (Consumer#ack) — a broker hiccup here
             // cannot be allowed to fail a delivery that already succeeded.
             log.warn("sqs ack failed for queue {} message {}: {}", identifier, message.id(), e.toString());
+            return false;
         }
     }
 

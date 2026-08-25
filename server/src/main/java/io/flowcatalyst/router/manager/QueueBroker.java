@@ -57,7 +57,13 @@ public final class QueueBroker implements Broker {
                     message.queueId(), message.id());
             return;
         }
-        consumer.ack(freshest);
+        if (!consumer.ack(freshest)) {
+            // Not fatal — the message is finished with here either way — but
+            // it means the broker may redeliver it, and a silent redelivery
+            // is harder to explain later than a logged one.
+            log.warn("broker did not confirm ack of {} on queue {}; it may redeliver",
+                    message.id(), message.queueId());
+        }
     }
 
     @Override

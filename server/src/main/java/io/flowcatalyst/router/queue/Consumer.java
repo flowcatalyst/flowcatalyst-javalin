@@ -36,8 +36,17 @@ public interface Consumer extends AutoCloseable {
     ///         treats this as shutdown, never as a queue failure
     PollResult poll(int max) throws InterruptedException;
 
-    /// Permanently removes a delivery. Failure is logged, never thrown.
-    void ack(QueuedMessage message);
+    /// Permanently removes a delivery.
+    ///
+    /// Never throws — a broker blip must not fail a delivery that already
+    /// succeeded, nor kill the worker holding the message.
+    ///
+    /// @return whether the broker confirmed the removal. `false` means the
+    ///         message may still redeliver. Most callers ignore this — the
+    ///         message is finished with either way — but an **operator
+    ///         force-acking a stuck message is entitled to know**, and the
+    ///         only alternative is telling them something untrue.
+    boolean ack(QueuedMessage message);
 
     /// Makes a delivery visible again after `delay`.
     ///

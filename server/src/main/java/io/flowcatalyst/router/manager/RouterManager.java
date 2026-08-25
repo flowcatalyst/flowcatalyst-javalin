@@ -45,6 +45,11 @@ public final class RouterManager {
     /// (spec constant 10).
     static final Duration NO_POOL_NACK_DELAY = Duration.ofSeconds(5);
 
+    /// How long a reconfigure will spend building consumers before carrying
+    /// on without the stragglers. They are reported as failures and retried
+    /// on the next reconfigure.
+    static final Duration CONSUMER_BUILD_TIMEOUT = Duration.ofSeconds(30);
+
     private final Map<String, Pool> pools = new ConcurrentHashMap<>();
     private final Map<String, Consumer> consumers = new ConcurrentHashMap<>();
 
@@ -96,6 +101,20 @@ public final class RouterManager {
 
     public Map<String, Pool> pools() {
         return Map.copyOf(pools);
+    }
+
+    /// The queues currently registered, so a caller can start or stop a loop
+    /// per queue without holding its own copy of the registry.
+    public java.util.Set<String> consumerNames() {
+        return java.util.Set.copyOf(consumers.keySet());
+    }
+
+    /// Drops every consumer without closing it — the caller has already
+    /// stopped them. Used on a leadership loss, where the pools and tracker
+    /// stay and only the sources go.
+    public void forgetConsumers() {
+        consumers.clear();
+        queueConfigs.clear();
     }
 
     /// Routes one polled batch, in the order the queue delivered it.
@@ -287,22 +306,31 @@ public final class RouterManager {
             }
         }
 
-        var started = 0;
-        var failed = new java.util.ArrayList<String>();
-        for (var entry : wanted.entrySet()) {
-            if (consumers.containsKey(entry.getKey())) {
-                continue;
-            }
+        // Build concurrently: each one opens a broker connection, so in turn
+        // a deployment waits for the SUM of its brokers' latencies rather
+        // than the slowest, and one unreachable broker delays every queue
+        // behind it. Bounded, so a broker that never answers cannot hold a
+        // reconfigure — or a leadership transition — open indefinitely.
+        var toBuild = wanted.entrySet().stream()
+                .filter(entry -> !consumers.containsKey(entry.getKey()))
+                .toList();
+        var failed = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var started = new java.util.concurrent.atomic.AtomicInteger();
+        Concurrently.forEach(toBuild, entry -> {
             var built = factory.create(entry.getValue());
             if (built.isEmpty()) {
                 failed.add(entry.getKey());
-                continue;
+                return;
             }
             consumers.put(entry.getKey(), built.get());
             queueConfigs.put(entry.getKey(), entry.getValue());
-            started++;
-        }
-        return new ConsumerChanges(started, stopped, List.copyOf(failed));
+            started.incrementAndGet();
+        }, CONSUMER_BUILD_TIMEOUT, "consumer build");
+
+        // Stable order regardless of which finished first, so the same
+        // failure reads the same way twice.
+        var failedNames = failed.stream().sorted().toList();
+        return new ConsumerChanges(started.get(), stopped, failedNames);
     }
 
     private void stopConsumer(String queueName) {

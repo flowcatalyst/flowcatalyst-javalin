@@ -142,12 +142,15 @@ public final class LeaderElection implements AutoCloseable {
     ///
     /// A held lock is refreshed; an unheld one is acquired. Either answering
     /// no, or the store failing, demotes.
-    /// Runs one contention round on the caller's thread.
+    /// Re-checks leadership now, on the caller's thread, instead of waiting
+    /// for the next heartbeat.
     ///
-    /// Package-private so a test can drive the decision without waiting out a
-    /// heartbeat — the interval is a constant, while what happens in a round
-    /// is the behaviour.
-    void contendForTest() {
+    /// Useful beyond tests: an operator forcing a re-check after fixing a
+    /// Redis outage should not have to wait out the interval, and a
+    /// deployment tool can confirm a stepped-down instance really has let go
+    /// before it moves on. The heartbeat interval is a constant; what happens
+    /// in a round is the behaviour.
+    public void contendNow() {
         contend();
     }
 

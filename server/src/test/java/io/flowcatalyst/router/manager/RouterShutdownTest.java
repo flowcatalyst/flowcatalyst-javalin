@@ -195,8 +195,9 @@ class RouterShutdownTest {
         }
 
         @Override
-        public void ack(QueuedMessage message) {
+        public boolean ack(QueuedMessage message) {
             acked.add(message.id());
+            return true;
         }
 
         @Override

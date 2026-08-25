@@ -156,6 +156,15 @@ public final class Pool implements AutoCloseable {
         return activeWorkers.get();
     }
 
+    /// Whether the pool's own rate limiter is holding messages back right
+    /// now — as opposed to a target throttling us, which is a 429 and shows
+    /// up separately. Conflating the two hides which side is the bottleneck.
+    ///
+    /// Observational: reading it takes no token.
+    public boolean rateLimited() {
+        return limiter.limited();
+    }
+
     /// Message groups currently holding work. An ordered group is a
     /// serialisation point, so a rising count is the shape of ordered
     /// backlog that [#queueSize] alone would not distinguish from a busy

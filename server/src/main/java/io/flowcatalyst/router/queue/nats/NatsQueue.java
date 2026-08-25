@@ -280,17 +280,19 @@ public final class NatsQueue implements Consumer {
     /// an unknown receipt handle — is logged, never thrown (the [Consumer]
     /// contract).
     @Override
-    public void ack(QueuedMessage message) {
+    public boolean ack(QueuedMessage message) {
         io.nats.client.Message msg = pending.remove(message.receiptHandle());
         if (msg == null) {
             log.warn("nats: no pending message for receipt {} on queue {}", message.receiptHandle(), identifier);
-            return;
+            return false;
         }
         try {
             msg.ack();
             acked.incrementAndGet();
+            return true;
         } catch (Exception e) {
             log.warn("nats: ack failed on queue {} for receipt {}", identifier, message.receiptHandle(), e);
+            return false;
         }
     }
 
