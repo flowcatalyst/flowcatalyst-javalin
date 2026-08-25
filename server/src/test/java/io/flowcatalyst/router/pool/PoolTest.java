@@ -2,6 +2,9 @@ package io.flowcatalyst.router.pool;
 
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.observability.jfr.DispatchEvent;
+import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
+import io.flowcatalyst.router.observability.jfr.Recorded;
 import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
@@ -128,6 +131,55 @@ class PoolTest {
 
         assertThat(broker.nacked).containsKey("m1");
         assertThat(broker.acked).isEmpty();
+    }
+
+    // ── Flight recorder ─────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a delivery attempt is recorded with its outcome and its target")
+    void dispatchIsRecorded() throws Exception {
+        mediator.answer("m1", MediationOutcome.Success.of(200));
+        var p = pool(4, 0);
+
+        var events = Recorded.from(DispatchEvent.class, () -> {
+            p.submit(immediate("m1"));
+            await(() -> broker.acked.contains("m1"));
+        });
+
+        assertThat(events).hasSize(1);
+        var dispatch = events.getFirst();
+        assertThat(dispatch.getString("pool")).isEqualTo("POOL-A");
+        assertThat(dispatch.getString("messageId")).isEqualTo("m1");
+        assertThat(dispatch.getString("outcome")).isEqualTo("Success");
+        assertThat(dispatch.getString("disposition")).isEqualTo("DELIVERED");
+        assertThat(dispatch.getInt("statusCode")).isEqualTo(200);
+        // A duration event, so a recording carries the latency per attempt
+        // without a histogram having been configured beforehand.
+        assertThat(dispatch.getDuration()).isGreaterThanOrEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    @DisplayName("a group decision records its blast radius, not just its verdict")
+    void groupDecisionRecordsBlastRadius() throws Exception {
+        // The event that would have made the ACK-deletion bug obvious: the
+        // decision and the number of messages it takes with it, side by side.
+        mediator.answer("m0", new MediationOutcome.CircuitOpen(30));
+        var p = pool(1, 0);
+
+        var events = Recorded.from(GroupDecisionEvent.class, () -> {
+            IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+            await(() -> broker.nacked.size() == 3);
+        });
+
+        assertThat(events).hasSize(1);
+        var decision = events.getFirst();
+        assertThat(decision.getString("group")).isEqualTo("g");
+        assertThat(decision.getString("dispatchMode")).isEqualTo("BLOCK_ON_ERROR");
+        assertThat(decision.getString("disposition")).isEqualTo("RETURN_TO_BROKER");
+        assertThat(decision.getString("decision")).isEqualTo("ReturnGroup");
+        assertThat(decision.getInt("siblingsAffected")).isEqualTo(2);
+        // No call was made, so there is no status to report.
+        assertThat(decision.getInt("statusCode")).isZero();
     }
 
     @Test

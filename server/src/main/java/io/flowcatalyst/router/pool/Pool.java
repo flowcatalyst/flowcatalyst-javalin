@@ -6,6 +6,8 @@ import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
 import io.flowcatalyst.router.wire.MediationOutcome;
 
+import io.flowcatalyst.router.observability.jfr.DispatchEvent;
+import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -302,8 +304,57 @@ public final class Pool implements AutoCloseable {
     ///         the group has been released — by being returned to the broker
     ///         or blocked — and a fresh drainer will be started by whatever
     ///         brings work back.
+    /// Records what the group decided, if anyone is recording.
+    ///
+    /// Emitted before the decision is acted on, so a recording that ends
+    /// mid-shutdown still says what was about to happen.
+    private static void decided(String group, QueuedMessage message,
+                                MediationOutcome outcome, HeadFailure failure) {
+        var event = new GroupDecisionEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.group = group;
+        event.dispatchMode = String.valueOf(message.message().dispatchMode());
+        event.decision = failure.getClass().getSimpleName();
+        event.disposition = outcome.disposition().name();
+        event.statusCode = outcome.statusCode();
+        event.attempt = message.attempts();
+        event.siblingsAffected = switch (failure) {
+            case HeadFailure.ReturnGroup returned -> returned.siblings().size();
+            case HeadFailure.BlockGroup blocked -> blocked.siblings().size();
+            case HeadFailure.RetryHead ignored -> 0;
+            case HeadFailure.Continue ignored -> 0;
+        };
+        event.commit();
+    }
+
+    /// Commits the dispatch event for a failure that never reached [#resolve]
+    /// — the mediator threw, or the thread was interrupted mid-call.
+    private Attempt failed(DispatchEvent event, QueuedMessage message, MediationOutcome outcome) {
+        dispatched(event, message, outcome);
+        return new Attempt.Failed(outcome);
+    }
+
+    private void dispatched(DispatchEvent event, QueuedMessage message, MediationOutcome outcome) {
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.pool = config.code();
+        event.messageId = message.id();
+        event.queue = message.queueId();
+        event.group = message.group();
+        event.attempt = message.attempts();
+        event.outcome = outcome.getClass().getSimpleName();
+        event.disposition = outcome.disposition().name();
+        event.statusCode = outcome.statusCode();
+        event.commit();
+    }
+
     private boolean handleHeadFailure(String group, QueuedMessage message, MediationOutcome outcome) {
-        return switch (groups.onHeadFailure(message, outcome, backoffs.delivery().burstSize())) {
+        var failure = groups.onHeadFailure(message, outcome, backoffs.delivery().burstSize());
+        decided(group, message, outcome, failure);
+        return switch (failure) {
             case HeadFailure.RetryHead retry -> {
                 var next = retry.head().retrying();
                 groups.reFront(next);
@@ -312,19 +363,20 @@ public final class Pool implements AutoCloseable {
             case HeadFailure.ReturnGroup returned -> {
                 // The target is down. Nothing here is wrong; the broker holds
                 // them until it or the target gives way.
-                broker.nack(returned.head(), REJECTED_NACK_DELAY);
-                returned.siblings().forEach(sibling -> broker.nack(sibling, REJECTED_NACK_DELAY));
+                broker.nack(returned.head(), REJECTED_NACK_DELAY, "target-unavailable");
+                returned.siblings().forEach(sibling ->
+                        broker.nack(sibling, REJECTED_NACK_DELAY, "target-unavailable"));
                 yield false;
             }
             case HeadFailure.Continue carryOn -> {
-                broker.ack(carryOn.failed());
+                broker.ack(carryOn.failed(), "rejected-group-continues");
                 yield true;
             }
             case HeadFailure.BlockGroup blocked -> {
-                broker.ack(blocked.failed());
+                broker.ack(blocked.failed(), "rejected-group-blocked");
                 // Siblings were never delivered; the platform re-sends the
                 // whole group in order once the failure is resolved.
-                blocked.siblings().forEach(broker::ack);
+                blocked.siblings().forEach(sibling -> broker.ack(sibling, "rejected-group-blocked"));
                 yield false;
             }
         };
@@ -369,25 +421,30 @@ public final class Pool implements AutoCloseable {
         }
 
         var startedAt = clock.instant();
+        var event = new DispatchEvent();
         MediationOutcome outcome;
         activeWorkers.incrementAndGet();
+        event.begin();
         try {
             outcome = mediator.deliver(message.message(), backoffs.delivery().endsBurst(message.attempts()));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new Attempt.Failed(new MediationOutcome.ErrorConnection(0, "interrupted"));
+            return failed(event, message, new MediationOutcome.ErrorConnection(0, "interrupted"));
         } catch (RuntimeException e) {
             // The policy Go's panic recovery guarded, kept without the
             // scaffolding: an unexpected failure is a retry, not a lost
             // message. Reported as unavailability because we cannot claim the
             // target rejected anything.
-            return new Attempt.Failed(new MediationOutcome.ErrorConnection(
+            return failed(event, message, new MediationOutcome.ErrorConnection(
                     (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "unexpected failure: " + e));
         } finally {
+            event.end();
             activeWorkers.decrementAndGet();
         }
         var took = Duration.between(startedAt, clock.instant());
-        return resolve(message, outcome, took);
+        var attempt = resolve(message, outcome, took);
+        dispatched(event, message, outcome);
+        return attempt;
     }
 
     private Attempt resolve(QueuedMessage message, MediationOutcome outcome, Duration took) {
@@ -397,14 +454,14 @@ public final class Pool implements AutoCloseable {
                     applyFlush(message, success.delaySeconds());
                 }
                 metrics.recordSuccess(took);
-                broker.ack(message);
+                broker.ack(message, "delivered");
                 yield new Attempt.Settled();
             }
             // The request was wrong, not the target. Retrying it unchanged
             // cannot succeed, so it is dropped rather than kept forever.
             case MediationOutcome.ErrorConfig ignored -> {
                 metrics.recordFailure(took);
-                broker.ack(message);
+                broker.ack(message, "undeliverable");
                 yield new Attempt.Settled();
             }
             case MediationOutcome.Deferred deferred -> {

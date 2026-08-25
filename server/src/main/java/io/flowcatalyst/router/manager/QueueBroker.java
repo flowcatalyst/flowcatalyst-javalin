@@ -4,6 +4,7 @@ import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.Broker;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Acknowledger;
+import io.flowcatalyst.router.observability.jfr.MessageSettledEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +50,13 @@ public final class QueueBroker implements Broker {
 
     @Override
     public void ack(QueuedMessage message) {
+        ack(message, "settled");
+    }
+
+    /// @param reason who decided, recorded on the flight-recorder event.
+    ///               An ack is correct after a 200 and catastrophic after an
+    ///               open circuit, and the action alone cannot tell them apart.
+    public void ack(QueuedMessage message, String reason) {
         var freshest = withFreshestHandle(message);
         var consumer = consumers.apply(message.queueId());
         // Release ownership first: whatever happens at the broker, this
@@ -61,9 +69,12 @@ public final class QueueBroker implements Broker {
             // on whichever consumer replaces it, if any.
             log.warn("ack skipped: queue {} is no longer registered (message {})",
                     message.queueId(), message.id());
+            settled(message, "ack", reason, Duration.ZERO, false);
             return;
         }
-        if (!consumer.ack(freshest)) {
+        var confirmed = consumer.ack(freshest);
+        settled(message, "ack", reason, Duration.ZERO, confirmed);
+        if (!confirmed) {
             // Not fatal — the message is finished with here either way — but
             // it means the broker may redeliver it, and a silent redelivery
             // is harder to explain later than a logged one.
@@ -74,21 +85,47 @@ public final class QueueBroker implements Broker {
 
     @Override
     public void nack(QueuedMessage message, Duration delay) {
+        nack(message, delay, "returned");
+    }
+
+    public void nack(QueuedMessage message, Duration delay, String reason) {
         var freshest = withFreshestHandle(message);
         var consumer = consumers.apply(message.queueId());
         tracker.remove(message.id());
         if (consumer == null) {
             log.warn("nack skipped: queue {} is no longer registered (message {})",
                     message.queueId(), message.id());
+            settled(message, "nack", reason, delay, false);
             return;
         }
         consumer.nack(freshest, delay);
+        settled(message, "nack", reason, delay, true);
     }
 
     @Override
     public void release(QueuedMessage message) {
         // No broker call at all — just ownership.
         tracker.remove(message.id());
+        settled(message, "release", "abandoned", Duration.ZERO, false);
+    }
+
+    /// Records the message leaving, if anyone is recording.
+    ///
+    /// `shouldCommit()` first so a disabled recording costs one virtual call
+    /// and no field writes — this sits on the delivery path of every message.
+    private static void settled(QueuedMessage message, String action, String reason,
+                                Duration requestedDelay, boolean brokerConfirmed) {
+        var event = new MessageSettledEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.messageId = message.id();
+        event.queue = message.queueId();
+        event.action = action;
+        event.reason = reason;
+        event.requestedDelay = requestedDelay.toSeconds();
+        event.brokerConfirmed = brokerConfirmed;
+        event.commit();
     }
 
     /// Substitutes the freshest handle the tracker knows, falling back to the

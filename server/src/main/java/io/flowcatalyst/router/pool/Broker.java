@@ -18,10 +18,25 @@ public interface Broker {
     /// redeliver forever.
     void ack(QueuedMessage message);
 
+    /// As [#ack(QueuedMessage)], recording **who decided**.
+    ///
+    /// The reason never changes what happens — it is carried onto the
+    /// flight-recorder event, where it is the difference between an ack that
+    /// followed a 200 and one that followed an open circuit. Defaulted so an
+    /// implementation that does not record is not made to care.
+    default void ack(QueuedMessage message, String reason) {
+        ack(message);
+    }
+
     /// Returns the message to the queue, asking for `delay` before it is
     /// redelivered. Some backends ignore the delay; none may treat a nack as
     /// an ack.
     void nack(QueuedMessage message, Duration delay);
+
+    /// As [#nack(QueuedMessage, Duration)], recording who decided.
+    default void nack(QueuedMessage message, Duration delay, String reason) {
+        nack(message, delay);
+    }
 
     /// Gives up ownership **without touching the broker**.
     ///

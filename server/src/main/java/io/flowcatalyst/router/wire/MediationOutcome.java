@@ -26,6 +26,16 @@ public sealed interface MediationOutcome {
     /// out of the exhaustiveness the type exists to provide.
     Disposition disposition();
 
+    /// The HTTP status the target answered with, or **0 when no call was
+    /// made** — an open circuit, a connection that never established, our own
+    /// limiter deferring the attempt.
+    ///
+    /// Abstract rather than defaulted, for the same reason [#disposition()]
+    /// is: four of these carry a real status as a component and three must
+    /// say so explicitly. A default here would let a future outcome that does
+    /// have a status silently report that it had none.
+    int statusCode();
+
     /// What should happen to an ordered group when its head produces an
     /// outcome (`docs/spec/router.md` §2.6).
     enum Disposition {
@@ -140,6 +150,12 @@ public sealed interface MediationOutcome {
         public Disposition disposition() {
             return Disposition.RETURN_TO_BROKER;
         }
+
+        /// The connection never established, so the target never answered.
+        @Override
+        public int statusCode() {
+            return 0;
+        }
     }
 
     /// HTTP 429. Retryable, floored at the target's `Retry-After`, but
@@ -152,6 +168,12 @@ public sealed interface MediationOutcome {
         @Override
         public Disposition disposition() {
             return Disposition.RETRY_IN_PLACE;
+        }
+
+        /// Our own limiter deferred it; the target never heard of the message.
+        @Override
+        public int statusCode() {
+            return 0;
         }
     }
 
@@ -166,6 +188,12 @@ public sealed interface MediationOutcome {
         @Override
         public Disposition disposition() {
             return Disposition.RETURN_TO_BROKER;
+        }
+
+        /// The breaker refused the call before it was made.
+        @Override
+        public int statusCode() {
+            return 0;
         }
     }
 }
