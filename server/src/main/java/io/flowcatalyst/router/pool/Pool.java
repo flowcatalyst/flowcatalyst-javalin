@@ -111,6 +111,12 @@ public final class Pool implements AutoCloseable {
     /// owner per number rather than a total that can drift from its parts.
     private final AtomicInteger immediateWaiting = new AtomicInteger();
 
+    /// Workers currently inside a delivery attempt — holding a semaphore
+    /// permit and, usually, an open socket. Distinct from [#queueSize], which
+    /// counts what is *waiting*: together they answer "is this pool busy or
+    /// backed up?", which one number alone cannot.
+    private final AtomicInteger activeWorkers = new AtomicInteger();
+
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean stopped;
 
@@ -143,6 +149,19 @@ public final class Pool implements AutoCloseable {
     /// in a backoff, or queued behind their group's head.
     public int queueSize() {
         return immediateWaiting.get() + groups.buffered();
+    }
+
+    /// Deliveries in progress right now.
+    public int activeWorkers() {
+        return activeWorkers.get();
+    }
+
+    /// Message groups currently holding work. An ordered group is a
+    /// serialisation point, so a rising count is the shape of ordered
+    /// backlog that [#queueSize] alone would not distinguish from a busy
+    /// IMMEDIATE pool.
+    public int messageGroupCount() {
+        return groups.groupCount();
     }
 
     /// Accepts a message for delivery, or hands it straight back.
@@ -331,6 +350,7 @@ public final class Pool implements AutoCloseable {
 
         var startedAt = clock.instant();
         MediationOutcome outcome;
+        activeWorkers.incrementAndGet();
         try {
             outcome = mediator.deliver(message.message(), backoffs.delivery().endsBurst(message.attempts()));
         } catch (InterruptedException e) {
@@ -343,6 +363,8 @@ public final class Pool implements AutoCloseable {
             // target rejected anything.
             return new Attempt.Failed(new MediationOutcome.ErrorConnection(
                     (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "unexpected failure: " + e));
+        } finally {
+            activeWorkers.decrementAndGet();
         }
         var took = Duration.between(startedAt, clock.instant());
         return resolve(message, outcome, took);

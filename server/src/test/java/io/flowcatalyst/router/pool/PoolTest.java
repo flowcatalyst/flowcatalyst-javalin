@@ -319,6 +319,58 @@ class PoolTest {
         await(() -> metrics.rateLimited.get() >= 1);
     }
 
+    @Test
+    @DisplayName("active workers counts deliveries in progress, not messages waiting")
+    void activeWorkersCountsInProgressDeliveries() {
+        // queueSize counts what is WAITING; activeWorkers counts what is
+        // happening. Together they say whether a pool is busy or backed up —
+        // either number alone cannot.
+        mediator.block();
+        var p = pool(3, 0);
+
+        IntStream.range(0, 10).forEach(i -> p.submit(immediate("m" + i)));
+
+        await(() -> p.activeWorkers() == 3);
+        assertThat(p.queueSize()).as("the rest are waiting, not working").isGreaterThan(0);
+
+        mediator.unblock();
+        await(() -> p.activeWorkers() == 0);
+    }
+
+    @Test
+    @DisplayName("a worker releases its count even when the delivery throws")
+    void activeWorkersReleasedOnFailure() {
+        // Leaking the count on the exceptional path would make a pool look
+        // permanently busier than it is, and the gauge is what an operator
+        // uses to decide whether to scale it.
+        mediator.throwOnce("m1", new IllegalStateException("kaboom"));
+        mediator.answer("m1", MediationOutcome.Success.of(200));
+        var p = pool(2, 0);
+
+        p.submit(immediate("m1"));
+
+        await(() -> broker.acked.contains("m1"));
+        assertThat(p.activeWorkers()).isZero();
+    }
+
+    @Test
+    @DisplayName("the group count tracks ordered groups holding work")
+    void messageGroupCountTracksOrderedGroups() {
+        // An ordered group is a serialisation point, so a rising count is the
+        // shape of ordered backlog that queueSize alone would not distinguish
+        // from a busy IMMEDIATE pool.
+        mediator.block();
+        var p = pool(4, 0);
+
+        p.submit(ordered("alpha", "a1", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("beta", "b1", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("beta", "b2", DispatchMode.BLOCK_ON_ERROR));
+
+        await(() -> p.messageGroupCount() == 2);
+        assertThat(p.messageGroupCount()).as("two groups, three messages").isEqualTo(2);
+        mediator.unblock();
+    }
+
     // ── Fakes ───────────────────────────────────────────────────────────
 
     private static final int AWAIT_MILLIS = 5_000;
