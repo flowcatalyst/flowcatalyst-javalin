@@ -153,7 +153,7 @@ router before the listeners bind and drains it after they stop.
 
 Ordered by what unblocks the most:
 
-1. ~~**Java warning service.**~~ **DONE 2026-08-25.** `HttpMediator` takes a
+1. ~~**Java warning service.**~~ **DONE 2026-08-25**, in two halves. `HttpMediator` takes a
    `Warnings` collaborator and every permanent ACK-drop now raises one; the
    corpus asserts a `warning` column on all 28 cases. `Warnings` moved from
    `manager` to `observability` beside its implementation — the raisers are
@@ -165,11 +165,20 @@ Ordered by what unblocks the most:
    the three calls behind `AlbTraffic`'s already-tested policy, and `Traffic`
    is now `AutoCloseable` so the SDK client is released on shutdown. **The
    router has no `TODO(port)` left.**
-3. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
+3. ~~**Pool gaps found against Go.**~~ **DONE 2026-08-25.** `markRetrying`
+   had no production caller, so two guards that read `attempts` were
+   unreachable; `runImmediate` never read `disposition`, so nothing went back
+   to the broker and no in-place retry was bounded; the live mediating view
+   was missing. Bounding was then applied to the ordered path too. An
+   unspecified `dispatchMode` now defaults to **`NEXT_ON_ERROR`**, matching
+   Go — Java defaulted to `IMMEDIATE`, which silently gave no ordering to a
+   producer that needed it.
+
+4. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
    Needs no Go changes and asserts six of seven fields.
-4. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`
+5. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`
    (`pool.go:901`) into a pure function so `disposition` becomes assertable.
-5. **Drop-in verification** — side-by-side replay against the Go binary, then
+6. **Drop-in verification** — side-by-side replay against the Go binary, then
    a cutover rehearsal.
 
 Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
@@ -276,6 +285,18 @@ order:
 
 **Standing rule:** re-check `git log` in `../flowcatalyst-go` before starting
 any *platform* unit — that side is still moving. The router is stable.
+
+## Owner rulings taken 2026-08-25
+
+| Question | Ruling |
+|---|---|
+| `BLOCK_ON_ERROR`, untried siblings | **Keep Java's**: ACK them. Go's nack returns them on the *broker's* timer, by which point the head is gone, so the first sibling becomes the new head and is delivered past the failure — breaking the guarantee the mode is named for. Residual gap recorded: nothing marks those jobs `FAILED` for review (platform work). |
+| Postgres quarantine | **`queue_messages_failed`, keep the LATEST failure.** Java already matches; Go-side change is Fix 2. |
+| `AUTO_ACKNOWLEDGE_AGE` | **1 hour.** |
+| Unspecified `dispatchMode` | **`NEXT_ON_ERROR`.** The failure modes are asymmetric: wanting concurrency and getting ordering is visible and cheap to fix; needing ordering and silently getting none is invisible and lands in the target's data. |
+
+**Still needing a ruling:** the webhook's minimum severity (set to `WARNING`,
+so `INFO` is dropped — a channel-noise judgement, one line to change).
 
 ## Owner rulings outstanding
 
