@@ -109,6 +109,12 @@
       <artifactId>jnats</artifactId>
     </dependency>
 
+    <!-- Leader election for standby mode. Version pinned by the parent. -->
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>com.github.ben-manes.caffeine</groupId>
       <artifactId>caffeine</artifactId>
