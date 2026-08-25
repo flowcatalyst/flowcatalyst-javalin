@@ -18,6 +18,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MessageWireTest {
 
     @Test
+    @DisplayName("an unspecified dispatch mode is NEXT_ON_ERROR, not IMMEDIATE")
+    void unspecifiedDispatchModeDefaultsToOrdered() {
+        // The two failure modes are not symmetric. A producer that wanted
+        // concurrency and got ordering sees lower throughput and fixes it. A
+        // producer that needed ordering and silently got none sees nothing —
+        // the damage lands in the target's data, not in the router, and is
+        // found long afterwards if ever.
+        assertThat(DispatchMode.parse(null)).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(DispatchMode.parse("")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(DispatchMode.parse("  ")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        // A typo is a producer bug and must not quietly turn ordering off,
+        // which is precisely what the old IMMEDIATE default did.
+        assertThat(DispatchMode.parse("NEXT-ON-ERROR")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(DispatchMode.parse("immediate")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        // Opting out stays explicit and exact.
+        assertThat(DispatchMode.parse("IMMEDIATE")).isEqualTo(DispatchMode.IMMEDIATE);
+    }
+
+    @Test
+    @DisplayName("the ordered default does not serialise messages that have no group")
+    void orderedDefaultDoesNotSerialiseGrouplessTraffic() {
+        // The risk of the new default: if a groupless message took the
+        // ordered path, every message without a group would queue behind the
+        // same empty key and the pool would run one at a time.
+        var groupless = new Message("m1", "", null, null, MediationType.HTTP,
+                "https://x.test/h", null, false, DispatchMode.parse(null));
+
+        assertThat(groupless.dispatchMode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(groupless.dispatchMode().requiresOrdering()).isTrue();
+        assertThat(groupless.ordered())
+                .as("no group means nothing to order within, so it dispatches concurrently")
+                .isFalse();
+
+        var grouped = new Message("m2", "", null, null, MediationType.HTTP,
+                "https://x.test/h", "orders", false, DispatchMode.parse(null));
+        assertThat(grouped.ordered()).isTrue();
+    }
+
+    @Test
     @DisplayName("a minimal message omits every unset optional rather than emitting null")
     void omitsUnsetOptionals() throws Exception {
         var json = Json.MAPPER.writeValueAsString(minimal());
@@ -65,24 +104,27 @@ class MessageWireTest {
             "IMMEDIATE,IMMEDIATE",
             "NEXT_ON_ERROR,NEXT_ON_ERROR",
             "BLOCK_ON_ERROR,BLOCK_ON_ERROR",
-            "immediate,IMMEDIATE",
-            "SOMETHING_NEW,IMMEDIATE",
-            "'',IMMEDIATE",
+            "immediate,NEXT_ON_ERROR",
+            "SOMETHING_NEW,NEXT_ON_ERROR",
+            "'',NEXT_ON_ERROR",
     })
     void dispatchModeParsesLeniently(String wire, DispatchMode expected) {
         assertThat(DispatchMode.parse(wire)).isEqualTo(expected);
     }
 
     @Test
-    @DisplayName("an absent dispatchMode reads as IMMEDIATE, so pre-propagation messages still route")
+    @DisplayName("an absent dispatchMode reads as the default, so pre-propagation messages still route")
     void absentDispatchModeIsImmediate() throws Exception {
         // Messages published before the scheduler carried the field are still
-        // on queues; they must route, not fail to deserialise.
+        // on queues; they must route, not fail to deserialise. What they route
+        // AS changed on 2026-08-25: the default is now NEXT_ON_ERROR, so an
+        // old grouped message is ordered rather than silently unordered.
         var message = Json.MAPPER.readValue(
                 "{\"id\":\"msg_3\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"https://x.test/h\"}",
                 Message.class);
 
-        assertThat(message.dispatchMode()).isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(message.dispatchMode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        // Still concurrent, because this one carries no group.
         assertThat(message.ordered()).isFalse();
     }
 
@@ -131,7 +173,7 @@ class MessageWireTest {
         assertThat(new Message("msg_4", null, null, null, null, "https://x.test/h", null, false, null))
                 .satisfies(m -> {
                     assertThat(m.mediationType()).isEqualTo(MediationType.HTTP);
-                    assertThat(m.dispatchMode()).isEqualTo(DispatchMode.IMMEDIATE);
+                    assertThat(m.dispatchMode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
                 });
     }
 

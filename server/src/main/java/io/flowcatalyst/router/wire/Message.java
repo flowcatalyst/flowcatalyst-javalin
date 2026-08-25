@@ -65,7 +65,7 @@ public record Message(
     /// inward (CONVENTIONS §8).
     public Message {
         mediationType = mediationType == null ? MediationType.HTTP : mediationType;
-        dispatchMode = dispatchMode == null ? DispatchMode.IMMEDIATE : dispatchMode;
+        dispatchMode = dispatchMode == null ? DispatchMode.DEFAULT : dispatchMode;
     }
 
     /// The message group, or `""` when ungrouped.
