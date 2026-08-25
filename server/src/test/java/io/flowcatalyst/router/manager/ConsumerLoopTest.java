@@ -148,7 +148,7 @@ class ConsumerLoopTest {
     @DisplayName("with every pool full the loop pauses instead of pulling messages it must hand back")
     void pausesWhenAllPoolsAreFull() {
         var manager = manager();
-        fillPool();
+        fillPool(manager);
         consumer.deliver(batch("m1"));
 
         start(manager);
@@ -165,7 +165,7 @@ class ConsumerLoopTest {
         // A warning store holding a thousand entries would otherwise be
         // flooded by one busy period.
         var manager = manager();
-        fillPool();
+        fillPool(manager);
         start(manager);
         await(() -> !warnings.raised.isEmpty());
 
@@ -205,12 +205,23 @@ class ConsumerLoopTest {
         }
     };
 
-    /// Submits enough messages to exhaust the pool's queue capacity.
-    private void fillPool() {
+    /// Submits until the manager reports no capacity anywhere.
+    ///
+    /// Awaits that condition rather than `queueSize >= capacity`: workers
+    /// decrement the waiting count as they claim slots, so the queue can
+    /// hover just below capacity indefinitely and an earlier version of this
+    /// timed out intermittently. The loop's gate reads
+    /// `anyPoolHasCapacity()`, so that is what the fixture should establish.
+    private void fillPool(RouterManager manager) {
         deliveryBlocked.set(true);
-        int capacity = pool.config().queueCapacity();
-        IntStream.range(0, capacity + 5).forEach(i -> pool.submit(message("filler-" + i)));
-        await(() -> pool.queueSize() >= capacity);
+        int submitted = 0;
+        int limit = pool.config().queueCapacity() * 4;
+        while (manager.anyPoolHasCapacity() && submitted < limit) {
+            pool.submit(message("filler-" + submitted++));
+        }
+        if (manager.anyPoolHasCapacity()) {
+            throw new AssertionError("could not exhaust pool capacity after " + submitted + " messages");
+        }
     }
 
     private static List<QueuedMessage> batch(String... ids) {
