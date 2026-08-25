@@ -303,10 +303,19 @@ class PoolTest {
     void rateLimitingIsCounted() {
         // Conflating them hides which side is the bottleneck (§13 Q9).
         IntStream.range(0, 4).forEach(i -> mediator.answer("m" + i, MediationOutcome.Success.of(200)));
-        var p = pool(4, 2); // two per minute: the third is held
+        // Concurrency 1 so the messages are strictly serialised. With more,
+        // all three could check the limiter before any of them consumed a
+        // token, and none would observe an empty bucket — which made an
+        // earlier version of this test fail about two runs in five.
+        var p = pool(1, 1);
 
         IntStream.range(0, 3).forEach(i -> p.submit(immediate("m" + i)));
 
+        // The first takes the only token, so the second must find it gone.
+        // Only one observation is assertable: having recorded it, the second
+        // message then waits ~60s for the next token, holding the single
+        // worker, so a third never runs. Expecting two would deadlock the
+        // assertion rather than test anything.
         await(() -> metrics.rateLimited.get() >= 1);
     }
 
