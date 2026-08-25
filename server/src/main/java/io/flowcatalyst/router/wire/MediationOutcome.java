@@ -24,6 +24,9 @@ public sealed interface MediationOutcome {
     /// an explicit "come back later". Each of those ACK-deleted an entire
     /// ordered group after three attempts. A default on a sealed type opts
     /// out of the exhaustiveness the type exists to provide.
+    /// The one status a [RateLimited] can come from.
+    int TOO_MANY_REQUESTS = 429;
+
     Disposition disposition();
 
     /// The HTTP status the target answered with, or **0 when no call was
@@ -170,10 +173,13 @@ public sealed interface MediationOutcome {
             return Disposition.RETRY_IN_PLACE;
         }
 
-        /// Our own limiter deferred it; the target never heard of the message.
+        /// Always 429. This outcome exists for exactly one response status,
+        /// so the status is a property of the type rather than of the
+        /// instance — there is no such thing as a `RateLimited` that came
+        /// from anything else. A component would only invite one.
         @Override
         public int statusCode() {
-            return 0;
+            return TOO_MANY_REQUESTS;
         }
     }
 

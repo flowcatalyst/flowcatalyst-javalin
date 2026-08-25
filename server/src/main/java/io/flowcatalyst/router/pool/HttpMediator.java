@@ -130,6 +130,9 @@ public final class HttpMediator implements Mediator {
         return builder.build();
     }
 
+    /// The one 5xx that is permanent rather than transient.
+    private static final int NOT_IMPLEMENTED = 501;
+
     /// Maps a response to an outcome (§6.5).
     private MediationOutcome classify(HttpResponse<byte[]> response) {
         int status = response.statusCode();
@@ -145,6 +148,18 @@ public final class HttpMediator implements Mediator {
             // recorded as a breaker SUCCESS: the endpoint answered us
             // correctly, so it is healthy.
             return new MediationOutcome.ErrorConfig(status, "HTTP " + status);
+        }
+        if (status == NOT_IMPLEMENTED) {
+            // 501 is a 5xx that behaves like a 4xx, which is why it has to be
+            // tested before the generic 5xx branch rather than after it: the
+            // target is telling us it does not implement this hook, and no
+            // number of retries will make it. Permanent, and a breaker
+            // SUCCESS for the same reason a 404 is — the endpoint answered.
+            //
+            // TODO(warnings): §6 calls for a CRITICAL CONFIGURATION warning
+            // here, which needs the warning service the 3xx branch is also
+            // waiting on.
+            return new MediationOutcome.ErrorConfig(status, "HTTP 501: not implemented");
         }
         if (status >= 500) {
             return new MediationOutcome.ErrorProcess(status, SERVER_ERROR_DELAY_SECONDS, "HTTP " + status);
