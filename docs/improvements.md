@@ -91,150 +91,75 @@ mechanism to fix it is already built.
 
 ---
 
-## No grace period on client-secret rotation (auth-core Q14)
+## Client-secret rotation grace window (auth-core Q14) — SHIPPED IN GO
 
-**Owner ruling 2026-08-24: keep current behaviour in the port; spec the
-grace period here as a later improvement.** Java reproduces the hard
-cutover exactly — this is not a port deviation.
+**Status changed 2026-08-25.** This was specced here as a deferred
+improvement with the port keeping Go's hard cutover. Go has since
+implemented it (`77ede1d`), so this section now records **what Go actually
+does** — the Java port reproduces this, not the earlier hard cutover, and
+not the spec that preceded it.
 
-### Current behaviour, both sides
+### What Go now does
 
-`oauth_clients.client_secret_ref` is a single column holding one encrypted
-reference, and rotation overwrites it:
+`migration 046` adds `previous_secret_ref` and `previous_secret_expires_at`,
+both nullable and additive — an existing row reads as "no overlap in
+flight", which is exactly the old behaviour.
 
-```go
-// SetSecretRef records a rotated encrypted secret reference.
-func (c *OAuthClient) SetSecretRef(ref string) {
-    c.SecretRef = &ref          // overwrite, not append
-    c.UpdatedAt = time.Now().UTC()
-}
-```
+| Concern | Behaviour |
+|---|---|
+| Rotate | `RotateSecretRef` demotes the outgoing secret and bounds it by a grace window |
+| Default grace | **24 hours** (`DefaultSecretGrace`) — long enough to roll a fleet across a normal deployment window without being an open-ended second credential |
+| Request body | `POST /api/oauth-clients/{id}/rotate-secret` takes an **optional** body `{ "graceSeconds": <int64> }`. A pointer, so existing body-less POSTs from the SPA and the SDK alias keep working |
+| `graceSeconds: 0` | Immediate cutover, keeping nothing — the right choice for a secret believed compromised |
+| Negative | Rejected, `GRACE_INVALID` |
+| Response | `previousSecretExpiresAt`, **omitted on an immediate cutover** so a caller can tell the two apart |
+| Verification | `acceptClientSecret` tries the current ref then the previous one while unexpired. Both the client-authenticated grants **and** `client_credentials` go through it — the latter matters most, being the path a fleet mid-rollout uses |
+| Only one previous | Rotating twice inside a window retires the older one rather than accumulating valid credentials |
+| Immediate revoke | `POST /api/oauth-clients/{id}/revoke-previous-secret` closes an already-in-flight overlap. **Idempotent** — calling it twice, or after the timer has fired, is fine |
+| Expiry enforcement | Read through `UsablePreviousSecretRef`, which enforces the expiry. The row still carries a lapsed secret until the purger clears it, so reading the field directly would keep it alive |
+| At-rest hygiene | `StartPurger` clears lapsed overlaps. Hygiene, not enforcement — the expiry check above is what actually gates it |
 
-`RotateOAuthClientSecret` (`operations/oauth_client.go:317`) mints a secret,
-calls `SetSecretRef`, stashes the plaintext for one-shot retrieval, emits
-`OAuthClientSecretRotated`, and saves. Verification takes exactly one ref
-with no fallback (`verifyClientSecret`, decrypt-and-compare in constant
-time). There is no `previous_secret_ref` anywhere in the schema.
+### Two details worth carrying into the Java port verbatim
 
-So the instant rotate returns, every caller still presenting the old secret
-gets `401 Invalid client credentials`.
+**`acceptClientSecret` runs both compares rather than returning early on a
+current-secret match.** Short-circuiting would make a still-valid *old*
+secret measurably slower than a new one, leaking where a client sits in its
+rotation. Constant-time comparison of each ref is not enough on its own if
+the control flow itself varies.
 
-### Why it is worth changing later
+**Expiry is enforced on read, not on write.** A lapsed previous secret stays
+in the row until the purger runs, so any code path that reads
+`previous_secret_ref` directly rather than through the usability check would
+silently keep a retired credential alive.
 
-Confidential clients are machine-to-machine: the secret lives in a config
-file or a secrets manager, in every replica. A hard cutover makes rotation
-a synchronised operation — mint, then every deployment holding the old
-secret is broken until redeployed. There is no window in which both work,
-so a fleet cannot be rolled gradually, and rolling *back* to the previous
-deployment restores a secret that no longer works.
+### Where our earlier spec differed
 
-The practical consequence is that operators rotate rarely, which is the
-opposite of what rotation is for.
+Recorded because the differences are decisions, not accidents:
 
-### The change: two secrets, two ways to end the overlap
+- We specced the grace as *configured with a sane default*; Go made it a
+  per-request `graceSeconds` with a 24h default and no server-side config.
+  The per-request form is better — a routine rotation and an emergency one
+  want different windows, and a config value cannot express that.
+- We assumed a rollback caveat would need stating. It still holds: the
+  columns are additive so Go ignores them, but after a rollback a client on
+  the old secret stops being accepted, because only the newer code checks
+  `previous_secret_ref`.
+- We called for **a signal when a request authenticates on the previous
+  secret** — the answer to "who still has not redeployed?" while the window
+  is open. Go has **not** implemented that, and without it a grace period
+  trades a loud failure for a silent one. Still worth having; see below.
 
-**Additive schema** — `previous_secret_ref VARCHAR`,
-`previous_secret_expires_at TIMESTAMPTZ`, both nullable. Additive keeps the
-Go rollback path intact (Go ignores the columns), with one caveat worth
-stating: after a rollback, a client still on the old secret stops being
-accepted, because only the Java side knows to check `previous_secret_ref`.
+### Still open
 
-**Verification** — try `client_secret_ref`; if that fails and
-`previous_secret_expires_at > now()`, try `previous_secret_ref`. Both
-comparisons stay constant-time, and a failure of both must be
-indistinguishable from a single failure in timing and in the response.
+**No UI.** The API is complete; the OAuth client drawer still rotates with
+the default and offers neither a grace-window choice nor revoke-previous.
+What the drawer needs:
 
-**Ending the overlap — both paths are required:**
+1. A grace control on rotate, with **0 presented as an explicit "cut over
+   now"** rather than a number to type — it is the compromise-response path
+   and should read as one.
+2. A separate **Revoke previous secret** action, enabled only while an
+   overlap is in flight, showing `previousSecretExpiresAt`.
+3. Ideally, whether anything is still authenticating on the old secret —
+   which needs the signal Go has not built yet.
 
-1. **Timed lapse.** Rotate moves current → previous with
-   `previous_secret_expires_at = now + grace`. Grace is configured, with a
-   sane default (24h); `graceSeconds: 0` on the rotate request reproduces
-   today's hard cutover, so the strict behaviour remains available rather
-   than being replaced.
-2. **Explicit immediate revoke.** A separate operation that clears
-   `previous_secret_ref` now, without minting anything. **This is the more
-   important of the two**: a leak is usually discovered *after* a routine
-   rotation, at which point the operator needs to kill the old credential
-   without disturbing the new one. Making it a parameter of rotate only
-   would force an unnecessary second rotation — and another fleet-wide
-   redeploy — at exactly the wrong moment.
-
-**Events** — `OAuthClientSecretRotated` already exists and carries the
-rotation; add one for the explicit revoke so the compromise response is
-auditable and distinguishable from a routine lapse.
-
-**Observability** — emit a signal whenever a request authenticates on the
-*previous* secret. That is the operator's answer to "who still has not
-redeployed?", visible while the window is open rather than as 401s after it
-closes. Without it the grace period trades a loud failure for a silent one.
-
-### The trade-off being accepted
-
-During the window there are two live credentials for one client. That is
-only a real weakness when rotating *because* the old secret leaked — which
-is precisely the case path 2 exists to serve. Keeping `graceSeconds: 0`
-available means the strict behaviour is a choice at the call site rather
-than a property of the platform.
-
----
-
-## `flushGroup` is honoured from any target (router Q54)
-
-**Owner ruling 2026-08-24: honour the Go behaviour — correct for this
-deployment's context, where targets own the records they are pointed at.
-Logged here to revisit.** The Java port implements no gate.
-
-### Current behaviour, both sides
-
-A target answering a 2xx with `{"ack": true, "flushGroup": true}` causes the
-router to **ACK the remaining messages of that message group without
-delivering them** (`mediator.go:356-365`, `pool.go:760-806`). Suppression is
-TTL-bounded — `delaySeconds` on the same response, default 60 s, capped at
-5 min — and self-heals: the next message after the window probes the target.
-
-The saving is real and is the point of the feature: the check runs *before*
-the rate limiter, so a flushed group spends neither a rate-limit token nor a
-concurrency slot, where previously the target had to absorb every sibling
-one delivery at a time.
-
-### Why it is worth revisiting
-
-The safety condition is that the target **already owns the records** being
-pointed at (the message-pointer pattern) and will re-drive them itself.
-Flushed messages are never delivered and, once ACKed, are gone from the
-broker for every backend.
-
-Nothing enforces that condition. It is asserted in code comments and in
-`docs/wire-contract.md`, and honoured from **any** target that sets the
-flag. A target that sets it while holding the only copy of a payload loses
-data in a way that is indistinguishable from a bug: no error, no warning, no
-metric (see below), just messages that quietly stop arriving.
-
-The exposure is bounded by who can be a mediation target — targets are
-configured, not arbitrary — which is why honouring it is reasonable here.
-It becomes worth revisiting if targets are ever operated by parties who do
-not also own the underlying records, or if a target's implementation can be
-changed without the platform's knowledge.
-
-### If it is revisited, the shape
-
-Honour `flushGroup` only for pools or targets explicitly opted in by config,
-so the capability is granted rather than assumed. One config field, one
-check at the point the outcome is applied, and a line in the integrator
-documentation stating the ownership requirement as a precondition rather
-than a warning.
-
-### Related gaps, worth closing regardless (router Q52, Q53)
-
-These are not the safety question, but they are what makes the safety
-question hard to monitor:
-
-- A message ACKed because its group is suppressed records **no pool metric
-  at all** — not success, not transient, not rate-limited. A pool whose
-  groups are being flushed heavily looks *idle* on `/monitoring` and in
-  Prometheus rather than busy-but-suppressed. The registry's own
-  `suppressed` counter exists and nothing reads it.
-- `GroupFlushRegistry.SuppressedUntil`, `.Clear` and `.Stats` have no
-  callers outside tests, so an operator cannot ask "why is this group
-  quiet?" — the question the TTL design explicitly anticipates — and cannot
-  lift a suppression early.
