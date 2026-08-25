@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.manager;
 
+import io.flowcatalyst.router.concurrent.Concurrently;
+
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;

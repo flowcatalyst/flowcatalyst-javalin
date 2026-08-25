@@ -1,4 +1,4 @@
-package io.flowcatalyst.router.manager;
+package io.flowcatalyst.router.concurrent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,7 +20,7 @@ import java.util.concurrent.StructuredTaskScope;
 /// forked tasks are guaranteed not to outlive the call, the deadline belongs
 /// to the scope rather than being re-derived per await, and cancellation
 /// propagates into the tasks instead of merely abandoning them.
-final class Concurrently {
+public final class Concurrently {
 
     private static final Logger log = LoggerFactory.getLogger(Concurrently.class);
 
@@ -35,7 +35,7 @@ final class Concurrently {
     /// the shutdown exists to release. Failures are logged individually.
     ///
     /// @return whether every task finished inside the timeout
-    static <T> boolean forEach(Collection<T> items, java.util.function.Consumer<T> action,
+    public static <T> boolean forEach(Collection<T> items, java.util.function.Consumer<T> action,
                                Duration timeout, String what) {
         if (items.isEmpty()) {
             return true;

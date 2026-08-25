@@ -133,6 +133,32 @@ class PoolTest {
         assertThat(broker.acked).isEmpty();
     }
 
+    @Test
+    @DisplayName("a broker that never answers cannot hold the shutdown open")
+    void handBackIsBounded() {
+        // The messages are not lost by giving up: they were never
+        // acknowledged, so the broker redelivers them on its own timer. What
+        // would be lost is the shutdown itself — stop() is on the leadership
+        // transition path, so one unresponsive broker would otherwise stall
+        // the failover of every other queue behind it.
+        mediator.block();
+        broker.hangOnNack = true;
+        var p = pool(1, 0);
+        IntStream.range(0, 5).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+        await(() -> p.queueSize() >= 4);
+
+        var startedAt = System.nanoTime();
+        p.stop();
+        var took = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertThat(took)
+                .as("stop() must give up on the broker, not wait on it")
+                .isLessThan(Pool.HANDBACK_TIMEOUT.plusSeconds(3));
+        assertThat(broker.acked).isEmpty();
+        broker.hangOnNack = false;
+        mediator.unblock();
+    }
+
     // ── Flight recorder ─────────────────────────────────────────────────
 
     @Test
@@ -579,6 +605,10 @@ class PoolTest {
     /// that a method ran; running the tracker proves the message is actually
     /// free for its next delivery.
     private static final class RecordingBroker implements Broker {
+        /// Accepts the call and then never answers — the failure mode a
+        /// timeout exists for, and the one a refused connection does not
+        /// reproduce.
+        volatile boolean hangOnNack;
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
         final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
@@ -591,6 +621,14 @@ class PoolTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+            if (hangOnNack) {
+                try {
+                    Thread.sleep(Duration.ofMinutes(5));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
             nacked.put(message.id(), delay);
             tracker.remove(message.id());
         }

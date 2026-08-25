@@ -6,6 +6,7 @@ import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
 import io.flowcatalyst.router.wire.MediationOutcome;
 
+import io.flowcatalyst.router.concurrent.Concurrently;
 import io.flowcatalyst.router.observability.jfr.DispatchEvent;
 import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
 import org.slf4j.Logger;
@@ -123,6 +124,10 @@ public final class Pool implements AutoCloseable {
     /// counts what is *waiting*: together they answer "is this pool busy or
     /// backed up?", which one number alone cannot.
     private final AtomicInteger activeWorkers = new AtomicInteger();
+
+    /// How long a stand-down will spend handing buffered messages back before
+    /// giving up on the broker and letting redelivery do it instead.
+    static final Duration HANDBACK_TIMEOUT = Duration.ofSeconds(5);
 
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean stopped;
@@ -556,9 +561,15 @@ public final class Pool implements AutoCloseable {
         // Each nack is a broker round-trip, and a pool can be holding
         // hundreds. In turn, that is hundreds of serial round-trips inside a
         // shutdown budget; at once, it is one.
-        try (var handback = Executors.newVirtualThreadPerTaskExecutor()) {
-            buffered.forEach(message -> handback.execute(() -> broker.nack(message, REJECTED_NACK_DELAY)));
-        }
+        //
+        // Bounded, because "at once" is not the same as "guaranteed to
+        // finish". A broker that accepts the connection and then never
+        // answers would otherwise hold this call — and with it stop(), the
+        // leadership transition and the whole shutdown — open forever. The
+        // messages that cannot be handed back are not lost: they were never
+        // acknowledged, so the broker redelivers them on its own timer.
+        Concurrently.forEach(buffered, message -> broker.nack(message, REJECTED_NACK_DELAY, "stood-down"),
+                HANDBACK_TIMEOUT, "hand-back for pool " + config.code());
     }
 
     /// Stops, then waits briefly for in-flight deliveries to finish before
