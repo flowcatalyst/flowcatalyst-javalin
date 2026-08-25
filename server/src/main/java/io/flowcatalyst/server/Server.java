@@ -200,14 +200,23 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
             if (router != null) {
-                // TODO(port): BasicAuth on this surface (spec §9.7), the
-                //   dashboard HTML, and the /metrics alias. The monitoring
-                //   API and the engine behind it are wired.
+                // Guard first, then routes, then the dashboard — Javalin
+                // resolves `before` filters by path match regardless of
+                // registration order, but reading top-to-bottom as
+                // "guard, routes, page" is worth the ordering.
+                //
+                // TODO(port): the /metrics alias under the router prefix.
+                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(cfg.routes,
+                        new io.flowcatalyst.router.api.auth.BasicAuthFilter(
+                                env.routerAuthMode(), env.routerAuthUser(), env.routerAuthPass(),
+                                env.routerHttpPrefix()));
                 io.flowcatalyst.router.api.RouterApi.register(cfg.routes,
                         new io.flowcatalyst.router.api.RouterApi.State(
                                 router.manager(), router.tracker(), router.warnings(), router.breakers(),
                                 router.election(), router.electionConfig(), Version.current(),
                                 env.routerHttpPrefix(), null, router.poolMetrics()));
+                io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
+                        cfg.routes, env.routerHttpPrefix());
             }
             switch (spa) {
                 case Spa.Embedded(var frontend) -> frontend.register(cfg.routes);

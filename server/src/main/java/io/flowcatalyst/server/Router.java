@@ -141,7 +141,7 @@ public final class Router implements AutoCloseable {
         var traffic = trafficFor(env, clock);
 
         var server = new RouterServer(manager, tracker, election,
-                consumerFactory(env, dataSource), configSource(env),
+                consumerFactory(dataSource), configSource(env),
                 warnings, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
 
         // Traffic follows leadership: an instance that is not leading has
@@ -247,48 +247,24 @@ public final class Router implements AutoCloseable {
     }
 
     /// Builds a consumer for a configured queue, choosing the backend by URI
-    /// scheme.
+    /// scheme (`docs/spec/router.md` §7.1).
     ///
-    /// Returning empty rather than throwing is deliberate: one queue whose
-    /// backend cannot be built must not stop the others starting, and the
-    /// reconfigure reports it as a failed queue.
-    private static RouterManager.ConsumerFactory consumerFactory(Env env, DataSource dataSource) {
-        return queue -> {
-            var uri = queue.queueUri();
-            try {
-                if (uri.startsWith("postgres://") || uri.startsWith("postgresql://")) {
-                    if (dataSource == null) {
-                        LOG.error("queue {} needs Postgres but no database is configured", queue.queueName());
-                        return Optional.empty();
-                    }
-                    return Optional.of(new PostgresQueue(dataSource, queue.queueName(),
-                            Duration.ofSeconds(queue.visibilityTimeout())));
-                }
-                // TODO(port): SQS and NATS consumers are implemented and
-                // tested; wiring them needs their client construction from the
-                // queue URI, which follows this unit.
-                LOG.error("queue {} uses scheme not yet wired: {}", queue.queueName(), uri);
-                return Optional.<Consumer>empty();
-            } catch (RuntimeException e) {
-                LOG.error("could not build consumer for queue {}", queue.queueName(), e);
-                return Optional.empty();
-            }
-        };
+    /// `dataSource` may be null: a deployment consuming solely from SQS or
+    /// NATS needs no database, which is what lets a router-only instance skip
+    /// Postgres entirely.
+    private static RouterManager.ConsumerFactory consumerFactory(DataSource dataSource) {
+        return new io.flowcatalyst.router.queue.QueueFactory(dataSource);
     }
 
     /// Where the router's configuration comes from.
     ///
-    /// With no config URL the router runs the **default broker**: a single
-    /// Postgres queue and one pool, which is what `fcdev` and single-tenant
-    /// deployments use (`docs/spec/router.md` §8.4).
+    /// With a config URL the router polls it (§8.1). Without one it runs the
+    /// **default broker**: a single Postgres queue and the fallback pool,
+    /// which is what `fcdev` and single-tenant deployments use (§8.4).
     private static RouterServer.ConfigSource configSource(Env env) {
         if (!env.routerConfigUrl().isBlank()) {
-            // TODO(port): the polling HTTP config source (§8.1) — parallel
-            // fetch of comma-separated URLs, 12 attempts 5s apart, merge with
-            // first-definition-wins. RouterConfig.merge already implements
-            // the merge itself.
-            LOG.warn("FLOWCATALYST_CONFIG_URL is set but the HTTP config source is not yet wired;"
-                    + " falling back to the default broker");
+            LOG.info("router configuration from {}", env.routerConfigUrl());
+            return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl());
         }
         var queue = QueueConfig.of(defaultQueueUri(env));
         LOG.info("router using the default broker queue={}", queue.queueName());

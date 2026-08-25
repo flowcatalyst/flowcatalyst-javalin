@@ -1,0 +1,317 @@
+package io.flowcatalyst.router.config.http;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.router.config.QueueConfig;
+import io.flowcatalyst.router.config.RouterConfig;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// [HttpConfigSource] against `docs/spec/router.md` §8.1. Every test binds a
+/// real [HttpServer] on loopback — no mocking library, and no network beyond
+/// this process (CONVENTIONS §6). Retry attempts/interval are always
+/// constructor-injected small so the *mechanism* (count, spacing, ordering,
+/// parallelism) is provable in milliseconds rather than at the production
+/// 12×5 s schedule, which is pinned separately as constants.
+class HttpConfigSourceTest {
+
+    private final List<HttpServer> servers = new ArrayList<>();
+
+    @AfterEach
+    void stopServers() {
+        servers.forEach(server -> server.stop(0));
+        servers.clear();
+    }
+
+    private HttpServer startServer(HttpHandler handler) {
+        try {
+            var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/config", handler);
+            server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+            server.start();
+            servers.add(server);
+            return server;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static String urlOf(HttpServer server) {
+        return "http://127.0.0.1:" + server.getAddress().getPort() + "/config";
+    }
+
+    private static void respondOk(HttpExchange exchange, RouterConfig config) throws IOException {
+        byte[] body = Json.MAPPER.writeValueAsBytes(config);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, body.length);
+        try (var os = exchange.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    private static void respondStatus(HttpExchange exchange, int status) throws IOException {
+        exchange.sendResponseHeaders(status, -1);
+        exchange.close();
+    }
+
+    private static RouterConfig configWithQueue(String uri, int visibilityTimeout) {
+        return new RouterConfig(List.of(), List.of(new QueueConfig(uri, "q", 1, visibilityTimeout)));
+    }
+
+    private HttpConfigSource source(List<String> urls, int maxAttempts, Duration interval, Duration requestTimeout) {
+        var client = HttpClient.newBuilder().connectTimeout(requestTimeout).build();
+        return new HttpConfigSource(urls, client, maxAttempts, interval, requestTimeout);
+    }
+
+    // ---- URL parsing --------------------------------------------------------------
+
+    @Test
+    @DisplayName("splits FLOWCATALYST_CONFIG_URL on commas, trims each part and drops empties")
+    void parsesCommaSeparatedUrls() {
+        assertThat(HttpConfigSource.parseUrls(" http://a/config , http://b/config ,, http://c/config"))
+                .containsExactly("http://a/config", "http://b/config", "http://c/config");
+    }
+
+    @Test
+    @DisplayName("parses a null or blank env value as no URLs")
+    void parsesAbsentAsEmpty() {
+        assertThat(HttpConfigSource.parseUrls(null)).isEmpty();
+        assertThat(HttpConfigSource.parseUrls("   ")).isEmpty();
+    }
+
+    // ---- production constants (spec pin) -------------------------------------------
+
+    @Test
+    @DisplayName("pins the spec's retry schedule: 12 attempts, 5s apart, 10s per-attempt timeout")
+    void pinsProductionConstants() {
+        assertThat(HttpConfigSource.DEFAULT_MAX_ATTEMPTS).isEqualTo(12);
+        assertThat(HttpConfigSource.DEFAULT_RETRY_INTERVAL).isEqualTo(Duration.ofSeconds(5));
+        assertThat(HttpConfigSource.DEFAULT_REQUEST_TIMEOUT).isEqualTo(Duration.ofSeconds(10));
+    }
+
+    // ---- parallel fetch: timing --------------------------------------------------
+
+    @Test
+    @DisplayName("fetches every URL in parallel: elapsed time tracks the slowest URL, not their sum")
+    void fetchesInParallel() throws IOException {
+        var delay = Duration.ofMillis(350);
+        var s1 = startServer(exchange -> {
+            sleepQuietly(delay);
+            respondOk(exchange, configWithQueue("postgres://a/db", 10));
+        });
+        var s2 = startServer(exchange -> {
+            sleepQuietly(delay);
+            respondOk(exchange, configWithQueue("postgres://b/db", 20));
+        });
+
+        var src = source(List.of(urlOf(s1), urlOf(s2)), 1, Duration.ofMillis(10), Duration.ofSeconds(5));
+
+        var start = Instant.now();
+        var result = src.fetch();
+        var elapsed = Duration.between(start, Instant.now());
+
+        assertThat(result).isPresent();
+        // Sequential would cost ~2x delay (~700ms); parallel costs ~1x (~350ms).
+        // The midpoint (525ms) cleanly separates the two.
+        assertThat(elapsed).as("elapsed %s should track the slowest URL (%s), not the sum", elapsed, delay)
+                .isLessThan(delay.multipliedBy(2).minus(Duration.ofMillis(150)));
+    }
+
+    // ---- retry count and spacing ---------------------------------------------------
+
+    @Test
+    @DisplayName("retries a failing URL up to the configured attempt count, then gives up")
+    void retriesUpToMaxAttempts() {
+        var requests = new AtomicInteger();
+        var server = startServer(exchange -> {
+            requests.incrementAndGet();
+            respondStatus(exchange, 500);
+        });
+
+        var src = source(List.of(urlOf(server)), 4, Duration.ofMillis(20), Duration.ofSeconds(5));
+        var result = src.fetch();
+
+        assertThat(result).isEmpty();
+        assertThat(requests.get()).as("exactly maxAttempts requests, no more, no fewer").isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("stops retrying as soon as an attempt succeeds")
+    void stopsRetryingOnSuccess() {
+        var requests = new AtomicInteger();
+        var server = startServer(exchange -> {
+            int n = requests.incrementAndGet();
+            if (n < 3) {
+                respondStatus(exchange, 503);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://ok/db", 10));
+            }
+        });
+
+        var src = source(List.of(urlOf(server)), 10, Duration.ofMillis(20), Duration.ofSeconds(5));
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(requests.get()).as("must not keep retrying past the first success").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("spaces retries by the configured interval")
+    void spacesRetriesByInterval() {
+        var interval = Duration.ofMillis(150);
+        var timestamps = new CopyOnWriteArrayList<Instant>();
+        var server = startServer(exchange -> {
+            timestamps.add(Instant.now());
+            respondStatus(exchange, 500);
+        });
+
+        source(List.of(urlOf(server)), 3, interval, Duration.ofSeconds(5)).fetch();
+
+        assertThat(timestamps).hasSize(3);
+        for (int i = 1; i < timestamps.size(); i++) {
+            var gap = Duration.between(timestamps.get(i - 1), timestamps.get(i));
+            assertThat(gap).as("gap between attempt %d and %d", i, i + 1)
+                    .isGreaterThanOrEqualTo(interval.minusMillis(30));
+        }
+    }
+
+    // ---- all-fail vs partial-fail ---------------------------------------------------
+
+    @Test
+    @DisplayName("answers empty when every URL fails")
+    void emptyWhenAllUrlsFail() {
+        var s1 = startServer(exchange -> respondStatus(exchange, 500));
+        var s2 = startServer(exchange -> respondStatus(exchange, 500));
+
+        var src = source(List.of(urlOf(s1), urlOf(s2)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
+
+        assertThat(src.fetch()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("tolerates a partial failure: the surviving URL's configuration is still returned")
+    void toleratesPartialFailure() {
+        var failing = startServer(exchange -> respondStatus(exchange, 500));
+        var succeeding = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://survivor/db", 42)));
+
+        var src = source(List.of(urlOf(failing), urlOf(succeeding)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(result.get().queues()).extracting(QueueConfig::queueUri).containsExactly("postgres://survivor/db");
+    }
+
+    // ---- URL-order collection (first-definition-wins, independent of completion order) --
+
+    @Test
+    @DisplayName("merges successes in URL order, not completion order")
+    void mergesInUrlOrderNotCompletionOrder() {
+        // The FIRST url in the list answers slow; the SECOND answers fast.
+        // If the merge used completion order, the fast (second) URL's value
+        // would win. The spec requires the declared order to win instead.
+        var slowFirst = startServer(exchange -> {
+            sleepQuietly(Duration.ofMillis(200));
+            respondOk(exchange, configWithQueue("postgres://shared/db", 111));
+        });
+        var fastSecond = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://shared/db", 222)));
+
+        var src = source(List.of(urlOf(slowFirst), urlOf(fastSecond)), 1, Duration.ofMillis(10), Duration.ofSeconds(5));
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(result.get().queues()).singleElement()
+                .extracting(QueueConfig::visibilityTimeout)
+                .as("the first URL in the list wins, even though the second answered first")
+                .isEqualTo(111);
+    }
+
+    // ---- unchanged configuration is still returned -----------------------------------
+
+    @Test
+    @DisplayName("returns the same configuration again on a second fetch rather than suppressing it as unchanged")
+    void doesNotSuppressAnUnchangedConfiguration() {
+        var server = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://steady/db", 30)));
+        var src = source(List.of(urlOf(server)), 1, Duration.ofMillis(10), Duration.ofSeconds(5));
+
+        var first = src.fetch();
+        var second = src.fetch();
+
+        assertThat(first).isPresent();
+        assertThat(second).as("an unchanged config must still be handed back, never suppressed").isPresent();
+        assertThat(second).isEqualTo(first);
+    }
+
+    // ---- cancellation is interruption -------------------------------------------------
+
+    @Test
+    @DisplayName("a blocked fetch exits promptly on interruption, with the interrupt flag restored")
+    void cancellationIsInterruption() throws InterruptedException {
+        var requestReceived = new CountDownLatch(1);
+        var releaseServer = new CountDownLatch(1);
+        var server = startServer(exchange -> {
+            requestReceived.countDown();
+            try {
+                // Hangs until the test releases it (or the test times out and
+                // the server is torn down in @AfterEach). Long enough that
+                // only interruption — never the request timeout — explains a
+                // prompt return.
+                releaseServer.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            try {
+                respondStatus(exchange, 200);
+            } catch (IOException ignored) {
+            }
+        });
+
+        var src = source(List.of(urlOf(server)), 5, Duration.ofSeconds(1), Duration.ofSeconds(30));
+        var result = new AtomicReference<Optional<RouterConfig>>();
+        var interruptedAfterReturn = new AtomicBoolean();
+
+        Thread worker = new Thread(() -> {
+            result.set(src.fetch());
+            interruptedAfterReturn.set(Thread.currentThread().isInterrupted());
+        }, "config-fetch-worker");
+        worker.start();
+
+        assertThat(requestReceived.await(5, TimeUnit.SECONDS)).as("the request must have started").isTrue();
+        worker.interrupt();
+        worker.join(5_000);
+
+        assertThat(worker.isAlive()).as("interruption must make the fetch return promptly").isFalse();
+        assertThat(interruptedAfterReturn.get()).as("the interrupt flag must be restored, not swallowed").isTrue();
+        assertThat(result.get()).as("an interrupted fetch reports no configuration").isEmpty();
+
+        releaseServer.countDown();
+    }
+
+    private static void sleepQuietly(Duration duration) {
+        try {
+            Thread.sleep(duration);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}

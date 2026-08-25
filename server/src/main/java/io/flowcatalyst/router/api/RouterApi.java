@@ -32,8 +32,10 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /// The router's monitoring HTTP API (`docs/spec/router.md` §9.1). Mounted
-/// under [State#prefix] (default `/router`); BasicAuth (§9.7) is a separate,
-/// not-yet-ported concern and is applied by the caller, not here.
+/// under [State#prefix] (default `/router`). BasicAuth (§9.7) guards this
+/// surface and is applied by the caller — see
+/// `io.flowcatalyst.router.api.auth.BasicAuthFilter`, which strips the mount
+/// prefix before deciding whether a path is public.
 ///
 /// ### Routes NOT registered here, and why
 ///
@@ -62,11 +64,12 @@ import java.util.concurrent.atomic.AtomicLong;
 ///     abstraction that does not exist yet.
 ///   - `POST /config/reload` beyond the "no reloader wired" branch — no
 ///     config-source/reload mechanism ported; see [#configReload].
-///   - `GET /monitoring/dashboard`, `/dashboard.html` — no embedded HTML
-///     asset in scope; recreating the dashboard UI is out of proportion for
-///     an API port.
-///   - `GET /metrics` (Prometheus) — blocked by the same `Pool`/consumer
-///     gaps as the pool/queue routes above.
+///   - `GET /monitoring/dashboard`, `/dashboard.html` — served by
+///     `io.flowcatalyst.router.api.dashboard.DashboardHandler`, which is a
+///     consumer of this API rather than part of it.
+///   - `GET /metrics` (Prometheus) — rendered by
+///     `io.flowcatalyst.router.prometheus.RouterPrometheusCollector`; only
+///     the alias under this prefix is still to be mounted.
 ///   - `GET /openapi.json`, `/docs` — huma-generated docs; no equivalent
 ///     generator wired for the router surface.
 ///
