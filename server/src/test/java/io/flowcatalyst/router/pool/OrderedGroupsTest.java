@@ -172,6 +172,34 @@ class OrderedGroupsTest {
     }
 
     @Test
+    @DisplayName("an endlessly deferring head does not pin its group for ever")
+    void inPlaceRetriesAreBoundedForOrderedGroups() {
+        // The same defect that was fixed for IMMEDIATE messages, still live on
+        // the ordered path: a 429 forever kept the head AND everything queued
+        // behind it in memory, off the broker, for the life of the process.
+        // Worse here than for a lone message, because a whole group is held.
+        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
+        var head = groups.pollHead("orders").orElseThrow();
+        var deferring = new MediationOutcome.RateLimited(5);
+
+        // Within budget the group keeps its head, which is the normal case.
+        assertThat(groups.onHeadFailure(head, deferring, BUDGET))
+                .isEqualTo(new HeadFailure.RetryHead(head));
+
+        var spent = head;
+        for (int i = 0; i < Pool.MAX_IN_PIPELINE_ATTEMPTS - 1; i++) {
+            spent = spent.retrying();
+        }
+        var failure = groups.onHeadFailure(spent, deferring, BUDGET);
+
+        assertThat(failure).isInstanceOf(HeadFailure.ReturnGroup.class);
+        var returned = (HeadFailure.ReturnGroup) failure;
+        // Handed back, not ACKed: nothing is wrong with any of them.
+        assertThat(returned.head()).isEqualTo(spent);
+        assertThat(returned.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
+    }
+
+    @Test
     @DisplayName("BLOCK_ON_ERROR: budget spent, head and siblings are ACKed and the group stops")
     void blockOnErrorHandsBackSiblings() {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");

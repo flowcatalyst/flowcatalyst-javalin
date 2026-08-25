@@ -152,8 +152,23 @@ final class OrderedGroups {
     HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome, int rejectionBudget) {
         return switch (outcome.disposition()) {
             // Nothing was learned about the message, or the target is fine
-            // and asked us to wait. Either way the group keeps its head.
-            case RETRY_IN_PLACE -> new HeadFailure.RetryHead(head);
+            // and asked us to wait. The group keeps its head — but not for
+            // ever. An in-place retry never returns the message, so while it
+            // loops the broker's expiry, redelivery count and dead-letter
+            // queue can never act on it, and the stall detector deliberately
+            // leaves retrying entries alone. Unbounded, an endpoint answering
+            // 429 or ack:false for ever pins the head, EVERY MESSAGE BEHIND
+            // IT, and their tracker entries for the life of the process,
+            // invisibly.
+            //
+            // Past the budget the group goes back to the broker — the same
+            // treatment an unreachable target gets, and the only outcome that
+            // restores the broker's authority over it. This is not the Q1
+            // ruling in disguise: BLOCK_ON_ERROR and NEXT_ON_ERROR govern what
+            // a TERMINAL failure does to the group, and a deferral is not one.
+            case RETRY_IN_PLACE -> head.attempts() + 1 >= Pool.MAX_IN_PIPELINE_ATTEMPTS
+                    ? new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()))
+                    : new HeadFailure.RetryHead(head);
             case RETURN_TO_BROKER ->
                     new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
             case REJECTED -> rejected(head, rejectionBudget);

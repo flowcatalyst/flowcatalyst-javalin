@@ -671,7 +671,10 @@ limiter atomically; `nil`/0 → unlimited (`pool.go:209-220`,
 7. Resolve (table in §6.5): terminal outcomes ACK with the **freshest**
    receipt handle from the tracker (falling back to the dispatch-time
    handle) and release the entry; retryable outcomes mark the entry retrying
-   and return *retry* with a computed backoff. Retryable outcomes **never
+   and return *retry* with a computed backoff. **Superseded (Go `7bbef5d`):**
+   an unreachable target NACKs immediately rather than retrying in place, and
+   the in-place retry is bounded at 10 attempts. Original text: retryable
+   outcomes **never
    touch the broker** (`guardrail_test.go:103-165`).
 
 A suppressed message (step 4) records **no pool metric at all** — not
@@ -693,7 +696,14 @@ Prometheus rather than busy-but-suppressed. **Q53.**
    its group**, so it is the next attempted and is never overtaken; the group
    is head-of-line blocked until it succeeds, is ACK-dropped (4xx), or the
    pool stops. (`pool.go:496-515,609-631`)
-5. **Retryable outcomes never release the message to the broker**: no Nack,
+5. ~~**Retryable outcomes never release the message to the broker**: no Nack,~~
+   **NO LONGER TRUE (Go `7bbef5d`, Java 2026-08-25).** An unreachable target
+   NACKs immediately, and an in-place retry is bounded — past
+   `maxInPipelineAttempts` (10) the message is released to the broker, because
+   an in-pipeline retry never returns it and while it loops the broker's
+   expiry, redelivery count and dead-letter queue can never act on it. The
+   original invariant, kept for the record:
+   no Nack,
    no Defer, no visibility change; the retry lives in-process with the in-
    flight entry kept. Only terminal outcomes (2xx success, 4xx config error,
    process-time duplicate) ACK. (`guardrail_test.go:103-165`,

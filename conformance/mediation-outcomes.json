@@ -201,10 +201,10 @@
                  "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "failure"},
       "divergence": {
-        "go": "ErrorProcess(0, 30) via the default arm — Go's client surfaces the 1xx as a final status (verified at 819b390)",
+        "go": "DISPUTED. Reading mediator.go says a 1xx reaches the default arm as ErrorProcess(0, 30). But net/http's readLoop waits for a terminal response after any non-101 1xx rather than treating it as final, so a bare-1xx server should break the connection and yield ErrorConnection — matching Java exactly. A reproduction of Go's classifier agreed with the second reading. NOT resolved from source alone: settle it by running the Go runner against the real module.",
         "java": "ErrorConnection(0, 30) — java.net.http refuses to treat 1xx as final and fails the exchange, so classify() never sees it",
         "correct": "both",
-        "basis": "Neither may claim the message was rejected when it cannot tell whether the target ever saw it. Both land on RETURN_TO_BROKER, a 30s delay and a breaker failure — identical fate for the message, which is what the row exists to pin. The differing outcome NAME is a client-library artefact, not a policy difference."
+        "basis": "DISPUTED ON THE OUTCOME NAME ONLY — see `go`. Agreed on every field that decides the message's fate. Neither may claim the message was rejected when it cannot tell whether the target ever saw it. Both land on RETURN_TO_BROKER, a 30s delay and a breaker failure — identical fate for the message, which is what the row exists to pin. The differing outcome NAME is a client-library artefact, not a policy difference."
       }
     },
     {
