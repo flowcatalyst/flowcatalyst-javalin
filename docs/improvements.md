@@ -160,6 +160,41 @@ What the drawer needs:
    and should read as one.
 2. A separate **Revoke previous secret** action, enabled only while an
    overlap is in flight, showing `previousSecretExpiresAt`.
-3. Ideally, whether anything is still authenticating on the old secret —
-   which needs the signal Go has not built yet.
+3. Whether anything is still authenticating on the old secret — which needs
+   the signal below.
+
+### The missing signal, specified
+
+Without this the drawer cannot answer the question an operator actually has
+during a rollout, and a grace window trades a loud failure for a silent one.
+
+**Record it where the fallback already happens.** `acceptClientSecret`
+already knows it matched the *previous* ref rather than the current one.
+That is the only place the fact exists, and it costs nothing to note.
+
+- **Emit an event, not just a counter.** `OAuthClientPreviousSecretUsed`,
+  carrying the client id and the time. A counter answers "is anyone?"; an
+  event answers "who, and how recently?", which is what decides whether it
+  is safe to revoke.
+- **Do not log the secret, the ref, or any prefix of either.** The event's
+  value is the client identity and the timestamp.
+- **Surface it on the client resource** as `previousSecretLastUsedAt`
+  (nullable), alongside `previousSecretExpiresAt`. Two timestamps together
+  answer the whole question: how long is left, and is anyone still there.
+- **Rate-limit or coalesce the write.** A fleet mid-rollout may authenticate
+  thousands of times an hour on the old secret; last-write-wins on a
+  timestamp column is enough and avoids turning a rollout into write load.
+
+**Then the drawer reads:** *"Previous secret valid for another 6 hours —
+last used 4 minutes ago"*, and **Revoke previous secret** is obviously the
+wrong button to press. Without it the same drawer shows only a countdown,
+and revoking is a guess.
+
+### The grace control itself
+
+Present `graceSeconds: 0` as an explicit **"Cut over now"** action, not a
+number to type. It is the compromise-response path — the one taken when a
+secret is believed leaked — and typing a zero into a duration field reads
+like a default, not like a decision. A short list (24h default, 1h, cut over
+now) with the last visually separated says what the API means.
 
