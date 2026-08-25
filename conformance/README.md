@@ -130,10 +130,13 @@ branch was tested before anything could special-case it.
 mvn -pl server test -Dtest=MediationConformanceTest
 ```
 
-**Go** — not yet written. The runner is roughly fifty lines: load the JSON,
-`httptest.NewServer` per case, call `Mediate`, compare. It belongs in the Go
-repo and should read this file by path rather than copying it, so the two can
-never drift.
+**Go** — not yet written. `conformance/go-runner.md` is the handover spec:
+the API it needs (all verified present), the outcome-name mapping, a
+`given.kind` table, and the one Go change `disposition` requires. Phase 1
+asserts six of the seven fields and needs no changes to Go at all.
+
+It belongs in the Go repo and must read the corpus by path rather than copy
+it — two copies drift and then prove nothing.
 
 ## Adding a case
 

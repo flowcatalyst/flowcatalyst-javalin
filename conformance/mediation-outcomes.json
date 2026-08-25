@@ -48,8 +48,8 @@
       "divergence": {
         "correct": "java",
         "basis": "The status is the target's own answer. Flattening 201 and 202 to 200 discards information the router never had a reason to hold an opinion about, and an operator reading a trace cannot recover it.",
-        "go": "reports 200 for every 2xx",
-        "tracked": "docs/spec/router-fixes.md"
+        "go": "common.Success() hard-codes StatusCode 200, so 201/202/204 all report 200 (verified at 819b390)",
+        "tracked": "docs/spec/router-fixes.md Fix 1"
       }
     },
     {
@@ -108,7 +108,11 @@
       "why": "The one 5xx that is permanent. A target answering \"not implemented\" will not implement it part-way through a retry schedule, so treating it as transient is an unbounded retry that cannot succeed. Breaker success for the same reason a 404 is one: the endpoint answered, so it is healthy — it is the request it cannot serve.",
       "given": {"kind": "response", "status": 501, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 501,
-                 "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
+                 "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"},
+      "history": {
+        "found": "This corpus. Java was letting 501 fall into the generic `status >= 500` branch and retrying a target that had said it does not implement the hook.",
+        "corroboration": "Go reached the same answer independently in 4f2d52c, before this corpus existed. Two implementations arriving separately at the same rule is the strongest evidence available here that the rule is right."
+      }
     },
     {
       "id": "config-error-other-4xx",
@@ -169,7 +173,7 @@
       "expect": {"outcome": "ErrorConnection", "statusCode": 0, "delaySeconds": 30,
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "failure"},
       "divergence": {
-        "go": "ErrorProcess(0, 30) — Go's client surfaces the 1xx as a final status",
+        "go": "ErrorProcess(0, 30) via the default arm — Go's client surfaces the 1xx as a final status (verified at 819b390)",
         "java": "ErrorConnection(0, 30) — java.net.http refuses to treat 1xx as final and fails the exchange, so classify() never sees it",
         "correct": "both",
         "basis": "Neither may claim the message was rejected when it cannot tell whether the target ever saw it. Both land on RETURN_TO_BROKER, a 30s delay and a breaker failure — identical fate for the message, which is what the row exists to pin. The differing outcome NAME is a client-library artefact, not a policy difference."
@@ -185,7 +189,7 @@
       "divergence": {
         "correct": "java",
         "basis": "Retrying reproduces the redirect every time, so the message can never be delivered as addressed — an unbounded retry that cannot succeed. Following it instead is not the fix either: 301/302/303 downgrade POST to GET and drop the body, so the target would receive nothing and the router would record a success.",
-        "go": "treats 3xx as ErrorProcess and retries it for ever",
+        "go": "falls through to the default arm: ErrorProcess(30) with StatusCode unset, so it retries for ever and reports status 0 (verified at 819b390)",
         "owner": "ruling 2026-08-24"
       }
     },
