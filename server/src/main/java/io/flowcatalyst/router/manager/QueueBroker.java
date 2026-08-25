@@ -85,6 +85,12 @@ public final class QueueBroker implements Broker {
         consumer.nack(freshest, delay);
     }
 
+    @Override
+    public void release(QueuedMessage message) {
+        // No broker call at all — just ownership.
+        tracker.remove(message.id());
+    }
+
     /// Substitutes the freshest handle the tracker knows, falling back to the
     /// one the message was dispatched with.
     ///

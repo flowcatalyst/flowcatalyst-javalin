@@ -209,6 +209,10 @@ class ConsumerLoopTest {
         @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
     };
 
     /// Keeps the pool at capacity for as long as the test needs it.

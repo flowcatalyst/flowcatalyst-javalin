@@ -101,6 +101,48 @@ public final class NatsQueue implements Consumer {
     private record Resources(Connection connection, ConsumerContext consumerContext) {
     }
 
+    /// Runs the provisioning that turns an open connection into a usable
+    /// queue, closing that connection if the provisioning fails.
+    ///
+    /// Without this, a stream or consumer that cannot be provisioned — a name
+    /// the account may not create, a JetStream-disabled server — leaves a live
+    /// connection with **no reference to it**. Nothing notices: [QueueFactory]
+    /// logs the failure and returns empty, and the reconfigure loop tries the
+    /// same queue again on the next config poll. Since the connection is built
+    /// with `maxReconnects(-1)`, each orphan also keeps reconnecting forever.
+    /// One misconfigured queue therefore leaks a connection per poll, without
+    /// bound, for as long as the process runs.
+    /// Takes the connection's `close` rather than the connection so the
+    /// behaviour is reachable from a test without standing up a broker.
+    static <R> R adopting(Closing connection, Provisioning<R> provisioning)
+            throws IOException, JetStreamApiException, InterruptedException {
+        try {
+            return provisioning.run();
+        } catch (IOException | JetStreamApiException | InterruptedException | RuntimeException e) {
+            try {
+                connection.close();
+            } catch (InterruptedException closing) {
+                Thread.currentThread().interrupt();
+                e.addSuppressed(closing);
+            } catch (RuntimeException closing) {
+                // Reporting why provisioning failed beats reporting why the
+                // cleanup did; the original is the actionable one.
+                e.addSuppressed(closing);
+            }
+            throw e;
+        }
+    }
+
+    @FunctionalInterface
+    interface Provisioning<R> {
+        R run() throws IOException, JetStreamApiException, InterruptedException;
+    }
+
+    @FunctionalInterface
+    interface Closing {
+        void close() throws InterruptedException;
+    }
+
     private static Resources connect(NatsQueueUri config, String queueUri) {
         try {
             Options options = new Options.Builder()
@@ -110,11 +152,15 @@ public final class NatsQueue implements Consumer {
                     .maxReconnects(-1)
                     .build();
             Connection connection = Nats.connect(options);
-            JetStreamManagement jsm = connection.jetStreamManagement();
-            createOrUpdateStream(jsm, config);
-            createOrUpdateConsumer(jsm, config);
-            ConsumerContext consumerContext = connection.getConsumerContext(config.streamName(), config.consumerName());
-            return new Resources(connection, consumerContext);
+            // From here the connection is OPEN and nothing owns it yet — see
+            // [#adopting].
+            return adopting(connection::close, () -> {
+                JetStreamManagement jsm = connection.jetStreamManagement();
+                createOrUpdateStream(jsm, config);
+                createOrUpdateConsumer(jsm, config);
+                return new Resources(connection,
+                        connection.getConsumerContext(config.streamName(), config.consumerName()));
+            });
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new NatsQueueException("nats: interrupted while connecting to " + queueUri, e);

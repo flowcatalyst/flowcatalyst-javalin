@@ -67,6 +67,10 @@ class RouterApiTest {
         @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
     };
 
     private static WarningStore warnings;
@@ -357,6 +361,10 @@ class RouterApiTest {
             public void nack(QueuedMessage message, Duration delay) {
                 delivered.countDown();
             }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
         };
         var isolatedTracker = new InFlightTracker(CLOCK);
         var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,

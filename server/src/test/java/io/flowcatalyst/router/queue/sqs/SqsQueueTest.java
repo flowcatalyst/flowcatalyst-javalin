@@ -53,6 +53,28 @@ class SqsQueueTest {
     // --- poll: happy path -------------------------------------------------
 
     @Test
+    @DisplayName("a client whose queue is rejected is closed rather than stranded")
+    void rejectedQueueClosesTheClient() {
+        // The client owns an HTTP connection pool and its threads. Nothing
+        // references it until the constructor returns, and QueueFactory turns
+        // the throw into an empty Optional — so the reconfigure loop retries
+        // the same bad queue on every config poll and strands another one.
+        assertThatThrownBy(() -> SqsQueue.adopt(client, null, "orders", 30))
+                .isInstanceOf(NullPointerException.class);
+
+        assertThat(client.closed).isTrue();
+    }
+
+    @Test
+    @DisplayName("a client that is accepted stays open")
+    void acceptedQueueKeepsTheClient() {
+        var queue = SqsQueue.adopt(client, "https://sqs.eu-west-1.amazonaws.com/1/orders", null, 30);
+
+        assertThat(queue.identifier()).isEqualTo("orders");
+        assertThat(client.closed).isFalse();
+    }
+
+    @Test
     @DisplayName("poll parses a message body into a QueuedMessage carrying the receipt and broker id")
     void pollParsesBodyIntoQueuedMessage() throws InterruptedException {
         client.enqueueReceive(ReceiveMessageResponse.builder()

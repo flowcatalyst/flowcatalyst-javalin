@@ -9,7 +9,9 @@ import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -116,6 +118,57 @@ class OrderedGroupsTest {
 
         assertThat(disposition).isEqualTo(new HeadFailure.Continue(spent));
         assertThat(drainIds("orders")).containsExactly("b", "c");
+    }
+
+    /// The regression that motivated `MediationOutcome.disposition()`.
+    ///
+    /// These three outcomes mean **the message was never run**: the breaker
+    /// was open, the limiter said wait, or the target asked for a delay. They
+    /// carry no evidence at all about the message, so spending the rejection
+    /// budget on them and then ACKing the group off the broker destroys work
+    /// that nothing has yet found fault with — silently, at exactly the moment
+    /// a target is unhealthy and the group is at its longest.
+    ///
+    /// The old `targetUnavailable()` default returned `false` for all three,
+    /// so that is precisely what happened.
+    @ParameterizedTest(name = "{0} with the budget spent never ACKs the group")
+    @MethodSource("neverRan")
+    @DisplayName("an outcome that never ran the message cannot consume the group")
+    void neverRanDoesNotDestroyTheGroup(String name, MediationOutcome outcome, boolean returnsToBroker) {
+        for (var mode : DispatchMode.values()) {
+            var groups = new OrderedGroups();
+            offerAll(groups, "orders", mode, "a", "b", "c");
+            var head = groups.pollHead("orders").orElseThrow();
+            var spent = head.retrying().retrying();
+
+            var failure = groups.onHeadFailure(spent, outcome, BUDGET);
+
+            if (returnsToBroker) {
+                // Handed back for redelivery: still on the broker, in order.
+                assertThat(failure).isInstanceOf(HeadFailure.ReturnGroup.class);
+                var returned = (HeadFailure.ReturnGroup) failure;
+                assertThat(returned.head()).isEqualTo(spent);
+                assertThat(returned.siblings().stream().map(QueuedMessage::id))
+                        .as("%s under %s must hand every sibling back", name, mode)
+                        .containsExactly("b", "c");
+            } else {
+                // Kept in place: the head is still the head, siblings untouched.
+                assertThat(failure).isEqualTo(new HeadFailure.RetryHead(spent));
+                assertThat(drainIds(groups, "orders"))
+                        .as("%s under %s must not disturb the buffered siblings", name, mode)
+                        .containsExactly("b", "c");
+            }
+        }
+    }
+
+    static List<Arguments> neverRan() {
+        return List.of(
+                // The breaker refused the call: the target is presumed down.
+                Arguments.of("CircuitOpen", new MediationOutcome.CircuitOpen(30), true),
+                // Our own limiter deferred it; the target never heard of it.
+                Arguments.of("RateLimited", new MediationOutcome.RateLimited(5), false),
+                // The target answered "not now" (429 / Retry-After).
+                Arguments.of("Deferred", new MediationOutcome.Deferred(429, 5, "slow down"), false));
     }
 
     @Test
@@ -326,12 +379,20 @@ class OrderedGroupsTest {
     }
 
     private void offerAll(String group, DispatchMode mode, String... ids) {
-        IntStream.range(0, ids.length).forEach(i -> groups.offer(message(group, ids[i], mode)));
+        offerAll(groups, group, mode, ids);
+    }
+
+    private static void offerAll(OrderedGroups target, String group, DispatchMode mode, String... ids) {
+        IntStream.range(0, ids.length).forEach(i -> target.offer(message(group, ids[i], mode)));
     }
 
     private List<String> drainIds(String group) {
+        return drainIds(groups, group);
+    }
+
+    private static List<String> drainIds(OrderedGroups target, String group) {
         var drained = new java.util.ArrayList<String>();
-        for (var head = groups.pollHead(group); head.isPresent(); head = groups.pollHead(group)) {
+        for (var head = target.pollHead(group); head.isPresent(); head = target.pollHead(group)) {
             drained.add(head.get().id());
         }
         return drained;

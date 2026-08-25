@@ -252,6 +252,10 @@ class RouterManagerTest {
                 @Override
                 public void nack(QueuedMessage message, Duration delay) {
                 }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
             };
             return new RecordingPool(
                     new Pool(new Pool.Config(code, 4, 0), mediator, noOp, PoolMetrics.NO_OP, Clock.systemUTC()),

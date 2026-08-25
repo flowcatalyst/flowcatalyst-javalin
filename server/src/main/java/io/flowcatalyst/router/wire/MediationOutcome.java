@@ -13,19 +13,47 @@ public sealed interface MediationOutcome {
     /// which is why it is read through the specific record, never generically.
     int delaySeconds();
 
-    /// Whether the target could not be reached, or was reachable but not
-    /// ready to serve — as opposed to having taken the message and failed on
-    /// it.
+    /// What this outcome means for the message's **group**.
     ///
-    /// The distinction decides what happens to an ordered group
-    /// (`docs/spec/router.md` §2.6) and is a **deliberate deviation from
-    /// Go**, which classifies every 5xx identically. Unavailability says
-    /// nothing is wrong with the message, so it is returned to the broker and
-    /// retried for as long as the broker keeps it. A rejection says the
-    /// target ran this message and it failed, so it is retried a bounded
-    /// number of times and then handed to the platform.
-    default boolean targetUnavailable() {
-        return false;
+    /// Deliberately **not** a default method. Every record must answer, so
+    /// adding an outcome is a compile error until someone decides what it
+    /// does to a group — which is the whole point of a sealed hierarchy. An
+    /// earlier version defaulted to [Disposition#REJECTED], and three
+    /// outcomes silently inherited it: an open circuit (where no call was
+    /// made at all), a 429 (where the target is healthy and throttling), and
+    /// an explicit "come back later". Each of those ACK-deleted an entire
+    /// ordered group after three attempts. A default on a sealed type opts
+    /// out of the exhaustiveness the type exists to provide.
+    Disposition disposition();
+
+    /// What should happen to an ordered group when its head produces an
+    /// outcome (`docs/spec/router.md` §2.6).
+    enum Disposition {
+
+        /// Nothing failed. Not asked about on a failure path.
+        DELIVERED,
+
+        /// Retry the head where it is, keeping its place at the front of the
+        /// group. The target is healthy and has told us something specific —
+        /// come back later, or slow down — so the message is fine and the
+        /// group should not move without it.
+        RETRY_IN_PLACE,
+
+        /// Hand the head **and its buffered siblings** back to the broker.
+        /// Nothing is wrong with these messages; we could not reach a working
+        /// target, or were told not to try. The broker owns the retry for as
+        /// long as it keeps them, and nothing waits in memory on an outage of
+        /// unknown length.
+        RETURN_TO_BROKER,
+
+        /// The target took the message and failed on it. Retry a bounded
+        /// number of times, then give up on it: ACK it away and let the
+        /// platform surface it for review.
+        REJECTED,
+
+        /// The request itself is wrong and will stay wrong. Drop it; no
+        /// amount of retrying or returning changes anything.
+        UNDELIVERABLE
     }
 
     /// 2xx. ACK and release.
@@ -48,12 +76,26 @@ public sealed interface MediationOutcome {
         public static Success flushing(int statusCode, int delaySeconds) {
             return new Success(statusCode, true, delaySeconds);
         }
+
+        @Override
+        public Disposition disposition() {
+            return Disposition.DELIVERED;
+        }
     }
 
     /// 2xx carrying `{"ack": false}`: healthy, but asking us to come back.
     /// Requeued on the deferred backoff curve floored at [#delaySeconds];
     /// no in-pipeline retry, and no circuit-breaker impact.
     record Deferred(int statusCode, int delaySeconds, String reason) implements MediationOutcome {
+
+        /// The target is healthy and asked for more time. Its group waits
+        /// with it — advancing past a message the target has explicitly
+        /// deferred would deliver its successors out of order, which is the
+        /// one thing an ordered group promises not to do.
+        @Override
+        public Disposition disposition() {
+            return Disposition.RETRY_IN_PLACE;
+        }
     }
 
     /// 4xx other than 429, an unsupported mediation type, or an unusable
@@ -66,6 +108,11 @@ public sealed interface MediationOutcome {
         public int delaySeconds() {
             return 0;
         }
+
+        @Override
+        public Disposition disposition() {
+            return Disposition.UNDELIVERABLE;
+        }
     }
 
     /// 5xx, or a status below 200. Retryable; counts as a breaker failure.
@@ -77,8 +124,10 @@ public sealed interface MediationOutcome {
         /// same way — we cannot claim the message was rejected when we do not
         /// know that it was seen.
         @Override
-        public boolean targetUnavailable() {
-            return statusCode == 0 || statusCode == 502 || statusCode == 503 || statusCode == 504;
+        public Disposition disposition() {
+            return statusCode == 0 || statusCode == 502 || statusCode == 503 || statusCode == 504
+                    ? Disposition.RETURN_TO_BROKER
+                    : Disposition.REJECTED;
         }
     }
 
@@ -88,18 +137,35 @@ public sealed interface MediationOutcome {
     record ErrorConnection(int delaySeconds, String message) implements MediationOutcome {
 
         @Override
-        public boolean targetUnavailable() {
-            return true;
+        public Disposition disposition() {
+            return Disposition.RETURN_TO_BROKER;
         }
     }
 
     /// HTTP 429. Retryable, floored at the target's `Retry-After`, but
     /// **not** a breaker failure: the destination is healthy and throttling.
     record RateLimited(int delaySeconds) implements MediationOutcome {
+
+        /// A 429 is a healthy target asking us to slow down, not a rejection.
+        /// The message is fine and keeps its place; honouring `Retry-After`
+        /// is the whole of the response.
+        @Override
+        public Disposition disposition() {
+            return Disposition.RETRY_IN_PLACE;
+        }
     }
 
     /// The per-endpoint breaker was open, so no HTTP call was made. A defer,
     /// not a failure — it records nothing on the breaker it came from.
     record CircuitOpen(int delaySeconds) implements MediationOutcome {
+
+        /// **No call was made.** Nothing has been learned about this message,
+        /// so it cannot have been rejected — and the breaker being open means
+        /// the target is failing for everyone, which is exactly when holding
+        /// a group in memory is worst. Back to the broker.
+        @Override
+        public Disposition disposition() {
+            return Disposition.RETURN_TO_BROKER;
+        }
     }
 }

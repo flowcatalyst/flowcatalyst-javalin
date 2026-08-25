@@ -112,6 +112,10 @@ class RouterShutdownTest {
                     public void nack(QueuedMessage message, Duration delay) {
                         nacked.add(message.id());
                     }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
                 },
                 PoolMetrics.NO_OP, clock);
 
@@ -287,6 +291,10 @@ class RouterShutdownTest {
                     public void nack(QueuedMessage message, Duration delay) {
                         nacked.put(message.id(), true);
                     }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
                 },
                 PoolMetrics.NO_OP, clock);
 

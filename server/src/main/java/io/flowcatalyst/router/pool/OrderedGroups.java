@@ -150,9 +150,22 @@ final class OrderedGroups {
     /// Unavailability skips the budget entirely: no number of retries makes a
     /// down target reachable, and the broker is the better place to wait.
     HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome, int rejectionBudget) {
-        if (outcome.targetUnavailable()) {
-            return new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
-        }
+        return switch (outcome.disposition()) {
+            // Nothing was learned about the message, or the target is fine
+            // and asked us to wait. Either way the group keeps its head.
+            case RETRY_IN_PLACE -> new HeadFailure.RetryHead(head);
+            case RETURN_TO_BROKER ->
+                    new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
+            case REJECTED -> rejected(head, rejectionBudget);
+            // A delivered or undeliverable head is not a failure the group
+            // has to react to; the caller has already acted on it.
+            case DELIVERED, UNDELIVERABLE -> new HeadFailure.Continue(head);
+        };
+    }
+
+    /// A head the target ran and failed on: retried within its budget, then
+    /// given up on according to its mode.
+    private HeadFailure rejected(QueuedMessage head, int rejectionBudget) {
         if (head.attempts() + 1 < rejectionBudget) {
             return new HeadFailure.RetryHead(head);
         }

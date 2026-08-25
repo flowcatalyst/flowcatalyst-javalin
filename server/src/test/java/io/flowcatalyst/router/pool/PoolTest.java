@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.pool;
 
+import io.flowcatalyst.router.inflight.InFlightMessage;
+import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
@@ -11,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -125,6 +128,48 @@ class PoolTest {
 
         assertThat(broker.nacked).containsKey("m1");
         assertThat(broker.acked).isEmpty();
+    }
+
+    @Test
+    @DisplayName("shutdown during a backoff frees the message for its redelivery")
+    void shutdownMidBackoffReleasesOwnership() {
+        // The failure this pins is entirely invisible from the broker: no ack,
+        // no nack, nothing recorded. The message is left OWNED by a process
+        // that has exited, so when the broker redelivers it the next reader
+        // classifies it as a duplicate of a live delivery and drops it. The
+        // message then sits untouched until the reaper runs — fifteen minutes
+        // later — and it happens on every rolling deploy.
+        var slow = new Pool.Backoffs(
+                new RetryPolicy(List.of(Duration.ofSeconds(60)), Duration.ofSeconds(60), Duration.ofSeconds(60), 12),
+                new RetryPolicy(List.of(), Duration.ofSeconds(60), Duration.ofSeconds(60), 12));
+        pool = new Pool(new Pool.Config("POOL-A", 4, 0), slow, mediator, broker, metrics, Clock.systemUTC());
+        mediator.answer("m1", new MediationOutcome.ErrorProcess(500, 30, "boom"));
+
+        var queued = immediate("m1");
+        assertThat(broker.tracker.register(inFlight(queued))).isEqualTo(InFlightTracker.Registration.NEW);
+        pool.submit(queued);
+        // Failed once and now parked in the 60-second backoff.
+        await(() -> mediator.attempts("m1") == 1);
+        assertThat(broker.tracker.size()).isOne();
+
+        pool.close();
+
+        // Nothing was said to the broker — correct, the message was never
+        // acknowledged, so the broker's own redelivery is what brings it back.
+        assertThat(broker.acked).isEmpty();
+        assertThat(broker.nacked).isEmpty();
+        // But ownership is gone, so that redelivery is accepted as new work
+        // rather than dropped as a duplicate of a delivery no one is running.
+        assertThat(broker.tracker.size()).isZero();
+        var redelivery = new InFlightMessage("m1", "broker-m1-again", "POOL-A", "queue-1",
+                Instant.now(), Instant.now(), null, null, "receipt-m1-again", 0);
+        assertThat(broker.tracker.register(redelivery)).isEqualTo(InFlightTracker.Registration.NEW);
+    }
+
+    private static InFlightMessage inFlight(QueuedMessage message) {
+        return new InFlightMessage(message.id(), message.brokerMessageId(), "POOL-A",
+                message.queueId(), Instant.now(), Instant.now(),
+                null, null, message.receiptHandle(), 0);
     }
 
     @Test
@@ -477,18 +522,30 @@ class PoolTest {
         }
     }
 
+    /// Carries a **real** [InFlightTracker], because every one of these three
+    /// methods exists to give ownership back. Recording the call proves only
+    /// that a method ran; running the tracker proves the message is actually
+    /// free for its next delivery.
     private static final class RecordingBroker implements Broker {
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
+        final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
 
         @Override
         public void ack(QueuedMessage message) {
             acked.add(message.id());
+            tracker.remove(message.id());
         }
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
             nacked.put(message.id(), delay);
+            tracker.remove(message.id());
+        }
+
+        @Override
+        public void release(QueuedMessage message) {
+            tracker.remove(message.id());
         }
     }
 

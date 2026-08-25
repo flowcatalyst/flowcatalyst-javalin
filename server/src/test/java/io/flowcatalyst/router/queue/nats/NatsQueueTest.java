@@ -8,10 +8,13 @@ import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// [NatsQueue] behaviour that does not require a live NATS server
 /// (`docs/spec/router.md` §7.1, §7.4). Everything reachable without a
@@ -34,6 +37,36 @@ class NatsQueueTest {
     }
 
     // --- identifier -----------------------------------------------------
+
+    @Test
+    @DisplayName("a connection whose stream cannot be provisioned is closed, not stranded")
+    void failedProvisioningClosesTheConnection() {
+        // Nats.connect has already succeeded at this point, so the connection
+        // is live and nothing holds a reference to it yet. QueueFactory logs
+        // the provisioning failure and returns empty, and the reconfigure loop
+        // retries the same queue on the next config poll — so a stream name
+        // the account may not create leaks one reconnecting connection per
+        // poll, without bound, for the life of the process.
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        var boom = new IOException("no jetstream");
+
+        assertThatThrownBy(() -> NatsQueue.adopting(closed::incrementAndGet, () -> {
+            throw boom;
+        })).isSameAs(boom);
+
+        assertThat(closed.get()).isOne();
+    }
+
+    @Test
+    @DisplayName("a connection that provisions successfully stays open")
+    void successfulProvisioningKeepsTheConnection() throws Exception {
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+
+        var provisioned = NatsQueue.adopting(closed::incrementAndGet, () -> "ready");
+
+        assertThat(provisioned).isEqualTo("ready");
+        assertThat(closed.get()).isZero();
+    }
 
     @Test
     @DisplayName("identifier is stream/consumer, matching the historical Go format")

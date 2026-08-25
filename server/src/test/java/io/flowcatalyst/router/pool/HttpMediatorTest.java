@@ -184,7 +184,9 @@ class HttpMediatorTest {
         var outcome = mediator.deliver(message("msg_1", null, null), true);
 
         assertThat(outcome).isInstanceOf(MediationOutcome.ErrorProcess.class);
-        assertThat(outcome.targetUnavailable()).isEqualTo(unavailable);
+        assertThat(outcome.disposition()).isEqualTo(unavailable
+                ? MediationOutcome.Disposition.RETURN_TO_BROKER
+                : MediationOutcome.Disposition.REJECTED);
     }
 
     @ParameterizedTest(name = "HTTP {0} is a permanent error, ACKed rather than retried")
@@ -200,7 +202,7 @@ class HttpMediatorTest {
         var outcome = mediator.deliver(message("msg_1", null, null), true);
 
         assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConfig.class);
-        assertThat(outcome.targetUnavailable()).isFalse();
+        assertThat(outcome.disposition()).isNotEqualTo(MediationOutcome.Disposition.RETURN_TO_BROKER);
         assertThat(((MediationOutcome.ErrorConfig) outcome).message()).contains("misconfigured");
     }
 
@@ -225,7 +227,7 @@ class HttpMediatorTest {
         var outcome = mediator.deliver(dead, true);
 
         assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConnection.class);
-        assertThat(outcome.targetUnavailable()).isTrue();
+        assertThat(outcome.disposition()).isEqualTo(MediationOutcome.Disposition.RETURN_TO_BROKER);
     }
 
     @Test

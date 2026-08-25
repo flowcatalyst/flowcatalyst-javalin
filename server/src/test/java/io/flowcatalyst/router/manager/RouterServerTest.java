@@ -63,6 +63,10 @@ class RouterServerTest {
             public void nack(QueuedMessage message, Duration delay) {
                 nacked.add(message.id());
             }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
         };
         return new RouterManager(tracker, warnings, clock, config -> {
             var pool = new Pool(config, mediator, recording, PoolMetrics.NO_OP, clock);
@@ -300,6 +304,10 @@ class RouterServerTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public void release(QueuedMessage message) {
         }
     };
 

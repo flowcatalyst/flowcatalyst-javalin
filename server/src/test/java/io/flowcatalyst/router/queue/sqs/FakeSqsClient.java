@@ -96,7 +96,10 @@ final class FakeSqsClient implements SqsClient {
         return "sqs";
     }
 
+    boolean closed;
+
     @Override
     public void close() {
+        closed = true;
     }
 }

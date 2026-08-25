@@ -6,6 +6,9 @@ import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
 import io.flowcatalyst.router.wire.MediationOutcome;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
@@ -42,6 +45,8 @@ import java.util.concurrent.atomic.AtomicReference;
 /// what survives is the *policy* it guarded — an unexpected exception is a
 /// retry after [#UNEXPECTED_FAILURE_DELAY], not a lost message.
 public final class Pool implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(Pool.class);
 
     /// Backoff after an unexpected exception (spec constant 16). Deliberately
     /// flat: an exception we did not anticipate tells us nothing about how
@@ -248,6 +253,12 @@ public final class Pool implements AutoCloseable {
                 // No broker action: the message was never acknowledged, so
                 // the broker's own redelivery brings it back. Nacking here
                 // would race that redelivery with our own.
+                //
+                // Ownership MUST be released, though. Holding it means the
+                // redelivery we are relying on is classified as a duplicate
+                // and dropped, so the message waits for the reaper instead —
+                // fifteen minutes of nothing happening, on the shutdown path.
+                broker.release(message);
                 return;
             }
         }
@@ -501,7 +512,16 @@ public final class Pool implements AutoCloseable {
         workers.shutdown();
         try {
             if (!workers.awaitTermination(5, TimeUnit.SECONDS)) {
+                // Interrupting is not the end of it. A worker parked in a
+                // backoff wakes up owing a broker call — releasing ownership,
+                // or nacking — and returning here before it makes that call
+                // loses exactly what the interrupt was supposed to preserve.
+                // So wait for the unwind too; it is only ever the tail of a
+                // catch block, hence the far shorter grace.
                 workers.shutdownNow();
+                if (!workers.awaitTermination(2, TimeUnit.SECONDS)) {
+                    log.warn("pool {} still had workers running after shutdown", config.code());
+                }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

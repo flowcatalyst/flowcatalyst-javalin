@@ -240,6 +240,10 @@ class ReconfigureTest {
         @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
     };
 
     private static final class FakeConsumer implements Consumer {

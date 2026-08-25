@@ -22,4 +22,17 @@ public interface Broker {
     /// redelivered. Some backends ignore the delay; none may treat a nack as
     /// an ack.
     void nack(QueuedMessage message, Duration delay);
+
+    /// Gives up ownership **without touching the broker**.
+    ///
+    /// The third thing that can happen to a message, and the one that is easy
+    /// to forget: this process is done with it, but has neither delivered it
+    /// nor returned it. Shutdown mid-backoff is the case — the message was
+    /// never acknowledged, so the broker's own redelivery brings it back, and
+    /// nacking would race that redelivery with our own.
+    ///
+    /// Ownership still has to go. Holding it means the redelivery we are
+    /// relying on is classified as a duplicate and dropped, and the message
+    /// waits for the reaper instead.
+    void release(QueuedMessage message);
 }

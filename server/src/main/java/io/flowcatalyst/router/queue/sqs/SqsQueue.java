@@ -116,7 +116,28 @@ public final class SqsQueue implements Consumer {
     public static SqsQueue create(String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
         var builder = SqsClient.builder();
         regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
-        return new SqsQueue(builder.build(), queueUrl, configuredName, visibilityTimeoutSeconds, Clock.systemUTC());
+        return adopt(builder.build(), queueUrl, configuredName, visibilityTimeoutSeconds);
+    }
+
+    /// Wraps a freshly built client, closing it if the wrapping fails.
+    ///
+    /// The client owns an HTTP connection pool and its threads, and until the
+    /// constructor returns nothing holds a reference to it. A queue URL the
+    /// constructor rejects would therefore strand one — and [QueueFactory]
+    /// turns that throw into an empty `Optional` and lets the reconfigure
+    /// loop retry the same queue on the next config poll, so the strand
+    /// repeats for the life of the process rather than happening once.
+    static SqsQueue adopt(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
+        try {
+            return new SqsQueue(client, queueUrl, configuredName, visibilityTimeoutSeconds, Clock.systemUTC());
+        } catch (RuntimeException e) {
+            try {
+                client.close();
+            } catch (RuntimeException closing) {
+                e.addSuppressed(closing);
+            }
+            throw e;
+        }
     }
 
     /// Extracts the AWS region from an SQS queue URL whose host is
