@@ -1629,6 +1629,8 @@ export type OAuthClientResponse = {
     pkceRequired: boolean;
     portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
+    previousSecretExpiresAt?: string;
+    previousSecretLastUsedAt?: string;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
     updatedAt: string;
@@ -3904,6 +3906,8 @@ export type OAuthClientResponseWritable = {
     pkceRequired: boolean;
     portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
+    previousSecretExpiresAt?: string;
+    previousSecretLastUsedAt?: string;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
     updatedAt: string;
