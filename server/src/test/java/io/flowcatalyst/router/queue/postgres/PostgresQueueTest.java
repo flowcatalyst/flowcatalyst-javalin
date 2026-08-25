@@ -90,6 +90,43 @@ class PostgresQueueTest {
         }
     }
 
+    /// Waits out a one-second visibility window, with headroom for its
+    /// whole-second granularity. Real time, because the
+    /// window is enforced by the database's clock rather than anything the
+    /// test can advance.
+    private static void waitForVisibilityToLapse() {
+        try {
+            Thread.sleep(Duration.ofMillis(2_500));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+        }
+    }
+
+    /// The recorded reason a row was rejected, or null when it was not.
+    private static String errorMessageOf(String queueName, String id) {
+        return columnOf(queueName, id, "error_message");
+    }
+
+    /// The stored payload — kept even when unparseable, because it is the
+    /// only evidence of why it was.
+    private static String payloadOf(String queueName, String id) {
+        return columnOf(queueName, id, "payload");
+    }
+
+    private static String columnOf(String queueName, String id, String column) {
+        try (Connection conn = DS.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT " + column + " FROM queue_messages WHERE queue_name = ? AND id = ?")) {
+            ps.setString(1, queueName);
+            ps.setString(2, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     @Test
     @DisplayName("a visible message is claimed on poll, with a receipt handle and the broker id set")
     void claimAndPoll() throws InterruptedException {
@@ -129,14 +166,19 @@ class PostgresQueueTest {
         String id = "m-" + UUID.randomUUID();
         insertNowVisible(queue, id, null, message(id, null));
 
-        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(1))) {
+        // visible_at is whole unix seconds, so a one-second window is a coin
+        // flip: a claim at X.9s sets visible_at to X+1, and an "immediate"
+        // re-poll a few milliseconds later can already be in second X+1 and
+        // see it as visible. Three seconds puts the invisibility assertion
+        // comfortably inside the window whatever the sub-second phase.
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(3))) {
             var first = (Consumer.PollResult.Delivered) consumer.poll(10);
             assertThat(first.messages()).hasSize(1);
 
             var immediate = (Consumer.PollResult.Delivered) consumer.poll(10);
             assertThat(immediate.messages()).as("still invisible, not yet lapsed").isEmpty();
 
-            Thread.sleep(1500);
+            Thread.sleep(3500);
 
             var afterLapse = (Consumer.PollResult.Delivered) consumer.poll(10);
             assertThat(afterLapse.messages()).as("visibility lapsed, redelivered").hasSize(1);
@@ -207,27 +249,94 @@ class PostgresQueueTest {
     }
 
     @Test
-    @DisplayName("a malformed payload fails the whole poll (Q17) and the row stays poisoned-claimed")
-    void malformedPayloadFailsTheWholePoll() throws InterruptedException {
+    @DisplayName("a malformed payload is marked errored, and the rest of the batch still delivers")
+    void malformedPayloadIsMarkedErrored() throws InterruptedException {
+        // Q17 ruled (owner, 2026-08-25). Go fails the WHOLE poll here, and the
+        // row is already claimed — so it re-claims and re-fails forever and
+        // every message behind it is never delivered. One bad row would stop
+        // the queue permanently.
         String queue = freshQueue();
         String goodId = "good-" + UUID.randomUUID();
         String badId = "bad-" + UUID.randomUUID();
         long now = Instant.now().getEpochSecond();
-        // Distinct groups (COALESCE(group,id)) so both are eligible in the same poll.
+        // Distinct groups (COALESCE(group,id)) so both are eligible in one poll.
         insert(queue, goodId, null, io.flowcatalyst.platform.shared.json.Json.write(message(goodId, "")), now, now);
-        insert(queue, badId, null, "{not-json", now, now + 1); // sorts after goodId by (created_at, id)
+        insert(queue, badId, null, "{not-json", now, now + 1);
 
         try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
-            assertThatThrownBy(() -> consumer.poll(10))
-                    .isInstanceOf(PostgresQueueException.class)
-                    .hasMessageContaining(badId);
+            var delivered = (Consumer.PollResult.Delivered) consumer.poll(10);
 
-            // Both rows were claimed by the single claiming UPDATE before the
-            // malformed payload was found, so neither is returned by a
-            // following poll until visibility lapses again — the poison
-            // behaviour the spec flags as Q17.
+            // The good message is unaffected by its neighbour being unusable.
+            assertThat(delivered.messages()).singleElement()
+                    .extracting(QueuedMessage::id).isEqualTo(goodId);
+            assertThat(errorMessageOf(queue, badId))
+                    .as("the failure is recorded on the row, not just logged")
+                    .isNotNull();
+            // Kept, not deleted: the payload is the only evidence of why it
+            // was malformed.
+            assertThat(payloadOf(queue, badId)).isEqualTo("{not-json");
+        }
+    }
+
+    @Test
+    @DisplayName("an errored row is never claimed again, however long the queue runs")
+    void erroredRowIsNeverClaimedAgain() throws InterruptedException {
+        String queue = freshQueue();
+        String badId = "bad-" + UUID.randomUUID();
+        long past = Instant.now().getEpochSecond() - 3600;
+        insert(queue, badId, null, "{not-json", past, past);
+
+        // A one-second visibility, waited out, so the row really is eligible
+        // again on the second poll. That isolates error_at as the only thing
+        // keeping it out; with the default visibility the test would pass
+        // whether or not the guard existed. (Zero does not work: the spec
+        // substitutes 30s for it.) The wait is the database's clock, which is
+        // not injectable, so it is a real one.
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(1))) {
+            consumer.poll(10);
+            waitForVisibilityToLapse();
+
+            // Asserting "no message delivered" would prove nothing: a
+            // re-claimed malformed row is marked and skipped, so it yields no
+            // message either way. receive_count is what actually differs —
+            // it counts claims, and a poison loop increments it forever.
+            var second = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(second.messages()).isEmpty();
+            assertThat(columnOf(queue, badId, "receive_count"))
+                    .as("an errored row must never be claimed a second time")
+                    .isEqualTo("1");
+            assertThat(rowCount(queue, badId)).isOne();
+        }
+    }
+
+    @Test
+    @DisplayName("an errored row does not hold back its own message group")
+    void erroredRowDoesNotBlockItsGroup() throws InterruptedException {
+        // Ordering holds back later siblings behind an earlier one. If an
+        // errored row still counted as an earlier sibling, marking it would
+        // stop the queue in a subtler way than the poison loop did.
+        String queue = freshQueue();
+        String group = "grp-" + UUID.randomUUID();
+        String badId = "a-bad-" + UUID.randomUUID();
+        String goodId = "b-good-" + UUID.randomUUID();
+        long now = Instant.now().getEpochSecond();
+        insert(queue, badId, group, "{not-json", now, now);
+        insert(queue, goodId, group, io.flowcatalyst.platform.shared.json.Json.write(message(goodId, group)), now, now + 1);
+
+        // Waited out again, so the errored head is visible once more and
+        // would still count as an earlier sibling — holding the group back —
+        // unless error_at excludes it from the sibling check too.
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(1))) {
+            consumer.poll(10); // marks the bad head errored
+            waitForVisibilityToLapse();
+
             var following = (Consumer.PollResult.Delivered) consumer.poll(10);
-            assertThat(following.messages()).isEmpty();
+            assertThat(following.messages())
+                    .as("the good sibling must not be held back by an errored head")
+                    .singleElement()
+                    .extracting(QueuedMessage::id).isEqualTo(goodId);
+            // And the errored head itself was not re-claimed to get there.
+            assertThat(columnOf(queue, badId, "receive_count")).isEqualTo("1");
         }
     }
 

@@ -708,9 +708,9 @@ Prometheus rather than busy-but-suppressed. **Q53.**
     **Decision needed before the ordered-group code is written.** Either (a) the Java scheduler propagates `dispatchMode` and `poolCode` onto the published message, which activates the router's ordered path and per-pool routing and makes the router half of the Q1 ruling live and load-bearing; or (b) it does not, ordering stays a platform-side concern, and the router's ordered machinery applies only to other producers — in which case the Q1 router-side ruling (BLOCK_ON_ERROR ACKs its queued siblings) is unreachable for dispatch jobs and should say so. (a) appears to be the original intent, since both fields are modelled on both sides and only the publish step drops them; but it is a behaviour change and it is the owner's call. See §2.6.
 
 
-17. **Every submitted message resolves exactly once** (no loss, no double
-    ack) under concurrent submit across both paths.
-    (`guardrail_test.go:167-202`)
+17. **RULED (owner, 2026-08-25): mark the row as errored.** Go fails the *whole poll* on a malformed payload, and the row is already claimed at that point — so it re-claims and re-fails every time its visibility lapses, and every message behind it is never delivered. One bad row stops a Postgres queue permanently. Java instead records the failure on the row (`error_at`, `error_message`, both additive columns) and carries on with the rest of the batch; errored rows are excluded from the claim **and** from the ordering sibling-check, so they neither redeliver nor hold their group back. Marking beats deleting — which is what SQS and NATS effectively do — because the payload is the only evidence of *why* it was malformed. Rollback note: Go's claim ignores `error_at`, so a rollback resumes the poison behaviour on any row Java has marked.
+
+
 18. **`HighPriority` never reorders anything.** (`pool_test.go:11-32`)
 
 ### 3.7 Ordering guarantees (and non-guarantees)

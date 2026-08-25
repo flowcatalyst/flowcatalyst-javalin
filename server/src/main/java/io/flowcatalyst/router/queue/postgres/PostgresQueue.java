@@ -54,11 +54,13 @@ public final class PostgresQueue implements Consumer {
                 FROM queue_messages m
                WHERE m.queue_name = ?
                  AND m.visible_at <= ?
+                 AND m.error_at IS NULL
                  AND NOT EXISTS (
                        SELECT 1 FROM queue_messages e
                         WHERE e.queue_name = m.queue_name
                           AND COALESCE(e.message_group_id, e.id) = COALESCE(m.message_group_id, m.id)
                           AND e.visible_at <= ?
+                          AND e.error_at IS NULL
                           AND (e.created_at < m.created_at
                                OR (e.created_at = m.created_at AND e.id < m.id))
                      )
@@ -74,6 +76,15 @@ public final class PostgresQueue implements Consumer {
              WHERE t.queue_name = ?
                AND t.id = claimed.id
              RETURNING t.id, t.payload
+            """;
+
+    private static final String MARK_ERRORED_SQL = """
+            UPDATE queue_messages
+               SET error_at       = ?,
+                   error_message  = ?,
+                   receipt_handle = NULL
+             WHERE queue_name = ?
+               AND id = ?
             """;
 
     private final DataSource dataSource;
@@ -118,6 +129,15 @@ public final class PostgresQueue implements Consumer {
                     PRIMARY KEY (queue_name, id)
                 )
                 """;
+        // Additive, so a rollback to Go is unaffected: its CREATE TABLE IF
+        // NOT EXISTS leaves these alone and its claim query simply ignores
+        // them — which does mean Go would re-claim an errored row and poison
+        // itself again, the behaviour Java is fixing.
+        final String addErrorColumns = """
+                ALTER TABLE queue_messages
+                    ADD COLUMN IF NOT EXISTS error_at      BIGINT,
+                    ADD COLUMN IF NOT EXISTS error_message TEXT
+                """;
         final String createIndex = """
                 CREATE INDEX IF NOT EXISTS idx_queue_visible
                     ON queue_messages (queue_name, visible_at, message_group_id)
@@ -125,10 +145,47 @@ public final class PostgresQueue implements Consumer {
         try (Connection conn = dataSource.getConnection();
              Statement st = conn.createStatement()) {
             st.execute(createTable);
+            st.execute(addErrorColumns);
             st.execute(createIndex);
         } catch (SQLException e) {
             throw new PostgresQueueException("failed to initialise queue_messages schema", e);
         }
+    }
+
+    /// Records a row as unusable and takes it out of circulation, without
+    /// deleting it.
+    ///
+    /// The payload is kept deliberately: it is the only evidence of *why* the
+    /// message was malformed, and a queue that silently discards what it
+    /// cannot parse gives an operator nothing to work from. The receipt
+    /// handle is cleared so the row does not look claimed, and `error_at`
+    /// keeps it out of every future claim.
+    ///
+    /// Best-effort by design. If the marking itself fails, the row keeps its
+    /// pushed-out visibility and will be retried later — the same message
+    /// arriving twice is far better than a poll that dies and takes the whole
+    /// batch with it.
+    private void markErrored(String id, Exception cause) {
+        log.error("queue {}: message {} has a malformed payload; marking it errored and skipping it",
+                queueName, id, cause);
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(MARK_ERRORED_SQL)) {
+            ps.setLong(1, Instant.now().getEpochSecond());
+            ps.setString(2, truncate(cause.getMessage()));
+            ps.setString(3, queueName);
+            ps.setString(4, id);
+            ps.executeUpdate();
+        } catch (Exception e) {
+            log.warn("queue {}: could not mark message {} as errored", queueName, id, e);
+        }
+    }
+
+    /// Keeps a parser's message from becoming an unbounded column value.
+    private static String truncate(String message) {
+        if (message == null) {
+            return "malformed payload";
+        }
+        return message.length() <= 1000 ? message : message.substring(0, 1000);
     }
 
     @Override
@@ -168,15 +225,19 @@ public final class PostgresQueue implements Consumer {
                     try {
                         message = Json.read(payload, Message.class);
                     } catch (JsonProcessingException e) {
-                        // TODO(Q17, docs/spec/router.md §7.3/§13): a malformed payload
-                        // fails the WHOLE poll here, matching the Go behaviour exactly
-                        // (SQS acks a malformed message away; NATS terms it). The row
-                        // above is already claimed — visible_at pushed out, receipt set
-                        // — so it silently re-claims and re-fails every time its
-                        // visibility lapses: a poison message the queue never sheds.
-                        // Owner has not ruled on ack/park-instead for Postgres.
-                        throw new PostgresQueueException(
-                                "malformed payload for message " + id + " on queue " + queueName, e);
+                        // Q17 RULED (owner, 2026-08-25): mark the row as errored
+                        // and carry on with the rest of the batch.
+                        //
+                        // Go instead fails the whole poll, and the row is already
+                        // claimed at this point — so it re-claims and re-fails every
+                        // time its visibility lapses, and every message behind it is
+                        // never delivered. One bad row stops the queue permanently.
+                        //
+                        // Marking beats deleting (SQS acks a malformed message away,
+                        // NATS terms it): the payload stays for inspection, which is
+                        // the only way to find out why it was malformed.
+                        markErrored(id, e);
+                        continue;
                     }
                     messages.add(QueuedMessage.of(message, id, receipt + ":" + id, queueName));
                 }
