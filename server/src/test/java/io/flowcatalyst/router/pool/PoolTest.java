@@ -315,6 +315,60 @@ class PoolTest {
         mediator.unblock();
     }
 
+    @Test
+    @DisplayName("a resize changes the limit that is actually enforced")
+    void resizeRaisesTheEnforcedLimit() {
+        // `updateConcurrency` returning true says nothing about whether the
+        // pool then runs that many — which is all this was asserting before.
+        // The semaphore is swapped wholesale rather than resized, so what
+        // needs pinning is that new acquirers meet the NEW ceiling while the
+        // workers holding permits from the old one are unaffected.
+        mediator.block();
+        var p = pool(2, 0);
+        IntStream.range(0, 12).forEach(i -> p.submit(immediate("m" + i)));
+        await(() -> mediator.inFlight.get() == 2);
+
+        assertThat(p.updateConcurrency(5)).isTrue();
+
+        // These twelve were submitted BEFORE the resize, so their workers are
+        // already parked waiting for a permit. That is the whole point: a
+        // resize the backlog cannot see is a resize that does not help the
+        // situation an operator raises concurrency to fix.
+        await(() -> mediator.inFlight.get() == 5);
+        sleepBriefly();
+        assertThat(mediator.inFlight.get())
+                .as("the new limit governs the messages already waiting, not just future ones")
+                .isEqualTo(5);
+        mediator.unblock();
+    }
+
+    @Test
+    @DisplayName("concurrency settles to the new limit once the old permits are gone")
+    void resizeSettlesToTheNewLimit() {
+        // Shrinking cannot evict work already running, so "settles to n" is a
+        // claim about what happens AFTER those finish — the half that a test
+        // taken at the moment of the resize would miss entirely.
+        mediator.block();
+        var p = pool(6, 0);
+        IntStream.range(0, 6).forEach(i -> p.submit(immediate("old" + i)));
+        await(() -> mediator.inFlight.get() == 6);
+
+        assertThat(p.updateConcurrency(2)).isTrue();
+        mediator.unblock();
+        // Every permit on the old semaphore is now released.
+        await(() -> broker.acked.size() == 6);
+
+        mediator.block();
+        IntStream.range(0, 10).forEach(i -> p.submit(immediate("new" + i)));
+
+        await(() -> mediator.inFlight.get() == 2);
+        sleepBriefly();
+        assertThat(mediator.inFlight.get())
+                .as("with the old permits gone, the new limit is the only one left")
+                .isEqualTo(2);
+        mediator.unblock();
+    }
+
     // ── Ordering ────────────────────────────────────────────────────────
 
     @Test

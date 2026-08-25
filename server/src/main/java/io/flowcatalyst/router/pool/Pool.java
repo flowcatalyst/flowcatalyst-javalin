@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /// One processing pool: bounded concurrency, a rate limit, and delivery of
 /// every message routed to it (`docs/spec/router.md` §3.4, §3.5).
@@ -109,10 +108,9 @@ public final class Pool implements AutoCloseable {
     private final OrderedGroups groups = new OrderedGroups();
     private final Clock clock;
 
-    /// Replaced wholesale by [#updateConcurrency]. A worker holding a permit
-    /// keeps releasing to the semaphore it acquired from, so a resize never
-    /// releases a permit into the wrong one.
-    private final AtomicReference<Semaphore> slots;
+    /// Resized in place rather than replaced — see [ResizableSemaphore] for
+    /// why swapping the instance strands everyone already waiting on it.
+    private final ResizableSemaphore slots;
 
     /// IMMEDIATE messages awaiting a slot or sitting in a backoff. Ordered
     /// messages are counted by [OrderedGroups#buffered], so there is one
@@ -146,7 +144,7 @@ public final class Pool implements AutoCloseable {
         this.clock = clock;
         this.flushes = new GroupFlushRegistry(clock);
         this.limiter = new RateLimiter(config.requestsPerMinute());
-        this.slots = new AtomicReference<>(new Semaphore(config.concurrency()));
+        this.slots = new ResizableSemaphore(config.concurrency());
     }
 
     public Config config() {
@@ -229,7 +227,7 @@ public final class Pool implements AutoCloseable {
     private void runImmediate(QueuedMessage initial) {
         var message = initial;
         while (true) {
-            var semaphore = slots.get();
+            var semaphore = slots;
             try {
                 semaphore.acquire();
             } catch (InterruptedException e) {
@@ -279,7 +277,7 @@ public final class Pool implements AutoCloseable {
                 return;
             }
             var message = head.get();
-            var semaphore = slots.get();
+            var semaphore = slots;
             try {
                 semaphore.acquire();
             } catch (InterruptedException e) {
@@ -510,9 +508,12 @@ public final class Pool implements AutoCloseable {
         return policy.delayBefore(message.attempts() + 1, outcome.delaySeconds());
     }
 
-    /// Resizes concurrency. Workers already holding a permit keep it on the
-    /// old semaphore, so effective concurrency during the change is at most
-    /// `in-flight + n`, settling to `n`.
+    /// Resizes concurrency, for the messages already queued as much as for
+    /// the ones still to come.
+    ///
+    /// Raising takes effect at once. Lowering cannot evict a delivery already
+    /// running, so it settles to `n` as those finish rather than the instant
+    /// it is called; it never exceeds the higher of the two in the meantime.
     ///
     /// @return false when `n` is not positive — a zero-capacity pool would
     ///         accept messages and never deliver them
@@ -520,7 +521,7 @@ public final class Pool implements AutoCloseable {
         if (n < 1) {
             return false;
         }
-        slots.set(new Semaphore(n));
+        slots.resize(n);
         return true;
     }
 
