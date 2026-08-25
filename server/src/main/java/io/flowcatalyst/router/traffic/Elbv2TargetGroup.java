@@ -29,13 +29,25 @@ public final class Elbv2TargetGroup implements TargetGroup, AutoCloseable {
         this.targetGroupArn = Objects.requireNonNull(targetGroupArn, "targetGroupArn");
     }
 
-    /// Builds a client from the SDK's default region and credential chain.
+    /// Builds a client for `region`, or the SDK's default region chain when
+    /// it is blank.
+    ///
+    /// The region has to be honoured explicitly: the default chain resolves
+    /// from the environment or instance metadata, which is the region the
+    /// **instance** is in — not necessarily the one holding the target group.
+    /// Get that wrong and every registration call goes to the wrong region's
+    /// endpoint, so the instance never joins the balancer and nothing says
+    /// why.
     ///
     /// Adopts the client so a failure constructing this wrapper closes it
     /// rather than stranding its connection pool — the same shape that leaked
     /// in the queue factories.
-    public static Elbv2TargetGroup create(String targetGroupArn) {
-        var client = ElasticLoadBalancingV2Client.builder().build();
+    public static Elbv2TargetGroup create(String targetGroupArn, String region) {
+        var builder = ElasticLoadBalancingV2Client.builder();
+        if (region != null && !region.isBlank()) {
+            builder.region(software.amazon.awssdk.regions.Region.of(region.trim()));
+        }
+        var client = builder.build();
         try {
             return new Elbv2TargetGroup(client, targetGroupArn);
         } catch (RuntimeException e) {

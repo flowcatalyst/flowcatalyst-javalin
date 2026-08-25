@@ -8,6 +8,9 @@ import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.RouterServer;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
+import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
+import io.flowcatalyst.router.lifecycle.LifecycleLoops;
+import io.flowcatalyst.router.lifecycle.StallDetector;
 import io.flowcatalyst.router.observability.WarningNotifier;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
@@ -55,6 +58,9 @@ public final class Router implements AutoCloseable {
     private final WarningStore warnings;
     private final Traffic traffic;
 
+    /// Held so shutdown stops the housekeeping threads.
+    private final LifecycleLoops housekeeping;
+
     /// Held only so shutdown can flush it — the last notices an instance
     /// sends are the ones most likely to explain why it is going away.
     private final Warnings notifier;
@@ -72,7 +78,7 @@ public final class Router implements AutoCloseable {
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
-                   Warnings notifier) {
+                   Warnings notifier, LifecycleLoops housekeeping) {
         this.server = server;
         this.manager = manager;
         this.tracker = tracker;
@@ -83,6 +89,7 @@ public final class Router implements AutoCloseable {
         this.electionConfig = electionConfig;
         this.redisClient = redisClient;
         this.notifier = notifier;
+        this.housekeeping = housekeeping;
         this.poolMetrics.putAll(metrics);
     }
 
@@ -170,11 +177,29 @@ public final class Router implements AutoCloseable {
             }
         });
 
+        // Housekeeping. Built and tested on 2026-08-25 and then wired to
+        // nothing until 2026-08-26, which meant the stall detector never ran,
+        // broker stats never refreshed, and — the one that matters most — the
+        // reaper that recovers ownership of messages a backend has stopped
+        // redelivering never ran either. Every "the reaper picks it up"
+        // reassurance in this codebase depended on this call existing.
+        var stalls = new StallDetector(tracker, warningSink,
+                queueId -> manager.consumer(queueId).orElse(null),
+                StallDetector.Config.REPORT_ONLY, clock);
+        var brokerStats = new BrokerStatsCache(clock);
+        var housekeeping = new LifecycleLoops();
+        housekeeping.start(LifecycleLoops.standard(stalls, tracker, warningSink,
+                () -> brokerStats.refresh(manager.consumerNames().stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                queueId -> queueId,
+                                queueId -> () -> manager.consumer(queueId)
+                                        .flatMap(io.flowcatalyst.router.queue.Consumer::metrics))))));
+
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
-                redisClient, metrics, notifier);
+                redisClient, metrics, notifier, housekeeping);
     }
 
     private static LeaderElection.Config electionConfig(Env env) {
@@ -261,7 +286,7 @@ public final class Router implements AutoCloseable {
                 : AlbTraffic.DEFAULT_DRAIN_TIMEOUT;
         return new AlbTraffic(
                 new AlbTraffic.Config(env.albInstanceIp(), env.albPort(), drainTimeout),
-                Elbv2TargetGroup.create(env.albTargetGroupArn()),
+                Elbv2TargetGroup.create(env.albTargetGroupArn(), env.albRegion()),
                 clock);
     }
 
@@ -296,6 +321,9 @@ public final class Router implements AutoCloseable {
 
     @Override
     public void close() {
+        // Housekeeping first: a reaper or stall sweep firing while the
+        // consumers are draining would report the drain as a stall.
+        housekeeping.close();
         server.close();
         // Deregister first and let the balancer drain, THEN release the
         // client that did it.
