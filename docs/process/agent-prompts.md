@@ -3,7 +3,7 @@
 These are the prompts used to port units with fresh agents, so a new
 session can run the same pipeline identically. Substitute `<aggregate>`,
 `<Aggregate>`, `<path-prefix>`, `<Go package>`. Always:
-JAVA_HOME=$(mise where graalvm),
+JAVA_HOME=$(mise where java),
 Maven from the repo root, `-pl server` without `-am` (other modules are in
 `~/.m2`; `mvn -q -B -N install` puts the parent pom there,
 `mvn -q -B -pl usecase,sdk install` the libraries), never edit poms or
