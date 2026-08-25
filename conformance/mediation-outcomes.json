@@ -17,6 +17,7 @@
       "spec": "§6 outcome table row 1",
       "given": {"kind": "response", "status": 200, "body": ""},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
@@ -24,18 +25,21 @@
       "why": "A target that answers 200 with HTML has still accepted the message.",
       "given": {"kind": "response", "status": 200, "body": "<html>ok</html>"},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
       "id": "success-json-without-ack",
       "given": {"kind": "response", "status": 200, "body": "{\"id\":\"abc\"}"},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
       "id": "success-ack-true",
       "given": {"kind": "response", "status": 200, "body": "{\"ack\":true}"},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
@@ -44,6 +48,7 @@
       "why": "201 and 202 mean different things to an operator reading a trace.",
       "given": {"kind": "response", "status": 201, "body": ""},
       "expect": {"outcome": "Success", "statusCode": 201, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"},
       "divergence": {
         "correct": "java",
@@ -57,12 +62,14 @@
       "why": "The target accepted the request and declined the work: not a failure, so the breaker must not count it.",
       "given": {"kind": "response", "status": 200, "body": "{\"ack\":false}"},
       "expect": {"outcome": "Deferred", "statusCode": 200, "delaySeconds": 0,
+                 "warning": "none",
                  "disposition": "RETRY_IN_PLACE", "breaker": "neither", "metric": "transient"}
     },
     {
       "id": "deferred-ack-false-with-delay",
       "given": {"kind": "response", "status": 200, "body": "{\"ack\":false,\"delaySeconds\":15}"},
       "expect": {"outcome": "Deferred", "statusCode": 200, "delaySeconds": 15,
+                 "warning": "none",
                  "disposition": "RETRY_IN_PLACE", "breaker": "neither", "metric": "transient"}
     },
     {
@@ -70,12 +77,14 @@
       "spec": "eff2a29, Q54",
       "given": {"kind": "response", "status": 200, "body": "{\"ack\":true,\"flushGroup\":true}"},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 0, "flushGroup": true,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
       "id": "success-flush-group-with-delay",
       "given": {"kind": "response", "status": 200, "body": "{\"ack\":true,\"flushGroup\":true,\"delaySeconds\":20}"},
       "expect": {"outcome": "Success", "statusCode": 200, "delaySeconds": 20, "flushGroup": true,
+                 "warning": "none",
                  "disposition": "DELIVERED", "breaker": "success", "metric": "success"}
     },
     {
@@ -83,24 +92,28 @@
       "why": "The request is wrong and will stay wrong. Breaker SUCCESS, which is counter-intuitive and right: a breaker exists to detect an unhealthy TARGET, and a target rejecting a bad request promptly is working perfectly. Counting it a failure would trip the circuit on a client bug and stop delivery to a healthy endpoint.",
       "given": {"kind": "response", "status": 400, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 400,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
     },
     {
       "id": "config-error-401",
       "given": {"kind": "response", "status": 401, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 401,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
     },
     {
       "id": "config-error-403",
       "given": {"kind": "response", "status": 403, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 403,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
     },
     {
       "id": "config-error-404",
       "given": {"kind": "response", "status": 404, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 404,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
     },
     {
@@ -108,6 +121,7 @@
       "why": "The one 5xx that is permanent. A target answering \"not implemented\" will not implement it part-way through a retry schedule, so treating it as transient is an unbounded retry that cannot succeed. Breaker success for the same reason a 404 is one: the endpoint answered, so it is healthy — it is the request it cannot serve.",
       "given": {"kind": "response", "status": 501, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 501,
+                 "warning": "CRITICAL",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"},
       "history": {
         "found": "This corpus. Java was letting 501 fall into the generic `status >= 500` branch and retrying a target that had said it does not implement the hook.",
@@ -118,6 +132,7 @@
       "id": "config-error-other-4xx",
       "given": {"kind": "response", "status": 418, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 418,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
     },
     {
@@ -125,12 +140,14 @@
       "why": "429 is a healthy target asking us to slow down. Neither a breaker success nor a failure.",
       "given": {"kind": "response", "status": 429, "body": "", "headers": {"Retry-After": "12"}},
       "expect": {"outcome": "RateLimited", "statusCode": 429, "delaySeconds": 12,
+                 "warning": "none",
                  "disposition": "RETRY_IN_PLACE", "breaker": "neither", "metric": "rateLimited"}
     },
     {
       "id": "rate-limited-without-retry-after",
       "given": {"kind": "response", "status": 429, "body": ""},
       "expect": {"outcome": "RateLimited", "statusCode": 429, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETRY_IN_PLACE", "breaker": "neither", "metric": "rateLimited"}
     },
     {
@@ -138,6 +155,7 @@
       "why": "An HTTP-date Retry-After is legal and unparsed here; falling back beats throwing.",
       "given": {"kind": "response", "status": 429, "body": "", "headers": {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}},
       "expect": {"outcome": "RateLimited", "statusCode": 429, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETRY_IN_PLACE", "breaker": "neither", "metric": "rateLimited"}
     },
     {
@@ -145,6 +163,7 @@
       "why": "The target ran the message and failed on it. Retried, then given up on — the fault is likely the message.",
       "given": {"kind": "response", "status": 500, "body": ""},
       "expect": {"outcome": "ErrorProcess", "statusCode": 500, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "REJECTED", "breaker": "failure", "metric": "transient"}
     },
     {
@@ -152,18 +171,21 @@
       "why": "502/503/504 say the target is not ready, not that the message is bad, so the group goes back rather than being dropped.",
       "given": {"kind": "response", "status": 502, "body": ""},
       "expect": {"outcome": "ErrorProcess", "statusCode": 502, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "transient"}
     },
     {
       "id": "process-error-503-returns-to-broker",
       "given": {"kind": "response", "status": 503, "body": ""},
       "expect": {"outcome": "ErrorProcess", "statusCode": 503, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "transient"}
     },
     {
       "id": "process-error-504-returns-to-broker",
       "given": {"kind": "response", "status": 504, "body": ""},
       "expect": {"outcome": "ErrorProcess", "statusCode": 504, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "transient"}
     },
     {
@@ -171,6 +193,7 @@
       "why": "Neither implementation may claim the message was rejected when it cannot tell whether it was even seen.",
       "given": {"kind": "response", "status": 199, "body": ""},
       "expect": {"outcome": "ErrorConnection", "statusCode": 0, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "failure"},
       "divergence": {
         "go": "ErrorProcess(0, 30) via the default arm — Go's client surfaces the 1xx as a final status (verified at 819b390)",
@@ -185,6 +208,7 @@
       "why": "A redirect the client did not follow is a misconfigured target, not a transient fault.",
       "given": {"kind": "response", "status": 301, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 301,
+                 "warning": "ERROR",
                  "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"},
       "divergence": {
         "correct": "java",
@@ -198,6 +222,7 @@
       "why": "Nothing was learned about the message, so it must go back to the broker rather than be dropped.",
       "given": {"kind": "unreachableTarget"},
       "expect": {"outcome": "ErrorConnection", "statusCode": 0, "delaySeconds": 30,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "failure", "metric": "failure"}
     },
     {
@@ -205,19 +230,32 @@
       "why": "Silently undeliverable: no host to call, and retrying cannot invent one.",
       "given": {"kind": "malformedTargetUrl"},
       "expect": {"outcome": "ErrorConfig", "statusCode": 0,
-                 "disposition": "UNDELIVERABLE", "breaker": "none", "metric": "failure"}
+                 "warning": "ERROR",
+                 "disposition": "UNDELIVERABLE", "breaker": "none", "metric": "failure"},
+      "divergence": {
+        "correct": "java",
+        "basis": "This path ACK-drops every message routed through it, permanently, and it is a configuration mistake an operator can actually fix — a target URL with no host. That is precisely the case for telling someone. Go warns on 400/401/403/404/501 for exactly this reason and then does not warn here, which reads as an omission rather than a decision: the pre-flight rejections are MORE clearly configuration errors than a 404 is, not less.",
+        "go": "returns ErrorConfig silently — no warning service call (verified at 819b390)"
+      }
     },
     {
       "id": "unsupported-mediation-type",
       "given": {"kind": "unsupportedMediationType"},
       "expect": {"outcome": "ErrorConfig", "statusCode": 0,
-                 "disposition": "UNDELIVERABLE", "breaker": "none", "metric": "failure"}
+                 "warning": "ERROR",
+                 "disposition": "UNDELIVERABLE", "breaker": "none", "metric": "failure"},
+      "divergence": {
+        "correct": "java",
+        "basis": "This path ACK-drops every message routed through it, permanently, and it is a configuration mistake an operator can actually fix — a mediation type that is not HTTP. That is precisely the case for telling someone. Go warns on 400/401/403/404/501 for exactly this reason and then does not warn here, which reads as an omission rather than a decision: the pre-flight rejections are MORE clearly configuration errors than a 404 is, not less.",
+        "go": "returns ErrorConfig silently — no warning service call (verified at 819b390)"
+      }
     },
     {
       "id": "breaker-open-makes-no-call",
       "why": "No call was made, so there is nothing to say about the target that the breaker is not already saying: no metric, and the group returns rather than being dropped.",
       "given": {"kind": "breakerOpen"},
       "expect": {"outcome": "CircuitOpen", "statusCode": 0,
+                 "warning": "none",
                  "disposition": "RETURN_TO_BROKER", "breaker": "neither", "metric": "none",
                  "httpCallMade": false}
     }

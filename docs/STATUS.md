@@ -153,12 +153,14 @@ router before the listeners bind and drains it after they stop.
 
 Ordered by what unblocks the most:
 
-1. **Java warning service.** Two `TODO(warnings)` in `HttpMediator` (3xx and
-   501) plus the `WarningStore` auto-acknowledge question. Go raises
-   ERROR/CRITICAL operator warnings from `mediateOnce` that Java silently
-   drops — an ACK-drop nobody is told about is a silent loss. Go is **ahead**
-   here; its behaviour is the specification. Unblocks a `warning` column in
-   the conformance corpus.
+1. ~~**Java warning service.**~~ **DONE 2026-08-25.** `HttpMediator` takes a
+   `Warnings` collaborator and every permanent ACK-drop now raises one; the
+   corpus asserts a `warning` column on all 28 cases. `Warnings` moved from
+   `manager` to `observability` beside its implementation — the raisers are
+   spread across three packages and the contract should not sit inside one
+   caller's. **Still open:** the `WarningStore.AUTO_ACKNOWLEDGE_AGE` question
+   (constant 45) — deliberately left, it needs an owner ruling, not a silent
+   fix.
 2. **ELBv2 `TargetGroup`** — the one `TODO(port)` in `Router.java:242`.
    `AlbTraffic`'s policy is ported and tested; only the AWS client is missing.
 3. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.

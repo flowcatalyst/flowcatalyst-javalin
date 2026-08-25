@@ -60,6 +60,8 @@ class MediationConformanceTest {
     private final Map<String, String> responseHeaders = new ConcurrentHashMap<>();
     private final AtomicInteger calls = new AtomicInteger();
 
+    private final List<String> raised = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private BreakerRegistry breakers;
     private HttpMediator mediator;
 
@@ -70,7 +72,8 @@ class MediationConformanceTest {
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
         breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, FIXED);
-        mediator = new HttpMediator(HttpMediator.defaultClient(), Duration.ofSeconds(5), breakers, FIXED);
+        mediator = new HttpMediator(HttpMediator.defaultClient(), Duration.ofSeconds(5), breakers, FIXED,
+                (severity, category, text) -> raised.add(severity + "/" + category));
     }
 
     @AfterEach
@@ -177,6 +180,7 @@ class MediationConformanceTest {
                     .as("%s: httpCallMade", id).isEqualTo(expect.get("httpCallMade").asBoolean());
         }
         assertBreaker(id, expect.get("breaker").asText(), before, after);
+        assertWarning(id, expect.get("warning").asText());
     }
 
     /// The breaker column is the one most often got wrong, because the
@@ -194,6 +198,18 @@ class MediationConformanceTest {
             case "neither", "none" -> assertThat(List.of(successes, failures))
                     .as("%s: breaker should record nothing", id).containsExactly(0L, 0L);
             default -> throw new IllegalArgumentException("unknown breaker expectation: " + expected);
+        }
+    }
+
+    /// A permanent ACK-drop deletes the message; the warning is the only
+    /// trace it leaves. A retryable outcome must NOT warn — the message is
+    /// coming back, and a target having a bad afternoon would flood the store.
+    private void assertWarning(String id, String expected) {
+        if ("none".equals(expected)) {
+            assertThat(raised).as("%s: must not warn", id).isEmpty();
+        } else {
+            assertThat(raised).as("%s: must warn an operator", id)
+                    .containsExactly(expected + "/CONFIGURATION");
         }
     }
 

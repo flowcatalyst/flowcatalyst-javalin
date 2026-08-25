@@ -2,6 +2,7 @@ package io.flowcatalyst.router.pool;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.wire.DispatchMode;
@@ -24,6 +25,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
@@ -46,6 +48,8 @@ class HttpMediatorTest {
     private final Map<String, String> lastHeaders = new ConcurrentHashMap<>();
     private final AtomicInteger calls = new AtomicInteger();
 
+    private final java.util.List<Raised> raised = new CopyOnWriteArrayList<>();
+
     private BreakerRegistry breakers;
     private HttpMediator mediator;
 
@@ -56,7 +60,8 @@ class HttpMediatorTest {
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
         breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, FIXED);
-        mediator = new HttpMediator(HttpMediator.defaultClient(), Duration.ofSeconds(5), breakers, FIXED);
+        mediator = new HttpMediator(HttpMediator.defaultClient(), Duration.ofSeconds(5), breakers, FIXED,
+                (severity, category, text) -> raised.add(new Raised(severity, category, text)));
     }
 
     @AfterEach
@@ -78,6 +83,94 @@ class HttpMediatorTest {
     }
 
     // ── Request shape ───────────────────────────────────────────────────
+
+    // ── Operator warnings (§2.7) ────────────────────────────────────────
+
+    @ParameterizedTest(name = "HTTP {0} warns an operator at {1}")
+    @CsvSource({
+            "400, ERROR,    bad request",
+            "401, ERROR,    auth error",
+            "403, ERROR,    auth error",
+            "404, ERROR,    not found",
+            "418, ERROR,    client error",
+            "501, CRITICAL, not implemented",
+            "301, ERROR,    redirect not followed",
+    })
+    @DisplayName("every permanent ACK-drop tells someone")
+    void permanentDropsWarn(int status, Warnings.Severity severity, String detail) throws Exception {
+        // These paths delete a message off the broker for good. Each is the
+        // right call — none can succeed on a retry — but the warning is the
+        // only trace the message leaves, so an unwarned drop is a silent loss.
+        this.status.set(status);
+
+        mediator.deliver(message(baseUrl), true);
+
+        assertThat(raised).singleElement().satisfies(warning -> {
+            assertThat(warning.severity()).isEqualTo(severity);
+            assertThat(warning.category()).isEqualTo("CONFIGURATION");
+            assertThat(warning.message()).contains(detail).contains(baseUrl);
+        });
+    }
+
+    @ParameterizedTest(name = "HTTP {0} does not warn")
+    @CsvSource({"200", "204", "429", "500", "503"})
+    @DisplayName("a message that is coming back does not raise a warning")
+    void retryablesDoNotWarn(int status) throws Exception {
+        // A warning store holding a thousand entries is useless, and a target
+        // having a bad afternoon would flood it. These outcomes keep the
+        // message, so there is nothing an operator must act on to save it.
+        this.status.set(status);
+
+        mediator.deliver(message(baseUrl), true);
+
+        assertThat(raised).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an unparseable target warns rather than dropping in silence")
+    void malformedTargetWarns() throws Exception {
+        // Never warned before, in either implementation. It ACK-drops every
+        // message routed through it, and it is a configuration mistake someone
+        // can actually fix — which is exactly the case for telling them.
+        var outcome = mediator.deliver(message("http:///no-host"), true);
+
+        assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConfig.class);
+        assertThat(raised).singleElement().satisfies(warning -> {
+            assertThat(warning.severity()).isEqualTo(Warnings.Severity.ERROR);
+            assertThat(warning.message()).contains("invalid mediation target");
+        });
+    }
+
+    @Test
+    @DisplayName("an unsupported mediation type warns rather than dropping in silence")
+    void unsupportedTypeWarns() throws Exception {
+        var message = new Message("m1", "", null, null, MediationType.parse("SQS"),
+                baseUrl, null, false, DispatchMode.NEXT_ON_ERROR);
+
+        var outcome = mediator.deliver(message, true);
+
+        assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConfig.class);
+        assertThat(raised).singleElement().satisfies(warning ->
+                assertThat(warning.message()).contains("unsupported mediation type"));
+    }
+
+    @Test
+    @DisplayName("an open circuit is not an operator's problem")
+    void circuitOpenDoesNotWarn() throws Exception {
+        // The breaker exists to stop shouting about a target that is already
+        // known to be down. Warning per suppressed call would defeat it.
+        var breaker = breakers.get(baseUrl);
+        while (breaker.state() != CircuitBreaker.State.OPEN) {
+            breaker.recordFailure();
+        }
+
+        mediator.deliver(message(baseUrl), true);
+
+        assertThat(raised).isEmpty();
+    }
+
+    private record Raised(Warnings.Severity severity, String category, String message) {
+    }
 
     @Test
     @DisplayName("the body is exactly the one-field object the signature covers")
@@ -152,13 +245,22 @@ class HttpMediatorTest {
                 .isEqualTo(MediationOutcome.Success.flushing(200, 90));
     }
 
-    @ParameterizedTest(name = "HTTP {0} maps to a config error")
-    @CsvSource({"400", "401", "403", "404", "422"})
-    void clientErrorsAreConfigErrors(int code) throws Exception {
+    @ParameterizedTest(name = "HTTP {0} maps to a config error saying which")
+    @CsvSource({
+            "400, HTTP 400: bad request",
+            "401, HTTP 401: auth error",
+            "403, HTTP 403: auth error",
+            "404, HTTP 404: not found",
+            "422, HTTP 422: client error",
+    })
+    void clientErrorsAreConfigErrors(int code, String detail) throws Exception {
+        // The detail is operator-facing text, not a log string: it is what the
+        // warning carries, and "auth error" and "not found" send someone to
+        // different places. A bare "HTTP 401" sends them nowhere.
         status.set(code);
 
         assertThat(mediator.deliver(message("msg_1", null, null), true))
-                .isEqualTo(new MediationOutcome.ErrorConfig(code, "HTTP " + code));
+                .isEqualTo(new MediationOutcome.ErrorConfig(code, detail));
     }
 
     @Test
@@ -305,6 +407,12 @@ class HttpMediatorTest {
             Thread.currentThread().interrupt();
             throw new AssertionError(e);
         }
+    }
+
+    /// A plain HTTP message aimed at `target`.
+    private static Message message(String target) {
+        return new Message("m1", "", null, null, MediationType.HTTP, target,
+                null, false, DispatchMode.IMMEDIATE);
     }
 
     private Message message(String id, String authToken, String signingSecret) {

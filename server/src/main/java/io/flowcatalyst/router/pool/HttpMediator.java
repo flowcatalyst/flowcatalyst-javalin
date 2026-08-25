@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.pool;
 
+import io.flowcatalyst.router.observability.Warnings;
+
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.wire.MediationOutcome;
@@ -45,12 +47,19 @@ public final class HttpMediator implements Mediator {
     private final Duration requestTimeout;
     private final BreakerRegistry breakers;
     private final Clock clock;
+    private final Warnings warnings;
 
     public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers, Clock clock) {
+        this(client, requestTimeout, breakers, clock, Warnings.NO_OP);
+    }
+
+    public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers,
+                        Clock clock, Warnings warnings) {
         this.client = client;
         this.requestTimeout = requestTimeout;
         this.breakers = breakers;
         this.clock = clock;
+        this.warnings = warnings;
     }
 
     public static HttpClient defaultClient() {
@@ -68,12 +77,12 @@ public final class HttpMediator implements Mediator {
         if (!(message.mediationType() instanceof MediationType.Http)) {
             // Nothing else is deliverable. Dropped rather than retried: no
             // amount of waiting turns an unsupported type into HTTP.
-            return new MediationOutcome.ErrorConfig(0,
+            return undeliverable(message, Warnings.Severity.ERROR, 0,
                     "unsupported mediation type: " + message.mediationType().wireValue());
         }
         var target = parseTarget(message.mediationTarget());
         if (target.isEmpty()) {
-            return new MediationOutcome.ErrorConfig(0,
+            return undeliverable(message, Warnings.Severity.ERROR, 0,
                     "invalid mediation target: " + message.mediationTarget());
         }
 
@@ -99,7 +108,7 @@ public final class HttpMediator implements Mediator {
         }
         try {
             var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            return classify(response);
+            return classify(message, response);
         } catch (HttpTimeoutException e) {
             return new MediationOutcome.ErrorConnection(SERVER_ERROR_DELAY_SECONDS, "request timeout");
         } catch (IOException e) {
@@ -133,8 +142,41 @@ public final class HttpMediator implements Mediator {
     /// The one 5xx that is permanent rather than transient.
     private static final int NOT_IMPLEMENTED = 501;
 
+    /// The warning category every one of these belongs to (§2.7).
+    private static final String CONFIGURATION = "CONFIGURATION";
+
     /// Maps a response to an outcome (§6.5).
-    private MediationOutcome classify(HttpResponse<byte[]> response) {
+    /// Builds an `ErrorConfig` **and tells an operator**.
+    ///
+    /// Every caller of this is a path that ACKs a message off the broker
+    /// permanently. That is the right call — none of them can succeed on a
+    /// retry — but it also means the message is gone, and an ACK-drop nobody
+    /// is told about is a silent loss. The warning is not decoration here; it
+    /// is the only trace the message leaves.
+    ///
+    /// Deliberately covers the two pre-flight rejections as well (unsupported
+    /// mediation type, unparseable target). Both are configuration mistakes an
+    /// operator can fix, both delete every message routed through them, and
+    /// both said nothing at all before.
+    private MediationOutcome undeliverable(Message message, Warnings.Severity severity,
+                                           int status, String detail) {
+        warnings.raise(severity, CONFIGURATION,
+                detail + " (target " + message.mediationTarget() + ")");
+        return new MediationOutcome.ErrorConfig(status, detail);
+    }
+
+    /// Go distinguishes these in the operator-facing text, and it is worth
+    /// keeping: "auth error" and "not found" send someone to different places.
+    private static String clientErrorDetail(int status) {
+        return switch (status) {
+            case 400 -> "HTTP 400: bad request";
+            case 401, 403 -> "HTTP " + status + ": auth error";
+            case 404 -> "HTTP 404: not found";
+            default -> "HTTP " + status + ": client error";
+        };
+    }
+
+    private MediationOutcome classify(Message message, HttpResponse<byte[]> response) {
         int status = response.statusCode();
         if (status >= 200 && status < 300) {
             // The body may steer us: defer, or flush the group.
@@ -147,7 +189,7 @@ public final class HttpMediator implements Mediator {
             // The request is wrong and will stay wrong. ACK-dropped, and
             // recorded as a breaker SUCCESS: the endpoint answered us
             // correctly, so it is healthy.
-            return new MediationOutcome.ErrorConfig(status, "HTTP " + status);
+            return undeliverable(message, Warnings.Severity.ERROR, status, clientErrorDetail(status));
         }
         if (status == NOT_IMPLEMENTED) {
             // 501 is a 5xx that behaves like a 4xx, which is why it has to be
@@ -156,10 +198,11 @@ public final class HttpMediator implements Mediator {
             // number of retries will make it. Permanent, and a breaker
             // SUCCESS for the same reason a 404 is — the endpoint answered.
             //
-            // TODO(warnings): §6 calls for a CRITICAL CONFIGURATION warning
-            // here, which needs the warning service the 3xx branch is also
-            // waiting on.
-            return new MediationOutcome.ErrorConfig(status, "HTTP 501: not implemented");
+            // CRITICAL, not ERROR: a 4xx is usually one bad message, but a
+            // target that does not implement the hook at all rejects every
+            // message routed to it. That is a deployment or routing mistake,
+            // and it degrades health until someone acknowledges it.
+            return undeliverable(message, Warnings.Severity.CRITICAL, status, "HTTP 501: not implemented");
         }
         if (status >= 500) {
             return new MediationOutcome.ErrorProcess(status, SERVER_ERROR_DELAY_SECONDS, "HTTP " + status);
@@ -174,10 +217,7 @@ public final class HttpMediator implements Mediator {
             // POST to GET and drop the body, so the target would receive
             // nothing and we would record a success (§13 Q5).
             //
-            // TODO(warnings): this must also raise an ERROR-severity
-            // CONFIGURATION warning once the warning service lands (§2.7) —
-            // an ACK-drop that nobody is told about is a silent loss.
-            return new MediationOutcome.ErrorConfig(status,
+            return undeliverable(message, Warnings.Severity.ERROR, status,
                     "HTTP " + status + ": redirect not followed — target misconfigured");
         }
         // A 1xx as a final status is not something we can interpret. Status 0

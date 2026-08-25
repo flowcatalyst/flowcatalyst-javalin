@@ -117,10 +117,17 @@ Current entries:
 | `success-carries-real-2xx-status` | java | The status is the target's own answer; flattening 201/202 to 200 discards information irrecoverably. Go fix tracked in `docs/spec/router-fixes.md`. |
 | `unfollowed-3xx-is-permanent` | java | Retrying reproduces the redirect for ever and following it drops the body. Go retries indefinitely. Owner ruling 2026-08-24. |
 | `unexpected-status-1xx` | both | Client-library artefact: Go's client surfaces the 1xx as final, `java.net.http` refuses to and fails the exchange. Both reach `RETURN_TO_BROKER`, 30s, breaker failure. |
+| `malformed-target-url` | java | Go ACK-drops silently. Java warns: it deletes every message routed through it and is a fixable configuration mistake. |
+| `unsupported-mediation-type` | java | As above. |
 
 Not a divergence, but found by this corpus: `config-error-501`. Java was
 treating 501 as an ordinary 5xx and retrying for ever, because the `>= 500`
 branch was tested before anything could special-case it.
+
+The `warning` column encodes one rule: **a permanent ACK-drop must warn; a
+retryable outcome must not.** A permanent drop deletes the message, so the
+warning is its only trace; a retryable one keeps it, and warning per attempt
+would flood the store during any ordinary outage.
 
 ## Running it
 

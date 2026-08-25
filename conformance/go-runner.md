@@ -125,17 +125,34 @@ Verified against `819b390` while writing this:
 | `unexpected-status-1xx` | **both** | Benign. Same `default:` arm gives `ErrorProcess(0, 30)`; `java.net.http` refuses to treat 1xx as final and fails the exchange, giving `ErrorConnection(0, 30)`. Both reach `RETURN_TO_BROKER`, 30s, breaker failure — identical fate. Expect this row to differ on `outcome` and agree on everything that matters. |
 | `config-error-501` | **both** | Agreed. Go fixed this in `4f2d52c`; Java was still letting 501 fall into the generic `>= 500` branch and retrying a "Not Implemented" target for ever, and this corpus caught it. Independent agreement on the same answer is the best evidence either fix was right. |
 
-## One thing Go has that Java does not
+## Warnings
 
-Go raises operator warnings from `mediateOnce` (`m.warnConfig(...)`) — ERROR
-for 400/401/403/404, CRITICAL for 501. Java has these as `TODO(warnings)` in
-`HttpMediator`, pending the warning service.
+**Now asserted.** Every case carries `expect.warning`: `ERROR`, `CRITICAL`, or
+`none`. Java raises through a `Warnings` collaborator on the mediator; Go
+through `m.warnConfig(...)`. Category is `CONFIGURATION` on both sides.
 
-The corpus does **not** assert warnings yet, deliberately: asserting a field
-one side cannot produce would fail Java for a known, tracked gap rather than
-telling anyone anything new. Add a `warning` field to the corpus once Java's
-warning service lands, and Go's existing behaviour becomes the specification
-for it — this is a case where Go is ahead and should be copied.
+Go was ahead here and its behaviour was copied: ERROR for 400/401/403/404 and
+other 4xx, CRITICAL for 501. Java had these as `TODO(warnings)` and dropped
+them on the floor.
+
+The rule the column encodes: **a permanent ACK-drop must warn; a retryable
+outcome must not.** A permanent drop deletes the message and the warning is
+the only trace it leaves. A retryable one keeps the message, and warning per
+attempt would flood the store during any ordinary outage — a 500, a 429 and an
+open circuit all raise nothing.
+
+Two rows where Java now goes further, both `correct: java`:
+
+| Case | Go |
+|---|---|
+| `malformed-target-url` | returns `ErrorConfig` **silently** |
+| `unsupported-mediation-type` | returns `ErrorConfig` **silently** |
+
+Both ACK-drop every message routed through them, permanently, and both are
+configuration mistakes an operator can fix. Go warns on 404 for exactly that
+reason and then does not warn here, which reads as an omission rather than a
+decision — the pre-flight rejections are *more* clearly configuration errors
+than a 404 is, not less.
 
 ## Skeleton
 

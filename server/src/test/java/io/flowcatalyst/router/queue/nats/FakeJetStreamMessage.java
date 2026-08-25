@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.queue.nats;
 
+import io.flowcatalyst.router.observability.Warnings;
+
 import io.nats.client.Connection;
 import io.nats.client.Message;
 import io.nats.client.Subscription;

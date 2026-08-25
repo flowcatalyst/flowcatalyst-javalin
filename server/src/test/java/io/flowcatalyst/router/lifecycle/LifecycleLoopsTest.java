@@ -2,7 +2,7 @@ package io.flowcatalyst.router.lifecycle;
 
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
-import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.Warnings;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

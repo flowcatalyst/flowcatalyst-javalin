@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.manager.RouterManager;
-import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;

@@ -6,7 +6,7 @@ import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.manager.QueueBroker;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.RouterServer;
-import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
@@ -121,7 +121,7 @@ public final class Router implements AutoCloseable {
         var breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, clock);
         var mediator = new HttpMediator(HttpMediator.defaultClient(),
                 env.routerDevMode() ? HttpMediator.DEV_TIMEOUT : HttpMediator.PRODUCTION_TIMEOUT,
-                breakers, clock);
+                breakers, clock, warnings);
 
         var metrics = new ConcurrentHashMap<String, PoolMetricsCollector>();
         // The broker is resolved per message from the queue it came from, so

@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.observability;
 
-import io.flowcatalyst.router.manager.Warnings.Severity;
+import io.flowcatalyst.router.observability.Warnings.Severity;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

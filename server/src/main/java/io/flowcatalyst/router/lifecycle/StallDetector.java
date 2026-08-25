@@ -2,7 +2,7 @@ package io.flowcatalyst.router.lifecycle;
 
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
-import io.flowcatalyst.router.manager.Warnings;
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.queue.Acknowledger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

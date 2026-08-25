@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.api.dashboard;
 
+import io.flowcatalyst.router.observability.Warnings;
+
 import io.flowcatalyst.platform.shared.TestHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;

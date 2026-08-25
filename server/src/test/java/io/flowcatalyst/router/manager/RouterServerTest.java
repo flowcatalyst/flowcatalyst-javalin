@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.manager;
 
+import io.flowcatalyst.router.observability.Warnings;
+
 import io.flowcatalyst.router.config.PoolSpec;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
