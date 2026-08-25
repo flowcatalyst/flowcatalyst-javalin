@@ -133,7 +133,12 @@
       "given": {"kind": "response", "status": 418, "body": ""},
       "expect": {"outcome": "ErrorConfig", "statusCode": 418,
                  "warning": "ERROR",
-                 "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"}
+                 "disposition": "UNDELIVERABLE", "breaker": "success", "metric": "failure"},
+      "divergence": {
+        "correct": "java",
+        "basis": "A 4xx nobody wrote a named branch for still ACK-drops the message permanently, which is the one condition the warning column encodes. Go warns on 400/401/403/404/501 and then only logs for the rest, so an operator is told about a 404 and not about a 422 — same permanence, same deletion, no notice. That is the shape of an omission, not a decision.",
+        "go": "the generic 4xx fallback calls slog.Warn only, never warnConfig, so no warning is recorded (found by the Go conformance runner)"
+      }
     },
     {
       "id": "rate-limited-honours-retry-after",
@@ -235,7 +240,7 @@
       "divergence": {
         "correct": "java",
         "basis": "This path ACK-drops every message routed through it, permanently, and it is a configuration mistake an operator can actually fix — a target URL with no host. That is precisely the case for telling someone. Go warns on 400/401/403/404/501 for exactly this reason and then does not warn here, which reads as an omission rather than a decision: the pre-flight rejections are MORE clearly configuration errors than a 404 is, not less.",
-        "go": "returns ErrorConfig silently — no warning service call (verified at 819b390)"
+        "go": "returns ErrorConfig silently — no warning service call, AND records a breaker SUCCESS for a rejection that never touched the network (verified at 819b390). Java skips the breaker entirely for both pre-flight paths, which is the better answer: a call that was never made is no evidence at all about the target\u2019s health, in either direction."
       }
     },
     {
@@ -247,7 +252,7 @@
       "divergence": {
         "correct": "java",
         "basis": "This path ACK-drops every message routed through it, permanently, and it is a configuration mistake an operator can actually fix — a mediation type that is not HTTP. That is precisely the case for telling someone. Go warns on 400/401/403/404/501 for exactly this reason and then does not warn here, which reads as an omission rather than a decision: the pre-flight rejections are MORE clearly configuration errors than a 404 is, not less.",
-        "go": "returns ErrorConfig silently — no warning service call (verified at 819b390)"
+        "go": "returns ErrorConfig silently — no warning service call, AND records a breaker SUCCESS for a rejection that never touched the network (verified at 819b390). Java skips the breaker entirely for both pre-flight paths, which is the better answer: a call that was never made is no evidence at all about the target\u2019s health, in either direction."
       }
     },
     {
