@@ -99,6 +99,35 @@ lifetime, work arriving from consumer poll threads, no join point, and
 `fork()` must be called by the scope owner. It belongs where the fan-out is
 bounded and joined, which is where it already is.
 
+### Correctness over conformance (2026-08-25)
+
+Owner: *"You have been helping with correctness. I don't just want blind
+conformance."* Go is **evidence of what Go does, not of what is correct**.
+The port is the one chance to fix what Go shipped, so a harness that freezes
+Go's behaviour would make Java inherit those defects and then fail Java for
+being right.
+
+`conformance/mediation-outcomes.json` is the §6 outcome table made executable
+— 28 cases, language-neutral, stated as HTTP responses so both
+implementations run the same file. Where they differ the row asserts the
+better behaviour: `correct` names the side, `basis` argues it from the
+behaviour itself. **Enforced in code** — a divergence missing either field
+fails the build, because a row that does not say which side is right has in
+practice picked Go.
+
+Standing divergences (verified against Go `819b390`, not assumed):
+
+| Case | Correct | State |
+|---|---|---|
+| real 2xx status | java | open — `common.Success()` hard-codes 200 |
+| 3xx as permanent | java | open — falls to Go's `default` arm, retried for ever at status 0 |
+| 1xx | both | benign client-library difference; every field deciding the message's fate agrees |
+| 501 | both | **agreed** — Go fixed it in `4f2d52c`, the corpus caught Java still wrong |
+
+Two defects found while building it, both Java: 501 falling into the generic
+`>= 500` branch, and `RateLimited.statusCode()` returning 0 when the outcome
+is produced only from a 429.
+
 ### Build and tooling notes (2026-08-25)
 
 - **`--enable-preview` is now genuinely enabled** — compiler args *and*
@@ -117,11 +146,30 @@ bounded and joined, which is where it already is.
   Maven processes before trusting a result, and prefer `mvn clean test`
   after any interface change.
 
-### Router work remaining
+### Router work remaining (2026-08-25)
 
-ALB deregistration; mounting the router into the platform server so it
-starts with the process; then drop-in verification — the side-by-side replay
-harness against the Go binary and a cutover rehearsal.
+Mounting into the platform server is **done** — `Server.java` starts the
+router before the listeners bind and drains it after they stop.
+
+Ordered by what unblocks the most:
+
+1. **Java warning service.** Two `TODO(warnings)` in `HttpMediator` (3xx and
+   501) plus the `WarningStore` auto-acknowledge question. Go raises
+   ERROR/CRITICAL operator warnings from `mediateOnce` that Java silently
+   drops — an ACK-drop nobody is told about is a silent loss. Go is **ahead**
+   here; its behaviour is the specification. Unblocks a `warning` column in
+   the conformance corpus.
+2. **ELBv2 `TargetGroup`** — the one `TODO(port)` in `Router.java:242`.
+   `AlbTraffic`'s policy is ported and tested; only the AWS client is missing.
+3. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
+   Needs no Go changes and asserts six of seven fields.
+4. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`
+   (`pool.go:901`) into a pure function so `disposition` becomes assertable.
+5. **Drop-in verification** — side-by-side replay against the Go binary, then
+   a cutover rehearsal.
+
+Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
+`Q41` metrics contract (`RouterPrometheusCollector.java:54`).
 
 ## Next wave (in order)
 
