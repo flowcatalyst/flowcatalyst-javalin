@@ -6,9 +6,9 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-24, evening)
 
-Reactor green on a clean uncontended build, 2026-08-26: **2242 tests** —
-usecase 30 · sdk 44 · **server 2128** · fcdev 40, 0 failures. Coverage
-180/243 lockfile operations (74%), zero drift. Commits on `main`; one commit
+Reactor green on a clean uncontended build, 2026-08-26: **2254 tests** —
+usecase 30 · sdk 44 · **server 2140** · fcdev 40, 0 failures. Coverage
+**190/243 lockfile operations (78%)**, zero drift. Commits on `main`; one commit
 per landed/audited unit.
 
 **Orchestration model** — see `Claude.md` and `docs/process/agent-prompts.md`
@@ -384,9 +384,15 @@ order:
    `PrincipalApiTest`** — the only aggregate that landed without either, and
    the security-critical one. Its §11 Q3 (existence oracle) wants a ruling
    first.
-2. **Finish `sdksync`** — the `Api` + registration; every `Sync*` operation
-   it wires already exists and is audited. Unlocks 11 lockfile operations.
-   Register `openapispecs` with it.
+2. ~~**Finish `sdksync`**~~ **DONE 2026-08-26.** All ten routes, not the nine
+   the spec expected — `SyncPrincipals` was already ported, so the principals
+   route was built with the rest and `State` gained its repository.
+   `openapispecs` reaches the router here too. Coverage 180 → 190.
+   Raised for a ruling (`backlog.md`): `archiveUnlisted` on the scheduled-job
+   sync sweeps the whole `clientId` scope, ignoring the application the route
+   is mounted under, so two applications sharing a client can archive each
+   other's jobs. Go does the same; it bit the Java test immediately, which
+   archived 20 of other tests' jobs before being scoped.
 3. Remaining aggregates, three at a time: `serviceaccount` (14 ops),
    `anchor-domains` (4), `auth-configs` (4), `idp-role-mappings` (3); then
    the SDK ingest batch endpoints (`/api/events`, `/api/events/batch`,
@@ -406,7 +412,19 @@ order:
    rehearsal on a Go-created database.
 
 **Standing rule:** re-check `git log` in `../flowcatalyst-go` before starting
-any *platform* unit — that side is still moving. The router is stable.
+any *platform* unit — that side is still moving.
+
+**The router is NOT stable any more** (checked 2026-08-26): six commits
+landed that day, several substantial — `2468140` *router: own the consumers,
+bound the retries, tell the truth about outcomes* (which adds a 470-line
+`mediation_conformance_test.go` and a `mediator_truthfulness_test.go`, so it
+looks like our `router-fixes.md` fixes plus the conformance corpus landing on
+the Go side), `89b195e` *platform: an unspecified dispatch mode means
+NEXT_ON_ERROR* (Go adopting our ruling), and `20e9fe7` *queue: key a message
+by its identity, not by its delivery*. **Unverified beyond the commit stats.**
+If that reading holds, several open items in `router-fixes.md` and rows in the
+standing-divergence table can be closed, and Go-runner Phases 1–2 may already
+be done. Worth a session of its own before any further router work.
 
 ## Owner rulings taken 2026-08-25
 
