@@ -16,4 +16,13 @@ public interface TargetGroup {
     /// @return whether the balancer still reports the target as draining,
     ///         i.e. finishing in-flight requests
     boolean draining(String targetId, int port);
+
+    /// How the balancer names this group — the ARN for ELBv2.
+    ///
+    /// Reported on `/monitoring/traffic-status` and nowhere else: registration
+    /// itself never needs it, because the implementation already holds it.
+    /// Abstract rather than defaulted so a new implementation has to say what
+    /// it registers with; a default of `""` would let one quietly report
+    /// nothing on the endpoint whose whole job is naming the group.
+    String arn();
 }

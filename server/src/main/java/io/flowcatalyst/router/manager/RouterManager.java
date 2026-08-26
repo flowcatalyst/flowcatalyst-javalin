@@ -11,6 +11,7 @@ import io.flowcatalyst.router.config.PoolSpec;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.QueueMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +22,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /// Decides where each polled message goes, and hands it to a pool.
 ///
@@ -110,6 +112,21 @@ public final class RouterManager {
     /// per queue without holding its own copy of the registry.
     public java.util.Set<String> consumerNames() {
         return java.util.Set.copyOf(consumers.keySet());
+    }
+
+    /// One metrics source per registered queue, for
+    /// [io.flowcatalyst.router.lifecycle.BrokerStatsCache#refresh].
+    ///
+    /// Resolved lazily per queue rather than captured: a reconfigure replaces
+    /// a consumer without renaming its queue, and a map of bound consumers
+    /// would go on sampling the closed one. It also has two callers now — the
+    /// housekeeping tick and `POST /monitoring/broker-stats/refresh` — and the
+    /// endpoint must sample the same queues the loop does, not a second list
+    /// that can drift from it.
+    public Map<String, Supplier<Optional<QueueMetrics>>> queueMetricSources() {
+        return consumerNames().stream().collect(java.util.stream.Collectors.toMap(
+                queueId -> queueId,
+                queueId -> () -> consumer(queueId).flatMap(Consumer::metrics)));
     }
 
     /// Drops every consumer. Used on a leadership loss, where the pools and

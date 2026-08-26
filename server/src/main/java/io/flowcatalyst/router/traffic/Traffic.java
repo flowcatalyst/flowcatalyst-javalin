@@ -33,20 +33,36 @@ public interface Traffic extends AutoCloseable {
     default void close() {
     }
 
-    /// @param enabled    whether traffic management is configured at all
-    /// @param registered whether this instance is currently in the target
-    ///                   group as far as we know
-    /// @param lastChange when that last changed
-    /// @param lastError  why the last attempt failed, if it did. Kept
-    ///                   separately from `registered` because a failed
-    ///                   deregister leaves us *believing* we are out while
-    ///                   the balancer still sends traffic — the two facts
-    ///                   disagree and an operator needs both
-    record Status(boolean enabled, boolean registered, Optional<Instant> lastChange,
-                  Optional<String> lastError) {
+    /// What [Status#mode] reports when nothing is managing traffic.
+    String MODE_DISABLED = "disabled";
+
+    /// @param enabled        whether traffic management is configured at all
+    /// @param mode           which mechanism is managing traffic — [#MODE_DISABLED]
+    ///                       when none is. A separate field rather than
+    ///                       something the reader derives from `enabled`:
+    ///                       there is exactly one mechanism today, and an
+    ///                       operator reading the status should learn which
+    ///                       one from the status rather than from the
+    ///                       deployment they assume they are looking at
+    /// @param targetGroupArn which group this instance registers with, empty
+    ///                       when traffic is unmanaged. It is the first thing
+    ///                       to check when registration "works" and the
+    ///                       balancer still sends nothing — usually the ARN
+    ///                       names a group in another region or another stack
+    /// @param registered     whether this instance is currently in the target
+    ///                       group as far as we know
+    /// @param lastChange     when that last changed
+    /// @param lastError      why the last attempt failed, if it did. Kept
+    ///                       separately from `registered` because a failed
+    ///                       deregister leaves us *believing* we are out while
+    ///                       the balancer still sends traffic — the two facts
+    ///                       disagree and an operator needs both
+    record Status(boolean enabled, String mode, Optional<String> targetGroupArn, boolean registered,
+                  Optional<Instant> lastChange, Optional<String> lastError) {
 
         public static Status disabled() {
-            return new Status(false, false, Optional.empty(), Optional.empty());
+            return new Status(false, MODE_DISABLED, Optional.empty(), false,
+                    Optional.empty(), Optional.empty());
         }
     }
 

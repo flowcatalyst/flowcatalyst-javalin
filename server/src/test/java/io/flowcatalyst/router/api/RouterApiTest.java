@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
@@ -20,6 +21,8 @@ import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
+import io.flowcatalyst.router.traffic.AlbTraffic;
+import io.flowcatalyst.router.traffic.TargetGroup;
 import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
@@ -82,6 +85,9 @@ class RouterApiTest {
     private static Pool poolA;
     private static PoolMetricsCollector poolAMetrics;
     private static RecordingConsumer consumerQ1;
+    private static BrokerStatsCache brokerStats;
+    private static FakeTargetGroup targetGroup;
+    private static AlbTraffic traffic;
     private static TestHttp http;
     private static TestHttp bare;
 
@@ -103,12 +109,22 @@ class RouterApiTest {
         var election = new LeaderElection(electionConfig, new AlwaysAcquireStore(), CLOCK);
         election.start();
 
+        brokerStats = new BrokerStatsCache(CLOCK);
+        // A real AlbTraffic over a stub target group, not a stub Traffic: the
+        // status this endpoint renders — including the failed-deregister
+        // disagreement — is produced by AlbTraffic, and stubbing it would
+        // leave the wire shape asserted against a hand-written answer.
+        targetGroup = new FakeTargetGroup();
+        traffic = new AlbTraffic(
+                new AlbTraffic.Config("10.0.0.7", 8080, Duration.ofSeconds(1), Duration.ofMillis(1)),
+                targetGroup, CLOCK);
+
         var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
-                "test-version", "/router", null, Map.of("POOL-A", poolAMetrics));
+                "test-version", "/router", null, Map.of("POOL-A", poolAMetrics), traffic, brokerStats);
         http = new TestHttp(cfg -> RouterApi.register(cfg.routes, state));
         warmUp(http);
 
-        var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null);
+        var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null, null, null);
         bare = new TestHttp(cfg -> RouterApi.register(cfg.routes, bareState));
         warmUp(bare);
     }
@@ -203,7 +219,7 @@ class RouterApiTest {
     void readinessDegradesOnCritical() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             assertThat(isolatedHttp.get("/router/health/ready").statusCode())
@@ -236,7 +252,7 @@ class RouterApiTest {
     void warningThresholds() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             for (int i = 0; i < 6; i++) {
@@ -298,7 +314,7 @@ class RouterApiTest {
         isolatedWarnings.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-unacked");
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, isolatedWarnings, null, null, null,
-                "v", "/router", null, Map.of("M-POOL", metricsCollector));
+                "v", "/router", null, Map.of("M-POOL", metricsCollector), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             var body = json(isolatedHttp.get("/router/monitoring"));
@@ -346,7 +362,7 @@ class RouterApiTest {
         }, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
         isolatedManager.registerPool("HELD-POOL", held);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
-                null, null, null, "v", "/router", null, Map.of());
+                null, null, null, "v", "/router", null, Map.of(), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             // Staggered on purpose. Submitted together they enter their
@@ -499,7 +515,7 @@ class RouterApiTest {
                 PoolMetrics.NO_OP, CLOCK);
         isolatedManager.registerPool("UNLIMITED-POOL", unlimitedPool);
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             var message = new Message("rl-" + tag(), "RL-POOL", null, null, null, "https://example.invalid/hook",
@@ -547,7 +563,7 @@ class RouterApiTest {
         metrics.recordSuccess(Duration.ofMillis(10));
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(clock), null, null, null,
-                "v", "/router", null, Map.of("W-POOL", metrics));
+                "v", "/router", null, Map.of("W-POOL", metrics), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             var fiveMin = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=5min")).get("W-POOL");
@@ -588,7 +604,7 @@ class RouterApiTest {
         var busyPool = new Pool(new Pool.Config("BUSY-POOL", 3, 0), blocking, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
         isolatedManager.registerPool("BUSY-POOL", busyPool);
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             var message = new Message("busy-" + tag(), "BUSY-POOL", null, null, null,
@@ -691,7 +707,7 @@ class RouterApiTest {
     void acknowledgeAll() {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "a");
@@ -710,7 +726,7 @@ class RouterApiTest {
         var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         var isolated = new WarningStore(clock);
         var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
-                "v", "/router", null, null);
+                "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-one");
@@ -804,7 +820,7 @@ class RouterApiTest {
         isolatedBreakers.get("https://a.example").recordFailure();
         isolatedBreakers.get("https://b.example").recordFailure();
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), isolatedBreakers,
-                null, null, "v", "/router", null, null);
+                null, null, "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
             warmUp(isolatedHttp);
             var r = isolatedHttp.post("/router/monitoring/circuit-breakers/reset-all", null);
@@ -955,6 +971,410 @@ class RouterApiTest {
         var r = http.post("/router/monitoring/in-flight-messages/ghost-" + t + "/ack", null);
         assertThat(r.statusCode()).as("tracked, but its queue has no registered consumer").isEqualTo(503);
         tracker.remove("ghost-" + t);
+    }
+
+    @Test
+    @DisplayName("in-flight detail: an unknown id answers inPipeline:false rather than 404")
+    void inFlightDetailUnknownId() {
+        // "Is it safe to resend this?" is the question, and the caller is
+        // usually asking because it expects the answer to be no. A 404 would
+        // make the safe answer look like a broken endpoint.
+        var r = http.get("/router/monitoring/in-flight-messages/detail?messageId=ghost-" + tag());
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("inPipeline").asBoolean()).isFalse();
+        assertThat(body.has("status")).as("no status for something that is not there").isFalse();
+        assertThat(body.has("queueId")).isFalse();
+    }
+
+    @Test
+    @DisplayName("in-flight detail: TRACKED_IDLE vs RETRY_BACKOFF is decided by attempts")
+    void inFlightDetailIdleAndRetrying() {
+        String t = tag();
+        var now = Instant.now();
+        tracker.register(new InFlightMessage("idle-" + t, "brk-" + t, "POOL-A", "queue-1",
+                now, now, "grp-" + t, "b1", "rh", 0));
+        tracker.register(new InFlightMessage("retry-" + t, "", "POOL-A", "queue-1",
+                now, now, "", "b1", "rh", 3));
+
+        var idle = json(http.get("/router/monitoring/in-flight-messages/detail?messageId=idle-" + t));
+        assertThat(idle.get("inPipeline").asBoolean()).isTrue();
+        assertThat(idle.get("status").asText())
+                .as("no attempts and no worker: buffered, waiting for a slot, or a phantom")
+                .isEqualTo("TRACKED_IDLE");
+        assertThat(idle.get("attempts").asInt())
+                .as("present even at zero: 'on its first attempt' is the fact that separates a pinned "
+                        + "message from a retrying one, and Go's omitempty hides it")
+                .isZero();
+        assertThat(idle.get("queueId").asText()).isEqualTo("queue-1");
+        assertThat(idle.get("poolCode").asText()).isEqualTo("POOL-A");
+        assertThat(idle.get("brokerMessageId").asText()).isEqualTo("brk-" + t);
+        assertThat(idle.get("messageGroup").asText()).isEqualTo("grp-" + t);
+        assertThat(idle.has("addedToInPipelineAt")).isTrue();
+        assertThat(idle.has("mediationTarget")).as("not in a worker").isFalse();
+
+        var retrying = json(http.get("/router/monitoring/in-flight-messages/detail?messageId=retry-" + t));
+        assertThat(retrying.get("status").asText()).isEqualTo("RETRY_BACKOFF");
+        assertThat(retrying.get("attempts").asInt()).isEqualTo(3);
+        assertThat(retrying.has("brokerMessageId")).as("empty broker id is omitted, as in Go").isFalse();
+        assertThat(retrying.has("messageGroup")).as("ungrouped is omitted, as in Go").isFalse();
+    }
+
+    @Test
+    @DisplayName("in-flight detail: lastSeenElapsedMs is the phantom signature, and is separate from elapsedTimeMs")
+    void inFlightDetailPhantomSignature() {
+        // A TRACKED_IDLE entry whose lastSeenElapsedMs keeps growing is one the
+        // broker has stopped redelivering — it will ACK-swallow every requeued
+        // copy until cleared. The two elapsed times must therefore be able to
+        // differ; reporting one twice would erase the whole signal.
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(clock);
+        var started = clock.instant();
+        clock.advance(Duration.ofMinutes(4));
+        var lastSeen = clock.instant();
+        isolatedTracker.register(new InFlightMessage("phantom", "", "POOL-A", "queue-1",
+                started, lastSeen, "", "b1", "rh", 0));
+        clock.advance(Duration.ofMinutes(6));
+
+        var detail = RouterApi.inFlightDetail(isolatedTracker.snapshot().getFirst(), null, clock.instant());
+
+        assertThat(detail.status()).isEqualTo("TRACKED_IDLE");
+        assertThat(detail.elapsedTimeMs()).as("owned for 10 minutes").isEqualTo(Duration.ofMinutes(10).toMillis());
+        assertThat(detail.lastSeenElapsedMs()).as("not redelivered for 6 of them")
+                .isEqualTo(Duration.ofMinutes(6).toMillis());
+    }
+
+    @Test
+    @DisplayName("in-flight detail: MEDIATING wins over RETRY_BACKOFF and carries the target it is stuck on")
+    void inFlightDetailMediating() throws Exception {
+        // A retrying message IS in a worker while the retry runs. Reporting
+        // RETRY_BACKOFF there would tell an operator it is waiting when it is
+        // actually wedged against the target — so the worker fact wins, and
+        // the entry used here has attempts > 0 to prove it does.
+        var gate = new CountDownLatch(1);
+        var entered = new CountDownLatch(1);
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var held = new Pool(new Pool.Config("MED-POOL", 2, 0), (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        }, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("MED-POOL", held);
+        var now = Instant.now();
+        isolatedTracker.register(new InFlightMessage("in-worker", "", "MED-POOL", "queue-1",
+                now, now, "", "b1", "rh", 2));
+
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, Map.of(), null, null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            held.submit(message("in-worker", "https://wedged.test/x"));
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("the message reached a worker").isTrue();
+
+            var body = json(isolatedHttp.get("/router/monitoring/in-flight-messages/detail?messageId=in-worker"));
+            assertThat(body.get("status").asText())
+                    .as("attempts=2 would read RETRY_BACKOFF; being in a worker outranks it")
+                    .isEqualTo("MEDIATING");
+            assertThat(body.get("mediationTarget").asText()).isEqualTo("https://wedged.test/x");
+            assertThat(body.has("mediatingElapsedMs")).as("how long THIS attempt has been inside").isTrue();
+            assertThat(body.get("attempts").asInt()).isEqualTo(2);
+        } finally {
+            gate.countDown();
+            held.close();
+        }
+    }
+
+    @Test
+    @DisplayName("force-ack reports wasMediating from the live worker set, not a hard-coded false")
+    void forceAckReportsWasMediating() throws Exception {
+        // wasMediating warns that an attempt is STILL RUNNING and may yet
+        // reach the target. It was hard-coded false until 2026-08-26, which
+        // told every operator force-acking a wedged message the one thing the
+        // flag exists to deny.
+        var gate = new CountDownLatch(1);
+        var entered = new CountDownLatch(1);
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var held = new Pool(new Pool.Config("ACK-POOL", 2, 0), (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        }, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("ACK-POOL", held);
+        isolatedManager.registerConsumer(new RecordingConsumer("queue-1"));
+        var now = Instant.now();
+        isolatedTracker.register(new InFlightMessage("wedged", "", "ACK-POOL", "queue-1",
+                now, now, "", "b1", "rh", 0));
+        isolatedTracker.register(new InFlightMessage("parked", "", "ACK-POOL", "queue-1",
+                now, now, "", "b1", "rh", 0));
+
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, Map.of(), null, null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            held.submit(message("wedged", "https://wedged.test/y"));
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var inWorker = json(isolatedHttp.post(
+                    "/router/monitoring/in-flight-messages/wedged/ack", null));
+            assertThat(inWorker.get("wasMediating").asBoolean())
+                    .as("an attempt is still running and may still reach the target").isTrue();
+
+            var notInWorker = json(isolatedHttp.post(
+                    "/router/monitoring/in-flight-messages/parked/ack", null));
+            assertThat(notInWorker.get("wasMediating").asBoolean())
+                    .as("tracked but in no worker — nothing is going to arrive late").isFalse();
+        } finally {
+            gate.countDown();
+            held.close();
+        }
+    }
+
+    // ── Queue depth / broker stats / traffic ─────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring/queues is snake_case, alone on this surface")
+    void queuesIsSnakeCase() {
+        // Its neighbours are camelCase. This one is not, because that is the
+        // shape already on the wire; tidying it would be a break dressed up
+        // as consistency.
+        var isolated = new BrokerStatsCache(CLOCK);
+        isolated.refresh(Map.of("q-snake", () -> Optional.of(new QueueMetrics(7, 3, 0, 0, 0))));
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var row = json(isolatedHttp.get("/router/monitoring/queues")).get(0);
+
+            assertThat(row.get("queue_identifier").asText()).isEqualTo("q-snake");
+            assertThat(row.get("pending_messages").asLong()).isEqualTo(7);
+            assertThat(row.get("in_flight_messages").asLong()).isEqualTo(3);
+            assertThat(row.has("queueIdentifier")).as("must not be camelCase").isFalse();
+            assertThat(row.has("pendingMessages")).isFalse();
+            assertThat(row.has("inFlightMessages")).isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/queues sorts by queue id so an unchanged reading renders the same twice")
+    void queuesAreOrdered() {
+        // The cache hands back an unordered map. A list whose rows move
+        // between two polls of identical data is a dashboard nobody can read
+        // — and an unsorted implementation passes a single-queue test.
+        var isolated = new BrokerStatsCache(CLOCK);
+        isolated.refresh(Map.of(
+                "zulu", () -> Optional.of(new QueueMetrics(1, 0, 0, 0, 0)),
+                "alpha", () -> Optional.of(new QueueMetrics(2, 0, 0, 0, 0)),
+                "mike", () -> Optional.of(new QueueMetrics(3, 0, 0, 0, 0))));
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var ids = new java.util.ArrayList<String>();
+            json(isolatedHttp.get("/router/monitoring/queues"))
+                    .forEach(row -> ids.add(row.get("queue_identifier").asText()));
+            assertThat(ids).containsExactly("alpha", "mike", "zulu");
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/queue-stats derives every column from the queue's counters")
+    void queueStatsDerivations() {
+        var isolated = new BrokerStatsCache(CLOCK);
+        // 90 acked, 10 nacked -> 0.9. Chosen so a swapped numerator (0.1) or a
+        // denominator of totalPolled (0.9 by accident is impossible: 90/120)
+        // both show up as a different number.
+        isolated.refresh(Map.of("q-derive", () -> Optional.of(new QueueMetrics(11, 4, 120, 90, 10))));
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var body = json(isolatedHttp.get("/router/monitoring/queue-stats"));
+            assertThat(body.isObject()).as("a map keyed by queue, not a list").isTrue();
+            var row = body.get("q-derive");
+
+            assertThat(row.get("name").asText()).isEqualTo("q-derive");
+            assertThat(row.get("totalMessages").asLong()).as("polled").isEqualTo(120);
+            assertThat(row.get("totalConsumed").asLong()).as("acked").isEqualTo(90);
+            assertThat(row.get("totalFailed").asLong()).as("nacked").isEqualTo(10);
+            assertThat(row.get("successRate").asDouble()).as("acked / (acked + nacked)").isEqualTo(0.9);
+            assertThat(row.get("pendingMessages").asLong()).isEqualTo(11);
+            assertThat(row.get("messagesNotVisible").asLong()).as("inFlight under the SQS name").isEqualTo(4);
+            assertThat(row.get("currentSize").asLong()).as("pending + inFlight").isEqualTo(15);
+            assertThat(row.get("throughput").asDouble()).as("never computed, on either side").isZero();
+            assertThat(row.get("totalDeferred").asLong())
+                    .as("Go's Defer verb has no production caller, so this is 0 on both sides").isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("successRate is 1.0 for a queue that has processed nothing, not 0.0")
+    void successRateOfAnIdleQueueIsOne() {
+        // 0.0 and 1.0 are both plausible-looking and only one is right: a
+        // queue that has done nothing has failed nothing, and zero would
+        // paint every freshly-created queue as a total outage.
+        var idle = RouterApi.queueStatsRow("fresh", new QueueMetrics(0, 0, 0, 0, 0));
+        assertThat(idle.successRate()).isEqualTo(1.0);
+
+        // ...and it is genuinely derived, not a constant: one failure and
+        // nothing else is a total failure.
+        assertThat(RouterApi.queueStatsRow("bad", new QueueMetrics(0, 0, 1, 0, 1)).successRate()).isZero();
+    }
+
+    @Test
+    @DisplayName("queue-stats time_window narrows the counters to that window")
+    void queueStatsWindow() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolated = new BrokerStatsCache(clock);
+        var live = new java.util.concurrent.atomic.AtomicReference<>(new QueueMetrics(0, 0, 100, 90, 10));
+        Map<String, java.util.function.Supplier<Optional<QueueMetrics>>> source =
+                Map.of("q-win", () -> Optional.of(live.get()));
+
+        isolated.refresh(source);                       // baseline: 90 acked
+        clock.advance(Duration.ofMinutes(6));           // now outside 5min, inside 30
+        live.set(new QueueMetrics(0, 0, 140, 125, 15));
+        isolated.refresh(source);
+
+        var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
+                "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var allTime = json(isolatedHttp.get("/router/monitoring/queue-stats")).get("q-win");
+            assertThat(allTime.get("totalConsumed").asLong()).as("lifetime").isEqualTo(125);
+
+            var fiveMin = json(isolatedHttp.get("/router/monitoring/queue-stats?time_window=5min")).get("q-win");
+            assertThat(fiveMin.get("totalConsumed").asLong())
+                    .as("only what happened since the 5-minute baseline").isEqualTo(35);
+        }
+    }
+
+    @Test
+    @DisplayName("queue-stats?refresh=true samples the brokers before rendering")
+    void queueStatsRefreshSamplesFirst() {
+        var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var consumer = new RecordingConsumer("q-refresh");
+        isolatedManager.registerConsumer(consumer);
+        var isolated = new BrokerStatsCache(CLOCK);
+        var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            consumer.queueMetrics = new QueueMetrics(42, 0, 0, 0, 0);
+
+            assertThat(json(isolatedHttp.get("/router/monitoring/queue-stats")).isEmpty())
+                    .as("nothing sampled yet, and the endpoint does not sample on its own").isTrue();
+
+            var refreshed = json(isolatedHttp.get("/router/monitoring/queue-stats?refresh=true")).get("q-refresh");
+            assertThat(refreshed.get("pendingMessages").asLong()).isEqualTo(42);
+        }
+    }
+
+    @Test
+    @DisplayName("POST /monitoring/broker-stats/refresh samples the same queues the housekeeping loop does")
+    void brokerStatsRefresh() {
+        var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var consumer = new RecordingConsumer("q-forced");
+        consumer.queueMetrics = new QueueMetrics(5, 1, 0, 0, 0);
+        isolatedManager.registerConsumer(consumer);
+        var isolated = new BrokerStatsCache(CLOCK);
+        var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            var r = isolatedHttp.post("/router/monitoring/broker-stats/refresh", null);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("refreshed").asBoolean()).isTrue();
+            assertThat(json(r).get("ageSeconds").asLong())
+                    .as("clamped at 0 — a refresh that just happened cannot report NEVER_REFRESHED").isZero();
+
+            // The observable effect, not the response's own claim: a queue the
+            // endpoint had never sampled is now readable.
+            var row = json(isolatedHttp.get("/router/monitoring/queues")).get(0);
+            assertThat(row.get("queue_identifier").asText()).isEqualTo("q-forced");
+            assertThat(row.get("pending_messages").asLong()).isEqualTo(5);
+        }
+    }
+
+    @Test
+    @DisplayName("a clock that steps backwards still reports ageSeconds >= 0")
+    void brokerStatsRefreshAgeIsNeverNegative() {
+        // NTP corrections happen. A negative age would render as a refresh in
+        // the future, which reads as a broken endpoint rather than a corrected
+        // clock — and this is the response to the request that just caused it.
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolated = new BrokerStatsCache(clock);
+        var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
+                "v", "/router", null, null, null, isolated);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            warmUp(isolatedHttp);
+            isolated.refresh(Map.of());
+            clock.advance(Duration.ofSeconds(-30));
+
+            assertThat(isolated.ageSeconds()).as("the cache reports the raw truth").isEqualTo(-30);
+            assertThat(json(isolatedHttp.post("/router/monitoring/broker-stats/refresh", null))
+                    .get("ageSeconds").asLong()).isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("with no broker stats wired: the two lists answer empty and the refresh mutation 503s")
+    void brokerStatsAbsent() {
+        assertThat(json(bare.get("/router/monitoring/queues")).isEmpty()).isTrue();
+        assertThat(json(bare.get("/router/monitoring/queue-stats")).isEmpty()).isTrue();
+        assertThat(bare.post("/router/monitoring/broker-stats/refresh", null).statusCode())
+                .as("§9.1: 503 for mutations, empty payload for lists").isEqualTo(503);
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/traffic-status reports the mode and the target group it registers with")
+    void trafficStatusRegistered() {
+        targetGroup.failing = false;
+        traffic.register();
+
+        var body = json(http.get("/router/monitoring/traffic-status"));
+        assertThat(body.get("enabled").asBoolean()).isTrue();
+        assertThat(body.get("mode").asText()).isEqualTo("alb-target-group");
+        assertThat(body.get("targetGroupArn").asText()).isEqualTo(FakeTargetGroup.ARN);
+        assertThat(body.get("registered").asBoolean()).isTrue();
+        assertThat(body.has("lastChangedAt")).isTrue();
+        assertThat(body.has("lastError")).as("nothing has failed").isFalse();
+    }
+
+    @Test
+    @DisplayName("a failed deregister reports registered:true AND lastError — the two facts that disagree")
+    void trafficStatusReportsTheDisagreement() {
+        // This is the field that earns the endpoint. A deregister that threw
+        // leaves the router believing it is out while the balancer is still
+        // sending it traffic; an operator deciding whether it is safe to stop
+        // the process needs both halves, and either one alone misleads.
+        targetGroup.failing = false;
+        traffic.register();
+        targetGroup.failing = true;
+        traffic.deregister();
+
+        var body = json(http.get("/router/monitoring/traffic-status"));
+        assertThat(body.get("registered").asBoolean())
+                .as("still in, as far as we know — the dangerous direction is believing otherwise").isTrue();
+        assertThat(body.get("lastError").asText()).contains("cannot reach the balancer");
+
+        targetGroup.failing = false;
+    }
+
+    @Test
+    @DisplayName("with no traffic wired, traffic-status is the disabled shape rather than an error")
+    void trafficStatusAbsent() {
+        var body = json(bare.get("/router/monitoring/traffic-status"));
+        assertThat(body.get("enabled").asBoolean()).isFalse();
+        assertThat(body.get("mode").asText()).isEqualTo("disabled");
+        assertThat(body.get("registered").asBoolean()).isFalse();
+        assertThat(body.has("targetGroupArn")).as("no group to name").isFalse();
+        assertThat(body.has("lastChangedAt")).isFalse();
     }
 
     // ── Pool update ──────────────────────────────────────────────────────
@@ -1115,6 +1535,10 @@ class RouterApiTest {
         /// the `brokerAcked:true` and `brokerAcked:false` force-ack branches.
         volatile boolean ackConfirms = true;
 
+        /// What `#metrics` reports next. `null` is "could not read", which the
+        /// broker-stats cache treats differently from a zeroed reading.
+        volatile QueueMetrics queueMetrics;
+
         RecordingConsumer(String id) {
             this.id = id;
         }
@@ -1141,11 +1565,44 @@ class RouterApiTest {
 
         @Override
         public Optional<QueueMetrics> metrics() {
-            return Optional.empty();
+            return Optional.ofNullable(queueMetrics);
         }
 
         @Override
         public void close() {
+        }
+    }
+
+    /// Stands in for ELBv2 — the AWS boundary, not a component this module
+    /// reads from. [AlbTraffic]'s own policy stays real.
+    private static final class FakeTargetGroup implements TargetGroup {
+        static final String ARN = "arn:aws:elasticloadbalancing:eu-west-1:1:targetgroup/fc/abc";
+        volatile boolean failing;
+
+        @Override
+        public void register(String targetId, int port) {
+            failIfAsked();
+        }
+
+        @Override
+        public void deregister(String targetId, int port) {
+            failIfAsked();
+        }
+
+        @Override
+        public boolean draining(String targetId, int port) {
+            return false;
+        }
+
+        @Override
+        public String arn() {
+            return ARN;
+        }
+
+        private void failIfAsked() {
+            if (failing) {
+                throw new IllegalStateException("cannot reach the balancer");
+            }
         }
     }
 

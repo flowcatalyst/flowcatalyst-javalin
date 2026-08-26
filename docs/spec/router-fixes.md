@@ -219,3 +219,41 @@ but `net/http`'s `readLoop` waits for a terminal response after any non-101 1xx
 rather than treating it as final, which would make Go produce `ErrorConnection`
 and match Java exactly. A reproduction of Go's classifier agreed with the second
 reading. Report what the real module does.
+
+---
+
+## Fix 10 — `queue.Defer` has no production caller
+
+**Found 2026-08-26 while wiring `GET /monitoring/queue-stats`.**
+
+`internal/queue/queue.go:80` declares `Defer(ctx, receipt, delaySeconds)` and
+all three backends implement it, each incrementing a `deferred` counter that
+`queue.Metrics.TotalDeferred` reports and `/monitoring/queue-stats` renders as
+`totalDeferred`. `grep 'Defer('` over the tree finds the interface, the three
+implementations, and **nothing else** — so the column is structurally zero in
+production, on every deployment, for ever.
+
+**Not a defect in behaviour.** Deferrals do happen; they go out as `Nack` with
+a delay and are counted as nacks. The field is simply dead.
+
+**Impact.** It is a dashboard column that reads as a fact and is not one — an
+operator comparing `totalFailed` against `totalDeferred` will conclude no
+message has ever been rate-limited or met an open breaker, which is false.
+That is worse than the column's absence.
+
+**Fix — owner's call, one of:**
+
+1. **Delete the verb and the column.** Removes a wire field, so it needs the
+   dashboard changed with it.
+2. **Wire `Defer` up** where a delay means "not the message's fault"
+   (429, open circuit, `ack:false` deferral) and let `TotalFailed` stop
+   counting them. This is the more useful shape: it stops rate-limiting from
+   depressing `successRate`, which today it does on both sides.
+3. **Keep it at zero and say so** in the DTO doc.
+
+**Java.** Option 3 for now, deliberately and named: `RouterApi`'s
+`DEFERRALS_ARE_NACKS` constant emits 0 with the reason attached, so parity is
+exact and the next reader does not go looking for a counter that was never
+lost. Java never grew the verb — `Acknowledger` has `ack`/`nack(delay)` and
+`Broker` adds `release` — so option 2 would be a change on both sides, and it
+wants a ruling before either.

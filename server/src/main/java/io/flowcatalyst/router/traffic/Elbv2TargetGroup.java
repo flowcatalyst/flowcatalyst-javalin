@@ -97,6 +97,11 @@ public final class Elbv2TargetGroup implements TargetGroup, AutoCloseable {
                         && description.targetHealth().state() == TargetHealthStateEnum.DRAINING);
     }
 
+    @Override
+    public String arn() {
+        return targetGroupArn;
+    }
+
     private static TargetDescription target(String targetId, int port) {
         return TargetDescription.builder().id(targetId).port(port).build();
     }

@@ -67,22 +67,46 @@ public final class BrokerStatsCache {
     /// previous reading stays, because "we could not ask" is not the same as
     /// "there is nothing there", and showing zero depth for a queue we simply
     /// failed to reach would be actively misleading during an outage.
-    public synchronized void refresh(Map<String, Supplier<java.util.Optional<QueueMetrics>>> queues) {
-        var now = clock.instant();
+    ///
+    /// ### Why the sampling is not done under the lock
+    ///
+    /// Each supplier may cost a broker round-trip, and there are now two
+    /// callers: the housekeeping tick and an operator hitting
+    /// `POST /monitoring/broker-stats/refresh`. Holding the monitor across the
+    /// I/O would make one unreachable broker block **every read of this
+    /// cache** for as long as its client takes to time out — so the endpoint
+    /// built to diagnose an outage would be the thing that hangs the dashboard
+    /// during one. The whole point of a cache is that reads never wait on a
+    /// broker.
+    public void refresh(Map<String, Supplier<java.util.Optional<QueueMetrics>>> queues) {
         var sampled = new HashMap<String, QueueMetrics>();
         queues.forEach((queueId, source) -> {
             try {
-                source.get().ifPresent(metrics -> {
-                    latest.put(queueId, metrics);
-                    sampled.put(queueId, metrics);
-                });
+                source.get().ifPresent(metrics -> sampled.put(queueId, metrics));
             } catch (RuntimeException e) {
                 log.warn("could not read broker metrics for queue {}", queueId, e);
             }
         });
-        history.addLast(new Snapshot(now, Map.copyOf(sampled)));
-        trim(now);
-        lastRefresh = now;
+        // Stamped after the sampling, not before: the age answers "how stale
+        // is the newest reading", and a slow sweep that started a minute ago
+        // did not produce minute-old numbers.
+        store(clock.instant(), sampled);
+    }
+
+    /// Records one completed sample. Short and lock-held; no I/O.
+    ///
+    /// A sample that finished *behind* one already recorded is dropped rather
+    /// than applied. Two refreshes can now overlap — a tick and an operator's
+    /// forced refresh — and letting the slower one land last would rewind
+    /// `latest` to older numbers and then report them as fresh.
+    private synchronized void store(Instant at, Map<String, QueueMetrics> sampled) {
+        if (lastRefresh != null && at.isBefore(lastRefresh)) {
+            return;
+        }
+        latest.putAll(sampled);
+        history.addLast(new Snapshot(at, Map.copyOf(sampled)));
+        trim(at);
+        lastRefresh = at;
     }
 
     private void trim(Instant now) {

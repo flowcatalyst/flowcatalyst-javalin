@@ -111,3 +111,65 @@ is `lastSeenElapsedMs` growing without bound.
 - One mutation check per derived field — `successRate`'s empty case especially,
   since 0.0 and 1.0 are both plausible-looking and only one is right.
 - `NoOrphansTest` stays green: anything added must be reachable.
+
+---
+
+## Outcome (2026-08-26)
+
+All five landed. `RouterApi.State` gained `traffic` and `brokerStats`, both
+nullable and degrading the §9.1 way; `Router` now holds the cache the
+housekeeping loop samples into and hands the API **that** one, so the loop and
+the endpoint cannot disagree on the same dashboard.
+
+### Two things this plan got wrong
+
+- **The 30-minute window was already kept.** `BrokerStatsCache.HISTORY` is 30
+  minutes and `windowed(Duration)` was written and tested on 2026-08-25;
+  `queue-stats` needed no cache change for it, only `parseTimeWindow` — which
+  `pool-stats` already had. The plan (and the `RouterApi` class doc it was
+  written from) carried the claim forward without re-reading the class.
+- **`totalDeferred` is not missing data; it is a permanently-zero field on
+  both sides.** Go carries a `Defer` verb on all three queue backends with the
+  counter behind this field, and **no production caller** — `grep 'Defer('`
+  over the Go tree finds only the interface and the three implementations. So
+  Go reports 0 as well. Java never grew the verb: a deferral is a `nack` with
+  a delay and is counted as a nack on both sides, so the column loses nothing
+  the nack count does not already hold. Emitting 0 is exact parity, not a
+  stand-in for a number we failed to keep, and the rule "do not emit a zero
+  for a window that is not kept" does not bite. Recorded as a named constant
+  (`DEFERRALS_ARE_NACKS`) so the next reader finds the reason.
+
+### Decisions taken while building
+
+| Decision | Why |
+|---|---|
+| `Traffic.Status` gains `mode` + `targetGroupArn`; `TargetGroup` gains an **abstract** `arn()` | The API cannot learn the ARN without reaching into the implementation. Abstract rather than defaulted so a new `TargetGroup` must say what it registers with — a `""` default would let one report nothing on the endpoint whose job is naming the group |
+| `BrokerStatsCache.refresh` samples **outside** the lock | It has two callers now. Holding the monitor across the broker I/O would make one unreachable broker block every read of the cache — the endpoint built to diagnose an outage would be the thing that hangs the dashboard during one |
+| A sample that finishes behind one already stored is dropped | Two refreshes can now overlap (tick + operator). Letting the slower one land last would rewind `latest` and then report it as fresh |
+| `RouterManager.queueMetricSources()` | The endpoint must sample the same queues the loop does. Resolved lazily per queue, so a reconfigure that replaces a consumer does not leave either caller sampling the closed one |
+| `/monitoring/queues` sorted by queue id | The cache returns an unordered map; rows that move between two polls of unchanged data are unreadable, and an unsorted implementation passes a single-queue test |
+| `in-flight-messages/detail` emits `attempts` and the elapsed fields **even at zero** — a deliberate deviation from Go's `omitempty` | `attempts: 0` is the fact separating a message pinned on its first delivery from one legitimately retrying, and that distinction is the endpoint's whole point. Absence is still used where it means something: a message not in the pipeline carries `messageId` and `inPipeline` only |
+| `MEDIATING` outranks `RETRY_BACKOFF` | A retrying message *is* in a worker while the retry runs. Reporting `RETRY_BACKOFF` would tell an operator it is waiting when it is wedged against the target |
+| `lastChangedAt` is an `Instant`, not Go's hand-formatted millisecond string | Every other timestamp on this surface goes through the platform's one RFC 3339 layout; Go rolls its own in exactly this handler. Still RFC 3339, still parses |
+
+### A defect found on the way
+
+`ForceAckResponse.wasMediating` was hard-coded `false` — it was written before
+`Pool.mediating()` existed and the class doc said so. It told every operator
+force-acking a genuinely wedged message that no attempt was running, which is
+the one thing the flag exists to deny. Now read from the live set, and read
+**before** the ack so the worker finishing mid-request cannot flip it.
+
+### Mutation checks
+
+Twelve mutants, all killed: `successRate`'s empty case (1.0 → 0.0),
+`currentSize` dropping `inFlight`, `messagesNotVisible` reading `pending`, the
+`/queues` sort removed, snake_case → camelCase, `MEDIATING` losing to
+`RETRY_BACKOFF`, `wasMediating` back to `false`, `lastSeenElapsedMs` reading
+`startedAt`, `lastError` dropped from traffic-status, `refresh=true` ignored,
+`time_window` ignored, and the `ageSeconds` clamp removed.
+
+The clamp survived its first mutation: after a successful refresh the age is
+never negative, so the guard was unreachable and the test was decorative. It
+is now pinned by a clock that steps **backwards** (an NTP correction), which is
+the only way it fires — and the way it will fire in production.

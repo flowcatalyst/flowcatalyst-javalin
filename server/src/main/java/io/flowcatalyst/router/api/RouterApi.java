@@ -3,6 +3,7 @@ package io.flowcatalyst.router.api;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
@@ -12,6 +13,7 @@ import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.standby.LeaderElection;
+import io.flowcatalyst.router.traffic.Traffic;
 import io.flowcatalyst.router.wire.Message;
 import io.javalin.http.Context;
 import io.javalin.router.JavalinDefaultRoutingApi;
@@ -46,21 +48,6 @@ import java.util.concurrent.atomic.AtomicLong;
 /// Several §9.1 rows have **no such source yet** and are deliberately absent
 /// rather than faked:
 ///
-///   - `GET /monitoring/queue-stats`, `GET /monitoring/queues`,
-///     `POST /monitoring/broker-stats/refresh`, `GET /monitoring/traffic-status`
-///     — **no longer blocked; simply not built.** Every dependency these were
-///     waiting on now exists: `RouterManager.consumerNames()` enumerates the
-///     queues, [io.flowcatalyst.router.lifecycle.BrokerStatsCache] is ported
-///     and running on the housekeeping loop, and [Traffic#status()] has a live
-///     ALB implementation behind it. What is left is the wiring and the DTOs.
-///     `queue-stats` additionally wants `totalDeferred` and a 30-minute
-///     windowed history, which the cache does not yet keep.
-///   - The `MEDIATING` branch of `GET /monitoring/in-flight-messages/detail`.
-///     `GET /monitoring/mediating` itself **is** now ported — [Pool] keeps the
-///     live set (`Pool.mediating()`), so the count and the rows come from one
-///     structure and cannot drift. The detail endpoint still needs the join
-///     between that set and the tracker entry, so it stays skipped rather than
-///     silently never reporting `MEDIATING`.
 ///   - `GET/POST /messages`, `POST /api/seed/messages` — need a publisher
 ///     abstraction that does not exist yet.
 ///   - `POST /config/reload` beyond the "no reloader wired" branch — no
@@ -79,6 +66,37 @@ import java.util.concurrent.atomic.AtomicLong;
 /// it. `DELETE /warnings` and `DELETE /warnings/old` are the two exceptions
 /// that dropped for a different reason: [WarningStore] has no bulk-remove
 /// method, only `raise`/`acknowledge`/`cleanup`/the read accessors.
+///
+/// ### Queue depth and traffic (2026-08-26)
+///
+/// `GET /monitoring/queues`, `GET /monitoring/queue-stats`,
+/// `POST /monitoring/broker-stats/refresh` and `GET /monitoring/traffic-status`
+/// are now wired, over [BrokerStatsCache] and [Traffic] on [State]. Both are
+/// nullable and degrade the §9.1 way: an empty payload for the two lists, 503
+/// for the refresh mutation, and the `disabled` status for traffic.
+///
+/// Two things worth knowing before trusting the numbers:
+///
+///   - **`totalDeferred` is always 0**, and that is exact parity rather than a
+///     stand-in. Go carries a `Defer` verb on every queue backend with the
+///     counter behind this field — and **no production caller**, so Go reports
+///     0 too. Java never grew the verb: a deferral is a `nack` with a delay,
+///     counted as a nack on both sides, so nothing is being lost from the
+///     column. It is kept on the wire because the dashboard reads it.
+///   - **A queue the cache could not sample keeps its previous reading**
+///     rather than reporting zero depth, so a row here can be stale during an
+///     outage — which is the honest failure. `ageSeconds` on the refresh
+///     response is how stale.
+///
+/// ### `GET /monitoring/in-flight-messages/detail`
+///
+/// The three statuses are the value of the endpoint: `MEDIATING` (inside a
+/// pool worker right now — the join between [Pool#mediating()] and the tracker
+/// entry), `RETRY_BACKOFF` (attempts > 0 and not in a worker), and
+/// `TRACKED_IDLE` (neither: buffered behind its ordered group, waiting for a
+/// slot, **or** a phantom whose broker has stopped redelivering). The last is
+/// the one an operator is hunting, and its signature is `lastSeenElapsedMs`
+/// growing without bound while `elapsedTimeMs` grows with it.
 ///
 /// ### `GET /monitoring`, `/monitoring/pools`, `/monitoring/pool-stats`
 ///
@@ -104,6 +122,20 @@ public final class RouterApi {
     private static final PoolMetricsCollector.Snapshot ZERO_METRICS =
             new PoolMetricsCollector.Snapshot(0, 0, 0, 0, 1.0,
                     PoolMetricsCollector.ProcessingTimeMetrics.EMPTY, ZERO_WINDOW, ZERO_WINDOW);
+
+    /// `queue-stats`' `totalDeferred`, which is structurally zero on both
+    /// sides. Go carries a `Defer` verb on every backend and the counter this
+    /// field reports — and no production caller, so Go answers 0 as well.
+    /// Java never grew the verb: a deferral is a `nack` with a delay and is
+    /// counted as a nack, so the column loses nothing that the nack count does
+    /// not already hold. Named rather than inlined so the next reader finds
+    /// the reason instead of a bare literal.
+    private static final long DEFERRALS_ARE_NACKS = 0;
+
+    /// `queue-stats`' `throughput`. Go hard-codes 0.0 — it never computed a
+    /// rate — and a plausible-looking number invented here would be worse than
+    /// an obviously absent one, because a dashboard would plot it.
+    private static final double THROUGHPUT_NOT_COMPUTED = 0.0;
 
     /// See `#forceAck`: paired with `brokerAcked:false` when
     /// [io.flowcatalyst.router.queue.Consumer#ack] reports the broker did
@@ -150,10 +182,21 @@ public final class RouterApi {
     ///                       here separately. A pool with no entry reports
     ///                       zeroed metrics (matches Go's `if s.Metrics !=
     ///                       nil` guard); `null`/omitted defaults to `Map.of()`
+    /// @param traffic       load-balancer registration state; `null` →
+    ///                       `/monitoring/traffic-status` answers the disabled
+    ///                       shape, which is also what [Traffic#DISABLED]
+    ///                       reports, so an unconfigured deployment and an
+    ///                       unwired one read the same
+    /// @param brokerStats   the **same** cache the housekeeping loop samples
+    ///                       into, not a second one — two caches would answer
+    ///                       from two schedules and disagree on one dashboard.
+    ///                       `null` → the two queue lists answer empty and the
+    ///                       refresh mutation 503s
     public record State(RouterManager manager, InFlightTracker tracker, WarningStore warnings,
                         BreakerRegistry breakers, LeaderElection election, LeaderElection.Config electionConfig,
                         String version, String prefix, MockCounters mocks,
-                        Map<String, PoolMetricsCollector> poolMetrics) {
+                        Map<String, PoolMetricsCollector> poolMetrics,
+                        Traffic traffic, BrokerStatsCache brokerStats) {
 
         public State {
             Objects.requireNonNull(tracker, "tracker");
@@ -229,8 +272,15 @@ public final class RouterApi {
         // ── Monitoring: in-flight messages ───────────────────────────────
         routes.get(p + "/monitoring/in-flight-messages", ctx -> inFlightList(ctx, s));
         routes.get(p + "/monitoring/in-flight-messages/check", ctx -> inFlightCheck(ctx, s));
+        routes.get(p + "/monitoring/in-flight-messages/detail", ctx -> inFlightDetail(ctx, s));
         routes.post(p + "/monitoring/in-flight-messages/check-batch", ctx -> inFlightCheckBatch(ctx, s));
         routes.post(p + "/monitoring/in-flight-messages/{messageId}/ack", ctx -> forceAck(ctx, s));
+
+        // ── Monitoring: queue depth, broker stats, traffic ───────────────
+        routes.get(p + "/monitoring/queues", ctx -> queues(ctx, s));
+        routes.get(p + "/monitoring/queue-stats", ctx -> queueStats(ctx, s));
+        routes.post(p + "/monitoring/broker-stats/refresh", ctx -> brokerStatsRefresh(ctx, s));
+        routes.get(p + "/monitoring/traffic-status", ctx -> trafficStatus(ctx, s));
 
         // ── Monitoring: pool update, standby, stream health ──────────────
         routes.put(p + "/monitoring/pools/{poolCode}", ctx -> updatePool(ctx, s));
@@ -686,8 +736,12 @@ public final class RouterApi {
     /// (`handlers_mutations.go: inFlightForceAck`): subsystem-absence (503)
     /// before not-tracked (404).
     ///
-    /// `wasMediating` is always `false`: nothing in this module's scope
-    /// tracks the live "currently mediating" set (see class doc).
+    /// `wasMediating` warns that a delivery attempt was **still running inside
+    /// a worker** when the entry was cleared; that attempt finishes on its own
+    /// and may still reach the target after this responds. It is read from
+    /// [Pool#mediating()] — it was hard-coded `false` until 2026-08-26, which
+    /// told every operator force-acking a genuinely wedged message that
+    /// nothing was in flight for it.
     ///
     /// `brokerAcked`/`brokerAckError`: [io.flowcatalyst.router.queue.Consumer#ack]
     /// now returns whether the broker confirmed the removal (still
@@ -721,12 +775,179 @@ public final class RouterApi {
                 new Message(entry.messageId(), entry.poolCode(), null, null, null, "", entry.messageGroupId(),
                         false, null),
                 entry.brokerMessageId(), entry.receiptHandle(), entry.queueIdentifier(), entry.attempts());
+        // Read BEFORE the ack: the worker may finish between the two, and an
+        // operator who is told "nothing was running" because the race went the
+        // other way has been told the one thing this flag exists to deny.
+        boolean wasMediating = mediating(s, messageId).isPresent();
         boolean brokerAcked = consumer.get().ack(ackTarget);
         s.tracker().remove(entry.messageId());
         long elapsedMs = entry.elapsedSeconds(Instant.now()) * 1000;
         ctx.json(new ForceAckResponse(messageId, true, brokerAcked,
                 brokerAcked ? null : BROKER_ACK_NOT_CONFIRMED, entry.queueIdentifier(), entry.poolCode(), elapsedMs,
-                false));
+                wasMediating));
+    }
+
+    // ── Queue depth / broker stats / traffic ─────────────────────────────
+
+    /// `GET /monitoring/queues` — the latest broker-side depth per queue.
+    ///
+    /// **snake_case, alone on this surface.** Its neighbours are camelCase;
+    /// this one is not, because that is the shape the dashboard already parses.
+    /// Tidying it would be a wire break dressed up as consistency.
+    ///
+    /// Sorted by queue id. The cache hands back an unordered map, and a list
+    /// whose rows move between two polls of the same unchanged data is a
+    /// dashboard nobody can read.
+    private static void queues(Context ctx, State s) {
+        if (s.brokerStats() == null) {
+            ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
+            return;
+        }
+        ctx.json(s.brokerStats().latest().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> new QueueMetricsView(e.getKey(), e.getValue().pending(), e.getValue().inFlight()))
+                .toList());
+    }
+
+    /// `GET /monitoring/queue-stats` — per-queue counters, keyed by queue.
+    ///
+    /// `time_window=5min|30min` narrows the counters to that window (the cache
+    /// keeps 30 minutes of snapshots); anything else is all-time.
+    /// `refresh=true` samples the brokers before rendering, for an operator who
+    /// would otherwise wait out the housekeeping tick.
+    ///
+    /// The derivation worth stating: `successRate` is **1.0 when nothing has
+    /// been processed**, not 0.0. A queue that has done nothing has failed
+    /// nothing, and zero would paint every freshly-created queue as a total
+    /// outage on the dashboard.
+    private static void queueStats(Context ctx, State s) {
+        if (s.brokerStats() == null) {
+            ctx.json(Map.of()); // empty payload for lists (spec §9.1 note)
+            return;
+        }
+        if ("true".equalsIgnoreCase(queryParam(ctx, "refresh"))) {
+            refreshBrokerStats(s);
+        }
+        var window = parseTimeWindow(ctx.queryParam("time_window"));
+        Map<String, DashboardQueueStats> out = new LinkedHashMap<>();
+        s.brokerStats().windowed(window).entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> out.put(e.getKey(), queueStatsRow(e.getKey(), e.getValue())));
+        ctx.json(out);
+    }
+
+    /// One `queue-stats` row. Separated from the HTTP so the derivations can be
+    /// tested on values chosen to make a wrong one visible.
+    static DashboardQueueStats queueStatsRow(String queue, io.flowcatalyst.router.queue.QueueMetrics m) {
+        long processed = m.acked() + m.nacked();
+        // 1.0, not 0.0 — see the handler's javadoc.
+        double successRate = processed > 0 ? (double) m.acked() / processed : 1.0;
+        return new DashboardQueueStats(queue, m.polled(), m.acked(), m.nacked(),
+                DEFERRALS_ARE_NACKS, successRate, m.pending() + m.inFlight(),
+                THROUGHPUT_NOT_COMPUTED, m.pending(), m.inFlight());
+    }
+
+    /// `POST /monitoring/broker-stats/refresh` — sample now rather than waiting
+    /// for the housekeeping tick.
+    ///
+    /// `ageSeconds` is clamped at zero: [BrokerStatsCache#ageSeconds] answers
+    /// [BrokerStatsCache#NEVER_REFRESHED] before the first sample, and a `-1`
+    /// on the response to a refresh that just happened would be nonsense.
+    private static void brokerStatsRefresh(Context ctx, State s) {
+        if (s.brokerStats() == null) {
+            serviceUnavailable(ctx, "broker stats not configured");
+            return;
+        }
+        refreshBrokerStats(s);
+        ctx.json(new BrokerStatsRefreshResponse(true, Math.max(0, s.brokerStats().ageSeconds())));
+    }
+
+    /// Samples the same queues the housekeeping loop does, by asking the
+    /// manager for its sources rather than keeping a second list here — one
+    /// that would quietly stop matching after the first reconfigure.
+    private static void refreshBrokerStats(State s) {
+        s.brokerStats().refresh(s.manager() == null ? Map.of() : s.manager().queueMetricSources());
+    }
+
+    /// `GET /monitoring/traffic-status`.
+    ///
+    /// `lastError` is the field that earns this endpoint. It is reported
+    /// separately from `registered` because a **failed deregister** leaves the
+    /// router believing it is out of the balancer while the balancer is still
+    /// sending it traffic — the two facts disagree, and an operator deciding
+    /// whether it is safe to stop the process needs both.
+    private static void trafficStatus(Context ctx, State s) {
+        var status = s.traffic() == null ? Traffic.Status.disabled() : s.traffic().status();
+        ctx.json(new TrafficStatusResponse(status.enabled(), status.mode(),
+                status.targetGroupArn().orElse(null), status.registered(),
+                status.lastChange().orElse(null), status.lastError().orElse(null)));
+    }
+
+    // ── In-flight detail ─────────────────────────────────────────────────
+
+    /// `GET /monitoring/in-flight-messages/detail` — everything known about one
+    /// tracked message.
+    ///
+    /// An unknown id is **not a 404**: `inPipeline:false` is the answer to
+    /// "is it safe to resend this?", and the caller asking is usually asking
+    /// precisely because it expects the answer to be no.
+    private static void inFlightDetail(Context ctx, State s) {
+        String messageId = queryParam(ctx, "messageId");
+        InFlightMessage entry = null;
+        for (var im : s.tracker().snapshot()) {
+            if (im.messageId().equals(messageId)) {
+                entry = im;
+                break;
+            }
+        }
+        if (entry == null) {
+            ctx.json(InFlightMessageDetail.notInPipeline(messageId));
+            return;
+        }
+        ctx.json(inFlightDetail(entry, mediating(s, messageId).orElse(null), Instant.now()));
+    }
+
+    /// The tracker entry joined to the live worker view, separated from the
+    /// HTTP so each status can be produced from state chosen to distinguish it.
+    static InFlightMessageDetail inFlightDetail(InFlightMessage entry,
+                                                io.flowcatalyst.router.pool.Mediating mediating, Instant now) {
+        // Order matters: being inside a worker is the strongest fact, and a
+        // message on its second attempt IS in a worker while it is being
+        // retried — reporting RETRY_BACKOFF there would tell an operator it is
+        // waiting when it is actually stuck against the target.
+        String status = mediating != null ? "MEDIATING"
+                : entry.retrying() ? "RETRY_BACKOFF"
+                : "TRACKED_IDLE";
+        return new InFlightMessageDetail(entry.messageId(), true, status,
+                emptyToNull(entry.brokerMessageId()), entry.queueIdentifier(), entry.poolCode(),
+                emptyToNull(entry.messageGroupId()), entry.attempts(),
+                millisBetween(entry.startedAt(), now), entry.startedAt(),
+                entry.lastSeenAt(), millisBetween(entry.lastSeenAt(), now),
+                mediating == null ? null : mediating.target(),
+                mediating == null ? null : millisBetween(mediating.startedAt(), now));
+    }
+
+    /// The live worker entry for a message, if any pool has one.
+    private static java.util.Optional<io.flowcatalyst.router.pool.Mediating> mediating(State s, String messageId) {
+        if (s.manager() == null) {
+            return java.util.Optional.empty();
+        }
+        return s.manager().pools().values().stream()
+                .flatMap(pool -> pool.mediating().stream())
+                .filter(row -> row.messageId().equals(messageId))
+                .findFirst();
+    }
+
+    /// Never negative: a clock that stepped backwards should read as "just
+    /// now", not as a message delivered in the future.
+    private static long millisBetween(Instant from, Instant to) {
+        return Math.max(0, Duration.between(from, to).toMillis());
+    }
+
+    /// `""` → `null`, so Jackson drops the field the way Go's `omitempty`
+    /// does on these two.
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
     }
 
     // ── Pool update ──────────────────────────────────────────────────────
@@ -995,6 +1216,71 @@ public final class RouterApi {
     }
 
     public record InFlightCheckResponse(String messageId, boolean inPipeline, String poolCode, String queueId) {
+    }
+
+    /// `GET /monitoring/in-flight-messages/detail`.
+    ///
+    /// **Deliberate deviation from Go**: Go marks `attempts` and the three
+    /// millisecond fields `omitempty`, so a message on its first attempt
+    /// reports no `attempts` field at all — indistinguishable from an
+    /// endpoint that did not look. Here every field is present once
+    /// `inPipeline` is true, because `attempts: 0` is the fact that separates
+    /// a message pinned on its first delivery from one legitimately retrying,
+    /// and that distinction is the whole point of the row. Absence is still
+    /// used where it means something: a message that is not in the pipeline
+    /// carries `messageId` and `inPipeline` and nothing else, and
+    /// `mediationTarget`/`mediatingElapsedMs` appear only for `MEDIATING`.
+    ///
+    /// @param status             `MEDIATING` | `RETRY_BACKOFF` | `TRACKED_IDLE`,
+    ///                           absent when not in the pipeline
+    /// @param lastSeenAt         refreshed on every broker redelivery of the
+    ///                           owner copy
+    /// @param lastSeenElapsedMs  the phantom signature: a `TRACKED_IDLE` entry
+    ///                           whose value keeps growing is one the broker
+    ///                           has stopped redelivering, and it will
+    ///                           ACK-swallow every requeued copy until cleared
+    public record InFlightMessageDetail(String messageId, boolean inPipeline, String status,
+                                        String brokerMessageId, String queueId, String poolCode,
+                                        String messageGroup, Integer attempts, Long elapsedTimeMs,
+                                        Instant addedToInPipelineAt, Instant lastSeenAt, Long lastSeenElapsedMs,
+                                        String mediationTarget, Long mediatingElapsedMs) {
+
+        static InFlightMessageDetail notInPipeline(String messageId) {
+            return new InFlightMessageDetail(messageId, false, null, null, null, null, null,
+                    null, null, null, null, null, null, null);
+        }
+    }
+
+    /// `GET /monitoring/queues` — **snake_case**, alone on this surface,
+    /// because that is the shape already on the wire.
+    public record QueueMetricsView(@JsonProperty("queue_identifier") String queueIdentifier,
+                                   @JsonProperty("pending_messages") long pendingMessages,
+                                   @JsonProperty("in_flight_messages") long inFlightMessages) {
+    }
+
+    /// `GET /monitoring/queue-stats` map value — camelCase.
+    ///
+    /// `currentSize` is `pendingMessages + inFlightMessages`, and
+    /// `messagesNotVisible` is `inFlightMessages` under the SQS name the
+    /// dashboard uses; both are kept as separate fields because that is what
+    /// the wire contract says, not because they are separate facts.
+    public record DashboardQueueStats(String name, long totalMessages, long totalConsumed, long totalFailed,
+                                      long totalDeferred, double successRate, long currentSize, double throughput,
+                                      long pendingMessages, long messagesNotVisible) {
+    }
+
+    public record BrokerStatsRefreshResponse(boolean refreshed, long ageSeconds) {
+    }
+
+    /// `GET /monitoring/traffic-status`.
+    ///
+    /// `lastChangedAt` is an [Instant] rather than Go's hand-formatted
+    /// millisecond string: every other timestamp on this surface goes through
+    /// the platform's one RFC 3339 layout, and one layout across the API beats
+    /// reproducing the single place Go rolled its own. Still RFC 3339, still
+    /// parses.
+    public record TrafficStatusResponse(boolean enabled, String mode, String targetGroupArn, boolean registered,
+                                        Instant lastChangedAt, String lastError) {
     }
 
     public record InFlightCheckBatchRequest(List<String> messageIds) {

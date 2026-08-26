@@ -174,15 +174,30 @@ Ordered by what unblocks the most:
    Go — Java defaulted to `IMMEDIATE`, which silently gave no ordering to a
    producer that needed it.
 
-4. **Four monitoring routes, unblocked but unbuilt** (2026-08-26). The
-   `RouterApi` class doc listed these as blocked; every dependency they were
-   waiting on now exists, so the note was stale and has been corrected.
-   `GET /monitoring/queues`, `GET /monitoring/queue-stats`,
-   `POST /monitoring/broker-stats/refresh`, `GET /monitoring/traffic-status`,
-   and the `MEDIATING` branch of `GET /monitoring/in-flight-messages/detail`.
-   All read-only over data the router already holds; the work is `RouterApi.State`
-   fields, DTOs and wiring. `queue-stats` also wants `totalDeferred` and a
-   30-minute window the cache does not keep yet.
+4. ~~**Four monitoring routes.**~~ **DONE 2026-08-26** — all five, including
+   the whole of `GET /monitoring/in-flight-messages/detail`, which turned out
+   to be unported rather than merely missing its `MEDIATING` branch. Outcome
+   and every decision in `docs/spec/monitoring-routes.md` "Outcome". The
+   router's §9.1 surface now has nothing left that a live data source exists
+   for.
+
+   Two claims the plan inherited from the class doc were wrong on re-reading
+   the code: the **30-minute window was already kept** (`BrokerStatsCache`
+   has `HISTORY` + `windowed`), and **`totalDeferred` is not missing data** —
+   Go's `Defer` verb has no production caller, so the field is structurally
+   zero on both sides (`router-fixes.md` Fix 10 asks the owner what to do
+   about it).
+
+   Found and fixed on the way: `ForceAckResponse.wasMediating` was hard-coded
+   `false`, telling every operator force-acking a wedged message that no
+   attempt was running. `BrokerStatsCache.refresh` now samples **outside**
+   its lock — with an operator-triggered refresh added, holding the monitor
+   across broker I/O would let one unreachable broker hang every read of the
+   cache during exactly the outage someone is looking at it for.
+
+   Twelve mutation checks, all killed. One (`ageSeconds`' clamp) survived
+   first time because it was unreachable after a successful refresh; it is
+   now pinned by a backwards clock step, which is the only way it fires.
 
 5. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
    Needs no Go changes and asserts six of seven fields.

@@ -61,6 +61,12 @@ public final class Router implements AutoCloseable {
     /// Held so shutdown stops the housekeeping threads.
     private final LifecycleLoops housekeeping;
 
+    /// Sampled by the housekeeping loop and read by the monitoring API. Held
+    /// here so both see the same readings — a second cache built for the API
+    /// would answer from its own sampling schedule and disagree with the
+    /// dashboard on the same page.
+    private final BrokerStatsCache brokerStats;
+
     /// Held only so shutdown can flush it — the last notices an instance
     /// sends are the ones most likely to explain why it is going away.
     private final Warnings notifier;
@@ -78,7 +84,7 @@ public final class Router implements AutoCloseable {
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
-                   Warnings notifier, LifecycleLoops housekeeping) {
+                   Warnings notifier, LifecycleLoops housekeeping, BrokerStatsCache brokerStats) {
         this.server = server;
         this.manager = manager;
         this.tracker = tracker;
@@ -90,6 +96,7 @@ public final class Router implements AutoCloseable {
         this.redisClient = redisClient;
         this.notifier = notifier;
         this.housekeeping = housekeeping;
+        this.brokerStats = brokerStats;
         this.poolMetrics.putAll(metrics);
     }
 
@@ -111,6 +118,10 @@ public final class Router implements AutoCloseable {
 
     public Traffic traffic() {
         return traffic;
+    }
+
+    public BrokerStatsCache brokerStats() {
+        return brokerStats;
     }
 
     public Map<String, PoolMetricsCollector> poolMetrics() {
@@ -189,17 +200,13 @@ public final class Router implements AutoCloseable {
         var brokerStats = new BrokerStatsCache(clock);
         var housekeeping = new LifecycleLoops();
         housekeeping.start(LifecycleLoops.standard(stalls, tracker, warningSink,
-                () -> brokerStats.refresh(manager.consumerNames().stream()
-                        .collect(java.util.stream.Collectors.toMap(
-                                queueId -> queueId,
-                                queueId -> () -> manager.consumer(queueId)
-                                        .flatMap(io.flowcatalyst.router.queue.Consumer::metrics))))));
+                () -> brokerStats.refresh(manager.queueMetricSources())));
 
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
-                redisClient, metrics, notifier, housekeeping);
+                redisClient, metrics, notifier, housekeeping, brokerStats);
     }
 
     private static LeaderElection.Config electionConfig(Env env) {

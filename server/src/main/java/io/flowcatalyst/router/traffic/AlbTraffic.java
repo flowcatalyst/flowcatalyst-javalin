@@ -32,6 +32,9 @@ public final class AlbTraffic implements Traffic {
 
     private static final Logger log = LoggerFactory.getLogger(AlbTraffic.class);
 
+    /// What [Traffic.Status#mode] reports while this is the strategy in use.
+    public static final String MODE = "alb-target-group";
+
     /// How often to ask whether draining has finished (spec constant 51).
     static final Duration DRAIN_POLL_INTERVAL = Duration.ofSeconds(5);
 
@@ -168,7 +171,7 @@ public final class AlbTraffic implements Traffic {
 
     @Override
     public Status status() {
-        return new Status(true, registered.get(),
+        return new Status(true, MODE, Optional.of(targetGroup.arn()), registered.get(),
                 Optional.ofNullable(lastChange.get()), Optional.ofNullable(lastError.get()));
     }
 }

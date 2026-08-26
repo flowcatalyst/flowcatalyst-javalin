@@ -178,6 +178,11 @@ class AlbTrafficTest {
         }
 
         @Override
+        public String arn() {
+            return "arn:aws:elasticloadbalancing:eu-west-1:1:targetgroup/fc/abc";
+        }
+
+        @Override
         public boolean draining(String targetId, int port) {
             drainChecks.incrementAndGet();
             if (drainCheckFails) {
