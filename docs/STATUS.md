@@ -209,6 +209,36 @@ Ordered by what unblocks the most:
 Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
 `Q41` metrics contract (`RouterPrometheusCollector.java:54`).
 
+### Two cross-cutting changes, 2026-08-26
+
+**Jackson 3 (`tools.jackson`)** — owner ruling, reversing the earlier "stay on
+2.x": the migration cost is paid once either way, and paying it now avoids
+paying it on someone else's schedule. `jackson-annotations` keeps its
+`com.fasterxml.jackson.core` coordinate, which Jackson 3 never renamed.
+
+The trap, because it will be hit again: **do not add `jackson-datatype-jsr310`
+or `jackson-datatype-jdk8`.** Jackson 3 folded both into databind —
+`java.time` lives in `tools.jackson.databind.ext.javatime`. The
+`tools.jackson.datatype` jsr310 artifact is *retired*, which is why the BOM
+looks like it points at an unpublished version. That is not a broken pointer
+to work around, and pinning `3.0.0-rc2` to satisfy it puts a pre-GA
+dependency in the build to get behaviour databind already has. Verified: with
+no module registered, databind renders an `Instant` as
+`2024-03-05T07:08:09.123456789Z` by itself. The fixed six-digit RFC 3339
+layout comes from the `micro` `SimpleModule` in `platform/shared/json/Json.java`,
+which must stay registered — `JsonTest` pins it, and removing `micro` fails 6
+of its 10 assertions. The one remaining jsr310 dependency, in `sdk`, is real:
+openapi-generator's templates hardcode Jackson 2.
+
+**`RouterApi` split** — 1337 lines into 11 files, none over 241, `RouterApi`
+itself 169. Grouped by resource, not by verb, and each group registers its own
+routes so a path and its handler stay adjacent (what Go gets from
+`huma.Register`). `Wire` is the `dto.go` counterpart; `Http` holds the shared
+query reading and the two §9.1 error shapes. A pure move — no handler body
+changed. Checked as one: 55 routes before and after, identical set, each still
+bound to the **same** handler, compared as path→handler pairs rather than
+paths alone.
+
 ### The `DashboardHandlerTest` "flake" was not a flake (2026-08-26)
 
 It failed 3 of 4 in one full-suite run and passed standalone and on three
