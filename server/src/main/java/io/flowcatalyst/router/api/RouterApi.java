@@ -46,21 +46,21 @@ import java.util.concurrent.atomic.AtomicLong;
 /// Several §9.1 rows have **no such source yet** and are deliberately absent
 /// rather than faked:
 ///
-///   - `GET /monitoring/queue-stats`, `GET /monitoring/queues` — both need
-///     every configured queue's [io.flowcatalyst.router.queue.QueueMetrics].
-///     [RouterManager] exposes only `consumer(String queueId)` (single
-///     lookup), not a way to enumerate all queue ids. `queue-stats` also
-///     needs `totalDeferred` and a 30-minute windowed history
-///     (`router/broker_stats.go`), neither of which has a Java port.
-///   - `POST /monitoring/broker-stats/refresh` — no broker-stats cache ported.
+///   - `GET /monitoring/queue-stats`, `GET /monitoring/queues`,
+///     `POST /monitoring/broker-stats/refresh`, `GET /monitoring/traffic-status`
+///     — **no longer blocked; simply not built.** Every dependency these were
+///     waiting on now exists: `RouterManager.consumerNames()` enumerates the
+///     queues, [io.flowcatalyst.router.lifecycle.BrokerStatsCache] is ported
+///     and running on the housekeeping loop, and [Traffic#status()] has a live
+///     ALB implementation behind it. What is left is the wiring and the DTOs.
+///     `queue-stats` additionally wants `totalDeferred` and a 30-minute
+///     windowed history, which the cache does not yet keep.
 ///   - The `MEDIATING` branch of `GET /monitoring/in-flight-messages/detail`.
 ///     `GET /monitoring/mediating` itself **is** now ported — [Pool] keeps the
 ///     live set (`Pool.mediating()`), so the count and the rows come from one
 ///     structure and cannot drift. The detail endpoint still needs the join
 ///     between that set and the tracker entry, so it stays skipped rather than
 ///     silently never reporting `MEDIATING`.
-///   - `GET /monitoring/traffic-status` — no ALB/traffic-management runtime
-///     ported (`Env.java` only parses the env vars).
 ///   - `GET/POST /messages`, `POST /api/seed/messages` — need a publisher
 ///     abstraction that does not exist yet.
 ///   - `POST /config/reload` beyond the "no reloader wired" branch — no

@@ -174,11 +174,21 @@ Ordered by what unblocks the most:
    Go — Java defaulted to `IMMEDIATE`, which silently gave no ordering to a
    producer that needed it.
 
-4. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
+4. **Four monitoring routes, unblocked but unbuilt** (2026-08-26). The
+   `RouterApi` class doc listed these as blocked; every dependency they were
+   waiting on now exists, so the note was stale and has been corrected.
+   `GET /monitoring/queues`, `GET /monitoring/queue-stats`,
+   `POST /monitoring/broker-stats/refresh`, `GET /monitoring/traffic-status`,
+   and the `MEDIATING` branch of `GET /monitoring/in-flight-messages/detail`.
+   All read-only over data the router already holds; the work is `RouterApi.State`
+   fields, DTOs and wiring. `queue-stats` also wants `totalDeferred` and a
+   30-minute window the cache does not keep yet.
+
+5. **Go runner Phase 1** (`conformance/go-runner.md`) — Go repo, not this one.
    Needs no Go changes and asserts six of seven fields.
-5. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`
+6. **Go runner Phase 2** — extract Go's inline `switch outcome.Result`
    (`pool.go:901`) into a pure function so `disposition` becomes assertable.
-6. **Drop-in verification** — side-by-side replay against the Go binary, then
+7. **Drop-in verification** — side-by-side replay against the Go binary, then
    a cutover rehearsal.
 
 Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
