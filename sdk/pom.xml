@@ -31,6 +31,15 @@
       <artifactId>flowcatalyst-usecase</artifactId>
     </dependency>
 
+    <!-- Hand-written SDK code + the usecase.OutboxSink interop point (its
+         ObjectMapper constructor param) are Jackson 3. -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <!-- The generated OpenAPI client (ApiClient, model classes) is hardcoded
+         to Jackson 2 by the openapi-generator-maven-plugin's own templates —
+         not something this module's own code controls. -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>

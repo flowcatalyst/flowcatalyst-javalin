@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.process.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.process.ProcessRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The seven `/api/processes` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class ProcessApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -117,7 +118,7 @@ class ProcessApiTest {
         assertThat(p.has("createdBy")).as("never persisted, so never on the wire (spec §1)").isFalse();
         assertThat(p.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(p.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(p.fieldNames()).toIterable().containsExactly("id", "code", "name", "description", "status", "source",
+        assertThat(p.propertyNames()).containsExactly("id", "code", "name", "description", "status", "source",
                 "application", "subdomain", "processName", "body", "diagramType", "tags", "createdAt", "updatedAt");
 
         // A bare process still carries body ("") and tags ([]) — both required on the wire.
@@ -139,7 +140,7 @@ class ProcessApiTest {
         assertThat(items.isArray()).isTrue();
         assertThat(items).extracting(n -> n.get("code").asText()).contains(code, APP + ":orders:returns");
         assertThat(items).extracting(n -> n.get("code").asText()).as("ordered by code").isSorted();
-        assertThat(json(list).fieldNames()).toIterable().containsExactly("items");
+        assertThat(json(list).propertyNames()).containsExactly("items");
 
         // A CLIENT-scoped viewer sees them too: processes are global.
         var viewerList = http.get("/api/processes?application=" + APP + "&subdomain=orders", VIEWER);

@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// `data` text column. Write-side rows are seeded through a real unit of
 /// work; read-side rows by the projection or directly with a chosen
 /// `created_at` / `client_id`.
+@SuppressWarnings("deprecation")
 class EventRepositoryTest {
 
     private static final EventRepository repo = new EventRepository(DS);

@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.dispatchjob;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
@@ -41,6 +41,10 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOB_ATTEMPTS;
 /// via jOOQ (spec §9). The status flips owned by the scheduler and the
 /// processing endpoint are **not** here (spec §10). Pure CRUD — no domain
 /// decisions live here.
+/// `asText()`/`isTextual()` are deprecated in Jackson 3 for `stringValue()`/
+/// `isString()`, which are NOT equivalent (throws on non-string, `null` not
+/// `""` for JSON `null`) — kept deliberately, suppressed rather than migrated.
+@SuppressWarnings("deprecation")
 public final class DispatchJobRepository implements Persist<DispatchJob> {
 
     private static final MsgDispatchJobs T = MSG_DISPATCH_JOBS;
@@ -355,7 +359,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
         JsonNode node;
         try {
             node = Json.MAPPER.readTree(jsonb.data());
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("msg_dispatch_jobs.metadata is not valid JSON", e);
         }
         if (!node.isArray()) return List.of();

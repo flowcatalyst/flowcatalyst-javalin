@@ -7,11 +7,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 
 /// Port of `internal/platform/seed/event_types_test.go` plus the equivalent
 /// shape checks for the role catalogue.
+@SuppressWarnings("deprecation")
 class PlatformCatalogueTest {
 
     @Test

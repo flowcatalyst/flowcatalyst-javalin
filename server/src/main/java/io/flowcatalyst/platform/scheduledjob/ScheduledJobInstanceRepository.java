@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.scheduledjob;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobInstanceLogs;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobInstances;
 import io.flowcatalyst.db.generated.tables.records.MsgScheduledJobInstanceLogsRecord;

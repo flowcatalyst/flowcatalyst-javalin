@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.emaildomainmapping.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -34,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Javalin: the authenticator's test headers, the anchor-only gates (and the
 /// ungated lookup), route precedence between the literal and `{id}` paths,
 /// the lockfile status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class EmailDomainMappingApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -143,7 +144,7 @@ class EmailDomainMappingApiTest {
         assertThat(m.get("rememberDeviceDays").asInt()).isEqualTo(14);
         assertThat(m.get("createdAt").asText()).matches(TS);
         assertThat(m.get("updatedAt").asText()).matches(TS);
-        assertThat(m.fieldNames()).toIterable().containsExactly("id", "emailDomain", "identityProviderId", "identityProviderName",
+        assertThat(m.propertyNames()).containsExactly("id", "emailDomain", "identityProviderId", "identityProviderName",
                 "scopeType", "primaryClientId", "additionalClientIds", "grantedClientIds", "requiredOidcTenantId", "require2fa",
                 "allowed2faMethods", "rememberDeviceEnabled", "rememberDeviceDays", "createdAt", "updatedAt");
 
@@ -156,7 +157,7 @@ class EmailDomainMappingApiTest {
         assertThat(beta.get("allowed2faMethods")).isEmpty();
         assertThat(beta.get("require2fa").asBoolean()).isFalse();
         assertThat(beta.get("rememberDeviceDays").asInt()).isEqualTo(30);
-        assertThat(beta.fieldNames()).toIterable().containsExactly("id", "emailDomain", "identityProviderId", "scopeType",
+        assertThat(beta.propertyNames()).containsExactly("id", "emailDomain", "identityProviderId", "scopeType",
                 "additionalClientIds", "grantedClientIds", "require2fa", "allowed2faMethods", "rememberDeviceEnabled",
                 "rememberDeviceDays", "createdAt", "updatedAt");
 
@@ -167,7 +168,7 @@ class EmailDomainMappingApiTest {
         var list = http.get("/api/email-domain-mappings", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("mappings", "total");
+        assertThat(body.propertyNames()).containsExactly("mappings", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("mappings").size());
         assertThat(body.get("mappings")).extracting(n -> n.get("id").asText()).contains(id);
         assertThat(body.get("mappings")).filteredOn(n -> n.get("id").asText().equals(id))
@@ -229,7 +230,7 @@ class EmailDomainMappingApiTest {
         var move = http.post("/api/email-domain-mappings/" + id + "/move-provider", "{\"identityProviderId\":\"" + internal + "\"}", ANCHOR);
         assertThat(move.statusCode()).as(move.body()).isEqualTo(200);
         var r = json(move);
-        assertThat(r.fieldNames()).toIterable().containsExactly("mappingId", "emailDomain", "fromIdentityProviderId", "toIdentityProviderId", "usersReset");
+        assertThat(r.propertyNames()).containsExactly("mappingId", "emailDomain", "fromIdentityProviderId", "toIdentityProviderId", "usersReset");
         assertThat(r.get("mappingId").asText()).isEqualTo(id);
         assertThat(r.get("emailDomain").asText()).isEqualTo(domain("move"));
         assertThat(r.get("fromIdentityProviderId").asText()).isEqualTo(idp);

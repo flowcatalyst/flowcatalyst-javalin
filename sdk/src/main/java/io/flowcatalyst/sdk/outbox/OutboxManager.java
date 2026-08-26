@@ -1,7 +1,7 @@
 package io.flowcatalyst.sdk.outbox;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.http.Json;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import java.nio.charset.StandardCharsets;
@@ -175,7 +175,7 @@ public final class OutboxManager {
     private String serialize(Map<String, Object> payload) {
         try {
             return mapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalArgumentException("Outbox payload is not serializable to JSON", e);
         }
     }

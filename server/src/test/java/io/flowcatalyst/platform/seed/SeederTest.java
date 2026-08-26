@@ -27,7 +27,8 @@ import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.jooq.Record;
 import org.jooq.SQLDialect;
@@ -418,8 +419,8 @@ class SeederTest {
     static JsonNode readTree(String json) {
         try {
             return Json.MAPPER.readTree(json);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+        } catch (JacksonException e) {
+            throw new IllegalStateException(e);
         }
     }
 

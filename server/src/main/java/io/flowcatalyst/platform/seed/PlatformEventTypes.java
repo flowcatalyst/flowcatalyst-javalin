@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.seed;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.List;

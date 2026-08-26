@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.scheduledjob.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.NullNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.NullNode;
 import io.flowcatalyst.platform.scheduledjob.InstanceStatus;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJob;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstance;
@@ -57,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: codes carry a
 /// per-JVM suffix and sync tests own a fresh client scope.
+@SuppressWarnings("deprecation")
 class ScheduledJobOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();

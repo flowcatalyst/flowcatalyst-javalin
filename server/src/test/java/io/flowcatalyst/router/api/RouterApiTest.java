@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.inflight.InFlightMessage;
@@ -58,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// but has `manager`/`breakers`/`election` all `null`, to exercise the
 /// provider-absent branches (spec §9.1: "503 for mutations/lookups, empty
 /// payload for lists").
+@SuppressWarnings("deprecation")
 class RouterApiTest {
 
     private static final Clock CLOCK = Clock.systemUTC();

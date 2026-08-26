@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.eventtype.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository.ListFilter;
@@ -50,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: codes are
 /// namespaced by a per-JVM suffix on the application segment.
+@SuppressWarnings("deprecation")
 class EventTypeOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();

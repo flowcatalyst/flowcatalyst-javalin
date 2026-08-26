@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.role.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.RoleSource;
@@ -55,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: application
 /// codes are namespaced by a per-JVM suffix.
+@SuppressWarnings("deprecation")
 class RoleOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -199,7 +200,7 @@ class RoleOperationsTest {
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.get("roleId").asText()).isEqualTo(ev.roleId());
         assertThat(data.get("name").asText()).isEqualTo(application + ":editor");
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("roleId", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("roleId", "name");
 
         var audits = auditsFor(ev.roleId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -342,7 +343,7 @@ class RoleOperationsTest {
         var grants = eventsFor(seeded.roleId(), RoleEvents.PERMISSION_GRANTED);
         assertThat(grants).hasSize(2);
         var data = json(grants.getFirst().get("data", String.class));
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("roleId", "roleName", "permission");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("roleId", "roleName", "permission");
         assertThat(auditsFor(seeded.roleId(), "GrantPermissionCommand")).hasSize(2);
 
         var revoked = runAsAnchor(RevokePermission.of(repo), new RevokePermissionCommand(name, application + ":job:run:*"));

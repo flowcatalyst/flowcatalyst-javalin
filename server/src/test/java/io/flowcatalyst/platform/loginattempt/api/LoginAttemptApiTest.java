@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.loginattempt.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
 import io.flowcatalyst.platform.loginattempt.AttemptType;
 import io.flowcatalyst.platform.loginattempt.LoginAttempt;
@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `GET /api/login-attempts` end to end through Javalin (spec §2–4): the
 /// anchor gate, the lockfile envelope and entry shape, the filters, the
 /// cursor walk and the lenient inputs.
+@SuppressWarnings("deprecation")
 class LoginAttemptApiTest {
 
     private static final String[] ANCHOR = {
@@ -109,12 +110,12 @@ class LoginAttemptApiTest {
     @Test
     void listEnvelopeAndEntryShapeAreTheLockfiles() {
         var body = ok(http.get("/api/login-attempts?identifier=" + q(ADA), ANCHOR));
-        assertThat(body.fieldNames()).toIterable().containsExactly("items", "hasMore");
+        assertThat(body.propertyNames()).containsExactly("items", "hasMore");
         assertThat(body.get("hasMore").asBoolean()).isFalse();
         var items = body.get("items");
         assertThat(items).extracting(n -> n.get("id").asText()).containsExactlyElementsOf(adaNewestFirst);
         var first = items.get(0);
-        assertThat(first.fieldNames()).toIterable().containsExactly(
+        assertThat(first.propertyNames()).containsExactly(
                 "id", "attemptType", "outcome", "failureReason", "identifier", "principalId", "ipAddress", "userAgent", "attemptedAt");
         assertThat(first.get("attemptType").asText()).isEqualTo("USER_LOGIN");
         assertThat(first.get("outcome").asText()).isEqualTo("SUCCESS");

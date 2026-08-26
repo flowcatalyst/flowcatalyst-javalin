@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.shared.openapi;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,6 +20,10 @@ import java.util.Set;
 /// Java routes are written *from* it, never generated *into* it. The route
 /// coverage test compares the registered Javalin routes against
 /// [#operations()].
+/// `asText()`/`isTextual()` are deprecated in Jackson 3 for `stringValue()`/
+/// `isString()`, which are NOT equivalent (throws on non-string, `null` not
+/// `""` for JSON `null`) — kept deliberately, suppressed rather than migrated.
+@SuppressWarnings("deprecation")
 public final class Lockfile {
 
     private static final String RESOURCE = "openapi/openapi.lock.json";

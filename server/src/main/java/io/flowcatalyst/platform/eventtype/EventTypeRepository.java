@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.eventtype;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgEventTypeSpecVersions;
 import io.flowcatalyst.db.generated.tables.MsgEventTypes;
 import io.flowcatalyst.db.generated.tables.records.MsgEventTypeSpecVersionsRecord;
@@ -196,7 +196,7 @@ public final class EventTypeRepository implements Persist<EventType> {
         if (jsonb == null || jsonb.data() == null || jsonb.data().isEmpty()) return null;
         try {
             return Json.MAPPER.readTree(jsonb.data());
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("msg_event_type_spec_versions.schema_content is not valid JSON", e);
         }
     }

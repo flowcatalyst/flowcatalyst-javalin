@@ -1,7 +1,7 @@
 package io.flowcatalyst.router.conformance;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.router.policy.BreakerRegistry;
@@ -47,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// It also converts the spec's §6 table from prose into something that fails.
 /// That table was the source of truth for a dozen decisions and nothing
 /// checked the code still matched it.
+@SuppressWarnings("deprecation")
 class MediationConformanceTest {
 
     private static final Clock FIXED =

@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.client.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.client.ClientStatus;
@@ -47,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: identifiers
 /// are namespaced by a per-JVM suffix.
+@SuppressWarnings("deprecation")
 class ClientOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -143,7 +144,7 @@ class ClientOperationsTest {
         assertThat(data.get("clientId").asText()).isEqualTo(ev.clientId());
         assertThat(data.get("name").asText()).isEqualTo("Acme Corp");
         assertThat(data.get("identifier").asText()).isEqualTo(ident("cl-create"));
-        assertThat(data.fieldNames()).toIterable().as("jsonb reorders keys; the set is the contract")
+        assertThat(data.propertyNames()).as("jsonb reorders keys; the set is the contract")
                 .containsExactlyInAnyOrder("clientId", "name", "identifier");
 
         var audits = auditsFor(ev.clientId(), "CreateCommand");
@@ -329,7 +330,7 @@ class ClientOperationsTest {
         // The stored JSON carries the note field names verbatim (jsonb reorders keys).
         var stored = json(DB.fetchOne("SELECT notes::text AS notes FROM tnt_clients WHERE id = ?", seeded.clientId()).get("notes", String.class));
         assertThat(stored.isArray()).isTrue();
-        assertThat(stored.get(0).fieldNames()).toIterable().containsExactlyInAnyOrder("category", "text", "addedBy", "addedAt");
+        assertThat(stored.get(0).propertyNames()).containsExactlyInAnyOrder("category", "text", "addedBy", "addedAt");
 
         var data = json(eventsFor(seeded.clientId(), ClientEvents.NOTE_ADDED).getFirst().get("data", String.class));
         assertThat(data.get("category").asText()).isEqualTo("billing");

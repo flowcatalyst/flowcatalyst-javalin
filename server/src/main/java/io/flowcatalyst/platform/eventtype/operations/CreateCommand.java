@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.eventtype.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 /// The input DTO for [CreateEventType]. The record's simple name is the audit
 /// log's `operation` column, so it must stay `CreateCommand` (as in Go).

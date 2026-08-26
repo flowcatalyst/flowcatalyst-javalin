@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.docs.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.docs.AppDocFixture;
 import io.flowcatalyst.platform.docs.PublishedDocs;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The three `/api/docs` routes end to end through Javalin (spec §4): the
 /// view gate, the grouped index, the platform and application page
 /// envelopes, and the 404s.
+@SuppressWarnings("deprecation")
 class DocsApiTest {
 
     private static final String[] ANCHOR = {

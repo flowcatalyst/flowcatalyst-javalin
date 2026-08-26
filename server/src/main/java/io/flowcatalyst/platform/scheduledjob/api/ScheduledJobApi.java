@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.scheduledjob.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.scheduledjob.InstanceStatus;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJob;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstance;

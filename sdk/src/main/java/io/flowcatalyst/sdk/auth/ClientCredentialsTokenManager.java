@@ -1,7 +1,8 @@
 package io.flowcatalyst.sdk.auth;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.error.FlowCatalystException;
 import io.flowcatalyst.sdk.error.SdkError;
 import java.io.IOException;
@@ -134,7 +135,7 @@ public final class ClientCredentialsTokenManager implements TokenProvider {
     private JsonNode parseQuietly(String body) {
         try {
             return mapper.readTree(body);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             return null;
         }
     }

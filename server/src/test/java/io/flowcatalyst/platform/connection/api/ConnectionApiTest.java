@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.connection.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The seven `/api/connections` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class ConnectionApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -113,7 +114,7 @@ class ConnectionApiTest {
         assertThat(created.has("clientIdentifier")).as("null clientIdentifier omitted").isFalse();
         assertThat(created.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(created.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(created.fieldNames()).toIterable().containsExactly("id", "code", "name", "description", "externalId",
+        assertThat(created.propertyNames()).containsExactly("id", "code", "name", "description", "externalId",
                 "status", "serviceAccountId", "createdAt", "updatedAt");
 
         // GET by id returns the same shape.
@@ -125,7 +126,7 @@ class ConnectionApiTest {
         create(code("connapi-aaa"), "First by code", "");
         var list = http.get("/api/connections?status=ACTIVE", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
-        assertThat(json(list).fieldNames()).toIterable().containsExactly("connections", "total");
+        assertThat(json(list).propertyNames()).containsExactly("connections", "total");
         var connections = json(list).get("connections");
         assertThat(connections).extracting(n -> n.get("code").asText())
                 .as("ordered by code").containsSubsequence(code("connapi-aaa"), code);

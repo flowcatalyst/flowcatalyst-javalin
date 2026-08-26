@@ -1,9 +1,9 @@
 package io.flowcatalyst.platform.shared.openapi;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.dataformat.yaml.YAMLFactory;
+import tools.jackson.dataformat.yaml.YAMLWriteFeature;
+import tools.jackson.databind.ObjectMapper;
 import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.nio.charset.StandardCharsets;
@@ -54,13 +54,13 @@ public final class SpecRoutes {
 
     private static byte[] toYaml(Lockfile lockfile) {
         var factory = YAMLFactory.builder()
-                .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
-                .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
-                .enable(YAMLGenerator.Feature.ALWAYS_QUOTE_NUMBERS_AS_STRINGS)
+                .disable(YAMLWriteFeature.WRITE_DOC_START_MARKER)
+                .enable(YAMLWriteFeature.MINIMIZE_QUOTES)
+                .enable(YAMLWriteFeature.ALWAYS_QUOTE_NUMBERS_AS_STRINGS)
                 .build();
         try {
             return new ObjectMapper(factory).writeValueAsString(lockfile.json()).getBytes(StandardCharsets.UTF_8);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("could not render the OpenAPI lockfile as YAML", e);
         }
     }

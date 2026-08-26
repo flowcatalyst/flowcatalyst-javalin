@@ -133,7 +133,7 @@ public final class CreateEventDto {
      * Build the event payload for the outbox (nulls omitted). {@code data} is
      * embedded as a JSON string, matching the wire contract.
      */
-    Map<String, Object> toPayload(com.fasterxml.jackson.databind.ObjectMapper mapper) {
+    Map<String, Object> toPayload(tools.jackson.databind.ObjectMapper mapper) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("specVersion", "1.0");
         payload.put("type", type);
@@ -141,7 +141,7 @@ public final class CreateEventDto {
         putIfNotNull(payload, "subject", subject);
         try {
             payload.put("data", mapper.writeValueAsString(data));
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+        } catch (tools.jackson.core.JacksonException e) {
             throw new IllegalArgumentException("Event data is not serializable to JSON", e);
         }
         putIfNotNull(payload, "correlationId", correlationId);

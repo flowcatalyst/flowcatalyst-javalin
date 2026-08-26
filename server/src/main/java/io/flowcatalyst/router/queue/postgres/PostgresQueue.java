@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.queue.postgres;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+import tools.jackson.core.JacksonException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
@@ -246,7 +246,7 @@ public final class PostgresQueue implements Consumer {
                     Message message;
                     try {
                         message = Json.read(payload, Message.class);
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         // Q17 RULED (owner, 2026-08-25): mark the row as errored
                         // and carry on with the rest of the batch.
                         //

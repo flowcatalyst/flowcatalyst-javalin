@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchpool.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.dispatchpool.DispatchPool;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository.ListFilter;
@@ -49,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// The fixture never truncates, so every test owns its rows: codes carry a
 /// per-JVM suffix. Sync with `removeUnlisted` archives every non-listed pool
 /// in the table (spec §7), so no test asserts another test's status afterwards.
+@SuppressWarnings("deprecation")
 class DispatchPoolOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -156,7 +157,7 @@ class DispatchPoolOperationsTest {
         assertThat(data.get("poolId").asText()).isEqualTo(ev.poolId());
         assertThat(data.get("code").asText()).isEqualTo(code);
         assertThat(data.get("name").asText()).isEqualTo("DP Create");
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("poolId", "code", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("poolId", "code", "name");
 
         var audits = auditsFor(ev.poolId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -280,7 +281,7 @@ class DispatchPoolOperationsTest {
 
         assertThat(eventsFor(seeded.poolId(), DispatchPoolEvents.UPDATED)).hasSize(2);
         var data = json(eventsFor(seeded.poolId(), DispatchPoolEvents.UPDATED).getFirst().get("data", String.class));
-        assertThat(data.fieldNames()).toIterable().as("updated carries poolId + name only").containsExactlyInAnyOrder("poolId", "name");
+        assertThat(data.propertyNames()).as("updated carries poolId + name only").containsExactlyInAnyOrder("poolId", "name");
         assertThat(auditsFor(seeded.poolId(), "UpdateCommand")).hasSize(2);
     }
 

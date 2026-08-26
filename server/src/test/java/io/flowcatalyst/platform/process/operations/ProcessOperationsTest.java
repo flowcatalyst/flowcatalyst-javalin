@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.process.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.process.Process;
 import io.flowcatalyst.platform.process.ProcessRepository;
 import io.flowcatalyst.platform.process.ProcessRepository.ListFilter;
@@ -49,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// The fixture never truncates (and the seeder leaves one example row), so
 /// every test owns its rows: codes are namespaced by a per-JVM suffix on the
 /// application segment.
+@SuppressWarnings("deprecation")
 class ProcessOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -155,7 +156,7 @@ class ProcessOperationsTest {
         assertThat(data.get("processId").asText()).isEqualTo(ev.processId());
         assertThat(data.get("code").asText()).isEqualTo(code);
         assertThat(data.get("name").asText()).isEqualTo("Order Fulfilment");
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("processId", "code", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("processId", "code", "name");
 
         var audits = auditsFor(ev.processId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -243,8 +244,8 @@ class ProcessOperationsTest {
         assertThat(partial.tags()).isEmpty();
 
         assertThat(eventsFor(seeded.processId(), ProcessEvents.UPDATED)).hasSize(2);
-        assertThat(json(eventsFor(seeded.processId(), ProcessEvents.UPDATED).getFirst().get("data", String.class)).fieldNames())
-                .toIterable().containsExactlyInAnyOrder("processId", "name");
+        assertThat(json(eventsFor(seeded.processId(), ProcessEvents.UPDATED).getFirst().get("data", String.class)).propertyNames())
+                .containsExactlyInAnyOrder("processId", "name");
         assertThat(auditsFor(seeded.processId(), "UpdateCommand")).hasSize(2);
     }
 
@@ -370,7 +371,7 @@ class ProcessOperationsTest {
                 ProcessEvents.syncSubjectFor(application), ProcessEvents.SYNCED);
         assertThat(rollups).hasSize(2);
         assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:processes");
-        assertThat(json(rollups.getFirst().get("data", String.class)).fieldNames()).toIterable()
+        assertThat(json(rollups.getFirst().get("data", String.class)).propertyNames())
                 .containsExactlyInAnyOrder("applicationCode", "created", "updated", "deleted", "syncedCodes");
     }
 

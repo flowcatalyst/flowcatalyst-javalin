@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.platformconfig.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
 import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -27,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The seven platform-config routes end to end through Javalin: the
 /// authenticator's test headers, the anchor / grant gates, secret masking,
 /// the lockfile status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class PlatformConfigApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);

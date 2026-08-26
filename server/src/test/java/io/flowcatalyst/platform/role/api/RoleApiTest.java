@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.role.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.role.Permission;
 import io.flowcatalyst.platform.role.PermissionRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
@@ -44,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// authenticator's test headers, the coarse permission gates, route
 /// precedence between the literal and `{id}` paths, the lockfile status
 /// codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class RoleApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -149,7 +150,7 @@ class RoleApiTest {
         assertThat(role.has("applicationId")).as("null applicationId omitted").isFalse();
         assertThat(role.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(role.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(role.fieldNames()).toIterable().containsExactly("id", "name", "displayName", "description",
+        assertThat(role.propertyNames()).containsExactly("id", "name", "displayName", "description",
                 "applicationCode", "permissions", "source", "clientManaged", "createdAt", "updatedAt");
 
         // The {id} routes also accept the name (SDK clients), and by-code is name-only.
@@ -161,7 +162,7 @@ class RoleApiTest {
         var list = http.get("/api/roles", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("roles", "total");
+        assertThat(body.propertyNames()).containsExactly("roles", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("roles").size());
         var ours = body.get("roles").findValues("name").stream().map(JsonNode::asText).filter(n -> n.startsWith(APP + ":")).toList();
         assertThat(ours).containsSubsequence(APP + ":editor", APP + ":viewer");
@@ -290,7 +291,7 @@ class RoleApiTest {
         var list = http.get("/api/roles/permissions", ANCHOR);
         assertThat(list.statusCode()).as("the literal route wins over /api/roles/{id}").isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("permissions", "total");
+        assertThat(body.propertyNames()).containsExactly("permissions", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("permissions").size());
         var entry = body.get("permissions").findValues("permission").stream().map(JsonNode::asText).filter(code::equals).findFirst();
         assertThat(entry).isPresent();

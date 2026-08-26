@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// guarantee that the reset lands together with one `msg_events` +
 /// `aud_logs` pair per job plus the rollup pair. Rows are seeded directly
 /// (no writer exists yet); every test owns its ids.
+@SuppressWarnings("deprecation")
 class DispatchJobOperationsTest {
 
     private static final DispatchJobRepository repo = new DispatchJobRepository(DS);

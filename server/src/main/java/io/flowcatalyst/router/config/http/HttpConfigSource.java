@@ -5,6 +5,7 @@ import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.manager.RouterServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.core.JacksonException;
 
 import java.io.IOException;
 import java.net.URI;
@@ -231,7 +232,7 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
 
         try {
             return Optional.of(Json.MAPPER.readValue(response.body(), RouterConfig.class));
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             log.warn("config fetch attempt failed for {}: invalid JSON: {}", url, e.toString());
             return Optional.empty();
         }

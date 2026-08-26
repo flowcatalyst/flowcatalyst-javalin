@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.client.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.client.ClientRepository;
@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the authenticator's test headers, the anchor-only gates, route precedence
 /// between the literal and `{id}` paths, the lockfile status codes and body
 /// shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class ClientApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -129,7 +130,7 @@ class ClientApiTest {
         assertThat(c.get("notes")).isEmpty();
         assertThat(c.get("createdAt").asText()).matches(TS);
         assertThat(c.get("updatedAt").asText()).matches(TS);
-        assertThat(c.fieldNames()).toIterable().containsExactly("id", "name", "identifier", "status", "notes", "createdAt", "updatedAt");
+        assertThat(c.propertyNames()).containsExactly("id", "name", "identifier", "status", "notes", "createdAt", "updatedAt");
 
         // GET by identifier (the stored, normalised form).
         var byIdent = http.get("/api/clients/by-identifier/" + ident("acme-corp"), ANCHOR);
@@ -140,7 +141,7 @@ class ClientApiTest {
         var list = http.get("/api/clients", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("clients", "total");
+        assertThat(body.propertyNames()).containsExactly("clients", "total");
         assertThat(body.get("clients").isArray()).isTrue();
         assertThat(body.get("total").asInt()).isEqualTo(body.get("clients").size());
         assertThat(body.get("clients")).extracting(n -> n.get("id").asText()).contains(id);
@@ -153,7 +154,7 @@ class ClientApiTest {
 
         var exact = http.post("/api/clients/search", "{\"term\":\"" + ident("srch") + "\"}", ANCHOR);
         assertThat(exact.statusCode()).as(exact.body()).isEqualTo(200);
-        assertThat(json(exact).fieldNames()).toIterable().containsExactly("clients", "total");
+        assertThat(json(exact).propertyNames()).containsExactly("clients", "total");
         assertThat(json(exact).get("clients")).extracting(n -> n.get("id").asText()).as("ordered by identifier").containsExactly(a, b);
         assertThat(json(exact).get("total").asInt()).isEqualTo(2);
 
@@ -200,7 +201,7 @@ class ClientApiTest {
         assertThat(suspended.get("status").asText()).isEqualTo("SUSPENDED");
         assertThat(suspended.get("statusReason").asText()).isEqualTo("billing overdue");
         assertThat(suspended.get("statusChangedAt").asText()).matches(TS);
-        assertThat(suspended.fieldNames()).toIterable().containsExactly("id", "name", "identifier", "status",
+        assertThat(suspended.propertyNames()).containsExactly("id", "name", "identifier", "status",
                 "statusReason", "statusChangedAt", "notes", "createdAt", "updatedAt");
 
         var noReason = http.post("/api/clients/" + id + "/suspend", "{}", ANCHOR);
@@ -224,7 +225,7 @@ class ClientApiTest {
         assertThat(notes.get(0).get("text").asText()).isEqualTo("annual plan");
         assertThat(notes.get(0).get("addedBy").asText()).isEqualTo(ANCHOR_PRINCIPAL);
         assertThat(notes.get(0).get("addedAt").asText()).matches(TS);
-        assertThat(notes.get(0).fieldNames()).toIterable().containsExactly("category", "text", "addedBy", "addedAt");
+        assertThat(notes.get(0).propertyNames()).containsExactly("category", "text", "addedBy", "addedAt");
 
         var badNote = http.post("/api/clients/" + id + "/notes", "{\"category\":\"billing\"}", ANCHOR);
         assertThat(badNote.statusCode()).isEqualTo(400);
@@ -272,14 +273,14 @@ class ClientApiTest {
         var r = http.get("/api/clients/" + id + "/applications", ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
         var body = json(r);
-        assertThat(body.fieldNames()).toIterable().containsExactly("applications", "total");
+        assertThat(body.propertyNames()).containsExactly("applications", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("applications").size());
         var byId = new HashMap<String, JsonNode>();
         body.get("applications").forEach(n -> byId.put(n.get("id").asText(), n));
         assertThat(byId.get(enabledApp).get("enabledForClient").asBoolean()).isTrue();
         assertThat(byId.get(disabledApp).get("enabledForClient").asBoolean()).isFalse();
         assertThat(byId.get(unconfiguredApp).get("enabledForClient").asBoolean()).as("no config row → false").isFalse();
-        assertThat(byId.get(enabledApp).fieldNames()).toIterable().containsExactly("id", "code", "name", "description", "active", "enabledForClient");
+        assertThat(byId.get(enabledApp).propertyNames()).containsExactly("id", "code", "name", "description", "active", "enabledForClient");
         assertThat(byId.get(enabledApp).get("active").asBoolean()).isTrue();
 
         // The one non-anchor route: a principal with access to this client may read it…

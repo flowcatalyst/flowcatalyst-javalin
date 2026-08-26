@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.event.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.event.EventFixture;
 import io.flowcatalyst.platform.event.EventFixture.Payload;
 import io.flowcatalyst.platform.event.EventRepository;
@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The five `/api/events` routes end to end through Javalin (spec §2–5, §8):
 /// the two gates, the bare-array list and its filters, the tenant scoping,
 /// the filter options, the detail shape and the error envelopes.
+@SuppressWarnings("deprecation")
 class EventApiTest {
 
     private static final String CLIENT_A = "cli_" + EventFixture.RUN + "0000api";
@@ -129,7 +130,7 @@ class EventApiTest {
         assertThat(ids(body)).containsExactly(sinkRow, platformRow, rowA, rowB);
 
         var first = body.get(0);
-        assertThat(first.fieldNames()).toIterable().containsExactly(
+        assertThat(first.propertyNames()).containsExactly(
                 "id", "type", "source", "subject", "time", "application", "subdomain", "aggregate", "messageGroup", "correlationId", "projectedAt");
         assertThat(first.get("type").asText()).isEqualTo(SHIPPED);
         assertThat(first.get("source").asText()).isEqualTo("platform:admin");
@@ -144,7 +145,7 @@ class EventApiTest {
         assertThat(first.has("clientId")).as("platform-scoped: no clientId").isFalse();
 
         var a = body.get(2);
-        assertThat(a.fieldNames()).toIterable().containsExactly(
+        assertThat(a.propertyNames()).containsExactly(
                 "id", "type", "source", "subject", "time", "application", "subdomain", "aggregate", "messageGroup", "correlationId", "clientId", "projectedAt");
         assertThat(a.get("clientId").asText()).isEqualTo(CLIENT_A);
     }
@@ -216,10 +217,10 @@ class EventApiTest {
     @Test
     void filterOptionsAnswerThreeLabelledFacets() {
         var body = ok(http.get("/api/events/filter-options", VIEWER));
-        assertThat(body.fieldNames()).toIterable().containsExactly("applications", "subdomains", "eventTypes");
+        assertThat(body.propertyNames()).containsExactly("applications", "subdomains", "eventTypes");
         assertThat(body.get("applications").valueStream().map(n -> n.get("value").asText())).contains(APP);
         var app = body.get("applications").valueStream().filter(n -> n.get("value").asText().equals(APP)).findFirst().orElseThrow();
-        assertThat(app.fieldNames()).toIterable().containsExactly("value", "label");
+        assertThat(app.propertyNames()).containsExactly("value", "label");
         assertThat(app.get("label").asText()).isEqualTo(APP);
         assertThat(body.get("subdomains").valueStream().map(n -> n.get("value").asText())).contains("shipping", "billing");
         assertThat(body.get("eventTypes").valueStream().map(n -> n.get("value").asText())).contains(SHIPPED, PAID);
@@ -230,7 +231,7 @@ class EventApiTest {
     @Test
     void getByIdAnswersTheFullEnvelope() {
         var e = ok(http.get("/api/events/" + sinkRow, ANCHOR));
-        assertThat(e.fieldNames()).toIterable().containsExactly(
+        assertThat(e.propertyNames()).containsExactly(
                 "id", "specVersion", "type", "source", "subject", "time", "data", "deduplicationId",
                 "messageGroup", "correlationId", "application", "subdomain", "aggregate", "projectedAt", "createdAt");
         assertThat(e.get("specVersion").asText()).isEqualTo("1.0");

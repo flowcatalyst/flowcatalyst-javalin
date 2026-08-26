@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.connection.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository.ListFilter;
@@ -48,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: codes carry a
 /// per-JVM suffix.
+@SuppressWarnings("deprecation")
 class ConnectionOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -152,7 +153,7 @@ class ConnectionOperationsTest {
         assertThat(data.get("connectionId").asText()).isEqualTo(ev.connectionId());
         assertThat(data.get("code").asText()).isEqualTo(code);
         assertThat(data.get("name").asText()).isEqualTo("Conn Create Happy");
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("connectionId", "code", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("connectionId", "code", "name");
 
         var audits = auditsFor(ev.connectionId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -254,7 +255,7 @@ class ConnectionOperationsTest {
         var events = eventsFor(seeded.connectionId(), ConnectionEvents.UPDATED);
         assertThat(events).hasSize(3);
         var data = json(events.getFirst().get("data", String.class));
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("connectionId", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("connectionId", "name");
         assertThat(auditsFor(seeded.connectionId(), "UpdateCommand")).hasSize(3);
     }
 
@@ -319,7 +320,7 @@ class ConnectionOperationsTest {
         var events = eventsFor(seeded.connectionId(), ConnectionEvents.DELETED);
         assertThat(events).hasSize(1);
         var data = json(events.getFirst().get("data", String.class));
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("connectionId", "code");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("connectionId", "code");
         assertThat(auditsFor(seeded.connectionId(), "DeleteCommand")).hasSize(1);
 
         assertUseCaseError(() -> runAsAnchor(DeleteConnection.of(repo), new DeleteCommand(seeded.connectionId())),

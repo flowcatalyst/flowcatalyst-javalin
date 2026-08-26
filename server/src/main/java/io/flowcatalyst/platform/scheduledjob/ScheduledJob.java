@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.scheduledjob;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.scheduledjob.cron.Cron;
 import io.flowcatalyst.platform.scheduledjob.cron.CronExpression;
 import io.flowcatalyst.platform.shared.tsid.EntityType;

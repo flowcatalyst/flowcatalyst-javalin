@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.queue.sqs;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+import tools.jackson.core.JacksonException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
@@ -271,7 +271,7 @@ public final class SqsQueue implements Consumer {
         }
         try {
             return Json.MAPPER.readValue(body, Message.class);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             log.warn("sqs malformed message body on queue {}: {}", identifier, e.getMessage());
             return null;
         }

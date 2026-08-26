@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchpool.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The eight `/api/dispatch-pools` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class DispatchPoolApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -122,7 +123,7 @@ class DispatchPoolApiTest {
         assertThat(p.has("clientIdentifier")).as("null clientIdentifier omitted").isFalse();
         assertThat(p.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(p.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(p.fieldNames()).toIterable().containsExactly("id", "code", "name", "description", "rateLimit",
+        assertThat(p.propertyNames()).containsExactly("id", "code", "name", "description", "rateLimit",
                 "concurrency", "status", "createdAt", "updatedAt");
 
         // Defaults on the wire: no rateLimit key, concurrency 10.
@@ -134,11 +135,11 @@ class DispatchPoolApiTest {
         var list = http.get("/api/dispatch-pools", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("pools", "total");
+        assertThat(body.propertyNames()).containsExactly("pools", "total");
         assertThat(body.get("pools").isArray()).isTrue();
         assertThat(body.get("total").asInt()).isEqualTo(body.get("pools").size());
         assertThat(body.get("pools")).extracting(n -> n.get("code").asText()).contains(code, code("plain"));
-        var codes = body.get("pools").findValuesAsText("code");
+        var codes = body.get("pools").findValuesAsString("code");
         assertThat(codes).isSorted();
 
         // A viewer (CLIENT scope, view permission) sees platform-wide pools too.

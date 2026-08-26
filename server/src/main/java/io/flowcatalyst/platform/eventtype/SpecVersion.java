@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.eventtype;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 
 import java.time.Instant;

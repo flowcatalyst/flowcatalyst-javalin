@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.identityprovider.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the authenticator's test headers, the anchor-only gates, the lockfile
 /// status codes and body shapes, the error envelope, and the client
 /// secret's at-rest conversion with and without an encryption key (spec §5).
+@SuppressWarnings("deprecation")
 class IdentityProviderApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -145,7 +146,7 @@ class IdentityProviderApiTest {
         assertThat(c.get("allowedRoleIds")).extracting(JsonNode::asText).containsExactly("rol_a");
         assertThat(c.get("createdAt").asText()).matches(TS);
         assertThat(c.get("updatedAt").asText()).matches(TS);
-        assertThat(c.fieldNames()).toIterable().containsExactly("id", "code", "name", "type", "oidcIssuerUrl", "oidcClientId",
+        assertThat(c.propertyNames()).containsExactly("id", "code", "name", "type", "oidcIssuerUrl", "oidcClientId",
                 "hasClientSecret", "oidcMultiTenant", "allowedEmailDomains", "syncRolesFromIdp", "allowedRoleIds", "createdAt", "updatedAt");
 
         // The plaintext was sealed before the command was built: stored as `encrypted:` and decryptable, never in the audit.
@@ -162,7 +163,7 @@ class IdentityProviderApiTest {
         var list = http.get("/api/identity-providers", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("identityProviders", "total");
+        assertThat(body.propertyNames()).containsExactly("identityProviders", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("identityProviders").size());
         assertThat(body.get("identityProviders")).extracting(n -> n.get("id").asText()).contains(id);
     }
@@ -221,7 +222,7 @@ class IdentityProviderApiTest {
         var missingName = http.post("/api/identity-providers", "{\"code\":\"" + code("api-noname") + "\",\"type\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
         assertThat(missingName.statusCode()).isEqualTo(400);
         assertThat(json(missingName).get("error").asText()).isEqualTo("NAME_REQUIRED");
-        assertThat(json(missingName).fieldNames()).toIterable().containsExactly("error", "message");
+        assertThat(json(missingName).propertyNames()).containsExactly("error", "message");
 
         var oidcNoIssuer = http.post("/api/identity-providers", "{\"code\":\"" + code("api-noiss") + "\",\"name\":\"X\",\"type\":\"OIDC\",\"oidcMultiTenant\":false}", ANCHOR);
         assertThat(oidcNoIssuer.statusCode()).isEqualTo(400);

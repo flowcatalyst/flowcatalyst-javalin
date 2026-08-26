@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.scheduledjob;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobs;
 import io.flowcatalyst.db.generated.tables.records.MsgScheduledJobsRecord;
 import io.flowcatalyst.platform.shared.auth.Visibility;
@@ -232,7 +232,7 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
         try {
             JsonNode node = Json.MAPPER.readTree(jsonb.data());
             return node.isNull() ? null : node;
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("stored jsonb is not valid JSON", e);
         }
     }

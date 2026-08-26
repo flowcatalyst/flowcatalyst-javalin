@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.application.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
@@ -37,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Javalin: the authenticator's test headers, the coarse permission / anchor
 /// gates, route precedence between the literal and `{id}` paths, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class ApplicationApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -136,7 +137,7 @@ class ApplicationApiTest {
         assertThat(app.has("iconUrl")).as("null optionals omitted").isFalse();
         assertThat(app.has("serviceAccountId")).isFalse();
         assertThat(app.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(app.fieldNames()).toIterable().containsExactly("id", "type", "code", "name", "description", "website",
+        assertThat(app.propertyNames()).containsExactly("id", "type", "code", "name", "description", "website",
                 "active", "hasLoginClient", "createdAt", "updatedAt");
 
         // GET by code — the literal path wins over `{id}`.
@@ -148,7 +149,7 @@ class ApplicationApiTest {
         var list = http.get("/api/applications?type=INTEGRATION", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("applications", "total");
+        assertThat(body.propertyNames()).containsExactly("applications", "total");
         assertThat(body.get("applications")).extracting(n -> n.get("id").asText()).contains(id);
         assertThat(body.get("applications")).extracting(n -> n.get("type").asText()).containsOnly("INTEGRATION");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("applications").size());
@@ -238,7 +239,7 @@ class ApplicationApiTest {
         assertThat(one.get("applicationId").asText()).isEqualTo(id);
         assertThat(one.get("clientId").asText()).isEqualTo(clientId);
         assertThat(one.get("enabled").asBoolean()).isTrue();
-        assertThat(one.fieldNames()).toIterable().containsExactly("id", "applicationId", "clientId", "enabled", "createdAt", "updatedAt");
+        assertThat(one.propertyNames()).containsExactly("id", "applicationId", "clientId", "enabled", "createdAt", "updatedAt");
 
         var disable = http.post("/api/applications/" + id + "/clients/" + clientId + "/disable", null, ANCHOR);
         assertThat(disable.statusCode()).isEqualTo(204);

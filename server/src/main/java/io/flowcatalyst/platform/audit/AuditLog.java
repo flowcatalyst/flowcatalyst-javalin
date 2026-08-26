@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.audit;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.sdk.usecase.HasId;
 

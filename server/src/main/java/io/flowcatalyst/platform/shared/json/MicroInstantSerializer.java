@@ -1,10 +1,10 @@
 package io.flowcatalyst.platform.shared.json;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.JsonSerializer;
-import com.fasterxml.jackson.databind.SerializerProvider;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonGenerator;
+import tools.jackson.databind.SerializationContext;
+import tools.jackson.databind.ValueSerializer;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -23,7 +23,7 @@ import java.time.temporal.TemporalAccessor;
 ///
 /// Registered for [Instant], [OffsetDateTime] and [ZonedDateTime]; an
 /// [Instant] is always UTC and therefore always ends in `Z`.
-public final class MicroInstantSerializer<T extends TemporalAccessor> extends JsonSerializer<T> {
+public final class MicroInstantSerializer<T extends TemporalAccessor> extends ValueSerializer<T> {
 
     /// `yyyy-MM-dd'T'HH:mm:ss.SSSSSS` followed by `Z` or `±HH:MM`.
     public static final DateTimeFormatter LAYOUT = new DateTimeFormatterBuilder()
@@ -50,7 +50,7 @@ public final class MicroInstantSerializer<T extends TemporalAccessor> extends Js
     }
 
     @Override
-    public void serialize(T value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+    public void serialize(T value, JsonGenerator gen, SerializationContext serializers) throws JacksonException {
         gen.writeString(format(value));
     }
 

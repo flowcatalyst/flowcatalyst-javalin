@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.event;
 
-import com.fasterxml.jackson.databind.node.NullNode;
+import tools.jackson.databind.node.NullNode;
 import io.flowcatalyst.platform.event.Event.ContextEntry;
 import io.flowcatalyst.platform.event.Event.Projection;
 import io.flowcatalyst.platform.shared.json.Json;

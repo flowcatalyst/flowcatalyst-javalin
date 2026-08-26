@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.platformconfig.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.platformconfig.ConfigAccess;
 import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
 import io.flowcatalyst.platform.platformconfig.ConfigCoordinate;
@@ -50,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: application
 /// codes are namespaced by a per-JVM suffix.
+@SuppressWarnings("deprecation")
 class PlatformConfigOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();

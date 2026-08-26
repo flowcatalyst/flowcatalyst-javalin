@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.client;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
 import io.flowcatalyst.db.generated.tables.TntClients;
 import io.flowcatalyst.db.generated.tables.records.TntClientsRecord;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -133,7 +133,7 @@ public final class ClientRepository implements Persist<Client> {
         if (jsonb == null || jsonb.data() == null || jsonb.data().isBlank()) return List.of();
         try {
             return Json.MAPPER.readValue(jsonb.data(), NOTES);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("tnt_clients.notes is not a valid note array", e);
         }
     }

@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.observability;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /// The point of this class is that a notice reaches a person. Asserting that
 /// `raise()` was called would prove the opposite of what matters, so every
 /// test here reads what the webhook actually received.
+@SuppressWarnings("deprecation")
 class WarningNotifierTest {
 
     private static final Clock FIXED = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);

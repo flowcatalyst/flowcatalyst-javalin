@@ -1,15 +1,13 @@
 package io.flowcatalyst.platform.shared.json;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.json.JsonMapper;
 
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -43,7 +41,7 @@ public final class JavalinJsonMapper implements JsonMapper {
     public String toJsonString(Object obj, Type type) {
         try {
             return mapper.writerFor(mapper.constructType(type)).writeValueAsString(obj) + "\n";
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("JSON serialisation failed for " + type.getTypeName(), e);
         }
     }
@@ -56,7 +54,7 @@ public final class JavalinJsonMapper implements JsonMapper {
     @Override
     public void writeToOutputStream(Stream<?> stream, OutputStream outputStream) {
         try (stream) {
-            var gen = mapper.getFactory().createGenerator(outputStream);
+            var gen = mapper.createGenerator(outputStream);
             gen.writeStartArray();
             var it = stream.iterator();
             while (it.hasNext()) {
@@ -65,8 +63,8 @@ public final class JavalinJsonMapper implements JsonMapper {
             gen.writeEndArray();
             gen.writeRaw('\n');
             gen.flush();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+        } catch (JacksonException e) {
+            throw new IllegalStateException("JSON stream serialisation failed", e);
         }
     }
 
@@ -74,7 +72,7 @@ public final class JavalinJsonMapper implements JsonMapper {
     public <T> T fromJsonString(String json, Type type) {
         try {
             return mapper.readValue(json, mapper.constructType(type));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw invalidJson(e);
         }
     }
@@ -83,14 +81,12 @@ public final class JavalinJsonMapper implements JsonMapper {
     public <T> T fromJsonStream(InputStream json, Type type) {
         try {
             return mapper.readValue(json, mapper.constructType(type));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw invalidJson(e);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
         }
     }
 
-    private static UseCaseException invalidJson(JsonProcessingException e) {
+    private static UseCaseException invalidJson(JacksonException e) {
         var msg = e.getOriginalMessage();
         return UseCaseException.validation("INVALID_JSON", msg == null || msg.isBlank() ? "malformed request body" : msg);
     }

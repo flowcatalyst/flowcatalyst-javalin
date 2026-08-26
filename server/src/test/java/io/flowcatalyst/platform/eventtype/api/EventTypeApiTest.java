@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.eventtype.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.operations.ArchiveCommand;
 import io.flowcatalyst.platform.eventtype.operations.ArchiveEventType;
@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The eight `/api/event-types` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class EventTypeApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -146,7 +147,7 @@ class EventTypeApiTest {
         assertThat(sv.get("status").asText()).isEqualTo("FINALISING");
         assertThat(sv.get("schema").get("type").asText()).isEqualTo("object");
         assertThat(sv.get("createdAt").asText()).endsWith("Z");
-        assertThat(et.fieldNames()).toIterable().containsExactly("id", "code", "name", "application", "subdomain",
+        assertThat(et.propertyNames()).containsExactly("id", "code", "name", "application", "subdomain",
                 "aggregate", "eventName", "description", "status", "source", "createdBy", "createdAt", "updatedAt", "specVersions");
 
         // GET by code.
@@ -161,7 +162,7 @@ class EventTypeApiTest {
         assertThat(items.isArray()).isTrue();
         assertThat(items).extracting(n -> n.get("code").asText())
                 .contains(code, APP + ":orders:order:shipped");
-        assertThat(json(list).fieldNames()).toIterable().containsExactly("items");
+        assertThat(json(list).propertyNames()).containsExactly("items");
 
         // A viewer (CLIENT scope, view permission) sees platform-level event types too.
         var viewerList = send("GET", "/api/event-types?application=" + APP, null, VIEWER);

@@ -24,8 +24,9 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.release>25</maven.compiler.release>
 
-    <!-- Stay on Jackson 2.x (com.fasterxml namespace); Jackson 3's split packages are not wanted here. -->
-    <jackson.version>2.22.2</jackson.version>
+    <!-- tools.jackson (3.x); jackson-annotations alone stays on its original
+         com.fasterxml.jackson.core coordinate, which Jackson 3 never renamed. -->
+    <jackson.version>3.1.5</jackson.version>
     <javalin.version>7.2.3</javalin.version>
     <jooq.version>3.21.7</jooq.version>
     <hikaricp.version>7.1.0</hikaricp.version>
@@ -63,9 +64,20 @@
     <dependencies>
       <!-- BOMs -->
       <dependency>
-        <groupId>com.fasterxml.jackson</groupId>
+        <groupId>tools.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
         <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- sdk's generated OpenAPI client (openapi-generator-maven-plugin) is
+           hardcoded to Jackson 2 by its own templates; jackson-annotations
+           also has no tools.jackson coordinate and never will (Jackson 3's
+           own jackson-databind depends on it directly). This BOM pins both. -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.22.2</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.audit.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.audit.AuditLogFixture;
 import io.flowcatalyst.platform.audit.AuditLogFixture.OtherCommand;
 import io.flowcatalyst.platform.audit.AuditLogFixture.SeedCommand;
@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The nine `/api/audit-logs` routes end to end through Javalin (spec §2–6):
 /// the view gate, the lockfile envelopes, the cursor walk, the facets and
 /// the error envelope.
+@SuppressWarnings("deprecation")
 class AuditLogApiTest {
 
     private static final String[] ANCHOR = {
@@ -101,13 +102,13 @@ class AuditLogApiTest {
     @Test
     void listEnvelopeAndEntryShapeAreTheLockfiles() {
         var body = ok(http.get("/api/audit-logs?entityType=" + TYPE + "&entityId=" + entityA, ANCHOR));
-        assertThat(body.fieldNames()).toIterable().containsExactly("auditLogs", "hasMore");
+        assertThat(body.propertyNames()).containsExactly("auditLogs", "hasMore");
         assertThat(body.get("hasMore").asBoolean()).isFalse();
         var logs = body.get("auditLogs");
         assertThat(logs).extracting(n -> n.get("id").asText()).containsExactlyElementsOf(idsNewestFirst);
 
         var first = logs.get(0);
-        assertThat(first.fieldNames()).toIterable().containsExactly(
+        assertThat(first.propertyNames()).containsExactly(
                 "id", "entityType", "entityId", "operation", "operationJson", "principalId", "principalName", "performedAt");
         assertThat(first.get("entityType").asText()).isEqualTo(TYPE);
         assertThat(first.get("entityId").asText()).isEqualTo(entityA);
@@ -181,19 +182,19 @@ class AuditLogApiTest {
     @Test
     void facetRoutesAnswerTheirOwnEnvelopes() {
         var types = ok(http.get("/api/audit-logs/entity-types", ANCHOR));
-        assertThat(types.fieldNames()).toIterable().containsExactly("entityTypes");
+        assertThat(types.propertyNames()).containsExactly("entityTypes");
         assertThat(types.get("entityTypes")).extracting(JsonNode::asText).contains(TYPE);
 
         var ops = ok(http.get("/api/audit-logs/operations", ANCHOR));
-        assertThat(ops.fieldNames()).toIterable().containsExactly("operations");
+        assertThat(ops.propertyNames()).containsExactly("operations");
         assertThat(ops.get("operations")).extracting(JsonNode::asText).contains("SeedCommand", "OtherCommand");
 
         var apps = ok(http.get("/api/audit-logs/application-ids", ANCHOR));
-        assertThat(apps.fieldNames()).toIterable().containsExactly("applicationIds");
+        assertThat(apps.propertyNames()).containsExactly("applicationIds");
         assertThat(apps.get("applicationIds").isArray()).isTrue();
 
         var clients = ok(http.get("/api/audit-logs/client-ids", ANCHOR));
-        assertThat(clients.fieldNames()).toIterable().containsExactly("clientIds");
+        assertThat(clients.propertyNames()).containsExactly("clientIds");
         assertThat(clients.get("clientIds").isArray()).isTrue();
     }
 
@@ -202,7 +203,7 @@ class AuditLogApiTest {
     @Test
     void entityAndPrincipalListsAreUnpaginatedListEnvelopes() {
         var byEntity = ok(http.get("/api/audit-logs/entity/" + TYPE + "/" + entityA, ANCHOR));
-        assertThat(byEntity.fieldNames()).toIterable().containsExactly("auditLogs", "hasMore");
+        assertThat(byEntity.propertyNames()).containsExactly("auditLogs", "hasMore");
         assertThat(byEntity.get("hasMore").asBoolean()).isFalse();
         assertThat(byEntity.get("auditLogs")).extracting(n -> n.get("id").asText()).containsExactlyElementsOf(idsNewestFirst);
 

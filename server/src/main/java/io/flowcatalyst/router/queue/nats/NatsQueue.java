@@ -334,7 +334,7 @@ public final class NatsQueue implements Consumer {
         Message payload;
         try {
             payload = Json.MAPPER.readValue(data, Message.class);
-        } catch (IOException e) {
+        } catch (tools.jackson.core.JacksonException e) {
             return FetchOutcome.Malformed.INSTANCE;
         }
         String receipt = streamName + ":" + streamSeq;

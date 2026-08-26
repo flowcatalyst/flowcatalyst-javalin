@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.openapispecs;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
@@ -16,6 +16,13 @@ import java.util.TreeMap;
 /// carries a top-level `openapi` or `swagger` key. Carries the two facts the
 /// sync needs — the declared `info.version` and the canonical-JSON hash that
 /// the "unchanged" short-circuit compares.
+/// `asText()`/`isTextual()` are deprecated in Jackson 3 in favour of
+/// `stringValue()`/`isString()`, which are NOT equivalent — `stringValue()`
+/// throws on a non-string node instead of coercing, and returns `null` rather
+/// than `""` for JSON `null`. Kept deliberately, suppressed rather than
+/// migrated: this record's whole job is tolerating whatever shape an
+/// incoming OpenAPI document has.
+@SuppressWarnings("deprecation")
 public record OpenApiDocument(JsonNode root) {
 
     public static final String INVALID = "INVALID_OPENAPI_SPEC";
@@ -50,7 +57,7 @@ public record OpenApiDocument(JsonNode root) {
         try {
             byte[] canonical = Json.MAPPER.writeValueAsBytes(canonicalise(root));
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical));
-        } catch (JsonProcessingException | NoSuchAlgorithmException e) {
+        } catch (JacksonException | NoSuchAlgorithmException e) {
             throw new IllegalStateException("canonical JSON hash", e);
         }
     }

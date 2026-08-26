@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.openapispecs;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -108,7 +108,7 @@ public record ChangeNotes(
 
     private static Set<String> keys(JsonNode object) {
         var out = new TreeSet<String>();
-        if (object != null) object.fieldNames().forEachRemaining(out::add);
+        if (object != null) out.addAll(object.propertyNames());
         return out;
     }
 

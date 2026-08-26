@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.wire;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Go and Java never run at once, but a rollback leaves Java-written messages
 /// on a queue for Go to drain, so these assertions are about **both**
 /// directions staying readable — not about matching Go for its own sake.
+@SuppressWarnings("deprecation")
 class MessageWireTest {
 
     @Test

@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.openapispecs;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.AppApplicationOpenapiSpecs;
 import io.flowcatalyst.db.generated.tables.records.AppApplicationOpenapiSpecsRecord;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -127,7 +127,7 @@ public final class OpenApiSpecRepository implements Persist<OpenApiSpec> {
     private static JsonNode fromJsonb(JSONB jsonb) {
         try {
             return Json.MAPPER.readTree(jsonb.data());
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("stored spec is not valid JSON", e);
         }
     }
@@ -138,7 +138,7 @@ public final class OpenApiSpecRepository implements Persist<OpenApiSpec> {
         try {
             JsonNode node = Json.MAPPER.readTree(jsonb.data());
             return node.isNull() ? null : Json.MAPPER.treeToValue(node, ChangeNotes.class);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("stored change_notes is not valid JSON", e);
         }
     }

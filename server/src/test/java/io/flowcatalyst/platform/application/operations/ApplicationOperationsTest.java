@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.application.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationRepository.ListFilter;
@@ -54,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: codes carry a
 /// per-JVM suffix, client and principal rows are minted per test.
+@SuppressWarnings("deprecation")
 class ApplicationOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();

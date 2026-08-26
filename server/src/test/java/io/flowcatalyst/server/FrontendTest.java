@@ -1,6 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.javalin.Javalin;
+import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,10 @@ class FrontendTest {
         app = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
+            // Matches the real Server.buildApi(): Javalin's own lazy default
+            // jsonMapper is JavalinJackson (Jackson 2), which this project no
+            // longer ships a real jackson-databind for.
+            cfg.jsonMapper(new JavalinJsonMapper());
             cfg.routes.get("/api/things", ctx -> ctx.json(Map.of("ok", true)));
             cfg.routes.post("/auth/login", ctx -> ctx.result("posted"));
             Frontend.embedded().orElseThrow().register(cfg.routes);
@@ -99,7 +104,7 @@ class FrontendTest {
     void apiRoutesWinOverTheFallbackAndGetMethodMismatchRendersTheShell() throws Exception {
         var api = get("/api/things");
         assertThat(api.statusCode()).isEqualTo(200);
-        assertThat(api.body()).isEqualTo("{\"ok\":true}");
+        assertThat(api.body()).isEqualTo("{\"ok\":true}\n");
 
         // POST /auth/login exists; GET /auth/login is a Vue history route → SPA (Go's 405 shim)
         var login = get("/auth/login");

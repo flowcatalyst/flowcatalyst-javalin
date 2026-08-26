@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.scheduledjob.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.scheduledjob.InstanceStatus;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, the instance projection routes and the
 /// error envelope.
+@SuppressWarnings("deprecation")
 class ScheduledJobApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -271,7 +272,7 @@ class ScheduledJobApiTest {
 
         var list = json(http.get("/api/scheduled-jobs?search=" + code("vis-"), VIEWER));
         assertThat(list.get("total").asLong()).as("platform rows + own client's").isEqualTo(2);
-        assertThat(list.get("data").findValuesAsText("id")).containsExactlyInAnyOrder(mine, platform);
+        assertThat(list.get("data").findValuesAsString("id")).containsExactlyInAnyOrder(mine, platform);
 
         assertThat(http.get("/api/scheduled-jobs/" + mine, VIEWER).statusCode()).isEqualTo(200);
         assertThat(http.get("/api/scheduled-jobs/" + platform, VIEWER).statusCode()).isEqualTo(200);
@@ -284,7 +285,7 @@ class ScheduledJobApiTest {
         assertThat(http.get("/api/scheduled-jobs/by-code/" + code("vis-mine"), VIEWER).statusCode()).as("absent clientId = platform scope").isEqualTo(404);
 
         var platformOnly = json(http.get("/api/scheduled-jobs?search=" + code("vis-") + "&clientId=platform", ANCHOR));
-        assertThat(platformOnly.get("data").findValuesAsText("id")).containsExactly(platform);
+        assertThat(platformOnly.get("data").findValuesAsString("id")).containsExactly(platform);
 
         // A fired instance of another client's job is invisible to the viewer; the writer can log on its own.
         String theirInstance = json(http.post("/api/scheduled-jobs/" + theirs + "/fire", null, ANCHOR)).get("instanceId").asText();

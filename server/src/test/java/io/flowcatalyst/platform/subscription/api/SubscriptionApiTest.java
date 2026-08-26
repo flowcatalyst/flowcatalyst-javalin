@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.subscription.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -26,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The seven `/api/subscriptions` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
 /// status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class SubscriptionApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -127,7 +128,7 @@ class SubscriptionApiTest {
         assertThat(s.get("clientScoped").asBoolean()).isFalse();
         assertThat(s.get("eventTypes")).hasSize(1);
         assertThat(s.get("eventTypes").get(0).get("eventTypeCode").asText()).isEqualTo("subapi:orders:order:created");
-        assertThat(s.get("eventTypes").get(0).fieldNames()).toIterable().as("null binding fields omitted").containsExactly("eventTypeCode");
+        assertThat(s.get("eventTypes").get(0).propertyNames()).as("null binding fields omitted").containsExactly("eventTypeCode");
         assertThat(s.get("connectionId").asText()).isEqualTo("con_subapi1");
         assertThat(s.get("endpoint").asText()).isEqualTo("https://hooks.example.test/" + code);
         assertThat(s.get("customConfig").get(0).get("key").asText()).isEqualTo("X-Env");
@@ -147,7 +148,7 @@ class SubscriptionApiTest {
         assertThat(s.has("dispatchPoolId")).isFalse();
         assertThat(s.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(s.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(s.fieldNames()).toIterable().containsExactly("id", "code", "name", "description", "clientScoped",
+        assertThat(s.propertyNames()).containsExactly("id", "code", "name", "description", "clientScoped",
                 "eventTypes", "connectionId", "endpoint", "customConfig", "source", "status", "maxAgeSeconds",
                 "delaySeconds", "sequence", "mode", "timeoutSeconds", "maxRetries", "dataOnly", "createdBy",
                 "createdAt", "updatedAt");
@@ -164,10 +165,10 @@ class SubscriptionApiTest {
         var list = http.get("/api/subscriptions", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("subscriptions", "total");
+        assertThat(body.propertyNames()).containsExactly("subscriptions", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("subscriptions").size());
         assertThat(body.get("subscriptions")).extracting(n -> n.get("code").asText()).contains(code, code("plain"));
-        assertThat(body.get("subscriptions").findValuesAsText("code")).isSorted();
+        assertThat(body.get("subscriptions").findValuesAsString("code")).isSorted();
 
         // A viewer (CLIENT scope, view permission) sees platform-wide subscriptions too.
         var viewerList = http.get("/api/subscriptions", VIEWER);

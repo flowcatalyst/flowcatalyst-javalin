@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.event.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.event.Event;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.EventRepository.Facet;

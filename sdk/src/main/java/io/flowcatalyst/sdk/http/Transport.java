@@ -1,8 +1,9 @@
 package io.flowcatalyst.sdk.http;
 
-import com.fasterxml.jackson.databind.JavaType;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.auth.ClientCredentialsTokenManager;
 import io.flowcatalyst.sdk.auth.TokenProvider;
 import io.flowcatalyst.sdk.error.FlowCatalystException;
@@ -196,7 +197,7 @@ public final class Transport {
     private String serialize(Object body) {
         try {
             return mapper.writeValueAsString(body);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             throw new FlowCatalystException(
                     new SdkError.Network("Failed to serialize request body: " + e.getMessage(), e));
         }
@@ -208,7 +209,7 @@ public final class Transport {
         }
         try {
             return mapper.readValue(body, responseType);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             throw new FlowCatalystException(
                     new SdkError.Network("Failed to parse response: " + e.getMessage(), e));
         }
@@ -217,7 +218,7 @@ public final class Transport {
     private JsonNode parseQuietly(String body) {
         try {
             return body == null || body.isEmpty() ? null : mapper.readTree(body);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             return null;
         }
     }

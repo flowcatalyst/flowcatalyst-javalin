@@ -1,6 +1,6 @@
 package io.flowcatalyst.sdk.outbox;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.http.Json;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -147,7 +147,7 @@ public final class JdbcOutboxDriver implements OutboxDriver {
             String json;
             try {
                 json = mapper.writeValueAsString(message.headers());
-            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            } catch (tools.jackson.core.JacksonException e) {
                 throw new OutboxPersistenceException("Failed to serialize outbox headers", e);
             }
             if (postgres) {

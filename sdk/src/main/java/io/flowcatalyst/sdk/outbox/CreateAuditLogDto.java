@@ -131,7 +131,7 @@ public final class CreateAuditLogDto {
      * {@code operationData} is embedded as a JSON string; {@code performedAt}
      * defaults to now.
      */
-    Map<String, Object> toPayload(com.fasterxml.jackson.databind.ObjectMapper mapper) {
+    Map<String, Object> toPayload(tools.jackson.databind.ObjectMapper mapper) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("entityType", entityType);
         payload.put("entityId", entityId);
@@ -139,7 +139,7 @@ public final class CreateAuditLogDto {
         if (operationData != null) {
             try {
                 payload.put("operationData", mapper.writeValueAsString(operationData));
-            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            } catch (tools.jackson.core.JacksonException e) {
                 throw new IllegalArgumentException(
                         "Audit operationData is not serializable to JSON", e);
             }

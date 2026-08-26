@@ -1,10 +1,11 @@
 package io.flowcatalyst.platform.shared.openapi;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@SuppressWarnings("deprecation")
 class LockfileTest {
 
     @Test

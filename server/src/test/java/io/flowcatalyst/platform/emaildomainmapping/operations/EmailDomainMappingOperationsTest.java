@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.emaildomainmapping.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
@@ -58,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates (and the seeder owns a row), so every test
 /// owns its rows: domains are namespaced by a per-JVM suffix.
+@SuppressWarnings("deprecation")
 class EmailDomainMappingOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -189,7 +190,7 @@ class EmailDomainMappingOperationsTest {
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.get("mappingId").asText()).isEqualTo(ev.mappingId());
         assertThat(data.get("emailDomain").asText()).isEqualTo(domain("edm-create"));
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("mappingId", "emailDomain");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("mappingId", "emailDomain");
 
         var audits = auditsFor(ev.mappingId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -367,7 +368,7 @@ class EmailDomainMappingOperationsTest {
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.get("fromIdentityProviderId").asText()).isEqualTo(IDP);
         assertThat(data.get("toIdentityProviderId").asText()).isEqualTo(target);
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("mappingId", "emailDomain", "fromIdentityProviderId", "toIdentityProviderId");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("mappingId", "emailDomain", "fromIdentityProviderId", "toIdentityProviderId");
         var audits = auditsFor(seeded.mappingId(), "MoveProviderCommand");
         assertThat(audits).hasSize(1);
         assertThat(json(audits.getFirst().get("operation_json", String.class)).get("identityProviderId").asText()).isEqualTo(target);

@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.publicapi;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+import tools.jackson.core.JacksonException;
 import io.flowcatalyst.platform.shared.json.Json;
 
 import java.util.Optional;
@@ -49,7 +49,7 @@ public record LoginTheme(
         if (storedValue == null || storedValue.isBlank()) return Optional.empty();
         try {
             return Optional.ofNullable(Json.read(storedValue, LoginTheme.class));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             return Optional.empty();
         }
     }

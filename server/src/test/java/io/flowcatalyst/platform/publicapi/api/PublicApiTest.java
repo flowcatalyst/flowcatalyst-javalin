@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.publicapi.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.BrandingFixture;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// defaults with no configuration, the verbatim echo of a stored theme — and,
 /// through the real `Server` with its authenticator wired, that an anonymous
 /// request (no bearer, no cookie, no test headers) still gets `200`.
+@SuppressWarnings("deprecation")
 class PublicApiTest {
 
     private static TestHttp http;
@@ -72,7 +73,7 @@ class PublicApiTest {
         var body = json(r);
         assertThat(body.path("features").path("messagingEnabled").asBoolean()).isTrue();
         assertThat(body.path("platformName").asText()).isEqualTo("Flowcatalyst");
-        assertThat(body.fieldNames()).toIterable().containsExactly("features", "platformName");
+        assertThat(body.propertyNames()).containsExactly("features", "platformName");
     }
 
     @Test

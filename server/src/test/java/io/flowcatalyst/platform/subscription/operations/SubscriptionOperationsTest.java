@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.subscription.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.operations.CreateConnection;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
@@ -58,6 +58,7 @@ import static org.assertj.core.groups.Tuple.tuple;
 ///
 /// The fixture never truncates, so every test owns its rows: codes and
 /// application codes carry a per-JVM suffix.
+@SuppressWarnings("deprecation")
 class SubscriptionOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -221,7 +222,7 @@ class SubscriptionOperationsTest {
         assertThat(data.get("subscriptionId").asText()).isEqualTo(ev.subscriptionId());
         assertThat(data.get("code").asText()).isEqualTo(code);
         assertThat(data.get("name").asText()).isEqualTo("Sub Create");
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("subscriptionId", "code", "name");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("subscriptionId", "code", "name");
 
         var audits = auditsFor(ev.subscriptionId(), "CreateCommand");
         assertThat(audits).hasSize(1);
@@ -365,7 +366,7 @@ class SubscriptionOperationsTest {
 
         var events = eventsFor(seeded.subscriptionId(), SubscriptionEvents.UPDATED);
         assertThat(events).hasSize(2);
-        assertThat(json(events.getFirst().get("data", String.class)).fieldNames()).toIterable().containsExactlyInAnyOrder("subscriptionId", "name");
+        assertThat(json(events.getFirst().get("data", String.class)).propertyNames()).containsExactlyInAnyOrder("subscriptionId", "name");
         assertThat(auditsFor(seeded.subscriptionId(), "UpdateCommand")).hasSize(2);
     }
 
@@ -412,8 +413,8 @@ class SubscriptionOperationsTest {
 
         runAsAnchor(PauseSubscription.of(repo), new PauseCommand(seeded.subscriptionId()));
         assertThat(eventsFor(seeded.subscriptionId(), SubscriptionEvents.PAUSED)).as("a no-op pause still emits").hasSize(2);
-        assertThat(json(eventsFor(seeded.subscriptionId(), SubscriptionEvents.PAUSED).getFirst().get("data", String.class)).fieldNames())
-                .toIterable().containsExactly("subscriptionId");
+        assertThat(json(eventsFor(seeded.subscriptionId(), SubscriptionEvents.PAUSED).getFirst().get("data", String.class)).propertyNames())
+                .containsExactly("subscriptionId");
         assertThat(auditsFor(seeded.subscriptionId(), "PauseCommand")).hasSize(2);
 
         var resumed = runAsAnchor(ResumeSubscription.of(repo), new ResumeCommand(seeded.subscriptionId()));

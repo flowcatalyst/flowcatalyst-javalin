@@ -1,14 +1,13 @@
 package io.flowcatalyst.platform.shared.json;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.json.JsonMapper;
-import com.fasterxml.jackson.databind.module.SimpleModule;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.module.SimpleModule;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -25,8 +24,10 @@ import java.time.ZonedDateTime;
 ///   - [Instant] / [OffsetDateTime] / [ZonedDateTime] are written as RFC 3339
 ///     with exactly six fractional digits and `Z` for UTC (`jsontime.Layout`),
 ///     and read from any RFC 3339 precision.
-///   - Records and `Optional` are supported (jsr310 + jdk8 modules); enums go
-///     on the wire as their `name()` unless they declare `@JsonValue`.
+///   - Records, `Optional` and `java.time` need no modules: Jackson 3
+///     folded both `Jdk8Module` and the jsr310 datatype into databind
+///     (`tools.jackson.databind.ext.javatime`);
+///     enums go on the wire as their `name()` unless they declare `@JsonValue`.
 ///
 /// The Javalin adapter is [JavalinJsonMapper].
 public final class Json {
@@ -45,16 +46,19 @@ public final class Json {
                 .addDeserializer(OffsetDateTime.class, MicroInstantDeserializer.forOffsetDateTime())
                 .addDeserializer(ZonedDateTime.class, MicroInstantDeserializer.forZonedDateTime());
         return JsonMapper.builder()
-                .addModule(new JavaTimeModule())
-                .addModule(new Jdk8Module())
-                .addModule(micro) // registered last so it wins over JavaTimeModule for the three types above
+                .addModule(micro) // overrides databind's built-in java.time handling for the three types above
                 // Go `omitempty` on pointers/interfaces: nulls AND empty Optionals are dropped;
                 // empty strings / collections are still written (NON_ABSENT, not NON_EMPTY).
-                .defaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_ABSENT, JsonInclude.Include.USE_DEFAULTS))
+                .changeDefaultPropertyInclusion(v ->
+                        JsonInclude.Value.construct(JsonInclude.Include.NON_ABSENT, JsonInclude.Include.USE_DEFAULTS))
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
                 .disable(SerializationFeature.FAIL_ON_EMPTY_BEANS)
-                .disable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+                .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+                // Jackson 3 flipped this default to true (Jackson 2: false) — a
+                // missing/null field on a primitive would now hard-fail instead
+                // of defaulting to zero/false, which every record here relies on.
+                .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .build();
     }
 
@@ -63,7 +67,7 @@ public final class Json {
     public static String write(Object value) {
         try {
             return MAPPER.writeValueAsString(value);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("JSON serialisation failed for " + value.getClass().getName(), e);
         }
     }
@@ -78,7 +82,7 @@ public final class Json {
 
     /// Deserialises with [#MAPPER]; the caller decides how a malformed input is
     /// reported (the HTTP layer maps it to the `INVALID_JSON` envelope).
-    public static <T> T read(String json, Class<T> type) throws JsonProcessingException {
+    public static <T> T read(String json, Class<T> type) throws JacksonException {
         return MAPPER.readValue(json, type);
     }
 }

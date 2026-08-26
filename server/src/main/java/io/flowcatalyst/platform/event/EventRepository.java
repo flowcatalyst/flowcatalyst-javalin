@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.event;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgEvents;
 import io.flowcatalyst.db.generated.tables.MsgEventsRead;
 import io.flowcatalyst.db.generated.tables.records.MsgEventsReadRecord;
@@ -34,6 +34,10 @@ import static io.flowcatalyst.db.generated.Tables.MSG_EVENTS_READ;
 /// projected by the stream processor, never here. Every lockfile route reads
 /// the projected table; [#findRecentRaw] is the one read over the write-side
 /// table (spec §6). Pure CRUD — no domain decisions live here.
+/// `asText()`/`isTextual()` are deprecated in Jackson 3 for `stringValue()`/
+/// `isString()`, which are NOT equivalent (throws on non-string, `null` not
+/// `""` for JSON `null`) — kept deliberately, suppressed rather than migrated.
+@SuppressWarnings("deprecation")
 public final class EventRepository {
 
     private static final MsgEventsRead R = MSG_EVENTS_READ;
@@ -216,7 +220,7 @@ public final class EventRepository {
         if (text == null || text.isBlank()) return null;
         try {
             return Json.MAPPER.readTree(text);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException(column + " is not valid JSON", e);
         }
     }

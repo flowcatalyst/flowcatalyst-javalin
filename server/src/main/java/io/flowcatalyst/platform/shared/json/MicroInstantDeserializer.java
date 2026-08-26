@@ -1,12 +1,12 @@
 package io.flowcatalyst.platform.shared.json;
 
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.databind.DeserializationContext;
-import com.fasterxml.jackson.databind.JsonDeserializer;
-import com.fasterxml.jackson.databind.exc.InvalidFormatException;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.databind.DeserializationContext;
+import tools.jackson.databind.ValueDeserializer;
+import tools.jackson.databind.exc.InvalidFormatException;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
@@ -20,7 +20,7 @@ import java.util.function.Function;
 /// fraction; `Z` or numeric offset) and truncates it to microseconds — the
 /// same leniency as Go's `time.Parse(time.RFC3339Nano, …)` followed by
 /// `Truncate(time.Microsecond)`. JSON `null` becomes `null` (Go: zero time).
-public final class MicroInstantDeserializer<T extends TemporalAccessor> extends JsonDeserializer<T> {
+public final class MicroInstantDeserializer<T extends TemporalAccessor> extends ValueDeserializer<T> {
 
     private final Class<T> handled;
     private final Function<OffsetDateTime, T> convert;
@@ -48,11 +48,11 @@ public final class MicroInstantDeserializer<T extends TemporalAccessor> extends 
     }
 
     @Override
-    public T deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+    public T deserialize(JsonParser p, DeserializationContext ctxt) throws JacksonException {
         if (p.currentToken() != JsonToken.VALUE_STRING) {
             return ctxt.readValue(p, handled); // let Jackson report the type mismatch its usual way
         }
-        var text = p.getText().trim();
+        var text = p.getString().trim();
         try {
             var parsed = OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME)
                     .truncatedTo(ChronoUnit.MICROS);

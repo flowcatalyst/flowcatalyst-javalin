@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.cors.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.cors.CorsOrigin;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.operations.CorsOriginEvents.CorsOriginAdded;
@@ -45,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 ///
 /// The fixture never truncates, so every test owns its rows: origins are
 /// namespaced by a per-JVM suffix on the host.
+@SuppressWarnings("deprecation")
 class CorsOriginOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -140,7 +141,7 @@ class CorsOriginOperationsTest {
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.get("originId").asText()).isEqualTo(ev.originId());
         assertThat(data.get("origin").asText()).isEqualTo(origin);
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("originId", "origin");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("originId", "origin");
 
         var audits = auditsFor(ev.originId(), "AddCommand");
         assertThat(audits).hasSize(1);

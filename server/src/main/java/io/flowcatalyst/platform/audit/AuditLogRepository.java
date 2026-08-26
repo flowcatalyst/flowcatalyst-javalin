@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.audit;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.IamPrincipals;
 import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
@@ -168,7 +168,7 @@ public final class AuditLogRepository {
         if (jsonb == null || jsonb.data() == null || jsonb.data().isEmpty()) return null;
         try {
             return Json.MAPPER.readTree(jsonb.data());
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("aud_logs.operation_json is not valid JSON", e);
         }
     }

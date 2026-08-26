@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// The pure rules of the aggregate (spec §1, §4): the record's invariants and
 /// its keyset position, without a database. The cursor's encoding is the
 /// shared `apicommon.KeysetCursor`'s — see `KeysetCursorTest`.
+@SuppressWarnings("deprecation")
 class AuditLogTest {
 
     private static final Instant T = Instant.parse("2026-08-22T10:11:12.123456Z");

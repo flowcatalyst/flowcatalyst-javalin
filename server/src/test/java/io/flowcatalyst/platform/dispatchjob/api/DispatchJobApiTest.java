@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the two gates, the bare-array list envelopes, SQL-side scoping, the
 /// detail / raw / attempts reads with 404 + scope, the facets, the aliases
 /// and the requeue write.
+@SuppressWarnings("deprecation")
 class DispatchJobApiTest {
 
     private static final String CLIENT_A = "cli_apa" + RUN;

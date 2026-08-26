@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the facets. Rows are seeded through a real unit of work; nothing here
 /// writes `aud_logs` directly except the foreign-shape rows of
 /// [#jsonColumnReadsWhateverAnotherWriterProduced].
+@SuppressWarnings("deprecation")
 class AuditLogRepositoryTest {
 
     private static final AuditLogRepository repo = new AuditLogRepository(DS);

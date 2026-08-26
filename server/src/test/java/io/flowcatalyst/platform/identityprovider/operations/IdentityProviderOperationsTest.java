@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.identityprovider.operations;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.emaildomainmapping.ScopeType;
@@ -55,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// The fixture never truncates, so every test owns its rows: codes and
 /// domains are namespaced by a per-JVM suffix. The seeded `internal`
 /// provider may or may not exist already — tests that need it ensure it.
+@SuppressWarnings("deprecation")
 class IdentityProviderOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -182,7 +183,7 @@ class IdentityProviderOperationsTest {
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.get("identityProviderId").asText()).isEqualTo(res.identityProviderId());
         assertThat(data.get("code").asText()).isEqualTo(code("idpcrt"));
-        assertThat(data.fieldNames()).toIterable().containsExactlyInAnyOrder("identityProviderId", "code");
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("identityProviderId", "code");
 
         var audits = auditsFor(res.identityProviderId(), "CreateCommand");
         assertThat(audits).hasSize(1);

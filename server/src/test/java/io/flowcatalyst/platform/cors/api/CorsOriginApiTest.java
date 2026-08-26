@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.cors.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -27,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// authenticator's test headers, the anchor-only gates, the public
 /// `/allowed` read, route precedence between `/allowed` and `{id}`, the
 /// lockfile status codes and body shapes, and the error envelope.
+@SuppressWarnings("deprecation")
 class CorsOriginApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -110,7 +111,7 @@ class CorsOriginApiTest {
         assertThat(o.get("createdBy").asText()).isEqualTo(ANCHOR_PRINCIPAL);
         assertThat(o.get("createdAt").asText()).matches(TS);
         assertThat(o.get("updatedAt").asText()).matches(TS);
-        assertThat(o.fieldNames()).toIterable().containsExactly("id", "origin", "description", "createdBy", "createdAt", "updatedAt");
+        assertThat(o.propertyNames()).containsExactly("id", "origin", "description", "createdBy", "createdAt", "updatedAt");
 
         // Without a description the field is omitted.
         var bare = json(http.get("/api/platform/cors/" + json(created).get("id").asText(), ANCHOR));
@@ -120,7 +121,7 @@ class CorsOriginApiTest {
         var list = http.get("/api/platform/cors", ANCHOR);
         assertThat(list.statusCode()).isEqualTo(200);
         var body = json(list);
-        assertThat(body.fieldNames()).toIterable().containsExactly("corsOrigins", "total");
+        assertThat(body.propertyNames()).containsExactly("corsOrigins", "total");
         assertThat(body.get("corsOrigins").isArray()).isTrue();
         assertThat(body.get("total").asInt()).isEqualTo(body.get("corsOrigins").size());
         assertThat(body.get("corsOrigins")).extracting(n -> n.get("id").asText()).contains(id);
@@ -128,7 +129,7 @@ class CorsOriginApiTest {
         // Public allowlist: {"origins": [...]} — strings only, no bearer, no test headers.
         var allowed = http.get("/api/platform/cors/allowed");
         assertThat(allowed.statusCode()).isEqualTo(200);
-        assertThat(json(allowed).fieldNames()).toIterable().containsExactly("origins");
+        assertThat(json(allowed).propertyNames()).containsExactly("origins");
         assertThat(json(allowed).get("origins")).extracting(JsonNode::asText).contains(origin, origin("corsapi-2"));
     }
 
