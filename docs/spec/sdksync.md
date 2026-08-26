@@ -116,3 +116,44 @@ as missing.
   aggregate's events file) + its `aud_logs` row, or — for docs, which emits
   nothing — the replaced page set.
 - `removeUnlisted` is read from the query string, not the body.
+
+## 6. Where the application code comes from (client side, 2026-08-26)
+
+Not a server contract — the routes are unchanged — but the two facts a
+reader of §1's "application resolution is **by code**" needs, because the
+code is chosen entirely on the client and a wrong one is a 404 attributed to
+the platform.
+
+Ported from Go `7db14b7` / `c7dcb4a`; only the first applies to the Java SDK.
+
+- **`DefinitionSet.define(code)` or `DefinitionSet.defineFromEnv()`**
+  (`FLOWCATALYST_APP_CODE`). An explicit factory rather than a silent
+  fallback inside `define`, so a call site says where its code came from. A
+  missing or blank variable **throws at the call site**; without that it
+  surfaces much later as `POST /api/applications/null/…` — a 404 from §1's
+  resolution step, at sync time, blamed on the platform.
+- **No per-definition application override**, and that is a design decision
+  rather than a gap. The Laravel SDK has one (`application:` on all six
+  attributes as of `c7dcb4a`) because its definitions are discovered by
+  scanning the filesystem, so there is no structural place to say "this one
+  belongs elsewhere". In the Java SDK the set a definition is built into
+  *is* its application; a codebase owning several builds one set each and
+  passes them to `definitions().syncAll(sets, options)`. An override would
+  add a second source of truth competing with the set's own code.
+- Laravel's override is **absent from every `toArray()`** on purpose: the
+  application selects which `/api/applications/{appCode}` endpoint a
+  definition is posted to, so it is routing information, not a body field.
+  Worth knowing here because §1 resolves strictly from the path segment (and
+  the one body-scoped alias) — nothing on this surface reads an application
+  from a definition's own body, and adding one would give a definition two
+  ways to name its application that could disagree.
+
+### `--remove-unlisted` is per application, per category
+
+Recorded in Go `c7dcb4a` and true of these routes as specified: an
+application is only contacted when at least one definition resolves to it,
+so **moving the last definition out of an application leaves that
+application's rows unpruned**. §1's note that "with `removeUnlisted` a sync
+can prune, so it must never reach an application the caller is not bound to"
+is the safety half of the same fact; this is the operational half — a prune
+that never runs is as surprising as one that runs too widely.

@@ -395,8 +395,57 @@ public final class Definitions {
             this.applicationCode = applicationCode;
         }
 
+        /** Environment variable read by {@link #defineFromEnv()}. */
+        public static final String APP_CODE_ENV = "FLOWCATALYST_APP_CODE";
+
         /** Start building definitions for {@code applicationCode}. */
         public static DefinitionSet define(String applicationCode) {
+            return new DefinitionSet(applicationCode);
+        }
+
+        /**
+         * Start building definitions for the application named by
+         * {@code FLOWCATALYST_APP_CODE}, for apps that carry their code in the
+         * environment rather than in source.
+         *
+         * <p>An explicit factory rather than a silent fallback inside
+         * {@link #define(String)}: both paths stay direct, and a caller reading
+         * the call site can see where the code came from.
+         *
+         * <p>There is deliberately <em>no per-definition application
+         * override</em>, unlike the Laravel SDK. There definitions are
+         * discovered by scanning the filesystem, so there is no structural
+         * place to say "this one belongs elsewhere". Here the set a definition
+         * is built into <em>is</em> its application, and a codebase owning
+         * several builds one set each for
+         * {@code definitions().syncAll(sets, options)} — an override would only
+         * add a second source of truth competing with the set's own code.
+         *
+         * @throws IllegalStateException if the variable is unset or blank; a
+         *     missing code would otherwise surface much later as a request to
+         *     {@code /api/applications/null/…}
+         */
+        public static DefinitionSet defineFromEnv() {
+            return defineFrom(System.getenv(APP_CODE_ENV));
+        }
+
+        /**
+         * The decision {@link #defineFromEnv()} makes, separated from the
+         * lookup that supplies it.
+         *
+         * <p>The JDK offers no supported way to mutate the process
+         * environment, so a test driving {@code defineFromEnv()} directly can
+         * only assert whichever branch the surrounding environment happens to
+         * give it — which leaves the rejection path unexercised on every
+         * machine that has the variable set, and that is the path that matters.
+         * Taking the resolved value as an argument makes both branches
+         * assertable unconditionally.
+         */
+        static DefinitionSet defineFrom(String applicationCode) {
+            if (applicationCode == null || applicationCode.isBlank()) {
+                throw new IllegalStateException(
+                        APP_CODE_ENV + " is not set — pass the application code to define(…) instead.");
+            }
             return new DefinitionSet(applicationCode);
         }
 

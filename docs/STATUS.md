@@ -209,6 +209,31 @@ Ordered by what unblocks the most:
 Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
 `Q41` metrics contract (`RouterPrometheusCollector.java:54`).
 
+### SDK drift picked up from Go (2026-08-26)
+
+Go `7db14b7` / `c7dcb4a` / `2d10924` touched the SDKs' handling of the
+application code. Ported and recorded in `docs/spec/sdksync.md` §6:
+
+- `DefinitionSet.defineFromEnv()` + `APP_CODE_ENV` added to the Java SDK, an
+  explicit factory rather than a fallback inside `define`. Blank/unset throws
+  **at the call site** instead of surfacing later as
+  `POST /api/applications/null/…`.
+  Java's version splits out `defineFrom(String)` so both branches are
+  assertable: Go's test can only exercise whichever branch the machine's
+  environment happens to give it, which leaves the rejection path — the one
+  that matters — untested wherever the variable is set.
+- **No per-definition application override** in the Java SDK, deliberately;
+  the Laravel one exists only because its definitions are found by scanning
+  the filesystem. Recorded so nobody "fixes" the absence.
+- `CreateDispatchJobDto` documented `IMMEDIATE` as the platform default. It
+  is `NEXT_ON_ERROR` (owner ruling, below). Corrected here; Go fixed the
+  Laravel and TypeScript SDKs in `2d10924` and **missed its own java-sdk** —
+  `router-fixes.md` Fix 9.
+- `docs/spec/router.md` §2's `dispatchMode` wire row still said "`IMMEDIATE`
+  (default when absent/unknown)". Now records the ruling, the deviation from
+  Go, and that an *unknown* mode is logged rather than folded into the
+  default.
+
 ## Next wave (in order)
 
 ### 1. Router / data plane — the current focus

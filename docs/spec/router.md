@@ -194,7 +194,7 @@ camelCase; unset optionals are **absent** (not `null`)
 | `MediationTarget` | `mediationTarget` | string | always emitted | Absolute URL POSTed to. Also the circuit-breaker key (full URL string) and, via scheme/host/port, the host-pool key. |
 | `MessageGroupID` | `messageGroupId` | string pointer | omitempty | FIFO group. Used for ordering only when `dispatchMode` requires ordering; carried to SQS as `MessageGroupId` on publish. |
 | `HighPriority` | `highPriority` | bool | omitempty | Carried, never acted on anywhere in the router (`router/pool.go:80-86`, `router/pool_test.go:11-32`). |
-| `DispatchMode` | `dispatchMode` | enum string | omitempty | `IMMEDIATE` (default when absent/unknown), `NEXT_ON_ERROR`, `BLOCK_ON_ERROR`. See §2.6. |
+| `DispatchMode` | `dispatchMode` | enum string | omitempty | `IMMEDIATE`, `NEXT_ON_ERROR`, `BLOCK_ON_ERROR`. **Absent → `NEXT_ON_ERROR`** (owner ruling 2026-08-25; Go defaults to `IMMEDIATE`, a **deliberate deviation**). **Unknown → `NEXT_ON_ERROR`, logged**, not silently folded into the default: an unrecognised mode is a producer bug, and Go's `default` arm is how the wrong one hid. See §2.6. |
 
 Go's `encoding/json` escapes `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026` when marshalling
 strings; the only router-constructed JSON is the POST body, so a message id

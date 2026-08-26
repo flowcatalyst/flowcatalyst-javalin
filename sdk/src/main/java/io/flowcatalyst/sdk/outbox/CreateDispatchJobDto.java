@@ -20,9 +20,15 @@ public final class CreateDispatchJobDto {
 
     /**
      * Ordering behavior within a message group.
-     * IMMEDIATE: no ordering, jobs dispatch concurrently (platform default).
-     * NEXT_ON_ERROR: FIFO per group; a failed job is retried later but the group moves on.
+     * IMMEDIATE: no ordering, jobs dispatch concurrently.
+     * NEXT_ON_ERROR: FIFO per group; a failed job is retried later but the group moves on
+     * (<strong>the platform default when {@code mode} is unset</strong>).
      * BLOCK_ON_ERROR: strict FIFO per group; a failed job blocks the group until resolved.
+     *
+     * <p>The default is NEXT_ON_ERROR because the two failure modes are not
+     * symmetric: wanting concurrency and getting ordering costs throughput,
+     * which is visible and cheap to fix, while needing ordering and silently
+     * getting none is invisible and lands in the target's data.
      */
     public enum DispatchMode {
         IMMEDIATE,
@@ -157,7 +163,7 @@ public final class CreateDispatchJobDto {
         return c;
     }
 
-    /** Ordering behavior within the message group; unset defaults to IMMEDIATE on the platform. */
+    /** Ordering behavior within the message group; unset defaults to NEXT_ON_ERROR on the platform. */
     public CreateDispatchJobDto withMode(DispatchMode mode) {
         CreateDispatchJobDto c = copy();
         c.mode = mode;

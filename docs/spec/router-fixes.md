@@ -222,6 +222,39 @@ reading. Report what the real module does.
 
 ---
 
+## Fix 9 — the java-sdk still documents `IMMEDIATE` as the platform default
+
+**Found 2026-08-26 while porting the SDK application-code commits.**
+
+Go `2d10924` corrected the `CreateDispatchJob` builders' doc comment — unset
+`mode` defaults to `NEXT_ON_ERROR`, not `IMMEDIATE` — in the **Laravel and
+TypeScript SDKs only**. `clients/java-sdk`'s `CreateDispatchJobDto` carries
+the same wrong claim in two places and was not touched:
+
+```
+clients/java-sdk/.../outbox/CreateDispatchJobDto.java:23
+    IMMEDIATE: no ordering, jobs dispatch concurrently (platform default).
+clients/java-sdk/.../outbox/CreateDispatchJobDto.java:160
+    Ordering behavior within the message group; unset defaults to IMMEDIATE
+    on the platform.
+```
+
+**Impact is documentation-only but points the wrong way.** A producer reading
+it believes leaving `mode` unset gives concurrency; it gives ordering. The
+harm is bounded — the surprise is lower throughput, which is visible — but it
+is the *opposite* of the reasoning behind the owner's 2026-08-25 ruling, which
+chose `NEXT_ON_ERROR` precisely because the reverse mistake (needing ordering,
+silently getting none) is invisible. A doc that recommends the invisible
+failure by implication is worth one line.
+
+**Fix.** The same two-line edit `2d10924` made to the other two SDKs.
+
+**Java.** Already corrected here (`sdk/.../outbox/CreateDispatchJobDto.java`),
+with the asymmetry argument stated so the next reader does not "restore" it
+against the Go copy.
+
+---
+
 ## Fix 10 — `queue.Defer` has no production caller
 
 **Found 2026-08-26 while wiring `GET /monitoring/queue-stats`.**
