@@ -437,14 +437,14 @@ class RouterApiTest {
         var middle = new io.flowcatalyst.router.pool.Mediating("mid", "P", "", "q", "t", 0,
                 java.time.Instant.parse("2026-01-01T00:00:05Z"));
 
-        var rows = RouterApi.mediatingRows(List.of(newest, middle, oldest), null, 200, now);
+        var rows = PoolRoutes.mediatingRows(List.of(newest, middle, oldest), null, 200, now);
 
-        assertThat(rows).extracting(RouterApi.WireMediating::messageId)
+        assertThat(rows).extracting(Wire.WireMediating::messageId)
                 .containsExactly("old", "mid", "new");
         assertThat(rows.getFirst().elapsedTimeMs()).isEqualTo(10_000);
         // The limit keeps the longest-stuck, not an arbitrary three.
-        assertThat(RouterApi.mediatingRows(List.of(newest, middle, oldest), null, 1, now))
-                .extracting(RouterApi.WireMediating::messageId).containsExactly("old");
+        assertThat(PoolRoutes.mediatingRows(List.of(newest, middle, oldest), null, 1, now))
+                .extracting(Wire.WireMediating::messageId).containsExactly("old");
     }
 
     private static void await(java.util.function.BooleanSupplier condition) throws InterruptedException {
@@ -1037,7 +1037,7 @@ class RouterApiTest {
                 started, lastSeen, "", "b1", "rh", 0));
         clock.advance(Duration.ofMinutes(6));
 
-        var detail = RouterApi.inFlightDetail(isolatedTracker.snapshot().getFirst(), null, clock.instant());
+        var detail = InFlightRoutes.inFlightDetail(isolatedTracker.snapshot().getFirst(), null, clock.instant());
 
         assertThat(detail.status()).isEqualTo("TRACKED_IDLE");
         assertThat(detail.elapsedTimeMs()).as("owned for 10 minutes").isEqualTo(Duration.ofMinutes(10).toMillis());
@@ -1217,12 +1217,12 @@ class RouterApiTest {
         // 0.0 and 1.0 are both plausible-looking and only one is right: a
         // queue that has done nothing has failed nothing, and zero would
         // paint every freshly-created queue as a total outage.
-        var idle = RouterApi.queueStatsRow("fresh", new QueueMetrics(0, 0, 0, 0, 0));
+        var idle = QueueRoutes.queueStatsRow("fresh", new QueueMetrics(0, 0, 0, 0, 0));
         assertThat(idle.successRate()).isEqualTo(1.0);
 
         // ...and it is genuinely derived, not a constant: one failure and
         // nothing else is a total failure.
-        assertThat(RouterApi.queueStatsRow("bad", new QueueMetrics(0, 0, 1, 0, 1)).successRate()).isZero();
+        assertThat(QueueRoutes.queueStatsRow("bad", new QueueMetrics(0, 0, 1, 0, 1)).successRate()).isZero();
     }
 
     @Test

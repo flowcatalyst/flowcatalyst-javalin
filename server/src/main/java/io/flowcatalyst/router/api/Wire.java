@@ -1,0 +1,241 @@
+package io.flowcatalyst.router.api;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.flowcatalyst.router.observability.PoolMetricsCollector;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+/// Every shape this API puts on the wire, in one place — the counterpart to
+/// Go's `internal/router/api/dto.go`.
+///
+/// Together they ARE the wire contract: field names, casing, and which fields
+/// are omitted when absent. `/monitoring/queues` is snake_case while its
+/// neighbours are camelCase, and that stays, because it is the shape already
+/// being parsed — see [Wire.QueueMetricsView].
+///
+/// Kept apart from the handlers so a change to a rendered shape is visible as
+/// a change to this file, rather than buried in the middle of the logic that
+/// happens to build it.
+public final class Wire {
+
+    /// One row of `GET /monitoring/mediating`. Field names and order match Go.
+    public record WireMediating(String messageId, String poolCode, String group, String queue,
+                                String target, int attempts, long elapsedTimeMs) {
+    }
+
+    public record ProbeResponse(String status) {
+    }
+
+    public record SimpleHealthResponse(String status, String version,
+                                       @JsonProperty("active_warnings") int activeWarnings,
+                                       @JsonProperty("critical_warnings") int criticalWarnings) {
+    }
+
+    public record DashboardHealthResponse(String status, Instant timestamp, long uptimeMillis,
+                                          DashboardHealthDetails details) {
+    }
+
+    public record DashboardHealthDetails(int totalQueues, int healthyQueues, int totalPools, int healthyPools,
+                                         int activeWarnings, int criticalWarnings, int circuitBreakersOpen,
+                                         String degradationReason) {
+    }
+
+    public record ConsumerHealthResponse(long currentTimeMs, Instant currentTime, Map<String, Object> consumers) {
+    }
+
+    /// `GET /monitoring`. Snake outer + nested `health_report`/`pool_stats`.
+    public record MonitoringResponse(String status, String version,
+                                     @JsonProperty("health_report") WireHealthReport healthReport,
+                                     @JsonProperty("pool_stats") List<WirePoolStats> poolStats,
+                                     @JsonProperty("active_warnings") int activeWarnings,
+                                     @JsonProperty("critical_warnings") int criticalWarnings) {
+    }
+
+    public record WireHealthReport(String status, @JsonProperty("pools_healthy") int poolsHealthy,
+                                   @JsonProperty("pools_unhealthy") int poolsUnhealthy,
+                                   @JsonProperty("consumers_healthy") int consumersHealthy,
+                                   @JsonProperty("consumers_unhealthy") int consumersUnhealthy,
+                                   @JsonProperty("active_warnings") int activeWarnings,
+                                   @JsonProperty("critical_warnings") int criticalWarnings, List<String> issues) {
+    }
+
+    /// One pool's stats for `GET /monitoring`/`GET /monitoring/pools`: snake
+    /// outer fields, camelCase `metrics` (the real [PoolMetricsCollector.Snapshot]
+    /// shape, including the Java-only `totalSuppressed`/`suppressedCount`
+    /// counters `PoolMetricsCollector`'s own javadoc documents as a
+    /// deliberate addition over the Go shape).
+    public record WirePoolStats(@JsonProperty("pool_code") String poolCode, int concurrency,
+                                @JsonProperty("active_workers") int activeWorkers,
+                                @JsonProperty("queue_size") int queueSize,
+                                @JsonProperty("queue_capacity") int queueCapacity,
+                                @JsonProperty("message_group_count") int messageGroupCount,
+                                @JsonProperty("rate_limit_per_minute") Integer rateLimitPerMinute,
+                                @JsonProperty("is_rate_limited") boolean isRateLimited,
+                                PoolMetricsCollector.Snapshot metrics) {
+    }
+
+    /// `GET /monitoring/pool-stats` map value — camelCase throughout, and
+    /// distinct from [WirePoolStats]: no `isRateLimited`, but `totalRateLimited`
+    /// and `availablePermits` instead.
+    public record DashboardPoolStats(String poolCode, long totalProcessed, long totalSucceeded, long totalFailed,
+                                     long totalRateLimited, double successRate, int activeWorkers,
+                                     int availablePermits, int maxConcurrency, int queueSize, int maxQueueCapacity,
+                                     double averageProcessingTimeMs) {
+    }
+
+    public record WireWarning(String id, String category, String severity, String message, String source,
+                              @JsonProperty("created_at") Instant createdAt, boolean acknowledged,
+                              @JsonProperty("acknowledged_at") Instant acknowledgedAt) {
+    }
+
+    public record AcknowledgedResponse(boolean acknowledged) {
+    }
+
+    public record AcknowledgedCountResponse(long acknowledged) {
+    }
+
+    public record DashboardCircuitBreaker(String name, String state, long successfulCalls, long failedCalls,
+                                          long rejectedCalls, double failureRate, long bufferedCalls,
+                                          long bufferSize) {
+    }
+
+    public record CircuitBreakerStateResponse(String name, String state, long successes, long failures,
+                                              int recentFailures) {
+    }
+
+    public record BreakerResetResponse(boolean reset, String name) {
+    }
+
+    public record BreakerResetAllResponse(int reset) {
+    }
+
+    public record InFlightMessageInfo(String messageId, String brokerMessageId, String queueId, String poolCode,
+                                      long elapsedTimeMs, Instant addedToInPipelineAt, String messageGroup,
+                                      int attempts) {
+    }
+
+    public record InFlightCheckResponse(String messageId, boolean inPipeline, String poolCode, String queueId) {
+    }
+
+    /// `GET /monitoring/in-flight-messages/detail`.
+    ///
+    /// **Deliberate deviation from Go**: Go marks `attempts` and the three
+    /// millisecond fields `omitempty`, so a message on its first attempt
+    /// reports no `attempts` field at all — indistinguishable from an
+    /// endpoint that did not look. Here every field is present once
+    /// `inPipeline` is true, because `attempts: 0` is the fact that separates
+    /// a message pinned on its first delivery from one legitimately retrying,
+    /// and that distinction is the whole point of the row. Absence is still
+    /// used where it means something: a message that is not in the pipeline
+    /// carries `messageId` and `inPipeline` and nothing else, and
+    /// `mediationTarget`/`mediatingElapsedMs` appear only for `MEDIATING`.
+    ///
+    /// @param status             `MEDIATING` | `RETRY_BACKOFF` | `TRACKED_IDLE`,
+    ///                           absent when not in the pipeline
+    /// @param lastSeenAt         refreshed on every broker redelivery of the
+    ///                           owner copy
+    /// @param lastSeenElapsedMs  the phantom signature: a `TRACKED_IDLE` entry
+    ///                           whose value keeps growing is one the broker
+    ///                           has stopped redelivering, and it will
+    ///                           ACK-swallow every requeued copy until cleared
+    public record InFlightMessageDetail(String messageId, boolean inPipeline, String status,
+                                        String brokerMessageId, String queueId, String poolCode,
+                                        String messageGroup, Integer attempts, Long elapsedTimeMs,
+                                        Instant addedToInPipelineAt, Instant lastSeenAt, Long lastSeenElapsedMs,
+                                        String mediationTarget, Long mediatingElapsedMs) {
+
+        static InFlightMessageDetail notInPipeline(String messageId) {
+            return new InFlightMessageDetail(messageId, false, null, null, null, null, null,
+                    null, null, null, null, null, null, null);
+        }
+    }
+
+    /// `GET /monitoring/queues` — **snake_case**, alone on this surface,
+    /// because that is the shape already on the wire.
+    public record QueueMetricsView(@JsonProperty("queue_identifier") String queueIdentifier,
+                                   @JsonProperty("pending_messages") long pendingMessages,
+                                   @JsonProperty("in_flight_messages") long inFlightMessages) {
+    }
+
+    /// `GET /monitoring/queue-stats` map value — camelCase.
+    ///
+    /// `currentSize` is `pendingMessages + inFlightMessages`, and
+    /// `messagesNotVisible` is `inFlightMessages` under the SQS name the
+    /// dashboard uses; both are kept as separate fields because that is what
+    /// the wire contract says, not because they are separate facts.
+    public record DashboardQueueStats(String name, long totalMessages, long totalConsumed, long totalFailed,
+                                      long totalDeferred, double successRate, long currentSize, double throughput,
+                                      long pendingMessages, long messagesNotVisible) {
+    }
+
+    public record BrokerStatsRefreshResponse(boolean refreshed, long ageSeconds) {
+    }
+
+    /// `GET /monitoring/traffic-status`.
+    ///
+    /// `lastChangedAt` is an [Instant] rather than Go's hand-formatted
+    /// millisecond string: every other timestamp on this surface goes through
+    /// the platform's one RFC 3339 layout, and one layout across the API beats
+    /// reproducing the single place Go rolled its own. Still RFC 3339, still
+    /// parses.
+    public record TrafficStatusResponse(boolean enabled, String mode, String targetGroupArn, boolean registered,
+                                        Instant lastChangedAt, String lastError) {
+    }
+
+    public record InFlightCheckBatchRequest(List<String> messageIds) {
+        public InFlightCheckBatchRequest {
+            messageIds = messageIds == null ? List.of() : List.copyOf(messageIds);
+        }
+    }
+
+    public record ForceAckResponse(String messageId, boolean removed, boolean brokerAcked, String brokerAckError,
+                                   String queueId, String poolCode, long elapsedTimeMs, boolean wasMediating) {
+    }
+
+    public record PoolConfigUpdateRequest(Integer concurrency,
+                                          @JsonProperty("rate_limit_per_minute") Integer rateLimitPerMinute) {
+    }
+
+    public record PoolConfigUpdateResponse(boolean success, @JsonProperty("pool_code") String poolCode,
+                                           @JsonProperty("new_config") PoolConfigUpdateNewConfig newConfig) {
+    }
+
+    public record PoolConfigUpdateNewConfig(Integer concurrency,
+                                            @JsonProperty("rate_limit_per_minute") Integer rateLimitPerMinute) {
+    }
+
+    public record StandbyStatusResponse(boolean enabled, @JsonProperty("is_leader") boolean isLeader,
+                                        @JsonProperty("instance_id") String instanceId) {
+    }
+
+    public record StreamHealthResponse(boolean enabled, String status, String detail) {
+    }
+
+    public record StreamProbeResponse(String status) {
+    }
+
+    public record LocalConfigResponse(String version, @JsonProperty("warnings_total") long warningsTotal,
+                                      @JsonProperty("warnings_critical") long warningsCritical) {
+    }
+
+    public record ConfigReloadResponse(boolean success, String note) {
+    }
+
+    public record MockOkResponse(boolean ok, String endpoint) {
+    }
+
+    public record MockStatsResponse(long fast, long slow, long faulty,
+                                    @JsonProperty("faulty_success") long faultySuccess,
+                                    @JsonProperty("faulty_fail") long faultyFail, long fail, long success,
+                                    long pending, @JsonProperty("client_error") long clientError,
+                                    @JsonProperty("server_error") long serverError) {
+    }
+
+    public record ResetResponse(boolean reset) {
+    }
+
+    private Wire() {
+    }
+}
