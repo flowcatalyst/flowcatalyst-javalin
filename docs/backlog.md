@@ -239,6 +239,22 @@ item names its origin; items marked **owner** need Andrew's call.
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
 in the spec.
 
+**principal** (demonstrated 2026-08-26 by the new `PrincipalApiTest`, needs a
+ruling — spec §11 Q3/Q4): two cross-tenant/read-leak questions, both now
+pinned by tests so a ruling either way shows up as a test flipping.
+
+- **The `/{id}/…` sub-routes are not client-scoped, while the by-id read is.**
+  `GET /api/principals/{id}` denies a clientA administrator reading a clientB
+  principal (403 `FORBIDDEN`, §3's table), and `GET /api/principals` hides it
+  entirely — but `GET /api/principals/{id}/roles` answers **200** for the same
+  caller and target. An administrator blocked from reading a principal can
+  still enumerate its roles. The by-id check exists and works; the sub-routes
+  simply never got it.
+- **Role/application-access/developer-credential mutations are an existence
+  oracle.** They have no coarse handler gate and load before authorising, so a
+  caller with no user permission at all gets 404 for an invented id and a
+  different status for a real one — enumerable over the principal table.
+
 **sdksync / scheduledjob** (found 2026-08-26 while porting the sync surface,
 needs a ruling): `archiveUnlisted` on
 `POST /api/applications/{appCode}/scheduled-jobs/sync` sweeps the **whole

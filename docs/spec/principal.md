@@ -421,7 +421,7 @@ DESC`); roles / grants hydrated in one `IN` query each.
 1. `AssignRoles` rewrites every assignment as `ADMIN_ASSIGNED`, silently adopting IdP/SDK-sourced rows.
 2. `SyncPrincipals` does not validate role names (no FK); `removeUnlisted` strips `SDK_SYNC` roles from every USER not in the payload regardless of application.
 3. Role / application-access / developer-credential mutations have no coarse handler gate and load before authorizing (existence oracle).
-4. Read routes under `/{id}/…` check only `USER_VIEW`, not client scope; by-id read is lenient on clientless principals while the list hides them.
+4. Read routes under `/{id}/…` check only `USER_VIEW`, not client scope; by-id read is lenient on clientless principals while the list hides them. **Demonstrated 2026-08-26** by `PrincipalApiTest`: the by-id read *is* scoped (a clientA admin gets 403 on a clientB principal), but `GET /{id}/roles` is **not** — the same caller reads that principal's roles with 200. So one route denies, its sub-route allows, and the list hides entirely. Both halves are pinned by tests so a ruling either way is visible.
 5. `SetClientAssociation` emits `user:updated` (name only) and writes TO_PARTNER grant rows without `client-access-granted` events.
 6. `/users` accepts `enforcePasswordComplexity` and ignores it; create always enforces the policy.
 7. Two not-found resource names (`Principal_NOT_FOUND` vs `User_NOT_FOUND`).
