@@ -95,12 +95,18 @@ lockfile's `required` is informational here.
 ## 4. Wiring
 
 `SdkSyncApi.State(apps, eventTypes, roles, subscriptions, connections,
-processes, dispatchPools, scheduledJobs, specs, appDocs, uow)` is built in
-`Platform.register` after the aggregate registrations (the repositories are
-the same instances the aggregates' own APIs use). The principals route is
-wired when `principal.operations.SyncPrincipals` lands (ported concurrently);
-until then it is absent from the router and `LockfileCoverageTest` lists it
-as missing.
+processes, dispatchPools, scheduledJobs, specs, appDocs, principals, uow)` is
+built in `Platform.register` after the aggregate registrations (the
+repositories are the same instances the aggregates' own APIs use — a second
+set would read a different connection's view of rows the aggregate had just
+written).
+
+**Landed 2026-08-26, all ten routes.** `principals` joined the `State` when
+`principal.operations.SyncPrincipals` turned out to be already ported, so the
+route this spec expected to defer was built with the rest. This is also where
+`openapispecs` finally reaches the router: the unit was complete but
+unregistered, and `/openapi/sync` is its only route. Lockfile coverage
+180 → 190 of 243.
 
 ## 5. Tests — `SdkSyncApiTest` (`TestHttp`)
 

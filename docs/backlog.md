@@ -239,6 +239,27 @@ item names its origin; items marked **owner** need Andrew's call.
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
 in the spec.
 
+**sdksync / scheduledjob** (found 2026-08-26 while porting the sync surface,
+needs a ruling): `archiveUnlisted` on
+`POST /api/applications/{appCode}/scheduled-jobs/sync` sweeps the **whole
+`clientId` scope** — `SyncScheduledJobs` reads
+`repo.findInScope(ClientFilter.scope(cmd.clientId()))`, which does not narrow
+by application. So two applications sharing a client can archive each other's
+jobs, and a sync with `clientId: null` sweeps **every platform-scoped job on
+the instance**. The route is mounted under `/api/applications/{appCode}` and
+the command already carries `applicationId`, so the narrowing is available
+and simply unused.
+
+This is **Go's behaviour too** — its own sync tests carry the warning "never
+the nil (platform) scope, which would sweep other tests' jobs" — so by the
+standing rule the behaviour is kept, and Java matches. But it is a
+cross-tenant data hazard reachable from a normal SDK call, and it bit
+immediately: the Java `SdkSyncApiTest` archived 20 of other tests' jobs on
+its first full-suite run. Options: (a) keep, and document the scope on the
+route; (b) narrow the sweep to `clientId + applicationId`, a deliberate
+deviation needing the Go side too; (c) refuse `archiveUnlisted` on the
+platform scope unless the caller is an anchor.
+
 **eventtype** (`docs/spec/eventtype.md` §10): `clientId` carried on the
 aggregate/command/event but never persisted ⇒ CLIENT-scoped principals can
 never update/delete (post-create writes are effectively anchor-only);

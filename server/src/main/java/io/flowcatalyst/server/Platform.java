@@ -41,6 +41,7 @@ import io.flowcatalyst.platform.principal.PasswordResetEmailer;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.api.PrincipalApi;
 import io.flowcatalyst.platform.principal.operations.DeveloperSecrets;
+import io.flowcatalyst.platform.openapispecs.OpenApiSpecRepository;
 import io.flowcatalyst.platform.process.ProcessRepository;
 import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.publicapi.Branding;
@@ -48,6 +49,7 @@ import io.flowcatalyst.platform.publicapi.api.PublicApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.sdksync.api.SdkSyncApi;
 import io.flowcatalyst.platform.scheduledjob.api.ScheduledJobApi;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
@@ -160,7 +162,8 @@ public final class Platform {
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
         var dispatchJobRepo = new DispatchJobRepository(pool);
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
-        DocsApi.register(routes, new DocsApi.State(new AppDocRepository(pool), applicationRepo, PublishedDocs.load()));
+        var appDocRepo = new AppDocRepository(pool);
+        DocsApi.register(routes, new DocsApi.State(appDocRepo, applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
@@ -173,6 +176,16 @@ public final class Platform {
                 uow));
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
+        // The SDK self-registration surface (docs/spec/sdksync.md). Registered
+        // AFTER the aggregates because it assembles THEIR commands from the
+        // SAME repository instances — a second set would read a different
+        // connection's view of rows the aggregate had just written.
+        // This is also where `openapispecs` reaches the router: the unit was
+        // complete but unregistered, and `/openapi/sync` is its only route.
+        SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
+                connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, new OpenApiSpecRepository(pool),
+                appDocRepo, principalRepo, uow));
+
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
 
