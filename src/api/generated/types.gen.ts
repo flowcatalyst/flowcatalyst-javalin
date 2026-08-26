@@ -1103,7 +1103,7 @@ export type CreateSubscriptionRequest = {
     maxAgeSeconds?: number;
     maxRetries?: number;
     /**
-     * Dispatch mode (IMMEDIATE, NEXT_ON_ERROR, BLOCK_ON_ERROR)
+     * Dispatch mode. Omitted means NEXT_ON_ERROR: a message group is delivered in sequence, one at a time, moving on past a failure. BLOCK_ON_ERROR stops the group at a failure instead; IMMEDIATE opts out of ordering entirely. Ordering applies only to messages that carry a message group.
      */
     mode?: string;
     name: string;
@@ -3614,7 +3614,7 @@ export type CreateSubscriptionRequestWritable = {
     maxAgeSeconds?: number;
     maxRetries?: number;
     /**
-     * Dispatch mode (IMMEDIATE, NEXT_ON_ERROR, BLOCK_ON_ERROR)
+     * Dispatch mode. Omitted means NEXT_ON_ERROR: a message group is delivered in sequence, one at a time, moving on past a failure. BLOCK_ON_ERROR stops the group at a failure instead; IMMEDIATE opts out of ordering entirely. Ordering applies only to messages that carry a message group.
      */
     mode?: string;
     name: string;

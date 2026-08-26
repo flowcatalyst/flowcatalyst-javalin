@@ -28,7 +28,9 @@ const maxAgeSeconds = ref<number>(86400);
 const delaySeconds = ref<number>(0);
 const sequence = ref<number>(99);
 const timeoutSeconds = ref<number>(30);
-const mode = ref<SubscriptionMode>("IMMEDIATE");
+// Matches the platform default: a message group is delivered in sequence,
+// moving on past a failure. IMMEDIATE is the explicit opt-out of ordering.
+const mode = ref<SubscriptionMode>("NEXT_ON_ERROR");
 const dispatchPoolId = ref<string | null>(null);
 const clientScoped = ref(false);
 const clientId = ref<string | null>(null);

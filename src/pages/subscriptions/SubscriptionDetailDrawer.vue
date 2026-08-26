@@ -31,7 +31,7 @@ const editMaxAgeSeconds = ref<number | null>(null);
 const editDelaySeconds = ref<number | null>(null);
 const editSequence = ref<number | null>(null);
 const editTimeoutSeconds = ref<number | null>(null);
-const editMode = ref<SubscriptionMode>("IMMEDIATE");
+const editMode = ref<SubscriptionMode>("NEXT_ON_ERROR"); // platform default; replaced on load
 
 const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
 	name: editName.value,
