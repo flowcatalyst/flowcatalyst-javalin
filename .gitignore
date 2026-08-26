@@ -31,3 +31,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# maven-shade-plugin writes this beside the pom, not into target/
+server/dependency-reduced-pom.xml

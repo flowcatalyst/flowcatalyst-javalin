@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-24, evening)
 
-Reactor green on a clean uncontended build, 2026-08-25: **2041 tests** —
-usecase 30 · sdk 40 · **server 1931** · fcdev 40, 0 failures. Coverage
+Reactor green on a clean uncontended build, 2026-08-26: **2242 tests** —
+usecase 30 · sdk 44 · **server 2128** · fcdev 40, 0 failures. Coverage
 180/243 lockfile operations (74%), zero drift. Commits on `main`; one commit
 per landed/audited unit.
 
@@ -208,6 +208,48 @@ Ordered by what unblocks the most:
 
 Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
 `Q41` metrics contract (`RouterPrometheusCollector.java:54`).
+
+### The `DashboardHandlerTest` "flake" was not a flake (2026-08-26)
+
+It failed 3 of 4 in one full-suite run and passed standalone and on three
+clean re-runs. First written up here as the Jetty first-connection race
+`RouterApiTest.warmUp` absorbs. **That was wrong**, and the giveaway was in
+the line already captured: `Failures: 3, Errors: 0` in 0.044s. A dropped
+connection surfaces as an `UncheckedIOException` — an **Error**. Three
+*assertion* failures, with no time spent, means the requests all succeeded
+and returned the wrong body.
+
+The reconstruction that fits every detail: `DashboardHandler` reads
+`dashboard.html` from `target/classes` **once, at construction**, and
+`readAllBytes` returns whatever has been copied so far without complaint. A
+second Maven run over the same `target/` re-copies that resource; catch it
+mid-copy and the handler renders an empty page and serves it as `200
+text/html`. The three tests sharing the `@BeforeAll` instance then fail their
+body assertions, while `rootMountSubstitutesEmptyPrefix` — the only one that
+constructs its own handler, later, once the copy has finished — passes. Three
+of four, and exactly those three.
+
+So this is the **concurrent-Maven hazard `Claude.md` already documents**,
+caught in the act, not a test to stabilise. A `warmUp` retry would not have
+prevented it and would have been a fix for a failure mode that was not
+occurring.
+
+What was worth changing:
+
+- **`DashboardHandler` now refuses an incomplete template** — it must contain
+  the `__FC_API_BASE__` token *and* end in `</html>`. Both are needed: the
+  token sits at byte 845 of ~91 KB, so it survives almost any truncation. The
+  rules live in a package-private `validated(String)` so a test can state a
+  partial document rather than contrive one on a classpath. This matters
+  beyond the test — a bad build would otherwise ship a blank dashboard that
+  answers 200.
+- **`TestHttp.close()` now closes its `HttpClient`.** It never did: 1200
+  create/close cycles left 1401 live threads, and closing it brings that to
+  1203. The residual ~1 per instance is Javalin's own non-daemon helper
+  (`JettyServer.kt:41`), not reclaimed by `app.stop()` and not fixable from
+  the harness — recorded in `TestHttp` so nobody re-hunts it there.
+
+Neither is the cause; the cause was running two builds over one `target/`.
 
 ### SDK drift picked up from Go (2026-08-26)
 

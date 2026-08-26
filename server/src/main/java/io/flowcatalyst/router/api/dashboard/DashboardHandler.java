@@ -23,6 +23,10 @@ public final class DashboardHandler implements Handler {
     private static final String RESOURCE_PATH = "/router/dashboard.html";
     private static final String TOKEN = "__FC_API_BASE__";
 
+    /// The last bytes of a complete document. Checked because a partial read
+    /// has no other symptom — see [#loadTemplate].
+    private static final String CLOSING_TAG = "</html>";
+
     private final String rendered;
 
     /// @param prefix the mount prefix (e.g. `/router`); `null`/blank means
@@ -47,14 +51,46 @@ public final class DashboardHandler implements Handler {
         routes.get(p + "/dashboard.html", handler);
     }
 
+    /// Reads the page and **refuses an incomplete one**.
+    ///
+    /// A missing resource already threw. A *partial* one did not, and it is
+    /// the more likely accident: the resource is copied into `target/classes`
+    /// by the build, so a second Maven run over the same `target/` can be
+    /// observed mid-copy — the hazard `Claude.md` documents under "Build
+    /// hygiene under multiple agents". `readAllBytes` returns what is there
+    /// so far, quite happily, and an empty read produces a handler that
+    /// answers **200 with an empty body**: the right status, the right
+    /// content type, and no page. Nothing downstream can tell that apart from
+    /// a dashboard that legitimately renders nothing.
     private static String loadTemplate() {
+        String template;
         try (InputStream in = DashboardHandler.class.getResourceAsStream(RESOURCE_PATH)) {
             if (in == null) {
                 throw new IllegalStateException("classpath resource not found: " + RESOURCE_PATH);
             }
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            template = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+        return validated(template);
+    }
+
+    /// The completeness rules, separated from the reading that supplies the
+    /// bytes so a test can state a partial document instead of contriving one
+    /// on a classpath.
+    ///
+    /// Both rules are needed. The token sits at byte 845 of ~91 KB, so its
+    /// presence says nothing about the other 99%; the closing tag is the only
+    /// cheap evidence the whole document arrived.
+    static String validated(String template) {
+        if (!template.contains(TOKEN)) {
+            throw new IllegalStateException(RESOURCE_PATH + " has no " + TOKEN
+                    + " token to substitute (" + template.length() + " chars read)");
+        }
+        if (!template.stripTrailing().endsWith(CLOSING_TAG)) {
+            throw new IllegalStateException(RESOURCE_PATH + " is truncated: it does not end in "
+                    + CLOSING_TAG + " (" + template.length() + " chars read)");
+        }
+        return template;
     }
 }

@@ -79,8 +79,21 @@ public final class TestHttp implements AutoCloseable {
         }
     }
 
+    /// Stops the server **and closes the client**.
+    ///
+    /// The client used to be left open, which leaked its selector and
+    /// executor: 1200 create/close cycles ended with 1401 live threads, and
+    /// closing it brings that to 1203.
+    ///
+    /// The residual ~1 thread per instance is **not** ours and is not fixable
+    /// from here — it is Javalin's own non-daemon helper
+    /// (`io.javalin.jetty.JettyServer` line 41, parked in a sleep loop),
+    /// created per instance and not reclaimed by `app.stop()`. Recorded so the
+    /// next person to measure a rising thread count does not go looking for it
+    /// in this class.
     @Override
     public void close() {
         app.stop();
+        client.close();
     }
 }
