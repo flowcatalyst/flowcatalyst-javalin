@@ -266,6 +266,18 @@ Rules promoted from audits (recurring findings become rules here):
 - **No empty-string sentinels inside the JVM.** The wire/DB `""` ↔ `NULL`
   mapping lives in sinks and DTOs; an absent optional string in a record is
   `null` (documented) or an `Optional` return — never `""`.
+- **One hydration path per aggregate; the condition is the only thing that
+  varies.** Every single-row lookup goes through one private
+  `findOne(Condition)` that assembles the entity and *all* its junctions;
+  `findById`, `findByEmail`, `findByServiceAccount` differ only in the
+  predicate they pass. Promoted 2026-08-27 from the `principal` audit against
+  a Go defect Java was structurally immune to: Go wrote the three lookups
+  separately and `FindByServiceAccount` hydrated roles but not the
+  client-access or application-access junctions, so an app-scoped service
+  account's token silently carried an empty `applications` claim —
+  indistinguishable from one confined to nothing (`de868dd`). Three
+  implementations of "load this row" means the third can forget what the
+  first two remember; one means it cannot.
 - **Import it.** No fully-qualified names inline; `[Type]` / `[#method]`
   Markdown links in `///` docs, never `{@link}`.
 - **Shared row/payload builders live in `SinkSupport`.** Anything two sinks

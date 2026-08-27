@@ -252,6 +252,38 @@ class PrincipalApiTest {
         assertThat(real.statusCode()).as("real id — a DIFFERENT status, which is the leak").isNotEqualTo(404);
     }
 
+    // ── The tenant boundary on the ungated mutations ───────────────────────
+
+    @Test
+    @DisplayName("§11 Q3 is about ORDERING only: the mutations still refuse a target in another client")
+    void ungatedMutationsStillEnforceTheTenantBoundary() {
+        // The role / application-access / developer-credential routes have no
+        // coarse handler gate and load before authorising, which is the
+        // existence oracle in Q3. What they do NOT lack is the check itself:
+        // Access.requireUserAdmin runs post-load and tests the TARGET's home
+        // client, so a clientA administrator cannot reach a clientB principal.
+        //
+        // Asserted rather than read, because "the check exists somewhere
+        // downstream" is exactly the belief that turns into a tenant breach
+        // when someone moves it.
+        var adminOfA = client(clientA, "platform:iam:user:view,platform:iam:user:update,platform:iam:user:assign-roles");
+
+        var roles = http.put("/api/principals/" + userInB + "/roles", "{\"roles\":[]}", adminOfA);
+        assertThat(roles.statusCode()).as("roles, body was: %s", roles.body()).isEqualTo(403);
+
+        var apps = http.put("/api/principals/" + userInB + "/application-access",
+                "{\"applicationIds\":[]}", adminOfA);
+        assertThat(apps.statusCode()).as("application access, body was: %s", apps.body()).isEqualTo(403);
+
+        var cred = http.post("/api/principals/" + userInB + "/developer-credential", null, adminOfA);
+        assertThat(cred.statusCode()).as("developer credential, body was: %s", cred.body()).isEqualTo(403);
+
+        // ...and the same administrator CAN do it inside its own client, so
+        // the 403s above are the boundary and not a blanket denial.
+        var ownClient = http.put("/api/principals/" + userInA + "/roles", "{\"roles\":[]}", adminOfA);
+        assertThat(ownClient.statusCode()).as("own client, body was: %s", ownClient.body()).isEqualTo(200);
+    }
+
     // ── Roles ──────────────────────────────────────────────────────────────
 
     @Test

@@ -239,6 +239,18 @@ item names its origin; items marked **owner** need Andrew's call.
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
 in the spec.
 
+**principal — `PrincipalApi` is 1051 lines over 29 routes** (design smell,
+2026-08-27 audit; describe-don't-refactor): the same shape `RouterApi` had
+before its split — a wall of route registrations, handlers in the middle,
+DTOs below. The split done for `RouterApi` on 2026-08-26 (per-resource route
+groups, each registering its own routes, plus a `Wire` DTO holder) applies
+cleanly here: the natural groups are principal CRUD, roles, client-access,
+application-access, developer-credential, and the password/2FA operations.
+Not done as part of the audit because the audit brief says describe smells
+rather than refactor them, and because the aggregate has only just acquired
+its first API test — the split is much safer with that in place than it
+would have been before.
+
 **dispatch mode — two enums, opposite defaults** (found 2026-08-27 in the Go
 drift check; needs one line from the owner): Java has **two** `DispatchMode`
 enums and they disagree about the same concept.

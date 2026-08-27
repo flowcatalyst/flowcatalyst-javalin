@@ -442,10 +442,23 @@ Blocking dependency to note: the router Q1 ruling needs the dispatchjob
 Nothing here is blocked; it was overtaken by the router. Resume in this
 order:
 
-1. **Audit `principal`** (`docs/process/agent-prompts.md` §2) and **add
-   `PrincipalApiTest`** — the only aggregate that landed without either, and
-   the security-critical one. Its §11 Q3 (existence oracle) wants a ruling
-   first.
+1. ~~**Audit `principal` and add `PrincipalApiTest`**~~ **DONE 2026-08-26/27.**
+   12 API tests, four security mutants killed (by-id client check, self-read
+   exemption, `DELETE` gate, and the post-load tenant check on the ungated
+   mutations). Checklist pass clean: no `-Xlint` warnings, no `""` sentinels,
+   every `Optional` a return type, all 29 routes in `Auth.scoped`, one
+   `DSLContext`. The oversized handlers are §7 compositions by design, not
+   drift.
+
+   Two findings worth carrying: **Java is structurally immune** to Go's
+   `de868dd` because all three single-row lookups share one
+   `findOne(Condition)` that hydrates every junction — promoted to
+   CONVENTIONS as a rule. And **§11 Q3 is about ordering only**: those
+   mutations have no coarse gate and leak existence, but
+   `Access.requireUserAdmin` does enforce the target's home client post-load,
+   now asserted rather than assumed. Smell recorded (`backlog.md`):
+   `PrincipalApi` is 1051 lines over 29 routes, the same shape `RouterApi`
+   had before its split.
 2. ~~**Finish `sdksync`**~~ **DONE 2026-08-26.** All ten routes, not the nine
    the spec expected — `SyncPrincipals` was already ported, so the principals
    route was built with the rest and `State` gained its repository.
