@@ -346,14 +346,77 @@ final readonly class FlowCatalystUser
     }
 
     /**
-     * Application codes derived from roles (the `applications` claim).
+     * Application IDs the principal may reach (parsed from the `applications`
+     * claim).
+     *
+     * The claim mirrors `clients`: `"{id}:{code}"` pairs, or the single `"*"`
+     * sentinel meaning every application. Bare IDs — the form minted before
+     * pairs existed — are still accepted, so a token issued just before a
+     * platform upgrade keeps working for its TTL.
+     *
+     * Empty when {@see hasAllApplications()} is true: there is no restriction
+     * to enumerate.
      *
      * @return array<int, string>
      */
     public function getApplications(): array
     {
-        $apps = $this->claims['applications'] ?? [];
-        return is_array($apps) ? array_values(array_filter($apps, 'is_string')) : [];
+        return $this->parsedApplications()['ids'];
+    }
+
+    /**
+     * Application codes, positionally aligned with {@see getApplications()}.
+     * An ID whose code the platform could not resolve contributes no entry.
+     *
+     * @return array<int, string>
+     */
+    public function getApplicationCodes(): array
+    {
+        return $this->parsedApplications()['codes'];
+    }
+
+    /**
+     * Whether the principal reaches every application, present and future —
+     * the `"*"` entry in the claim.
+     *
+     * Also honours the deprecated `all_applications` boolean, so this reads
+     * correctly against a platform that emits only that.
+     */
+    public function hasAllApplications(): bool
+    {
+        return $this->parsedApplications()['all'];
+    }
+
+    /**
+     * Split the `applications` claim once. Only the FIRST colon delimits, so
+     * an application code containing one survives intact.
+     *
+     * @return array{ids: array<int, string>, codes: array<int, string>, all: bool}
+     */
+    private function parsedApplications(): array
+    {
+        $entries = $this->claims['applications'] ?? [];
+        $entries = is_array($entries) ? array_filter($entries, 'is_string') : [];
+
+        $ids = [];
+        $codes = [];
+        $all = ($this->claims['all_applications'] ?? false) === true;
+
+        foreach ($entries as $entry) {
+            if ($entry === '*') {
+                $all = true;
+                continue;
+            }
+            $i = strpos($entry, ':');
+            if ($i !== false && $i > 0) {
+                $ids[] = substr($entry, 0, $i);
+                $codes[] = substr($entry, $i + 1);
+            } elseif ($entry !== '') {
+                $ids[] = $entry;
+            }
+        }
+
+        return ['ids' => array_values($ids), 'codes' => array_values($codes), 'all' => $all];
     }
 
     /**
