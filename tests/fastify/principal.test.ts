@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { buildPrincipal } from "../../src/fastify/principal.js";
+import { parseApplicationsClaim } from "../../src/fastify/oidc/claims.js";
 import { defineRbac } from "../../src/fastify/rbac.js";
 
 function snap(over: Partial<Parameters<typeof buildPrincipal>[0]["snapshot"]> = {}) {
@@ -83,5 +84,40 @@ describe("Principal helpers", () => {
 		const p = buildPrincipal({ snapshot: snap(), rbac: undefined });
 		assert.equal(p.hasPermissionTo(["anything"]), false);
 		assert.equal(p.hasAnyPermissionTo(["a", "b"]), false);
+	});
+});
+
+describe("applications claim", () => {
+	// The claim mirrors `clients`: "{id}:{code}" pairs, or "*" for every
+	// application. Apps want ids, codes and the flag separately.
+	it("splits id:code pairs", () => {
+		const parsed = parseApplicationsClaim(["app_1:alpha", "app_2:beta"]);
+		assert.deepEqual(parsed.applications, ["app_1", "app_2"]);
+		assert.deepEqual(parsed.applicationCodes, ["alpha", "beta"]);
+		assert.equal(parsed.allApplications, false);
+	});
+
+	it("reads the wildcard as all-applications", () => {
+		const parsed = parseApplicationsClaim(["*"]);
+		assert.equal(parsed.allApplications, true);
+		assert.deepEqual(parsed.applications, []);
+	});
+
+	it("still accepts bare ids from a pre-upgrade token", () => {
+		const parsed = parseApplicationsClaim(["app_1", "app_2"]);
+		assert.deepEqual(parsed.applications, ["app_1", "app_2"]);
+		assert.deepEqual(parsed.applicationCodes, []);
+	});
+
+	it("honours the deprecated all_applications boolean", () => {
+		// A platform that sets the boolean but not the sentinel must still
+		// read as all-applications.
+		assert.equal(parseApplicationsClaim([], true).allApplications, true);
+	});
+
+	it("keeps a colon inside an application code", () => {
+		const parsed = parseApplicationsClaim(["app_1:a:b"]);
+		assert.deepEqual(parsed.applications, ["app_1"]);
+		assert.deepEqual(parsed.applicationCodes, ["a:b"]);
 	});
 });

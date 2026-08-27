@@ -23,7 +23,20 @@ export interface PrincipalSnapshot<TData = Record<string, unknown>> {
 	email?: string;
 	clients: string[];
 	roles: string[];
+	/** Application ids the principal may reach (parsed from the claim). */
 	applications: string[];
+	/**
+	 * Application codes, positionally aligned with {@link applications}. Empty
+	 * for an id whose code the platform could not resolve, and empty overall
+	 * when {@link allApplications} is set.
+	 */
+	applicationCodes: string[];
+	/**
+	 * True when the principal reaches every application, present and future —
+	 * the `"*"` entry in the claim. {@link applications} is then not a
+	 * restriction and is empty.
+	 */
+	allApplications: boolean;
 	mechanism: AuthMechanism;
 	sessionData: TData;
 }

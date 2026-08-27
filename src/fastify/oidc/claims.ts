@@ -44,7 +44,20 @@ export interface FcAccessTokenClaims extends JWTPayload {
 	email?: string;
 	clients: string[];
 	roles: string[];
+	/**
+	 * Application scope, as `"{id}:{code}"` pairs — or the single `"*"`
+	 * sentinel meaning every application. Use {@link parseApplicationsClaim}
+	 * rather than reading it raw; the SDK exposes the parsed result on the
+	 * principal as `applications` (ids), `applicationCodes` and
+	 * `allApplications`.
+	 */
 	applications: string[];
+	/**
+	 * @deprecated Read `"*"` in {@link applications} instead. This boolean is
+	 * still emitted for consumers that predate the sentinel and will be
+	 * removed in a future platform release.
+	 */
+	all_applications?: boolean;
 }
 
 /**
@@ -67,8 +80,15 @@ export interface FcIdTokenClaims extends JWTPayload {
 	email?: string;
 	clients?: string[];
 	roles?: string[];
+	/** See {@link FcAccessTokenClaims.applications}. */
 	applications?: string[];
+	/**
+	 * @deprecated Read `"*"` in {@link applications} instead — removal is
+	 * planned in a future platform release.
+	 */
+	all_applications?: boolean;
 	nonce?: string;
+	/** When the user actually signed in (not when the token was minted). */
 	auth_time?: number;
 }
 
@@ -103,6 +123,7 @@ export function mergeIdTokenAuthority(
 		clients: id.clients ?? access.clients,
 		roles: id.roles ?? access.roles,
 		applications: id.applications ?? access.applications,
+		all_applications: id.all_applications ?? access.all_applications,
 	};
 }
 
@@ -134,7 +155,48 @@ export function claimsToSnapshot(
 		...(claims.email ? { email: claims.email } : {}),
 		clients: claims.clients ?? [],
 		roles: claims.roles ?? [],
-		applications: claims.applications ?? [],
+		...parseApplicationsClaim(claims.applications, claims.all_applications),
 		mechanism,
 	};
+}
+
+/**
+ * Split the `applications` claim into the shape app code actually wants.
+ *
+ * The claim carries `"{id}:{code}"` pairs — mirroring `clients` — or the
+ * single `"*"` sentinel for a principal that reaches every application. Bare
+ * ids (the form minted before pairs existed) are still accepted, so a token
+ * issued just before a platform upgrade keeps working for its TTL.
+ *
+ * `deprecatedAllApplications` is the legacy `all_applications` boolean; it is
+ * OR-ed with the sentinel so this reads correctly against either a platform
+ * that emits `"*"` or one that only sets the boolean.
+ */
+export function parseApplicationsClaim(
+	entries: readonly string[] | undefined,
+	deprecatedAllApplications?: boolean,
+): {
+	applications: string[];
+	applicationCodes: string[];
+	allApplications: boolean;
+} {
+	const applications: string[] = [];
+	const applicationCodes: string[] = [];
+	let allApplications = deprecatedAllApplications === true;
+
+	for (const entry of entries ?? []) {
+		if (entry === "*") {
+			allApplications = true;
+			continue;
+		}
+		// First colon only: an application code containing one stays intact.
+		const i = entry.indexOf(":");
+		if (i > 0) {
+			applications.push(entry.slice(0, i));
+			applicationCodes.push(entry.slice(i + 1));
+		} else if (entry) {
+			applications.push(entry);
+		}
+	}
+	return { applications, applicationCodes, allApplications };
 }

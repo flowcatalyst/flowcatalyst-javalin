@@ -489,6 +489,8 @@ function bagToSession(
 			clients: [],
 			roles: [],
 			applications: [],
+			applicationCodes: [],
+			allApplications: false,
 		},
 		tokens: { accessToken: "", accessTokenExpiresAt: 0 },
 		sessionData: { bag },
