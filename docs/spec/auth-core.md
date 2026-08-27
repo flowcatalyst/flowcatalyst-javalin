@@ -15,6 +15,22 @@ may restructure as long as the stated behaviour holds. Open questions are
 numbered **Q1…Qn** inline and collected in §19 as yes/no decisions. Until an
 owner ruling lands, the Go behaviour is the spec.
 
+## 0. Go drift since extraction — re-read before porting
+
+The spec below was extracted before these landed. **They are corrections, not
+new features**, so the port should reproduce the corrected behaviour and skip
+the defect — reading the sections they touch without this list will implement
+the bug.
+
+| Go commit | What changed | Where it bites this spec |
+|---|---|---|
+| `de868dd` 2026-08-27 | `FindByServiceAccount` hydrated **roles only**, unlike `FindByID`/`FindByEmail` which also hydrate the client-access and application-access junctions. The admin token mint (`POST /api/service-accounts/{id}/token`) loads through it, so an app-scoped service account's token **always carried an empty `applications` claim** however it was actually bound — indistinguishable from one confined to nothing, since `CanAccessApplication` has no anchor bypass. The `/oauth/token` client_credentials path was never affected (it loads via `FindByID`), and the anchor branch of `buildClients` masked the missing client hydration by short-circuiting to `["*"]`. | §3.1 access-token claims; the service-account token mint. Also lands on the **`serviceaccount` unit** (14 ops) still on the platform queue — whichever is ported first must hydrate all three junctions. |
+| `304338a` 2026-08-27 | `grantedScope` passed an **anchor** principal's requested scopes through verbatim, so the `scope` claim could advertise permissions no role granted, and downstream consumers read that claim as authority. Now bounded by the role ceiling **at every tier**. The anchor bypass in `auth.requirePermission` is deliberate and untouched — this governs only what the token *advertises*. The escape hatch for a genuine super-admin is a real wildcard permission on a role (`platform:*:*:*`), which `Grants` already honours. **Behaviour change:** an explicit scope request that intersects the ceiling to nothing now returns `invalid_scope` rather than a token; the no-scope-requested path still mints the full ceiling. | §3.1 `scope` claim; the token-mint scope logic. A Java port of the old behaviour would over-advertise anchor authority. |
+| `8d7ddbc` 2026-08-27 | `filterRolesForApplications` emitted `r.ShortName()`, stripping the application prefix for app-scoped OAuth clients — so the same principal's role reached two relying parties under **two different spellings** depending on whether their client happened to be app-scoped. `iam_roles` stores every definition as `{applicationCode}:{role}` and both environments' assignments are fully qualified, so this was the only thing in the system producing unqualified names. Narrowing now decides only **which** roles a client sees, never what they are called; consumers that key an RBAC catalogue by app-local name strip the prefix themselves. | The `roles` claim. Java must emit canonical `{applicationCode}:{role}` from narrowing. |
+
+Checked against Go `426ac85` (2026-08-27). Re-run the check before starting
+auth: this side is still moving.
+
 ### Path aliases used in citations
 
 | Alias | File (under `flowcatalyst-go/`) |

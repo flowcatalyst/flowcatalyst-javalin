@@ -206,8 +206,70 @@ Ordered by what unblocks the most:
 7. **Drop-in verification** — side-by-side replay against the Go binary, then
    a cutover rehearsal.
 
-Smaller, tracked in place: `Q19` NATS redelivery handle (`NatsQueue.java:326`),
-`Q41` metrics contract (`RouterPrometheusCollector.java:54`).
+Smaller, tracked in place: `Q41` metrics contract
+(`RouterPrometheusCollector.java:54`). **`Q19` is closed** — see below.
+
+### Go drift check, 2026-08-27
+
+Ran against Go `426ac85`. Two live Java defects found and fixed, three auth
+changes recorded for the unported side, and several places where Java was
+already right.
+
+**Fixed — `Q19`, NATS at-least-once was silently at-most-once.** The broker
+id was `<streamSeq>:<consumerSeq>`, and the **consumer** sequence counts
+deliveries, so it changes on every redelivery. The tracker read a changed
+broker id under a known app id as "a rival copy exists — an external process
+requeued work we still own" and ACK-deleted the arrival, so JetStream
+destroyed its own copy on every ack-wait lapse; a later release or pool flush
+then lost the message with only a "no pending message for receipt" warning.
+Both identities now derive from the **stream** sequence, which every delivery
+shares. `consumerSeq` was removed from `classify` entirely rather than left
+unused, so the mistake is unavailable. Go ruled by fixing it the same way
+(`20e9fe7`) with the loss demonstrated, which turns a parked question into a
+defect. **The existing test asserted the bug** (`isNotEqualTo` on a
+redelivery's broker id) and passed; it now asserts the same id.
+
+**Fixed — TSID string order was noise below the millisecond.** Layout was
+`ms | random | seq`; ids sort as strings and Crockford Base32 is
+order-preserving, so the bit order **is** the sort order, and the counter that
+guarantees uniqueness contributed nothing to ordering. Two ids minted in one
+millisecond came out backwards about half the time — and these ids are the
+keyset-pagination cursor. Now `ms | seq | random`, matching Go `17e737a`.
+**The test documented the defect instead of catching it**: it decoded
+`(ms, seq)` and compared that, with a comment explaining that the random bits
+sat between them. It now compares the raw strings, which is what actually
+sorts in an index.
+
+**Already correct in Java, confirmed against Go's fixes:** redirects are not
+followed (`Redirect.NEVER`, with the same reasoning Go reached in `2468140` —
+301/302/303 downgrade POST to GET and drop the body, delivering nothing and
+reporting success); `Pool.mediating` is keyed by worker `Thread`, not message
+id, so `activeWorkers()` cannot under-report or let a loser's exit delete a
+winner's entry; there is no `ExtendVisibility`; the Postgres quarantine is
+`queue_messages_failed` keeping the latest failure. `89b195e` shows Go
+adopting our `NEXT_ON_ERROR` ruling including logging an unrecognised mode —
+full convergence on the router's enum.
+
+**Recorded, not fixed:**
+
+- `backlog.md`: **two `DispatchMode` enums with opposite defaults**. The
+  router's takes `NEXT_ON_ERROR` per the ruling; `platform.subscription`'s
+  still silently takes `IMMEDIATE`. Go applied the ruling at every layer.
+  Needs one line from the owner because it changes how existing rows read.
+- `dispatchjob.md`: Go `5762aa1` — `BLOCK_ON_ERROR` must hold a group while an
+  **earlier** job is `FAILED`/`ERROR` **or backed-off**, compared
+  **positionally**. A backed-off job is `PENDING` with a future
+  `scheduled_for`, so nothing treated it as holding anything and its
+  successors overtook it. The Java scheduler is unported: a note to
+  implement, not a defect to fix.
+- `auth-core.md` §0 (new): `de868dd` (`FindByServiceAccount` hydrates roles
+  only, so an app-scoped SA's token carried an empty `applications` claim),
+  `304338a` (the `scope` claim must be bounded by the role ceiling at every
+  tier; an explicit request intersecting to nothing is now `invalid_scope`),
+  `8d7ddbc` (per-client narrowing must emit canonical `{app}:{role}` names,
+  not short names). Auth is unported, so these are corrections the port must
+  reproduce rather than defects to fix — `de868dd` also lands on the
+  `serviceaccount` unit still on the platform queue.
 
 ### Two cross-cutting changes, 2026-08-26
 

@@ -177,6 +177,20 @@ transition is intent-named and total.
 
 The router ruling says a failed head-of-group is **reviewed by a human**,
 who resolves it as *ignore*, *completed* or *resend*, after which the
+> **Go drift 2026-08-27 (`5762aa1`), for whoever ports the scheduler:**
+> `BLOCK_ON_ERROR` stopped a group for a `FAILED` sibling **and nothing else**.
+> A job that failed transiently and is sitting out a retry backoff is
+> `PENDING` with a future `scheduled_for` — excluded from the claim query by
+> its own `scheduled_for`, and not `FAILED` — so nothing treated it as holding
+> anything. Its successors were claimed and delivered while it waited, then it
+> rejoined afterwards: precisely the reordering the mode exists to prevent,
+> in the exact circumstances it exists for. A job is now held while an
+> **earlier** job in its group is holding it up, where holding means
+> `FAILED`/`ERROR` **or backed-off**, and the comparison had to become
+> **positional** rather than set membership ("this group contains a held job"
+> would catch the held job itself). The Java scheduler is unported, so this is
+> a note to implement rather than a defect to fix.
+
 **group goes back onto the queue** (the scheduler's blocked-group hold-back
 releases once no `FAILED`/`ERROR` sibling remains in the group; the
 processing endpoint's delivery-time check uses the same predicate —

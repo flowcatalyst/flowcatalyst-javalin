@@ -239,6 +239,37 @@ item names its origin; items marked **owner** need Andrew's call.
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
 in the spec.
 
+**dispatch mode — two enums, opposite defaults** (found 2026-08-27 in the Go
+drift check; needs one line from the owner): Java has **two** `DispatchMode`
+enums and they disagree about the same concept.
+
+| | default when absent/unknown | unknown value |
+|---|---|---|
+| `router.wire.DispatchMode` | `NEXT_ON_ERROR` | logged |
+| `platform.subscription.DispatchMode` | `IMMEDIATE` | silent |
+
+The router's was changed by the owner ruling of 2026-08-25 ("wanting
+concurrency and getting ordering is visible and cheap to fix; needing
+ordering and silently getting none is invisible and lands in the target's
+data"). The subscription one was not. **Go applied the same ruling at every
+layer** in `89b195e` — "`ParseDispatchMode`'s fallback, fan-out's mode string,
+`subscription.New`, and the mode column's DEFAULT" — so Java is now the only
+side where a stored subscription with an absent or misspelled mode silently
+gets no ordering.
+
+Two enums in one codebase with opposite defaults for one concept is a defect
+whichever default is right; `subscription.md` §9a already plans to merge them
+into a shared `messaging` package. The ruling to make is only whether the
+merged enum defaults to `NEXT_ON_ERROR` (extending the existing ruling, and
+converging with Go) — which also changes how **existing rows** with a null or
+unrecognised mode read. Not changed unilaterally because the spec carries it
+as an open question ("load-bearing or accident?", `subscription.md` §1 Q7) and
+because it alters stored-data interpretation.
+
+Related and separate: `subscription.md` §217 records that create **always**
+stores `IMMEDIATE` and ignores the input's `mode`, which limits how much the
+parse default actually reaches today.
+
 **principal** (demonstrated 2026-08-26 by the new `PrincipalApiTest`, needs a
 ruling — spec §11 Q3/Q4): two cross-tenant/read-leak questions, both now
 pinned by tests so a ruling either way shows up as a test flipping.

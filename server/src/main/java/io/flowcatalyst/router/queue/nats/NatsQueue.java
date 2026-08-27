@@ -278,17 +278,15 @@ public final class NatsQueue implements Consumer {
     void handleFetched(io.nats.client.Message msg, List<QueuedMessage> out) {
         boolean metadataOk;
         long streamSeq = 0;
-        long consumerSeq = 0;
         try {
             var meta = msg.metaData();
             streamSeq = meta.streamSequence();
-            consumerSeq = meta.consumerSequence();
             metadataOk = true;
         } catch (Exception e) {
             metadataOk = false;
         }
 
-        apply(classify(metadataOk, streamSeq, consumerSeq, config.streamName(), msg.getData()), msg, out);
+        apply(classify(metadataOk, streamSeq, config.streamName(), msg.getData()), msg, out);
     }
 
     /// Acts on a classification.
@@ -322,12 +320,25 @@ public final class NatsQueue implements Consumer {
     /// (the message can't be tracked, so it must be termed regardless of its
     /// body).
     ///
-    /// The broker id encodes both sequences as `<streamSeq>:<consumerSeq>`.
-    // TODO(Q19, docs/spec/router.md §7.4/§13): a redelivery carries a fresh
-    // consumer sequence, so its broker id differs from the original
-    // delivery's — the router's dedup classifies it as an external requeue
-    // rather than a redelivery. Kept as-is pending the owner's ruling.
-    static FetchOutcome classify(boolean metadataOk, long streamSeq, long consumerSeq, String streamName, byte[] data) {
+    /// Both identities derive from the **stream** sequence — the message's
+    /// identity in the stream, which every redelivery of it shares.
+    ///
+    /// Neither may involve the **consumer** sequence, which counts deliveries
+    /// and therefore changes on every redelivery. Feeding that to
+    /// [io.flowcatalyst.router.inflight.InFlightTracker]'s duplicate filter
+    /// makes each redelivery look like a *different copy* of the message — an
+    /// external requeue — and the router ACK-deletes those. JetStream then
+    /// destroys its own copy every time the ack-wait lapses, leaving the
+    /// in-memory copy as the only one: at-least-once quietly becomes
+    /// at-most-once, and a later release or pool flush loses the message with
+    /// nothing but a "no pending message for receipt" warning to show for it.
+    ///
+    /// This was Q19, parked pending a ruling. Go ruled by fixing it the same
+    /// way (`20e9fe7`) with the loss demonstrated, so it is a defect rather
+    /// than a question. SQS (`MessageId`) and Postgres (row id) were always
+    /// right; the rule is written here because the tracker enforces it on
+    /// backends it cannot see.
+    static FetchOutcome classify(boolean metadataOk, long streamSeq, String streamName, byte[] data) {
         if (!metadataOk) {
             return FetchOutcome.Malformed.INSTANCE;
         }
@@ -338,7 +349,7 @@ public final class NatsQueue implements Consumer {
             return FetchOutcome.Malformed.INSTANCE;
         }
         String receipt = streamName + ":" + streamSeq;
-        String brokerMessageId = streamSeq + ":" + consumerSeq;
+        String brokerMessageId = Long.toString(streamSeq);
         return new FetchOutcome.Deliver(receipt, brokerMessageId, payload);
     }
 

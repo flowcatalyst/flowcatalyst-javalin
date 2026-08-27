@@ -34,14 +34,21 @@ class TsidTest {
         List<String> ids = new ArrayList<>();
         for (int i = 0; i < 20_000; i++) ids.add(Tsid.generate());
         assertThat(new HashSet<>(ids)).hasSize(ids.size());
-        // Only the timestamp + sequence are monotonic; the 10 random bits sit between them,
-        // so compare on the decoded (ms, seq) instead of the raw string.
-        long previous = -1;
+
+        // Compare the RAW STRINGS, because that is what actually sorts — in
+        // an index, in an ORDER BY, and in the keyset pagination cursor.
+        //
+        // This test used to decode (ms, seq) and compare that instead, with a
+        // comment explaining that the random bits sat between them. That made
+        // it pass on ids whose STRING order was wrong roughly half the time
+        // within a millisecond: it documented the defect rather than catching
+        // it. The bit order is now ms | seq | random, so the string order is
+        // the mint order, and asserting the weaker property is no longer
+        // necessary.
+        String previous = "";
         for (String id : ids) {
-            long v = Tsid.toLong(id).orElseThrow();
-            long msSeq = ((v >>> 22) << 12) | (v & 0xFFF);
-            assertThat(msSeq).isGreaterThan(previous);
-            previous = msSeq;
+            assertThat(id).isGreaterThan(previous);
+            previous = id;
         }
     }
 

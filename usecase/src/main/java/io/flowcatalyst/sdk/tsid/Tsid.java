@@ -11,9 +11,19 @@ import java.util.concurrent.atomic.AtomicLong;
 ///
 /// ```
 /// bits 63..22  timestamp (42 bits, milliseconds since the Unix epoch)
-/// bits 21..12  random    (10 bits)
-/// bits 11..0   sequence  (12 bits)
+/// bits 21..10  sequence  (12 bits)
+/// bits 9..0    random    (10 bits)
 /// ```
+///
+/// **The sequence sits ABOVE the random field, and the order is the point.**
+/// Ids sort as strings and Crockford Base32 is order-preserving, so the bit
+/// order *is* the sort order. With random above the sequence — which is what
+/// this was until 2026-08-27, matching Go before `17e737a` — two ids minted
+/// in the same millisecond were ordered by **noise**: the counter that
+/// guarantees uniqueness contributed nothing to ordering, and a pair came out
+/// backwards about half the time. "Time-sorted id" was true only at
+/// millisecond granularity, which matters because these ids are the keyset
+/// pagination cursor.
 ///
 /// rendered as exactly 13 Crockford Base32 characters (`0-9 A-H J-K M-N P-T V-Z`).
 /// Typed ids add a short lowercase prefix: `{prefix}_{raw}` (e.g. `aud_0HZXEQ5Y8JY5Z`).
@@ -32,6 +42,7 @@ public final class Tsid {
     private static final long MS_MASK = 0x3FF_FFFF_FFFFL; // 42 bits
     private static final int SEQ_BITS = 12;
     private static final int SEQ_MASK = 0xFFF;
+    private static final int RANDOM_BITS = 10;
     private static final int RANDOM_MASK = 0x3FF;
 
     /// Bits 63..12 = last issued millisecond, bits 11..0 = last issued sequence.
@@ -46,7 +57,7 @@ public final class Tsid {
     public static String generate() {
         var ms = nextMsSeq();
         long random = ThreadLocalRandom.current().nextInt(RANDOM_MASK + 1);
-        long value = ((ms.ms() & MS_MASK) << 22) | (random << SEQ_BITS) | ms.seq();
+        long value = ((ms.ms() & MS_MASK) << 22) | (ms.seq() << RANDOM_BITS) | random;
         return encode(value);
     }
 

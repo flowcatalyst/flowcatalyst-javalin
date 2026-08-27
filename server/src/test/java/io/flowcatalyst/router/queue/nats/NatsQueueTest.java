@@ -82,7 +82,7 @@ class NatsQueueTest {
     @Test
     @DisplayName("a message whose metadata failed to read is termed regardless of its payload")
     void metadataFailureIsTermedEvenWithValidPayload() {
-        var outcome = NatsQueue.classify(false, 1L, 1L, "STREAM", VALID_PAYLOAD);
+        var outcome = NatsQueue.classify(false, 1L, "STREAM", VALID_PAYLOAD);
 
         assertThat(outcome).isInstanceOf(FetchOutcome.Malformed.class);
     }
@@ -92,7 +92,7 @@ class NatsQueueTest {
     void malformedJsonClassifies() {
         byte[] garbage = "not json at all".getBytes(StandardCharsets.UTF_8);
 
-        var outcome = NatsQueue.classify(true, 1L, 1L, "STREAM", garbage);
+        var outcome = NatsQueue.classify(true, 1L, "STREAM", garbage);
 
         assertThat(outcome).isInstanceOf(FetchOutcome.Malformed.class);
     }
@@ -100,35 +100,48 @@ class NatsQueueTest {
     @Test
     @DisplayName("an empty payload classifies as malformed")
     void emptyPayloadClassifies() {
-        var outcome = NatsQueue.classify(true, 1L, 1L, "STREAM", new byte[0]);
+        var outcome = NatsQueue.classify(true, 1L, "STREAM", new byte[0]);
 
         assertThat(outcome).isInstanceOf(FetchOutcome.Malformed.class);
     }
 
     @Test
-    @DisplayName("a well-formed message is delivered with a stream:seq receipt and seq:seq broker id")
+    @DisplayName("a well-formed message is delivered with a stream:seq receipt and a stream-seq broker id")
     void wellFormedMessageIsDelivered() {
-        var outcome = NatsQueue.classify(true, 42L, 7L, "FLOWCATALYST", VALID_PAYLOAD);
+        var outcome = NatsQueue.classify(true, 42L, "FLOWCATALYST", VALID_PAYLOAD);
 
         assertThat(outcome).isInstanceOf(FetchOutcome.Deliver.class);
         var deliver = (FetchOutcome.Deliver) outcome;
         assertThat(deliver.receipt()).isEqualTo("FLOWCATALYST:42");
-        assertThat(deliver.brokerMessageId()).isEqualTo("42:7");
+        assertThat(deliver.brokerMessageId()).isEqualTo("42");
         assertThat(deliver.payload().id()).isEqualTo("msg_1");
         assertThat(deliver.payload().mediationType()).isEqualTo(MediationType.HTTP);
         assertThat(deliver.payload().dispatchMode()).isEqualTo(DispatchMode.IMMEDIATE);
     }
 
     @Test
-    @DisplayName("redelivery's fresh consumer sequence produces a different broker id (Q19)")
-    void redeliveryProducesDifferentBrokerId() {
-        // Same stream sequence (same underlying delivery) but a later
-        // consumer sequence, as JetStream assigns on redelivery.
-        var first = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, 1L, "FLOWCATALYST", VALID_PAYLOAD);
-        var redelivered = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, 2L, "FLOWCATALYST", VALID_PAYLOAD);
+    @DisplayName("a redelivery keeps the SAME broker id, so the tracker sees a redelivery and not a rival copy")
+    void redeliveryKeepsTheSameBrokerId() {
+        // This test used to assert the opposite, and passed — on code that
+        // silently turned at-least-once into at-most-once. A redelivery
+        // carries a fresh CONSUMER sequence; when that fed the broker id, the
+        // tracker read the redelivery as a different copy of the message (an
+        // external requeue) and ACK-deleted it, so JetStream destroyed its own
+        // copy on every ack-wait lapse. Both identities must therefore come
+        // from the STREAM sequence, which every delivery of a message shares.
+        //
+        // Only the stream sequence is an input at all now: the consumer
+        // sequence was removed from `classify` rather than left unused, so the
+        // mistake cannot be made again from inside this method.
+        var first = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, "FLOWCATALYST", VALID_PAYLOAD);
+        var redelivered = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, "FLOWCATALYST", VALID_PAYLOAD);
 
-        assertThat(first.receipt()).isEqualTo(redelivered.receipt());
-        assertThat(first.brokerMessageId()).isNotEqualTo(redelivered.brokerMessageId());
+        assertThat(redelivered.brokerMessageId()).isEqualTo(first.brokerMessageId());
+        assertThat(redelivered.receipt()).isEqualTo(first.receipt());
+
+        // ...and a genuinely different message still gets a different id.
+        var other = (FetchOutcome.Deliver) NatsQueue.classify(true, 43L, "FLOWCATALYST", VALID_PAYLOAD);
+        assertThat(other.brokerMessageId()).isNotEqualTo(first.brokerMessageId());
     }
 
     // --- effectiveBatch ---------------------------------------------------
@@ -355,7 +368,7 @@ class NatsQueueTest {
         var queue = testQueue();
         var msg = new FakeJetStreamMessage(VALID_PAYLOAD);
         var delivered = new java.util.ArrayList<io.flowcatalyst.router.pool.QueuedMessage>();
-        var verdict = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, 7L, "STREAM", VALID_PAYLOAD);
+        var verdict = (FetchOutcome.Deliver) NatsQueue.classify(true, 42L, "STREAM", VALID_PAYLOAD);
 
         queue.apply(verdict, msg, delivered);
 
