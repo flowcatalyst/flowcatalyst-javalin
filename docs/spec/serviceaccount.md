@@ -144,11 +144,21 @@ Rules the Java must keep, however it is structured:
 - **Expiry is swept on every store**, so no background thread is needed and
   the map holds only in-flight entries.
 
-The `principal` aggregate already has this exact shape as
-`operations.DeveloperSecrets` (`pop(principalId)`), so **Java should reuse or
-generalise that rather than write a second one** — two implementations of
-"hand this secret over exactly once" is the shape CONVENTIONS' one-hydration-
-path rule was promoted against.
+**Do not port the stash.** Java removed its equivalent on 2026-08-27 after
+finding the same flaw: the stash was written from inside the operation's
+`execute`, which runs *before* the commit, so a failed commit left a plaintext
+in a process-wide map for the full TTL belonging to a credential that was
+never stored. Nothing delivered it, but a side channel that can hold a secret
+for a rolled-back transaction is one refactor away from handing it out.
+
+The shape to use instead — already in `principal`, and what this port must
+copy — is a **caller-owned sink**: the operation takes a `Consumer<String>`,
+mints **after** the authorisation rules have passed, and writes the plaintext
+to it; the handler owns an `AtomicReference` and reads it only after `run`
+returns. Three properties become structural rather than remembered: the
+plaintext cannot outlive the request, an unauthorised request never reaches
+the minting path, and a rolled-back commit discloses nothing. No TTL, no
+sweep, no global. Go fix: `serviceaccount-fixes.md` Fix 4.
 
 ## 6. Events
 
@@ -157,6 +167,21 @@ deactivated, deleted, roles-assigned, token-regenerated, secret-regenerated.
 Per CONVENTIONS, an event record must **never shadow a `DomainEvent`
 accessor** — an event about a service account names it `serviceAccountId`,
 never `principalId` (which is the actor).
+
+### 5.1 The `_ref` columns hold plaintext
+
+`wh_auth_token_ref` and `wh_signing_secret_ref` are named as *references* but
+hold the secret itself (`repository.go:92` writes the plaintext; the outbound
+resolver reads it straight back). The plaintext is genuinely required — the
+bearer is stamped on outbound webhooks, so it cannot be hashed — but the name
+asserts an indirection that does not exist.
+
+**Owner ruling 2026-08-27: fix it.** The Java port **encrypts at rest under
+the app key** from the start, as `principal` already does for developer
+credentials; the encryption plumbing exists and is wired in
+`Platform.register`. Go fix: `serviceaccount-fixes.md` Fix 3 — encrypt, or at
+minimum rename the columns so the schema stops claiming an indirection it does
+not have.
 
 ## 7. Persistence
 
@@ -211,11 +236,11 @@ from the principal — returns the real set. **One route says none, the sibling
 says several.** Structurally the same trap as `principal` §11 Q4, where the
 by-id read and its sub-route disagree.
 
-**Q1 (ruling needed):** drop `roles` from the response (a wire change), or
-hydrate it like the sub-route does? Reproducing an always-empty array because
-Go emits one is the conformance trap this project has ruled against before —
-but it *is* the wire contract today, so it needs a decision rather than a
-quiet fix.
+**Owner ruling 2026-08-27: hydrate it.** `FindByID`/`FindByCode` populate
+`roles` from the linked principal using the same lookup the sub-route uses, so
+the two routes cannot disagree. Kept **off** the list read, matching the
+existing `principalId` decision; if the list ever hydrates, both move
+together. Go fix: `serviceaccount-fixes.md` Fix 1.
 
 ### 9.2 `lastUsedAt` is never written
 
@@ -224,9 +249,12 @@ quiet fix.
 the service account's. It is on the aggregate, read from the column, and
 rendered — and always null.
 
-**Q2 (ruling needed):** is the column meant to be stamped on token mint or on
-webhook use (in which case the write is the missing piece), or is the field
-vestigial and due for removal?
+**Owner ruling 2026-08-27: stamp it.** Both uses count — the token mint
+(`POST /{id}/token`) and outbound webhook credential resolution. The resolver
+is TTL-memoised so the stamp fires on a cache miss rather than per delivery;
+that is the intended meaning ("last known use") rather than a compromise.
+Best-effort and outside the delivery's transaction: a failed stamp must never
+fail a mint or a delivery. Go fix: `serviceaccount-fixes.md` Fix 2.
 
 ## 10. Open questions for the owner
 

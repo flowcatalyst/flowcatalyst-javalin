@@ -464,15 +464,21 @@ class PrincipalOperationsTest {
     void developerCredentialIsIssuedOnceEncryptedAndRevocable() {
         String id = createdUser("dev", "ANCHOR", null);
         var secrets = DeveloperSecrets.withEncryption(Encryption.withKey(Encryption.generateKey()));
-        assertUseCaseError(() -> runAsAnchor(SetDeveloperCredential.of(repo, secrets), new SetDeveloperCredentialCommand(id)), UseCaseError.BusinessRule.class, "NOT_A_DEVELOPER");
+        // The sink is a local: the plaintext reaches exactly one caller and
+        // dies with the frame, where it used to sit in a process-wide map for
+        // two minutes — including when the commit that stored its encrypted
+        // form failed.
+        var disclosed = new java.util.concurrent.atomic.AtomicReference<String>();
+        assertUseCaseError(() -> runAsAnchor(SetDeveloperCredential.of(repo, secrets, disclosed::set), new SetDeveloperCredentialCommand(id)), UseCaseError.BusinessRule.class, "NOT_A_DEVELOPER");
+        assertThat(disclosed.get()).as("a rejected request never reaches the minting path").isNull();
         if (roles.findByName(SetDeveloperCredential.DEVELOPER_ROLE).isEmpty()) {
             var r = Role.create("platform", "developer", "Developer");
             uow.inTransaction(tx -> { roles.persist(r, tx.dbTx()); return null; });
         }
         runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(id, List.of(SetDeveloperCredential.DEVELOPER_ROLE)));
-        var ev = runAsAnchor(SetDeveloperCredential.of(repo, secrets), new SetDeveloperCredentialCommand(id));
-        String plaintext = secrets.pop(id).orElseThrow();
-        assertThat(secrets.pop(id)).as("disclosed once").isEmpty();
+        var ev = runAsAnchor(SetDeveloperCredential.of(repo, secrets, disclosed::set), new SetDeveloperCredentialCommand(id));
+        String plaintext = disclosed.get();
+        assertThat(plaintext).as("disclosed to the caller that asked").isNotBlank();
         var got = reload(id);
         assertThat(got.hasDeveloperSecret()).isTrue();
         assertThat(got.userIdentity().devClientSecretRef()).isNotEqualTo(plaintext);
@@ -484,9 +490,11 @@ class PrincipalOperationsTest {
         runAs(self, RevokeDeveloperCredential.of(repo), new RevokeDeveloperCredentialCommand(id));
         assertThat(reload(id).hasDeveloperSecret()).isFalse();
         assertThat(eventsFor(id, PrincipalEvents.DEVELOPER_CREDENTIAL_REVOKED)).hasSize(1);
-        assertUseCaseError(() -> runAsAnchor(SetDeveloperCredential.of(repo, DeveloperSecrets.unconfigured()), new SetDeveloperCredentialCommand(id)), UseCaseError.Internal.class, "SECRET");
+        assertUseCaseError(() -> runAsAnchor(SetDeveloperCredential.of(repo, DeveloperSecrets.unconfigured(), disclosed::set), new SetDeveloperCredentialCommand(id)), UseCaseError.Internal.class, "SECRET");
         var stranger = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "s@x.io", List.of(), List.of(), List.of(), false, List.of());
-        assertUseCaseError(() -> runAs(stranger, SetDeveloperCredential.of(repo, secrets), new SetDeveloperCredentialCommand(id)), UseCaseError.Authorization.class, "ANCHOR_REQUIRED");
+        var refused = new java.util.concurrent.atomic.AtomicReference<String>();
+        assertUseCaseError(() -> runAs(stranger, SetDeveloperCredential.of(repo, secrets, refused::set), new SetDeveloperCredentialCommand(id)), UseCaseError.Authorization.class, "ANCHOR_REQUIRED");
+        assertThat(refused.get()).as("an unauthorised caller never reaches the minting path").isNull();
     }
 
     // ── Repository reads ───────────────────────────────────────────────────

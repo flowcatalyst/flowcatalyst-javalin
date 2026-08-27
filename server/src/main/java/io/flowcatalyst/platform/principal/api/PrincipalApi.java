@@ -617,10 +617,16 @@ public final class PrincipalApi {
     }
 
     /// No coarse gate: the operation's self-or-user-admin rule is the whole check.
+    ///
+    /// The plaintext comes back through a **local** sink rather than a
+    /// process-wide stash: it reaches the response exactly once, cannot
+    /// outlive this frame, and is only read after `run` returns — so a
+    /// rolled-back commit discloses nothing. See [DeveloperSecrets].
     private static void setDeveloperCredential(Context ctx, State s) {
-        var ev = SetDeveloperCredential.of(s.repo(), s.developerSecrets())
+        var plaintext = new java.util.concurrent.atomic.AtomicReference<String>();
+        var ev = SetDeveloperCredential.of(s.repo(), s.developerSecrets(), plaintext::set)
                 .run(s.uow(), new SetDeveloperCredentialCommand(ctx.pathParam("id")), Auth.executionContext());
-        ctx.json(new SetDeveloperCredentialResponse(ev.userId(), s.developerSecrets().pop(ev.userId()).orElse(null)));
+        ctx.json(new SetDeveloperCredentialResponse(ev.userId(), plaintext.get()));
     }
 
     private static void revokeDeveloperCredential(Context ctx, State s) {
