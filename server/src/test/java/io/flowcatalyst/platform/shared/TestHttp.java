@@ -19,16 +19,65 @@ public final class TestHttp implements AutoCloseable {
     private final Javalin app;
     private final HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
+    /// A route the harness registers for itself, to prove the connector is
+    /// serving before any test issues its first real request. Named to be
+    /// unmistakable and to collide with nothing a test would mount.
+    private static final String READY_PATH = "/__testhttp_ready";
+
     public TestHttp(Consumer<JavalinConfig> configure) {
         this.app = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.jsonMapper(new JavalinJsonMapper());
+            // Registered BEFORE the caller's routes so a catch-all of theirs
+            // still wins for every other path.
+            cfg.routes.get(READY_PATH, ctx -> ctx.result("ready"));
             configure.accept(cfg);
         }).start(0);
+        awaitReady(READY_PATH);
     }
 
     public int port() {
         return app.port();
+    }
+
+    /// Blocks until a request to `probePath` actually comes back, then returns.
+    ///
+    /// Called from the constructor against [#READY_PATH], so **every instance
+    /// is ready before it is handed to a test** and no test needs to know this
+    /// race exists. Public because a caller that rebinds or otherwise wants to
+    /// re-check can.
+    ///
+    /// A freshly bound Jetty connector occasionally drops the very first
+    /// connection on a JDK `HttpClient` — "header parser received no bytes",
+    /// "EOF reached while reading" — a harness/OS race with nothing to do with
+    /// routing. Without this, the drop surfaces as an ERROR in whichever test
+    /// happens to go first, which reads like a real failure of that test. It
+    /// did exactly that to `DashboardHandlerTest` on 2026-08-27, in the one
+    /// test that builds its own instance inside the test method.
+    ///
+    /// **One attempt is not enough.** A connector that rejects the first
+    /// request may reject the second, so absorbing exactly one failure just
+    /// moves the problem to the next call — where it arrives as a body that
+    /// parses to something missing the field under test, i.e. a
+    /// `NullPointerException` that looks like an ordering bug and is not one.
+    /// This retries until it genuinely answers, so a test past this line is
+    /// talking to a server that works.
+    ///
+    /// `probePath` must be a route this instance actually registers; the
+    /// response is discarded, so any status will do.
+    public void awaitReady(String probePath) {
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(5).toNanos();
+        RuntimeException last = null;
+        while (System.nanoTime() < deadline) {
+            try {
+                get(probePath);
+                return;
+            } catch (RuntimeException e) {
+                last = e;
+            }
+            Thread.onSpinWait();
+        }
+        throw new AssertionError("test server never became ready at " + probePath, last);
     }
 
     public HttpResponse<String> get(String path, String... headers) {

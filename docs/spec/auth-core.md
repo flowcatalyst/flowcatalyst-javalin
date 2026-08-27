@@ -28,7 +28,34 @@ the bug.
 | `304338a` 2026-08-27 | `grantedScope` passed an **anchor** principal's requested scopes through verbatim, so the `scope` claim could advertise permissions no role granted, and downstream consumers read that claim as authority. Now bounded by the role ceiling **at every tier**. The anchor bypass in `auth.requirePermission` is deliberate and untouched — this governs only what the token *advertises*. The escape hatch for a genuine super-admin is a real wildcard permission on a role (`platform:*:*:*`), which `Grants` already honours. **Behaviour change:** an explicit scope request that intersects the ceiling to nothing now returns `invalid_scope` rather than a token; the no-scope-requested path still mints the full ceiling. | §3.1 `scope` claim; the token-mint scope logic. A Java port of the old behaviour would over-advertise anchor authority. |
 | `8d7ddbc` 2026-08-27 | `filterRolesForApplications` emitted `r.ShortName()`, stripping the application prefix for app-scoped OAuth clients — so the same principal's role reached two relying parties under **two different spellings** depending on whether their client happened to be app-scoped. `iam_roles` stores every definition as `{applicationCode}:{role}` and both environments' assignments are fully qualified, so this was the only thing in the system producing unqualified names. Narrowing now decides only **which** roles a client sees, never what they are called; consumers that key an RBAC catalogue by app-local name strip the prefix themselves. | The `roles` claim. Java must emit canonical `{applicationCode}:{role}` from narrowing. |
 
-Checked against Go `426ac85` (2026-08-27). Re-run the check before starting
+| `7bce06c` 2026-08-27 | The **id_token's `applications` claim was emitted whole**, not confined to the relying party's own applications. `mintInteractiveAccessToken` cloned the principal and ran `intersectApps` before minting; `mintIDToken` was handed the original and overrode only roles. A user with access to three applications signing into a client scoped to one handed it all three ids. Both authority claims now go through one `confineToClient` helper: `applications` becomes the intersection with the client's set and `all_applications` is forced off. Unscoped clients (no `ApplicationIDs`) unchanged. | §3.2 ID-token payload. |
+| `5e4d0f9` 2026-08-27 | **`auth_time` and `updated_at` were both stamped with the mint time.** `auth_time` is what a relying party evaluates `max_age` against, so re-stamping made a long-running session look freshly authenticated on every refresh — the claim could never answer "how long ago did this person actually sign in". It now rides on the authorization code, onto the refresh-token family, and **through rotation**, because a rotation is not a re-authentication. Codes/refresh tokens predating the field decode to a zero time and fall back to *now*, not the epoch. `updated_at` now reports the principal's own `UpdatedAt`. | §3.2. A port that stamps both at mint reproduces a claim that cannot do its job. |
+| `eecb4f0` 2026-08-27 | **`/api/me` undid the id_token's confinement.** `whoami` and `listMyApplications` read `accessible_application_ids` off the principal **row**, so they returned the caller's full platform-wide application list regardless of which OAuth client the token was for — the same leak as `7bce06c` through a different door, and through the endpoints an SDK actually calls. Application scope now comes from the **credential**, like roles/permissions/clients already did; the row is still read for identity fields that are not claims. | The `me` surface (unported, outside the lockfile). |
+| `8ec7f9a` 2026-08-27 | **`/oauth/userinfo` answered with empty arrays.** An interactive login receives an identity-only access token — no roles or applications by design — and userinfo echoed that token's claims straight back, so the one endpoint an identity token exists for asserted "this user holds nothing", falsely, while being advertised in discovery. Access tokens minted through an OAuth client now carry `azp`; userinfo resolves it, loads the principal, and runs the **same `confineToClient`** the id_token mint uses, so the two cannot drift. Userinfo is therefore "the id_token's claims as of now" and structurally cannot disclose more. | §3.2 and the OIDC provider surface. |
+| `ab1e5f1` 2026-08-27 | **`applications` now carries `"{id}:{code}"` pairs**, mirroring `clients`, or the single `"*"` sentinel. An id whose code will not resolve degrades to the bare id rather than vanishing, since dropping it would silently narrow access. The internal model still reasons in bare ids, so the pair is split **exactly once**, at the boundary where a token becomes an `AuthContext` (`ParseApplicationsClaim`), which also accepts the older bare form so existing tokens keep working. `all_applications` is deprecated, not removed. | §3.1 **[C]** — and **this one already bit Java**: see the note below. |
+| `44e5633` 2026-08-27 | Portal id_tokens must **not** be stamped `tier: CLIENT`. A portal identity is not a platform principal and has no tenancy tier, so claiming one tells a relying party it is one — a claim some consumer will branch on. The empty string is the visible edge of a claim that does not apply. | §3.2, portal tokens. |
+
+### The pair form already bit Java (fixed 2026-08-27)
+
+`ab1e5f1` is what surfaced it, but the defect was **older and wider**: `clients`
+has *always* carried `"{id}:{identifier}"` pairs, and Java compared claim
+entries to bare ids directly in both `AuthContext.canAccessClient` and
+`canAccessApplication`. A Go-minted token for any CLIENT or PARTNER principal
+therefore failed **every** tenant check — `canAccessClient("clt_x")` asking
+whether the list contained `"clt_x"` when it contained `"clt_x:acme"`.
+
+It was invisible for two compounding reasons: Java minted and read its own
+tokens, so it was consistent with itself, and the failure is **closed** — the
+caller is denied, which reads as a permissions problem rather than a parsing
+one. It would have surfaced first during drop-in verification, as a pile of
+inexplicable 403s.
+
+Java now parses both claims through `shared.auth.ScopeClaim` at the single
+boundary where a token becomes an `AuthContext`, accepting the pair form, the
+bare form and the `"*"` sentinel — the same contract as Go's
+`ParseApplicationsClaim`.
+
+Checked against Go `44e5633` (2026-08-27). Re-run the check before starting
 auth: this side is still moving.
 
 ### Path aliases used in citations

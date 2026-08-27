@@ -123,11 +123,9 @@ class RouterApiTest {
         var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
                 "test-version", "/router", null, Map.of("POOL-A", poolAMetrics), traffic, brokerStats);
         http = new TestHttp(cfg -> RouterApi.register(cfg.routes, state));
-        warmUp(http);
 
         var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null, null, null);
         bare = new TestHttp(cfg -> RouterApi.register(cfg.routes, bareState));
-        warmUp(bare);
     }
 
     @AfterAll
@@ -147,42 +145,6 @@ class RouterApiTest {
 
     private static String tag() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 10);
-    }
-
-    /// Absorbs a one-off flake reproduced independently of this suite:
-    /// `/health/live` is unconditionally registered on every [RouterApi.State],
-    /// so it is a harmless first request. A freshly bound Jetty connector
-    /// occasionally (~1/150 in a tight loop) drops the very first connection
-    /// on a JDK `HttpClient` ("EOF reached while reading" / "header parser
-    /// received no bytes") — a `TestHttp`/OS-level race unrelated to routing.
-    /// Firing one disposable request before the real assertions run keeps
-    /// that race from occasionally failing a test outright.
-    /// Waits until a freshly bound connector actually serves a request.
-    ///
-    /// One attempt is not enough. `/health/live` is unconditionally
-    /// registered on every [RouterApi.State], so it is a safe probe — but a
-    /// connector that rejects the first request may reject the second, and
-    /// absorbing exactly one failure leaves the *next* call to fail instead,
-    /// with a body that parses to something without the field under test.
-    /// That produced a NullPointerException in full-suite runs and passed
-    /// standalone, which reads like an ordering bug and is not one.
-    ///
-    /// Retries until it genuinely answers, so a test that gets past this line
-    /// is talking to a server that works.
-    private static void warmUp(TestHttp http) {
-        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-        RuntimeException last = null;
-        while (System.nanoTime() < deadline) {
-            try {
-                if (http.get("/router/health/live").statusCode() == 200) {
-                    return;
-                }
-            } catch (RuntimeException e) {
-                last = e;
-            }
-            Thread.onSpinWait();
-        }
-        throw new AssertionError("router test server never became ready", last);
     }
 
     // ── Health ────────────────────────────────────────────────────────────
@@ -222,7 +184,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             assertThat(isolatedHttp.get("/router/health/ready").statusCode())
                     .as("healthy with no warnings").isEqualTo(200);
             assertThat(json(isolatedHttp.get("/router/health/ready")).get("status").asText()).isEqualTo("READY");
@@ -255,7 +216,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             for (int i = 0; i < 6; i++) {
                 isolated.raise(Warnings.Severity.WARNING, "ROUTING", "w" + i + "-" + tag());
             }
@@ -317,7 +277,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, isolatedWarnings, null, null, null,
                 "v", "/router", null, Map.of("M-POOL", metricsCollector), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var body = json(isolatedHttp.get("/router/monitoring"));
             assertThat(body.has("pool_stats")).as("snake outer key").isTrue();
             assertThat(body.has("poolStats")).as("must not be camelCase").isFalse();
@@ -365,7 +324,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             // Staggered on purpose. Submitted together they enter their
             // workers in the same millisecond, their elapsed times tie, and
             // the ordering assertion below passes whether or not anything
@@ -518,7 +476,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var message = new Message("rl-" + tag(), "RL-POOL", null, null, null, "https://example.invalid/hook",
                     "", false, null);
             limitedPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
@@ -566,7 +523,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(clock), null, null, null,
                 "v", "/router", null, Map.of("W-POOL", metrics), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var fiveMin = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=5min")).get("W-POOL");
             assertThat(fiveMin.get("totalProcessed").asLong()).as("only the sample inside the 5min window")
                     .isEqualTo(1);
@@ -607,7 +563,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var message = new Message("busy-" + tag(), "BUSY-POOL", null, null, null,
                     "https://example.invalid/hook", "", false, null);
             busyPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
@@ -710,7 +665,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "a");
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "b");
 
@@ -729,7 +683,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-one");
             clock.advance(Duration.ofMinutes(31));
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-one");
@@ -823,7 +776,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), isolatedBreakers,
                 null, null, "v", "/router", null, null, null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var r = isolatedHttp.post("/router/monitoring/circuit-breakers/reset-all", null);
             assertThat(r.statusCode()).isEqualTo(200);
             assertThat(json(r).get("reset").asInt()).isEqualTo(2);
@@ -1070,7 +1022,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             held.submit(message("in-worker", "https://wedged.test/x"));
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("the message reached a worker").isTrue();
 
@@ -1115,7 +1066,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             held.submit(message("wedged", "https://wedged.test/y"));
             assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -1147,7 +1097,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var row = json(isolatedHttp.get("/router/monitoring/queues")).get(0);
 
             assertThat(row.get("queue_identifier").asText()).isEqualTo("q-snake");
@@ -1173,7 +1122,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var ids = new java.util.ArrayList<String>();
             json(isolatedHttp.get("/router/monitoring/queues"))
                     .forEach(row -> ids.add(row.get("queue_identifier").asText()));
@@ -1192,7 +1140,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var body = json(isolatedHttp.get("/router/monitoring/queue-stats"));
             assertThat(body.isObject()).as("a map keyed by queue, not a list").isTrue();
             var row = body.get("q-derive");
@@ -1242,7 +1189,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var allTime = json(isolatedHttp.get("/router/monitoring/queue-stats")).get("q-win");
             assertThat(allTime.get("totalConsumed").asLong()).as("lifetime").isEqualTo(125);
 
@@ -1263,7 +1209,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             consumer.queueMetrics = new QueueMetrics(42, 0, 0, 0, 0);
 
             assertThat(json(isolatedHttp.get("/router/monitoring/queue-stats")).isEmpty())
@@ -1286,7 +1231,6 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             var r = isolatedHttp.post("/router/monitoring/broker-stats/refresh", null);
 
             assertThat(r.statusCode()).isEqualTo(200);
@@ -1313,7 +1257,6 @@ class RouterApiTest {
         var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
-            warmUp(isolatedHttp);
             isolated.refresh(Map.of());
             clock.advance(Duration.ofSeconds(-30));
 

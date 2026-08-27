@@ -6,8 +6,8 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 
 ## Where we are (2026-08-24, evening)
 
-Reactor green on a clean uncontended build, 2026-08-26: **2254 tests** —
-usecase 30 · sdk 44 · **server 2140** · fcdev 40, 0 failures. Coverage
+Reactor green on a clean uncontended build, 2026-08-27: **2270 tests** —
+usecase 30 · sdk 44 · **server 2156** · fcdev 40, 0 failures. Coverage
 **190/243 lockfile operations (78%)**, zero drift. Commits on `main`; one commit
 per landed/audited unit.
 

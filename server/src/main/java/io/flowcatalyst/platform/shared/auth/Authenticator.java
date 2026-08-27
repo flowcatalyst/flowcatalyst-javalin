@@ -181,16 +181,24 @@ public final class Authenticator implements Handler {
             var derived = resolver.flattenPermissions(claims.roles());
             if (derived != null && !derived.isEmpty()) perms = derived;
         }
+        // The boundary where a token becomes an AuthContext, and the only
+        // place the "{id}:{label}" claim form is understood — see [ScopeClaim].
+        // Everything inward reasons in bare ids.
+        var clients = ScopeClaim.parse(claims.clients());
+        var applications = ScopeClaim.parse(claims.applications());
         return new Authenticated(new AuthContext(
                 claims.subject(),
                 PrincipalType.parse(claims.principalType()),
                 Scope.parse(claims.tier()),
                 claims.email(),
                 claims.name(),
-                claims.clients(),
+                clients.ids(),
                 claims.roles(),
-                claims.applications(),
-                claims.allApplications(),
+                applications.ids(),
+                // The wildcard is the claim's own way of saying "every
+                // application"; `all_applications` is the older boolean. Either
+                // grants it, so a token carrying only one of them still works.
+                claims.allApplications() || applications.wildcard(),
                 perms,
                 claims.tokenUse()));
     }

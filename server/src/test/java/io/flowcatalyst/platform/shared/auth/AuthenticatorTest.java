@@ -8,6 +8,7 @@ import com.nimbusds.jwt.SignedJWT;
 import io.flowcatalyst.platform.shared.TestHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
@@ -49,6 +50,14 @@ class AuthenticatorTest {
                 var ac = Auth.from(ctx);
                 ctx.result(ac == null ? "anon" : ac.principalId() + (ac.isAnchor() ? ":anchor" : ""));
             });
+            // Reports the SCOPE DECISION, not the raw claim, so the assertion
+            // is about what the platform will actually allow.
+            cfg.routes.get("/api/scope-check", ctx -> {
+                var ac = Auth.from(ctx);
+                ctx.result(ac == null ? "anon"
+                        : "client=" + ac.canAccessClient(ctx.queryParam("clientId"))
+                                + ",app=" + ac.canAccessApplication(ctx.queryParam("applicationId")));
+            });
         });
     }
 
@@ -72,6 +81,74 @@ class AuthenticatorTest {
         var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(with.kid()).build(), b.build());
         jwt.sign(new RSASSASigner(with.privateKey()));
         return jwt.serialize();
+    }
+
+    @Test
+    @DisplayName("a token carrying \"{id}:{label}\" pairs still grants access to the bare id")
+    void pairFormClaimsGrantAccess() throws Exception {
+        // The clients claim has always carried "{clientId}:{clientIdentifier}"
+        // pairs, and applications joined it as "{applicationId}:{code}". The
+        // platform compares against BARE ids, so without a parser every scope
+        // check failed closed — canAccessClient("clt_x") asking whether the
+        // list contained "clt_x" when it contained "clt_x:acme".
+        //
+        // Self-minted tokens hid it: the same code wrote and read bare ids, so
+        // it was consistent with itself. It only shows against a token minted
+        // by the other implementation, which is the whole point of a drop-in
+        // replacement — and it fails CLOSED, so it reads as a permissions
+        // problem rather than a parsing one.
+        var token = mint(keys, Map.of(
+                "tier", "CLIENT",
+                "clients", List.of("clt_x:acme"),
+                "applications", List.of("app_1:orders"),
+                "all_applications", false));
+
+        var r = strict.get("/api/scope-check?clientId=clt_x&applicationId=app_1",
+                "Authorization", "Bearer " + token);
+        assertThat(r.body()).isEqualTo("client=true,app=true");
+    }
+
+    @Test
+    @DisplayName("the bare-id form still works, so tokens minted before the pair form stay valid")
+    void bareFormClaimsStillGrantAccess() throws Exception {
+        var token = mint(keys, Map.of(
+                "tier", "CLIENT",
+                "clients", List.of("clt_y"),
+                "applications", List.of("app_2"),
+                "all_applications", false));
+
+        assertThat(strict.get("/api/scope-check?clientId=clt_y&applicationId=app_2",
+                "Authorization", "Bearer " + token).body()).isEqualTo("client=true,app=true");
+    }
+
+    @Test
+    @DisplayName("the \"*\" sentinel on applications grants every application without all_applications")
+    void wildcardApplicationsSentinel() throws Exception {
+        // "*" is the claim's own way of saying "every one"; all_applications is
+        // the older boolean. Either alone must grant it, or a token carrying
+        // only the newer form silently reaches nothing.
+        var token = mint(keys, Map.of(
+                "tier", "CLIENT",
+                "clients", List.of("clt_z:zeta"),
+                "applications", List.of("*"),
+                "all_applications", false));
+
+        assertThat(strict.get("/api/scope-check?clientId=clt_z&applicationId=anything-at-all",
+                "Authorization", "Bearer " + token).body()).isEqualTo("client=true,app=true");
+    }
+
+    @Test
+    @DisplayName("a pair for one id does not grant a different id")
+    void pairFormDoesNotOverGrant() throws Exception {
+        var token = mint(keys, Map.of(
+                "tier", "CLIENT",
+                "clients", List.of("clt_x:acme"),
+                "applications", List.of("app_1:orders"),
+                "all_applications", false));
+
+        assertThat(strict.get("/api/scope-check?clientId=acme&applicationId=orders",
+                "Authorization", "Bearer " + token).body())
+                .as("the LABEL half must not be usable as an id").isEqualTo("client=false,app=false");
     }
 
     @Test
