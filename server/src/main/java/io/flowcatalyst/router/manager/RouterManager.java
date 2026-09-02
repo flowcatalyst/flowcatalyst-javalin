@@ -19,13 +19,21 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /// Decides where each polled message goes, and hands it to a pool.
 ///
@@ -66,7 +74,38 @@ public final class RouterManager {
     public static final Duration DEFAULT_SYNTH_POOL_IDLE_TTL = Duration.ofHours(1);
 
     private final Map<String, Pool> pools = new ConcurrentHashMap<>();
+
+    /// Pools removed from routing by [#applyPools] but not yet [Pool#drained]
+    /// (X-11, `docs/spec/router-completion.md` §2 ruling 6). Kept apart from
+    /// [#pools] so a reconfigure that stops routing to a pool never blocks on
+    /// it finishing — [#allPools] is the merged view the monitoring surface
+    /// reads instead.
+    private final Map<String, Pool> drainingPools = new ConcurrentHashMap<>();
+
     private final Map<String, Consumer> consumers = new ConcurrentHashMap<>();
+
+    /// A consumer [#stopConsumer] detached, plus when. Kept resolvable by
+    /// [#consumer] until [#retireLingeringConsumers] finds nothing in the
+    /// tracker still referencing its queue (`docs/spec/router-completion.md`
+    /// §2 ruling 5, X-11/R-26) — a message buffered or mid-delivery when its
+    /// queue disappeared from config must still be able to ack/nack on the
+    /// object that actually polled it.
+    ///
+    /// A [ConcurrentLinkedDeque] rather than one entry
+    /// per name: a queue can in principle be replaced again before the first
+    /// replacement's predecessor has finished lingering, and every one of
+    /// them still owes something an ack. [#consumer] resolves the most
+    /// recently detached — the same imprecision the specification documents
+    /// for a **changed** queue (§5.1): harmless unless the change also swapped
+    /// the underlying broker connection.
+    private final Map<String, ConcurrentLinkedDeque<Lingering>> lingeringConsumers =
+            new ConcurrentHashMap<>();
+
+    /// One detached consumer, and when it stopped being the active one for
+    /// its queue — the instant [InFlightTracker#countForQueue] checks entries
+    /// against.
+    private record Lingering(Consumer consumer, Instant detachedAt) {
+    }
 
     /// The configuration each running consumer was built from, so a change
     /// can be detected without asking the consumer to describe itself.
@@ -137,18 +176,136 @@ public final class RouterManager {
         consumers.put(consumer.identifier(), consumer);
     }
 
+    /// Resolves a queue's consumer for ack/nack: the active one first, then —
+    /// so a message buffered or in flight on a queue that has since been
+    /// removed or changed can still settle — the most recently detached
+    /// lingering one (`docs/spec/router-completion.md` §2 ruling 5).
+    ///
+    /// [#activeConsumer] is the routing-only view a poll loop must use
+    /// instead: this method resolving a lingering consumer must never be
+    /// read as "this queue is still being polled".
     public Optional<Consumer> consumer(String queueId) {
+        var active = consumers.get(queueId);
+        if (active != null) {
+            return Optional.of(active);
+        }
+        var lingering = lingeringConsumers.get(queueId);
+        return lingering == null || lingering.isEmpty()
+                ? Optional.empty()
+                : Optional.of(lingering.getLast().consumer());
+    }
+
+    /// The consumer currently being polled for `queueId`, or empty when
+    /// nothing is — never a lingering one. What
+    /// [RouterServer#syncLoops] judges a poll loop's continued existence
+    /// against; [#consumer] is the ack/nack-resolution superset that must not
+    /// be used for that decision, or a removed queue's loop would poll its
+    /// detached consumer forever.
+    public Optional<Consumer> activeConsumer(String queueId) {
         return Optional.ofNullable(consumers.get(queueId));
+    }
+
+    /// The configuration a currently-active queue was built from, for the
+    /// stall supervisor ([RouterServer#restartStalledLoops]) to rebuild a
+    /// consumer from without RouterServer having to keep its own copy.
+    public Optional<QueueConfig> queueConfig(String queueName) {
+        return Optional.ofNullable(queueConfigs.get(queueName));
+    }
+
+    /// Swaps the active consumer for `queueName`, detaching whatever was
+    /// there to the lingering set rather than closing it
+    /// (`docs/spec/router-completion.md` §2 ruling 5, R-26): the stall
+    /// supervisor's replacement, not a reconfigure. An in-flight delivery the
+    /// old consumer still holds keeps running and acks/nacks on its own
+    /// object; [#retireLingeringConsumers] closes it once the tracker holds
+    /// nothing more for its queue.
+    public void replaceConsumer(String queueName, Consumer replacement) {
+        var old = consumers.put(queueName, replacement);
+        if (old != null) {
+            linger(queueName, old);
+        }
+    }
+
+    private void linger(String queueName, Consumer consumer) {
+        lingeringConsumers.computeIfAbsent(queueName, ignored -> new ConcurrentLinkedDeque<>())
+                .addLast(new Lingering(consumer, clock.instant()));
+    }
+
+    /// Closes and forgets every lingering consumer whose queue the tracker no
+    /// longer references from before it detached (`docs/spec/router-completion.md`
+    /// §2 ruling 5) — housekeeping, alongside [#closeDrainedPools].
+    ///
+    /// @return how many were retired
+    public int retireLingeringConsumers() {
+        var retired = 0;
+        for (var entry : List.copyOf(lingeringConsumers.entrySet())) {
+            var queueName = entry.getKey();
+            var deque = entry.getValue();
+            var it = deque.iterator();
+            while (it.hasNext()) {
+                var candidate = it.next();
+                if (tracker.countForQueue(queueName, candidate.detachedAt()) == 0) {
+                    it.remove();
+                    closeQuietly(candidate.consumer());
+                    retired++;
+                }
+            }
+            if (deque.isEmpty()) {
+                // Mutated in place above — this drops the now-empty deque
+                // itself so the map does not keep one entry per queue name
+                // ever detached. A concurrent [#linger] landing between the
+                // emptiness check and this call loses its addition to a
+                // remove that targets the exact (by-reference) deque it
+                // raced, which `Map#remove(key, value)` guards against.
+                lingeringConsumers.remove(queueName, deque);
+            }
+        }
+        return retired;
+    }
+
+    private static void closeQuietly(Consumer consumer) {
+        try {
+            consumer.close();
+        } catch (RuntimeException e) {
+            log.warn("closing lingering consumer {} failed", consumer.identifier(), e);
+        }
     }
 
     public Map<String, Pool> pools() {
         return Map.copyOf(pools);
     }
 
+    /// Routing pools plus every pool still [Pool#drain]ing after removal
+    /// (X-11, `docs/spec/router-completion.md` §2 ruling 6) — what the
+    /// blocked-groups and group-flush monitoring surfaces read, so a pool
+    /// draining its last buffered group stays visible until it finishes.
+    /// [#pools] stays the routing-only view `/monitoring/pools` uses.
+    public Map<String, Pool> allPools() {
+        Map<String, Pool> all = new LinkedHashMap<>(pools);
+        drainingPools.forEach(all::putIfAbsent);
+        return Map.copyOf(all);
+    }
+
+    /// Closes and forgets every draining pool that has finished emptying
+    /// (X-11, `docs/spec/router-completion.md` §2 ruling 6) — housekeeping,
+    /// alongside [#retireLingeringConsumers].
+    ///
+    /// @return how many were closed
+    public int closeDrainedPools() {
+        var closed = 0;
+        for (var entry : List.copyOf(drainingPools.entrySet())) {
+            if (entry.getValue().drained() && drainingPools.remove(entry.getKey(), entry.getValue())) {
+                entry.getValue().close();
+                closed++;
+            }
+        }
+        return closed;
+    }
+
     /// The queues currently registered, so a caller can start or stop a loop
     /// per queue without holding its own copy of the registry.
-    public java.util.Set<String> consumerNames() {
-        return java.util.Set.copyOf(consumers.keySet());
+    public Set<String> consumerNames() {
+        return Set.copyOf(consumers.keySet());
     }
 
     /// One metrics source per registered queue, for
@@ -161,7 +318,7 @@ public final class RouterManager {
     /// endpoint must sample the same queues the loop does, not a second list
     /// that can drift from it.
     public Map<String, Supplier<Optional<QueueMetrics>>> queueMetricSources() {
-        return consumerNames().stream().collect(java.util.stream.Collectors.toMap(
+        return consumerNames().stream().collect(Collectors.toMap(
                 queueId -> queueId,
                 queueId -> () -> consumer(queueId).flatMap(Consumer::metrics)));
     }
@@ -175,15 +332,17 @@ public final class RouterManager {
     /// call site — exactly the shape of the pool-lifecycle bug this codebase
     /// already shipped once. Cheaper to be self-sufficient.
     public void forgetConsumers() {
-        consumers.values().forEach(consumer -> {
-            try {
-                consumer.close();
-            } catch (RuntimeException e) {
-                log.warn("closing consumer {} failed", consumer.identifier(), e);
-            }
-        });
+        consumers.values().forEach(RouterManager::closeQuietly);
         consumers.clear();
         queueConfigs.clear();
+        // Lingering consumers too: nothing is going to poll on their behalf
+        // any more once leadership is gone, so there is no reason left to
+        // wait for the tracker — the process-wide forget subsumes the
+        // per-queue retirement [#retireLingeringConsumers] would eventually
+        // have done.
+        lingeringConsumers.values().stream().flatMap(Collection::stream)
+                .forEach(l -> closeQuietly(l.consumer()));
+        lingeringConsumers.clear();
     }
 
     /// Routes one polled batch, in the order the queue delivered it.
@@ -199,7 +358,7 @@ public final class RouterManager {
     ///         (`docs/spec/router.md` §2.4, §6)
     public Set<String> route(List<QueuedMessage> batch, Consumer source) {
         var batchId = Long.toString(batchCounter.incrementAndGet());
-        Set<String> fed = new java.util.LinkedHashSet<>();
+        Set<String> fed = new LinkedHashSet<>();
         for (var message : batch) {
             routeOne(message, batchId, source, fed);
         }
@@ -361,20 +520,30 @@ public final class RouterManager {
         var consumerChanges = applyConsumers(config, consumerFactory);
         return new ReconfigureResult(
                 wantedPools.size(), removedPools, consumerChanges.started(), consumerChanges.stopped(),
-                consumerChanges.failed());
+                consumerChanges.failed(), consumerChanges.replaced());
     }
 
     /// What a reconfigure did.
     ///
-    /// @param failedQueues queues that could not be built. Non-empty means the
-    ///                     router is running with less than its configuration
-    ///                     asks for, which is worth surfacing rather than
-    ///                     leaving in a log line.
+    /// @param failedQueues   queues that could not be built. Non-empty means
+    ///                       the router is running with less than its
+    ///                       configuration asks for, which is worth surfacing
+    ///                       rather than leaving in a log line.
+    /// @param replacedQueues queue names whose consumer was rebuilt under the
+    ///                       same name — a config change, not a removal
+    ///                       (`docs/spec/router-completion.md` §2 ruling 5).
+    ///                       [RouterServer#syncLoops] must restart exactly
+    ///                       these loops even though their name never left
+    ///                       [#consumerNames]: the identity behind the name
+    ///                       changed, and the old loop is otherwise left
+    ///                       polling a consumer nothing else references any
+    ///                       more.
     public record ReconfigureResult(int pools, int poolsRemoved, int consumersStarted,
-                                    int consumersStopped, List<String> failedQueues) {
+                                    int consumersStopped, List<String> failedQueues, List<String> replacedQueues) {
 
         public ReconfigureResult {
             failedQueues = List.copyOf(failedQueues);
+            replacedQueues = List.copyOf(replacedQueues);
         }
 
         public boolean complete() {
@@ -387,7 +556,7 @@ public final class RouterManager {
     /// `DEFAULT-POOL` is always present: [#poolFor] falls back to it, and a
     /// configuration that omits it would leave messages with nowhere to go.
     private Map<String, PoolSpec> wantedPools(RouterConfig config) {
-        Map<String, PoolSpec> wanted = new java.util.LinkedHashMap<>();
+        Map<String, PoolSpec> wanted = new LinkedHashMap<>();
         config.processingPools().forEach(pool -> wanted.put(pool.code(), pool));
         wanted.computeIfAbsent(DEFAULT_POOL,
                 code -> new PoolSpec(code, DEFAULT_POOL_CONCURRENCY, 0));
@@ -402,10 +571,16 @@ public final class RouterManager {
                 // must survive a reconfigure that does not mention them.
                 var pool = pools.remove(code);
                 if (pool != null) {
-                    // close, not stop: this pool is being discarded, so its
-                    // worker executor goes with it. Stopping alone would hand
-                    // back the buffers and leak the threads.
-                    pool.close();
+                    // drain, not close (X-11, `docs/spec/router-completion.md`
+                    // §2 ruling 6): stop admitting at once — this pool has
+                    // already left [#pools], so [#poolFor] can never route to
+                    // it again — but let its existing buffer and workers
+                    // finish in the background. [#closeDrainedPools] is the
+                    // housekeeping follow-up that actually releases the
+                    // worker executor once nothing is left. A reconfigure
+                    // must never block on that.
+                    pool.drain();
+                    drainingPools.put(code, pool);
                     removed++;
                 }
             }
@@ -477,18 +652,27 @@ public final class RouterManager {
     }
 
     private ConsumerChanges applyConsumers(RouterConfig config, ConsumerFactory factory) {
-        Map<String, QueueConfig> wanted = new java.util.LinkedHashMap<>();
+        Map<String, QueueConfig> wanted = new LinkedHashMap<>();
         config.queues().forEach(queue -> wanted.put(queue.queueName(), queue));
 
         var stopped = 0;
+        var replaced = new ArrayList<String>();
         for (var entry : List.copyOf(queueConfigs.entrySet())) {
             // Not wanted at all, or wanted differently — either way the
             // running consumer is not the one we should have, so it goes.
             // A queue the config dropped compares against null, which is
             // "different" by the same rule as any other change.
-            if (!entry.getValue().sameConsumerTopology(wanted.get(entry.getKey()))) {
+            var newConfig = wanted.get(entry.getKey());
+            if (!entry.getValue().sameConsumerTopology(newConfig)) {
                 stopConsumer(entry.getKey());
                 stopped++;
+                if (newConfig != null) {
+                    // Still wanted, under the same name, just different — a
+                    // CHANGE, not a removal. The consumer built below for it
+                    // is a REPLACEMENT the caller must swap a running loop
+                    // onto, not a queue starting from cold.
+                    replaced.add(entry.getKey());
+                }
             }
         }
 
@@ -500,8 +684,8 @@ public final class RouterManager {
         var toBuild = wanted.entrySet().stream()
                 .filter(entry -> !consumers.containsKey(entry.getKey()))
                 .toList();
-        var failed = new java.util.concurrent.ConcurrentLinkedQueue<String>();
-        var started = new java.util.concurrent.atomic.AtomicInteger();
+        var failed = new ConcurrentLinkedQueue<String>();
+        var started = new AtomicInteger();
         Concurrently.forEach(toBuild, entry -> {
             var built = factory.create(entry.getValue());
             if (built.isEmpty()) {
@@ -516,18 +700,28 @@ public final class RouterManager {
         // Stable order regardless of which finished first, so the same
         // failure reads the same way twice.
         var failedNames = failed.stream().sorted().toList();
-        return new ConsumerChanges(started.get(), stopped, failedNames);
+        // A replaced queue that failed to rebuild is not actually replaced —
+        // it is simply gone, same as any other build failure — so it must
+        // not be reported twice under two different meanings.
+        var replacedNames = replaced.stream().filter(name -> !failedNames.contains(name)).sorted().toList();
+        return new ConsumerChanges(started.get(), stopped, failedNames, replacedNames);
     }
 
+    /// Detaches (never closes) the active consumer for `queueName` — the
+    /// pre-ruling behaviour closed it here, which is exactly the X-11/R-26
+    /// defect this method now exists to not repeat: an in-flight delivery or
+    /// a buffered message still referencing it would find its consumer gone.
+    /// [#retireLingeringConsumers] is what actually closes it, once nothing
+    /// does any more.
     private void stopConsumer(String queueName) {
         queueConfigs.remove(queueName);
         var consumer = consumers.remove(queueName);
         if (consumer != null) {
-            consumer.close();
+            linger(queueName, consumer);
         }
     }
 
-    private record ConsumerChanges(int started, int stopped, List<String> failed) {
+    private record ConsumerChanges(int started, int stopped, List<String> failed, List<String> replaced) {
     }
 
     /// Builds the tracker entry for `message`, shared verbatim with

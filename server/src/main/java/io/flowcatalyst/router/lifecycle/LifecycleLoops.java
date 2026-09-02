@@ -56,6 +56,12 @@ public final class LifecycleLoops implements AutoCloseable {
     /// for eviction (R-59, `docs/spec/router-completion.md` unit 3).
     public static final Duration SYNTH_POOL_EVICT_INTERVAL = Duration.ofMinutes(1);
 
+    /// How often a drained pool is closed and a lingering consumer is
+    /// retired (X-11/R-26, `docs/spec/router-completion.md` §2 rulings 5
+    /// and 6) — the same cadence as the stall detector, since both are
+    /// "has this finished emptying yet" sweeps of the same shape.
+    public static final Duration DRAIN_CHECK = Duration.ofSeconds(60);
+
     /// One periodic task. Named so a log line says which loop misbehaved.
     public record Task(String name, Duration interval, Runnable action) {
     }
@@ -94,21 +100,31 @@ public final class LifecycleLoops implements AutoCloseable {
     /// depths, warn if the tracker is growing without bound, and sweep the
     /// warning store (A-08).
     ///
-    /// `cleanupWarnings` and `evictSynthPools` are `Runnable`s — typically
-    /// `WarningStore::cleanup` and `manager::evictIdleSynthesisedPools`
-    /// partially applied to its TTL — rather than the objects they act on,
-    /// the same shape as `refreshBrokerStats`: this loop only ever needs to
-    /// invoke the sweep, never to read the thing being swept, so it depends
-    /// on nothing it does not use.
+    /// `cleanupWarnings`, `evictSynthPools`, `closeDrainedPools` and
+    /// `retireLingeringConsumers` are `Runnable`s — typically
+    /// `WarningStore::cleanup`, `manager::evictIdleSynthesisedPools` partially
+    /// applied to its TTL, `manager::closeDrainedPools` and
+    /// `manager::retireLingeringConsumers` — rather than the objects they act
+    /// on, the same shape as `refreshBrokerStats`: this loop only ever needs
+    /// to invoke the sweep, never to read the thing being swept, so it
+    /// depends on nothing it does not use.
     public static List<Task> standard(StallDetector stalls, InFlightTracker tracker,
                                       Warnings warnings, Runnable refreshBrokerStats,
-                                      Runnable cleanupWarnings, Runnable evictSynthPools) {
+                                      Runnable cleanupWarnings, Runnable evictSynthPools,
+                                      Runnable closeDrainedPools, Runnable retireLingeringConsumers) {
         return List.of(
                 new Task("stall-detector", STALL_CHECK, stalls::sweep),
                 new Task("reaper", REAP_INTERVAL, () -> reap(tracker, warnings)),
                 new Task("broker-stats", BROKER_REFRESH, refreshBrokerStats),
                 new Task("warning-cleanup", WARNING_CLEANUP_INTERVAL, cleanupWarnings),
-                new Task("synth-pool-evict", SYNTH_POOL_EVICT_INTERVAL, evictSynthPools));
+                new Task("synth-pool-evict", SYNTH_POOL_EVICT_INTERVAL, evictSynthPools),
+                // X-11/R-26: a removed pool or a removed/changed queue drains
+                // or lingers in the background rather than aborting on the
+                // spot (`docs/spec/router-completion.md` §2 rulings 5, 6) —
+                // these two sweeps are what actually releases them once
+                // nothing references them any more.
+                new Task("pool-drain-close", DRAIN_CHECK, closeDrainedPools),
+                new Task("consumer-linger-retire", DRAIN_CHECK, retireLingeringConsumers));
     }
 
     /// Drops tracker entries nothing has touched, and warns when the tracker

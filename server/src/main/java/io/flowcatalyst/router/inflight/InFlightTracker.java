@@ -253,6 +253,30 @@ public final class InFlightTracker {
         }
     }
 
+    /// How many owned entries name `queueId` and started before `startedBefore`
+    /// (`docs/spec/router-completion.md` §2 ruling 5) — what
+    /// [io.flowcatalyst.router.manager.RouterManager#retireLingeringConsumers]
+    /// checks a detached consumer's queue against before closing it.
+    ///
+    /// `startedBefore` is deliberately the detachment instant, not "now":
+    /// counting every current entry for the queue would never reach zero once
+    /// the **replacement** consumer starts feeding the same queue name, and a
+    /// lingering consumer would then never be closed. Restricting to entries
+    /// that started before the old consumer detached means only what it
+    /// itself might still need to ack/nack is counted — the replacement's own
+    /// traffic can never hold it open.
+    public int countForQueue(String queueId, Instant startedBefore) {
+        lock.lock();
+        try {
+            return (int) byMessageId.values().stream()
+                    .filter(entry -> entry.queueIdentifier.equals(queueId))
+                    .filter(entry -> entry.startedAt.isBefore(startedBefore))
+                    .count();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private void insert(Entry entry) {
         byMessageId.put(entry.messageId, entry);
         if (!entry.brokerMessageId.isEmpty()) {

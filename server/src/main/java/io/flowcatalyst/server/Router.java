@@ -3,6 +3,7 @@ package io.flowcatalyst.server;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.manager.ConsumerSupervisor;
 import io.flowcatalyst.router.manager.QueueBroker;
 import io.flowcatalyst.router.manager.RouterManager;
 import io.flowcatalyst.router.manager.RouterServer;
@@ -38,6 +39,7 @@ import redis.clients.jedis.providers.PooledConnectionProvider;
 import javax.sql.DataSource;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -224,11 +226,18 @@ public final class Router implements AutoCloseable {
         // running, so this reaches a leader whether it just gained
         // leadership (which already applied once) or has been leading for a
         // while and the *source's* configuration changed underneath it.
-        var housekeepingTasks = new java.util.ArrayList<>(LifecycleLoops.standard(stalls, tracker, warningSink,
+        var housekeepingTasks = new ArrayList<>(LifecycleLoops.standard(stalls, tracker, warningSink,
                 () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup,
-                () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl)));
+                () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl),
+                manager::closeDrainedPools, manager::retireLingeringConsumers));
         housekeepingTasks.add(new LifecycleLoops.Task("config-poll", RouterServer.CONFIG_POLL_INTERVAL,
                 server::applyConfiguration));
+        // R-26 (`docs/spec/router-completion.md` §2 ruling 5): the stall
+        // watchdog was built and tested but never wired until this task
+        // exists — a consumer that stopped polling without ever failing
+        // would otherwise sit silently stalled for the life of the process.
+        housekeepingTasks.add(new LifecycleLoops.Task("consumer-supervisor", ConsumerSupervisor.STALL_THRESHOLD,
+                server::restartStalledLoops));
         housekeeping.start(housekeepingTasks);
 
         server.start();

@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
 ///   - [BreakerRoutes] — circuit-breaker reads and resets
 ///   - [GroupFlushRoutes] — group-flush suppression list and operator
 ///     clear (R-52, R-53)
+///   - [GroupRoutes] — blocked/held ordered groups (R-04)
 ///   - [InFlightRoutes] — what this process owns, plus the force-ACK override
 ///   - [QueueRoutes] — broker-side depth, forced sampling, traffic status
 ///   - [AdminRoutes] — standby, stream health, config snapshot
@@ -185,6 +186,7 @@ public final class RouterApi {
         WarningRoutes.register(routes, s);
         BreakerRoutes.register(routes, s);
         GroupFlushRoutes.register(routes, s);
+        GroupRoutes.register(routes, s);
         InFlightRoutes.register(routes, s);
         QueueRoutes.register(routes, s);
         AdminRoutes.register(routes, s);

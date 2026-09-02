@@ -1060,6 +1060,167 @@ class RouterApiTest {
         }
     }
 
+    // ── Blocked / held groups (R-04) ─────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring/blocked-groups lists every group's depth, draining state and the pool's own settings")
+    void blockedGroupsListsDepthAndPoolSettings() throws Exception {
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        var entered = new java.util.concurrent.CountDownLatch(2);
+        Mediator held = (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var pool = new Pool(new Pool.Config("BLOCKED-POOL", 4, 90), held, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("BLOCKED-POOL", pool);
+        var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, Map.of(), null, null);
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            // "alpha": head + 3 siblings; "beta": head + 1 sibling.
+            pool.submit(ordered("alpha", "a-head"));
+            pool.submit(ordered("alpha", "a1"));
+            pool.submit(ordered("alpha", "a2"));
+            pool.submit(ordered("alpha", "a3"));
+            pool.submit(ordered("beta", "b-head"));
+            pool.submit(ordered("beta", "b1"));
+            assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("both heads reached a worker").isTrue();
+
+            var body = json(isolatedHttp.get("/router/monitoring/blocked-groups"));
+            assertThat(body.isArray()).isTrue();
+            assertThat(body.size()).isEqualTo(2);
+
+            var alpha = findRow(body, "BLOCKED-POOL", "alpha");
+            assertThat(alpha).as("alpha's row").isNotNull();
+            assertThat(alpha.get("depth").asInt()).as("head popped; three siblings behind it").isEqualTo(3);
+            assertThat(alpha.get("draining").asBoolean()).isTrue();
+            assertThat(alpha.has("suppressedUntil") && !alpha.get("suppressedUntil").isNull())
+                    .as("never flushed").isFalse();
+            assertThat(alpha.get("concurrency").asInt()).isEqualTo(4);
+            assertThat(alpha.get("rateLimitPerMinute").asInt()).isEqualTo(90);
+
+            var beta = findRow(body, "BLOCKED-POOL", "beta");
+            assertThat(beta).as("beta's row").isNotNull();
+            assertThat(beta.get("depth").asInt()).isOne();
+            assertThat(beta.get("draining").asBoolean()).isTrue();
+
+            // Flush "beta": its row must now carry a suppressedUntil.
+            pool.flushRegistry().flush("beta", Duration.ofMinutes(5));
+            var expiry = pool.flushRegistry().suppressedUntil("beta").orElseThrow();
+
+            var afterFlush = json(isolatedHttp.get("/router/monitoring/blocked-groups"));
+            var betaAfterFlush = findRow(afterFlush, "BLOCKED-POOL", "beta");
+            assertThat(Instant.parse(betaAfterFlush.get("suppressedUntil").asText())).isEqualTo(expiry);
+        } finally {
+            gate.countDown();
+            pool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/blocked-groups is [] with no manager wired (provider-absent list rule)")
+    void blockedGroupsEmptyWhenNoManager() {
+        var body = json(bare.get("/router/monitoring/blocked-groups"));
+        assertThat(body.isArray()).isTrue();
+        assertThat(body.isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a draining pool (removed by reconfigure) still shows its groups on /monitoring/blocked-groups")
+    void blockedGroupsIncludesADrainingPool() throws Exception {
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        Mediator held = (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
+                cfg -> "DRAIN-POOL".equals(cfg.code())
+                        ? new Pool(cfg, held, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK)
+                        : new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
+                null, null, null, "v", "/router", null, Map.of(), null, null);
+        Pool drainPool = null;
+        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            isolatedManager.reconfigure(
+                    new io.flowcatalyst.router.config.RouterConfig(
+                            java.util.List.of(new io.flowcatalyst.router.config.PoolSpec("DRAIN-POOL", 2, 0)),
+                            java.util.List.of()),
+                    q -> Optional.empty());
+            drainPool = isolatedManager.pools().get("DRAIN-POOL");
+            drainPool.submit(ordered("g", "head"));
+            drainPool.submit(ordered("g", "sibling"));
+            assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+            // Removed from config: leaves routing at once but keeps draining.
+            isolatedManager.reconfigure(
+                    new io.flowcatalyst.router.config.RouterConfig(java.util.List.of(), java.util.List.of()),
+                    q -> Optional.empty());
+            assertThat(isolatedManager.pools()).doesNotContainKey("DRAIN-POOL");
+
+            var body = json(isolatedHttp.get("/router/monitoring/blocked-groups"));
+            var row = findRow(body, "DRAIN-POOL", "g");
+            assertThat(row).as("still visible via allPools() while draining").isNotNull();
+            assertThat(row.get("depth").asInt()).isOne();
+        } finally {
+            gate.countDown();
+            if (drainPool != null) {
+                await(drainPool::drained);
+                isolatedManager.closeDrainedPools();
+            }
+            isolatedManager.pools().values().forEach(Pool::close);
+        }
+    }
+
+    @Test
+    @DisplayName("blocked-groups rows are sorted by pool then group, proven with input deliberately in the wrong order")
+    void blockedGroupsSortedByPoolThenGroup() throws Exception {
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        var entered = new java.util.concurrent.CountDownLatch(3);
+        Mediator held = (msg, recordFailure) -> {
+            entered.countDown();
+            gate.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var poolB = new Pool(new Pool.Config("POOL-B", 1, 0), held, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        // Concurrency 2: "zebra" and "apple" are different groups, each with
+        // its own drainer, and both must reach the mediator concurrently —
+        // concurrency 1 would strand one of them waiting on the semaphore,
+        // never counting down `entered`.
+        var poolZ = new Pool(new Pool.Config("POOL-Z", 2, 0), held, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        try {
+            poolZ.submit(ordered("zebra", "z1"));
+            poolZ.submit(ordered("apple", "a1"));
+            poolB.submit(ordered("mango", "m1"));
+            assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+            var wrongOrder = new java.util.LinkedHashMap<String, Pool>();
+            wrongOrder.put("POOL-Z", poolZ);
+            wrongOrder.put("POOL-B", poolB);
+
+            var rows = GroupRoutes.rows(wrongOrder);
+            assertThat(rows).extracting(Wire.BlockedGroupView::pool).containsExactly("POOL-B", "POOL-Z", "POOL-Z");
+            assertThat(rows).extracting(Wire.BlockedGroupView::group)
+                    .as("within POOL-Z, apple sorts before zebra")
+                    .containsExactly("mango", "apple", "zebra");
+        } finally {
+            gate.countDown();
+            poolB.close();
+            poolZ.close();
+        }
+    }
+
+    private static QueuedMessage ordered(String group, String id) {
+        return QueuedMessage.of(
+                new Message(id, "", null, null, MediationType.HTTP, "https://x.test/h", group, false,
+                        DispatchMode.NEXT_ON_ERROR),
+                "broker-" + id, "receipt-" + id, "queue-1");
+    }
+
     private static JsonNode findRow(JsonNode array, String pool, String group) {
         for (var row : array) {
             if (row.get("pool").asText().equals(pool) && row.get("group").asText().equals(group)) {

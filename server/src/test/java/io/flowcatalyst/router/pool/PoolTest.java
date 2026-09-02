@@ -698,6 +698,88 @@ class PoolTest {
         mediator.unblock();
     }
 
+    // ── Unit 4b: drain, blocked-groups snapshot ────────────────────────────
+
+    @Test
+    @DisplayName("X-11: drain() stops admitting but lets buffered/in-flight work finish; drained() reports when it has")
+    void drainStopsAdmittingButFinishesBufferedWork() {
+        mediator.block();
+        var p = pool(2, 0);
+        p.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("g", "m1", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("g", "m2", DispatchMode.BLOCK_ON_ERROR));
+        await(() -> mediator.inFlight.get() == 1); // the head has grabbed the mediator
+
+        p.drain();
+
+        assertThat(p.drained()).as("still holding the head plus two buffered siblings").isFalse();
+        p.submit(ordered("g", "late", DispatchMode.BLOCK_ON_ERROR));
+        assertThat(broker.nacked).as("a submission after drain() is rejected, not queued").containsKey("late");
+
+        mediator.unblock();
+
+        await(() -> broker.acked.size() == 3);
+        assertThat(mediator.delivered)
+                .as("the whole buffer kept draining after drain(), in order")
+                .containsExactly("m0", "m1", "m2");
+        await(p::drained);
+    }
+
+    @Test
+    @DisplayName("R-04: groupSnapshot reports each group's depth/draining state, joined with the pool's flush suppression")
+    void groupSnapshotJoinsDepthDrainingAndSuppression() {
+        mediator.block();
+        var p = pool(4, 0);
+        p.submit(ordered("alpha", "a-head", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("alpha", "a1", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("alpha", "a2", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("alpha", "a3", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("beta", "b-head", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("beta", "b1", DispatchMode.BLOCK_ON_ERROR));
+        await(() -> mediator.inFlight.get() == 2); // both heads grabbed, each by its own drainer
+
+        var snapshot = p.groupSnapshot();
+        assertThat(snapshot).hasSize(2);
+        var alpha = snapshot.stream().filter(g -> g.group().equals("alpha")).findFirst().orElseThrow();
+        var beta = snapshot.stream().filter(g -> g.group().equals("beta")).findFirst().orElseThrow();
+
+        assertThat(alpha.depth()).as("the head is popped; three siblings sit behind it").isEqualTo(3);
+        assertThat(alpha.draining()).isTrue();
+        assertThat(alpha.suppressedUntil()).as("never flushed").isNull();
+        assertThat(beta.depth()).isOne();
+        assertThat(beta.draining()).isTrue();
+
+        p.flushRegistry().flush("beta", Duration.ofMinutes(5));
+        var expiry = p.flushRegistry().suppressedUntil("beta").orElseThrow();
+        var afterFlush = p.groupSnapshot().stream().filter(g -> g.group().equals("beta")).findFirst().orElseThrow();
+        assertThat(afterFlush.suppressedUntil()).as("joined with the pool's own flush registry").isEqualTo(expiry);
+
+        mediator.unblock();
+        await(() -> broker.acked.size() == 6);
+    }
+
+    @Test
+    @DisplayName("a submit racing pool close does not silently lose the message (IMMEDIATE branch)")
+    void submitRacingCloseNacksRatherThanLosingTheMessage() throws Exception {
+        // Simulates close()/drain()-then-close() landing between submit()'s
+        // stopped/draining check and workers.execute(): the executor is shut
+        // down directly, underneath the still-open stopped/draining flags,
+        // so submit() reaches start() and workers.execute() throws
+        // RejectedExecutionException exactly as the real race would —
+        // deterministic, rather than trying to win an actual race.
+        var p = pool(4, 0);
+        var workersField = Pool.class.getDeclaredField("workers");
+        workersField.setAccessible(true);
+        var workers = (java.util.concurrent.ExecutorService) workersField.get(p);
+        workers.shutdownNow();
+
+        p.submit(immediate("raced"));
+
+        assertThat(broker.nacked).as("nacked, not silently dropped — neither acked, nacked nor released before").containsKey("raced");
+        assertThat(broker.nackReasons.get("raced")).isEqualTo("pool-closed");
+        assertThat(p.queueSize()).as("immediateWaiting must be decremented back, or this leaks forever").isZero();
+    }
+
     // ── Unit 3: layer-2 dedup, drainer resurrection ────────────────────────
 
     @Test

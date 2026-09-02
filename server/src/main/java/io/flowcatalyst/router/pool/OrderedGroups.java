@@ -299,4 +299,30 @@ final class OrderedGroups {
             lock.unlock();
         }
     }
+
+    /// One group's live buffer state, for the blocked-groups monitoring
+    /// surface (R-04, `docs/spec/router-completion.md` §2 ruling 6).
+    ///
+    /// @param group    the message group id
+    /// @param depth    messages currently queued for this group — behind
+    ///                 whatever is being attempted right now, since
+    ///                 [#pollHead] removes the head from the buffer before a
+    ///                 drainer attempts it
+    /// @param draining whether a drainer currently owns the group
+    record GroupSnapshot(String group, int depth, boolean draining) {
+    }
+
+    /// Every group currently held, for [Pool#groupSnapshot]. Counts nothing
+    /// and evicts nothing — a read-only view, same contract as
+    /// [io.flowcatalyst.router.policy.GroupFlushRegistry#active].
+    List<GroupSnapshot> snapshot() {
+        lock.lock();
+        try {
+            return groups.entrySet().stream()
+                    .map(e -> new GroupSnapshot(e.getKey(), e.getValue().queue.size(), e.getValue().draining))
+                    .toList();
+        } finally {
+            lock.unlock();
+        }
+    }
 }

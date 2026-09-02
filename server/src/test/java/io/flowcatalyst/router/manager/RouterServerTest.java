@@ -5,6 +5,7 @@ import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.config.PoolSpec;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
+import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.Broker;
 import io.flowcatalyst.router.pool.Mediator;
@@ -317,6 +318,70 @@ class RouterServerTest {
     }
 
     @Test
+    @DisplayName("§5.5: applyConfiguration's fetch holds no lock, so a leadership loss racing a slow one still pauses polling promptly")
+    void leadershipLossDuringSlowFetchStillPausesPromptly() throws InterruptedException {
+        // The defect this pins: applyConfiguration() used to be synchronized
+        // across the WHOLE call, fetch included. HttpConfigSource can retry
+        // an unreachable config service for minutes, and applyConfiguration
+        // is also the periodic config-poll task (A-10) — so a leadership
+        // loss landing mid-fetch used to block loseLeadership() (also
+        // synchronized) for however long the fetch took, leaving `running`
+        // true and the poll loops delivering well past what §5.5 requires
+        // ("losing leadership MUST pause polling").
+        var configRef = new AtomicReference<RouterServer.ConfigSource>(RouterServer.ConfigSource.fixed(config("q://1")));
+        RouterServer.ConfigSource dynamicSource = () -> configRef.get().fetch();
+        election = new LeaderElection(LeaderElection.Config.of("fc:leader"), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, dynamicSource, warnings, clock,
+                Duration.ofSeconds(1));
+        server.start();
+        await(() -> server.activeLoops() == 1);
+        int buildsBeforeSlowFetch = built.size();
+
+        var fetchStarted = new CountDownLatch(1);
+        var fetchGate = new CountDownLatch(1);
+        configRef.set(() -> {
+            fetchStarted.countDown();
+            try {
+                fetchGate.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Optional.of(config("q://1"));
+        });
+
+        // Simulates the periodic config-poll housekeeping task calling
+        // applyConfiguration() on its own thread while leadership is held.
+        var fetchThread = Thread.ofVirtual().start(server::applyConfiguration);
+        try {
+            assertThat(fetchStarted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("the slow fetch actually started").isTrue();
+
+            // Drive the loss on its own thread too, bounded: if
+            // applyConfiguration were still synchronized across the fetch,
+            // this would block for as long as the fetch does, not fail fast.
+            var loseThread = Thread.ofVirtual().start(() -> {
+                store.holder = "someone-else";
+                election.contendNow();
+            });
+            loseThread.join(Duration.ofMillis(500));
+
+            assertThat(loseThread.isAlive())
+                    .as("leadership loss must not block on the in-flight fetch").isFalse();
+            assertThat(server.running()).as("§5.5: losing leadership MUST pause polling").isFalse();
+            assertThat(server.activeLoops()).isZero();
+        } finally {
+            fetchGate.countDown();
+            fetchThread.join(Duration.ofSeconds(2));
+        }
+
+        // The stale fetch, resolved after leadership was already lost, must
+        // not resurrect anything: `apply` re-checks `running` itself.
+        assertThat(server.activeLoops()).as("nothing restarted from the discarded, stale fetch").isZero();
+        assertThat(built.size()).as("no new consumer built from it either")
+                .isEqualTo(buildsBeforeSlowFetch);
+    }
+
+    @Test
     @DisplayName("E: a consumer paused for capacity beyond the stall threshold is not reported stalled")
     void capacityPausedConsumerIsNotStalled() throws InterruptedException {
         // Same shape as RouterApiTest's "a consumer that keeps polling stays
@@ -383,6 +448,165 @@ class RouterServerTest {
         } finally {
             release.countDown();
             localServer.close();
+        }
+    }
+
+    @Test
+    @DisplayName("X-11/R-26: a replaced queue's NEW consumer is polled, and the OLD one is not")
+    void replacedQueueSwapsLoopToNewConsumer() throws InterruptedException {
+        var configRef = new AtomicReference<>(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
+                List.of(new QueueConfig("q://1", "orders", 1, 30))));
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build,
+                () -> Optional.of(configRef.get()), warnings, clock, Duration.ofSeconds(1));
+
+        server.start();
+        await(() -> server.activeLoops() == 1);
+        var first = built.getFirst();
+        await(() -> first.polls.get() >= 1);
+        int pollsAtSwap = first.polls.get();
+
+        // Same queue name, different connections — a CHANGE, not a removal.
+        configRef.set(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
+                List.of(new QueueConfig("q://1", "orders", 4, 30))));
+        server.applyConfiguration();
+
+        await(() -> built.size() == 2);
+        var second = built.get(1);
+        assertThat(second).as("a genuinely new consumer object").isNotSameAs(first);
+        await(() -> second.polls.get() >= 1);
+
+        // EMPTY_POLL_PAUSE is 1s: if the old loop were still running it
+        // would have polled again well within this margin.
+        Thread.sleep(1_500);
+        assertThat(first.polls.get()).as("the OLD loop's thread was interrupted, not merely orphaned")
+                .isEqualTo(pollsAtSwap);
+    }
+
+    @Test
+    @DisplayName("Q28: failed rebuilds accumulate, and a successful rebuild clears the count only once its consumer has polled")
+    void restartCountClearsOnlyOnceTheReplacementPolls() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var localManager = new RouterManager(isolatedTracker, warnings, mutableClock, cfg ->
+                new Pool(cfg, (msg, recordFailure) -> MediationOutcome.Success.of(200),
+                        NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        var original = new FakeConsumer("orders");
+        var toHandOut = new java.util.concurrent.ConcurrentLinkedQueue<Consumer>();
+        toHandOut.add(original);
+        RouterManager.ConsumerFactory factory = q -> Optional.ofNullable(toHandOut.poll());
+
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
+        var fastSupervisor = new ConsumerSupervisor(warnings, mutableClock, Duration.ofMillis(1));
+        var localServer = new RouterServer(localManager, isolatedTracker, election, factory,
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
+                        List.of(new QueueConfig("q://1", "orders", 1, 30)))),
+                warnings, mutableClock, Duration.ofSeconds(1), fastSupervisor);
+        try {
+            localServer.start();
+            await(() -> original.polls.get() >= 1);
+            original.failPolls = true;
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+
+            // Two ticks in which the factory cannot rebuild the consumer: the
+            // count climbs (Q28 — a failed attempt is an attempt) and nothing
+            // resets it, because nothing has polled.
+            localServer.restartStalledLoops();
+            assertThat(fastSupervisor.restartAttempts("orders")).isEqualTo(1);
+            localServer.restartStalledLoops();
+            assertThat(fastSupervisor.restartAttempts("orders")).isEqualTo(2);
+
+            // A rebuild that succeeds does NOT clear the count by itself…
+            var replacement = new FakeConsumer("orders");
+            toHandOut.add(replacement);
+            localServer.restartStalledLoops();
+            await(() -> localManager.activeConsumer("orders").map(c -> c == replacement).orElse(false));
+            assertThat(fastSupervisor.restartAttempts("orders"))
+                    .as("built, but it has not polled yet — not recovered").isEqualTo(3);
+
+            // …only the replacement polling successfully does, on the next tick.
+            await(() -> replacement.polls.get() >= 1);
+            localServer.restartStalledLoops();
+            assertThat(fastSupervisor.restartAttempts("orders")).isEqualTo(0);
+        } finally {
+            localServer.close();
+        }
+    }
+
+    @Test
+    @DisplayName("R-26: a stalled loop is rebuilt without aborting what the OLD consumer is still holding")
+    void stalledLoopRestartsWithoutAbortingInFlightWork() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var localPools = new CopyOnWriteArrayList<Pool>();
+        var localManager = new RouterManager(isolatedTracker, warnings, mutableClock, cfg -> {
+            var pool = new Pool(cfg, (msg, recordFailure) -> MediationOutcome.Success.of(200),
+                    NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock);
+            localPools.add(pool);
+            return pool;
+        });
+        var original = new FakeConsumer("orders");
+        var toHandOut = new java.util.concurrent.ConcurrentLinkedQueue<Consumer>();
+        toHandOut.add(original);
+        RouterManager.ConsumerFactory factory = q -> Optional.ofNullable(toHandOut.poll());
+
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
+        var fastSupervisor = new ConsumerSupervisor(warnings, mutableClock, Duration.ofMillis(1));
+        var localServer = new RouterServer(localManager, isolatedTracker, election, factory,
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
+                        List.of(new QueueConfig("q://1", "orders", 1, 30)))),
+                warnings, mutableClock, Duration.ofSeconds(1), fastSupervisor);
+        try {
+            localServer.start();
+            await(() -> localServer.activeLoops() == 1);
+            await(() -> original.polls.get() >= 1); // seeds lastPoll
+
+            // Freeze progress: every further poll fails, so lastPoll stops
+            // advancing — the shape a genuinely stuck consumer takes.
+            original.failPolls = true;
+
+            // An in-flight message this consumer polled, still owned when it
+            // stalls — the case the fix exists for.
+            isolatedTracker.register(new InFlightMessage("m1", "b1", "A", "orders",
+                    mutableClock.instant(), mutableClock.instant(), "", "batch-1", "receipt-1", 0));
+
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+
+            var replacement = new FakeConsumer("orders");
+            toHandOut.add(replacement);
+            localServer.restartStalledLoops();
+
+            await(() -> localManager.activeConsumer("orders").map(c -> c == replacement).orElse(false));
+            await(() -> replacement.polls.get() >= 1);
+
+            assertThat(original.closed)
+                    .as("not closed while an in-flight message from it is still tracked").isFalse();
+
+            // `consumer()` resolves active-before-lingering (ruling 5), so
+            // once the replacement is active the ack resolves through IT —
+            // the documented, accepted imprecision for a same-name swap
+            // (`docs/spec/router-specification.md` §5.1's closing paragraph:
+            // "resolveConsumer... resolves a buffered message's ack through
+            // whichever consumer is currently active for that name, not
+            // necessarily the physical instance that polled it... harmless
+            // when the change didn't swap the underlying broker connection").
+            // What matters here is that it resolves and acks cleanly at all —
+            // neither object is ever left silently unreachable.
+            var broker = new QueueBroker(qid -> localManager.consumer(qid).orElse(null), isolatedTracker, mutableClock);
+            broker.ack(QueuedMessage.of(new io.flowcatalyst.router.wire.Message("m1", "A", null, null,
+                    io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
+                    io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE), "b1", "receipt-1", "orders"));
+
+            assertThat(replacement.acked).as("resolves through the now-active replacement").contains("m1");
+            assertThat(original.acked).as("not the detached original").isEmpty();
+
+            // The tracker entry is gone (the ack removed it), so retiring
+            // finds nothing left referencing the original's queue any more.
+            localManager.retireLingeringConsumers();
+            assertThat(original.closed).as("closed once nothing references it any more").isTrue();
+        } finally {
+            localServer.close();
+            localPools.forEach(Pool::close);
         }
     }
 
@@ -540,6 +764,19 @@ class RouterServerTest {
     private static final class FakeConsumer implements Consumer {
         private final String id;
         volatile boolean closed;
+        /// Poll count, for asserting which loop is actually being ticked
+        /// (X-11/R-26: the OLD consumer for a replaced/stalled queue must
+        /// stop being polled the instant its loop is swapped, even though it
+        /// stays open for ack/nack).
+        final AtomicInteger polls = new AtomicInteger();
+        /// Ids acked on THIS object — the assertion that a message still
+        /// resolves ack on whichever consumer actually polled it, not
+        /// whichever is active now.
+        final List<String> acked = new CopyOnWriteArrayList<>();
+        /// Once true, every poll throws instead of answering empty — how a
+        /// test freezes this consumer's `lastPoll` heartbeat so it can be
+        /// judged stalled without waiting out real time.
+        volatile boolean failPolls;
 
         FakeConsumer(String id) {
             this.id = id;
@@ -552,11 +789,16 @@ class RouterServerTest {
 
         @Override
         public PollResult poll(int max) {
+            polls.incrementAndGet();
+            if (failPolls) {
+                throw new RuntimeException("poll failed (test)");
+            }
             return PollResult.empty();
         }
 
         @Override
         public boolean ack(QueuedMessage message) {
+            acked.add(message.id());
             return true;
         }
 

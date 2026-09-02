@@ -110,18 +110,22 @@ public final class ConsumerSupervisor {
     /// "how many times has the platform tried and failed to fix this?", and
     /// a failed rebuild is more of that, not less.
     ///
+    /// **The stalled consumer is never closed here** (R-26,
+    /// `docs/spec/router-completion.md` §2 ruling 5 — a deliberate deviation
+    /// from a pre-ruling implementation that did close it, aborting whatever
+    /// it was still holding). It is left exactly as it was; the caller —
+    /// `RouterServer`, once a replacement exists — hands it to
+    /// [RouterManager#replaceConsumer], which detaches it to the manager's
+    /// lingering set. An in-flight delivery still referencing it keeps
+    /// running and resolves its own ack/nack on it, exactly as a reconfigured
+    /// or removed queue's consumer does.
+    ///
     /// @return the replacement, or empty when it could not be built
     public Optional<Consumer> restart(String queueName, QueueConfig config, Consumer stalled,
                                       RouterManager.ConsumerFactory factory) throws InterruptedException {
         var attempt = attempts.computeIfAbsent(queueName, ignored -> new AtomicInteger()).incrementAndGet();
 
         Thread.sleep(restartDelay);
-
-        // Stop the old one first. Its in-flight deliveries are aborted and its
-        // ordered groups parked; redelivery resumes them, which is the whole
-        // reason a stalled consumer can be replaced at all rather than having
-        // to be drained.
-        stalled.close();
 
         var replacement = factory.create(config);
         // The two outcomes point at different causes and so read differently:

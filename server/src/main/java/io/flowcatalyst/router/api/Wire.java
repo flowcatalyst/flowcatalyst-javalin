@@ -256,6 +256,19 @@ public final class Wire {
     public record GroupFlushClearResponse(boolean cleared) {
     }
 
+    /// One row of `GET /monitoring/blocked-groups` (R-04): a live message
+    /// group, its buffer depth, whether a drainer currently owns it, and —
+    /// when a target has flushed it — until when it is suppressed, alongside
+    /// the pool settings an operator needs to judge whether the group is
+    /// actually stuck or just busy.
+    ///
+    /// @param suppressedUntil    `null` when not currently suppressed
+    /// @param rateLimitPerMinute follows [WirePoolStats]: `0` (unlimited) is
+    ///                           omitted as `null`
+    public record BlockedGroupView(String pool, String group, int depth, boolean draining,
+                                   Instant suppressedUntil, int concurrency, Integer rateLimitPerMinute) {
+    }
+
     private Wire() {
     }
 }

@@ -353,6 +353,33 @@ class OrderedGroupsTest {
     }
 
     @Test
+    @DisplayName("R-04: snapshot reports each group's depth and draining state independently")
+    void snapshotReportsDepthAndDraining() {
+        // "orders": three messages offered, none polled — a drainer is
+        // claimed (the first offer) but nothing has drained it, the shape a
+        // group blocked behind a stuck head has.
+        offerAll("orders", "a", "b", "c");
+
+        // "invoices": two offered, one polled off (leaving one buffered),
+        // then the drainer explicitly released without the group emptying —
+        // the shape a drainer that gave up its slot mid-flight leaves.
+        offerAll("invoices", "x", "y");
+        groups.pollHead("invoices");
+        assertThat(groups.releaseDrainer("invoices")).as("still holds work").isTrue();
+
+        var snapshot = groups.snapshot();
+        assertThat(snapshot).hasSize(2);
+
+        var orders = snapshot.stream().filter(g -> g.group().equals("orders")).findFirst().orElseThrow();
+        assertThat(orders.depth()).as("all three still queued").isEqualTo(3);
+        assertThat(orders.draining()).as("claimed by the first offer").isTrue();
+
+        var invoices = snapshot.stream().filter(g -> g.group().equals("invoices")).findFirst().orElseThrow();
+        assertThat(invoices.depth()).as("one polled off, one left").isOne();
+        assertThat(invoices.draining()).as("explicitly released").isFalse();
+    }
+
+    @Test
     @DisplayName("stopping drains everything and releases every group")
     void drainAll() {
         offerAll("orders", "a", "b");

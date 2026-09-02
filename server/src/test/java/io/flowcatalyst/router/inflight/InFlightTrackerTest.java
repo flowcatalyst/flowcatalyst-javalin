@@ -239,6 +239,40 @@ class InFlightTrackerTest {
         assertThat(tracker.size()).isOne();
     }
 
+    // ── countForQueue (R-26/X-11) ───────────────────────────────────────
+
+    @Test
+    @DisplayName("countForQueue counts only entries for that queue that started before the cutoff")
+    void countForQueueCountsStartedBeforeCutoff() {
+        tracker.register(message("m1", "b1", "r1")); // started at t0
+        var t0 = clock.instant();
+        clock.advance(Duration.ofSeconds(1));
+        tracker.register(message("m2", "b2", "r2")); // started at t0+1s
+
+        assertThat(tracker.countForQueue("queue-1", t0))
+                .as("m1 started AT the cutoff, not before it").isZero();
+        assertThat(tracker.countForQueue("queue-1", t0.plusSeconds(1)))
+                .as("only m1 started before t0+1s; m2 started exactly then").isOne();
+        assertThat(tracker.countForQueue("queue-1", t0.plusSeconds(2)))
+                .as("both started before t0+2s").isEqualTo(2);
+        assertThat(tracker.countForQueue("some-other-queue", t0.plusSeconds(2)))
+                .as("a different queue name counts nothing").isZero();
+    }
+
+    @Test
+    @DisplayName("countForQueue drops back to zero once the entries it counted are removed")
+    void countForQueueReflectsRemoval() {
+        tracker.register(message("m1", "b1", "r1"));
+        var cutoff = clock.instant().plusSeconds(1);
+
+        assertThat(tracker.countForQueue("queue-1", cutoff)).isOne();
+
+        tracker.remove("m1");
+
+        assertThat(tracker.countForQueue("queue-1", cutoff))
+                .as("what RouterManager#retireLingeringConsumers waits for").isZero();
+    }
+
     private InFlightMessage message(String messageId, String brokerId, String receipt) {
         var now = clock.instant();
         return new InFlightMessage(messageId, brokerId, "", "queue-1", now, now, "", "1", receipt, 0);

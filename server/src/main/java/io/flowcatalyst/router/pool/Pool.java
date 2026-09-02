@@ -19,10 +19,12 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.List;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
@@ -185,6 +187,15 @@ public final class Pool implements AutoCloseable {
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean stopped;
 
+    /// Set by [#drain] (X-11, `docs/spec/router-completion.md` §2 ruling 6):
+    /// stops admitting like [#stopped], but — unlike [#stop] — never hands
+    /// back what is already buffered. Distinct from `stopped` because a
+    /// draining pool must still be usable by its own drainers and workers
+    /// until [#drained] is true; `stopped` additionally implies the worker
+    /// executor is going away, which [#close] is the only thing allowed to
+    /// decide.
+    private volatile boolean draining;
+
     public Pool(Config config, Mediator mediator, Broker broker, PoolMetrics metrics, Clock clock) {
         this(config, Backoffs.DEFAULT, mediator, broker, metrics, clock, Warnings.NO_OP, new BlockedSiblings.Release());
     }
@@ -258,7 +269,7 @@ public final class Pool implements AutoCloseable {
     /// formed no opinion about the message, so it must return to the broker
     /// to be delivered by someone else or later.
     public void submit(QueuedMessage message) {
-        if (stopped) {
+        if (stopped || draining) {
             broker.nack(message, REJECTED_NACK_DELAY);
             return;
         }
@@ -270,7 +281,18 @@ public final class Pool implements AutoCloseable {
             submitOrdered(message);
         } else {
             immediateWaiting.incrementAndGet();
-            start(() -> runImmediate(message));
+            if (!start(() -> runImmediate(message))) {
+                // Raced with close(): the executor was already shutting
+                // down when this reached it, so runImmediate never got the
+                // chance to account for the message itself. Left alone, this
+                // was silent loss — neither acked, nacked nor released, and
+                // immediateWaiting never decremented — until the broker's
+                // own visibility eventually lapsed. Reachable in practice:
+                // evictIdleSynthesisedPools and a reconfigure removal both
+                // close a pool a concurrent route() may be mid-submit on.
+                immediateWaiting.decrementAndGet();
+                broker.nack(message, REJECTED_NACK_DELAY, "pool-closed");
+            }
         }
     }
 
@@ -759,8 +781,33 @@ public final class Pool implements AutoCloseable {
 
     /// Everything inside a worker right now, newest-first order unspecified —
     /// the caller sorts.
-    public java.util.List<Mediating> mediating() {
-        return java.util.List.copyOf(mediating.values());
+    public List<Mediating> mediating() {
+        return List.copyOf(mediating.values());
+    }
+
+    /// One message group's live state, for the blocked/held-groups
+    /// monitoring surface (R-04, `docs/spec/router-completion.md` §2 ruling
+    /// 6): joins [OrderedGroups#snapshot]'s buffer state with this pool's own
+    /// [GroupFlushRegistry] — "how deep is it, is something draining it, and
+    /// has a target asked us to go quiet on it" are one row, not three
+    /// separate lookups an operator has to reconcile by hand.
+    ///
+    /// @param suppressedUntil `null` when the group is not currently
+    ///                        suppressed — never a sentinel instant
+    public record GroupSnapshot(String group, int depth, boolean draining, Instant suppressedUntil) {
+    }
+
+    /// Every message group this pool currently holds. Includes a group still
+    /// draining after the pool itself was removed from routing — the caller
+    /// (`GroupRoutes`) reads
+    /// [io.flowcatalyst.router.manager.RouterManager#allPools] rather than
+    /// [io.flowcatalyst.router.manager.RouterManager#pools] specifically so a
+    /// draining pool's groups stay visible until it finishes (§5.1).
+    public List<GroupSnapshot> groupSnapshot() {
+        return groups.snapshot().stream()
+                .map(g -> new GroupSnapshot(g.group(), g.depth(), g.draining(),
+                        flushes.suppressedUntil(g.group()).orElse(null)))
+                .toList();
     }
 
     /// Resizes concurrency, for the messages already queued as much as for
@@ -798,6 +845,31 @@ public final class Pool implements AutoCloseable {
         handBack(groups.drainAll());
     }
 
+    /// Stops admitting new work but leaves everything already buffered alone
+    /// (X-11, `docs/spec/router-completion.md` §2 ruling 6): a pool the
+    /// configuration no longer wants must stop being routed to at once, but
+    /// every group already queued keeps draining through its existing
+    /// drainer, and a delivery already running finishes normally. Unlike
+    /// [#stop], nothing is handed back here — that would abort work the spec
+    /// requires to finish on its own (§5.1).
+    ///
+    /// [#drained] tells the caller when the buffer and every worker have
+    /// emptied on their own; [#close] is the follow-up that then releases the
+    /// worker executor. There is no resume: the only caller that drains a
+    /// pool ([io.flowcatalyst.router.manager.RouterManager#applyPools]) is
+    /// discarding it, same as [#stop].
+    public void drain() {
+        draining = true;
+    }
+
+    /// Whether this pool has nothing left to finish — no buffered work and no
+    /// delivery in progress. A draining pool becomes safe to [#close] the
+    /// moment this turns true; asked before [#drain] it means the same thing
+    /// it always did, an idle pool.
+    public boolean drained() {
+        return queueSize() == 0 && activeWorkers() == 0;
+    }
+
     /// Stops accepting work **permanently** and hands back everything still
     /// queued. A stopped pool nacks every later submission; there is no
     /// resume, because the only caller that stops a pool is discarding it.
@@ -810,7 +882,7 @@ public final class Pool implements AutoCloseable {
         handBack(groups.drainAll());
     }
 
-    private void handBack(java.util.List<QueuedMessage> buffered) {
+    private void handBack(List<QueuedMessage> buffered) {
         if (buffered.isEmpty()) {
             return;
         }
@@ -853,12 +925,21 @@ public final class Pool implements AutoCloseable {
         }
     }
 
-    private void start(Runnable task) {
+    /// @return whether `task` was actually handed to the executor — false
+    ///         means the pool closed between the caller's `stopped`/`draining`
+    ///         check and here, and the caller is responsible for whatever
+    ///         accounting or broker action that leaves undone (see the
+    ///         IMMEDIATE branch of [#submit]; [#submitOrdered] already
+    ///         defends its own buffer against this race by re-checking
+    ///         `stopped` after [OrderedGroups#offer]).
+    private boolean start(Runnable task) {
         try {
             workers.execute(task);
-        } catch (java.util.concurrent.RejectedExecutionException e) {
+            return true;
+        } catch (RejectedExecutionException e) {
             // The pool closed between the stopped check and here.
             stopped = true;
+            return false;
         }
     }
 

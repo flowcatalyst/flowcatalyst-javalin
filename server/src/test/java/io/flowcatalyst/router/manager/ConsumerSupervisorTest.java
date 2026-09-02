@@ -63,7 +63,7 @@ class ConsumerSupervisorTest {
     }
 
     @Test
-    @DisplayName("a restart warns, stops the old consumer and builds a replacement")
+    @DisplayName("a restart warns and builds a replacement, WITHOUT closing the old consumer (R-26)")
     void restartReplacesTheConsumer() throws Exception {
         var stalled = new FakeConsumer("q://1");
         var built = new CopyOnWriteArrayList<FakeConsumer>();
@@ -75,9 +75,11 @@ class ConsumerSupervisorTest {
         });
 
         assertThat(replacement).isPresent();
-        // Stopped first: its in-flight deliveries are aborted and its ordered
-        // groups parked, and redelivery resumes them.
-        assertThat(stalled.closed).isTrue();
+        // R-26: the old consumer is left alone here. Closing it would abort
+        // whatever in-flight delivery it is still holding; the caller
+        // (RouterServer) hands it to RouterManager#replaceConsumer, which
+        // detaches it to the lingering set instead.
+        assertThat(stalled.closed).isFalse();
         assertThat(built).hasSize(1);
         assertThat(warnings.raised).singleElement().asString()
                 .contains("CONSUMER_HEALTH").contains("attempt 1");

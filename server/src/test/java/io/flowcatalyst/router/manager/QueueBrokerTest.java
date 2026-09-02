@@ -70,11 +70,107 @@ class QueueBrokerTest {
         assertThat(broker.owns(message("m1", "b1"))).isTrue();
     }
 
+    // ── R-26/X-11: lingering consumers ─────────────────────────────────
+
+    @Test
+    @DisplayName("R-26/X-11: a queue dropped from config still resolves its old consumer for ack, and closes it only once the tracker clears")
+    void droppedQueueLingersUntilTrackerClears() {
+        var fakeConsumer = new FakeConsumer("queue-1");
+        var manager = new RouterManager(tracker, io.flowcatalyst.router.observability.Warnings.NO_OP, clock,
+                cfg -> new io.flowcatalyst.router.pool.Pool(cfg,
+                        (msg, recordFailure) -> io.flowcatalyst.router.wire.MediationOutcome.Success.of(200),
+                        NO_OP_POOL_BROKER, io.flowcatalyst.router.pool.PoolMetrics.NO_OP, clock));
+        try {
+            manager.reconfigure(
+                    new io.flowcatalyst.router.config.RouterConfig(java.util.List.of(),
+                            java.util.List.of(io.flowcatalyst.router.config.QueueConfig.of("queue-1"))),
+                    queue -> java.util.Optional.of(fakeConsumer));
+
+            var localBroker = new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker, clock);
+            var message = message("m1", "b1");
+            tracker.register(RouterManager.inFlight(message, "1", clock.instant()));
+
+            // The queue disappears from config: the OLD consumer must not be
+            // torn down while the tracker still references it.
+            manager.reconfigure(io.flowcatalyst.router.config.RouterConfig.EMPTY, queue -> java.util.Optional.empty());
+
+            assertThat(manager.consumer("queue-1")).as("still resolvable while lingering").isPresent();
+            assertThat(fakeConsumer.closed).as("not closed while the tracker still references it").isFalse();
+
+            localBroker.ack(message);
+
+            assertThat(fakeConsumer.acked).as("the ack reaches the OLD consumer object").contains("m1");
+            assertThat(fakeConsumer.closed).as("still not closed synchronously with the ack").isFalse();
+
+            manager.retireLingeringConsumers();
+
+            assertThat(fakeConsumer.closed).as("closed once housekeeping finds nothing left for its queue").isTrue();
+            assertThat(manager.consumer("queue-1")).as("gone once retired").isEmpty();
+        } finally {
+            manager.pools().values().forEach(io.flowcatalyst.router.pool.Pool::close);
+        }
+    }
+
+    private static final io.flowcatalyst.router.pool.Broker NO_OP_POOL_BROKER =
+            new io.flowcatalyst.router.pool.Broker() {
+                @Override
+                public void ack(QueuedMessage message) {
+                }
+
+                @Override
+                public void nack(QueuedMessage message, Duration delay) {
+                }
+
+                @Override
+                public void release(QueuedMessage message) {
+                }
+            };
+
     private static QueuedMessage message(String id, String brokerId) {
         return QueuedMessage.of(
                 new Message(id, "", null, null, MediationType.HTTP, "https://x.test/h",
                         null, false, DispatchMode.IMMEDIATE),
                 brokerId, "receipt-" + brokerId, "queue-1");
+    }
+
+    private static final class FakeConsumer implements io.flowcatalyst.router.queue.Consumer {
+        private final String id;
+        final java.util.List<String> acked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile boolean closed;
+
+        FakeConsumer(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) {
+            return PollResult.empty();
+        }
+
+        @Override
+        public boolean ack(QueuedMessage message) {
+            acked.add(message.id());
+            return true;
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public java.util.Optional<io.flowcatalyst.router.queue.QueueMetrics> metrics() {
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
     }
 
     private static final class FakeAcknowledger implements Acknowledger {

@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -138,6 +139,65 @@ class ReconfigureTest {
         assertThat(manager.pools()).containsKey("acme-DEFAULT-POOL");
     }
 
+    @Test
+    @DisplayName("X-11: a removed pool drains its buffered ordered group in the background, without blocking the reconfigure")
+    void removedPoolDrainsInBackground() throws InterruptedException {
+        var release = new CountDownLatch(1);
+        var delivered = new CopyOnWriteArrayList<String>();
+        var recordingBroker = new RecordingBroker();
+        Mediator slow = (message, recordFailure) -> {
+            release.await();
+            delivered.add(message.id());
+            return MediationOutcome.Success.of(200);
+        };
+        var localBuilt = new CopyOnWriteArrayList<Pool>();
+        var localManager = new RouterManager(new InFlightTracker(clock), Warnings.NO_OP, clock, cfg -> {
+            var pool = new Pool(cfg, slow, recordingBroker, PoolMetrics.NO_OP, Clock.systemUTC());
+            localBuilt.add(pool);
+            return pool;
+        });
+        try {
+            localManager.reconfigure(new RouterConfig(List.of(pool("A", 2, 0)), List.of()), consumerFactory);
+            var poolA = localManager.pools().get("A");
+            poolA.submit(ordered("g1", "m0"));
+            poolA.submit(ordered("g1", "m1"));
+            poolA.submit(ordered("g1", "m2"));
+            // Let the head grab the latch before removing the pool, so there
+            // is genuinely a buffer still draining when it is removed.
+            awaitTrue(() -> poolA.activeWorkers() == 1);
+
+            long startedAt = System.nanoTime();
+            localManager.reconfigure(new RouterConfig(List.of(), List.of()), consumerFactory);
+            var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+            // Pool.close()'s own await-termination budget is 5s+2s=7s; a
+            // reconfigure that (pre-fix) called close() synchronously on a
+            // pool still holding a blocked worker would take that long. Well
+            // under it proves the removal did not wait for the drain.
+            assertThat(elapsed).as("reconfigure must not block on the pool draining")
+                    .isLessThan(Duration.ofSeconds(3));
+            assertThat(localManager.pools()).as("gone from routing at once").doesNotContainKey("A");
+            assertThat(localManager.allPools()).as("but still visible while draining").containsKey("A");
+
+            // A message submitted to the drained pool object directly (as
+            // the group's own worker would if it looped back) is nacked, not
+            // silently accepted.
+            poolA.submit(ordered("g1", "m-late"));
+            assertThat(recordingBroker.nacked).contains("m-late");
+
+            release.countDown();
+            awaitTrue(() -> delivered.size() == 3);
+            assertThat(delivered).as("the buffer kept draining after removal").containsExactly("m0", "m1", "m2");
+            awaitTrue(poolA::drained);
+
+            assertThat(localManager.closeDrainedPools()).as("housekeeping closes it once drained").isOne();
+            assertThat(localManager.allPools()).as("gone once closed").doesNotContainKey("A");
+        } finally {
+            release.countDown();
+            localBuilt.forEach(Pool::close);
+        }
+    }
+
     // ── Consumers ───────────────────────────────────────────────────────
 
     @Test
@@ -165,12 +225,13 @@ class ReconfigureTest {
     }
 
     @Test
-    @DisplayName("any change to a queue rebuilds its consumer")
+    @DisplayName("any change to a queue rebuilds its consumer, but the OLD one lingers rather than aborting (R-26)")
     void changedQueueIsRebuilt() {
         // A consumer's identity is bound to a broker connection, so it cannot
-        // be tuned in place the way a pool can. Rebuilding aborts that
-        // queue's in-flight deliveries and parks its ordered groups until
-        // redelivery resumes them — which is why a queue edit is not cheap.
+        // be tuned in place the way a pool can. The old one is DETACHED, not
+        // closed: an in-flight delivery or a buffered message still
+        // referencing it must be able to ack/nack cleanly instead of finding
+        // it torn down (`docs/spec/router-completion.md` §2 ruling 5).
         manager.reconfigure(new RouterConfig(List.of(),
                 List.of(new QueueConfig("q://1", "orders", 1, 30))), consumerFactory);
         var first = (FakeConsumer) manager.consumer("orders").orElseThrow();
@@ -178,19 +239,33 @@ class ReconfigureTest {
         var result = manager.reconfigure(new RouterConfig(List.of(),
                 List.of(new QueueConfig("q://1", "orders", 4, 30))), consumerFactory);
 
-        assertThat(first.closed).as("the old consumer is closed, not leaked").isTrue();
-        assertThat(manager.consumer("orders").orElseThrow()).isNotSameAs(first);
+        assertThat(first.closed).as("not closed synchronously with the reconfigure").isFalse();
+        assertThat(manager.activeConsumer("orders").orElseThrow())
+                .as("the NEW consumer is what actually polls").isNotSameAs(first);
         assertThat(result.consumersStopped()).isOne();
         assertThat(result.consumersStarted()).isOne();
+        assertThat(result.replacedQueues()).as("a change, not a removal").containsExactly("orders");
+
+        // Nothing in the tracker references the old consumer's queue, so
+        // housekeeping retires it.
+        manager.retireLingeringConsumers();
+        assertThat(first.closed).as("closed once nothing references it any more").isTrue();
     }
 
     @Test
-    @DisplayName("a queue the config drops is closed and forgotten")
+    @DisplayName("a queue the config drops lingers, resolvable for ack, until the tracker clears and housekeeping retires it")
     void droppedQueueIsClosed() {
         manager.reconfigure(new RouterConfig(List.of(), List.of(QueueConfig.of("q://1"))), consumerFactory);
         var consumer = (FakeConsumer) manager.consumer("q://1").orElseThrow();
 
-        manager.reconfigure(RouterConfig.EMPTY, consumerFactory);
+        var result = manager.reconfigure(RouterConfig.EMPTY, consumerFactory);
+
+        assertThat(consumer.closed).as("not closed synchronously — X-11/R-26").isFalse();
+        assertThat(manager.consumer("q://1")).as("still resolvable while lingering").isPresent();
+        assertThat(manager.activeConsumer("q://1")).as("but no longer being polled").isEmpty();
+        assertThat(result.replacedQueues()).as("a removal, not a change").isEmpty();
+
+        manager.retireLingeringConsumers();
 
         assertThat(consumer.closed).isTrue();
         assertThat(manager.consumer("q://1")).isEmpty();
@@ -230,6 +305,49 @@ class ReconfigureTest {
     /// concurrency included, which is the case the runtime type cannot hold.
     private static PoolSpec pool(String code, int concurrency, int rpm) {
         return new PoolSpec(code, concurrency, rpm);
+    }
+
+    private static QueuedMessage ordered(String group, String id) {
+        return QueuedMessage.of(
+                new io.flowcatalyst.router.wire.Message(id, "", null, null,
+                        io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", group, false,
+                        io.flowcatalyst.router.wire.DispatchMode.NEXT_ON_ERROR),
+                "broker-" + id, "receipt-" + id, "queue-1");
+    }
+
+    private static void awaitTrue(java.util.function.BooleanSupplier condition) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        }
+        throw new AssertionError("condition not met within 10s");
+    }
+
+    private static final class RecordingBroker implements Broker {
+        final List<String> acked = new CopyOnWriteArrayList<>();
+        final List<String> nacked = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void ack(QueuedMessage message) {
+            acked.add(message.id());
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+            nacked.add(message.id());
+        }
+
+        @Override
+        public void release(QueuedMessage message) {
+        }
     }
 
     private static final Mediator MEDIATOR = (message, recordFailure) -> MediationOutcome.Success.of(200);

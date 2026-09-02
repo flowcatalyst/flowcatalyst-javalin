@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /// Boots and stops the router as a whole.
@@ -64,6 +65,13 @@ public final class RouterServer implements AutoCloseable {
     private final Clock clock;
     private final Duration drainTimeout;
 
+    /// The stall watchdog (R-26, `docs/spec/router-completion.md` §2 ruling
+    /// 5) — [#restartStalledLoops] is the housekeeping task that drives it.
+    /// Injectable so a test can use a negligible restart delay rather than
+    /// waiting out the real one (`ConsumerSupervisor`'s own doc explains why
+    /// that constant is real elapsed time).
+    private final ConsumerSupervisor supervisor;
+
     /// The poll loop running for each queue, so a leadership loss can stop
     /// exactly what a gain started, and readiness can ask each loop whether
     /// it is still making progress (R-36).
@@ -106,6 +114,16 @@ public final class RouterServer implements AutoCloseable {
     public RouterServer(RouterManager manager, InFlightTracker tracker, LeaderElection election,
                         RouterManager.ConsumerFactory consumerFactory, ConfigSource configSource,
                         Warnings warnings, Clock clock, Duration drainTimeout) {
+        this(manager, tracker, election, consumerFactory, configSource, warnings, clock, drainTimeout,
+                new ConsumerSupervisor(warnings, clock));
+    }
+
+    /// `supervisor` is injectable so a test can drive the stall-restart path
+    /// on a negligible delay rather than the production
+    /// [ConsumerSupervisor#RESTART_DELAY].
+    public RouterServer(RouterManager manager, InFlightTracker tracker, LeaderElection election,
+                        RouterManager.ConsumerFactory consumerFactory, ConfigSource configSource,
+                        Warnings warnings, Clock clock, Duration drainTimeout, ConsumerSupervisor supervisor) {
         this.manager = manager;
         this.tracker = tracker;
         this.election = election;
@@ -114,6 +132,7 @@ public final class RouterServer implements AutoCloseable {
         this.warnings = warnings;
         this.clock = clock;
         this.drainTimeout = drainTimeout;
+        this.supervisor = supervisor;
     }
 
     public boolean running() {
@@ -209,10 +228,24 @@ public final class RouterServer implements AutoCloseable {
     /// answering empty rather than a zeroed result so a caller (the reload
     /// route, R-33) can tell "nothing to do" from "nothing changed".
     ///
+    /// **Deliberately NOT synchronized.** [ConfigSource#fetch] can be slow —
+    /// `HttpConfigSource` retries an unreachable config service for minutes
+    /// — and this method is also the periodic config-poll task and the
+    /// `/config/reload` handler, neither of which is called from inside
+    /// [#gainLeadership]/[#loseLeadership]'s own synchronized block. Holding
+    /// the monitor across a slow fetch would make a leadership loss racing
+    /// it block [#loseLeadership] for however long the fetch takes — `running`
+    /// stays true and the poll loops keep delivering well past §5.5's
+    /// "losing leadership MUST pause polling" the whole time. [#apply] is the
+    /// synchronized remainder, re-checking [#running] itself: leadership may
+    /// have been lost while this call was waiting on the fetch, and applying
+    /// a configuration fetched before that loss would start consumers as a
+    /// follower.
+    ///
     /// @return what changed, or empty when this instance is not currently
     ///         running (not leader) or the configuration source is
     ///         momentarily unavailable
-    public synchronized Optional<RouterManager.ReconfigureResult> applyConfiguration() {
+    public Optional<RouterManager.ReconfigureResult> applyConfiguration() {
         if (!running) {
             return Optional.empty();
         }
@@ -220,7 +253,17 @@ public final class RouterServer implements AutoCloseable {
         if (config.isEmpty()) {
             return Optional.empty();
         }
-        var result = manager.reconfigure(config.get(), consumerFactory);
+        return apply(config.get());
+    }
+
+    /// The part of [#applyConfiguration] that actually touches [#manager]
+    /// and [#loops] — see that method's doc for why the fetch itself is not
+    /// inside this lock.
+    private synchronized Optional<RouterManager.ReconfigureResult> apply(RouterConfig config) {
+        if (!running) {
+            return Optional.empty();
+        }
+        var result = manager.reconfigure(config, consumerFactory);
         if (!result.complete()) {
             // Running with less than the configuration asks for is an
             // operator-visible condition, not a log line: some queues are
@@ -229,18 +272,27 @@ public final class RouterServer implements AutoCloseable {
                     "router is running without " + result.failedQueues().size()
                             + " configured queue(s): " + String.join(", ", result.failedQueues()));
         }
-        syncLoops();
+        syncLoops(Set.copyOf(result.replacedQueues()));
         return Optional.of(result);
     }
 
-    /// Starts a loop for every consumer that has one missing, and stops any
-    /// whose consumer has gone.
-    private void syncLoops() {
+    /// Starts a loop for every consumer that has one missing, stops any whose
+    /// consumer has gone, and — the X-11/R-26 case a pre-ruling implementation
+    /// missed — **restarts** the loop for a `replacedQueues` name even though
+    /// the name itself never left [RouterManager#consumerNames]: the
+    /// consumer *identity* behind it changed, and leaving the loop alone
+    /// would keep polling the old, now-detached consumer forever.
+    ///
+    /// [RouterManager#activeConsumer] is the check here, deliberately not
+    /// [RouterManager#consumer]: the latter also resolves a lingering
+    /// consumer, which would make a removed queue's loop look like it should
+    /// keep running.
+    private void syncLoops(Set<String> replacedQueues) {
         var current = manager.pools(); // touch, so a misconfigured manager fails here rather than later
         assert current != null;
 
         loops.entrySet().removeIf(entry -> {
-            if (manager.consumer(entry.getKey()).isPresent()) {
+            if (manager.activeConsumer(entry.getKey()).isPresent() && !replacedQueues.contains(entry.getKey())) {
                 return false;
             }
             entry.getValue().thread().interrupt();
@@ -252,8 +304,61 @@ public final class RouterServer implements AutoCloseable {
                 .toList();
         // Concurrent: each start may touch its broker, and a slow one must
         // not delay the queues behind it.
-        Concurrently.forEach(toStart, name -> manager.consumer(name).ifPresent(this::startLoop),
+        Concurrently.forEach(toStart, name -> manager.activeConsumer(name).ifPresent(this::startLoop),
                 TRANSITION_TIMEOUT, "consumer loop start");
+    }
+
+    /// The stall-restart housekeeping tick (R-26,
+    /// `docs/spec/router-completion.md` §2 ruling 5): rebuilds the poll loop
+    /// for every queue [ConsumerSupervisor#stalled] judges silent, without
+    /// aborting whatever its old consumer is still holding.
+    ///
+    /// The swap is exactly [#syncLoops]'s replaced-queue case, done for one
+    /// queue at a time as the supervisor finds it: [RouterManager#replaceConsumer]
+    /// detaches the stalled consumer to the manager's lingering set instead
+    /// of closing it, this loop's own thread is interrupted (poll-only —
+    /// nothing it is mid-delivery on is touched), and a fresh loop starts on
+    /// the replacement. A follower runs this as a no-op: there is nothing to
+    /// restart when nothing is running.
+    public void restartStalledLoops() {
+        if (!running) {
+            return;
+        }
+        for (var entry : Map.copyOf(loops).entrySet()) {
+            var queueName = entry.getKey();
+            var loop = entry.getValue();
+            if (!supervisor.stalled(loop.consumerLoop())) {
+                // Recovery is a successful poll on the CURRENT loop, judged
+                // here on the next tick rather than at restart time. Clearing
+                // the count the moment a replacement is built would reset it
+                // on every rebuild, so a consumer that re-stalls after each
+                // restart could never escalate past WARNING (Q28).
+                if (loop.consumerLoop().lastPoll().isPresent()) {
+                    supervisor.recovered(queueName);
+                }
+                continue;
+            }
+            var config = manager.queueConfig(queueName);
+            var stalledConsumer = manager.activeConsumer(queueName);
+            if (config.isEmpty() || stalledConsumer.isEmpty()) {
+                // A reconfigure already moved this queue on; leave it to
+                // [#syncLoops] rather than restarting something no longer
+                // wanted.
+                continue;
+            }
+            Optional<Consumer> replacement;
+            try {
+                replacement = supervisor.restart(queueName, config.get(), stalledConsumer.get(), consumerFactory);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            replacement.ifPresent(consumer -> {
+                manager.replaceConsumer(queueName, consumer);
+                loop.thread().interrupt();
+                startLoop(consumer);
+            });
+        }
     }
 
     private void startLoop(Consumer consumer) {
