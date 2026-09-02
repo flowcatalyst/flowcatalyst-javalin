@@ -14,8 +14,11 @@ import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
+import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
+import io.flowcatalyst.platform.dispatchjob.settled.SettledApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.api.DispatchPoolApi;
 import io.flowcatalyst.platform.docs.AppDocRepository;
@@ -162,6 +165,18 @@ public final class Platform {
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
         var dispatchJobRepo = new DispatchJobRepository(pool);
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
+        // The reaper (dispatch-seam spec §7) is not leader-gated — every sweep is one
+        // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
+        // (not-yet-ported) scheduler loops Server.java's TODO(port) still lists.
+        new DispatchJobReaper(dispatchJobRepo).start();
+        // /api/dispatch/settled (spec §6, §11): public route, registered below via
+        // Platform.isPublicPath; fail-closed on a missing FLOWCATALYST_APP_KEY, matching Go's
+        // scheduler + processing/settled mount ("refuses to start without it").
+        if (env.appKey() != null && !env.appKey().isBlank()) {
+            SettledApi.register(routes, new SettledApi.State(dispatchJobRepo, HmacTokenVerifier.fromAppKey(env.appKey())));
+        } else {
+            LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled is not mounted");
+        }
         var appDocRepo = new AppDocRepository(pool);
         DocsApi.register(routes, new DocsApi.State(appDocRepo, applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
@@ -234,6 +249,7 @@ public final class Platform {
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")
                 || p.equals("/api/dispatch/process")
+                || p.equals("/api/dispatch/settled")
                 || p.equals("/api/openapi.json") || p.equals("/api/openapi.yaml");
     }
 }

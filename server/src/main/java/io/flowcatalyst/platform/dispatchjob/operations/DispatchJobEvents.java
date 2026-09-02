@@ -25,12 +25,30 @@ public final class DispatchJobEvents {
     public static final String REQUEUED = "platform:admin:dispatchjob:requeued";
     public static final String BATCH_REQUEUED = "platform:admin:dispatchjobs:requeued";
 
+    /// The source Cancel/Complete emit under — dispatch-seam spec §8's
+    /// table, verbatim from Go (`operations/events.go`'s `Source` constant).
+    /// Deliberately different from [#SOURCE]: those two verbs are new in
+    /// this port and follow the seam spec exactly; Requeue's `platform:admin`
+    /// is the already-shipped (and separately flagged, DJ-5) Java behaviour
+    /// this unit does not touch.
+    public static final String SOURCE_MESSAGING = "platform:messaging";
+
+    public static final String CANCELLED = "platform:messaging:dispatch-job:cancelled";
+    public static final String COMPLETED = "platform:messaging:dispatch-job:completed";
+
     private DispatchJobEvents() {
     }
 
     /// `platform.dispatchjob.{id}` — the subject of every per-job event.
     public static String subjectFor(String dispatchJobId) {
         return EventConventions.buildSubject("platform", "dispatchjob", dispatchJobId);
+    }
+
+    /// `platform:dispatchjob:{id}` — the FIFO group of Cancel/Complete's
+    /// per-job event (dispatch-seam spec §8, Go `operations/events.go`'s
+    /// `groupFor`). Colon-separated, unlike [#subjectFor]'s dot-separated form.
+    static String groupFor(String dispatchJobId) {
+        return "platform:dispatchjob:" + dispatchJobId;
     }
 
     /// `platform.dispatchjobs.{batchId}` — the subject of the requeue rollup:
@@ -64,6 +82,44 @@ public final class DispatchJobEvents {
 
         private record Data(String dispatchJobId, String code, String previousStatus, String messageGroup,
                             String clientId) {
+        }
+    }
+
+    /// Emitted by [CancelDispatchJob]: an operator overrode a `FAILED` job to
+    /// `CANCELLED` (dispatch-seam spec §8). Single-resource; carries only the id.
+    public record DispatchJobCancelled(EventMetadata metadata, String dispatchJobId) implements DomainEvent {
+
+        public static DispatchJobCancelled of(ExecutionContext ec, DispatchJob j) {
+            EventMetadata md = EventMetadata.of(ec, CANCELLED, SOURCE_MESSAGING, subjectFor(j.id()))
+                    .withMessageGroup(groupFor(j.id()));
+            return new DispatchJobCancelled(md, j.id());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(dispatchJobId);
+        }
+
+        private record Data(String dispatchJobId) {
+        }
+    }
+
+    /// Emitted by [CompleteDispatchJob]: an operator overrode a `FAILED` job
+    /// to `COMPLETED` (dispatch-seam spec §8) — handled/delivered out of band.
+    public record DispatchJobCompleted(EventMetadata metadata, String dispatchJobId) implements DomainEvent {
+
+        public static DispatchJobCompleted of(ExecutionContext ec, DispatchJob j) {
+            EventMetadata md = EventMetadata.of(ec, COMPLETED, SOURCE_MESSAGING, subjectFor(j.id()))
+                    .withMessageGroup(groupFor(j.id()));
+            return new DispatchJobCompleted(md, j.id());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(dispatchJobId);
+        }
+
+        private record Data(String dispatchJobId) {
         }
     }
 

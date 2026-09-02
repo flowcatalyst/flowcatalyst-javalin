@@ -248,6 +248,162 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                 .execute();
     }
 
+    // ── Infra writes (direct SQL, outside the use-case envelope) ───────────
+    //
+    // The scheduler / processing-endpoint / settled-endpoint / reaper writes
+    // (dispatch-seam spec §4–7, §9): router-driven or backstop mutations, not
+    // human-initiated commands, so — like Go's Repository — they bypass
+    // Operation/Plan/UnitOfWork and write straight through `dsl` (auto-commit,
+    // one statement). Every flip carries `created_at` alongside `id` so the
+    // statement prunes to one partition, exactly as the Go queries do.
+
+    /// `GroupHolding` (spec §9): the ONE status predicate shared by every
+    /// enforcement point that decides whether a row holds the rest of its
+    /// group behind it — `FAILED`/legacy `ERROR`, OR `PENDING` with a
+    /// **future** `scheduled_for` (mid-retry-backoff; excluded from the
+    /// ordinary claim query by that same future timestamp, so a check that
+    /// only looked at terminal statuses would miss it). Deliberately excludes
+    /// `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
+    private static Condition groupHolding(Field<String> status, Field<OffsetDateTime> scheduledFor) {
+        return status.in("FAILED", "ERROR")
+                .or(status.eq("PENDING").and(scheduledFor.isNotNull()).and(scheduledFor.gt(DSL.currentOffsetDateTime())));
+    }
+
+    /// The delivery-time hold-back gate (spec §5, §9: Go `GroupHeldBefore`):
+    /// is `job` positioned behind a [#groupHolding] row in the same
+    /// `message_group`? The comparison is **positional**, over the same
+    /// `(sequence, created_at, id)` triple the claim query orders by — never
+    /// set membership, which would include the holder itself the instant its
+    /// own backoff expired and the group would never move again. A job with
+    /// no `message_group` cannot be held (`false`).
+    public boolean groupHeldBefore(DispatchJob job) {
+        if (job.messageGroup() == null) return false;
+        return dsl.fetchExists(dsl.selectOne().from(T)
+                .where(T.MESSAGE_GROUP.eq(job.messageGroup()))
+                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
+                .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
+                        .lt(DSL.row(job.sequence(), utc(job.createdAt()), job.id()))));
+    }
+
+    /// First delivery attempt begins (spec §4): `QUEUED` → `PROCESSING`,
+    /// stamps `last_attempt_at`.
+    public void markInProgress(String id, Instant createdAt) {
+        dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PROCESSING.name())
+                .set(T.LAST_ATTEMPT_AT, utc(Instant.now()))
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// Delivery succeeded (spec §4): `PROCESSING` → `COMPLETED`, stamps
+    /// `completed_at`/`duration_millis`.
+    public void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis) {
+        dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.COMPLETED.name())
+                .set(T.COMPLETED_AT, utc(completedAt))
+                .set(T.DURATION_MILLIS, durationMillis)
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// Retries exhausted (spec §4): `PROCESSING` → `FAILED`, records `lastError`.
+    public void markFailed(String id, Instant createdAt, String lastError) {
+        dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.FAILED.name())
+                .set(T.LAST_ERROR, lastError)
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// Retryable failure, budget remains (spec §4): `PROCESSING` → `PENDING`,
+    /// bumps `attempt_count` and records `lastError` — unlike [#reschedule],
+    /// this DOES spend retry budget.
+    public void scheduleRetry(String id, Instant createdAt, Instant scheduledFor, int attemptCount, String lastError) {
+        dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PENDING.name())
+                .set(T.SCHEDULED_FOR, utc(scheduledFor))
+                .set(T.ATTEMPT_COUNT, attemptCount)
+                .set(T.LAST_ERROR, lastError)
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// Cooperative deferral, or the delivery-time hold-back revert (spec §4,
+    /// §5): `PROCESSING`/`QUEUED` → `PENDING` at `scheduledFor`. **No**
+    /// `attempt_count` bump — back-pressure/hold-back, not a failure.
+    public void reschedule(String id, Instant createdAt, Instant scheduledFor) {
+        dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PENDING.name())
+                .set(T.SCHEDULED_FOR, utc(scheduledFor))
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// The settled endpoint's idempotent batch reset (spec §6, Go
+    /// `SettleAcked`): every id in `QUEUED`/`PROCESSING` flips to `PENDING`
+    /// with `scheduled_for` cleared and `last_error = reason`; a row already
+    /// advanced past those two statuses (already settled, or the reaper beat
+    /// this call to it) is left untouched — that `status IN (...)` guard is
+    /// the whole idempotency contract, shared verbatim with
+    /// [#sweepStrandedSiblings]. Returns the ids actually changed.
+    public List<String> settleAcked(List<String> ids, String reason) {
+        if (ids.isEmpty()) return List.of();
+        return dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PENDING.name())
+                .set(T.SCHEDULED_FOR, (OffsetDateTime) null)
+                .set(T.LAST_ERROR, reason)
+                .where(T.ID.in(ids))
+                .and(T.STATUS.in("QUEUED", "PROCESSING"))
+                .returning(T.ID)
+                .fetch(T.ID);
+    }
+
+    /// The reaper's backstop sweep (spec §7, Go
+    /// `DispatchJobSweepStrandedSiblings`): every `BLOCK_ON_ERROR` row in
+    /// `QUEUED`/`PROCESSING` whose `message_group` has an earlier
+    /// `FAILED`/legacy-`ERROR` head — positional over `(sequence, created_at,
+    /// id)`, so a sibling positioned BEFORE the head is never touched — is
+    /// reset to `PENDING`. A `QUEUED` sibling is reset regardless of age; a
+    /// `PROCESSING` sibling only once `updated_at` is older than
+    /// `processingLiveBefore` (a fresh `PROCESSING` row is presumed a
+    /// genuine in-flight delivery). `NEXT_ON_ERROR`/`IMMEDIATE` rows are
+    /// never matched. Idempotent — a row already reset no longer matches
+    /// `status IN ('QUEUED','PROCESSING')`. Returns the ids reset.
+    ///
+    /// Note the join deliberately checks only `h.status IN ('FAILED',
+    /// 'ERROR')`, not the full [#groupHolding] predicate — a head mid-backoff
+    /// (`PENDING` + future `scheduled_for`) self-resolves once that timer
+    /// fires and needs no reaper.
+    public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
+        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, utc(processingLiveBefore), reason)
+                .getValues(T.ID.getName(), String.class);
+    }
+
+    private static final String SWEEP_STRANDED_SIBLINGS_SQL = """
+            WITH stranded AS (
+                SELECT s.id, s.created_at
+                  FROM msg_dispatch_jobs s
+                  JOIN msg_dispatch_jobs h
+                    ON h.message_group = s.message_group
+                   AND h.status IN ('FAILED', 'ERROR')
+                   AND (h.sequence, h.created_at, h.id) < (s.sequence, s.created_at, s.id)
+                 WHERE s.mode = 'BLOCK_ON_ERROR'
+                   AND s.message_group IS NOT NULL
+                   AND s.status IN ('QUEUED', 'PROCESSING')
+                   AND (s.status <> 'PROCESSING' OR s.updated_at < ?::timestamptz)
+            )
+            UPDATE msg_dispatch_jobs j
+               SET status = 'PENDING', scheduled_for = NULL, last_error = ?::text, updated_at = now()
+              FROM stranded st
+             WHERE j.id = st.id AND j.created_at = st.created_at
+            RETURNING j.id
+            """;
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     /// Out-of-range limits are corrected, not rejected (spec §8).
@@ -283,7 +439,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                 row.getSchemaId(),
                 row.getMaxRetries(),
                 RetryStrategy.parse(row.getRetryStrategy()),
-                DispatchJobStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 row.getAttemptCount(),
                 row.getLastError(),
                 fromJsonb(row.getMetadata()),
@@ -317,7 +473,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                 row.getMessageGroup(),
                 row.getSequence() == null ? 0 : row.getSequence(),
                 row.getTimeoutSeconds() == null ? 0 : row.getTimeoutSeconds(),
-                DispatchJobStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 row.getMaxRetries(),
                 RetryStrategy.parse(row.getRetryStrategy()),
                 instant(row.getScheduledFor()),
@@ -372,6 +528,17 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
             }
         }
         return List.copyOf(out);
+    }
+
+    /// [DispatchJobStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06) instead of propagating a
+    /// bare [DispatchJobStatus.UnrecognisedStatusException] with no context.
+    private static DispatchJobStatus status(String rowId, String stored) {
+        try {
+            return DispatchJobStatus.parse(stored);
+        } catch (DispatchJobStatus.UnrecognisedStatusException e) {
+            throw new CorruptDispatchJobException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

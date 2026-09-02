@@ -148,7 +148,7 @@ on the wire and filters on the columns.)
 | `PROCESSING` | the processing endpoint is delivering it | no |
 | `COMPLETED` | delivered (2xx) | yes |
 | `FAILED` | retries exhausted (or `ERROR` legacy alias) | yes |
-| `CANCELLED` | operator-cancelled (no route today) | yes |
+| `CANCELLED` | operator-cancelled (`CancelDispatchJob`, §2.1) | yes |
 | `EXPIRED` | past `expires_at` (no writer today) | yes |
 
 Transitions and their **owners**:
@@ -164,6 +164,10 @@ Transitions and their **owners**:
 | `PROCESSING` → `PENDING` (retry) | processing (`scheduleRetry`) | `attempt_count+1`, `scheduled_for=now+backoff`, `last_error`, `last_attempt_at=now()` |
 | `PROCESSING`/`QUEUED` → `PENDING` (defer, no budget) | processing (`reschedule`) | `scheduled_for`, `updated_at` only |
 | **any → `PENDING` (requeue)** | **this unit — [RequeueDispatchJobs](#6-operations)** | `status='PENDING'`, `scheduled_for=NULL`, `attempt_count=0`, `completed_at=NULL`, `duration_millis=NULL`, `last_error=NULL`, `updated_at=now()` |
+| **`FAILED` → `CANCELLED`** | **this unit — `CancelDispatchJob` (§2.1, §6)** | `status='CANCELLED'`, `completed_at=updated_at=now()`; `last_error`/`attempt_count`/`scheduled_for` left as the failure left them |
+| **`FAILED` → `COMPLETED`** | **this unit — `CompleteDispatchJob` (§2.1, §6)** | same shape as Cancel, `status='COMPLETED'` |
+| `QUEUED`/`PROCESSING` → `PENDING` (router-settled) | this unit — `settled.SettledApi` (public route, §2.2) | `status='PENDING'`, `scheduled_for=NULL`, `last_error=reason`; guarded `status IN ('QUEUED','PROCESSING')` |
+| `QUEUED`/`PROCESSING` → `PENDING` (reaper backstop) | this unit — `DispatchJobReaper` (§2.2) | same shape as the settled reset; positional over `(sequence, created_at, id)` behind a `FAILED`/`ERROR` head |
 
 `requeue()` has **no precondition**: a `COMPLETED`, `PROCESSING` or even
 `QUEUED` job is reset the same way (Go's `UPDATE … WHERE id = ANY($1)`).
@@ -203,13 +207,57 @@ processing endpoint's delivery-time check uses the same predicate —
 | **ignore** | *no route* — the closest is `requeue` of the **siblings only** (the failed job stays `FAILED` and keeps blocking) → not expressible today | would need `FAILED → CANCELLED` | would release |
 | **completed** | *no route* | would need `FAILED → COMPLETED` (manual completion) | would release |
 
-**Owner decision needed (open question 1):** *ignore* and *completed*
-require two new admin operations (`CancelDispatchJob`: `FAILED → CANCELLED`;
-`CompleteDispatchJob`: `FAILED → COMPLETED`, manual) and lockfile routes
-that do not exist yet. This unit ships only *resend* (= requeue), with the
-aggregate's status model and `isTerminal` ready for the other two. Until
-ruled, a `BLOCK_ON_ERROR` group whose head should be ignored can only be
-unblocked by re-sending the head.
+**Shipped (Unit 6a, dispatch-seam spec §8):** *ignore* and *completed* are
+now `POST /api/dispatch-jobs/{id}/cancel` (`CancelDispatchJob`) and
+`POST /api/dispatch-jobs/{id}/complete` (`CompleteDispatchJob`), gated on
+the same `dispatch-job:view` permission as requeue; only valid from
+`FAILED` (409 `NOT_FAILED` otherwise). Flipping the head off `FAILED`
+unblocks the rest of its `BLOCK_ON_ERROR` group the moment
+`GroupHoldingStatusSQL` (§2.2 below) stops matching — the scheduler's next
+poll (when it exists) re-admits the siblings in order.
+
+**Unlike every read route on this aggregate, the post-load scope check on
+cancel/complete answers 404 `DispatchJob_NOT_FOUND` for an out-of-scope job
+— byte-identical to a truly missing id — not 403 `SCOPE_FORBIDDEN`.** This
+is a deliberate divergence from §5's read-path table: a write verb must not
+let a caller distinguish "exists but not mine" from "does not exist" by
+status code.
+
+### 2.2 The dispatch seam's platform-side infrastructure (Unit 6a)
+
+Shipped alongside Cancel/Complete, per `docs/spec/dispatch-seam.md`
+(the behavioural spec for all of §2.2 — this section only summarises what
+landed and where):
+
+- **`GroupHolding`** — one shared SQL predicate in `DispatchJobRepository`
+  (`groupHolding`, private): `status IN ('FAILED','ERROR')` OR (`PENDING`
+  with a **future** `scheduled_for`). `groupHeldBefore(DispatchJob)` is its
+  public, positional (`(sequence, created_at, id)`) consuming method — the
+  delivery-time gate a future processing endpoint will call; not yet wired
+  to any caller (§9's "infra writes" have no in-unit caller today, same as
+  before this unit, only now they exist).
+- **`POST /api/dispatch/settled`** (`settled.SettledApi`) — public route
+  (outside the platform JWT, registered via `Platform.isPublicPath`),
+  self-verified per item with `settled.HmacTokenVerifier` (HKDF-derived
+  from `FLOWCATALYST_APP_KEY`, byte-identical to Go's
+  `scheduler.DispatchAuthService`). Not in the lockfile (excluded by
+  `/api/dispatch/` in `LockfileCoverageTest`), matching Go.
+- **`DispatchJobReaper`** — a 2-minute, non-leader-gated sweep of
+  `DispatchJobRepository#sweepStrandedSiblings`, wired unconditionally from
+  `Platform.register` (not `Server.java`, which has no background-subsystem
+  wiring yet for any subsystem).
+- **`DispatchJobStatus.parse`** is now **strict** (X-06): an unrecognised
+  stored value throws `DispatchJobStatus.UnrecognisedStatusException`,
+  wrapped by the repository as `CorruptDispatchJobException(rowId, cause)`
+  so a corrupt read fails loudly with the offending row's id, and a list
+  read containing one corrupt row fails the whole list. This is a change
+  from the "unknown → `PENDING`" behaviour §1.1/§15 of the dispatch-seam
+  spec flagged as a direct X-06 violation.
+- **`io.flowcatalyst.platform.subscription.DispatchMode.parse`**'s default
+  moved from `IMMEDIATE` to `NEXT_ON_ERROR` for absent/unrecognised values
+  (X-01/A-09) — an unrecognised (non-blank) value is now logged at WARN.
+  The **router's own** `io.flowcatalyst.router.wire.DispatchMode` is a
+  separate class, untouched here (owned by a concurrent unit).
 
 ## 3. HTTP surface (lockfile)
 
@@ -232,6 +280,8 @@ pass). The literal segments (`list-raw`, `raw`, `filter-options`, `event/…`,
 | `GET /api/dispatch-jobs/{id}/raw` | view-raw | path | `DispatchJobResponse` | identical body to `{id}` — **accident?** |
 | `GET /api/dispatch-jobs/{id}/attempts` | view | path | bare array of `AttemptDTO` | the job is loaded first for 404 + scope; attempts oldest first |
 | `POST /api/dispatch-jobs/requeue` | **view** | `RequeueRequest` `{ids[]}` | `RequeueResponse` `{requeued}` | a caller who can see a job may re-drive it — **load-bearing or accident?** (a write gated by a view permission) |
+| `POST /api/dispatch-jobs/{id}/cancel` | **view** | path `id` | `DispatchJobResponse` (reloaded) | 404 `DispatchJob_NOT_FOUND` for missing **and** out-of-scope (§2.1); 409 `NOT_FAILED` unless `status == FAILED` |
+| `POST /api/dispatch-jobs/{id}/complete` | **view** | path `id` | `DispatchJobResponse` (reloaded) | same shape as cancel |
 
 Wire shapes (field order as listed; optional fields omitted when absent;
 timestamps RFC 3339, 6 fractional digits, `Z`):
@@ -299,10 +349,21 @@ No `Checks.require*` inside `operations/`.
 
 ## 6. Operations
 
-One operation: **`RequeueDispatchJobs`**, command **`RequeueCommand(ids)`**
-(Go has no use case here — the handler ran the SQL directly and wrote no
+Four operations: **`RequeueDispatchJobs`** (command `RequeueCommand(ids)`;
+Go has no use case here — the handler ran the SQL directly and wrote no
 event or audit; this port lifts the action into the envelope, as the Go
-package doc already intended for "human-initiated actions").
+package doc already intended for "human-initiated actions"), and — new in
+Unit 6a — **`CancelDispatchJob`** / **`CompleteDispatchJob`** (commands
+`CancelCommand(id)` / `CompleteCommand(id)`), which share their
+load-or-404-with-scope-as-404 and `FAILED`-precondition logic in a
+package-private `StatusFlip` helper (mirrors Go's `operations/shared.go`
+`statusFlip`).
+
+| Phase | `CancelDispatchJob` / `CompleteDispatchJob` | Error |
+|---|---|---|
+| validate | `id` non-blank | 400 `ID_REQUIRED` |
+| authorize | `publicAccess` — resource check is in `StatusFlip.loadOwn` | |
+| execute | `StatusFlip.loadOwn` (404 for missing **or** out-of-scope, §2.1) → `StatusFlip.requireFailed` (409 `NOT_FAILED`) → `job.cancel()`/`job.complete()` → `Plan.save` | |
 
 | Phase | Rule | Error |
 |---|---|---|
@@ -328,6 +389,22 @@ Each per-row event writes one `msg_events` row and one `aud_logs` row
 the rollup writes one of each (`entity_type = Dispatchjobs`,
 `entity_id = {batchId}`), all in the transaction that resets the rows.
 
+**Cancel / Complete use a DIFFERENT source** — `platform:messaging`, not
+`platform:admin` — per dispatch-seam spec §8's table verbatim (Go's
+`operations/events.go` `Source` constant). This is deliberate: those two
+verbs are new in this port and follow the seam spec exactly, while
+Requeue's `platform:admin` is the already-shipped (and separately
+flagged, DJ-5) Java behaviour this unit does not touch.
+
+| Type | Subject | Message group | `data` |
+|---|---|---|---|
+| `platform:messaging:dispatch-job:cancelled` | `platform.dispatchjob.{id}` | `platform:dispatchjob:{id}` | `dispatchJobId` |
+| `platform:messaging:dispatch-job:completed` | `platform.dispatchjob.{id}` | `platform:dispatchjob:{id}` | `dispatchJobId` |
+
+Each writes one `msg_events` row and one `aud_logs` row
+(`entity_type = Dispatchjob`, `entity_id = {id}`,
+`operation = CancelCommand` / `CompleteCommand`).
+
 ## 7. Conflicts and not-found
 
 | Where | Condition | Code | Status |
@@ -335,6 +412,9 @@ the rollup writes one of each (`entity_type = Dispatchjobs`,
 | `GET {id}`, `{id}/raw`, `{id}/attempts` | no job with that id | `DispatchJob_NOT_FOUND` | 404 |
 | same | job not in caller's scope | `SCOPE_FORBIDDEN` | 403 |
 | requeue | unknown / inaccessible id | — (skipped) | 200 |
+| cancel / complete | no job with that id **or** job not in caller's scope | `DispatchJob_NOT_FOUND` (both — byte-identical, §2.1) | 404 |
+| cancel / complete | job exists, in scope, `status != FAILED` | `NOT_FAILED` | 409 |
+| any read/write on this aggregate | a row's stored `status` is unrecognised | — (repository throws `CorruptDispatchJobException` before a `UseCaseError` is even built) | 500 (X-06, §2.2) |
 
 ## 8. Constants
 
@@ -378,15 +458,26 @@ the rollup writes one of each (`entity_type = Dispatchjobs`,
 
 ## 10. Repository methods owned by other units (do NOT implement here)
 
+**Update (Unit 6a):** the write primitives below marked "**implemented
+(6a)**" now exist on `DispatchJobRepository`, matching the contracts
+already documented here — but **no caller exists yet** (the scheduler and
+the processing endpoint that would call them are still future units, per
+`docs/spec/dispatch-seam.md` §15's "what Java has"). `groupHeldBefore` and
+`sweepStrandedSiblings`/`settleAcked` are consumed today only by
+`DispatchJobReaper` and `settled.SettledApi` respectively (§2.2); the rest
+remain unwired plumbing until the scheduler/processing endpoint land.
+
 | Go method | Owner | Contract the later unit must honour |
 |---|---|---|
 | `Insert` / `InsertBatch` | ingest (`POST /api/dispatch-jobs/batch`, `dispatch_job_create`), stream fan-out | `ON CONFLICT (id, created_at) DO NOTHING`; `metadata` `[]` when empty; `created_at` defaults to now |
-| `MarkInProgress(id, createdAt)` | processing | `status='PROCESSING'`, `last_attempt_at = updated_at = now()` |
-| `MarkCompleted(id, createdAt, durationMillis)` | processing | `status='COMPLETED'`, `completed_at = updated_at = now()`, `duration_millis` |
-| `MarkFailed(id, createdAt, lastError, durationMillis)` | processing | `status='FAILED'`, `completed_at`, `duration_millis`, `last_error`, `updated_at` (§2) |
-| `ScheduleRetry(id, createdAt, scheduledFor, lastError)` | processing | `attempt_count+1`, `scheduled_for`, `last_error`, `last_attempt_at=now()`, `status='PENDING'` |
-| `Reschedule(id, createdAt, scheduledFor)` | processing (ack=false / 429 / blocked group) | `status='PENDING'`, `scheduled_for`, `updated_at`, **no** attempt bump (§2) |
-| `GroupBlocked(group)` | processing + scheduler poller | `EXISTS … WHERE message_group = ? AND status IN ('FAILED','ERROR')` |
+| `MarkInProgress(id, createdAt)` | **implemented (6a)** — future caller: processing | `status='PROCESSING'`, `last_attempt_at = updated_at = now()` |
+| `MarkCompleted(id, createdAt, completedAt, durationMillis)` | **implemented (6a)** — future caller: processing | `status='COMPLETED'`, `completed_at`, `duration_millis`, `updated_at=now()` |
+| `MarkFailed(id, createdAt, lastError)` | **implemented (6a)** — future caller: processing | `status='FAILED'`, `last_error`, `updated_at=now()` (§2) |
+| `ScheduleRetry(id, createdAt, scheduledFor, attemptCount, lastError)` | **implemented (6a)** — future caller: processing | `status='PENDING'`, `scheduled_for`, `attempt_count`, `last_error`, `updated_at=now()` |
+| `Reschedule(id, createdAt, scheduledFor)` | **implemented (6a)** — future caller: processing (ack=false / 429 / blocked group) | `status='PENDING'`, `scheduled_for`, `updated_at`, **no** attempt bump (§2) |
+| `GroupHeldBefore(job)` (Go: `GroupBlocked`) | **implemented (6a)**, wired to no caller yet — future caller: processing | positional (`sequence, created_at, id`) over the shared `GroupHolding` predicate (§2.2); `false` when `messageGroup == null` |
+| `SettleAcked(ids, reason)` | **implemented (6a)**, wired to `settled.SettledApi` | `status IN ('QUEUED','PROCESSING')` guard, returns the ids actually changed (§2.2) |
+| `SweepStrandedSiblings(processingLiveBefore, reason)` | **implemented (6a)**, wired to `DispatchJobReaper` | positional `BLOCK_ON_ERROR` sweep behind a `FAILED`/`ERROR` head (§2.2) |
 | `RecordAttempt(jobId, attempt)` | processing | untyped TSID id; `status` `SUCCESS`/`FAILURE` from the boolean |
 | `FindRecentRaw(limit)` | `/bff/debug/dispatch-jobs` | write table, newest first, cap 1000 → 100 |
 | poller claim `PENDING → QUEUED` (`FOR UPDATE SKIP LOCKED`), stale `QUEUED → PENDING` | scheduler | plain-SQL text blocks are allowed for the claim |

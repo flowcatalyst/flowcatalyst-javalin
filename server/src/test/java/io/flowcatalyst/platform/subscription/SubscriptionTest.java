@@ -193,8 +193,11 @@ class SubscriptionTest {
 
         assertThat(DispatchMode.parse("NEXT_ON_ERROR")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
         assertThat(DispatchMode.parse("BLOCK_ON_ERROR")).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
-        assertThat(DispatchMode.parse("immediate")).isEqualTo(DispatchMode.IMMEDIATE);
-        assertThat(DispatchMode.parse(null)).isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(DispatchMode.parse("IMMEDIATE")).isEqualTo(DispatchMode.IMMEDIATE);
+        // unrecognised ("immediate" is lowercase, not the stored constant) and absent both fall
+        // back to the ordering-safe default, never to IMMEDIATE (X-01/A-09; dispatch-seam spec §2).
+        assertThat(DispatchMode.parse("immediate")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(DispatchMode.parse(null)).isEqualTo(DispatchMode.NEXT_ON_ERROR);
         assertThat(DispatchMode.IMMEDIATE.requiresOrdering()).isFalse();
         assertThat(DispatchMode.BLOCK_ON_ERROR.requiresOrdering()).isTrue();
     }

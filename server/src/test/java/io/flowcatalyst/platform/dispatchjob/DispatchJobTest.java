@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The pure rules of the aggregate (spec §1–2): the requeue transition, the
 /// lenient enum readers, terminality and the code-derived facets. No
@@ -69,6 +70,34 @@ class DispatchJobTest {
         assertThat(job(status).requeue().status()).isEqualTo(DispatchJobStatus.PENDING);
     }
 
+    // ── cancel / complete (spec §8) ─────────────────────────────────────────
+
+    @Test
+    void cancelFlipsToCancelledAndStampsCompletedAtButKeepsTheFailureEvidence() {
+        DispatchJob before = failedJob();
+        DispatchJob after = before.cancel();
+
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.CANCELLED);
+        assertThat(after.completedAt()).isAfterOrEqualTo(before.completedAt().minusSeconds(1));
+        assertThat(after.updatedAt()).isAfter(before.updatedAt());
+        // preserved, not cleared — Go's Cancel() touches only status/completedAt/updatedAt
+        assertThat(after.lastError()).isEqualTo("boom");
+        assertThat(after.attemptCount()).isEqualTo(3);
+        assertThat(after.scheduledFor()).isEqualTo(before.scheduledFor());
+        assertThat(after.id()).isEqualTo(before.id());
+    }
+
+    @Test
+    void completeFlipsToCompletedAndStampsCompletedAtButKeepsTheFailureEvidence() {
+        DispatchJob before = failedJob();
+        DispatchJob after = before.complete();
+
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        assertThat(after.updatedAt()).isAfter(before.updatedAt());
+        assertThat(after.lastError()).isEqualTo("boom");
+        assertThat(after.attemptCount()).isEqualTo(3);
+    }
+
     @Test
     void metadataIsDefensivelyCopiedAndNeverNull() {
         DispatchJob j = failedJob();
@@ -83,7 +112,7 @@ class DispatchJobTest {
     // ── Enums (spec §1.1, §1.2, §2) ────────────────────────────────────────
 
     @ParameterizedTest(name = "status ''{0}'' reads as {1}")
-    @CsvSource(nullValues = "NULL", value = {
+    @CsvSource(value = {
             "PENDING, PENDING",
             "QUEUED, QUEUED",
             "PROCESSING, PROCESSING",
@@ -92,11 +121,21 @@ class DispatchJobTest {
             "FAILED, FAILED",
             "ERROR, FAILED",
             "CANCELLED, CANCELLED",
-            "EXPIRED, EXPIRED",
-            "bogus, PENDING",
-            "NULL, PENDING"})
-    void statusParsesLenientlyWithLegacyAliases(String stored, DispatchJobStatus expected) {
+            "EXPIRED, EXPIRED"})
+    void statusParsesStrictlyWithOnlyTheDocumentedLegacyAliases(String stored, DispatchJobStatus expected) {
         assertThat(DispatchJobStatus.parse(stored)).isEqualTo(expected);
+    }
+
+    /// X-06: a value outside the recognised/legacy set is a loud read
+    /// failure, never a silent default to `PENDING` — a corrupted terminal
+    /// status silently reappearing as `PENDING` could resurrect a job that
+    /// already completed or failed (dispatch-seam spec §4).
+    @Test
+    void statusRejectsAnUnrecognisedOrMissingValue() {
+        assertThatThrownBy(() -> DispatchJobStatus.parse("bogus"))
+                .isInstanceOf(DispatchJobStatus.UnrecognisedStatusException.class);
+        assertThatThrownBy(() -> DispatchJobStatus.parse(null))
+                .isInstanceOf(DispatchJobStatus.UnrecognisedStatusException.class);
     }
 
     @ParameterizedTest(name = "{0} terminal = {1}")

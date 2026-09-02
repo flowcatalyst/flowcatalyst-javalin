@@ -8,6 +8,10 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobProjection;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.Facet;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ListFilter;
+import io.flowcatalyst.platform.dispatchjob.operations.CancelCommand;
+import io.flowcatalyst.platform.dispatchjob.operations.CancelDispatchJob;
+import io.flowcatalyst.platform.dispatchjob.operations.CompleteCommand;
+import io.flowcatalyst.platform.dispatchjob.operations.CompleteDispatchJob;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueCommand;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueDispatchJobs;
 import io.flowcatalyst.platform.shared.auth.Auth;
@@ -50,6 +54,8 @@ import static io.flowcatalyst.platform.shared.auth.Permission.DISPATCH_JOB_VIEW_
 /// | GET | `/api/dispatch-jobs/{id}/raw` | view-raw | 200 [DispatchJobResponse] |
 /// | GET | `/api/dispatch-jobs/{id}/attempts` | view | 200 `[AttemptDTO]` |
 /// | POST | `/api/dispatch-jobs/requeue` | view | 200 [RequeueResponse] |
+/// | POST | `/api/dispatch-jobs/{id}/cancel` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
+/// | POST | `/api/dispatch-jobs/{id}/complete` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
 public final class DispatchJobApi {
 
     /// Distinct values per facet on `filter-options` (spec §8).
@@ -81,6 +87,8 @@ public final class DispatchJobApi {
         routes.get("/api/dispatch-jobs/{id}", Auth.scoped(ctx -> getById(ctx, s, DISPATCH_JOB_VIEW)));
         routes.get("/api/dispatch-jobs/{id}/raw", Auth.scoped(ctx -> getById(ctx, s, DISPATCH_JOB_VIEW_RAW)));
         routes.get("/api/dispatch-jobs/{id}/attempts", Auth.scoped(ctx -> attempts(ctx, s)));
+        routes.post("/api/dispatch-jobs/{id}/cancel", Auth.scoped(ctx -> cancel(ctx, s)));
+        routes.post("/api/dispatch-jobs/{id}/complete", Auth.scoped(ctx -> complete(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
@@ -125,6 +133,30 @@ public final class DispatchJobApi {
         var cmd = ctx.bodyAsClass(RequeueRequest.class).toCommand();
         var event = RequeueDispatchJobs.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new RequeueResponse(event.requeued()));
+    }
+
+    /// Same gate as requeue: a caller who can see a job may resolve it
+    /// (seam spec §8); the resource-level scope and the `FAILED`
+    /// precondition are the operation's ([CancelDispatchJob]).
+    private static void cancel(Context ctx, State s) {
+        Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
+        String id = ctx.pathParam("id");
+        CancelDispatchJob.of(s.repo()).run(s.uow(), new CancelCommand(id), Auth.executionContext());
+        ctx.json(DispatchJobResponse.from(reload(s, id)));
+    }
+
+    /// Same shape as [#cancel]; see [CompleteDispatchJob].
+    private static void complete(Context ctx, State s) {
+        Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
+        String id = ctx.pathParam("id");
+        CompleteDispatchJob.of(s.repo()).run(s.uow(), new CompleteCommand(id), Auth.executionContext());
+        ctx.json(DispatchJobResponse.from(reload(s, id)));
+    }
+
+    /// Re-fetches the job after a cancel/complete so the SPA can refresh its
+    /// row without a second GET (spec §8).
+    private static DispatchJob reload(State s, String id) {
+        return s.repo().findById(id).orElseThrow(() -> HttpError.notFound("DispatchJob", id));
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────

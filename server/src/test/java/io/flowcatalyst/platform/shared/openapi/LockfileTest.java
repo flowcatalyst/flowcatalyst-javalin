@@ -11,9 +11,10 @@ class LockfileTest {
     @Test
     void loadsTheEmbeddedContract() {
         var lock = Lockfile.load(new ObjectMapper());
-        assertThat(lock.pathCount()).isEqualTo(178);
+        // +2 paths / +2 operations: cancelDispatchJob, completeDispatchJob (dispatch-seam spec §8).
+        assertThat(lock.pathCount()).isEqualTo(180);
         var ops = lock.operations();
-        assertThat(ops).hasSize(243);
+        assertThat(ops).hasSize(245);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");

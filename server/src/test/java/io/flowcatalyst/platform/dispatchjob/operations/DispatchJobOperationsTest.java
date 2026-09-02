@@ -6,6 +6,8 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
+import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobCancelled;
+import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobCompleted;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobsRequeued;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -185,5 +187,109 @@ class DispatchJobOperationsTest {
         assertThat(requeueAs(ANCHOR, done).requeued()).isEqualTo(1);
         assertThat(reload(done).status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(DB.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(done))).as("upsert, not a second row").isEqualTo(1);
+    }
+
+    // ── Cancel / Complete (spec §8) ──────────────────────────────────────────
+
+    @Test
+    void cancelFlipsFailedToCancelledStampsCompletedAtAndEmitsTheEventWithAudit() {
+        String id = failedJob(CLIENT_A);
+        DispatchJobCancelled event = Auth.runAs(ANCHOR, () -> CancelDispatchJob.of(repo)
+                .run(uow, new CancelCommand(id), ExecutionContext.of(ANCHOR.principalId())));
+
+        assertThat(event.dispatchJobId()).isEqualTo(id);
+        DispatchJob after = reload(id);
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.CANCELLED);
+        assertThat(after.completedAt()).isNotNull();
+        assertThat(after.lastError()).as("evidence of the failure is preserved").isEqualTo("boom");
+
+        var events = eventsOn(DispatchJobEvents.subjectFor(id), DispatchJobEvents.CANCELLED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("source")).isEqualTo("platform:messaging");
+        JsonNode data = json(events.getFirst().get("data", String.class));
+        assertThat(data.get("dispatchJobId").asText()).isEqualTo(id);
+
+        var audits = auditsFor(id, "CancelCommand");
+        assertThat(audits).hasSize(1);
+    }
+
+    @Test
+    void completeFlipsFailedToCompletedAndEmitsTheEvent() {
+        String id = failedJob(null);
+        DispatchJobCompleted event = Auth.runAs(ANCHOR, () -> CompleteDispatchJob.of(repo)
+                .run(uow, new CompleteCommand(id), ExecutionContext.of(ANCHOR.principalId())));
+
+        assertThat(event.dispatchJobId()).isEqualTo(id);
+        assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        assertThat(eventsOn(DispatchJobEvents.subjectFor(id), DispatchJobEvents.COMPLETED)).hasSize(1);
+    }
+
+    @Test
+    void cancelAndCompleteRejectEveryNonFailedStatusWith409() {
+        for (String status : List.of("PENDING", "QUEUED", "PROCESSING", "COMPLETED", "CANCELLED", "EXPIRED")) {
+            String id = seedWriteRow(Seed.of(code("op")).withStatus(status));
+            assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> CancelDispatchJob.of(repo)
+                    .run(uow, new CancelCommand(id), ExecutionContext.of(ANCHOR.principalId()))))
+                    .as("cancel from " + status)
+                    .isInstanceOf(UseCaseException.class)
+                    .extracting(t -> ((UseCaseException) t).code()).isEqualTo("NOT_FAILED");
+            assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> CompleteDispatchJob.of(repo)
+                    .run(uow, new CompleteCommand(id), ExecutionContext.of(ANCHOR.principalId()))))
+                    .as("complete from " + status)
+                    .isInstanceOf(UseCaseException.class)
+                    .extracting(t -> ((UseCaseException) t).code()).isEqualTo("NOT_FAILED");
+            assertThat(reload(id).status()).as("rejected — untouched").isEqualTo(DispatchJobStatus.valueOf(status));
+        }
+    }
+
+    @Test
+    void cancelAnswersTheSameNotFoundForAMissingIdAndForAnOutOfScopeId() {
+        String missingId = Tsid.generate();
+        String otherTenantId = failedJob(CLIENT_B);
+
+        UseCaseError missing = catchUseCaseError(() -> Auth.runAs(CLIENT_A_OPERATOR, () -> CancelDispatchJob.of(repo)
+                .run(uow, new CancelCommand(missingId), ExecutionContext.of(CLIENT_A_OPERATOR.principalId()))));
+        UseCaseError outOfScope = catchUseCaseError(() -> Auth.runAs(CLIENT_A_OPERATOR, () -> CancelDispatchJob.of(repo)
+                .run(uow, new CancelCommand(otherTenantId), ExecutionContext.of(CLIENT_A_OPERATOR.principalId()))));
+
+        assertThat(missing).isInstanceOf(UseCaseError.NotFound.class);
+        assertThat(outOfScope).as("out-of-scope answers the SAME shape as truly missing, not 403 SCOPE_FORBIDDEN")
+                .isInstanceOf(UseCaseError.NotFound.class);
+        assertThat(outOfScope.code()).isEqualTo(missing.code()).isEqualTo("DispatchJob_NOT_FOUND");
+        assertThat(outOfScope.httpStatus()).isEqualTo(missing.httpStatus()).isEqualTo(404);
+        assertThat(missing.message()).isEqualTo("DispatchJob not found: " + missingId);
+        assertThat(outOfScope.message()).as("same format, the out-of-scope job's own id").isEqualTo("DispatchJob not found: " + otherTenantId);
+        assertThat(reload(otherTenantId).status()).as("untouched").isEqualTo(DispatchJobStatus.FAILED);
+    }
+
+    @Test
+    void cancellingTheHeadUnblocksGroupHeldBeforeForItsSiblings() {
+        String group = "grp-cancel-unblock-" + RUN;
+        String cancelCode = code("cancelunblock");
+        var head = Seed.of(cancelCode).withMessageGroup(group).withSequence(1).failed(3, "x");
+        String headId = seedWriteRow(head);
+        var sibling = Seed.of(cancelCode).withMessageGroup(group).withSequence(2)
+                .withCreatedAt(head.createdAt().plusSeconds(1)).withStatus("QUEUED");
+        seedWriteRow(sibling);
+        DispatchJob siblingLoaded = reload(sibling.id());
+
+        assertThat(repo.groupHeldBefore(siblingLoaded)).as("held behind the FAILED head").isTrue();
+
+        Auth.runAs(ANCHOR, () -> CancelDispatchJob.of(repo)
+                .run(uow, new CancelCommand(headId), ExecutionContext.of(ANCHOR.principalId())));
+
+        assertThat(repo.groupHeldBefore(reload(sibling.id())))
+                .as("the head is no longer FAILED — GroupHolding stops matching the instant status changes")
+                .isFalse();
+    }
+
+    /// Runs `call`, expecting it to throw [UseCaseException], and returns the carried [UseCaseError].
+    private static UseCaseError catchUseCaseError(Runnable call) {
+        try {
+            call.run();
+        } catch (UseCaseException e) {
+            return e.error();
+        }
+        throw new AssertionError("expected a UseCaseException");
     }
 }

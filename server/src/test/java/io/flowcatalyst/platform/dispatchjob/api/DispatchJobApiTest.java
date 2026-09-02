@@ -292,4 +292,60 @@ class DispatchJobApiTest {
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asText()).isEqualTo("IDS_REQUIRED");
     }
+
+    // ── Cancel / Complete (spec §8) ──────────────────────────────────────────
+
+    @Test
+    void cancelFlipsFailedToCancelledAndReturnsTheUpdatedJob() {
+        String id = seedWriteRow(Seed.of(code("cancelapi")).withClientId(CLIENT_A).failed(3, "boom"));
+        var r = http.post("/api/dispatch-jobs/" + id + "/cancel", "", VIEWER_A);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        JsonNode body = json(r);
+        assertThat(body.get("id").asText()).isEqualTo(id);
+        assertThat(body.get("status").asText()).isEqualTo("CANCELLED");
+        assertThat(json(http.get("/api/dispatch-jobs/" + id, VIEWER_A)).get("status").asText())
+                .as("a second GET agrees with the returned body").isEqualTo("CANCELLED");
+    }
+
+    @Test
+    void completeFlipsFailedToCompletedAndReturnsTheUpdatedJob() {
+        String id = seedWriteRow(Seed.of(code("completeapi")).withClientId(CLIENT_A).failed(3, "boom"));
+        var r = http.post("/api/dispatch-jobs/" + id + "/complete", "", VIEWER_A);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("status").asText()).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void cancelAndCompleteRequireTheViewPermission() {
+        String id = seedWriteRow(Seed.of(code("cancelapiperm")).withClientId(CLIENT_A).failed(3, "boom"));
+        assertThat(http.post("/api/dispatch-jobs/" + id + "/cancel", "", NO_PERMISSION).statusCode()).isEqualTo(403);
+        assertThat(http.post("/api/dispatch-jobs/" + id + "/complete", "", NO_PERMISSION).statusCode()).isEqualTo(403);
+        assertThat(reload(id).get("status").asText()).as("untouched").isEqualTo("FAILED");
+    }
+
+    @Test
+    void cancelIsConflictWhenTheJobIsNotFailed() {
+        var r = http.post("/api/dispatch-jobs/" + jobA + "/cancel", "", ANCHOR); // jobA is PENDING
+        assertThat(r.statusCode()).isEqualTo(409);
+        assertThat(json(r).get("error").asText()).isEqualTo("NOT_FAILED");
+        assertThat(reload(jobA).get("status").asText()).isEqualTo("PENDING");
+    }
+
+    @Test
+    void cancelAnswersTheSameNotFoundForMissingAndOutOfScope() {
+        var missing = http.post("/api/dispatch-jobs/" + Tsid.generate() + "/cancel", "", VIEWER_A);
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(json(missing).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
+
+        // jobB belongs to CLIENT_B and VIEWER_A only has CLIENT_A: the write route answers the
+        // SAME 404 shape a missing id gets, unlike the GET route's 403 SCOPE_FORBIDDEN.
+        var outOfScope = http.post("/api/dispatch-jobs/" + jobB + "/cancel", "", VIEWER_A);
+        assertThat(outOfScope.statusCode()).isEqualTo(404);
+        assertThat(json(outOfScope).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
+        assertThat(reload(jobB).get("status").asText()).as("untouched").isEqualTo("FAILED");
+    }
+
+    private static JsonNode reload(String id) {
+        return json(http.get("/api/dispatch-jobs/" + id, ANCHOR));
+    }
 }

@@ -12339,6 +12339,88 @@
         ]
       }
     },
+    "/api/dispatch-jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelDispatchJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchJobResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Cancel a FAILED dispatch job",
+        "tags": [
+          "dispatch-jobs"
+        ]
+      }
+    },
+    "/api/dispatch-jobs/{id}/complete": {
+      "post": {
+        "operationId": "completeDispatchJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchJobResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Mark a FAILED dispatch job COMPLETED (delivered out of band)",
+        "tags": [
+          "dispatch-jobs"
+        ]
+      }
+    },
     "/api/dispatch-jobs/{id}/raw": {
       "get": {
         "operationId": "getDispatchJobRaw",

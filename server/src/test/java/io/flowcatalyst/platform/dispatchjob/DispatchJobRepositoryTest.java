@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
@@ -21,6 +22,7 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seed;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedAttempt;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedProjection;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -269,5 +271,217 @@ class DispatchJobRepositoryTest {
             return null;
         });
         assertThat(repo.findById(id)).isEmpty();
+    }
+
+    // ── X-06: corrupt status fails loudly (spec §4, §15) ────────────────────
+
+    @Test
+    void findByIdRejectsAnUnrecognisedStatusInsteadOfDefaultingSilently() {
+        String id = seedWriteRow(Seed.of(code("corrupt")).withStatus("BOGUS_STATUS"));
+        assertThatThrownBy(() -> repo.findById(id))
+                .isInstanceOf(CorruptDispatchJobException.class)
+                .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(id));
+    }
+
+    @Test
+    void findByIdReadsTheLegacyErrorStatusAsFailed() {
+        String id = seedWriteRow(Seed.of(code("corrupt")).withStatus("ERROR"));
+        assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.FAILED);
+    }
+
+    @Test
+    void aCorruptRowFailsTheWholeListReadNotJustThatRow() {
+        String goodCode = code("corruptlist");
+        seed(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(20)));
+        seedProjection(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(21)).withStatus("NOT_A_REAL_STATUS"));
+        assertThatThrownBy(() -> repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(goodCode), null)))
+                .isInstanceOf(CorruptDispatchJobException.class);
+    }
+
+    // ── GroupHolding / groupHeldBefore (spec §9) ────────────────────────────
+
+    @Test
+    void groupHeldBeforeIsPositionalOverSequenceCreatedAtId() {
+        String group = "grp-hold-" + RUN;
+        String holdCode = code("hold");
+        Instant t = BASE.plusSeconds(30);
+        seedWriteRow(Seed.of(holdCode).withMessageGroup(group).withSequence(1).withCreatedAt(t).failed(3, "boom"));
+        String ahead = seedWriteRow(Seed.of(holdCode).withMessageGroup(group).withSequence(0).withCreatedAt(t.minusSeconds(1)));
+        String behind = seedWriteRow(Seed.of(holdCode).withMessageGroup(group).withSequence(2).withCreatedAt(t.plusSeconds(1)));
+
+        assertThat(repo.groupHeldBefore(repo.findById(behind).orElseThrow()))
+                .as("behind a FAILED head, in the same group").isTrue();
+        assertThat(repo.groupHeldBefore(repo.findById(ahead).orElseThrow()))
+                .as("positioned BEFORE the failed head is never held — proves positional, not set membership").isFalse();
+    }
+
+    @Test
+    void groupHeldBeforeCountsAPendingRowMidBackoffButNotOneAlreadyEligible() {
+        String group = "grp-backoff-" + RUN;
+        String bckCode = code("bck");
+        Instant t = BASE.plusSeconds(40);
+        String midBackoff = seedWriteRow(Seed.of(bckCode).withMessageGroup(group).withSequence(1).withCreatedAt(t)
+                .withStatus("PENDING"));
+        DB.update(MSG_DISPATCH_JOBS)
+                .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, Instant.now().plusSeconds(60).atOffset(ZoneOffset.UTC))
+                .where(MSG_DISPATCH_JOBS.ID.eq(midBackoff))
+                .execute();
+        String behind = seedWriteRow(Seed.of(bckCode).withMessageGroup(group).withSequence(2).withCreatedAt(t.plusSeconds(1)));
+        assertThat(repo.groupHeldBefore(repo.findById(behind).orElseThrow()))
+                .as("PENDING with a FUTURE scheduled_for still holds — the easy-to-miss disjunct").isTrue();
+
+        // A SEPARATE group: an otherwise-identical PENDING head whose scheduled_for is NULL
+        // (immediately eligible) must NOT hold — reusing the first group would still be "held"
+        // by the still-backed-off `midBackoff` row above.
+        String group2 = "grp-backoff2-" + RUN;
+        String eligibleNow = seedWriteRow(Seed.of(bckCode).withMessageGroup(group2).withSequence(1).withCreatedAt(t.plusSeconds(5))
+                .withStatus("PENDING")); // scheduled_for NULL: immediately eligible, not holding
+        String behind2 = seedWriteRow(Seed.of(bckCode).withMessageGroup(group2).withSequence(2).withCreatedAt(t.plusSeconds(6)));
+        assertThat(repo.groupHeldBefore(repo.findById(behind2).orElseThrow())).isFalse();
+        assertThat(eligibleNow).isNotNull();
+    }
+
+    @Test
+    void groupHeldBeforeIsFalseWithNoMessageGroup() {
+        String id = seedWriteRow(Seed.of(code("nogroup")));
+        assertThat(repo.groupHeldBefore(repo.findById(id).orElseThrow())).isFalse();
+    }
+
+    // ── Infra writes (spec §4, direct — outside the envelope) ───────────────
+
+    @Test
+    void markInProgressFlipsQueuedToProcessingAndStampsLastAttemptAt() {
+        String id = seedWriteRow(Seed.of(code("mip")).withStatus("QUEUED"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        repo.markInProgress(id, before.createdAt());
+        DispatchJob after = repo.findById(id).orElseThrow();
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.PROCESSING);
+        assertThat(after.lastAttemptAt()).isNotNull();
+    }
+
+    @Test
+    void markCompletedStampsTerminalFields() {
+        String id = seedWriteRow(Seed.of(code("mc")).withStatus("PROCESSING"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        Instant completedAt = Instant.now();
+        repo.markCompleted(id, before.createdAt(), completedAt, 123L);
+        DispatchJob after = repo.findById(id).orElseThrow();
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        assertThat(after.durationMillis()).isEqualTo(123L);
+        assertThat(after.completedAt()).isNotNull();
+    }
+
+    @Test
+    void markFailedRecordsTheError() {
+        String id = seedWriteRow(Seed.of(code("mf")).withStatus("PROCESSING"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        repo.markFailed(id, before.createdAt(), "budget exhausted");
+        DispatchJob after = repo.findById(id).orElseThrow();
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.FAILED);
+        assertThat(after.lastError()).isEqualTo("budget exhausted");
+    }
+
+    @Test
+    void scheduleRetryBumpsAttemptCountAndSetsScheduledFor() {
+        String id = seedWriteRow(Seed.of(code("sr")).withStatus("PROCESSING"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        Instant scheduledFor = Instant.now().plusSeconds(30);
+        repo.scheduleRetry(id, before.createdAt(), scheduledFor, 2, "http 500");
+        DispatchJob after = repo.findById(id).orElseThrow();
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(after.attemptCount()).isEqualTo(2);
+        assertThat(after.scheduledFor()).isNotNull();
+        assertThat(after.lastError()).isEqualTo("http 500");
+    }
+
+    @Test
+    void rescheduleSpendsNoRetryBudget() {
+        String id = seedWriteRow(Seed.of(code("resched")).withStatus("PROCESSING"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        Instant scheduledFor = Instant.now().plusSeconds(5);
+        repo.reschedule(id, before.createdAt(), scheduledFor);
+        DispatchJob after = repo.findById(id).orElseThrow();
+        assertThat(after.status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(after.attemptCount()).as("no budget spend — hold-back/deferral, not a failure").isEqualTo(before.attemptCount());
+    }
+
+    // ── settleAcked (spec §6) ────────────────────────────────────────────────
+
+    @Test
+    void settleAckedResetsOnlyQueuedAndProcessingRowsAndIsIdempotent() {
+        String queued = seedWriteRow(Seed.of(code("settle")).withStatus("QUEUED"));
+        String processing = seedWriteRow(Seed.of(code("settle")).withStatus("PROCESSING"));
+        String completed = seedWriteRow(Seed.of(code("settle")).withStatus("COMPLETED"));
+
+        List<String> settled = repo.settleAcked(List.of(queued, processing, completed), "settled: test reason");
+        assertThat(settled).containsExactlyInAnyOrder(queued, processing);
+
+        DispatchJob q = repo.findById(queued).orElseThrow();
+        assertThat(q.status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(q.scheduledFor()).isNull();
+        assertThat(q.lastError()).isEqualTo("settled: test reason");
+        assertThat(repo.findById(completed).orElseThrow().status())
+                .as("a terminal row is never resurrected").isEqualTo(DispatchJobStatus.COMPLETED);
+
+        // idempotent: the same call again settles nothing more, since both rows already left QUEUED/PROCESSING
+        assertThat(repo.settleAcked(List.of(queued, processing, completed), "settled: test reason")).isEmpty();
+        assertThat(repo.settleAcked(List.of(), "unused")).isEmpty();
+    }
+
+    // ── sweepStrandedSiblings — the reaper's predicate (spec §7) ────────────
+
+    @Test
+    void sweepResetsStrandedBlockOnErrorSiblingsButLeavesEverythingElseAlone() {
+        String group = "grp-sweep-" + RUN;
+        String sweepCode = code("sweep");
+        Instant t = BASE.plusSeconds(50);
+        Instant liveBefore = Instant.now().minusSeconds(60);
+
+        String head = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(1).withCreatedAt(t).failed(3, "head failed"));
+        String queuedSibling = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(2).withCreatedAt(t.plusSeconds(1)).withStatus("QUEUED"));
+        String staleProcessing = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(3).withCreatedAt(t.plusSeconds(2)).withStatus("PROCESSING")
+                .withUpdatedAt(Instant.now().minusSeconds(3600))); // stale: older than liveBefore
+        String freshProcessing = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(4).withCreatedAt(t.plusSeconds(3)).withStatus("PROCESSING")
+                .withUpdatedAt(Instant.now().minusSeconds(60))); // fresh (1 minute old): left alone
+        String nextOnErrorSibling = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("NEXT_ON_ERROR")
+                .withSequence(5).withCreatedAt(t.plusSeconds(4)).withStatus("QUEUED"));
+        String aheadOfHead = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(0).withCreatedAt(t.minusSeconds(1)).withStatus("QUEUED"));
+
+        List<String> reset = repo.sweepStrandedSiblings(liveBefore, "reaper: test sweep");
+
+        assertThat(reset).as("QUEUED regardless of age, and stale PROCESSING")
+                .containsExactlyInAnyOrder(queuedSibling, staleProcessing);
+        assertThat(repo.findById(queuedSibling).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(repo.findById(queuedSibling).orElseThrow().lastError()).isEqualTo("reaper: test sweep");
+        assertThat(repo.findById(staleProcessing).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(repo.findById(freshProcessing).orElseThrow().status())
+                .as("a fresh PROCESSING row is presumed a genuine in-flight delivery").isEqualTo(DispatchJobStatus.PROCESSING);
+        assertThat(repo.findById(nextOnErrorSibling).orElseThrow().status())
+                .as("NEXT_ON_ERROR is never swept").isEqualTo(DispatchJobStatus.QUEUED);
+        assertThat(repo.findById(aheadOfHead).orElseThrow().status())
+                .as("positioned BEFORE the head is untouched").isEqualTo(DispatchJobStatus.QUEUED);
+        assertThat(head).isNotNull();
+
+        // idempotent: sweeping again resets nothing more
+        assertThat(repo.sweepStrandedSiblings(liveBefore, "reaper: test sweep")).isEmpty();
+    }
+
+    @Test
+    void sweepTreatsALegacyErrorHeadExactlyLikeFailed() {
+        String group = "grp-legacy-" + RUN;
+        String legacyCode = code("legacy");
+        Instant t = BASE.plusSeconds(70);
+        seedWriteRow(Seed.of(legacyCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(1).withCreatedAt(t).withStatus("ERROR"));
+        String sibling = seedWriteRow(Seed.of(legacyCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(2).withCreatedAt(t.plusSeconds(1)).withStatus("QUEUED"));
+
+        List<String> reset = repo.sweepStrandedSiblings(Instant.now().minusSeconds(60), "reaper: legacy");
+        assertThat(reset).containsExactly(sibling);
     }
 }

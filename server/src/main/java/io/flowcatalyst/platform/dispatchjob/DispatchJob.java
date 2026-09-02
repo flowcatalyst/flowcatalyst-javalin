@@ -136,4 +136,28 @@ public record DispatchJob(
                 DispatchJobStatus.PENDING, 0, null, metadata, idempotencyKey, createdAt, Instant.now(),
                 null, expiresAt, lastAttemptAt, null, null);
     }
+
+    /// The operator's "ignore" (dispatch-seam spec §8): `FAILED` → `CANCELLED`.
+    /// Stamps `completedAt`/`updatedAt`; everything else — `lastError`,
+    /// `attemptCount`, `scheduledFor` — is left as the failure left it. The
+    /// `status == FAILED` precondition is the operation's, not this method's
+    /// (`operations.CancelDispatchJob`, 409 `NOT_FAILED` otherwise).
+    public DispatchJob cancel() {
+        return terminal(DispatchJobStatus.CANCELLED);
+    }
+
+    /// The operator's "mark handled out of band" (dispatch-seam spec §8):
+    /// `FAILED` → `COMPLETED`. Same shape as [#cancel].
+    public DispatchJob complete() {
+        return terminal(DispatchJobStatus.COMPLETED);
+    }
+
+    private DispatchJob terminal(DispatchJobStatus newStatus) {
+        Instant now = Instant.now();
+        return new DispatchJob(id, externalId, kind, code, source, subject, targetUrl, protocol, payload,
+                payloadContentType, dataOnly, eventId, correlationId, clientId, subscriptionId, serviceAccountId,
+                dispatchPoolId, messageGroup, mode, sequence, timeoutSeconds, schemaId, maxRetries, retryStrategy,
+                newStatus, attemptCount, lastError, metadata, idempotencyKey, createdAt, now,
+                scheduledFor, expiresAt, lastAttemptAt, now, durationMillis);
+    }
 }

@@ -59,70 +59,107 @@ public final class DispatchJobFixture {
             String lastError,
             String payload,
             String metadataJson,
-            String source) {
+            String source,
+            String mode,
+            int sequence,
+            Instant updatedAt) {
 
-        /// A `PENDING`, platform-scoped seed with nothing but the essentials.
+        /// A `PENDING`, platform-scoped, `IMMEDIATE`-mode seed with nothing but the essentials.
         public static Seed of(String code) {
-            return new Seed(Tsid.generate(), code, null, "PENDING", Instant.now(), null, null, null, null,
-                    0, null, null, null, null, null, null, null);
+            Instant now = Instant.now();
+            return new Seed(Tsid.generate(), code, null, "PENDING", now, null, null, null, null,
+                    0, null, null, null, null, null, null, null, "IMMEDIATE", 99, now);
         }
 
         public Seed withClientId(String v) {
             return new Seed(id, code, v, status, createdAt, eventId, subscriptionId, dispatchPoolId, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withStatus(String v) {
             return new Seed(id, code, clientId, v, createdAt, eventId, subscriptionId, dispatchPoolId, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withCreatedAt(Instant v) {
             return new Seed(id, code, clientId, status, v, eventId, subscriptionId, dispatchPoolId, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withEventId(String v) {
             return new Seed(id, code, clientId, status, createdAt, v, subscriptionId, dispatchPoolId, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withSubscriptionId(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, v, dispatchPoolId, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withDispatchPoolId(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, v, messageGroup,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         public Seed withMessageGroup(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId, v,
-                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source);
+                    attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt);
         }
 
         /// The terminal-failure stamps a processing endpoint would have left.
         public Seed failed(int attempts, String error) {
             return new Seed(id, code, clientId, "FAILED", createdAt, eventId, subscriptionId, dispatchPoolId,
                     messageGroup, attempts, createdAt.plusSeconds(5), createdAt.plusSeconds(10), 777L, error,
-                    payload, metadataJson, source);
+                    payload, metadataJson, source, mode, sequence, updatedAt);
         }
 
         public Seed withPayload(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
-                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, v, metadataJson, source);
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, v, metadataJson,
+                    source, mode, sequence, updatedAt);
         }
 
         /// Raw JSON text for the `metadata` column (`null` → SQL `NULL`).
         public Seed withMetadataJson(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
-                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, v, source);
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, v,
+                    source, mode, sequence, updatedAt);
         }
 
         public Seed withSource(String v) {
             return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
-                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, v);
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload,
+                    metadataJson, v, mode, sequence, updatedAt);
+        }
+
+        /// `IMMEDIATE` / `NEXT_ON_ERROR` / `BLOCK_ON_ERROR` (spec §9); write-row only — the
+        /// projection row's `mode` stays the hardcoded `IMMEDIATE` [#seedProjection] always wrote.
+        public Seed withMode(String v) {
+            return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload,
+                    metadataJson, source, v, sequence, updatedAt);
+        }
+
+        /// Position within the message group — the `GroupHolding`/reaper positional ordering key.
+        public Seed withSequence(int v) {
+            return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload,
+                    metadataJson, source, mode, v, updatedAt);
+        }
+
+        /// The write row's `updated_at` — independent of `createdAt`, so a
+        /// reaper test can seed a `PROCESSING` row that looks stale (or fresh).
+        public Seed withUpdatedAt(Instant v) {
+            return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId,
+                    messageGroup, attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload,
+                    metadataJson, source, mode, sequence, v);
         }
     }
 
@@ -148,6 +185,8 @@ public final class DispatchJobFixture {
                 .set(MSG_DISPATCH_JOBS.SUBSCRIPTION_ID, s.subscriptionId())
                 .set(MSG_DISPATCH_JOBS.DISPATCH_POOL_ID, s.dispatchPoolId())
                 .set(MSG_DISPATCH_JOBS.MESSAGE_GROUP, s.messageGroup())
+                .set(MSG_DISPATCH_JOBS.MODE, s.mode())
+                .set(MSG_DISPATCH_JOBS.SEQUENCE, s.sequence())
                 .set(MSG_DISPATCH_JOBS.STATUS, s.status())
                 .set(MSG_DISPATCH_JOBS.ATTEMPT_COUNT, s.attemptCount())
                 .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, utc(s.scheduledFor()))
@@ -157,7 +196,7 @@ public final class DispatchJobFixture {
                 .set(MSG_DISPATCH_JOBS.PAYLOAD, s.payload())
                 .set(MSG_DISPATCH_JOBS.METADATA, s.metadataJson() == null ? null : JSONB.jsonb(s.metadataJson()))
                 .set(MSG_DISPATCH_JOBS.CREATED_AT, utc(s.createdAt()))
-                .set(MSG_DISPATCH_JOBS.UPDATED_AT, utc(s.createdAt()))
+                .set(MSG_DISPATCH_JOBS.UPDATED_AT, utc(s.updatedAt() == null ? s.createdAt() : s.updatedAt()))
                 .execute();
         return s.id();
     }
