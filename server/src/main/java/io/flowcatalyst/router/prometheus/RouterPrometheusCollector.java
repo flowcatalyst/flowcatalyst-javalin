@@ -35,7 +35,8 @@ import java.util.stream.Collectors;
 /// Data sources, matching the Go collector's `State` fields:
 ///   - [PoolSource] for the per-pool gauges plus each pool's
 ///     [PoolMetricsCollector] (`fc_pool_*`, `fc_messages_processed_total`,
-///     `fc_rate_limit_exceeded_total`, `fc_mediation_duration_seconds`). Kept
+///     `fc_rate_limit_exceeded_total`, `fc_messages_suppressed_total` (R-53),
+///     `fc_mediation_duration_seconds`). Kept
 ///     as a small interface — not a direct dependency on
 ///     `io.flowcatalyst.router.pool.Pool` — because that class does not yet
 ///     expose active-worker / message-group counts and wiring it is a
@@ -150,6 +151,7 @@ public final class RouterPrometheusCollector implements MultiCollector {
 
         addProcessedCounter(out, pools, totals);
         addRateLimitedCounter(out, pools, totals);
+        addSuppressedCounter(out, pools, totals);
         addMediationHistogram(out, pools, histograms);
 
         addQueueGauges(out, queues);
@@ -219,6 +221,25 @@ public final class RouterPrometheusCollector implements MultiCollector {
         for (var pool : pools) {
             builder.dataPoint(CounterSnapshot.CounterDataPointSnapshot.builder()
                     .value(totals.get(pool.poolCode()).totalRateLimited())
+                    .labels(Labels.of("pool", pool.poolCode()))
+                    .build());
+        }
+        out.metricSnapshot(builder.build());
+    }
+
+    /// R-53: a suppressed ACK (§4.5 `flushGroup`) must record its own
+    /// metric distinct from an ordinary success, so a heavily-flushed pool
+    /// reads as busy-but-suppressed rather than idle. Sourced from
+    /// [PoolMetricsCollector.Snapshot#totalSuppressed], the same total the
+    /// dashboard's pool-stats view already reads.
+    private static void addSuppressedCounter(MetricSnapshots.Builder out, List<PoolSnapshot> pools,
+                                              Map<String, PoolMetricsCollector.Snapshot> totals) {
+        var builder = CounterSnapshot.builder()
+                .name("fc_messages_suppressed_total")
+                .help("Cumulative messages ACKed because their group was suppressed by a target flushGroup.");
+        for (var pool : pools) {
+            builder.dataPoint(CounterSnapshot.CounterDataPointSnapshot.builder()
+                    .value(totals.get(pool.poolCode()).totalSuppressed())
                     .labels(Labels.of("pool", pool.poolCode()))
                     .build());
         }

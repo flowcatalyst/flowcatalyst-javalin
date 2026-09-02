@@ -95,6 +95,31 @@ class LifecycleLoopsTest {
         assertThat(warnings.raised).isEmpty();
     }
 
+    // ── standard() wiring ───────────────────────────────────────────────
+
+    @Test
+    @DisplayName("A-08: standard() actually schedules the warning-store cleanup sweep, not just the other three tasks")
+    void standardSchedulesWarningCleanup() {
+        var stalls = new StallDetector(tracker, warnings, queueId -> null, StallDetector.Config.REPORT_ONLY, clock);
+        var cleanupCalls = new AtomicInteger();
+        loops = new LifecycleLoops();
+
+        // A fast, real scheduler run rather than reading the Task list back:
+        // a task present in the returned List but never actually ticking
+        // would pass a "the list contains warning-cleanup" assertion just as
+        // well as a wired one, which is exactly the "built, never scheduled"
+        // defect A-08 describes.
+        var tasks = LifecycleLoops.standard(stalls, tracker, warnings,
+                () -> { }, cleanupCalls::incrementAndGet).stream()
+                .map(t -> "warning-cleanup".equals(t.name())
+                        ? new LifecycleLoops.Task(t.name(), Duration.ofMillis(20), t.action())
+                        : new LifecycleLoops.Task(t.name(), Duration.ofHours(1), t.action()))
+                .toList();
+        loops.start(tasks);
+
+        await(() -> cleanupCalls.get() >= 3);
+    }
+
     // ── The scheduler ───────────────────────────────────────────────────
 
     @Test

@@ -129,6 +129,11 @@ public record Env(
         boolean routerDevMode,
         // `FC_NOTIFY_WEBHOOK_URL`, no default (log-only).
         String routerNotifyWebhookUrl,
+        // `FC_NOTIFY_MIN_SEVERITY` (alias `NOTIFICATION_MIN_SEVERITY`), default `WARNING`
+        // (X-04). Carried here as the raw string per `CONVENTIONS.md` §8; the composition
+        // root parses it with `Warnings.parseMinSeverity`, which also owns the
+        // invalid-value fallback and its WARN log.
+        String routerNotifyMinSeverity,
         // `FC_DRAIN_TIMEOUT_SECONDS`, default 60.
         int routerDrainTimeoutSec,
         // Raw `AUTH_MODE` (trimmed); `NONE` (case-insensitive) forces router BasicAuth off.
@@ -273,6 +278,7 @@ public record Env(
                 e.get("FLOWCATALYST_CONFIG_URL"),
                 e.bool("FLOWCATALYST_DEV_MODE", false),
                 e.get("FC_NOTIFY_WEBHOOK_URL"),
+                e.firstSet("FC_NOTIFY_MIN_SEVERITY", "NOTIFICATION_MIN_SEVERITY").orElse("WARNING"),
                 e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60),
                 authMode,
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_USER", "AUTH_BASIC_USERNAME").orElse(""),

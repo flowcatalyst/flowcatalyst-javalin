@@ -146,7 +146,7 @@ public final class Router implements AutoCloseable {
         // The store is what the dashboard reads; the notifier is what reaches
         // someone who is not looking at the dashboard. Raisers get both.
         var notifier = WarningNotifier.create(env.routerNotifyWebhookUrl(),
-                Warnings.Severity.WARNING, clock);
+                Warnings.parseMinSeverity(env.routerNotifyMinSeverity()), clock);
         if (notifier instanceof WarningNotifier started) {
             started.start();
         }
@@ -200,7 +200,7 @@ public final class Router implements AutoCloseable {
         var brokerStats = new BrokerStatsCache(clock);
         var housekeeping = new LifecycleLoops();
         housekeeping.start(LifecycleLoops.standard(stalls, tracker, warningSink,
-                () -> brokerStats.refresh(manager.queueMetricSources())));
+                () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup));
 
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",

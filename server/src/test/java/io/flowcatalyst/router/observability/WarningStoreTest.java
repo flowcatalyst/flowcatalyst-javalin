@@ -24,6 +24,7 @@ class WarningStoreTest {
     void constantsMatchSpec() {
         assertThat(WarningStore.MAX_WARNING_AGE).isEqualTo(Duration.ofHours(8));
         assertThat(WarningStore.MAX_WARNINGS).isEqualTo(1000);
+        assertThat(WarningStore.MAX_INFO_AGE).as("X-04: materially shorter than MAX_WARNING_AGE").isEqualTo(Duration.ofHours(1));
     }
 
     @Test
@@ -221,7 +222,10 @@ class WarningStoreTest {
     @Test
     @DisplayName("cleanup() drops warnings older than MAX_WARNING_AGE, exactly at the boundary is kept")
     void cleanupDropsOnlyStrictlyOlderThanMaxAge() {
-        store.raise(Severity.INFO, "ROUTING", "boundary case");
+        // WARNING, not INFO: INFO now ages out on the much shorter
+        // MAX_INFO_AGE (see the INFO-specific tests below), so this pins the
+        // ordinary MAX_WARNING_AGE boundary for every other severity.
+        store.raise(Severity.WARNING, "ROUTING", "boundary case");
 
         clock.advance(WarningStore.MAX_WARNING_AGE); // exactly 8h -- not yet over
         store.cleanup();
@@ -239,7 +243,7 @@ class WarningStoreTest {
     @Test
     @DisplayName("cleanup() does not touch a warning already acknowledged before the max age, once past it it is still dropped")
     void cleanupDropsAcknowledgedTooOnceTooOld() {
-        store.raise(Severity.INFO, "ROUTING", "acked early");
+        store.raise(Severity.WARNING, "ROUTING", "acked early");
         var id = store.snapshot().warnings().get(0).id();
         store.acknowledge(id);
 
@@ -247,6 +251,33 @@ class WarningStoreTest {
         store.cleanup();
 
         assertThat(store.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("X-04: cleanup() drops an INFO entry after MAX_INFO_AGE while an ERROR the same age survives")
+    void infoAgesOutFasterThanOtherSeverities() {
+        store.raise(Severity.INFO, "RATE_LIMIT", "limiter back to unlimited");
+        store.raise(Severity.ERROR, "CONNECTION", "poll failing");
+
+        // Both are 2h old: past MAX_INFO_AGE (1h) but nowhere near
+        // MAX_WARNING_AGE (8h).
+        clock.advance(Duration.ofHours(2));
+        store.cleanup();
+
+        var remaining = store.snapshot().warnings().stream().map(WarningStore.Notice::category).toList();
+        assertThat(remaining).as("the INFO entry aged out on its own shorter clock").doesNotContain("RATE_LIMIT");
+        assertThat(remaining).as("the ERROR entry is nowhere near MAX_WARNING_AGE").containsExactly("CONNECTION");
+    }
+
+    @Test
+    @DisplayName("an INFO entry younger than MAX_INFO_AGE survives cleanup()")
+    void freshInfoSurvivesCleanup() {
+        store.raise(Severity.INFO, "CIRCUIT_BREAKER", "breaker recovered");
+
+        clock.advance(Duration.ofMinutes(30));
+        store.cleanup();
+
+        assertThat(store.count()).as("well under MAX_INFO_AGE (1h)").isEqualTo(1);
     }
 
     @Test

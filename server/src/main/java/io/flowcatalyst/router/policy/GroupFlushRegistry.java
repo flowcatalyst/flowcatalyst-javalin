@@ -3,6 +3,8 @@ package io.flowcatalyst.router.policy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -123,10 +125,14 @@ public final class GroupFlushRegistry {
     }
 
     /// Lifts suppression for `group` immediately — the operator override.
-    public void clear(String group) {
-        if (group != null && !group.isEmpty()) {
-            until.remove(group);
+    /// Returns whether a live suppression was actually removed, so a caller
+    /// (R-52's `POST .../clear`) can tell "I lifted it" from "it was already
+    /// quiet" instead of both answering the same 200.
+    public boolean clear(String group) {
+        if (group == null || group.isEmpty()) {
+            return false;
         }
+        return until.remove(group) != null;
     }
 
     /// A snapshot for the monitoring surface.
@@ -134,6 +140,24 @@ public final class GroupFlushRegistry {
         var now = clock.instant();
         long active = until.values().stream().filter(now::isBefore).count();
         return new Stats(active, flushes.sum(), suppressed.sum());
+    }
+
+    /// Every group currently suppressed in this pool, for the R-52 operator
+    /// surface ("why is this group quiet?"). Evicts nothing and counts
+    /// nothing — same read-only contract as [#suppressedUntil], just over
+    /// every group instead of one.
+    public List<Suppression> active() {
+        var now = clock.instant();
+        return until.entrySet().stream()
+                .filter(e -> now.isBefore(e.getValue()))
+                .map(e -> new Suppression(e.getKey(), e.getValue()))
+                .sorted(Comparator.comparing(Suppression::group))
+                .toList();
+    }
+
+    /// One group's live suppression window, as exposed on the monitoring
+    /// surface.
+    public record Suppression(String group, Instant until) {
     }
 
     /// `active` counts groups suppressed right now; `flushes` and

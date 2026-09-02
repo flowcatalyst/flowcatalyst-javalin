@@ -789,6 +789,103 @@ class RouterApiTest {
         return java.net.URLEncoder.encode(s, java.nio.charset.StandardCharsets.UTF_8);
     }
 
+    // ── Group flushes (R-52, R-53) ───────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /monitoring/group-flushes lists a suppression flushed straight through the registry, with pool/group/until")
+    void groupFlushesListsAnActiveSuppression() {
+        String group = "orders-" + tag();
+        var until = poolA.flushRegistry().suppressedUntil(group);
+        assertThat(until).as("nothing flushed yet").isEmpty();
+
+        assertThat(poolA.flushRegistry().flush(group, Duration.ofMinutes(5))).isTrue();
+        var expiry = poolA.flushRegistry().suppressedUntil(group).orElseThrow();
+
+        var body = json(http.get("/router/monitoring/group-flushes"));
+        assertThat(body.isArray()).isTrue();
+        var row = findRow(body, "POOL-A", group);
+        assertThat(row).as("the freshly flushed group must be listed").isNotNull();
+        assertThat(Instant.parse(row.get("suppressedUntil").asText())).isEqualTo(expiry);
+
+        poolA.flushRegistry().clear(group); // leave the shared pool clean for later tests
+    }
+
+    @Test
+    @DisplayName("GET /monitoring/group-flushes is [] with no manager wired (provider-absent list rule)")
+    void groupFlushesEmptyWhenNoManager() {
+        var body = json(bare.get("/router/monitoring/group-flushes"));
+        assertThat(body.isArray()).isTrue();
+        assertThat(body.isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("POST .../group-flushes/{pool}/{group}/clear lifts the suppression; a second clear reports cleared:false")
+    void clearGroupFlushLiftsSuppression() {
+        String group = "orders-" + tag();
+        poolA.flushRegistry().flush(group, Duration.ofMinutes(5));
+        assertThat(poolA.flushRegistry().suppressed(group)).isTrue();
+
+        var first = http.post("/router/monitoring/group-flushes/POOL-A/" + group + "/clear", null);
+        assertThat(first.statusCode()).isEqualTo(200);
+        assertThat(json(first).get("cleared").asBoolean()).isTrue();
+        assertThat(poolA.flushRegistry().suppressed(group))
+                .as("the registry itself must reflect the clear, not just the response body").isFalse();
+
+        var second = http.post("/router/monitoring/group-flushes/POOL-A/" + group + "/clear", null);
+        assertThat(second.statusCode()).isEqualTo(200);
+        assertThat(json(second).get("cleared").asBoolean())
+                .as("nothing left to clear the second time").isFalse();
+    }
+
+    @Test
+    @DisplayName("POST .../group-flushes/{pool}/{group}/clear on an unknown pool is 404 in the standard error shape")
+    void clearGroupFlushUnknownPoolIs404() {
+        var r = http.post("/router/monitoring/group-flushes/NO-SUCH-POOL/orders-1/clear", null);
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).has("error")).isTrue();
+    }
+
+    @Test
+    @DisplayName("group-flushes are sorted by pool then group, proven with input deliberately in the wrong order")
+    void groupFlushesSortedByPoolThenGroup() {
+        // A `Map<String, Pool>` arriving in insertion order here, on purpose:
+        // through the HTTP endpoint the map comes from a `ConcurrentHashMap`
+        // whose iteration order, for a small fixed set of keys, happens to
+        // land alphabetically anyway — see PoolRoutes#mediatingRows's own
+        // test for the same trap. Calling GroupFlushRoutes.groupFlushRows
+        // directly with a LinkedHashMap inserted in reverse order is the only
+        // way to prove the `.sorted(...)` call is load-bearing.
+        var poolB = new Pool(new Pool.Config("POOL-B", 1, 0), NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        var poolZ = new Pool(new Pool.Config("POOL-Z", 1, 0), NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        poolZ.flushRegistry().flush("zebra", Duration.ofMinutes(5));
+        poolZ.flushRegistry().flush("apple", Duration.ofMinutes(5));
+        poolB.flushRegistry().flush("mango", Duration.ofMinutes(5));
+
+        var wrongOrder = new java.util.LinkedHashMap<String, Pool>();
+        wrongOrder.put("POOL-Z", poolZ);
+        wrongOrder.put("POOL-B", poolB);
+
+        try {
+            var rows = GroupFlushRoutes.groupFlushRows(wrongOrder);
+            assertThat(rows).extracting(Wire.GroupFlushView::pool).containsExactly("POOL-B", "POOL-Z", "POOL-Z");
+            assertThat(rows).extracting(Wire.GroupFlushView::group)
+                    .as("within POOL-Z, apple sorts before zebra")
+                    .containsExactly("mango", "apple", "zebra");
+        } finally {
+            poolB.close();
+            poolZ.close();
+        }
+    }
+
+    private static JsonNode findRow(JsonNode array, String pool, String group) {
+        for (var row : array) {
+            if (row.get("pool").asText().equals(pool) && row.get("group").asText().equals(group)) {
+                return row;
+            }
+        }
+        return null;
+    }
+
     // ── In-flight messages ───────────────────────────────────────────────
 
     @Test
@@ -1358,13 +1455,18 @@ class RouterApiTest {
     // ── Standby / stream health / config ────────────────────────────────
 
     @Test
-    @DisplayName("GET /monitoring/standby-status reports the lock key (not the process UUID) as instance_id")
+    @DisplayName("R-56: GET /monitoring/standby-status reports the election's per-process instance id, not the shared lock key")
     void standbyStatus() {
         var body = json(http.get("/router/monitoring/standby-status"));
         assertThat(body.get("enabled").asBoolean()).isTrue();
         assertThat(body.get("is_leader").asBoolean()).isTrue();
-        assertThat(body.get("instance_id").asText()).as("the lock key, not LeaderElection#instanceId()'s UUID")
-                .isEqualTo("fc:test:leader");
+        // "instance-a" is the id this suite's LeaderElection.Config was built
+        // with (see start()); "fc:test:leader" is that same config's lock
+        // key — every instance sharing the lock would report that value
+        // identically, which is exactly what R-56 says is wrong.
+        assertThat(body.get("instance_id").asText())
+                .isEqualTo("instance-a")
+                .isNotEqualTo("fc:test:leader");
     }
 
     @Test

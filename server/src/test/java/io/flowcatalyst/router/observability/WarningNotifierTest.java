@@ -153,6 +153,37 @@ class WarningNotifierTest {
     }
 
     @Test
+    @DisplayName("X-04: FC_NOTIFY_MIN_SEVERITY parses case-insensitively, and an unset/blank value defaults to WARNING")
+    void parseMinSeverityHonoursConfiguredFloor() {
+        assertThat(Warnings.parseMinSeverity("INFO")).isEqualTo(Severity.INFO);
+        assertThat(Warnings.parseMinSeverity("error")).isEqualTo(Severity.ERROR);
+        assertThat(Warnings.parseMinSeverity(null)).isEqualTo(Severity.WARNING);
+        assertThat(Warnings.parseMinSeverity("")).isEqualTo(Severity.WARNING);
+        assertThat(Warnings.parseMinSeverity("  ")).isEqualTo(Severity.WARNING);
+    }
+
+    @Test
+    @DisplayName("X-04: an unparseable FC_NOTIFY_MIN_SEVERITY keeps the WARNING floor rather than failing")
+    void parseMinSeverityFallsBackToWarningOnGarbage() {
+        assertThat(Warnings.parseMinSeverity("garbage")).isEqualTo(Severity.WARNING);
+    }
+
+    @Test
+    @DisplayName("a notifier built with the parsed INFO floor actually pushes INFO, not just stores it above the default WARNING floor")
+    void parsedInfoFloorActuallyPushesInfo() {
+        var infoNotifier = new WarningNotifier(hook, HttpClient.newHttpClient(), 3,
+                Duration.ofHours(1), Warnings.parseMinSeverity("INFO"), FIXED);
+        try {
+            infoNotifier.raise(Severity.INFO, "RATE_LIMIT", "back to unlimited");
+            infoNotifier.flush();
+
+            assertThat(received).as("INFO configured as the floor must be delivered, not dropped").hasSize(1);
+        } finally {
+            infoNotifier.close();
+        }
+    }
+
+    @Test
     @DisplayName("tee reaches every sink, and one that throws does not stop the others")
     void teeIsolatesSinks() {
         var store = new WarningStore(FIXED);

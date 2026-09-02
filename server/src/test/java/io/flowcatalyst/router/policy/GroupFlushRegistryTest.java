@@ -126,6 +126,43 @@ class GroupFlushRegistryTest {
     }
 
     @Test
+    @DisplayName("clear() reports whether it actually lifted a live suppression")
+    void clearReportsWhetherItDidAnything() {
+        registry.flush("orders-1", Duration.ofMinutes(5));
+
+        assertThat(registry.clear("orders-1")).as("a live suppression was lifted").isTrue();
+        assertThat(registry.clear("orders-1")).as("nothing left to lift the second time").isFalse();
+        assertThat(registry.clear("never-flushed")).as("a group that was never suppressed").isFalse();
+    }
+
+    @Test
+    @DisplayName("active() lists every group still suppressed, sorted by group name, and never a lapsed one")
+    void activeListsLiveSuppressionsOnly() {
+        registry.flush("orders-3", Duration.ofMinutes(5));
+        registry.flush("orders-1", Duration.ofMinutes(5));
+        registry.flush("orders-2", Duration.ofSeconds(10));
+        clock.advance(Duration.ofSeconds(11)); // orders-2 lapses; orders-1/orders-3 do not
+
+        var active = registry.active();
+
+        assertThat(active).extracting(GroupFlushRegistry.Suppression::group)
+                .as("sorted, and the lapsed group is gone")
+                .containsExactly("orders-1", "orders-3");
+        assertThat(active.get(0).until()).isEqualTo(registry.suppressedUntil("orders-1").orElseThrow());
+    }
+
+    @Test
+    @DisplayName("active() is read-only: it neither counts a suppressed message nor evicts a lapsed entry")
+    void activeHasNoSideEffects() {
+        registry.flush("orders-1", Duration.ofSeconds(10));
+
+        registry.active();
+        registry.active();
+
+        assertThat(registry.stats().suppressed()).as("active() must not count as a delivery decision").isZero();
+    }
+
+    @Test
     @DisplayName("the read-only view neither counts nor evicts")
     void readOnlyViewHasNoSideEffects() {
         registry.flush("orders-1", Duration.ofSeconds(30));

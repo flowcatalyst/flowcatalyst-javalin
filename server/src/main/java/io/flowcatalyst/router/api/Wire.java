@@ -236,6 +236,14 @@ public final class Wire {
     public record ResetResponse(boolean reset) {
     }
 
+    /// One row of `GET /monitoring/group-flushes` (R-52, R-53): a group
+    /// currently suppressed in some pool, and until when.
+    public record GroupFlushView(String pool, String group, Instant suppressedUntil) {
+    }
+
+    public record GroupFlushClearResponse(boolean cleared) {
+    }
+
     private Wire() {
     }
 }

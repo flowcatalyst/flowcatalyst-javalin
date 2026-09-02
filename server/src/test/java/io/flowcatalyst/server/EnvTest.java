@@ -65,6 +65,7 @@ class EnvTest {
         assertThat(env.routerConfigUrl()).isEmpty();
         assertThat(env.routerDevMode()).isFalse();
         assertThat(env.routerNotifyWebhookUrl()).isEmpty();
+        assertThat(env.routerNotifyMinSeverity()).isEqualTo("WARNING");
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
         assertThat(env.routerAuthMode()).isEmpty();
         assertThat(env.routerAuthUser()).isEmpty();
@@ -110,6 +111,7 @@ class EnvTest {
                 "FC_STREAM_PARTITION_MANAGER_ENABLED", "false", "FC_STREAM_PARTITIONS_ENABLED", "true",
                 "FC_ROUTER_AUTH_USER", "u1", "AUTH_BASIC_USERNAME", "u2",
                 "FC_ROUTER_AUTH_PASS", "p1", "AUTH_BASIC_PASSWORD", "p2",
+                "FC_NOTIFY_MIN_SEVERITY", "ERROR", "NOTIFICATION_MIN_SEVERITY", "INFO",
                 "FC_WEBAUTHN_ORIGINS", "https://x, https://y,,", "FC_WEBAUTHN_RP_ORIGIN", "https://z");
 
         assertThat(env.apiPort()).isEqualTo(3000);
@@ -126,6 +128,7 @@ class EnvTest {
         assertThat(env.routerAuthUser()).isEqualTo("u1");
         assertThat(env.routerAuthPass()).isEqualTo("p1");
         assertThat(env.routerAuthEnabled()).isTrue();
+        assertThat(env.routerNotifyMinSeverity()).isEqualTo("ERROR");
         assertThat(env.webauthnOrigins()).containsExactly("https://x", "https://y");
         // FLOWCATALYST_URL also feeds the MCP platform URL
         assertThat(env.mcpPlatformUrl()).isEqualTo("https://s");
@@ -152,6 +155,7 @@ class EnvTest {
                 "AUTH_BASIC_USERNAME", "legacy-user",
                 "AUTH_BASIC_PASSWORD", "legacy-pass",
                 "FC_MCP_PLATFORM_URL", "http://mcp",
+                "NOTIFICATION_MIN_SEVERITY", "CRITICAL",
                 "FC_WEBAUTHN_RP_ORIGIN", "https://legacy");
 
         assertThat(env.apiPort()).isEqualTo(4000);
@@ -173,6 +177,7 @@ class EnvTest {
         assertThat(env.routerAuthUser()).isEqualTo("legacy-user");
         assertThat(env.routerAuthPass()).isEqualTo("legacy-pass");
         assertThat(env.mcpPlatformUrl()).isEqualTo("http://mcp");
+        assertThat(env.routerNotifyMinSeverity()).isEqualTo("CRITICAL");
         assertThat(env.webauthnOrigins()).containsExactly("https://legacy");
     }
 

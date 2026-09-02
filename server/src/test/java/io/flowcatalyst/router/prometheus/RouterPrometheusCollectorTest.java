@@ -128,6 +128,25 @@ class RouterPrometheusCollectorTest {
     }
 
     @Test
+    @DisplayName("R-53: fc_messages_suppressed_total carries the pool's group-flush suppressed count, not the success/failure totals")
+    void suppressedCounterRecordsGroupFlushSuppressions() {
+        var metrics = new PoolMetricsCollector(clock);
+        metrics.recordSuccess(Duration.ofMillis(1));
+        metrics.recordSuppressed();
+        metrics.recordSuppressed();
+        metrics.recordSuppressed();
+
+        var pool = new RouterPrometheusCollector.PoolSnapshot("DEFAULT-POOL", 0, 0, 0, metrics);
+        var text = collectorWith(List.of(pool), List.of()).renderText();
+
+        assertThat(text).contains("""
+                # HELP fc_messages_suppressed_total Cumulative messages ACKed because their group was suppressed by a target flushGroup.
+                # TYPE fc_messages_suppressed_total counter
+                fc_messages_suppressed_total{pool="DEFAULT-POOL"} 3.0
+                """.strip());
+    }
+
+    @Test
     @DisplayName("recordTransient counts toward fc_mediation_duration_seconds but not toward fc_messages_processed_total{success=\"false\"}")
     void transientIsNotYetAFailureVerdict() {
         var metrics = new PoolMetricsCollector(clock);
@@ -268,6 +287,7 @@ class RouterPrometheusCollectorTest {
                 .doesNotContain("fc_pool_message_groups")
                 .doesNotContain("fc_messages_processed_total")
                 .doesNotContain("fc_rate_limit_exceeded_total")
+                .doesNotContain("fc_messages_suppressed_total")
                 .doesNotContain("fc_mediation_duration_seconds")
                 .doesNotContain("fc_queue_pending_messages")
                 .doesNotContain("fc_queue_in_flight_messages")

@@ -32,6 +32,8 @@ import java.util.concurrent.atomic.AtomicLong;
 ///     the `PUT` hot-update
 ///   - [WarningRoutes] — both warning surfaces
 ///   - [BreakerRoutes] — circuit-breaker reads and resets
+///   - [GroupFlushRoutes] — group-flush suppression list and operator
+///     clear (R-52, R-53)
 ///   - [InFlightRoutes] — what this process owns, plus the force-ACK override
 ///   - [QueueRoutes] — broker-side depth, forced sampling, traffic status
 ///   - [AdminRoutes] — standby, stream health, config snapshot
@@ -79,10 +81,11 @@ public final class RouterApi {
     /// @param election       null → `/monitoring/standby-status` answers the
     ///                       Go "no leader adapter" default (`enabled:false,
     ///                       is_leader:true, instance_id:"default"`)
-    /// @param electionConfig the election's static config, needed because
-    ///                       [LeaderElection#instanceId] returns the
-    ///                       process UUID, not the lock key the wire shape
-    ///                       wants (Go `leaderAdapter.InstanceID`, `api.go:374`)
+    /// @param electionConfig the election's static config, read only for
+    ///                       `enabled` — `/monitoring/standby-status`'s
+    ///                       `instance_id` is [LeaderElection#instanceId],
+    ///                       the per-process id, never `electionConfig`'s
+    ///                       shared lock key (R-56)
     /// @param version        reported on `/health`, `/monitoring/health` is
     ///                       exempt, `/api/config`; `null`/blank defaults to `"dev"`
     ///                       (Go `api.Version = "dev"`)
@@ -161,6 +164,7 @@ public final class RouterApi {
         PoolRoutes.register(routes, s);
         WarningRoutes.register(routes, s);
         BreakerRoutes.register(routes, s);
+        GroupFlushRoutes.register(routes, s);
         InFlightRoutes.register(routes, s);
         QueueRoutes.register(routes, s);
         AdminRoutes.register(routes, s);

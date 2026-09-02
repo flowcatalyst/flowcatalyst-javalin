@@ -57,6 +57,16 @@ public final class WarningStore implements Warnings {
     /// it stops it driving health, it does not hide it.
     public static final Duration AUTO_ACKNOWLEDGE_AGE = Duration.ofHours(1);
 
+    /// The materially shorter TTL an `INFO`-severity notice gets (spec §7.1
+    /// X-04) instead of [#MAX_WARNING_AGE]. `INFO` is the routine "this
+    /// changed" tier (breaker CLOSED, rate limiter back to unlimited) rather
+    /// than something an operator needs to keep finding hours later, and
+    /// without a shorter clock a flood of it can crowd out real warnings
+    /// before anyone looks — the store's whole point per §7.1 is that
+    /// *everything* lands here first, including categories that used to skip
+    /// it, so this is the safety valve that keeps that inclusiveness cheap.
+    public static final Duration MAX_INFO_AGE = Duration.ofHours(1);
+
     /// The `Warnings` interface (which this class does not own) has no
     /// `source` parameter — every raiser shares one `Warnings` instance
     /// (`ConsumerSupervisor`, `ConsumerLoop`, `RouterManager` all take a
@@ -148,8 +158,9 @@ public final class WarningStore implements Warnings {
     }
 
     /// Auto-acks anything unacked past [#AUTO_ACKNOWLEDGE_AGE], then drops
-    /// anything past [#MAX_WARNING_AGE]. Idempotent; intended to be driven
-    /// by a periodic caller (see class doc) rather than run here.
+    /// anything past its severity's max age — [#MAX_INFO_AGE] for `INFO`,
+    /// [#MAX_WARNING_AGE] for everything else. Idempotent; intended to be
+    /// driven by a periodic caller (see class doc) rather than run here.
     public void cleanup() {
         var now = clock.instant();
         lock.lock();
@@ -160,10 +171,14 @@ public final class WarningStore implements Warnings {
                     entry.setValue(w.acknowledge(now));
                 }
             }
-            warnings.values().removeIf(w -> w.ageMinutes(now) > MAX_WARNING_AGE.toMinutes());
+            warnings.values().removeIf(w -> w.ageMinutes(now) > maxAgeMinutes(w.severity()));
         } finally {
             lock.unlock();
         }
+    }
+
+    private static long maxAgeMinutes(Severity severity) {
+        return (severity == Severity.INFO ? MAX_INFO_AGE : MAX_WARNING_AGE).toMinutes();
     }
 
     /// Every stored warning, for the `/warnings` API.

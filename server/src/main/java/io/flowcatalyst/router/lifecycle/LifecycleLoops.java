@@ -42,6 +42,13 @@ public final class LifecycleLoops implements AutoCloseable {
     /// How often broker depths are sampled (constant 42).
     public static final Duration BROKER_REFRESH = Duration.ofSeconds(60);
 
+    /// How often [io.flowcatalyst.router.observability.WarningStore#cleanup]
+    /// runs (spec §7.1, A-08). `WarningStore.cleanup()` was built and tested
+    /// on 2026-08-25 and left with no caller — every "an unacked warning
+    /// auto-acks after an hour" / "an INFO entry ages out after an hour"
+    /// guarantee held only in a unit test until this task exists.
+    public static final Duration WARNING_CLEANUP_INTERVAL = Duration.ofMinutes(1);
+
     /// Tracker size past which memory is worth a warning (constant 35).
     public static final int IN_FLIGHT_WARN_THRESHOLD = 10_000;
 
@@ -80,13 +87,22 @@ public final class LifecycleLoops implements AutoCloseable {
     }
 
     /// The standard set: find stalls, reap abandoned entries, sample broker
-    /// depths, and warn if the tracker is growing without bound.
+    /// depths, warn if the tracker is growing without bound, and sweep the
+    /// warning store (A-08).
+    ///
+    /// `cleanupWarnings` is a `Runnable` — typically
+    /// `WarningStore::cleanup` — rather than a `WarningStore` parameter, the
+    /// same shape as `refreshBrokerStats`: this loop only ever needs to
+    /// invoke the sweep, never to read the store, so it depends on nothing
+    /// it does not use.
     public static List<Task> standard(StallDetector stalls, InFlightTracker tracker,
-                                      Warnings warnings, Runnable refreshBrokerStats) {
+                                      Warnings warnings, Runnable refreshBrokerStats,
+                                      Runnable cleanupWarnings) {
         return List.of(
                 new Task("stall-detector", STALL_CHECK, stalls::sweep),
                 new Task("reaper", REAP_INTERVAL, () -> reap(tracker, warnings)),
-                new Task("broker-stats", BROKER_REFRESH, refreshBrokerStats));
+                new Task("broker-stats", BROKER_REFRESH, refreshBrokerStats),
+                new Task("warning-cleanup", WARNING_CLEANUP_INTERVAL, cleanupWarnings));
     }
 
     /// Drops tracker entries nothing has touched, and warns when the tracker

@@ -30,9 +30,10 @@ final class AdminRoutes {
         }
         var cfg = s.electionConfig();
         boolean enabled = cfg != null && cfg.enabled();
-        String instanceId = cfg != null && cfg.lockKey() != null && !cfg.lockKey().isBlank()
-                ? cfg.lockKey() : "default";
-        ctx.json(new Wire.StandbyStatusResponse(enabled, s.election().isLeader(), instanceId));
+        // R-56: the election's own per-process instance id, never the lock
+        // key every instance in the group shares — a lock key answers
+        // "which election", not "which process".
+        ctx.json(new Wire.StandbyStatusResponse(enabled, s.election().isLeader(), s.election().instanceId()));
     }
 
     /// No stream processor provider is wired anywhere in this build, so this
