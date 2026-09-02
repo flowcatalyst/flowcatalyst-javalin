@@ -12,6 +12,7 @@ import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.jooq.Condition;
@@ -341,6 +342,34 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                 .set(T.SCHEDULED_FOR, utc(scheduledFor))
                 .set(T.UPDATED_AT, utc(Instant.now()))
                 .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
+                .execute();
+    }
+
+    /// Records one delivery attempt (dispatch-seam spec §5 "Attempt
+    /// recording", Go `RecordAttempt`): one row of `msg_dispatch_job_attempts`
+    /// keyed by an untyped TSID. `success` derives the stored `status`
+    /// column (`SUCCESS`/`FAILURE`) — a cooperative deferral (`ack:false`,
+    /// 429) is recorded with `success = false` exactly like a genuine
+    /// failure, but `errorType = null`: a deferral is not an error, and
+    /// persisting the empty string here is the regression the migration's
+    /// `error_type` column shape guards against
+    /// (`TestCompleteFailure_EmptyErrorTypeLeavesItNil`, spec §13).
+    public void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
+                               String responseBody, String errorMessage, AttemptErrorType errorType,
+                               Instant attemptedAt, Instant completedAt, Long durationMillis) {
+        dsl.insertInto(A)
+                .set(A.ID, Tsid.generate())
+                .set(A.DISPATCH_JOB_ID, jobId)
+                .set(A.ATTEMPT_NUMBER, attemptNumber)
+                .set(A.STATUS, success ? "SUCCESS" : "FAILURE")
+                .set(A.RESPONSE_CODE, responseCode)
+                .set(A.RESPONSE_BODY, responseBody)
+                .set(A.ERROR_MESSAGE, errorMessage)
+                .set(A.ERROR_TYPE, errorType == null ? null : errorType.name())
+                .set(A.DURATION_MILLIS, durationMillis)
+                .set(A.ATTEMPTED_AT, utc(attemptedAt))
+                .set(A.COMPLETED_AT, utc(completedAt))
+                .set(A.CREATED_AT, utc(attemptedAt))
                 .execute();
     }
 

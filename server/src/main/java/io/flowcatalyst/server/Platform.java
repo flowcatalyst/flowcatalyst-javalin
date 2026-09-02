@@ -17,6 +17,8 @@ import io.flowcatalyst.platform.connection.api.ConnectionApi;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
+import io.flowcatalyst.platform.dispatchjob.processing.ProcessingApi;
+import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.dispatchjob.settled.SettledApi;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
@@ -122,8 +124,8 @@ public final class Platform {
         routes.before(authenticated(buildAuthenticator()));
 
         // ── public routes (outside the bearer middleware) ────────────────
-        // TODO(port): login endpoint public routes (/auth/login, /auth/logout), password reset (/auth/password-reset/*), /oauth/authorize,
-        //   POST /api/dispatch/process (HMAC job-token auth).
+        // TODO(port): login endpoint public routes (/auth/login, /auth/logout), password reset (/auth/password-reset/*), /oauth/authorize.
+        //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
         // TODO(port): the remaining aggregate registrations from wire_routes.go, in order:
@@ -169,13 +171,22 @@ public final class Platform {
         // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
         // (not-yet-ported) scheduler loops Server.java's TODO(port) still lists.
         new DispatchJobReaper(dispatchJobRepo).start();
-        // /api/dispatch/settled (spec §6, §11): public route, registered below via
-        // Platform.isPublicPath; fail-closed on a missing FLOWCATALYST_APP_KEY, matching Go's
-        // scheduler + processing/settled mount ("refuses to start without it").
+        // /api/dispatch/settled and /api/dispatch/process (dispatch-seam spec §5, §6, §11):
+        // public routes, registered below via Platform.isPublicPath; fail-closed on a missing
+        // FLOWCATALYST_APP_KEY, matching Go's scheduler + processing/settled mount ("refuses to
+        // start without it"). Both self-verify the same scheduler-signed per-job HMAC bearer, so
+        // they share one HmacTokenVerifier instance.
         if (env.appKey() != null && !env.appKey().isBlank()) {
-            SettledApi.register(routes, new SettledApi.State(dispatchJobRepo, HmacTokenVerifier.fromAppKey(env.appKey())));
+            var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
+            SettledApi.register(routes, new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
+            // DeliveryCredentials.none() (dispatch-seam spec §5, §15): the platform has no
+            // serviceaccount aggregate yet to resolve job -> subscription -> application ->
+            // service-account webhook credentials from, so every delivery goes out bare until
+            // that aggregate lands.
+            ProcessingApi.register(routes, new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         } else {
-            LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled is not mounted");
+            LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
         }
         var appDocRepo = new AppDocRepository(pool);
         DocsApi.register(routes, new DocsApi.State(appDocRepo, applicationRepo, PublishedDocs.load()));
