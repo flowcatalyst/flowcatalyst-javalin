@@ -44,9 +44,17 @@ unbounded before the 64 KiB cap. All are fixed or in the pending branches.
 The audits also asked for a cross-implementation HMAC vector and pins for the
 endpoint's three 500 paths.
 
-**Open after this drive:** the `DispatchMode` enum merge (X-01), SQS/NATS
-publishers, signed subscriber deliveries (needs `serviceaccount`), and the
-owner questions in `dispatch-seam.md` §14 and the ledger's deferred R-items.
+The drive closed with the X-01 enum merge (one
+`platform.shared.dispatch.DispatchMode`, `Subscription.DEFAULT_MODE` no
+longer `IMMEDIATE`), the audit-fix commits, and two full-run flakes fixed at
+the root (the throttle metric is one act; the test HTTP readiness probe has
+a per-attempt timeout). Final uncontended run: **server 2356 tests green**,
+lockfile 192/245 covered, zero drift.
+
+**Open after this drive:** SQS/NATS dispatch publishers, signed subscriber
+deliveries (needs `serviceaccount`), the owner questions in
+`dispatch-seam.md` §14, the ledger's deferred R-items, and the two backlog
+notes on the load-sensitive rate-limit test and leaked test threads.
 
 ## Where we are (2026-08-24, evening)
 

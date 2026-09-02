@@ -431,10 +431,18 @@ later decision.
 
 ## Router completion drive — design smells (2026-09-02)
 
-- **Two `DispatchMode` enums** (`router.wire.DispatchMode`,
-  `platform.subscription.DispatchMode`) with a hand conversion in
-  `PendingJobPoller.toWireMode`. X-01 rules one shared enum; the merge is a
-  small unit of its own (both now default to `NEXT_ON_ERROR`).
+- ~~Two `DispatchMode` enums~~ — merged into
+  `platform.shared.dispatch.DispatchMode` (X-01) on 2026-09-02.
+- **`PoolTest.rateLimitWarnsOnceForARun` is load-sensitive.** It failed twice
+  while a second Maven build ran on the machine and could not be reproduced
+  idle (4/4 green, also with 32 carriers); the throttle path was made one
+  act (reserve → record → wait) and the assertion now prints the pool's
+  counters on failure. If it fails again, the message says what stalled.
+- **Router tests leak parked virtual threads** — a thread dump after the
+  router package shows ~84 parked virtual threads (loops from tests that
+  start a `RouterServer`/`LifecycleLoops` without closing them). Harmless to
+  correctness, but every leaked loop is a background thread for the rest of
+  the JVM; worth a sweep with an `@AfterEach` close in the offenders.
 - **`Message.dispatchMode` is a raw nullable component with an overriding
   accessor**, so `equals`/`hashCode` compare the raw value while every reader
   sees the normalised one. Documented in the record; a sealed
