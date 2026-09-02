@@ -698,6 +698,93 @@ class PoolTest {
         mediator.unblock();
     }
 
+    // ── Unit 3: layer-2 dedup, drainer resurrection ────────────────────────
+
+    @Test
+    @DisplayName("layer 2 (`docs/spec/router.md` §2.1 EnsureTracked): a broker that no longer owns the "
+            + "message acks it as a duplicate without delivering")
+    void deliverOnceAcksADuplicateWithoutDelivering() {
+        // A different broker copy has since claimed the same application id
+        // (the route-time entry was reaped while this message sat buffered).
+        // This attempt must not deliver — a live copy elsewhere already owns
+        // the pipeline.
+        broker.owns = false;
+        var p = pool(4, 0);
+
+        p.submit(immediate("m1"));
+
+        await(() -> broker.acked.contains("m1"));
+        assertThat(broker.ackReasons.get("m1")).isEqualTo("duplicate");
+        assertThat(mediator.attempts("m1"))
+                .as("the mediator must never be called for a message this broker copy no longer owns")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("resumeGroup drains a group whose drainer died leaving work buffered (`docs/spec/router.md` §2.1)")
+    void resumeGroupDrainsAGroupWhoseDrainerDied() {
+        var delivered = new CopyOnWriteArrayList<String>();
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        // Simulates a drainer thread dying mid-backoff (an interrupted slot
+        // wait or a cancelled backoff both take this same path in
+        // Pool#sleepBackoff / #runDrainer): the message is re-fronted and the
+        // drainer flag is released, but the buffer is NOT emptied — nothing
+        // is draining the group any more.
+        Mediator selfInterrupting = (message, recordFailure) -> {
+            delivered.add(message.id());
+            if ("m0".equals(message.id()) && interrupted.compareAndSet(false, true)) {
+                Thread.currentThread().interrupt();
+                return new MediationOutcome.RateLimited(1);
+            }
+            return MediationOutcome.Success.of(200);
+        };
+        var slowBackoff = new Pool.Backoffs(
+                new RetryPolicy(List.of(Duration.ofSeconds(60)), Duration.ofSeconds(60), Duration.ofSeconds(60), 12),
+                new RetryPolicy(List.of(), Duration.ofSeconds(60), Duration.ofSeconds(60), 12));
+        pool = new Pool(new Pool.Config("POOL-A", 4, 0), slowBackoff, selfInterrupting, broker, metrics,
+                Clock.systemUTC());
+
+        pool.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
+        pool.submit(ordered("g", "m1", DispatchMode.BLOCK_ON_ERROR));
+
+        // The one attempt at m0 self-interrupted mid-backoff; both messages
+        // sit buffered and nothing is draining them.
+        await(() -> interrupted.get());
+        await(() -> pool.queueSize() == 2);
+        sleepBriefly();
+        assertThat(pool.queueSize()).as("still buffered — the drainer died, it did not finish").isEqualTo(2);
+        assertThat(broker.acked).isEmpty();
+
+        pool.resumeGroup("g");
+
+        await(() -> broker.acked.size() == 2);
+        assertThat(delivered).as("FIFO order survives the resurrection").containsExactly("m0", "m0", "m1");
+        assertThat(pool.queueSize()).isZero();
+    }
+
+    @Test
+    @DisplayName("resumeGroup does not start a second drainer for a group that already has a live one")
+    void resumeGroupIsANoOpWhileADrainerIsActive() {
+        mediator.block();
+        var p = pool(4, 0);
+        p.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("g", "m1", DispatchMode.BLOCK_ON_ERROR));
+        // One drainer, actively delivering the head.
+        await(() -> mediator.inFlight.get() == 1);
+
+        p.resumeGroup("g");
+
+        // claimDrainer must refuse: a live drainer already owns this group.
+        // A second one would let m0 and m1 deliver concurrently, breaking
+        // the FIFO guarantee ordered delivery exists for.
+        sleepBriefly();
+        assertThat(mediator.inFlight.get()).isEqualTo(1);
+
+        mediator.unblock();
+        await(() -> broker.acked.size() == 2);
+        assertThat(mediator.delivered).containsExactly("m0", "m1");
+    }
+
     // ── Fakes ───────────────────────────────────────────────────────────
 
     private static final int AWAIT_MILLIS = 5_000;
@@ -819,6 +906,10 @@ class PoolTest {
         /// timeout exists for, and the one a refused connection does not
         /// reproduce.
         volatile boolean hangOnNack;
+        /// Layer 2 dedup (`owns`): true unless a test says otherwise. A test
+        /// flips this to simulate a rival broker copy having claimed the
+        /// message since route time.
+        volatile boolean owns = true;
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
@@ -829,6 +920,11 @@ class PoolTest {
         public void ack(QueuedMessage message) {
             acked.add(message.id());
             tracker.remove(message.id());
+        }
+
+        @Override
+        public boolean owns(QueuedMessage message) {
+            return owns;
         }
 
         @Override

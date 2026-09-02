@@ -52,6 +52,10 @@ public final class LifecycleLoops implements AutoCloseable {
     /// Tracker size past which memory is worth a warning (constant 35).
     public static final int IN_FLIGHT_WARN_THRESHOLD = 10_000;
 
+    /// How often idle synthesised `{client}-DEFAULT-POOL` pools are swept
+    /// for eviction (R-59, `docs/spec/router-completion.md` unit 3).
+    public static final Duration SYNTH_POOL_EVICT_INTERVAL = Duration.ofMinutes(1);
+
     /// One periodic task. Named so a log line says which loop misbehaved.
     public record Task(String name, Duration interval, Runnable action) {
     }
@@ -90,19 +94,21 @@ public final class LifecycleLoops implements AutoCloseable {
     /// depths, warn if the tracker is growing without bound, and sweep the
     /// warning store (A-08).
     ///
-    /// `cleanupWarnings` is a `Runnable` — typically
-    /// `WarningStore::cleanup` — rather than a `WarningStore` parameter, the
-    /// same shape as `refreshBrokerStats`: this loop only ever needs to
-    /// invoke the sweep, never to read the store, so it depends on nothing
-    /// it does not use.
+    /// `cleanupWarnings` and `evictSynthPools` are `Runnable`s — typically
+    /// `WarningStore::cleanup` and `manager::evictIdleSynthesisedPools`
+    /// partially applied to its TTL — rather than the objects they act on,
+    /// the same shape as `refreshBrokerStats`: this loop only ever needs to
+    /// invoke the sweep, never to read the thing being swept, so it depends
+    /// on nothing it does not use.
     public static List<Task> standard(StallDetector stalls, InFlightTracker tracker,
                                       Warnings warnings, Runnable refreshBrokerStats,
-                                      Runnable cleanupWarnings) {
+                                      Runnable cleanupWarnings, Runnable evictSynthPools) {
         return List.of(
                 new Task("stall-detector", STALL_CHECK, stalls::sweep),
                 new Task("reaper", REAP_INTERVAL, () -> reap(tracker, warnings)),
                 new Task("broker-stats", BROKER_REFRESH, refreshBrokerStats),
-                new Task("warning-cleanup", WARNING_CLEANUP_INTERVAL, cleanupWarnings));
+                new Task("warning-cleanup", WARNING_CLEANUP_INTERVAL, cleanupWarnings),
+                new Task("synth-pool-evict", SYNTH_POOL_EVICT_INTERVAL, evictSynthPools));
     }
 
     /// Drops tracker entries nothing has touched, and warns when the tracker

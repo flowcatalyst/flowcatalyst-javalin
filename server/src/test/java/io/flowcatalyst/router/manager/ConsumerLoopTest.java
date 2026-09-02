@@ -45,6 +45,11 @@ class ConsumerLoopTest {
     /// Keeps submitting so the pool stays at capacity; stopped after each test.
     private Thread topUp;
     private Pool pool;
+    /// Second pool for the per-consumer capacity tests: fed by nobody, so it
+    /// stays free even while [#pool] (named "A" there) is full — the
+    /// discriminating case between "any pool has room" and "the pools THIS
+    /// consumer's own batch fed have room".
+    private Pool poolB;
     private Thread loopThread;
 
     private RouterManager manager() {
@@ -66,6 +71,27 @@ class ConsumerLoopTest {
         return manager;
     }
 
+    /// Two pools, "A" and "B", both registered up front — for the
+    /// per-consumer capacity tests, which need a pool the consumer feeds
+    /// (filled to capacity) and a pool it never touches (left with room).
+    private RouterManager twoPoolManager() {
+        Mediator mediator = (message, recordFailure) -> {
+            while (deliveryBlocked.get()) {
+                Thread.sleep(Duration.ofMillis(5));
+            }
+            delivered.add(message.id());
+            return MediationOutcome.Success.of(200);
+        };
+        pool = new Pool(new Pool.Config("A", 4, 0), mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
+        poolB = new Pool(new Pool.Config("B", 4, 0), mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
+        var manager = new RouterManager(tracker, warnings, clock,
+                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+        manager.registerPool("A", pool);
+        manager.registerPool("B", poolB);
+        manager.registerConsumer(consumer);
+        return manager;
+    }
+
     @AfterEach
     void stopLoop() {
         if (loopThread != null) {
@@ -77,6 +103,9 @@ class ConsumerLoopTest {
         deliveryBlocked.set(false);
         if (pool != null) {
             pool.close();
+        }
+        if (poolB != null) {
+            poolB.close();
         }
     }
 
@@ -231,6 +260,37 @@ class ConsumerLoopTest {
                 .isLessThan(ConsumerLoop.PARTIAL_BATCH_PAUSE);
     }
 
+    @Test
+    @DisplayName("§2.4/§6: a consumer whose last batch fed a full pool pauses even though an unrelated pool has room")
+    void pausesForItsOwnFedPoolEvenWhenAnOtherPoolHasRoom() {
+        // The defect the per-consumer rule fixes: judged process-wide (any
+        // pool has room), this consumer would never pause here, because B —
+        // which it never feeds — always has capacity. Mutate #hasRoom back
+        // to `manager.anyPoolHasCapacity()` and this test fails: the
+        // warning below never fires and the assertion times out.
+        var manager = twoPoolManager();
+        consumer.deliver(List.of(message("seed", "A")));
+        var loop = start(manager);
+        await(() -> delivered.contains("seed"));
+        // The loop's last (only) non-empty batch fed pool "A" — its
+        // remembered fed-pool set is now {"A"}.
+
+        fillPoolA(manager);
+        // Further polls return nothing; lastFedPools is untouched by an
+        // empty batch, so it keeps naming "A".
+        consumer.deliver(List.of());
+
+        await(() -> !warnings.raised.isEmpty());
+        assertThat(warnings.raised.getFirst())
+                .contains("POOL_CAPACITY").contains("queue-1");
+        // The discriminating assertion: the router as a WHOLE still has
+        // capacity (via B), so a pause here can only be explained by the
+        // per-consumer rule, not the process-wide one it replaced.
+        assertThat(manager.anyPoolHasCapacity())
+                .as("pool B, which this consumer never fed, still has room").isTrue();
+        assertThat(loop.lastAlive()).as("a capacity pause is alive, not stalled").isPresent();
+    }
+
     // ── Fixtures ────────────────────────────────────────────────────────
 
     private static final Broker NO_OP_BROKER = new Broker() {
@@ -273,8 +333,32 @@ class ConsumerLoopTest {
         await(() -> !manager.anyPoolHasCapacity());
     }
 
+    /// As [#fillPool], but fills only pool "A" (via [#twoPoolManager]),
+    /// leaving pool "B" empty — the per-consumer capacity tests' fixture.
+    private void fillPoolA(RouterManager manager) {
+        deliveryBlocked.set(true);
+        topUp = Thread.ofVirtual().start(() -> {
+            int n = 0;
+            while (!Thread.currentThread().isInterrupted()) {
+                if (manager.poolsHaveCapacity(java.util.Set.of("A"))) {
+                    pool.submit(message("filler-" + n++, "A"));
+                } else {
+                    Thread.onSpinWait();
+                }
+            }
+        });
+        await(() -> !manager.poolsHaveCapacity(java.util.Set.of("A")));
+    }
+
     private static List<QueuedMessage> batch(String... ids) {
         return java.util.Arrays.stream(ids).map(ConsumerLoopTest::message).toList();
+    }
+
+    private static QueuedMessage message(String id, String poolCode) {
+        return QueuedMessage.of(
+                new Message(id, poolCode, null, null, MediationType.HTTP, "https://x.test/h",
+                        null, false, DispatchMode.IMMEDIATE),
+                "broker-" + id, "receipt-" + id, "queue-1");
     }
 
     private static QueuedMessage message(String id) {

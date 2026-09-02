@@ -65,4 +65,22 @@ public interface Broker {
     /// relying on is classified as a duplicate and dropped, and the message
     /// waits for the reaper instead.
     void release(QueuedMessage message);
+
+    /// Whether **this** broker copy still owns the pipeline for `message` —
+    /// the process-time backstop, layer 2 of the three duplicate-suppression
+    /// layers (`docs/spec/router.md` §2.1 `EnsureTracked`).
+    ///
+    /// Catches the case route-time registration cannot: the tracker entry
+    /// was reaped (stall/reap housekeeping) while the message sat buffered,
+    /// and a *different* broker copy has since claimed the same application
+    /// id. A caller finding this false must ACK its own copy as a duplicate
+    /// and abandon delivery rather than deliver it — a different copy now
+    /// owns the pipeline.
+    ///
+    /// Defaulted true — always owning — so an implementation with no tracker
+    /// (nothing to dedup against) is not made to care, the same shape as
+    /// [#retrying(QueuedMessage)].
+    default boolean owns(QueuedMessage message) {
+        return true;
+    }
 }

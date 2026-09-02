@@ -152,6 +152,43 @@ class MessageWireTest {
         assertThat(ungrouped.groupId()).isEmpty();
     }
 
+    @Test
+    @DisplayName("unit 3 / R-13, R-16: dispatchModeSpecified() is false only when the wire truly omitted the field")
+    void dispatchModeSpecifiedDistinguishesAbsenceFromDefaulting() throws Exception {
+        // Genuinely absent: no dispatchMode key on the wire at all. This is
+        // the case the strict-routing gate calls malformed.
+        var absent = Json.MAPPER.readValue(
+                "{\"id\":\"msg_5\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"https://x.test/h\"}",
+                Message.class);
+        assertThat(absent.dispatchModeSpecified()).isFalse();
+        assertThat(absent.dispatchMode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+
+        // Present but unrecognised: the wire carried a value, even a bad
+        // one — the strict gate does not call this malformed, only true
+        // absence.
+        var unrecognised = Json.MAPPER.readValue(
+                "{\"id\":\"msg_6\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"https://x.test/h\","
+                        + "\"dispatchMode\":\"SOMETHING_NEW\"}",
+                Message.class);
+        assertThat(unrecognised.dispatchModeSpecified()).isTrue();
+        assertThat(unrecognised.dispatchMode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+
+        // Present and valid.
+        var specified = Json.MAPPER.readValue(
+                "{\"id\":\"msg_7\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"https://x.test/h\","
+                        + "\"dispatchMode\":\"IMMEDIATE\"}",
+                Message.class);
+        assertThat(specified.dispatchModeSpecified()).isTrue();
+        assertThat(specified.dispatchMode()).isEqualTo(DispatchMode.IMMEDIATE);
+
+        // Constructed directly with null — same as wire-absent, since
+        // nothing else can produce a null component.
+        assertThat(new Message("msg_8", "", null, null, MediationType.HTTP,
+                "https://x.test/h", null, false, null).dispatchModeSpecified()).isFalse();
+        assertThat(new Message("msg_9", "", null, null, MediationType.HTTP,
+                "https://x.test/h", null, false, DispatchMode.BLOCK_ON_ERROR).dispatchModeSpecified()).isTrue();
+    }
+
     @ParameterizedTest(name = "an unsupported mediationType survives parsing: {0}")
     @ValueSource(strings = {"GRPC", "kafka", ""})
     void unsupportedMediationTypeIsCarried(String raw) {

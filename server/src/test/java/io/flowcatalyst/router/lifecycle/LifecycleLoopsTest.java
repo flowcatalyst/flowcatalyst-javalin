@@ -110,7 +110,7 @@ class LifecycleLoopsTest {
         // well as a wired one, which is exactly the "built, never scheduled"
         // defect A-08 describes.
         var tasks = LifecycleLoops.standard(stalls, tracker, warnings,
-                () -> { }, cleanupCalls::incrementAndGet).stream()
+                () -> { }, cleanupCalls::incrementAndGet, () -> { }).stream()
                 .map(t -> "warning-cleanup".equals(t.name())
                         ? new LifecycleLoops.Task(t.name(), Duration.ofMillis(20), t.action())
                         : new LifecycleLoops.Task(t.name(), Duration.ofHours(1), t.action()))
@@ -118,6 +118,27 @@ class LifecycleLoopsTest {
         loops.start(tasks);
 
         await(() -> cleanupCalls.get() >= 3);
+    }
+
+    @Test
+    @DisplayName("R-59: standard() actually schedules the synthesised-pool eviction sweep")
+    void standardSchedulesSynthPoolEviction() {
+        // Same shape as A-08's warning-cleanup pin: a task present in the
+        // returned List but never actually ticking would pass a "the list
+        // contains synth-pool-evict" assertion just as well as a wired one.
+        var stalls = new StallDetector(tracker, warnings, queueId -> null, StallDetector.Config.REPORT_ONLY, clock);
+        var evictCalls = new AtomicInteger();
+        loops = new LifecycleLoops();
+
+        var tasks = LifecycleLoops.standard(stalls, tracker, warnings,
+                () -> { }, () -> { }, evictCalls::incrementAndGet).stream()
+                .map(t -> "synth-pool-evict".equals(t.name())
+                        ? new LifecycleLoops.Task(t.name(), Duration.ofMillis(20), t.action())
+                        : new LifecycleLoops.Task(t.name(), Duration.ofHours(1), t.action()))
+                .toList();
+        loops.start(tasks);
+
+        await(() -> evictCalls.get() >= 3);
     }
 
     @Test
@@ -135,7 +156,7 @@ class LifecycleLoopsTest {
         loops = new LifecycleLoops();
 
         var tasks = new java.util.ArrayList<>(LifecycleLoops.standard(stalls, tracker, warnings,
-                () -> { }, () -> { }));
+                () -> { }, () -> { }, () -> { }));
         tasks.add(new LifecycleLoops.Task("config-poll", Duration.ofMillis(20), configPolls::incrementAndGet));
         var fastTasks = tasks.stream()
                 .map(t -> "config-poll".equals(t.name())

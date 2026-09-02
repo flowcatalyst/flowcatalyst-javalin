@@ -67,6 +67,8 @@ class EnvTest {
         assertThat(env.routerNotifyWebhookUrl()).isEmpty();
         assertThat(env.routerNotifyMinSeverity()).isEqualTo("WARNING");
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
+        assertThat(env.routerStrictRouting()).as("R-13/R-16: off until every producer is confirmed compliant").isFalse();
+        assertThat(env.routerSynthPoolIdleSecs()).as("0 means \"use the implementation default\", not \"never evict\"").isZero();
         assertThat(env.routerAuthMode()).isEmpty();
         assertThat(env.routerAuthUser()).isEmpty();
         assertThat(env.routerAuthPass()).isEmpty();
@@ -198,6 +200,14 @@ class EnvTest {
         assertThat(env.platformEnabled()).as("set-but-unparseable primary bool yields the default, not the alias").isTrue();
         assertThat(env.outboxBlockOnError()).isTrue();
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
+    }
+
+    @Test
+    void routerCompletionUnit3Knobs() {
+        var env = load("FC_ROUTER_STRICT_ROUTING", "true", "FC_ROUTER_SYNTH_POOL_IDLE_SECS", "1800");
+
+        assertThat(env.routerStrictRouting()).isTrue();
+        assertThat(env.routerSynthPoolIdleSecs()).isEqualTo(1800);
     }
 
     @Test

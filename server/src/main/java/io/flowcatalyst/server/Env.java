@@ -136,6 +136,17 @@ public record Env(
         String routerNotifyMinSeverity,
         // `FC_DRAIN_TIMEOUT_SECONDS`, default 60.
         int routerDrainTimeoutSec,
+        // `FC_ROUTER_STRICT_ROUTING`, default false (R-13/R-16, §2.3): a
+        // message reaching the router with no poolCode, no dispatchMode, or
+        // an ordered dispatchMode with no messageGroupId is ACKed as
+        // malformed instead of defaulted. Off until every producer is
+        // confirmed to send the routing fields.
+        boolean routerStrictRouting,
+        // `FC_ROUTER_SYNTH_POOL_IDLE_SECS`, default 0 (R-59, §2.2): idle TTL
+        // for a synthesised `{client}-DEFAULT-POOL`. 0/unset means "use the
+        // implementation's own default" ([io.flowcatalyst.router.manager.RouterManager#DEFAULT_SYNTH_POOL_IDLE_TTL]),
+        // never "never evict".
+        int routerSynthPoolIdleSecs,
         // Raw `AUTH_MODE` (trimmed); `NONE` (case-insensitive) forces router BasicAuth off.
         String routerAuthMode,
         // `FC_ROUTER_AUTH_USER` (alias `AUTH_BASIC_USERNAME`); `""` when unset or when
@@ -285,6 +296,8 @@ public record Env(
                 e.get("FC_NOTIFY_WEBHOOK_URL"),
                 e.firstSet("FC_NOTIFY_MIN_SEVERITY", "NOTIFICATION_MIN_SEVERITY").orElse("WARNING"),
                 e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60),
+                e.bool("FC_ROUTER_STRICT_ROUTING", false),
+                e.integer("FC_ROUTER_SYNTH_POOL_IDLE_SECS", 0),
                 authMode,
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_USER", "AUTH_BASIC_USERNAME").orElse(""),
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_PASS", "AUTH_BASIC_PASSWORD").orElse(""),

@@ -12,14 +12,17 @@ import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
+import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -55,17 +58,45 @@ public final class RouterManager {
     /// on the next reconfigure.
     static final Duration CONSUMER_BUILD_TIMEOUT = Duration.ofSeconds(30);
 
+    /// Default idle TTL for a synthesised `{client}-DEFAULT-POOL` (R-59,
+    /// `docs/spec/router.md` §2.2, §9's config table): used whenever
+    /// `FC_ROUTER_SYNTH_POOL_IDLE_SECS` is unset or zero — the spec is
+    /// explicit that 0/unset means "the implementation's own default," not
+    /// "never evict".
+    public static final Duration DEFAULT_SYNTH_POOL_IDLE_TTL = Duration.ofHours(1);
+
     private final Map<String, Pool> pools = new ConcurrentHashMap<>();
     private final Map<String, Consumer> consumers = new ConcurrentHashMap<>();
 
     /// The configuration each running consumer was built from, so a change
     /// can be detected without asking the consumer to describe itself.
     private final Map<String, QueueConfig> queueConfigs = new ConcurrentHashMap<>();
+
+    /// When a message was last routed to each pool — the clock
+    /// [#evictIdleSynthesisedPools] ages a synthesised pool against (R-59).
+    /// Kept for every pool, not just synthesised ones, because it costs
+    /// nothing extra and keeps the update site (inside [#submit]) from
+    /// having to know which pools are eligible for eviction.
+    private final Map<String, Instant> lastRoutedAt = new ConcurrentHashMap<>();
+
+    /// Pool codes the last applied configuration actually named — checked by
+    /// [#evictIdleSynthesisedPools] so an explicitly configured pool whose
+    /// code happens to end in the synthesised suffix is never evicted out
+    /// from under the configuration that put it there.
+    private volatile Set<String> configuredPoolCodes = Set.of();
+
     private final InFlightTracker tracker;
     private final Warnings warnings;
     private final Clock clock;
     private final PoolFactory poolFactory;
     private final AtomicLong batchCounter = new AtomicLong();
+
+    /// R-13/R-16: with the gate on, a message reaching the router with no
+    /// usable `poolCode`, no `dispatchMode` on the wire, or an ordered
+    /// `dispatchMode` with no `messageGroupId` is malformed — ACKed without
+    /// delivery rather than defaulted (`docs/spec/router.md` §2.3). Off
+    /// (default) everywhere until every producer is confirmed compliant.
+    private final boolean strictRouting;
 
     /// Concurrency given to a pool the configuration named without one
     /// (spec constant 2).
@@ -86,10 +117,16 @@ public final class RouterManager {
     }
 
     public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory) {
+        this(tracker, warnings, clock, poolFactory, false);
+    }
+
+    public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory,
+                         boolean strictRouting) {
         this.tracker = tracker;
         this.warnings = warnings;
         this.clock = clock;
         this.poolFactory = poolFactory;
+        this.strictRouting = strictRouting;
     }
 
     public void registerPool(String code, Pool pool) {
@@ -155,21 +192,35 @@ public final class RouterManager {
     /// per-group FIFO preserves. What a pool then does with the messages —
     /// concurrently for IMMEDIATE, in turn for an ordered group — is its own
     /// business.
-    public void route(List<QueuedMessage> batch, Consumer source) {
+    ///
+    /// @return the pool codes this batch was actually submitted to — what a
+    ///         consumer must remember it fed, so it can judge its own
+    ///         capacity against those pools rather than the whole process
+    ///         (`docs/spec/router.md` §2.4, §6)
+    public Set<String> route(List<QueuedMessage> batch, Consumer source) {
         var batchId = Long.toString(batchCounter.incrementAndGet());
+        Set<String> fed = new java.util.LinkedHashSet<>();
         for (var message : batch) {
-            routeOne(message, batchId, source);
+            routeOne(message, batchId, source, fed);
         }
+        return Set.copyOf(fed);
     }
 
-    private void routeOne(QueuedMessage message, String batchId, Consumer source) {
-        switch (tracker.register(inFlight(message, batchId))) {
+    private void routeOne(QueuedMessage message, String batchId, Consumer source, Set<String> fed) {
+        switch (tracker.register(inFlight(message, batchId, clock.instant()))) {
             case InFlightTracker.Registration.Redelivery ignored -> {
                 // The owner's handle has been swapped to this fresher one, so
                 // this copy is finished with. Deliberately NOT acked: the
                 // owner is still working on the message, and acking here
                 // would delete the delivery out from under it.
                 log.debug("redelivery of {} dropped; owner keeps the pipeline", message.id());
+                // §2.1: if the owned copy is buffered in an ordered group
+                // whose drainer has died (its originating consumer was torn
+                // down), this redelivery must kick the group back to life
+                // rather than leave it stalled until the platform notices.
+                if (!message.group().isEmpty()) {
+                    poolFor(message).ifPresent(pool -> pool.resumeGroup(message.group()));
+                }
             }
             case InFlightTracker.Registration.ExternalRequeue ignored -> {
                 // A second, distinct delivery of a message we already own.
@@ -178,11 +229,41 @@ public final class RouterManager {
                 log.debug("external requeue of {} acked away", message.id());
                 source.ack(message);
             }
-            case InFlightTracker.Registration.New ignored -> submit(message);
+            case InFlightTracker.Registration.New ignored -> {
+                if (strictRouting) {
+                    var reason = malformedReason(message.message());
+                    if (reason != null) {
+                        tracker.remove(message.id());
+                        source.ack(message);
+                        warnings.raise(Warnings.Severity.WARNING, "CONFIGURATION",
+                                "message " + message.id() + " is malformed (" + reason
+                                        + "); acked without delivery");
+                        return;
+                    }
+                }
+                submit(message, fed);
+            }
         }
     }
 
-    private void submit(QueuedMessage message) {
+    /// R-13/R-16, `docs/spec/router.md` §2.3: the strict-gate malformed
+    /// reasons, or `null` when the message is well-formed. Checked only
+    /// under [#strictRouting] — off, the pre-ruling fallbacks in [Message]
+    /// and [#poolFor] apply instead and this is never called.
+    private static String malformedReason(Message message) {
+        if (message.poolCode() == null || message.poolCode().isBlank()) {
+            return "poolCode is absent";
+        }
+        if (!message.dispatchModeSpecified()) {
+            return "dispatchMode is absent";
+        }
+        if (message.dispatchMode().requiresOrdering() && message.groupId().isEmpty()) {
+            return "dispatchMode " + message.dispatchMode() + " has no messageGroupId";
+        }
+        return null;
+    }
+
+    private void submit(QueuedMessage message, Set<String> fed) {
         var pool = poolFor(message);
         if (pool.isEmpty()) {
             // Before the first reconfigure, or after shutdown. The message is
@@ -194,6 +275,9 @@ public final class RouterManager {
             }
             return;
         }
+        var code = pool.get().config().code();
+        lastRoutedAt.put(code, clock.instant());
+        fed.add(code);
         pool.get().submit(message);
     }
 
@@ -230,7 +314,28 @@ public final class RouterManager {
     /// Whether any pool has room. When none does, the poll loops pause rather
     /// than pulling messages they would only have to hand straight back.
     public boolean anyPoolHasCapacity() {
-        return pools.values().stream().anyMatch(pool -> pool.queueSize() < pool.config().queueCapacity());
+        return pools.values().stream().anyMatch(RouterManager::hasCapacity);
+    }
+
+    /// Whether **at least one** of the named pools currently has room.
+    ///
+    /// The per-consumer half of §2.4/§6: a consumer pauses only when *every*
+    /// pool its own last batch fed is at capacity, so a caller checks this
+    /// against exactly those pools rather than the whole process — one full
+    /// pool elsewhere in the router must not pause a consumer that is not
+    /// feeding it. A pool code this manager no longer knows (removed by a
+    /// reconfigure) is simply absent from the match; a caller whose entire
+    /// remembered set has gone stale that way should fall back to
+    /// [#anyPoolHasCapacity()] rather than call this with nothing left to
+    /// check.
+    public boolean poolsHaveCapacity(Set<String> poolCodes) {
+        return pools.entrySet().stream()
+                .filter(entry -> poolCodes.contains(entry.getKey()))
+                .anyMatch(entry -> hasCapacity(entry.getValue()));
+    }
+
+    private static boolean hasCapacity(Pool pool) {
+        return pool.queueSize() < pool.config().queueCapacity();
     }
 
     /// Applies a new configuration to the running router.
@@ -325,7 +430,50 @@ public final class RouterManager {
                 existing.updateConcurrency(config.concurrency());
             }
         });
+        // R-59: recorded so eviction never removes an explicitly configured
+        // pool just because its code happens to end in the synthesised
+        // suffix — the synthesis mechanism must never override a real
+        // config entry.
+        configuredPoolCodes = Set.copyOf(wanted.keySet());
         return removed;
+    }
+
+    /// Evicts every synthesised `{client}-DEFAULT-POOL` (R-59,
+    /// `docs/spec/router.md` §2.2) idle past `idleTtl` — no message routed to
+    /// it in that time — **and** currently holding no work: a pool still
+    /// finishing buffered messages is skipped until a later tick finds it
+    /// truly empty, per the drain rules (§5). An explicitly configured pool
+    /// of the same code is never touched, whatever its idle time.
+    ///
+    /// Removed from routing and closed; a later message naming the same code
+    /// synthesises it again from scratch, exactly as if it had never
+    /// existed.
+    ///
+    /// @return how many pools were evicted
+    public int evictIdleSynthesisedPools(Duration idleTtl) {
+        var now = clock.instant();
+        var evicted = 0;
+        for (var code : List.copyOf(pools.keySet())) {
+            if (!code.endsWith(DEFAULT_POOL_SUFFIX) || configuredPoolCodes.contains(code)) {
+                continue;
+            }
+            var lastRouted = lastRoutedAt.get(code);
+            if (lastRouted == null || Duration.between(lastRouted, now).compareTo(idleTtl) < 0) {
+                continue;
+            }
+            var pool = pools.get(code);
+            if (pool == null || pool.queueSize() != 0 || pool.activeWorkers() != 0) {
+                // Still holding work: the group processors finish their
+                // buffers first (§5); a later tick reconsiders it.
+                continue;
+            }
+            if (pools.remove(code, pool)) {
+                lastRoutedAt.remove(code);
+                pool.close();
+                evicted++;
+            }
+        }
+        return evicted;
     }
 
     private ConsumerChanges applyConsumers(RouterConfig config, ConsumerFactory factory) {
@@ -382,8 +530,19 @@ public final class RouterManager {
     private record ConsumerChanges(int started, int stopped, List<String> failed) {
     }
 
-    private InFlightMessage inFlight(QueuedMessage message, String batchId) {
-        var now = clock.instant();
+    /// Builds the tracker entry for `message`, shared verbatim with
+    /// [QueueBroker] (unit 3, `docs/spec/router-completion.md`): the
+    /// process-time backstop ([Broker#owns]) re-registers ownership with the
+    /// same shape route-time registration used, and any drift between two
+    /// hand-written builders is exactly the kind of thing that quietly
+    /// breaks the fields the tracker actually compares (poolCode, group).
+    ///
+    /// @param batchId the poll batch this entry belongs to. [QueueBroker]
+    ///                has no batch context at delivery time — it is
+    ///                re-registering ownership, not routing — so it passes a
+    ///                fixed marker; the field is monitoring metadata only
+    ///                and plays no part in [InFlightTracker]'s own decisions.
+    static InFlightMessage inFlight(QueuedMessage message, String batchId, Instant now) {
         return new InFlightMessage(
                 message.id(),
                 message.brokerMessageId(),

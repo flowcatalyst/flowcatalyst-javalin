@@ -9,7 +9,10 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /// Pulls from one queue and hands each batch to the router
 /// (`docs/spec/router.md` §3.2).
@@ -63,6 +66,19 @@ public final class ConsumerLoop implements Runnable {
     /// detector; never advanced by a failed poll.
     private final AtomicReference<Instant> lastPoll = new AtomicReference<>();
 
+    /// When this loop last ticked while paused for capacity. Together with
+    /// [#lastPoll], the source of [#lastAlive]: a loop legitimately holding
+    /// back because every pool it feeds is full is alive, not stalled, even
+    /// though it is not polling (`docs/spec/router.md` §2.4, §6).
+    private final AtomicReference<Instant> lastCapacityPause = new AtomicReference<>();
+
+    /// The pool codes this loop's own last **non-empty** batch was submitted
+    /// to (`docs/spec/router.md` §2.4, §6) — what [#awaitCapacity] judges
+    /// readiness against instead of the whole process. Empty until the first
+    /// batch routes anywhere; an empty poll never touches this, so it keeps
+    /// naming the last batch that actually fed something.
+    private volatile Set<String> lastFedPools = Set.of();
+
     /// Whether the loop is currently paused for capacity. Tracked so the
     /// warning fires on the *transition* into "all full" rather than once per
     /// two seconds — a warning store holding a thousand entries would
@@ -93,8 +109,30 @@ public final class ConsumerLoop implements Runnable {
     }
 
     /// The last successful poll, or empty if there has not been one.
-    public java.util.Optional<Instant> lastPoll() {
-        return java.util.Optional.ofNullable(lastPoll.get());
+    public Optional<Instant> lastPoll() {
+        return Optional.ofNullable(lastPoll.get());
+    }
+
+    /// The later of [#lastPoll] and the last capacity-pause tick, or empty if
+    /// neither has ever happened.
+    ///
+    /// What the stall detector should read instead of [#lastPoll] alone
+    /// (`docs/spec/router.md` §2.4, §6): a loop deliberately idle because
+    /// every pool it feeds is full is making a decision, not stuck, and each
+    /// pause tick — not just the transition into pausing — refreshes this so
+    /// a long capacity outage does not itself look stale. [#lastPoll] keeps
+    /// its own meaning unchanged for callers that want the poll heartbeat
+    /// specifically (§7.3's CONNECTION liveness, for one).
+    public Optional<Instant> lastAlive() {
+        var poll = lastPoll.get();
+        var pause = lastCapacityPause.get();
+        if (poll == null) {
+            return Optional.ofNullable(pause);
+        }
+        if (pause == null) {
+            return Optional.of(poll);
+        }
+        return Optional.of(poll.isAfter(pause) ? poll : pause);
     }
 
     @Override
@@ -119,7 +157,7 @@ public final class ConsumerLoop implements Runnable {
     /// @return whether there is room to poll now; false means the caller
     ///         should loop round and check again
     private boolean awaitCapacity() throws InterruptedException {
-        if (manager.anyPoolHasCapacity()) {
+        if (hasRoom()) {
             if (pausedForCapacity) {
                 log.info("capacity returned; resuming queue {}", queueId());
                 pausedForCapacity = false;
@@ -131,8 +169,28 @@ public final class ConsumerLoop implements Runnable {
             warnings.raise(Warnings.Severity.WARNING, "POOL_CAPACITY",
                     "all pools at capacity; pausing " + queueId());
         }
+        lastCapacityPause.set(clock.instant());
         Thread.sleep(ALL_FULL_PAUSE);
         return false;
+    }
+
+    /// Whether this consumer should keep polling right now (`docs/spec/router.md`
+    /// §2.4, §6): judged against the pools its own last non-empty batch fed,
+    /// not the whole process — a consumer that has never fed a pool, or
+    /// whose entire remembered set has since been removed by a reconfigure,
+    /// falls back to [RouterManager#anyPoolHasCapacity] rather than being
+    /// stuck on a set that can no longer answer anything.
+    private boolean hasRoom() {
+        var fed = lastFedPools;
+        if (fed.isEmpty()) {
+            return manager.anyPoolHasCapacity();
+        }
+        var known = manager.pools().keySet();
+        var stillTracked = fed.stream().filter(known::contains).collect(Collectors.toSet());
+        if (stillTracked.isEmpty()) {
+            return manager.anyPoolHasCapacity();
+        }
+        return manager.poolsHaveCapacity(stillTracked);
     }
 
     /// @return whether the loop should continue; false means the consumer is
@@ -181,7 +239,7 @@ public final class ConsumerLoop implements Runnable {
             Thread.sleep(EMPTY_POLL_PAUSE);
             return true;
         }
-        manager.route(batch, consumer);
+        lastFedPools = manager.route(batch, consumer);
         if (batch.size() < MAX_POLL) {
             Thread.sleep(PARTIAL_BATCH_PAUSE);
         }

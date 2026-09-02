@@ -46,8 +46,14 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 ///                        requires ordering
 /// @param highPriority    carried and never acted on — the Go router reads it
 ///                        nowhere (`docs/spec/router.md` §2.1, §13 Q14)
-/// @param dispatchMode    never null: an absent or unrecognised wire value is
-///                        [DispatchMode#IMMEDIATE]
+/// @param dispatchMode    never null via [#dispatchMode()]: an absent or
+///                        unrecognised wire value normalises to
+///                        [DispatchMode#DEFAULT]. The record component
+///                        itself stays raw (nullable) so
+///                        [#dispatchModeSpecified()] can tell "the wire
+///                        carried no value at all" from "the wire carried a
+///                        value that normalised" — see the accessor and
+///                        [#dispatchModeSpecified()] below.
 public record Message(
         String id,
         @JsonInclude(JsonInclude.Include.NON_EMPTY) String poolCode,
@@ -59,13 +65,46 @@ public record Message(
         @JsonInclude(JsonInclude.Include.NON_DEFAULT) boolean highPriority,
         DispatchMode dispatchMode) {
 
-    /// Normalises the two fields that must never be null in the JVM, so no
+    /// Normalises the one field that must never be null in the JVM, so no
     /// caller has to defend against a wire value that was simply absent.
     /// Empty-string-as-absent stays at the wire boundary and does not leak
     /// inward (CONVENTIONS §8).
+    ///
+    /// `dispatchMode` is deliberately **not** normalised here — see
+    /// [#dispatchMode()].
     public Message {
         mediationType = mediationType == null ? MediationType.HTTP : mediationType;
-        dispatchMode = dispatchMode == null ? DispatchMode.DEFAULT : dispatchMode;
+    }
+
+    /// Never null: an absent or unrecognised wire value normalises to
+    /// [DispatchMode#DEFAULT].
+    ///
+    /// This overrides the record's implicit accessor deliberately: the
+    /// canonical field stays raw (null when the wire carried no
+    /// `dispatchMode` at all, non-null whenever it carried any value, even a
+    /// blank or unrecognised one — [DispatchMode#parse] never returns null).
+    /// Normalising here rather than in the compact constructor is what makes
+    /// [#dispatchModeSpecified()] possible without a tenth record component,
+    /// which would break every positional `new Message(...)` call site
+    /// outside this unit's ownership (`docs/spec/router-completion.md`
+    /// unit 3). `equals`/`hashCode`/`toString` are therefore based on the
+    /// **raw** value, not this normalised one — this record does not
+    /// compare a wire-absent message equal to one explicitly constructed
+    /// with the default, which nothing in this codebase relies on today.
+    public DispatchMode dispatchMode() {
+        return dispatchMode == null ? DispatchMode.DEFAULT : dispatchMode;
+    }
+
+    /// Whether the wire carried a `dispatchMode` value at all — malformed
+    /// under the strict-routing gate when it did not (R-13/R-16,
+    /// `docs/spec/router-completion.md` unit 3; `docs/spec/router.md` §2.3).
+    ///
+    /// True for **any** wire value, including blank or unrecognised ones —
+    /// those still parse to [DispatchMode#DEFAULT] (with a warning for the
+    /// unrecognised case) and are not what the strict gate calls malformed;
+    /// only genuine absence (no key, or an explicit JSON `null`) is.
+    public boolean dispatchModeSpecified() {
+        return dispatchMode != null;
     }
 
     /// The message group, or `""` when ungrouped.
@@ -83,7 +122,7 @@ public record Message(
     /// Whether this message must be sequenced within [#groupId()].
     /// Ungrouped messages are never ordered, whatever the mode claims.
     public boolean ordered() {
-        return dispatchMode.requiresOrdering() && !groupId().isEmpty();
+        return dispatchMode().requiresOrdering() && !groupId().isEmpty();
     }
 
     /// The exact bytes POSTed to the target, and the bytes that are signed.

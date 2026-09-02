@@ -8,6 +8,7 @@ import io.flowcatalyst.router.observability.jfr.MessageSettledEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Map;
 import java.util.function.Function;
@@ -38,14 +39,29 @@ public final class QueueBroker implements Broker {
     /// makes that unavailable rather than merely discouraged.
     private final Function<String, Acknowledger> consumers;
     private final InFlightTracker tracker;
+    private final Clock clock;
+
+    /// A tracker entry rebuilt by [#owns] carries no batch context — this
+    /// broker is re-asserting ownership at delivery time, not routing —
+    /// see [RouterManager#inFlight].
+    private static final String OWNERSHIP_CHECK_BATCH_ID = "owns-check";
 
     public QueueBroker(Function<String, Acknowledger> consumers, InFlightTracker tracker) {
-        this.consumers = consumers;
-        this.tracker = tracker;
+        this(consumers, tracker, Clock.systemUTC());
     }
 
     public QueueBroker(Map<String, ? extends Acknowledger> consumers, InFlightTracker tracker) {
         this(consumers::get, tracker);
+    }
+
+    public QueueBroker(Function<String, Acknowledger> consumers, InFlightTracker tracker, Clock clock) {
+        this.consumers = consumers;
+        this.tracker = tracker;
+        this.clock = clock;
+    }
+
+    public QueueBroker(Map<String, ? extends Acknowledger> consumers, InFlightTracker tracker, Clock clock) {
+        this(consumers::get, tracker, clock);
     }
 
     @Override
@@ -105,6 +121,16 @@ public final class QueueBroker implements Broker {
     @Override
     public void retrying(QueuedMessage message) {
         tracker.markRetrying(message.id());
+    }
+
+    @Override
+    public boolean owns(QueuedMessage message) {
+        // Layer 2, the process-time backstop (`docs/spec/router.md` §2.1
+        // EnsureTracked): re-asserts the tracker entry, restoring one the
+        // reaper pruned while this message sat buffered. False means a
+        // different broker copy has since claimed the id — this attempt
+        // must ACK its own copy as a duplicate rather than deliver it.
+        return tracker.ensureTracked(RouterManager.inFlight(message, OWNERSHIP_CHECK_BATCH_ID, clock.instant()));
     }
 
     @Override

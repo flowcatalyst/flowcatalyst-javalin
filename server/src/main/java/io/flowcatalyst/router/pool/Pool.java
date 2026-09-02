@@ -274,6 +274,22 @@ public final class Pool implements AutoCloseable {
         }
     }
 
+    /// Kicks a dead drainer back to life for `group`, if it still holds
+    /// buffered work with nothing currently draining it (`docs/spec/router.md`
+    /// §2.1). A redelivery of a message already buffered in an ordered group
+    /// must not leave the group stalled forever just because its original
+    /// drainer exited without finishing — an interrupted slot wait or a
+    /// cancelled backoff releases the drainer flag but leaves the buffer
+    /// re-fronted, and nothing else was going to notice.
+    ///
+    /// A no-op when a drainer is already running for the group, or the group
+    /// holds nothing — [OrderedGroups#claimDrainer] answers both at once.
+    public void resumeGroup(String group) {
+        if (groups.claimDrainer(group)) {
+            start(() -> runDrainer(group));
+        }
+    }
+
     private void submitOrdered(QueuedMessage message) {
         boolean mustDrain = groups.offer(message);
         if (stopped) {
@@ -561,6 +577,14 @@ public final class Pool implements AutoCloseable {
 
     /// One delivery attempt and its consequences (§3.5).
     private Attempt deliverOnce(QueuedMessage message) {
+        if (!broker.owns(message)) {
+            // Layer 2 dedup backstop (`docs/spec/router.md` §2.1
+            // EnsureTracked): a different broker copy now owns the
+            // pipeline for this message — this attempt must ACK its own
+            // copy as a duplicate and go no further, never deliver it.
+            broker.ack(message, "duplicate");
+            return new Attempt.Settled();
+        }
         var group = message.group();
         if (!group.isEmpty() && flushes.suppressed(group)) {
             // Checked before the rate limiter, which is the point: a flushed

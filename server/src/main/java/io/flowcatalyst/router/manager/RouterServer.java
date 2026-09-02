@@ -151,7 +151,7 @@ public final class RouterServer implements AutoCloseable {
         return loops.entrySet().stream()
                 .filter(entry -> Duration.between(entry.getValue().consumerLoop().startedAt(), now)
                         .compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
-                .filter(entry -> entry.getValue().consumerLoop().lastPoll()
+                .filter(entry -> entry.getValue().consumerLoop().lastAlive()
                         .map(last -> Duration.between(last, now).compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
                         .orElse(true))
                 .map(Map.Entry::getKey)

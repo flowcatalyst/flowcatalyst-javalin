@@ -22,10 +22,14 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -80,8 +84,12 @@ class RouterServerTest {
     }
 
     private static QueuedMessage message(String id) {
+        return message(id, "");
+    }
+
+    private static QueuedMessage message(String id, String poolCode) {
         return QueuedMessage.of(
-                new io.flowcatalyst.router.wire.Message(id, "", null, null,
+                new io.flowcatalyst.router.wire.Message(id, poolCode, null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
                         io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE),
                 "b-" + id, "r-" + id, "q://1");
@@ -309,6 +317,76 @@ class RouterServerTest {
     }
 
     @Test
+    @DisplayName("E: a consumer paused for capacity beyond the stall threshold is not reported stalled")
+    void capacityPausedConsumerIsNotStalled() throws InterruptedException {
+        // Same shape as RouterApiTest's "a consumer that keeps polling stays
+        // ready" (readinessStaysReadyForAPollingConsumer): jump the clock
+        // past the stall threshold, then let the loop's own real-time ticks
+        // refresh its heartbeat under the now-advanced clock. Here the tick
+        // that refreshes it is a capacity pause, not a poll — the loop
+        // deliberately stops polling once its only fed pool is full, and
+        // stalledConsumers() must not read that silence as stalled.
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var release = new CountDownLatch(1);
+        Mediator blockingMediator = (message, recordFailure) -> {
+            release.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var localPools = new CopyOnWriteArrayList<Pool>();
+        var localManager = new RouterManager(isolatedTracker, warnings, mutableClock, cfg -> {
+            var pool = new Pool(cfg, blockingMediator, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock);
+            localPools.add(pool);
+            return pool;
+        });
+        var oneShot = new OneShotThenEmptyConsumer("q://cap");
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
+        var localServer = new RouterServer(localManager, isolatedTracker, election, q -> Optional.of(oneShot),
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 1, 0)),
+                        List.of(QueueConfig.of("q://cap")))),
+                warnings, mutableClock, Duration.ofSeconds(1));
+        try {
+            localServer.start();
+            await(() -> localServer.activeLoops() == 1);
+            var pool = localManager.pools().get("A");
+            await(() -> oneShot.delivered.get());
+
+            // Fill pool "A" — the only pool this consumer's seed batch fed —
+            // so every later poll is capacity-paused rather than empty.
+            var filler = Thread.ofVirtual().start(() -> {
+                int n = 0;
+                while (!Thread.currentThread().isInterrupted()) {
+                    if (localManager.poolsHaveCapacity(java.util.Set.of("A"))) {
+                        pool.submit(message("filler-" + n++, "A"));
+                    } else {
+                        Thread.onSpinWait();
+                    }
+                }
+            });
+            try {
+                // Pool "A" specifically, not the process-wide check: the
+                // manager always carries an untouched DEFAULT-POOL too,
+                // which would otherwise mask "A" being full.
+                await(() -> !localManager.poolsHaveCapacity(java.util.Set.of("A")));
+                // Let the loop notice and enter its capacity-pause branch at
+                // least once under the CURRENT (pre-jump) clock value.
+                await(() -> !warnings.raised.isEmpty());
+
+                mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+                // Real-time capacity-pause ticks (ALL_FULL_PAUSE) keep firing
+                // and now read the advanced clock, refreshing lastAlive()
+                // past the point lastPoll() alone would read as stale.
+                await(() -> localServer.stalledConsumers().isEmpty());
+            } finally {
+                filler.interrupt();
+            }
+        } finally {
+            release.countDown();
+            localServer.close();
+        }
+    }
+
+    @Test
     @DisplayName("closing stops the router and gives up leadership")
     void closeReleasesLeadership() {
         var router = server(LeaderElection.Config.of("fc:leader"), config("q://1"));
@@ -383,6 +461,79 @@ class RouterServerTest {
 
         @Override
         public void ping() {
+        }
+    }
+
+    /// Delivers exactly one non-empty batch, then empty forever. Used to set
+    /// a loop's [ConsumerLoop#lastPoll] once (the "seed") and never again —
+    /// once its fed pool is full, the loop never gets a chance to poll it
+    /// empty either, since capacity is checked before every poll.
+    private static final class OneShotThenEmptyConsumer implements Consumer {
+        private final String id;
+        private final AtomicBoolean sent = new AtomicBoolean();
+        final AtomicBoolean delivered = new AtomicBoolean();
+
+        OneShotThenEmptyConsumer(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) {
+            if (sent.compareAndSet(false, true)) {
+                delivered.set(true);
+                return PollResult.of(List.of(message("seed", "A")));
+            }
+            return PollResult.empty();
+        }
+
+        @Override
+        public boolean ack(QueuedMessage message) {
+            return true;
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public Optional<QueueMetrics> metrics() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    private static final class MutableClock extends Clock {
+        private volatile Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
         }
     }
 

@@ -181,8 +181,8 @@ public final class Router implements AutoCloseable {
                     metrics.get(config.code()), clock, warningSink, blockedSiblings);
         };
 
-        var manager = new RouterManager(tracker, warningSink, clock, poolFactory);
-        brokerRef.set(new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker));
+        var manager = new RouterManager(tracker, warningSink, clock, poolFactory, env.routerStrictRouting());
+        brokerRef.set(new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker, clock));
 
         var redisClient = redisFor(env);
         var electionConfig = electionConfig(env);
@@ -214,13 +214,19 @@ public final class Router implements AutoCloseable {
                 StallDetector.Config.REPORT_ONLY, clock);
         var brokerStats = new BrokerStatsCache(clock, warningSink);
         var housekeeping = new LifecycleLoops();
+        // R-59: 0/unset means "use the implementation's own default," not
+        // "never evict" (§10's config table).
+        var synthPoolIdleTtl = env.routerSynthPoolIdleSecs() > 0
+                ? Duration.ofSeconds(env.routerSynthPoolIdleSecs())
+                : RouterManager.DEFAULT_SYNTH_POOL_IDLE_TTL;
         // config-poll (A-10) rides the same housekeeping scheduler as the
         // other periodic tasks: applyConfiguration() already no-ops when not
         // running, so this reaches a leader whether it just gained
         // leadership (which already applied once) or has been leading for a
         // while and the *source's* configuration changed underneath it.
         var housekeepingTasks = new java.util.ArrayList<>(LifecycleLoops.standard(stalls, tracker, warningSink,
-                () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup));
+                () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup,
+                () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl)));
         housekeepingTasks.add(new LifecycleLoops.Task("config-poll", RouterServer.CONFIG_POLL_INTERVAL,
                 server::applyConfiguration));
         housekeeping.start(housekeepingTasks);
