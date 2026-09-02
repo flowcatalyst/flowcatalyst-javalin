@@ -6,6 +6,7 @@ import io.javalin.config.JavalinConfig;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.time.Duration;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -65,20 +66,35 @@ public final class TestHttp implements AutoCloseable {
     ///
     /// `probePath` must be a route this instance actually registers; the
     /// response is discarded, so any status will do.
+    ///
+    /// Each probe carries its own short timeout. Without one, a first
+    /// connection that Jetty accepts but does not answer (the race this
+    /// method exists to absorb) hangs the single probe past the whole budget,
+    /// and the failure reads "never became ready" after exactly one attempt.
+    /// Several bounded probes inside a generous budget is what makes the
+    /// retry loop actually retry.
     public void awaitReady(String probePath) {
-        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(5).toNanos();
+        long deadline = System.nanoTime() + READY_BUDGET.toNanos();
         RuntimeException last = null;
         while (System.nanoTime() < deadline) {
             try {
-                get(probePath);
+                client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port() + probePath))
+                        .GET().timeout(READY_PROBE_TIMEOUT).build(), HttpResponse.BodyHandlers.discarding());
                 return;
-            } catch (RuntimeException e) {
-                last = e;
+            } catch (IOException e) {
+                last = new UncheckedIOException(e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while waiting for the test server", e);
             }
-            Thread.onSpinWait();
         }
         throw new AssertionError("test server never became ready at " + probePath, last);
     }
+
+    /// Per-probe bound (see [#awaitReady]); the overall budget is generous
+    /// because a full suite run is exactly when the JVM is busiest.
+    private static final Duration READY_PROBE_TIMEOUT = Duration.ofMillis(500);
+    private static final Duration READY_BUDGET = Duration.ofSeconds(20);
 
     public HttpResponse<String> get(String path, String... headers) {
         return send(HttpRequest.newBuilder(URI.create("http://localhost:" + port() + path)).GET(), headers);

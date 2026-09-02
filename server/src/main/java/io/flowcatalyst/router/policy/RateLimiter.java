@@ -138,7 +138,15 @@ public final class RateLimiter {
     ///         message is going back on a retry path, and releasing it would
     ///         let a shutdown burst exceed the configured rate.
     public void await() throws InterruptedException {
-        var wait = reserve();
+        awaitReserved(reserve());
+    }
+
+    /// The second half of [#await]: sleeps out a wait [#reserve] handed back,
+    /// for a caller that wants to act on "this delivery is being held back"
+    /// between reserving and waiting — recording a metric, say — without a
+    /// separate observational check that could disagree with the token it
+    /// then takes.
+    public void awaitReserved(Duration wait) throws InterruptedException {
         if (!wait.isZero()) {
             Thread.sleep(wait);
         }

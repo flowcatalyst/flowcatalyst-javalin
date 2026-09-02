@@ -615,7 +615,13 @@ public final class Pool implements AutoCloseable {
             broker.ack(message);
             return new Attempt.Settled();
         }
-        if (limiter.limited()) {
+        // Reserve first, then record, then wait: one act, not a check
+        // followed by a separate acquire. Read as "is the limiter busy?" and
+        // then "take a token", every worker in a burst could see a free token
+        // before any of them took it, and the metric and the warning would
+        // describe a throttle nobody observed while the deliveries all waited.
+        var throttle = limiter.reserve();
+        if (!throttle.isZero()) {
             metrics.recordRateLimited();
             // INFO, once, on the transition into limiting — never once per
             // limited delivery, which would flood the store for the length
@@ -631,7 +637,7 @@ public final class Pool implements AutoCloseable {
             rateLimitWarned.set(false);
         }
         try {
-            limiter.await();
+            limiter.awaitReserved(throttle);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Attempt.Failed(new MediationOutcome.ErrorConnection(
