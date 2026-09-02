@@ -428,3 +428,27 @@ Platform improvements that are deliberately **not** porting work live in
 revocation on authorization-code replay). Nothing there blocks a port unit;
 Java reproduces the current Go behaviour and the improvement is a separate,
 later decision.
+
+## Router completion drive — design smells (2026-09-02)
+
+- **Two `DispatchMode` enums** (`router.wire.DispatchMode`,
+  `platform.subscription.DispatchMode`) with a hand conversion in
+  `PendingJobPoller.toWireMode`. X-01 rules one shared enum; the merge is a
+  small unit of its own (both now default to `NEXT_ON_ERROR`).
+- **`Message.dispatchMode` is a raw nullable component with an overriding
+  accessor**, so `equals`/`hashCode` compare the raw value while every reader
+  sees the normalised one. Documented in the record; a sealed
+  `Absent | Specified(mode)` wrapper would be cleaner once the positional
+  constructor call sites can be touched in one go.
+- **Redis client construction is duplicated** between `server.Router.redisFor`
+  and `server.Server.schedulerLeader` (Jedis pooled provider, retry bounds).
+  One helper in `server/` should own it.
+- **No SQS or NATS dispatch publisher.** The scheduler publishes to Postgres
+  or a no-op; Go is the same today. Needed before a production deployment on
+  either broker.
+- **Subscriber deliveries go out unsigned** — `DeliveryCredentials.none()`
+  until the `serviceaccount` aggregate is ported (Go resolves job →
+  subscription → application → service-account credentials).
+- **Processing endpoint 5xx classification** is uniform (every non-2xx/429
+  consumes budget), not the router's 502/503/504-vs-other split; open owner
+  question in `docs/spec/dispatch-seam.md` §14.

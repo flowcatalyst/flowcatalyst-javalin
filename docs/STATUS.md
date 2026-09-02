@@ -4,6 +4,50 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Router completion drive (2026-09-02)
+
+The owner asked for the full router port to be completed against the
+implementation-neutral contract `../flowcatalyst-rust/docs/router-specification.md`
+and its ruling ledger `../flowcatalyst-rust/docs/owner-questions.md` (the
+authority order is in the spec's §0; `docs/spec/router.md` is pre-ruling).
+Go absorbed every ruling in `2e2e466..7ae5acd`, so it is once again an
+accurate reference for shape, never for correctness.
+
+The gap audit and unit plan are `docs/spec/router-completion.md`; the platform
+half was spec-extracted first into `docs/spec/dispatch-seam.md` (1105 lines,
+11 owner questions in §14). Orchestration: Fable 5.1 planned, specced,
+reviewed and merged; Sonnet 5 agents at medium effort wrote the code in
+isolated git worktrees (builds must not share `target/`), one squash commit
+per unit on `main`, full suite re-run on `main` after each merge.
+
+| Unit | Commit | What landed |
+|---|---|---|
+| 5 observability | `4d2afce` | X-04 notifier floor env-tunable, INFO 1h TTL, `cleanup()` scheduled (A-08), R-52 group-flush list + clear, R-53 series, R-56 instance id |
+| 1 delivery contract | `f2402b0` | R-57 5xx boundary (REJECTED is an explicit component, terminal on first attempt), R-12 origin+path breaker key, corpus `metric` column asserted, CIRCUIT_BREAKER/RATE_LIMIT warnings once per transition |
+| 4a config lifecycle | `8a41635` | A-10 five-minute re-poll, R-30 last-known-good per source, R-33 gated real reload, R-36 consumer liveness → readiness, CONNECTION + QUEUE_HEALTH warnings |
+| 2 A-01 gate | `dffe9b6` | BLOCK_ON_ERROR siblings released unless `FC_ROUTER_PLATFORM_URL` is set; settled reporter (ACK first, fire-and-forget, 1000/chunk, 5s) |
+| 6a platform half | `2ea284f` | Cancel/Complete verbs (+ lockfile), one GroupHolding SQL fragment, `/api/dispatch/settled`, reaper, X-06 strict status parse, X-01 subscription default |
+| 3 routing | `1dffd24` | `FC_ROUTER_STRICT_ROUTING` gate (off), R-59 synthesised-pool eviction, layer-2 dedup wired, drainer resurrection, per-consumer backpressure |
+| 6c processing endpoint | `95929a3` | `/api/dispatch/process` with the §5 outcome table, delivery-time hold-back spending no budget, 5/15/30/60/120s ladder |
+| 6b scheduler | `23d4ce1` | claim → mark QUEUED → commit → publish; poolCode composed at publish time; per-job HMAC bearer; stale recovery; scheduler-suffixed election; Postgres publisher |
+| 4b lifecycle | `8b632da` | removed pools drain, replaced consumers linger until unreferenced, stall supervisor wired without aborting deliveries, `/monitoring/blocked-groups` (R-04) |
+
+**Three step-3 audits** (fresh Sonnet readers, read-only) found five real
+defects the coders' own mutation checks had not: `RouterServer` held the
+leadership monitor across a config fetch of up to minutes (a leadership loss
+mid-fetch kept the old leader polling); `Pool.submit` racing `close()`
+swallowed the rejected task so an IMMEDIATE message was neither acked nor
+nacked; the reaper was started and never stopped, sweeping the shared test
+database; the dispatch-job GET routes still answered 403 for an out-of-scope
+id while PR-3 requires a byte-identical 404; the subscriber response was read
+unbounded before the 64 KiB cap. All are fixed or in the pending branches.
+The audits also asked for a cross-implementation HMAC vector and pins for the
+endpoint's three 500 paths.
+
+**Open after this drive:** the `DispatchMode` enum merge (X-01), SQS/NATS
+publishers, signed subscriber deliveries (needs `serviceaccount`), and the
+owner questions in `dispatch-seam.md` §14 and the ledger's deferred R-items.
+
 ## Where we are (2026-08-24, evening)
 
 Reactor green on a clean uncontended build, 2026-08-27: **2270 tests** —

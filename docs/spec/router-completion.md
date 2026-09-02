@@ -87,6 +87,24 @@ These are Java design decisions inside the ledger's rulings, not new rulings.
    the buffers and drainers, and `close()` once buffer and workers are both
    empty (checked on the housekeeping tick). `RouterManager.allPools()` returns
    routing pools plus draining ones for the monitoring surface.
+7. **X-06 for dispatch-job status; X-01 for dispatch mode.** `DispatchJobStatus.parse`
+   is strict (legacy `ERROR` kept as a holding status; an unknown stored value
+   fails the row read with its id, and a list containing it fails). Dispatch
+   mode stays lenient by ruling: null/blank/unknown ⇒ `NEXT_ON_ERROR`, unknown
+   logged. The two enums (`router.wire` and `platform.subscription`) are still
+   separate; merging them is the last small unit.
+8. **DJ-5 by the standing convention.** The resend rollup subject is the
+   constant `platform.dispatchjobs.resent`, as Go has it.
+9. **The reaper is not leader-gated** (each sweep is one idempotent,
+   status-guarded UPDATE) but it is a held, stoppable resource of the server.
+10. **The scheduler's election key is the standby lock key suffixed
+    `:scheduler`**, so a router leader and a scheduler leader may differ.
+11. **Publishing is Postgres or nothing.** The scheduler publishes to the
+    built-in Postgres broker queue the default-broker router consumes, or to a
+    loud no-op publisher; SQS/NATS publishers are deferred, as in Go.
+12. **Subscriber deliveries are unsigned until the service-account aggregate
+    lands.** The credentials resolver ships with a "none" implementation and
+    says so at the wiring site.
 
 ## 3. Units and ownership
 
