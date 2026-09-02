@@ -182,6 +182,24 @@ class MediationConformanceTest {
         }
         assertBreaker(id, expect.get("breaker").asText(), before, after);
         assertWarning(id, expect.get("warning").asText());
+        assertMetric(id, expect.get("metric").asText(), outcome);
+    }
+
+    /// Maps the corpus's wire spelling (`rateLimited`, camelCase) onto
+    /// [Pool.Metric] and asserts [Pool#metricFor] agrees — the runner never
+    /// read this column before, so a wrong arm in that exhaustive switch had
+    /// nothing to catch it.
+    private static void assertMetric(String id, String expected, MediationOutcome outcome) {
+        var actual = io.flowcatalyst.router.pool.Pool.metricFor(outcome);
+        var wanted = switch (expected.toLowerCase(java.util.Locale.ROOT)) {
+            case "success" -> io.flowcatalyst.router.pool.Pool.Metric.SUCCESS;
+            case "failure" -> io.flowcatalyst.router.pool.Pool.Metric.FAILURE;
+            case "transient" -> io.flowcatalyst.router.pool.Pool.Metric.TRANSIENT;
+            case "ratelimited" -> io.flowcatalyst.router.pool.Pool.Metric.RATE_LIMITED;
+            case "none" -> io.flowcatalyst.router.pool.Pool.Metric.NONE;
+            default -> throw new IllegalArgumentException("unknown metric expectation: " + expected);
+        };
+        assertThat(actual).as("%s: metric", id).isEqualTo(wanted);
     }
 
     /// The breaker column is the one most often got wrong, because the

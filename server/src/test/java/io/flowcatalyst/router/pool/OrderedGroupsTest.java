@@ -1,7 +1,6 @@
 package io.flowcatalyst.router.pool;
 
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
-import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
@@ -10,7 +9,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
@@ -26,13 +24,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Go router, which blocks the group for both ordered modes.
 class OrderedGroupsTest {
 
-    private static final int BUDGET = RetryPolicy.DELIVERY.burstSize();
-
     private final OrderedGroups groups = new OrderedGroups();
 
-    /// The target ran the message and failed on it.
+    /// The target ran the message and answered badly — R-57, terminal on the
+    /// first attempt.
     private static MediationOutcome rejected() {
-        return new MediationOutcome.ErrorProcess(500, 30, "boom");
+        return MediationOutcome.ErrorConfig.rejected(500, "boom");
     }
 
     /// The target could not be reached or was not ready.
@@ -90,34 +87,39 @@ class OrderedGroupsTest {
     }
 
     @Test
-    @DisplayName("a rejected head is retried in place until its budget is spent")
-    void rejectedHeadRetriesWithinBudget() {
-        // 500 means the target ran the message and failed on it. Three
-        // attempts absorb a transient application fault — a database blip, a
-        // deadlock — without becoming an infinite retry.
+    @DisplayName("R-57: a rejected head never retries in place — it is terminal on the first attempt")
+    void rejectedHeadNeverRetriesInPlace() {
+        // The old retry-then-give-up budget is gone: the classifier now
+        // decides "retry" (ErrorProcess, 502/503/504) vs "give up"
+        // (ErrorConfig REJECTED) before OrderedGroups ever sees the outcome.
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
         var head = groups.pollHead("orders").orElseThrow();
 
-        assertThat(groups.onHeadFailure(head, rejected(), BUDGET))
-                .isEqualTo(new HeadFailure.RetryHead(head));
-
-        var second = head.retrying();
-        assertThat(groups.onHeadFailure(second, rejected(), BUDGET))
-                .isEqualTo(new HeadFailure.RetryHead(second));
+        assertThat(groups.onHeadFailure(head, rejected()))
+                .as("a fresh head (zero attempts) still goes straight to the per-mode decision")
+                .isEqualTo(new HeadFailure.Continue(head));
     }
 
     @Test
-    @DisplayName("NEXT_ON_ERROR: budget spent, the head is ACKed and the group continues")
-    void nextOnErrorContinuesOnceBudgetSpent() {
+    @DisplayName("NEXT_ON_ERROR: a rejected head is ACKed after one attempt, and the group continues")
+    void nextOnErrorContinuesAfterOneAttempt() {
         // The ruling, and the deviation: Go blocks the group here.
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
-        var spent = head.retrying().retrying();
 
-        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
+        var disposition = groups.onHeadFailure(head, rejected());
 
-        assertThat(disposition).isEqualTo(new HeadFailure.Continue(spent));
+        assertThat(disposition).isEqualTo(new HeadFailure.Continue(head));
         assertThat(drainIds("orders")).containsExactly("b", "c");
+    }
+
+    @Test
+    @DisplayName("IMMEDIATE never reaches the ordered drainer, but the REJECTED switch stays total")
+    void immediateRejectedIsContinueToo() {
+        var head = message("orders", "a", DispatchMode.IMMEDIATE);
+
+        assertThat(groups.onHeadFailure(head, rejected()))
+                .isEqualTo(new HeadFailure.Continue(head));
     }
 
     /// The regression that motivated `MediationOutcome.disposition()`.
@@ -131,7 +133,7 @@ class OrderedGroupsTest {
     ///
     /// The old `targetUnavailable()` default returned `false` for all three,
     /// so that is precisely what happened.
-    @ParameterizedTest(name = "{0} with the budget spent never ACKs the group")
+    @ParameterizedTest(name = "{0} at attempt 2 never ACKs the group")
     @MethodSource("neverRan")
     @DisplayName("an outcome that never ran the message cannot consume the group")
     void neverRanDoesNotDestroyTheGroup(String name, MediationOutcome outcome, boolean returnsToBroker) {
@@ -141,7 +143,7 @@ class OrderedGroupsTest {
             var head = groups.pollHead("orders").orElseThrow();
             var spent = head.retrying().retrying();
 
-            var failure = groups.onHeadFailure(spent, outcome, BUDGET);
+            var failure = groups.onHeadFailure(spent, outcome);
 
             if (returnsToBroker) {
                 // Handed back for redelivery: still on the broker, in order.
@@ -183,14 +185,14 @@ class OrderedGroupsTest {
         var deferring = new MediationOutcome.RateLimited(5);
 
         // Within budget the group keeps its head, which is the normal case.
-        assertThat(groups.onHeadFailure(head, deferring, BUDGET))
+        assertThat(groups.onHeadFailure(head, deferring))
                 .isEqualTo(new HeadFailure.RetryHead(head));
 
         var spent = head;
         for (int i = 0; i < Pool.MAX_IN_PIPELINE_ATTEMPTS - 1; i++) {
             spent = spent.retrying();
         }
-        var failure = groups.onHeadFailure(spent, deferring, BUDGET);
+        var failure = groups.onHeadFailure(spent, deferring);
 
         assertThat(failure).isInstanceOf(HeadFailure.ReturnGroup.class);
         var returned = (HeadFailure.ReturnGroup) failure;
@@ -200,17 +202,16 @@ class OrderedGroupsTest {
     }
 
     @Test
-    @DisplayName("BLOCK_ON_ERROR: budget spent, head and siblings are ACKed and the group stops")
+    @DisplayName("BLOCK_ON_ERROR: a rejected head and its siblings are ACKed after ONE attempt, and the group stops")
     void blockOnErrorHandsBackSiblings() {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
-        var spent = head.retrying().retrying();
 
-        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
+        var disposition = groups.onHeadFailure(head, rejected());
 
         assertThat(disposition).isInstanceOf(HeadFailure.BlockGroup.class);
         var blocked = (HeadFailure.BlockGroup) disposition;
-        assertThat(blocked.failed()).isEqualTo(spent);
+        assertThat(blocked.failed()).isEqualTo(head);
         assertThat(blocked.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
     }
 
@@ -223,7 +224,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(head, unavailable(503), BUDGET);
+        var disposition = groups.onHeadFailure(head, unavailable(503));
 
         assertThat(disposition).isInstanceOf(HeadFailure.ReturnGroup.class);
         var returned = (HeadFailure.ReturnGroup) disposition;
@@ -232,19 +233,12 @@ class OrderedGroupsTest {
         assertThat(groups.groupCount()).isZero();
     }
 
-    @ParameterizedTest(name = "status {0} is unavailability: {1}")
-    @CsvSource({"500,false", "501,false", "502,true", "503,true", "504,true", "505,false", "0,true"})
-    void unavailabilityByStatus(int status, boolean unavailable) {
-        // 502/503/504 are the gateway's answer, not the application's. Status
-        // 0 means we could not tell, and we must not claim a message was
-        // rejected when we do not know it was seen.
-        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b");
-        var head = groups.pollHead("orders").orElseThrow();
-
-        var disposition = groups.onHeadFailure(head, new MediationOutcome.ErrorProcess(status, 30, "x"), BUDGET);
-
-        assertThat(disposition instanceof HeadFailure.ReturnGroup).isEqualTo(unavailable);
-    }
+    // Note: the old status-by-status unavailability table (500/501/502/…)
+    // tested MediationOutcome.disposition()'s own conditional, not anything
+    // OrderedGroups decides — R-57 moved that boundary into HttpMediator's
+    // classifier (pinned there now: nonGatewayServerErrorsAreRejected /
+    // gatewayErrorsReturnToBroker), and ErrorProcess.disposition() is a
+    // constant, so there is nothing left here to parameterise by status.
 
     @Test
     @DisplayName("a transport error is unavailability whatever the mode")
@@ -252,7 +246,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
         var head = groups.pollHead("orders").orElseThrow();
 
-        assertThat(groups.onHeadFailure(head, new MediationOutcome.ErrorConnection(30, "refused"), BUDGET))
+        assertThat(groups.onHeadFailure(head, new MediationOutcome.ErrorConnection(30, "refused")))
                 .isInstanceOf(HeadFailure.ReturnGroup.class);
     }
 
@@ -263,9 +257,9 @@ class OrderedGroupsTest {
         // may wait indefinitely (Q2), so holding siblings would pin unbounded
         // memory and broker visibility.
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
-        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
+        var head = groups.pollHead("orders").orElseThrow();
 
-        groups.onHeadFailure(spent, rejected(), BUDGET);
+        groups.onHeadFailure(head, rejected());
 
         assertThat(groups.buffered()).isZero();
         assertThat(groups.groupCount()).isZero();
@@ -276,9 +270,9 @@ class OrderedGroupsTest {
     @DisplayName("blocking a group with no siblings hands back nothing and still releases it")
     void blockingASoleMessage() {
         groups.offer(message("orders", "a", DispatchMode.BLOCK_ON_ERROR));
-        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
+        var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(spent, rejected(), BUDGET);
+        var disposition = groups.onHeadFailure(head, rejected());
 
         assertThat(((HeadFailure.BlockGroup) disposition).siblings()).isEmpty();
         assertThat(groups.groupCount()).isZero();
@@ -289,9 +283,9 @@ class OrderedGroupsTest {
     void blockingIsPerGroup() {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b");
         offerAll("invoices", DispatchMode.BLOCK_ON_ERROR, "x", "y");
-        var spent = groups.pollHead("orders").orElseThrow().retrying().retrying();
+        var head = groups.pollHead("orders").orElseThrow();
 
-        groups.onHeadFailure(spent, rejected(), BUDGET);
+        groups.onHeadFailure(head, rejected());
 
         assertThat(drainIds("invoices")).containsExactly("x", "y");
     }
@@ -354,7 +348,7 @@ class OrderedGroupsTest {
         groups.reFront(head);
         assertThat(groups.buffered()).isEqualTo(3);
 
-        groups.onHeadFailure(groups.pollHead("orders").orElseThrow().retrying().retrying(), rejected(), BUDGET);
+        groups.onHeadFailure(groups.pollHead("orders").orElseThrow(), rejected());
         assertThat(groups.buffered()).isOne();
     }
 

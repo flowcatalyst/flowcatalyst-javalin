@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.policy;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Map;
@@ -8,12 +10,13 @@ import java.util.stream.Collectors;
 
 /// One [CircuitBreaker] per delivery endpoint, created on first use.
 ///
-/// **Keyed by the full target URL**, query string included, so
-/// `…/hook?tenant=a` and `…/hook?tenant=b` trip independently
-/// (`docs/spec/router.md` §13 Q12, unruled — behaviour kept). That is right
-/// when the query selects a distinct downstream and wrong when it is
-/// incidental, which is what the question is about; keying by origin instead
-/// would be a behaviour change, not a refactor.
+/// **Keyed by origin + path** — `scheme://host[:port]/path` — with the query
+/// string and fragment stripped (**R-12**, ruled 2026-09-02). A query string
+/// is per-message data, not a distinct downstream: keying on it would
+/// otherwise fragment the failure signal so a genuinely dead endpoint never
+/// trips, since each differently-parameterised message trips its own,
+/// separately-counted breaker instead of the one shared breaker for the
+/// endpoint they all hit.
 ///
 /// Unbounded growth is the risk that follows from an unbounded key space, so
 /// [#evictIdle] retires breakers nothing has touched. A retired breaker is
@@ -32,7 +35,29 @@ public final class BreakerRegistry {
 
     /// The breaker for `targetUrl`, created closed if this is the first call.
     public CircuitBreaker get(String targetUrl) {
-        return breakers.computeIfAbsent(targetUrl, ignored -> new CircuitBreaker(config, clock));
+        return breakers.computeIfAbsent(keyFor(targetUrl), ignored -> new CircuitBreaker(config, clock));
+    }
+
+    /// The R-12 breaker key for `targetUrl`: `scheme://host[:port]/path`,
+    /// query string and fragment stripped. A URL that will not parse keys by
+    /// its raw string instead — an unparseable target still needs a stable
+    /// key, and it is exactly the case [HttpMediator] handles elsewhere
+    /// without ever reaching the breaker at all, so no live target URL
+    /// actually takes this branch.
+    public static String keyFor(String targetUrl) {
+        try {
+            var uri = new URI(targetUrl);
+            var scheme = uri.getScheme();
+            var host = uri.getHost();
+            if (scheme == null || host == null) {
+                return targetUrl;
+            }
+            var port = uri.getPort();
+            var path = uri.getRawPath();
+            return scheme + "://" + host + (port == -1 ? "" : ":" + port) + (path == null ? "" : path);
+        } catch (URISyntaxException e) {
+            return targetUrl;
+        }
     }
 
     /// Retires breakers idle for longer than `maxIdle`. Returns how many went.
@@ -60,7 +85,7 @@ public final class BreakerRegistry {
     /// URL — so an operator typing a wrong URL is told, rather than silently
     /// succeeding.
     public boolean reset(String targetUrl) {
-        var breaker = breakers.get(targetUrl);
+        var breaker = breakers.get(keyFor(targetUrl));
         if (breaker == null) {
             return false;
         }

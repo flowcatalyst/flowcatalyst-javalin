@@ -1,6 +1,5 @@
 package io.flowcatalyst.router.pool;
 
-import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.wire.MediationOutcome;
 
 import java.util.ArrayDeque;
@@ -110,8 +109,11 @@ final class OrderedGroups {
     /// per-mode rule at each site.
     sealed interface HeadFailure {
 
-        /// Try the head again, in place, ahead of its siblings. Ordered
-        /// delivery's normal retry: the rejection budget is not yet spent.
+        /// Try the head again, in place, ahead of its siblings. Produced only
+        /// from `RETRY_IN_PLACE` — a target that is fine and asked us to
+        /// wait — before [Pool#MAX_IN_PIPELINE_ATTEMPTS] is reached. A
+        /// REJECTED head (R-57) never produces this: it is terminal on its
+        /// first attempt.
         record RetryHead(QueuedMessage head) implements HeadFailure {
         }
 
@@ -123,33 +125,38 @@ final class OrderedGroups {
         record ReturnGroup(QueuedMessage head, List<QueuedMessage> siblings) implements HeadFailure {
         }
 
-        /// `NEXT_ON_ERROR`, budget spent: **ACK the failed message** off the
-        /// broker and carry on with the next. The router does not retry it in
-        /// front of its siblings; the platform surfaces it for review and
-        /// re-queues it on resolution.
+        /// `NEXT_ON_ERROR`, a REJECTED head (R-57, terminal on its first
+        /// attempt): **ACK the failed message** off the broker and carry on
+        /// with the next. The router does not retry it in front of its
+        /// siblings; the platform surfaces it for review and re-queues it on
+        /// resolution.
         record Continue(QueuedMessage failed) implements HeadFailure {
         }
 
-        /// `BLOCK_ON_ERROR`, budget spent: **ACK the failed message and every
-        /// sibling** off the broker, and stop the group. The platform
-        /// re-sends the whole group in order once the failure is resolved.
+        /// `BLOCK_ON_ERROR`, a REJECTED head (R-57, terminal on its first
+        /// attempt): **ACK the failed message and every sibling** off the
+        /// broker, and stop the group. The platform re-sends the whole group
+        /// in order once the failure is resolved.
         record BlockGroup(QueuedMessage failed, List<QueuedMessage> siblings) implements HeadFailure {
         }
     }
 
     /// Decides — and applies — what a failed head does to its group.
     ///
-    /// @param head        the message just attempted, carrying the attempts
-    ///                    already made
-    /// @param outcome     what the delivery reported
-    /// @param rejectionBudget attempts a *rejected* head gets before it is
-    ///                    given up on. [RetryPolicy#burstSize] is the value
-    ///                    to pass, so the budget and the delivery burst stay
-    ///                    one constant rather than two kept in step.
+    /// @param head    the message just attempted, carrying the attempts
+    ///                already made
+    /// @param outcome what the delivery reported
     ///
-    /// Unavailability skips the budget entirely: no number of retries makes a
-    /// down target reachable, and the broker is the better place to wait.
-    HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome, int rejectionBudget) {
+    /// Unavailability skips straight to returning the group: no number of
+    /// retries makes a down target reachable, and the broker is the better
+    /// place to wait. A REJECTED outcome (R-57: the app ran the message and
+    /// answered badly) is terminal on its **first** attempt and goes
+    /// straight to the per-mode decision below — there is no retry-then-
+    /// give-up budget here any more, because the classifier now decides
+    /// "retry" (ErrorProcess, 502/503/504) versus "give up" (ErrorConfig,
+    /// REJECTED) before the pool ever sees the outcome, rather than this
+    /// method re-deciding it by counting attempts.
+    HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome) {
         return switch (outcome.disposition()) {
             // Nothing was learned about the message, or the target is fine
             // and asked us to wait. The group keeps its head — but not for
@@ -171,25 +178,18 @@ final class OrderedGroups {
                     : new HeadFailure.RetryHead(head);
             case RETURN_TO_BROKER ->
                     new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
-            case REJECTED -> rejected(head, rejectionBudget);
+            // R-57: terminal on the first attempt. NEXT_ON_ERROR carries on
+            // without the head; BLOCK_ON_ERROR stops and hands the siblings
+            // to the platform's re-send; IMMEDIATE never reaches here (it
+            // never enters a group) but the switch stays total.
+            case REJECTED -> switch (head.message().dispatchMode()) {
+                case NEXT_ON_ERROR -> new HeadFailure.Continue(head);
+                case BLOCK_ON_ERROR -> new HeadFailure.BlockGroup(head, takeAndReleaseGroup(head.group()));
+                case IMMEDIATE -> new HeadFailure.Continue(head);
+            };
             // A delivered or undeliverable head is not a failure the group
             // has to react to; the caller has already acted on it.
             case DELIVERED, UNDELIVERABLE -> new HeadFailure.Continue(head);
-        };
-    }
-
-    /// A head the target ran and failed on: retried within its budget, then
-    /// given up on according to its mode.
-    private HeadFailure rejected(QueuedMessage head, int rejectionBudget) {
-        if (head.attempts() + 1 < rejectionBudget) {
-            return new HeadFailure.RetryHead(head);
-        }
-        return switch (head.message().dispatchMode()) {
-            case NEXT_ON_ERROR -> new HeadFailure.Continue(head);
-            case BLOCK_ON_ERROR -> new HeadFailure.BlockGroup(head, takeAndReleaseGroup(head.group()));
-            // Not reachable from the ordered drainer — IMMEDIATE never enters
-            // a group — but the switch stays total rather than throwing.
-            case IMMEDIATE -> new HeadFailure.Continue(head);
         };
     }
 

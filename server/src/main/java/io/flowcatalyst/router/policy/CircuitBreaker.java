@@ -72,6 +72,34 @@ public final class CircuitBreaker {
     public record Stats(State state, long successes, long failures, int recentFailures, int windowSize) {
     }
 
+    /// Whether one [#recordFailure] or [#recordSuccess] call **changed the
+    /// breaker's state**, so a caller can warn on the transition rather than
+    /// on every attempt.
+    ///
+    /// Deliberately not a boolean: a caller warning on "opened" needs the
+    /// failure count that tripped it, and one that ought to distinguish
+    /// "opened" from "closed" from "nothing changed" with a flag and a
+    /// side channel is exactly the shape a sealed result exists to replace
+    /// (CONVENTIONS §8).
+    public sealed interface Transition {
+
+        /// The call was recorded; the breaker's state did not change.
+        record None() implements Transition {
+        }
+
+        /// The breaker just tripped open — either the failure rate crossed
+        /// [Config#failureRateThreshold] in [State#CLOSED], or a probe in
+        /// [State#HALF_OPEN] failed. `failures` is the window's failure
+        /// count at the moment it tripped.
+        record Opened(int failures) implements Transition {
+        }
+
+        /// Consecutive half-open successes reached [Config#successThreshold]
+        /// and the breaker closed.
+        record Closed() implements Transition {
+        }
+    }
+
     private final Config config;
     private final Clock clock;
 
@@ -134,7 +162,10 @@ public final class CircuitBreaker {
     /// [Config#successThreshold] consecutive successes close the breaker and
     /// **clear the window**, so a recovered endpoint starts from a clean
     /// slate rather than re-tripping on the failures that opened it.
-    public void recordSuccess() {
+    ///
+    /// @return [Transition.Closed] exactly when this call closed the
+    ///         breaker, [Transition.None] otherwise.
+    public Transition recordSuccess() {
         successes.incrementAndGet();
         var now = clock.instant();
         lastActivity = now;
@@ -145,7 +176,9 @@ public final class CircuitBreaker {
                 state = State.CLOSED;
                 clearWindow();
                 halfOpenSuccesses = 0;
+                return new Transition.Closed();
             }
+            return new Transition.None();
         } finally {
             lock.unlock();
         }
@@ -154,7 +187,10 @@ public final class CircuitBreaker {
     /// Records a delivery the endpoint failed. Any failure in half-open
     /// re-opens immediately — one bad probe is enough, because the endpoint
     /// has already demonstrated it is not well.
-    public void recordFailure() {
+    ///
+    /// @return [Transition.Opened] exactly when this call tripped the
+    ///         breaker, [Transition.None] otherwise.
+    public Transition recordFailure() {
         failures.incrementAndGet();
         var now = clock.instant();
         lastActivity = now;
@@ -162,21 +198,23 @@ public final class CircuitBreaker {
         try {
             lastFailure = now;
             push(false);
-            switch (state) {
+            return switch (state) {
                 case CLOSED -> {
                     if (count >= config.minCalls() && failureRate() >= config.failureRateThreshold()) {
                         state = State.OPEN;
+                        yield new Transition.Opened(windowFailures);
                     }
+                    yield new Transition.None();
                 }
                 case HALF_OPEN -> {
                     state = State.OPEN;
                     halfOpenSuccesses = 0;
+                    yield new Transition.Opened(windowFailures);
                 }
-                case OPEN -> {
-                    // Already open; the refreshed lastFailure above extends
-                    // the wait, which is the intent.
-                }
-            }
+                // Already open; the refreshed lastFailure above extends the
+                // wait, which is the intent.
+                case OPEN -> new Transition.None();
+            };
         } finally {
             lock.unlock();
         }

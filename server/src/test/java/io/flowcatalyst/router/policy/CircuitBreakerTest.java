@@ -185,6 +185,61 @@ class CircuitBreakerTest {
     }
 
     @Test
+    @DisplayName("recordFailure returns Opened exactly on the call that trips the breaker")
+    void recordFailureReturnsOpenedOnlyOnTheTrippingCall() {
+        // The failure count on Opened is the window's failure count at the
+        // moment it tripped — what an operator-facing warning would report.
+        for (int i = 0; i < 9; i++) {
+            assertThat(breaker.recordFailure())
+                    .as("call %d must not trip a breaker still below minCalls", i)
+                    .isEqualTo(new CircuitBreaker.Transition.None());
+        }
+        assertThat(breaker.recordFailure())
+                .as("the tenth failure reaches minCalls at a 100%% rate")
+                .isEqualTo(new CircuitBreaker.Transition.Opened(10));
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+
+        // Already open: further failures extend the wait but do not
+        // re-trip, so they report None, not another Opened.
+        assertThat(breaker.recordFailure()).isEqualTo(new CircuitBreaker.Transition.None());
+    }
+
+    @Test
+    @DisplayName("recordFailure in half-open returns Opened on the probe that fails")
+    void recordFailureReturnsOpenedOnHalfOpenReopen() {
+        open();
+        clock.advance(Duration.ofSeconds(5));
+        breaker.allow();
+        breaker.recordSuccess();
+
+        assertThat(breaker.recordFailure())
+                .as("one failure in half-open re-opens immediately")
+                .isInstanceOf(CircuitBreaker.Transition.Opened.class);
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
+    }
+
+    @Test
+    @DisplayName("recordSuccess returns Closed exactly on the call that closes the breaker")
+    void recordSuccessReturnsClosedOnlyOnTheClosingCall() {
+        open();
+        clock.advance(Duration.ofSeconds(5));
+        breaker.allow();
+
+        assertThat(breaker.recordSuccess()).isEqualTo(new CircuitBreaker.Transition.None());
+        assertThat(breaker.recordSuccess()).isEqualTo(new CircuitBreaker.Transition.None());
+        assertThat(breaker.recordSuccess())
+                .as("the third consecutive half-open success reaches successThreshold")
+                .isEqualTo(new CircuitBreaker.Transition.Closed());
+        assertThat(breaker.state()).isEqualTo(State.CLOSED);
+    }
+
+    @Test
+    @DisplayName("recordSuccess on an already-closed breaker never reports a transition")
+    void recordSuccessOnClosedBreakerReportsNone() {
+        assertThat(breaker.recordSuccess()).isEqualTo(new CircuitBreaker.Transition.None());
+    }
+
+    @Test
     @DisplayName("an impossible config is rejected at construction")
     void invalidConfig() {
         assertThatThrownBy(() -> new Config(0, 10, 3, Duration.ofSeconds(5), 100))

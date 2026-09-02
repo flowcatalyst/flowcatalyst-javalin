@@ -163,7 +163,8 @@ public final class Router implements AutoCloseable {
         var brokerRef = new java.util.concurrent.atomic.AtomicReference<QueueBroker>();
         RouterManager.PoolFactory poolFactory = config -> {
             metrics.computeIfAbsent(config.code(), ignored -> new PoolMetricsCollector(clock));
-            return new Pool(config, mediator, brokerRef.get(), metrics.get(config.code()), clock);
+            return new Pool(config, Pool.Backoffs.DEFAULT, mediator, brokerRef.get(),
+                    metrics.get(config.code()), clock, warningSink);
         };
 
         var manager = new RouterManager(tracker, warningSink, clock, poolFactory);

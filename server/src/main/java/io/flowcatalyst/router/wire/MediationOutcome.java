@@ -59,9 +59,12 @@ public sealed interface MediationOutcome {
         /// unknown length.
         RETURN_TO_BROKER,
 
-        /// The target took the message and failed on it. Retry a bounded
-        /// number of times, then give up on it: ACK it away and let the
-        /// platform surface it for review.
+        /// The target ran the message and answered with an application-level
+        /// failure — R-57's "every other 5xx" (500, 505, … — anything that
+        /// is not 502/503/504). Terminal on the **first** attempt: no
+        /// bounded retry. Retrying teaches nothing a second attempt would
+        /// not — the app already ran and answered — so the message goes
+        /// straight to the platform's review flow, ACKed away.
         REJECTED,
 
         /// The request itself is wrong and will stay wrong. Drop it; no
@@ -111,36 +114,63 @@ public sealed interface MediationOutcome {
         }
     }
 
-    /// 4xx other than 429, an unsupported mediation type, or an unusable
-    /// target URL. ACK — dropping the message — to prevent an infinite retry
-    /// of something that cannot succeed. Records a breaker **success**: the
-    /// destination answered.
-    record ErrorConfig(int statusCode, String message) implements MediationOutcome {
+    /// 4xx other than 429, an unfollowed 3xx, an unsupported mediation type,
+    /// an unusable target URL, or (per R-57) a 5xx other than 502/503/504.
+    /// ACK — dropping the message — to prevent an infinite retry of
+    /// something that cannot succeed as addressed, or hand it to the
+    /// platform's review flow when the app itself is what failed.
+    ///
+    /// [#disposition] is a required component, not derived from
+    /// [#statusCode]: the two dispositions this outcome may carry —
+    /// [Disposition#UNDELIVERABLE] and [Disposition#REJECTED] — mean
+    /// different things to an ordered group (§3.5 of the router spec), and
+    /// the compact constructor rejects every other value, so a construction
+    /// site cannot silently pick the wrong one.
+    record ErrorConfig(int statusCode, String message, Disposition disposition) implements MediationOutcome {
+
+        public ErrorConfig {
+            if (disposition != Disposition.UNDELIVERABLE && disposition != Disposition.REJECTED) {
+                throw new IllegalArgumentException(
+                        "ErrorConfig disposition must be UNDELIVERABLE or REJECTED, was " + disposition);
+            }
+        }
+
+        /// The request itself is wrong and will stay wrong — a 4xx, an
+        /// unfollowed redirect, an unsupported mediation type, an unusable
+        /// target URL. No amount of retrying changes anything.
+        public static ErrorConfig undeliverable(int statusCode, String message) {
+            return new ErrorConfig(statusCode, message, Disposition.UNDELIVERABLE);
+        }
+
+        /// R-57: a 5xx other than 502/503/504. The app ran and answered,
+        /// badly — a single attempt, then the platform's review flow.
+        public static ErrorConfig rejected(int statusCode, String message) {
+            return new ErrorConfig(statusCode, message, Disposition.REJECTED);
+        }
 
         @Override
         public int delaySeconds() {
             return 0;
         }
-
-        @Override
-        public Disposition disposition() {
-            return Disposition.UNDELIVERABLE;
-        }
     }
 
-    /// 5xx, or a status below 200. Retryable; counts as a breaker failure.
+    /// 502/503/504, or a status the client could not interpret as final
+    /// (an unexpected/pre-200 status, carried as `0`). Retryable; counts as
+    /// a breaker failure. Always unavailability — the target is not ready,
+    /// not that the message is bad — so the whole group goes back to the
+    /// broker rather than being dropped.
+    ///
+    /// The 5xx boundary [R-57] lives in the classifier
+    /// ([HttpMediator#classify]), not here: that method only ever
+    /// constructs this outcome for 502/503/504 or a status it cannot
+    /// interpret. Every other 5xx becomes [ErrorConfig#rejected], not this
+    /// record — so `disposition()` is a constant rather than a second place
+    /// the boundary could drift from the first.
     record ErrorProcess(int statusCode, int delaySeconds, String message) implements MediationOutcome {
 
-        /// 502, 503 and 504 are the gateway's answer, not the application's:
-        /// a proxy could not reach the app, or the app said it was not ready.
-        /// A status the router could not make sense of (`0`) is treated the
-        /// same way — we cannot claim the message was rejected when we do not
-        /// know that it was seen.
         @Override
         public Disposition disposition() {
-            return statusCode == 0 || statusCode == 502 || statusCode == 503 || statusCode == 504
-                    ? Disposition.RETURN_TO_BROKER
-                    : Disposition.REJECTED;
+            return Disposition.RETURN_TO_BROKER;
         }
     }
 

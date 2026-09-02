@@ -165,11 +165,19 @@
     },
     {
       "id": "process-error-500",
-      "why": "The target ran the message and failed on it. Retried, then given up on — the fault is likely the message.",
+      "why": "R-57 (owner, 2026-09-02): any 5xx other than 502/503/504 means the app ran and answered — permanent rejection like a 4xx, single attempt, warning is the trace.",
       "given": {"kind": "response", "status": 500, "body": ""},
-      "expect": {"outcome": "ErrorProcess", "statusCode": 500, "delaySeconds": 30,
-                 "warning": "none",
-                 "disposition": "REJECTED", "breaker": "failure", "metric": "transient"}
+      "expect": {"outcome": "ErrorConfig", "statusCode": 500, "delaySeconds": 0,
+                 "warning": "ERROR",
+                 "disposition": "REJECTED", "breaker": "success", "metric": "failure"}
+    },
+    {
+      "id": "process-error-505-rejects",
+      "why": "R-57 (owner, 2026-09-02): 'every other 5xx' is a range, not the single status 500 — an implementation that special-cases only 500 and retries every other non-gateway 5xx forever is non-conformant. 505 pins the boundary as a range.",
+      "given": {"kind": "response", "status": 505, "body": ""},
+      "expect": {"outcome": "ErrorConfig", "statusCode": 505, "delaySeconds": 0,
+                 "warning": "ERROR",
+                 "disposition": "REJECTED", "breaker": "success", "metric": "failure"}
     },
     {
       "id": "process-error-502-returns-to-broker",

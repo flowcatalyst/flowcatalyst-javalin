@@ -12,7 +12,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// `docs/spec/router.md` §13 Q12, constant 34.
+/// `docs/spec/router.md` §13 Q12 (R-12, ruled 2026-09-02), constant 34.
 class BreakerRegistryTest {
 
     private final TestClock clock = new TestClock(Instant.parse("2026-01-01T00:00:00Z"));
@@ -39,14 +39,27 @@ class BreakerRegistryTest {
     }
 
     @Test
-    @DisplayName("the query string is part of the key, so it separates breakers")
-    void queryStringSeparatesBreakers() {
-        // Q12: right when the query selects a distinct downstream, wrong when
-        // it is incidental. Pinned so a change to origin-keying is a decision.
+    @DisplayName("R-12: breaker key is origin + path — query string and fragment stripped, path still distinguishes")
+    void breakerKeyIsOriginAndPathOnly() {
+        // R-12, ruled 2026-09-02 (reverses the earlier "query string
+        // separates breakers" behaviour): a query string is per-message data
+        // and would otherwise fragment the failure signal so a genuinely
+        // dead endpoint never trips.
         IntStream.range(0, 10).forEach(i -> registry.get("https://a.test/h?tenant=a").recordFailure());
 
         assertThat(registry.get("https://a.test/h?tenant=a").state()).isEqualTo(CircuitBreaker.State.OPEN);
-        assertThat(registry.get("https://a.test/h?tenant=b").state()).isEqualTo(CircuitBreaker.State.CLOSED);
+        // A counter that must change if the key were wrong: identity, not
+        // just state, so a mutation that keyed on the full URL is caught
+        // even if it happened to leave both breakers open.
+        assertThat(registry.get("https://a.test/h?tenant=b"))
+                .as("same origin, same path, different query: ONE breaker")
+                .isSameAs(registry.get("https://a.test/h?tenant=a"));
+        assertThat(registry.get("https://a.test/h#section"))
+                .as("a fragment is not part of the key either")
+                .isSameAs(registry.get("https://a.test/h?tenant=a"));
+        assertThat(registry.get("https://a.test/other").state())
+                .as("a different PATH is a genuinely different endpoint")
+                .isEqualTo(CircuitBreaker.State.CLOSED);
         assertThat(registry.size()).isEqualTo(2);
     }
 

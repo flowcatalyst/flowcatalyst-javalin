@@ -94,7 +94,7 @@ public final class HttpMediator implements Mediator {
         }
 
         var outcome = attempt(message, target.get());
-        recordOnBreaker(breaker, outcome, recordFailure);
+        recordOnBreaker(breaker, outcome, recordFailure, BreakerRegistry.keyFor(message.mediationTarget()));
         return outcome;
     }
 
@@ -104,7 +104,7 @@ public final class HttpMediator implements Mediator {
         try {
             request = buildRequest(message, target, body);
         } catch (RuntimeException e) {
-            return new MediationOutcome.ErrorConfig(0, "could not build request: " + e.getMessage());
+            return MediationOutcome.ErrorConfig.undeliverable(0, "could not build request: " + e.getMessage());
         }
         try {
             var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -145,7 +145,10 @@ public final class HttpMediator implements Mediator {
     /// The warning category every one of these belongs to (§2.7).
     private static final String CONFIGURATION = "CONFIGURATION";
 
-    /// Maps a response to an outcome (§6.5).
+    /// The warning category for a breaker state change (§7.3).
+    private static final String CIRCUIT_BREAKER = "CIRCUIT_BREAKER";
+
+    /// Maps a response to a permanent, undeliverable outcome (§6.5).
     /// Builds an `ErrorConfig` **and tells an operator**.
     ///
     /// Every caller of this is a path that ACKs a message off the broker
@@ -162,7 +165,16 @@ public final class HttpMediator implements Mediator {
                                            int status, String detail) {
         warnings.raise(severity, CONFIGURATION,
                 detail + " (target " + message.mediationTarget() + ")");
-        return new MediationOutcome.ErrorConfig(status, detail);
+        return MediationOutcome.ErrorConfig.undeliverable(status, detail);
+    }
+
+    /// R-57: a 5xx other than 502/503/504. The app ran and answered, badly —
+    /// rejected into the platform's review flow after a single attempt, with
+    /// the warning as the deleted message's only trace.
+    private MediationOutcome rejected(Message message, int status, String detail) {
+        warnings.raise(Warnings.Severity.ERROR, CONFIGURATION,
+                detail + " (target " + message.mediationTarget() + ")");
+        return MediationOutcome.ErrorConfig.rejected(status, detail);
     }
 
     /// Go distinguishes these in the operator-facing text, and it is worth
@@ -204,8 +216,19 @@ public final class HttpMediator implements Mediator {
             // and it degrades health until someone acknowledges it.
             return undeliverable(message, Warnings.Severity.CRITICAL, status, "HTTP 501: not implemented");
         }
-        if (status >= 500) {
+        if (status == 502 || status == 503 || status == 504) {
+            // The gateway's answer, not the application's: a proxy could not
+            // reach the app, or the app said it was not ready. Unavailable,
+            // not rejected — the whole group goes back to the broker.
             return new MediationOutcome.ErrorProcess(status, SERVER_ERROR_DELAY_SECONDS, "HTTP " + status);
+        }
+        if (status >= 500) {
+            // R-57: every other 5xx (500, 505, 599, …) means the app ran and
+            // answered, badly — not that the target is unready. Broader than
+            // "only 500 rejects": special-casing a single status and
+            // retrying every other 5xx forever is exactly the defect this
+            // boundary exists to close.
+            return rejected(message, status, "HTTP " + status + ": server error, rejected for review");
         }
         if (status >= 300) {
             // A redirect we will not follow is a **permanent** error: the
@@ -251,18 +274,19 @@ public final class HttpMediator implements Mediator {
     /// A 4xx counts as a **success**: the endpoint is healthy and told us our
     /// request was wrong. Treating it as a failure would open the circuit for
     /// every other message to a target that is working perfectly.
-    private void recordOnBreaker(CircuitBreaker breaker, MediationOutcome outcome, boolean recordFailure) {
+    private void recordOnBreaker(CircuitBreaker breaker, MediationOutcome outcome, boolean recordFailure,
+                                 String breakerKey) {
         switch (outcome) {
-            case MediationOutcome.Success ignored -> breaker.recordSuccess();
-            case MediationOutcome.ErrorConfig ignored -> breaker.recordSuccess();
+            case MediationOutcome.Success ignored -> onTransition(breaker.recordSuccess(), breakerKey);
+            case MediationOutcome.ErrorConfig ignored -> onTransition(breaker.recordSuccess(), breakerKey);
             case MediationOutcome.ErrorProcess ignored -> {
                 if (recordFailure) {
-                    breaker.recordFailure();
+                    onTransition(breaker.recordFailure(), breakerKey);
                 }
             }
             case MediationOutcome.ErrorConnection ignored -> {
                 if (recordFailure) {
-                    breaker.recordFailure();
+                    onTransition(breaker.recordFailure(), breakerKey);
                 }
             }
             // Throttling and deferral are healthy answers from a working
@@ -272,6 +296,23 @@ public final class HttpMediator implements Mediator {
             case MediationOutcome.Deferred ignored -> {
             }
             case MediationOutcome.CircuitOpen ignored -> {
+            }
+        }
+    }
+
+    /// Raises the CIRCUIT_BREAKER warning a breaker state change earns —
+    /// once per transition, never per attempt. [CircuitBreaker#recordFailure]
+    /// and [CircuitBreaker#recordSuccess] already collapse "did this call
+    /// change the breaker's state" to one small result, so there is nothing
+    /// left to de-duplicate here: a burst of failing bursts each report
+    /// [CircuitBreaker.Transition.None] once the breaker is already open.
+    private void onTransition(CircuitBreaker.Transition transition, String breakerKey) {
+        switch (transition) {
+            case CircuitBreaker.Transition.Opened opened -> warnings.raise(Warnings.Severity.WARNING,
+                    CIRCUIT_BREAKER, "circuit opened for " + breakerKey + " after " + opened.failures() + " failures");
+            case CircuitBreaker.Transition.Closed ignored -> warnings.raise(Warnings.Severity.INFO,
+                    CIRCUIT_BREAKER, "circuit closed for " + breakerKey);
+            case CircuitBreaker.Transition.None ignored -> {
             }
         }
     }

@@ -232,22 +232,23 @@ class RouterPrometheusCollectorTest {
     }
 
     @Test
-    @DisplayName("fc_circuit_breaker_calls_total carries cumulative success/failure counts keyed by the full target URL")
+    @DisplayName("fc_circuit_breaker_calls_total carries cumulative success/failure counts keyed by origin + path, so two query variants share one series")
     void breakerCallsCounterCarriesCumulativeOutcomes() {
         var breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, clock);
-        // Query string included in the key, matching §13 Q12 (kept, unruled).
-        var breaker = breakers.get("https://example.com/hook?tenant=a");
-        breaker.recordSuccess();
-        breaker.recordSuccess();
-        breaker.recordFailure();
+        // R-12 (ruled 2026-09-02): the query string is per-message data and is
+        // stripped from the key, so both of these land on one breaker and one
+        // Prometheus series. Splitting them would fragment the failure signal.
+        breakers.get("https://example.com/hook?tenant=a").recordSuccess();
+        breakers.get("https://example.com/hook?tenant=b").recordSuccess();
+        breakers.get("https://example.com/hook?tenant=b").recordFailure();
 
         var text = collectorWith(breakers).renderText();
 
         assertThat(text).contains("""
                 # HELP fc_circuit_breaker_calls_total Cumulative breaker outcomes.
                 # TYPE fc_circuit_breaker_calls_total counter
-                fc_circuit_breaker_calls_total{outcome="failure",target="https://example.com/hook?tenant=a"} 1.0
-                fc_circuit_breaker_calls_total{outcome="success",target="https://example.com/hook?tenant=a"} 2.0
+                fc_circuit_breaker_calls_total{outcome="failure",target="https://example.com/hook"} 1.0
+                fc_circuit_breaker_calls_total{outcome="success",target="https://example.com/hook"} 2.0
                 """.strip());
     }
 

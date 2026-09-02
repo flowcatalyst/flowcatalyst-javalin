@@ -95,6 +95,8 @@ class HttpMediatorTest {
             "418, ERROR,    client error",
             "501, CRITICAL, not implemented",
             "301, ERROR,    redirect not followed",
+            "500, ERROR,    'server error, rejected for review'",
+            "505, ERROR,    'server error, rejected for review'",
     })
     @DisplayName("every permanent ACK-drop tells someone")
     void permanentDropsWarn(int status, Warnings.Severity severity, String detail) throws Exception {
@@ -113,7 +115,7 @@ class HttpMediatorTest {
     }
 
     @ParameterizedTest(name = "HTTP {0} does not warn")
-    @CsvSource({"200", "204", "429", "500", "503"})
+    @CsvSource({"200", "204", "429", "502", "503", "504"})
     @DisplayName("a message that is coming back does not raise a warning")
     void retryablesDoNotWarn(int status) throws Exception {
         // A warning store holding a thousand entries is useless, and a target
@@ -167,6 +169,18 @@ class HttpMediatorTest {
         mediator.deliver(message(baseUrl), true);
 
         assertThat(raised).isEmpty();
+    }
+
+    @Test
+    @DisplayName("ErrorConfig only ever carries UNDELIVERABLE or REJECTED")
+    void errorConfigDispositionIsValidated() {
+        assertThat(MediationOutcome.ErrorConfig.undeliverable(404, "x").disposition())
+                .isEqualTo(MediationOutcome.Disposition.UNDELIVERABLE);
+        assertThat(MediationOutcome.ErrorConfig.rejected(500, "x").disposition())
+                .isEqualTo(MediationOutcome.Disposition.REJECTED);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        new MediationOutcome.ErrorConfig(500, "x", MediationOutcome.Disposition.RETURN_TO_BROKER))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private record Raised(Warnings.Severity severity, String category, String message) {
@@ -260,7 +274,7 @@ class HttpMediatorTest {
         status.set(code);
 
         assertThat(mediator.deliver(message("msg_1", null, null), true))
-                .isEqualTo(new MediationOutcome.ErrorConfig(code, detail));
+                .isEqualTo(MediationOutcome.ErrorConfig.undeliverable(code, detail));
     }
 
     @Test
@@ -278,17 +292,41 @@ class HttpMediatorTest {
                 .isEqualTo(new MediationOutcome.RateLimited(30));
     }
 
-    @ParameterizedTest(name = "HTTP {0} is retryable, and unavailability: {1}")
-    @CsvSource({"500,false", "502,true", "503,true", "504,true"})
-    void serverErrors(int code, boolean unavailable) throws Exception {
+    @ParameterizedTest(name = "HTTP {0} is retryable — the target, not the message")
+    @CsvSource({"502", "503", "504"})
+    @DisplayName("502/503/504 are the gateway's answer: unavailable, retried by the broker")
+    void gatewayErrorsReturnToBroker(int code) throws Exception {
         status.set(code);
 
         var outcome = mediator.deliver(message("msg_1", null, null), true);
 
         assertThat(outcome).isInstanceOf(MediationOutcome.ErrorProcess.class);
-        assertThat(outcome.disposition()).isEqualTo(unavailable
-                ? MediationOutcome.Disposition.RETURN_TO_BROKER
-                : MediationOutcome.Disposition.REJECTED);
+        assertThat(outcome.disposition()).isEqualTo(MediationOutcome.Disposition.RETURN_TO_BROKER);
+    }
+
+    @ParameterizedTest(name = "HTTP {0} is R-57 rejected — the app ran and answered badly")
+    @CsvSource({"500", "505"})
+    @DisplayName("every other 5xx is a boundary, not a single status: R-57")
+    void nonGatewayServerErrorsAreRejected(int code) throws Exception {
+        // The rule is "broader than exactly 500" (`docs/spec/router.md`
+        // §6.4): an implementation that special-cases only 500 and retries
+        // every OTHER 5xx forever is non-conformant. 505 pins the boundary
+        // as a range rather than a single number.
+        status.set(code);
+        var before = breakers.get(baseUrl).stats();
+
+        var outcome = mediator.deliver(message("msg_1", null, null), true);
+
+        assertThat(outcome).isInstanceOf(MediationOutcome.ErrorConfig.class);
+        assertThat(outcome.disposition()).isEqualTo(MediationOutcome.Disposition.REJECTED);
+        assertThat(outcome.statusCode()).isEqualTo(code);
+        assertThat(((MediationOutcome.ErrorConfig) outcome).message())
+                .contains("server error, rejected for review");
+        // Breaker SUCCESS, same as any other ErrorConfig: the endpoint
+        // answered, so it is healthy — it is the request it rejected.
+        var after = breakers.get(baseUrl).stats();
+        assertThat(after.successes() - before.successes()).isOne();
+        assertThat(after.failures() - before.failures()).isZero();
     }
 
     @ParameterizedTest(name = "HTTP {0} is a permanent error, ACKed rather than retried")
@@ -366,7 +404,9 @@ class HttpMediatorTest {
     void failuresRecordPerBurst() throws Exception {
         // Q3: three failed attempts inside one burst are ONE breaker failure.
         // Recording each would open every circuit three times faster.
-        status.set(500);
+        // 503, not 500: R-57 moved 500 to ErrorConfig, a breaker SUCCESS —
+        // 502/503/504 are the statuses that still count as unavailability.
+        status.set(503);
 
         IntStream.range(0, 30).forEach(i -> deliverQuietly("msg_" + i, false));
         assertThat(breakers.get(baseUrl).stats().failures()).isZero();
@@ -378,7 +418,7 @@ class HttpMediatorTest {
     @Test
     @DisplayName("an open breaker short-circuits without calling the target")
     void openBreakerShortCircuits() throws Exception {
-        status.set(500);
+        status.set(503);
         IntStream.range(0, 10).forEach(i -> deliverQuietly("msg_" + i, true));
         assertThat(breakers.get(baseUrl).state()).isEqualTo(CircuitBreaker.State.OPEN);
         int callsBefore = calls.get();
@@ -388,6 +428,24 @@ class HttpMediatorTest {
         assertThat(outcome).isInstanceOf(MediationOutcome.CircuitOpen.class);
         assertThat(((MediationOutcome.CircuitOpen) outcome).delaySeconds()).isEqualTo(5);
         assertThat(calls.get()).isEqualTo(callsBefore);
+    }
+
+    @Test
+    @DisplayName("the circuit opening raises exactly ONE CIRCUIT_BREAKER warning, not one per failed attempt")
+    void circuitOpeningWarnsExactlyOnce() throws Exception {
+        // Ten failed bursts trip the breaker (defaults: minCalls 10, rate
+        // 0.5) — if the warning fired per attempt this would be ten, not one.
+        status.set(503);
+
+        IntStream.range(0, 10).forEach(i -> deliverQuietly("msg_" + i, true));
+
+        assertThat(breakers.get(baseUrl).state()).isEqualTo(CircuitBreaker.State.OPEN);
+        assertThat(raised).as("one warning for the transition, not one per failed attempt")
+                .hasSize(1);
+        var warning = raised.getFirst();
+        assertThat(warning.severity()).isEqualTo(Warnings.Severity.WARNING);
+        assertThat(warning.category()).isEqualTo("CIRCUIT_BREAKER");
+        assertThat(warning.message()).contains(baseUrl).contains("opened").contains("10 failures");
     }
 
     @Test

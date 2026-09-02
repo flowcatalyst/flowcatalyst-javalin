@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.pool;
 
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.policy.GroupFlushRegistry;
 import io.flowcatalyst.router.policy.RateLimiter;
 import io.flowcatalyst.router.policy.RetryPolicy;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /// One processing pool: bounded concurrency, a rate limit, and delivery of
@@ -66,6 +68,11 @@ public final class Pool implements AutoCloseable {
     private static final int QUEUE_CAPACITY_MULTIPLIER = 20;
     private static final int MIN_QUEUE_CAPACITY = 50;
 
+    /// The warning category for the pool's own limiter holding deliveries
+    /// back (§7.3) — distinct from a target's own 429, which never reaches
+    /// this class's warning path at all.
+    private static final String RATE_LIMIT = "RATE_LIMIT";
+
     /// @param code             the pool's identifier, as configured
     /// @param concurrency      simultaneous deliveries
     /// @param requestsPerMinute rate limit; zero is unlimited
@@ -108,6 +115,13 @@ public final class Pool implements AutoCloseable {
     private final RateLimiter limiter;
     private final OrderedGroups groups = new OrderedGroups();
     private final Clock clock;
+    private final Warnings warnings;
+
+    /// Whether the last [#deliverOnce] observed the limiter holding messages
+    /// back — so the INFO warning fires once on the transition into limiting
+    /// rather than once per limited delivery, and clears itself the moment a
+    /// delivery proceeds unlimited.
+    private final AtomicBoolean rateLimitWarned = new AtomicBoolean();
 
     /// Resized in place rather than replaced — see [ResizableSemaphore] for
     /// why swapping the instance strands everyone already waiting on it.
@@ -141,17 +155,23 @@ public final class Pool implements AutoCloseable {
     private volatile boolean stopped;
 
     public Pool(Config config, Mediator mediator, Broker broker, PoolMetrics metrics, Clock clock) {
-        this(config, Backoffs.DEFAULT, mediator, broker, metrics, clock);
+        this(config, Backoffs.DEFAULT, mediator, broker, metrics, clock, Warnings.NO_OP);
     }
 
     public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
                 PoolMetrics metrics, Clock clock) {
+        this(config, backoffs, mediator, broker, metrics, clock, Warnings.NO_OP);
+    }
+
+    public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
+                PoolMetrics metrics, Clock clock, Warnings warnings) {
         this.config = config;
         this.backoffs = backoffs;
         this.mediator = mediator;
         this.broker = broker;
         this.metrics = metrics;
         this.clock = clock;
+        this.warnings = warnings;
         this.flushes = new GroupFlushRegistry(clock);
         this.limiter = new RateLimiter(config.requestsPerMinute());
         this.slots = new ResizableSemaphore(config.concurrency());
@@ -258,6 +278,14 @@ public final class Pool implements AutoCloseable {
             if (attempt instanceof Attempt.Settled) {
                 return;
             }
+            if (attempt instanceof Attempt.Rejected rejected) {
+                // R-57: the app ran the message and answered with a
+                // permanent application failure. Terminal on this one
+                // attempt — no bounded retry — so it is ACKed straight to
+                // the platform's review flow rather than looping.
+                broker.ack(message, "rejected");
+                return;
+            }
             var failure = (Attempt.Failed) attempt;
             var delay = backoffFor(message, failure.outcome());
 
@@ -328,9 +356,24 @@ public final class Pool implements AutoCloseable {
             } finally {
                 semaphore.release();
             }
-            if (attempt instanceof Attempt.Failed failed
-                    && !handleHeadFailure(group, message, failed.outcome())) {
-                return;
+            switch (attempt) {
+                case Attempt.Settled ignored -> {
+                }
+                case Attempt.Failed failed -> {
+                    if (!handleHeadFailure(group, message, failed.outcome())) {
+                        return;
+                    }
+                }
+                // R-57: the app ran and rejected the message. Same per-mode
+                // decision as any other head failure — the drainer does not
+                // need to know REJECTED is terminal on the first attempt,
+                // only that OrderedGroups has already decided what happens
+                // to the group.
+                case Attempt.Rejected rejected -> {
+                    if (!handleHeadFailure(group, message, rejected.outcome())) {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -389,7 +432,7 @@ public final class Pool implements AutoCloseable {
     }
 
     private boolean handleHeadFailure(String group, QueuedMessage message, MediationOutcome outcome) {
-        var failure = groups.onHeadFailure(message, outcome, backoffs.delivery().burstSize());
+        var failure = groups.onHeadFailure(message, outcome);
         decided(group, message, outcome, failure);
         return switch (failure) {
             case HeadFailure.RetryHead retry -> {
@@ -449,6 +492,18 @@ public final class Pool implements AutoCloseable {
         }
         if (limiter.limited()) {
             metrics.recordRateLimited();
+            // INFO, once, on the transition into limiting — never once per
+            // limited delivery, which would flood the store for the length
+            // of any ordinary burst.
+            if (rateLimitWarned.compareAndSet(false, true)) {
+                warnings.raise(Warnings.Severity.INFO, RATE_LIMIT,
+                        "pool " + config.code() + " is holding deliveries back for its own rate limit");
+            }
+        } else {
+            // A delivery proceeded unlimited: the condition the warning
+            // described no longer holds, so the next transition back into
+            // limiting earns a fresh warning rather than staying silent.
+            rateLimitWarned.set(false);
         }
         try {
             limiter.await();
@@ -487,39 +542,89 @@ public final class Pool implements AutoCloseable {
         return attempt;
     }
 
+    /// The pool's own delivery metric — distinct from [PoolMetrics], which is
+    /// the sink; this is the pure classification the conformance corpus's
+    /// `metric` column pins case by case. Public because the conformance
+    /// runner (a different package, by design — see `conformance/README.md`)
+    /// asserts it directly rather than re-deriving the mapping.
+    public enum Metric { SUCCESS, FAILURE, TRANSIENT, RATE_LIMITED, NONE }
+
+    /// Classifies a mediation outcome for metrics, independent of what
+    /// [#resolve] does with the message. Exhaustive, so a new outcome is a
+    /// compile error here until someone decides what it counts as.
+    public static Metric metricFor(MediationOutcome outcome) {
+        return switch (outcome) {
+            case MediationOutcome.Success ignored -> Metric.SUCCESS;
+            // Both dispositions an ErrorConfig can carry — a permanent
+            // rejection and a config-drop — read as a failed delivery.
+            case MediationOutcome.ErrorConfig ignored -> Metric.FAILURE;
+            case MediationOutcome.Deferred ignored -> Metric.TRANSIENT;
+            case MediationOutcome.ErrorProcess ignored -> Metric.TRANSIENT;
+            case MediationOutcome.ErrorConnection ignored -> Metric.FAILURE;
+            case MediationOutcome.RateLimited ignored -> Metric.RATE_LIMITED;
+            // No call was made, so there is nothing to say about the target
+            // that the breaker is not already saying.
+            case MediationOutcome.CircuitOpen ignored -> Metric.NONE;
+        };
+    }
+
+    private void recordMetric(Metric metric, Duration took) {
+        switch (metric) {
+            case SUCCESS -> metrics.recordSuccess(took);
+            case FAILURE -> metrics.recordFailure(took);
+            case TRANSIENT -> metrics.recordTransient(took);
+            case RATE_LIMITED -> metrics.recordRateLimited();
+            case NONE -> {
+            }
+        }
+    }
+
     private Attempt resolve(QueuedMessage message, MediationOutcome outcome, Duration took) {
+        var metric = metricFor(outcome);
         return switch (outcome) {
             case MediationOutcome.Success success -> {
                 if (success.flushGroup()) {
                     applyFlush(message, success.delaySeconds());
                 }
-                metrics.recordSuccess(took);
+                recordMetric(metric, took);
                 broker.ack(message, "delivered");
                 yield new Attempt.Settled();
             }
-            // The request was wrong, not the target. Retrying it unchanged
-            // cannot succeed, so it is dropped rather than kept forever.
-            case MediationOutcome.ErrorConfig ignored -> {
-                metrics.recordFailure(took);
-                broker.ack(message, "undeliverable");
-                yield new Attempt.Settled();
+            case MediationOutcome.ErrorConfig config -> {
+                recordMetric(metric, took);
+                yield switch (config.disposition()) {
+                    // The request was wrong, not the target. Retrying it
+                    // unchanged cannot succeed, so it is dropped rather than
+                    // kept forever.
+                    case UNDELIVERABLE -> {
+                        broker.ack(message, "undeliverable");
+                        yield new Attempt.Settled();
+                    }
+                    // R-57: the app ran the message and answered badly.
+                    // Terminal on this attempt — no bounded retry — so the
+                    // caller decides what a rejection does to the message's
+                    // group rather than this method acking it directly.
+                    case REJECTED -> new Attempt.Rejected(config);
+                    case DELIVERED, RETRY_IN_PLACE, RETURN_TO_BROKER -> throw new IllegalStateException(
+                            "ErrorConfig disposition invariant violated: " + config.disposition());
+                };
             }
             case MediationOutcome.Deferred deferred -> {
-                metrics.recordTransient(took);
+                recordMetric(metric, took);
                 yield new Attempt.Failed(deferred, false);
             }
             case MediationOutcome.ErrorProcess process -> {
-                metrics.recordTransient(took);
+                recordMetric(metric, took);
                 yield new Attempt.Failed(process, false);
             }
             case MediationOutcome.ErrorConnection connection -> {
-                metrics.recordFailure(took);
+                recordMetric(metric, took);
                 yield new Attempt.Failed(connection, false);
             }
             case MediationOutcome.RateLimited rateLimited -> {
                 // The target is throttling us, not failing: no breaker
                 // impact, and counted apart from our own limiter.
-                metrics.recordRateLimited();
+                recordMetric(metric, took);
                 yield new Attempt.Failed(rateLimited, false);
             }
             // No metric: no call was made, so there is nothing to say about
@@ -532,7 +637,11 @@ public final class Pool implements AutoCloseable {
         var group = message.group();
         if (group.isEmpty()) {
             // An ungrouped message has no siblings to suppress; honouring it
-            // would mean flushing the shared empty bucket.
+            // would mean flushing the shared empty bucket. Logged rather than
+            // silently ignored (spec §4.5): a target setting flushGroup on an
+            // ungrouped message is telling us something we cannot act on, and
+            // silence there is indistinguishable from the feature working.
+            log.warn("flushGroup ignored: message {} has no group", message.id());
             return;
         }
         flushes.flush(group, Duration.ofSeconds(delaySeconds));
@@ -676,6 +785,14 @@ public final class Pool implements AutoCloseable {
         ///                  A required component, not a defaulted one: the
         ///                  compiler makes every construction site answer.
         record Failed(MediationOutcome outcome, boolean ourFault) implements Attempt {
+        }
+
+        /// R-57: the app ran the message and rejected it. Terminal on this
+        /// one attempt — not retryable, and not [Settled] either, because
+        /// what happens to the message's **group** still depends on the
+        /// dispatch mode, which only the caller (an ordered head, or a
+        /// standalone IMMEDIATE message) knows how to apply.
+        record Rejected(MediationOutcome outcome) implements Attempt {
         }
     }
 }

@@ -1,7 +1,12 @@
 package io.flowcatalyst.router.pool;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.jfr.DispatchEvent;
 import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
 import io.flowcatalyst.router.observability.jfr.Recorded;
@@ -13,6 +18,7 @@ import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -77,7 +83,7 @@ class PoolTest {
     void configErrorIsDropped() {
         // The request was wrong, not the target: retrying it unchanged cannot
         // succeed, so keeping it would be an infinite loop over a bad message.
-        mediator.answer("m1", new MediationOutcome.ErrorConfig(400, "bad"));
+        mediator.answer("m1", MediationOutcome.ErrorConfig.undeliverable(400, "bad"));
 
         pool(4, 0).submit(immediate("m1"));
 
@@ -91,9 +97,14 @@ class PoolTest {
         // §3.6's invariant, and the one Go's guardrail test pins: a retryable
         // outcome keeps the message here, holding its place and its attempt
         // count, rather than racing our retry against a redelivery.
+        // Deferred, not ErrorProcess: ErrorProcess is now always
+        // RETURN_TO_BROKER (R-57 moved the 5xx-that-retries-in-place
+        // boundary to ErrorConfig.rejected, which is terminal on one
+        // attempt instead). Deferred is still a RETRY_IN_PLACE outcome, so
+        // it still pins this invariant.
         mediator.script("m1",
-                new MediationOutcome.ErrorProcess(500, 30, "boom"),
-                new MediationOutcome.ErrorProcess(500, 30, "boom"),
+                new MediationOutcome.Deferred(200, 30, "not ready"),
+                new MediationOutcome.Deferred(200, 30, "not ready"),
                 MediationOutcome.Success.of(200));
 
         pool(4, 0).submit(immediate("m1"));
@@ -221,7 +232,10 @@ class PoolTest {
                 new RetryPolicy(List.of(Duration.ofSeconds(60)), Duration.ofSeconds(60), Duration.ofSeconds(60), 12),
                 new RetryPolicy(List.of(), Duration.ofSeconds(60), Duration.ofSeconds(60), 12));
         pool = new Pool(new Pool.Config("POOL-A", 4, 0), slow, mediator, broker, metrics, Clock.systemUTC());
-        mediator.answer("m1", new MediationOutcome.ErrorProcess(500, 30, "boom"));
+        // RETRY_IN_PLACE, not RETURN_TO_BROKER: the message must be parked
+        // inside the sleep when close() runs. ErrorProcess is now always
+        // RETURN_TO_BROKER (R-57), which would nack immediately instead.
+        mediator.answer("m1", new MediationOutcome.RateLimited(30));
 
         var queued = immediate("m1");
         assertThat(broker.tracker.register(inFlight(queued))).isEqualTo(InFlightTracker.Registration.NEW);
@@ -414,26 +428,30 @@ class PoolTest {
     }
 
     @Test
-    @DisplayName("BLOCK_ON_ERROR: a rejected head is retried, then it and its siblings are ACKed")
-    void blockOnErrorAcksGroupAfterBudget() {
-        mediator.always("m0", new MediationOutcome.ErrorProcess(500, 30, "boom"));
+    @DisplayName("BLOCK_ON_ERROR: a rejected head is ACKed after ONE attempt, then its siblings")
+    void blockOnErrorAcksGroupAfterOneAttempt() {
+        // R-57: REJECTED is terminal on the first attempt, no bounded retry.
+        mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
         var p = pool(2, 0);
 
         IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
 
         await(() -> broker.acked.size() == 3);
         assertThat(broker.nacked).isEmpty();
-        // Three attempts absorb a transient application fault before giving up.
-        assertThat(mediator.attempts("m0")).isEqualTo(RetryPolicy.DELIVERY.burstSize());
+        // A counter that must change: if the old retry-then-give-up budget
+        // were still running, this would be RetryPolicy.DELIVERY.burstSize().
+        assertThat(mediator.attempts("m0")).isOne();
+        assertThat(metrics.failures.get()).isOne();
+        assertThat(broker.ackReasons.get("m0")).isEqualTo("rejected-group-blocked");
         // Siblings were never delivered: the platform re-sends the group.
         assertThat(mediator.delivered).containsOnly("m0");
     }
 
     @Test
-    @DisplayName("NEXT_ON_ERROR: the group continues past a rejected head")
-    void nextOnErrorContinues() {
+    @DisplayName("NEXT_ON_ERROR: the group continues past a rejected head after ONE attempt")
+    void nextOnErrorContinuesAfterOneAttempt() {
         // The Q1 deviation: Go blocks the group for both ordered modes.
-        mediator.always("m0", new MediationOutcome.ErrorProcess(500, 30, "boom"));
+        mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
         mediator.answer("m1", MediationOutcome.Success.of(200));
         mediator.answer("m2", MediationOutcome.Success.of(200));
         var p = pool(2, 0);
@@ -441,7 +459,22 @@ class PoolTest {
         IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.NEXT_ON_ERROR)));
 
         await(() -> broker.acked.size() == 3);
-        assertThat(mediator.delivered).containsExactly("m0", "m0", "m0", "m1", "m2");
+        assertThat(mediator.attempts("m0")).isOne();
+        assertThat(mediator.delivered).containsExactly("m0", "m1", "m2");
+        assertThat(broker.ackReasons.get("m0")).isEqualTo("rejected-group-continues");
+    }
+
+    @Test
+    @DisplayName("IMMEDIATE: a rejected message is ACKed after ONE attempt")
+    void immediateRejectedAcksAfterOneAttempt() {
+        mediator.always("m1", MediationOutcome.ErrorConfig.rejected(500, "boom"));
+
+        pool(4, 0).submit(immediate("m1"));
+
+        await(() -> broker.acked.contains("m1"));
+        assertThat(mediator.attempts("m1")).isOne();
+        assertThat(metrics.failures.get()).isOne();
+        assertThat(broker.ackReasons.get("m1")).isEqualTo("rejected");
     }
 
     // ── Flush, rate limit ───────────────────────────────────────────────
@@ -461,18 +494,35 @@ class PoolTest {
     }
 
     @Test
-    @DisplayName("an ungrouped flushGroup is ignored rather than suppressing the empty bucket")
+    @DisplayName("an ungrouped flushGroup is ignored rather than suppressing the empty bucket, and it is logged")
     void ungroupedFlushIsIgnored() {
-        mediator.answer("m1", MediationOutcome.Success.flushing(200, 60));
-        mediator.answer("m2", MediationOutcome.Success.of(200));
-        var p = pool(4, 0);
+        // §4.5: "Ungrouped is a no-op" MUST be logged, not silently ignored —
+        // otherwise a target's misuse of the flag is invisible from outside
+        // the process.
+        var log = (Logger) LoggerFactory.getLogger(Pool.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            mediator.answer("m1", MediationOutcome.Success.flushing(200, 60));
+            mediator.answer("m2", MediationOutcome.Success.of(200));
+            var p = pool(4, 0);
 
-        p.submit(immediate("m1"));
-        await(() -> broker.acked.contains("m1"));
-        p.submit(immediate("m2"));
+            p.submit(immediate("m1"));
+            await(() -> broker.acked.contains("m1"));
+            p.submit(immediate("m2"));
 
-        await(() -> broker.acked.contains("m2"));
-        assertThat(metrics.suppressed.get()).isZero();
+            await(() -> broker.acked.contains("m2"));
+            assertThat(metrics.suppressed.get()).isZero();
+            assertThat(captured.list)
+                    .as("an ungrouped flushGroup must be logged, not silently dropped")
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage()).contains("flushGroup ignored").contains("m1");
+                    });
+        } finally {
+            log.detachAppender(captured);
+        }
     }
 
     @Test
@@ -494,6 +544,29 @@ class PoolTest {
         // worker, so a third never runs. Expecting two would deadlock the
         // assertion rather than test anything.
         await(() -> metrics.rateLimited.get() >= 1);
+    }
+
+    @Test
+    @DisplayName("the pool's own rate limiter raises exactly one RATE_LIMIT warning for a burst of limited deliveries")
+    void rateLimitWarnsOnceForARun() {
+        // A burst that keeps observing the limiter as holding messages back
+        // must not flood the warning store — one INFO entry for the
+        // transition into limiting, not one per limited delivery.
+        IntStream.range(0, 20).forEach(i -> mediator.answer("m" + i, MediationOutcome.Success.of(200)));
+        var raised = new CopyOnWriteArrayList<String>();
+        Warnings warnings = (severity, category, message) -> raised.add(severity + "/" + category);
+        pool = new Pool(new Pool.Config("POOL-A", 20, 1), FAST, mediator, broker, metrics,
+                Clock.systemUTC(), warnings);
+
+        IntStream.range(0, 20).forEach(i -> pool.submit(immediate("m" + i)));
+
+        // At least five DIFFERENT deliveries must have observed the limiter
+        // as limited — a counter that must change — proving the single
+        // warning survived repeated observations, not just one lucky check.
+        await(() -> metrics.rateLimited.get() >= 5);
+        assertThat(raised.stream().filter("INFO/RATE_LIMIT"::equals).count())
+                .as("one warning for the burst, not one per limited delivery")
+                .isEqualTo(1);
     }
 
     @Test
@@ -664,6 +737,7 @@ class PoolTest {
         /// reproduce.
         volatile boolean hangOnNack;
         final List<String> acked = new CopyOnWriteArrayList<>();
+        final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
         final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
 
@@ -671,6 +745,12 @@ class PoolTest {
         public void ack(QueuedMessage message) {
             acked.add(message.id());
             tracker.remove(message.id());
+        }
+
+        @Override
+        public void ack(QueuedMessage message, String reason) {
+            ackReasons.put(message.id(), reason);
+            ack(message);
         }
 
         @Override

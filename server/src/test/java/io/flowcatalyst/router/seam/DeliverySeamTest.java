@@ -110,7 +110,7 @@ class DeliverySeamTest {
     void undeliverableMessageIsAckedAndReleased() {
         // 404: the request is wrong, not the target. Retrying it unchanged
         // cannot succeed, so it leaves — and must leave both places.
-        mediator.answer("m1", new MediationOutcome.ErrorConfig(404, "not found"));
+        mediator.answer("m1", MediationOutcome.ErrorConfig.undeliverable(404, "not found"));
 
         deliver(pool(FAST), "m1");
 
@@ -219,7 +219,11 @@ class DeliverySeamTest {
         var slow = new Pool.Backoffs(
                 new RetryPolicy(List.of(Duration.ofSeconds(60)), Duration.ofSeconds(60), Duration.ofSeconds(60), 12),
                 new RetryPolicy(List.of(), Duration.ofSeconds(60), Duration.ofSeconds(60), 12));
-        mediator.answer("m1", new MediationOutcome.ErrorProcess(500, 30, "boom"));
+        // RETRY_IN_PLACE, not RETURN_TO_BROKER: this test needs the worker
+        // parked inside the in-pipeline retry loop's Thread.sleep when
+        // close() runs, which only a target the pool keeps retrying itself
+        // reaches — a 5xx now nacks straight to the broker instead (R-57).
+        mediator.answer("m1", new MediationOutcome.RateLimited(30));
         var p = pool(slow);
         p.submit(register(message("m1", "receipt-m1")));
         await(() -> mediator.attempts("m1") == 1);
