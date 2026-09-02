@@ -642,7 +642,9 @@ class PoolTest {
         // warning survived repeated observations, not just one lucky check.
         await(() -> metrics.rateLimited.get() >= 5);
         assertThat(raised.stream().filter("INFO/RATE_LIMIT"::equals).count())
-                .as("one warning for the burst, not one per limited delivery")
+                .as("one warning for the burst, not one per limited delivery [DIAG rateLimited=%d acked=%d nacked=%d queueSize=%d active=%d success=%d limited=%s raised=%s]",
+                        metrics.rateLimited.get(), broker.acked.size(), broker.nacked.size(), pool.queueSize(),
+                        pool.activeWorkers(), metrics.successes.get(), pool.rateLimited(), raised)
                 .isEqualTo(1);
     }
 
