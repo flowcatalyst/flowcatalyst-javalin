@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.subscription.operations;
 
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.subscription.EndpointUrl;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;

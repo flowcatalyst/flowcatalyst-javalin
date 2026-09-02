@@ -3,7 +3,7 @@ package io.flowcatalyst.platform.scheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.scheduler.jfr.ClaimedBatchEvent;
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
@@ -199,21 +199,8 @@ public final class PendingJobPoller {
         String authToken = authVerifier.sign(c.id());
         String groupId = (c.messageGroup() == null || c.messageGroup().isEmpty()) ? null : c.messageGroup();
         Message message = new Message(c.id(), poolCode, authToken, null,
-                MediationType.HTTP, processingEndpoint, groupId, false, toWireMode(c.mode()));
+                MediationType.HTTP, processingEndpoint, groupId, false, c.mode());
         return new PublishedMessage(c.id(), c.createdAt(), message);
-    }
-
-    /// `io.flowcatalyst.platform.subscription.DispatchMode` (the stored
-    /// value's parse target) and `io.flowcatalyst.router.wire.DispatchMode`
-    /// (the wire enum [Message] carries) are two distinct types sharing one
-    /// simple name — package-qualified here rather than imported, the one
-    /// case CONVENTIONS §8's "import it" cannot satisfy.
-    private static io.flowcatalyst.router.wire.DispatchMode toWireMode(DispatchMode mode) {
-        return switch (mode) {
-            case IMMEDIATE -> io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE;
-            case NEXT_ON_ERROR -> io.flowcatalyst.router.wire.DispatchMode.NEXT_ON_ERROR;
-            case BLOCK_ON_ERROR -> io.flowcatalyst.router.wire.DispatchMode.BLOCK_ON_ERROR;
-        };
     }
 
     /// Wraps a claim-transaction JDBC failure — connection acquisition,

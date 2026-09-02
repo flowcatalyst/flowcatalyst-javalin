@@ -1,6 +1,7 @@
 package io.flowcatalyst.router.wire;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 
 /// The JSON published to and consumed from every queue backend — an SQS body,
 /// a Postgres `payload` column, a NATS message payload.
@@ -24,7 +25,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 ///
 /// [#dispatchMode] is always emitted. Go omitted it until the scheduler
 /// began setting it (`docs/spec/dispatch-propagation.md`), and an absent
-/// value parses to [DispatchMode#IMMEDIATE] on the way in, so always writing
+/// value parses to [DispatchMode#DEFAULT] on the way in, so always writing
 /// it is compatible in both directions and removes a silent default.
 ///
 /// @param id              application message id — a TSID or dispatch-job id.

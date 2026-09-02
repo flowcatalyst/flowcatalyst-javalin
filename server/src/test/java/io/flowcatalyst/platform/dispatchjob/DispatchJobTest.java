@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob;
 
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

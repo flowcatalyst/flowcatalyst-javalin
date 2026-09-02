@@ -153,9 +153,9 @@ class SubscriptionApiTest {
                 "delaySeconds", "sequence", "mode", "timeoutSeconds", "maxRetries", "dataOnly", "createdBy",
                 "createdAt", "updatedAt");
 
-        // Defaults on the wire.
+        // Defaults on the wire. X-01: an absent mode on create stores NEXT_ON_ERROR, not IMMEDIATE.
         var plain = json(http.get("/api/subscriptions/" + json(created).get("id").asText(), ANCHOR));
-        assertThat(plain.get("mode").asText()).isEqualTo("IMMEDIATE");
+        assertThat(plain.get("mode").asText()).isEqualTo("NEXT_ON_ERROR");
         assertThat(plain.get("timeoutSeconds").asInt()).isEqualTo(30);
         assertThat(plain.get("dataOnly").asBoolean()).isTrue();
         assertThat(plain.get("customConfig").isArray()).as("empty arrays are present").isTrue();

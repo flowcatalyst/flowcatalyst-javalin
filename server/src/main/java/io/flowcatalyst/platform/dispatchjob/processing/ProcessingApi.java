@@ -4,7 +4,7 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.jfr.DispatchProcessedEvent;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.shared.json.Json;
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.javalin.http.Context;
 import io.javalin.router.JavalinDefaultRoutingApi;
 import org.slf4j.Logger;

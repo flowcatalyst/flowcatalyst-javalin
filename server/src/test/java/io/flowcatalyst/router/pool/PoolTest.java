@@ -15,7 +15,7 @@ import io.flowcatalyst.router.settled.BlockedSiblings;
 import io.flowcatalyst.router.settled.SettledJob;
 import io.flowcatalyst.router.settled.SettledReport;
 import io.flowcatalyst.router.settled.SettledReporter;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;

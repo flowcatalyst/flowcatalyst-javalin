@@ -7,7 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.pool.HttpMediator;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;

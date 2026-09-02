@@ -12,7 +12,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.platform.subscription.ConfigEntry;
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.subscription.EventTypeBinding;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
@@ -238,7 +238,8 @@ class SubscriptionOperationsTest {
     void createAppliesTheAggregateDefaultsForAbsentSettings() {
         var ev = created(code("subdefaults"), "Defaults");
         var got = reload(ev.subscriptionId());
-        assertThat(got.mode()).isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(got.mode()).as("X-01: absent mode defaults to NEXT_ON_ERROR, not IMMEDIATE")
+                .isEqualTo(DispatchMode.NEXT_ON_ERROR);
         assertThat(got.timeoutSeconds()).isEqualTo(Subscription.DEFAULT_TIMEOUT_SECONDS);
         assertThat(got.maxRetries()).isEqualTo(Subscription.DEFAULT_MAX_RETRIES);
         assertThat(got.delaySeconds()).isEqualTo(Subscription.DEFAULT_DELAY_SECONDS);
@@ -486,7 +487,8 @@ class SubscriptionOperationsTest {
         assertThat(a.dispatchPoolCode()).isEqualTo(code("subsync-pool"));
         assertThat(a.maxRetries()).isEqualTo(9);
         assertThat(a.timeoutSeconds()).as("absent timeout keeps the default").isEqualTo(Subscription.DEFAULT_TIMEOUT_SECONDS);
-        assertThat(a.mode()).as("sync never sets the mode").isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(a.mode()).as("sync never sets the mode; it stays at the create default (X-01: NEXT_ON_ERROR)")
+                .isEqualTo(DispatchMode.NEXT_ON_ERROR);
         assertThat(a.createdBy()).isEqualTo(PRINCIPAL);
         assertThat(a.dataOnly()).isTrue();
 

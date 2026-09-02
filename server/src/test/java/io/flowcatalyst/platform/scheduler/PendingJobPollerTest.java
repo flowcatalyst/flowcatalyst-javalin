@@ -6,7 +6,7 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.queue.postgres.PostgresQueue;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;

@@ -10,6 +10,7 @@ import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.MediationOutcome;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -318,7 +319,7 @@ class RouterShutdownTest {
         return QueuedMessage.of(
                 new io.flowcatalyst.router.wire.Message(id, "", null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", group, false,
-                        io.flowcatalyst.router.wire.DispatchMode.BLOCK_ON_ERROR),
+                        DispatchMode.BLOCK_ON_ERROR),
                 "b-" + id, "r-" + id, "q://1");
     }
 

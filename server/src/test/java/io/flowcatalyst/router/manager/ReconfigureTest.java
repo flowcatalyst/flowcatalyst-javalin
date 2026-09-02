@@ -14,6 +14,7 @@ import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.MediationOutcome;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -130,7 +131,7 @@ class ReconfigureTest {
         manager.poolFor(io.flowcatalyst.router.pool.QueuedMessage.of(
                 new io.flowcatalyst.router.wire.Message("m1", "acme-DEFAULT-POOL", null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
-                        io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE),
+                        DispatchMode.IMMEDIATE),
                 "b1", "r1", "q1"));
         assertThat(manager.pools()).containsKey("acme-DEFAULT-POOL");
 
@@ -311,7 +312,7 @@ class ReconfigureTest {
         return QueuedMessage.of(
                 new io.flowcatalyst.router.wire.Message(id, "", null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", group, false,
-                        io.flowcatalyst.router.wire.DispatchMode.NEXT_ON_ERROR),
+                        DispatchMode.NEXT_ON_ERROR),
                 "broker-" + id, "receipt-" + id, "queue-1");
     }
 

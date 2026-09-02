@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.subscription;
 
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.HasId;
 
@@ -41,7 +42,7 @@ import java.util.Objects;
 /// @param dispatchPoolCode optional pool code (set by sync resolution only)
 /// @param delaySeconds     delivery delay (default [#DEFAULT_DELAY_SECONDS])
 /// @param sequence         ordering hint, never changed today (default [#DEFAULT_SEQUENCE])
-/// @param mode             router ordering mode (default `IMMEDIATE`)
+/// @param mode             router ordering mode (default [DispatchMode#DEFAULT], `NEXT_ON_ERROR` — ledger `X-01`)
 /// @param timeoutSeconds   per-delivery timeout (default [#DEFAULT_TIMEOUT_SECONDS])
 /// @param maxRetries       retry budget (default [#DEFAULT_MAX_RETRIES])
 /// @param serviceAccountId optional signing/authenticating service account (not validated)
@@ -85,7 +86,7 @@ public record Subscription(
     public static final int DEFAULT_TIMEOUT_SECONDS = 30;
     public static final int DEFAULT_MAX_RETRIES = 3;
     public static final boolean DEFAULT_DATA_ONLY = true;
-    public static final DispatchMode DEFAULT_MODE = DispatchMode.IMMEDIATE;
+    public static final DispatchMode DEFAULT_MODE = DispatchMode.DEFAULT;
 
     public Subscription {
         Objects.requireNonNull(id, "id");

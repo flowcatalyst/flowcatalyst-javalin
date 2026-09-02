@@ -9,8 +9,8 @@ import java.util.List;
 /// audit log's `operation` column, so it must stay `CreateCommand`.
 ///
 /// Absent optionals take the aggregate's defaults (spec §1): `mode`
-/// (`null` ⇒ `IMMEDIATE`, read leniently), `timeoutSeconds`, `maxRetries`,
-/// `delaySeconds`, `maxAgeSeconds`, `dataOnly`.
+/// (`null` ⇒ `NEXT_ON_ERROR`, read leniently — ledger `X-01`), `timeoutSeconds`,
+/// `maxRetries`, `delaySeconds`, `maxAgeSeconds`, `dataOnly`.
 ///
 /// @param code             raw code; normalised (trimmed, lower-cased) by the operation
 /// @param name             human-readable name; trimmed

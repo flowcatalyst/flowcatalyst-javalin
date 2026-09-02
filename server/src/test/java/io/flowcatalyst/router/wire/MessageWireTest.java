@@ -1,6 +1,7 @@
 package io.flowcatalyst.router.wire;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

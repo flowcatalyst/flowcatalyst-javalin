@@ -17,6 +17,7 @@ import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
 import io.flowcatalyst.router.wire.MediationOutcome;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -92,7 +93,7 @@ class RouterServerTest {
         return QueuedMessage.of(
                 new io.flowcatalyst.router.wire.Message(id, poolCode, null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
-                        io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE),
+                        DispatchMode.IMMEDIATE),
                 "b-" + id, "r-" + id, "q://1");
     }
 
@@ -595,7 +596,7 @@ class RouterServerTest {
             var broker = new QueueBroker(qid -> localManager.consumer(qid).orElse(null), isolatedTracker, mutableClock);
             broker.ack(QueuedMessage.of(new io.flowcatalyst.router.wire.Message("m1", "A", null, null,
                     io.flowcatalyst.router.wire.MediationType.HTTP, "https://x.test/h", null, false,
-                    io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE), "b1", "receipt-1", "orders"));
+                    DispatchMode.IMMEDIATE), "b1", "receipt-1", "orders"));
 
             assertThat(replacement.acked).as("resolves through the now-active replacement").contains("m1");
             assertThat(original.acked).as("not the detached original").isEmpty();

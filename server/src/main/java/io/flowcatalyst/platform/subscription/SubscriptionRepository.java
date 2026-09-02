@@ -6,6 +6,7 @@ import io.flowcatalyst.db.generated.tables.MsgSubscriptions;
 import io.flowcatalyst.db.generated.tables.records.MsgSubscriptionCustomConfigsRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgSubscriptionEventTypesRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgSubscriptionsRecord;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.jooq.Condition;

@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.wire;
 
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

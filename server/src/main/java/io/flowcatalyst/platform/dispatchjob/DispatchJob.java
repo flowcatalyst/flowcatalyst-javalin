@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob;
 
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.usecase.HasId;
 
 import java.time.Instant;

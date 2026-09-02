@@ -3,7 +3,7 @@ package io.flowcatalyst.router.queue.postgres;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.testpg.TestPg;

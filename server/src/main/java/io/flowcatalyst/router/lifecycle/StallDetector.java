@@ -154,7 +154,7 @@ public final class StallDetector {
                 new io.flowcatalyst.router.wire.Message(entry.messageId(), entry.poolCode(), null, null,
                         io.flowcatalyst.router.wire.MediationType.HTTP, "", 
                         entry.messageGroupId().isEmpty() ? null : entry.messageGroupId(),
-                        false, io.flowcatalyst.router.wire.DispatchMode.IMMEDIATE),
+                        false, io.flowcatalyst.platform.shared.dispatch.DispatchMode.IMMEDIATE),
                 entry.brokerMessageId(), entry.receiptHandle(), entry.queueIdentifier(), entry.attempts());
     }
 }

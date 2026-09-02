@@ -12,7 +12,7 @@ import io.flowcatalyst.platform.dispatchjob.processing.ProcessingRepository;
 import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
-import io.flowcatalyst.platform.subscription.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;

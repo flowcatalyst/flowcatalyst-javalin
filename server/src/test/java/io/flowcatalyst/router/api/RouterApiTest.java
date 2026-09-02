@@ -28,7 +28,7 @@ import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
 import io.flowcatalyst.router.traffic.AlbTraffic;
 import io.flowcatalyst.router.traffic.TargetGroup;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;

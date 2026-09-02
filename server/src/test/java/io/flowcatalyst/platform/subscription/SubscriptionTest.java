@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.subscription;
 
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -71,7 +72,7 @@ class SubscriptionTest {
         assertThat(s.maxAgeSeconds()).isEqualTo(Subscription.DEFAULT_MAX_AGE_SECONDS).isEqualTo(86_400);
         assertThat(s.delaySeconds()).isEqualTo(Subscription.DEFAULT_DELAY_SECONDS).isZero();
         assertThat(s.sequence()).isEqualTo(Subscription.DEFAULT_SEQUENCE).isEqualTo(99);
-        assertThat(s.mode()).isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(s.mode()).as("X-01: the default is NEXT_ON_ERROR, not IMMEDIATE").isEqualTo(DispatchMode.NEXT_ON_ERROR);
         assertThat(s.timeoutSeconds()).isEqualTo(Subscription.DEFAULT_TIMEOUT_SECONDS).isEqualTo(30);
         assertThat(s.maxRetries()).isEqualTo(Subscription.DEFAULT_MAX_RETRIES).isEqualTo(3);
         assertThat(s.dataOnly()).isEqualTo(Subscription.DEFAULT_DATA_ONLY).isTrue();
@@ -191,15 +192,9 @@ class SubscriptionTest {
         assertThat(SubscriptionSource.CODE.isSyncManaged()).isTrue();
         assertThat(SubscriptionSource.UI.isSyncManaged()).isFalse();
 
-        assertThat(DispatchMode.parse("NEXT_ON_ERROR")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
-        assertThat(DispatchMode.parse("BLOCK_ON_ERROR")).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
-        assertThat(DispatchMode.parse("IMMEDIATE")).isEqualTo(DispatchMode.IMMEDIATE);
-        // unrecognised ("immediate" is lowercase, not the stored constant) and absent both fall
-        // back to the ordering-safe default, never to IMMEDIATE (X-01/A-09; dispatch-seam spec §2).
-        assertThat(DispatchMode.parse("immediate")).isEqualTo(DispatchMode.NEXT_ON_ERROR);
-        assertThat(DispatchMode.parse(null)).isEqualTo(DispatchMode.NEXT_ON_ERROR);
-        assertThat(DispatchMode.IMMEDIATE.requiresOrdering()).isFalse();
-        assertThat(DispatchMode.BLOCK_ON_ERROR.requiresOrdering()).isTrue();
+        // DispatchMode's own lenient-parsing rules (X-01/A-09) are pinned in
+        // io.flowcatalyst.platform.shared.dispatch.DispatchModeTest, now that
+        // the type is shared rather than local to this aggregate.
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {

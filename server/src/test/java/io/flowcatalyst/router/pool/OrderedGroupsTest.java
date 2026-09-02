@@ -1,7 +1,7 @@
 package io.flowcatalyst.router.pool;
 
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
-import io.flowcatalyst.router.wire.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
