@@ -21,13 +21,17 @@ import java.util.concurrent.locks.ReentrantLock;
 ///   - `NEXT_ON_ERROR` — a failed head does not hold its siblings: the
 ///     group continues with the next message, and the failed one is left to
 ///     the platform to surface for review and re-queue.
-///   - `BLOCK_ON_ERROR` — the group stops, and its queued siblings are
-///     **handed back to be ACKed off the broker** rather than held here. The spec's phrase is
+///   - `BLOCK_ON_ERROR` — the group stops, and its queued siblings **leave
+///     this buffer** rather than being held here — the spec's phrase is
 ///     "pending on the platform, **not in router memory**": a head entering
 ///     backoff may wait indefinitely (Q2 — the router never gives up), so
 ///     holding its siblings would pin unbounded memory and unbounded broker
-///     visibility for an unbounded time. The platform re-sends the whole
-///     group in order once a reviewer resolves the failure.
+///     visibility for an unbounded time. What happens to them *next* — ACKed
+///     off the broker and reported to the platform for re-send, or simply
+///     NACKed back — is decided by [Pool], not here: that is the A-01 gate
+///     (`docs/spec/router-completion.md` §2 ruling 3), and it depends on
+///     whether a platform exists to receive the report. This class's job
+///     stops at handing every buffered sibling to the caller in FIFO order.
 ///
 /// A single lock guards the buffers and the working flags together, because
 /// "is this group being drained?" and "what is in it?" are one decision:
@@ -134,9 +138,11 @@ final class OrderedGroups {
         }
 
         /// `BLOCK_ON_ERROR`, a REJECTED head (R-57, terminal on its first
-        /// attempt): **ACK the failed message and every sibling** off the
-        /// broker, and stop the group. The platform re-sends the whole group
-        /// in order once the failure is resolved.
+        /// attempt): the group stops, and every buffered sibling leaves this
+        /// buffer in FIFO order alongside the failed head. What happens to
+        /// them at the broker — ACKed and reported for the platform's
+        /// re-send, or NACKed back — is [Pool]'s decision (the A-01 gate),
+        /// not this record's: it only carries who is affected.
         record BlockGroup(QueuedMessage failed, List<QueuedMessage> siblings) implements HeadFailure {
         }
     }

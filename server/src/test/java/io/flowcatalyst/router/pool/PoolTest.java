@@ -11,6 +11,10 @@ import io.flowcatalyst.router.observability.jfr.DispatchEvent;
 import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
 import io.flowcatalyst.router.observability.jfr.Recorded;
 import io.flowcatalyst.router.policy.RetryPolicy;
+import io.flowcatalyst.router.settled.BlockedSiblings;
+import io.flowcatalyst.router.settled.SettledJob;
+import io.flowcatalyst.router.settled.SettledReport;
+import io.flowcatalyst.router.settled.SettledReporter;
 import io.flowcatalyst.router.wire.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
@@ -428,23 +432,96 @@ class PoolTest {
     }
 
     @Test
-    @DisplayName("BLOCK_ON_ERROR: a rejected head is ACKed after ONE attempt, then its siblings")
-    void blockOnErrorAcksGroupAfterOneAttempt() {
+    @DisplayName("A-01 gate OFF (default): BLOCK_ON_ERROR's untried siblings are released to the broker, not ACKed")
+    void blockOnErrorReleasesSiblingsWhenGateIsOff() {
         // R-57: REJECTED is terminal on the first attempt, no bounded retry.
+        // router-specification.md §0's MUST: with no platform to recover an
+        // ACKed sibling, the router MUST keep releasing (NACKing) them —
+        // ACKing all three here is exactly the violation this gate closes.
         mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
         var p = pool(2, 0);
 
         IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
 
-        await(() -> broker.acked.size() == 3);
-        assertThat(broker.nacked).isEmpty();
+        await(() -> broker.acked.size() == 1 && broker.nacked.size() == 2);
         // A counter that must change: if the old retry-then-give-up budget
         // were still running, this would be RetryPolicy.DELIVERY.burstSize().
         assertThat(mediator.attempts("m0")).isOne();
         assertThat(metrics.failures.get()).isOne();
+        // Only the head is gone permanently; its siblings are still on the
+        // broker, redeliverable, with a reason distinct from the head's.
         assertThat(broker.ackReasons.get("m0")).isEqualTo("rejected-group-blocked");
-        // Siblings were never delivered: the platform re-sends the group.
+        assertThat(broker.nackReasons).containsEntry("m1", "rejected-group-released")
+                .containsEntry("m2", "rejected-group-released");
+        assertThat(broker.nacked.values()).allMatch(Pool.REJECTED_NACK_DELAY::equals);
+        // Never delivered: the retry budget on them was never touched.
+        assertThat(mediator.attempts("m1")).isZero();
+        assertThat(mediator.attempts("m2")).isZero();
         assertThat(mediator.delivered).containsOnly("m0");
+    }
+
+    @Test
+    @DisplayName("A-01 gate ON: BLOCK_ON_ERROR's untried siblings are ACKed and reported, in FIFO order, never the head")
+    void blockOnErrorSettlesSiblingsWhenGateIsOn() {
+        mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
+        var reporter = new FakeSettledReporter();
+        pool = new Pool(new Pool.Config("POOL-A", 2, 0), FAST, mediator, broker, metrics,
+                Clock.systemUTC(), Warnings.NO_OP, new BlockedSiblings.Settle(reporter));
+
+        pool.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
+        pool.submit(orderedWithToken("g", "m1", DispatchMode.BLOCK_ON_ERROR, "tok-1"));
+        // No auth token: never came from the platform scheduler, so there is
+        // no dispatch-job row for it — ACKed like any other sibling, but
+        // skipped from the report.
+        pool.submit(ordered("g", "m2", DispatchMode.BLOCK_ON_ERROR));
+        pool.submit(orderedWithToken("g", "m3", DispatchMode.BLOCK_ON_ERROR, "tok-3"));
+
+        await(() -> broker.acked.size() == 4);
+        assertThat(broker.nacked).isEmpty();
+        assertThat(broker.ackReasons.values()).containsOnly("rejected-group-blocked");
+        assertThat(mediator.delivered).containsOnly("m0");
+
+        await(() -> !reporter.reports.isEmpty());
+        assertThat(reporter.reports).hasSize(1);
+        var report = reporter.reports.getFirst();
+        assertThat(report.poolCode()).isEqualTo("POOL-A");
+        assertThat(report.group()).isEqualTo("g");
+        // The head never appears; a tokenless sibling is skipped; the two
+        // that qualify keep their FIFO buffer order.
+        assertThat(report.jobs()).extracting(SettledJob::id).containsExactly("m1", "m3");
+        assertThat(report.jobs()).extracting(SettledJob::token).containsExactly("tok-1", "tok-3");
+    }
+
+    @Test
+    @DisplayName("A-01 gate ON: no report is sent when every sibling carries no auth token")
+    void blockOnErrorReportsNothingWithNoTokenedSiblings() {
+        mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
+        var reporter = new FakeSettledReporter();
+        pool = new Pool(new Pool.Config("POOL-A", 2, 0), FAST, mediator, broker, metrics,
+                Clock.systemUTC(), Warnings.NO_OP, new BlockedSiblings.Settle(reporter));
+
+        IntStream.range(0, 3).forEach(i -> pool.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+
+        await(() -> broker.acked.size() == 3);
+        sleepBriefly();
+        assertThat(reporter.reports).isEmpty();
+    }
+
+    @Test
+    @DisplayName("NEXT_ON_ERROR never touches the settled reporter, gate on or off")
+    void nextOnErrorNeverTouchesTheReporter() {
+        mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
+        mediator.answer("m1", MediationOutcome.Success.of(200));
+        var reporter = new FakeSettledReporter();
+        pool = new Pool(new Pool.Config("POOL-A", 2, 0), FAST, mediator, broker, metrics,
+                Clock.systemUTC(), Warnings.NO_OP, new BlockedSiblings.Settle(reporter));
+
+        pool.submit(ordered("g", "m0", DispatchMode.NEXT_ON_ERROR));
+        pool.submit(orderedWithToken("g", "m1", DispatchMode.NEXT_ON_ERROR, "tok-1"));
+
+        await(() -> broker.acked.size() == 2);
+        sleepBriefly();
+        assertThat(reporter.reports).isEmpty();
     }
 
     @Test
@@ -646,16 +723,22 @@ class PoolTest {
     }
 
     private static QueuedMessage immediate(String id) {
-        return message(id, null, DispatchMode.IMMEDIATE);
+        return message(id, null, DispatchMode.IMMEDIATE, null);
     }
 
     private static QueuedMessage ordered(String group, String id, DispatchMode mode) {
-        return message(id, group, mode);
+        return message(id, group, mode, null);
     }
 
-    private static QueuedMessage message(String id, String group, DispatchMode mode) {
+    /// A sibling carrying a platform-signed auth token — what makes it a
+    /// dispatch job the settled hook has something to report.
+    private static QueuedMessage orderedWithToken(String group, String id, DispatchMode mode, String authToken) {
+        return message(id, group, mode, authToken);
+    }
+
+    private static QueuedMessage message(String id, String group, DispatchMode mode, String authToken) {
         return QueuedMessage.of(
-                new Message(id, "", null, null, MediationType.HTTP, "https://x.test/h", group, false, mode),
+                new Message(id, "", authToken, null, MediationType.HTTP, "https://x.test/h", group, false, mode),
                 "broker-" + id, "receipt-" + id, "queue-1");
     }
 
@@ -739,6 +822,7 @@ class PoolTest {
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
+        final Map<String, String> nackReasons = new ConcurrentHashMap<>();
         final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
 
         @Override
@@ -768,8 +852,26 @@ class PoolTest {
         }
 
         @Override
+        public void nack(QueuedMessage message, Duration delay, String reason) {
+            nackReasons.put(message.id(), reason);
+            nack(message, delay);
+        }
+
+        @Override
         public void release(QueuedMessage message) {
             tracker.remove(message.id());
+        }
+    }
+
+    /// Captures every [SettledReport] handed to it, synchronously — a fake
+    /// has no fire-and-forget obligation to honour, unlike [SettledReporter]'s
+    /// production implementation.
+    private static final class FakeSettledReporter implements SettledReporter {
+        final List<SettledReport> reports = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void report(SettledReport report) {
+            reports.add(report);
         }
     }
 

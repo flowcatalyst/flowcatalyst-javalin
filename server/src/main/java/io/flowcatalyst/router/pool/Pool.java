@@ -5,6 +5,10 @@ import io.flowcatalyst.router.policy.GroupFlushRegistry;
 import io.flowcatalyst.router.policy.RateLimiter;
 import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.pool.OrderedGroups.HeadFailure;
+import io.flowcatalyst.router.settled.BlockedSiblings;
+import io.flowcatalyst.router.settled.SettledJob;
+import io.flowcatalyst.router.settled.SettledReport;
+import io.flowcatalyst.router.settled.SettledReporter;
 import io.flowcatalyst.router.wire.MediationOutcome;
 
 import io.flowcatalyst.router.concurrent.Concurrently;
@@ -15,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.List;
@@ -49,6 +54,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 /// process down. Per-thread failure isolation makes that unnecessary here;
 /// what survives is the *policy* it guarded — an unexpected exception is a
 /// retry after [#UNEXPECTED_FAILURE_DELAY], not a lost message.
+///
+/// ### The A-01 gate
+///
+/// A `BLOCK_ON_ERROR` group's untried siblings, once its head is terminally
+/// REJECTED, are either NACKed back to the broker or ACKed and reported to
+/// the platform — never ACKed with nothing to recover them. Which one is
+/// [#siblingPolicy], a [BlockedSiblings] the composition root chooses from
+/// whether a platform base URL is configured; see that type's doc for the
+/// full contract (router-specification.md §0, §3.2, §5.4).
 public final class Pool implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Pool.class);
@@ -59,8 +73,16 @@ public final class Pool implements AutoCloseable {
     static final Duration UNEXPECTED_FAILURE_DELAY = Duration.ofSeconds(10);
 
     /// Delay attached to a nack when the pool cannot take a message at all
-    /// (spec constant 11).
+    /// (spec constant 11). Also the delay a `BLOCK_ON_ERROR` head's untried
+    /// siblings get when [#siblingPolicy] releases them (A-01 gate off).
     static final Duration REJECTED_NACK_DELAY = Duration.ofSeconds(10);
+
+    /// Reason recorded on the [SettledReport] built for the platform's
+    /// settled-message hook (`docs/spec/dispatch-seam.md` §6) — fixed, not
+    /// derived from the mediation outcome, because every `BlockGroup`
+    /// failure reaches here the same way: the head followed the retry
+    /// policy and was terminally REJECTED (R-57).
+    static final String SETTLED_REASON = "head failed under BLOCK_ON_ERROR";
 
     /// Floor when a rate-limit wait is cancelled (spec constant 18).
     static final Duration RATE_LIMIT_CANCELLED_FLOOR = Duration.ofSeconds(5);
@@ -117,6 +139,15 @@ public final class Pool implements AutoCloseable {
     private final Clock clock;
     private final Warnings warnings;
 
+    /// The A-01 gate: what happens to a `BLOCK_ON_ERROR` head's untried
+    /// siblings once they leave [#groups]. Defaults to
+    /// [BlockedSiblings.Release] on every constructor that does not name it
+    /// — the router-specification §0 MUST: ACKing them is forbidden until a
+    /// platform half exists to recover them, and the composition root
+    /// ([io.flowcatalyst.server.Router]) is the only caller allowed to
+    /// switch this on, from whether a platform URL is configured.
+    private final BlockedSiblings siblingPolicy;
+
     /// Whether the last [#deliverOnce] observed the limiter holding messages
     /// back — so the INFO warning fires once on the transition into limiting
     /// rather than once per limited delivery, and clears itself the moment a
@@ -155,16 +186,21 @@ public final class Pool implements AutoCloseable {
     private volatile boolean stopped;
 
     public Pool(Config config, Mediator mediator, Broker broker, PoolMetrics metrics, Clock clock) {
-        this(config, Backoffs.DEFAULT, mediator, broker, metrics, clock, Warnings.NO_OP);
+        this(config, Backoffs.DEFAULT, mediator, broker, metrics, clock, Warnings.NO_OP, new BlockedSiblings.Release());
     }
 
     public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
                 PoolMetrics metrics, Clock clock) {
-        this(config, backoffs, mediator, broker, metrics, clock, Warnings.NO_OP);
+        this(config, backoffs, mediator, broker, metrics, clock, Warnings.NO_OP, new BlockedSiblings.Release());
     }
 
     public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
                 PoolMetrics metrics, Clock clock, Warnings warnings) {
+        this(config, backoffs, mediator, broker, metrics, clock, warnings, new BlockedSiblings.Release());
+    }
+
+    public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
+                PoolMetrics metrics, Clock clock, Warnings warnings, BlockedSiblings siblingPolicy) {
         this.config = config;
         this.backoffs = backoffs;
         this.mediator = mediator;
@@ -172,6 +208,7 @@ public final class Pool implements AutoCloseable {
         this.metrics = metrics;
         this.clock = clock;
         this.warnings = warnings;
+        this.siblingPolicy = siblingPolicy;
         this.flushes = new GroupFlushRegistry(clock);
         this.limiter = new RateLimiter(config.requestsPerMinute());
         this.slots = new ResizableSemaphore(config.concurrency());
@@ -454,13 +491,55 @@ public final class Pool implements AutoCloseable {
                 yield true;
             }
             case HeadFailure.BlockGroup blocked -> {
+                // The head is ACKed unconditionally — it is done, one way or
+                // another, the moment it is terminally REJECTED. What
+                // happens to the untried siblings is the A-01 gate: they
+                // were never delivered, so nothing is wrong with them, but
+                // this pool decides whether the broker or the platform ends
+                // up holding them next.
                 broker.ack(blocked.failed(), "rejected-group-blocked");
-                // Siblings were never delivered; the platform re-sends the
-                // whole group in order once the failure is resolved.
-                blocked.siblings().forEach(sibling -> broker.ack(sibling, "rejected-group-blocked"));
+                switch (siblingPolicy) {
+                    case BlockedSiblings.Release ignored ->
+                            // No platform to recover an ACKed sibling
+                            // (router-specification.md §0's MUST): released
+                            // back to the broker, exactly as the pre-ruling
+                            // behaviour did.
+                            blocked.siblings().forEach(sibling ->
+                                    broker.nack(sibling, REJECTED_NACK_DELAY, "rejected-group-released"));
+                    case BlockedSiblings.Settle settle -> {
+                        // Every ACK first, the report only after — never the
+                        // other order, or a crash between them could report
+                        // a sibling the broker still thinks is live.
+                        blocked.siblings().forEach(sibling -> broker.ack(sibling, "rejected-group-blocked"));
+                        reportSettled(settle.reporter(), blocked);
+                    }
+                }
                 yield false;
             }
         };
+    }
+
+    /// Builds and hands off the [SettledReport] for a `BlockGroup` failure's
+    /// siblings (A-01 gate on). A sibling with no auth token never came from
+    /// the platform scheduler — there is no dispatch-job row to mark — so it
+    /// is skipped rather than reported; an empty result is not sent at all.
+    private void reportSettled(SettledReporter reporter, HeadFailure.BlockGroup blocked) {
+        var jobs = blocked.siblings().stream()
+                .map(Pool::settledJob)
+                .flatMap(Optional::stream)
+                .toList();
+        if (jobs.isEmpty()) {
+            return;
+        }
+        reporter.report(new SettledReport(config.code(), blocked.failed().group(), SETTLED_REASON, jobs));
+    }
+
+    private static Optional<SettledJob> settledJob(QueuedMessage message) {
+        var token = message.message().authToken();
+        if (token == null || token.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(new SettledJob(message.id(), token));
     }
 
     /// Waits out an ordered head's backoff while holding **no** slot, so a

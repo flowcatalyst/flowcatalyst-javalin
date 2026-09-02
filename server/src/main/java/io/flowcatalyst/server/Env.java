@@ -143,6 +143,11 @@ public record Env(
         String routerAuthUser,
         // `FC_ROUTER_AUTH_PASS` (alias `AUTH_BASIC_PASSWORD`); `""` when unset or when `AUTH_MODE=NONE`.
         String routerAuthPass,
+        // `FC_ROUTER_PLATFORM_URL`, no alias (alias sprawl is an open owner question), default `""`.
+        // The A-01 gate (`docs/spec/router-completion.md` §2 ruling 3): blank means every
+        // `BLOCK_ON_ERROR` group's untried siblings are released back to the broker; set, they are
+        // ACKed and reported to this platform base URL's `/api/dispatch/settled` hook instead.
+        String routerPlatformUrl,
 
         // ── ALB self-registration ──────────────────────────────────────────
         // `FC_ALB_ENABLED`, default false.
@@ -283,6 +288,7 @@ public record Env(
                 authMode,
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_USER", "AUTH_BASIC_USERNAME").orElse(""),
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_PASS", "AUTH_BASIC_PASSWORD").orElse(""),
+                e.get("FC_ROUTER_PLATFORM_URL"),
 
                 e.bool("FC_ALB_ENABLED", false),
                 e.get("FC_ALB_TARGET_GROUP_ARN"),

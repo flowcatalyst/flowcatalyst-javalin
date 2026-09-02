@@ -19,6 +19,8 @@ import io.flowcatalyst.router.pool.HttpMediator;
 import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.postgres.PostgresQueue;
+import io.flowcatalyst.router.settled.BlockedSiblings;
+import io.flowcatalyst.router.settled.HttpSettledReporter;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
 import io.flowcatalyst.router.standby.RedisLockStore;
@@ -163,6 +165,12 @@ public final class Router implements AutoCloseable {
                 env.routerDevMode() ? HttpMediator.DEV_TIMEOUT : HttpMediator.PRODUCTION_TIMEOUT,
                 breakers, clock, warningSink);
 
+        // A-01 gate (`docs/spec/router-completion.md` §2 ruling 3): a
+        // platform URL is the only thing that turns this on, everywhere —
+        // one instance built here and handed to every pool the factory
+        // creates, never decided per pool.
+        var blockedSiblings = blockedSiblingsFor(env);
+
         var metrics = new ConcurrentHashMap<String, PoolMetricsCollector>();
         // The broker is resolved per message from the queue it came from, so
         // it is built before the manager and closed over by it.
@@ -170,7 +178,7 @@ public final class Router implements AutoCloseable {
         RouterManager.PoolFactory poolFactory = config -> {
             metrics.computeIfAbsent(config.code(), ignored -> new PoolMetricsCollector(clock));
             return new Pool(config, Pool.Backoffs.DEFAULT, mediator, brokerRef.get(),
-                    metrics.get(config.code()), clock, warningSink);
+                    metrics.get(config.code()), clock, warningSink, blockedSiblings);
         };
 
         var manager = new RouterManager(tracker, warningSink, clock, poolFactory);
@@ -222,6 +230,19 @@ public final class Router implements AutoCloseable {
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
                 redisClient, metrics, notifier, housekeeping, brokerStats);
+    }
+
+    /// The A-01 gate: [BlockedSiblings.Settle] iff a platform base URL is
+    /// configured, [BlockedSiblings.Release] otherwise — the
+    /// router-specification §0 MUST, and the one place in the whole binary
+    /// that decides it.
+    private static BlockedSiblings blockedSiblingsFor(Env env) {
+        if (env.routerPlatformUrl().isBlank()) {
+            LOG.info("BLOCK_ON_ERROR siblings: released to the broker (no FC_ROUTER_PLATFORM_URL)");
+            return new BlockedSiblings.Release();
+        }
+        LOG.info("BLOCK_ON_ERROR siblings: settled via {}", env.routerPlatformUrl());
+        return new BlockedSiblings.Settle(new HttpSettledReporter(env.routerPlatformUrl()));
     }
 
     private static LeaderElection.Config electionConfig(Env env) {

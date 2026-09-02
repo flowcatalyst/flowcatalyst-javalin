@@ -71,6 +71,10 @@ class EnvTest {
         assertThat(env.routerAuthUser()).isEmpty();
         assertThat(env.routerAuthPass()).isEmpty();
         assertThat(env.routerAuthEnabled()).isFalse();
+        // A-01 gate default: no platform URL, so BLOCK_ON_ERROR siblings are
+        // released rather than ACKed (`docs/spec/router-completion.md` §2
+        // ruling 3).
+        assertThat(env.routerPlatformUrl()).isEmpty();
 
         assertThat(env.albEnabled()).isFalse();
         assertThat(env.albTargetGroupArn()).isEmpty();
@@ -230,6 +234,12 @@ class EnvTest {
         assertThat(Env.queryEscape("a b")).isEqualTo("a+b");
         assertThat(Env.queryEscape("*/?&=:@")).isEqualTo("%2A%2F%3F%26%3D%3A%40");
         assertThat(Env.queryEscape("é")).isEqualTo("%C3%A9");
+    }
+
+    @Test
+    void routerPlatformUrlIsReadThrough() {
+        var env = load("FC_ROUTER_PLATFORM_URL", "https://platform.internal");
+        assertThat(env.routerPlatformUrl()).isEqualTo("https://platform.internal");
     }
 
     @Test
