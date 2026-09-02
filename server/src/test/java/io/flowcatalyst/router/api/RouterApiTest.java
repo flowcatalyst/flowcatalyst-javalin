@@ -3,10 +3,15 @@ package io.flowcatalyst.router.api;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.router.config.PoolSpec;
+import io.flowcatalyst.router.config.QueueConfig;
+import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
+import io.flowcatalyst.router.manager.ConsumerSupervisor;
 import io.flowcatalyst.router.manager.RouterManager;
+import io.flowcatalyst.router.manager.RouterServer;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
@@ -227,6 +232,184 @@ class RouterApiTest {
             }
             assertThat(json(isolatedHttp.get("/router/health")).get("status").asText())
                     .as("active > 20 -> DEGRADED even with zero criticals").isEqualTo("DEGRADED");
+        }
+    }
+
+    @Test
+    @DisplayName("R-36: a consumer loop that has never completed a poll past the stall threshold fails readiness, naming the queue")
+    void readinessFailsOnStalledConsumer() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, mutableClock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> Optional.of(new AlwaysFailingConsumer(q.queueName())),
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://stall")))),
+                Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
+        routerServer.start();
+        try {
+            await(() -> routerServer.activeLoops() == 1);
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
+                    election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+                var r = isolatedHttp.get("/router/health/ready");
+                assertThat(r.statusCode()).isEqualTo(503);
+                assertThat(json(r).get("status").asText()).contains("q://stall").contains("not polling");
+            }
+        } finally {
+            routerServer.close();
+        }
+    }
+
+    @Test
+    @DisplayName("R-36: a consumer loop younger than the stall threshold does not fail readiness")
+    void readinessStaysReadyForAYoungLoop() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, mutableClock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> Optional.of(new AlwaysFailingConsumer(q.queueName())),
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://young")))),
+                Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
+        routerServer.start();
+        try {
+            await(() -> routerServer.activeLoops() == 1);
+            // Never advanced past the stall threshold: too young to judge,
+            // even though it has never once polled successfully.
+
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
+                    election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+                var r = isolatedHttp.get("/router/health/ready");
+                assertThat(r.statusCode()).isEqualTo(200);
+                assertThat(json(r).get("status").asText()).isEqualTo("READY");
+            }
+        } finally {
+            routerServer.close();
+        }
+    }
+
+    @Test
+    @DisplayName("R-36: a consumer that keeps polling stays ready even once its loop's age crosses the stall threshold")
+    void readinessStaysReadyForAPollingConsumer() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, mutableClock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> Optional.of(new AlwaysEmptyConsumer(q.queueName())),
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://healthy")))),
+                Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
+        routerServer.start();
+        try {
+            await(() -> routerServer.activeLoops() == 1);
+            await(() -> routerServer.consumerHeartbeats().get("q://healthy").isPresent());
+
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+            // Let the loop poll again in real time under the advanced clock,
+            // refreshing its heartbeat past the point it would otherwise read
+            // as stale.
+            await(() -> routerServer.stalledConsumers().isEmpty());
+
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
+                    election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+                var r = isolatedHttp.get("/router/health/ready");
+                assertThat(r.statusCode()).isEqualTo(200);
+                assertThat(json(r).get("status").asText()).isEqualTo("READY");
+            }
+        } finally {
+            routerServer.close();
+        }
+    }
+
+    // NOTE: a "follower ignores a stalled loop" test was deliberately not
+    // added here. RouterServer#stopSources() always clears its loop map
+    // synchronously as part of losing leadership (RouterServer.java), so
+    // `!server.running()` and a non-empty `stalledConsumers()` can never
+    // coexist through the public API — the `!s.server().running()` guard in
+    // HealthRoutes#stalledConsumerReason is real defensive code (matches the
+    // spec's "a follower is unaffected" wording) but is not independently
+    // observable, confirmed by mutation: deleting the guard left every test
+    // in this file green. Documented here rather than shipped as a test that
+    // cannot fail (CLAUDE.md testing policy).
+
+    // ── R-33: config reload ─────────────────────────────────────────────
+
+    @Test
+    @DisplayName("R-33: with no server wired, reload answers 200 without reloading (degrade-safe default)")
+    void configReloadNoServerWired() {
+        var r = http.post("/router/config/reload", null);
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("reloaded").asBoolean()).isFalse();
+        assertThat(body.get("pools").asInt()).isZero();
+    }
+
+    @Test
+    @DisplayName("R-33: a follower's reload is refused with 409, and never starts a consumer")
+    void configReloadFollowerIs409() {
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var electionConfig = new LeaderElection.Config(true, "fc:test:reload-follower", "instance-follower",
+                Duration.ofSeconds(30), Duration.ofSeconds(10));
+        var election = new LeaderElection(electionConfig, new NeverAcquireStore(), CLOCK);
+        var built = new AtomicInteger();
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> {
+                    built.incrementAndGet();
+                    return Optional.empty();
+                },
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://never")))),
+                Warnings.NO_OP, CLOCK, Duration.ofSeconds(1));
+        routerServer.start();
+        try {
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null,
+                    election, electionConfig, "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+                var r = isolatedHttp.post("/router/config/reload", null);
+                assertThat(r.statusCode()).isEqualTo(409);
+                assertThat(json(r).get("error").asText()).isEqualTo("not leader");
+                assertThat(built).as("a follower must never build a consumer").hasValue(0);
+            }
+        } finally {
+            routerServer.close();
+        }
+    }
+
+    @Test
+    @DisplayName("R-33: a leader's reload actually reapplies configuration and reports counts")
+    void configReloadLeaderAppliesConfiguration() {
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), CLOCK);
+        var config = new RouterConfig(List.of(new PoolSpec("RELOAD-POOL", 3, 0)), List.of());
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> Optional.empty(), RouterServer.ConfigSource.fixed(config),
+                Warnings.NO_OP, CLOCK, Duration.ofSeconds(1));
+        routerServer.start(); // already applies the configuration once, as leader from the outset
+        try {
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null,
+                    election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+                var r = isolatedHttp.post("/router/config/reload", null);
+                assertThat(r.statusCode()).isEqualTo(200);
+                var body = json(r);
+                assertThat(body.get("reloaded").asBoolean()).isTrue();
+                assertThat(body.get("pools").asInt()).as("RELOAD-POOL plus the always-present DEFAULT-POOL")
+                        .isEqualTo(2);
+                assertThat(isolatedManager.pools()).containsKey("RELOAD-POOL");
+            }
+        } finally {
+            routerServer.close();
         }
     }
 
@@ -1500,16 +1683,6 @@ class RouterApiTest {
         assertThat(body.has("warnings_critical")).isTrue();
     }
 
-    @Test
-    @DisplayName("POST /config/reload always succeeds with the no-reloader-wired note")
-    void configReload() {
-        var r = http.post("/router/config/reload", null);
-        assertThat(r.statusCode()).isEqualTo(200);
-        var body = json(r);
-        assertThat(body.get("success").asBoolean()).isTrue();
-        assertThat(body.get("note").asText()).isEqualTo("config watcher polls automatically");
-    }
-
     // ── Dev mock targets ──────────────────────────────────────────────────
 
     @Test
@@ -1674,6 +1847,105 @@ class RouterApiTest {
 
         @Override
         public void ping() {
+        }
+    }
+
+    /// Never grants the lock — enough to make [LeaderElection] a permanent
+    /// follower without a real Redis, for the R-33 "a follower must never
+    /// reload" tests.
+    private static final class NeverAcquireStore implements LockStore {
+        @Override
+        public boolean acquire(String key, String value, Duration ttl) {
+            return false;
+        }
+
+        @Override
+        public boolean refresh(String key, String value, Duration ttl) {
+            return false;
+        }
+
+        @Override
+        public void release(String key, String value) {
+        }
+
+        @Override
+        public void ping() {
+        }
+    }
+
+    /// A poll loop that never once succeeds, so [RouterServer#stalledConsumers]
+    /// has no successful poll to judge (R-36 fixtures).
+    private static final class AlwaysFailingConsumer implements Consumer {
+        private final String id;
+
+        AlwaysFailingConsumer(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) {
+            throw new IllegalStateException("broker unreachable");
+        }
+
+        @Override
+        public boolean ack(QueuedMessage message) {
+            return true;
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public Optional<QueueMetrics> metrics() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    /// A poll loop that always succeeds with nothing to deliver, so its
+    /// heartbeat keeps advancing on real time (R-36 fixtures).
+    private static final class AlwaysEmptyConsumer implements Consumer {
+        private final String id;
+
+        AlwaysEmptyConsumer(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) {
+            return PollResult.empty();
+        }
+
+        @Override
+        public boolean ack(QueuedMessage message) {
+            return true;
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public Optional<QueueMetrics> metrics() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void close() {
         }
     }
 }

@@ -220,7 +220,19 @@ public final class Wire {
                                       @JsonProperty("warnings_critical") long warningsCritical) {
     }
 
-    public record ConfigReloadResponse(boolean success, String note) {
+    /// `POST /config/reload` (R-33). `reloaded` is false — with every count
+    /// zero — both when this instance is not currently running the
+    /// configuration-source pipeline at all, and when the source answered
+    /// unavailable; a follower is refused before this is ever built (409,
+    /// see [AdminRoutes]).
+    public record ConfigReloadResponse(boolean reloaded, int pools, int consumersStarted, int consumersStopped,
+                                       List<String> failedQueues) {
+
+        public ConfigReloadResponse {
+            failedQueues = failedQueues == null ? List.of() : List.copyOf(failedQueues);
+        }
+
+        static final ConfigReloadResponse UNAVAILABLE = new ConfigReloadResponse(false, 0, 0, 0, List.of());
     }
 
     public record MockOkResponse(boolean ok, String endpoint) {

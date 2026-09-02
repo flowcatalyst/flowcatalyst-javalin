@@ -136,6 +136,12 @@ public final class Router implements AutoCloseable {
         return electionConfig;
     }
 
+    /// The running router, for `POST /config/reload` (R-33) and readiness's
+    /// consumer-liveness check (R-36) — see [io.flowcatalyst.router.api.RouterApi.State#server].
+    public RouterServer server() {
+        return server;
+    }
+
     /// Builds and starts the router.
     ///
     /// `dataSource` is required only for the Postgres queue backend; a
@@ -176,7 +182,7 @@ public final class Router implements AutoCloseable {
         var traffic = trafficFor(env, clock);
 
         var server = new RouterServer(manager, tracker, election,
-                consumerFactory(dataSource), configSource(env),
+                consumerFactory(dataSource), configSource(env, warningSink),
                 warningSink, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
 
         // Traffic follows leadership: an instance that is not leading has
@@ -198,10 +204,18 @@ public final class Router implements AutoCloseable {
         var stalls = new StallDetector(tracker, warningSink,
                 queueId -> manager.consumer(queueId).orElse(null),
                 StallDetector.Config.REPORT_ONLY, clock);
-        var brokerStats = new BrokerStatsCache(clock);
+        var brokerStats = new BrokerStatsCache(clock, warningSink);
         var housekeeping = new LifecycleLoops();
-        housekeeping.start(LifecycleLoops.standard(stalls, tracker, warningSink,
+        // config-poll (A-10) rides the same housekeeping scheduler as the
+        // other periodic tasks: applyConfiguration() already no-ops when not
+        // running, so this reaches a leader whether it just gained
+        // leadership (which already applied once) or has been leading for a
+        // while and the *source's* configuration changed underneath it.
+        var housekeepingTasks = new java.util.ArrayList<>(LifecycleLoops.standard(stalls, tracker, warningSink,
                 () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup));
+        housekeepingTasks.add(new LifecycleLoops.Task("config-poll", RouterServer.CONFIG_POLL_INTERVAL,
+                server::applyConfiguration));
+        housekeeping.start(housekeepingTasks);
 
         server.start();
         LOG.info("router started leader={} prefix={} standby={} alb={}",
@@ -313,10 +327,10 @@ public final class Router implements AutoCloseable {
     /// With a config URL the router polls it (§8.1). Without one it runs the
     /// **default broker**: a single Postgres queue and the fallback pool,
     /// which is what `fcdev` and single-tenant deployments use (§8.4).
-    private static RouterServer.ConfigSource configSource(Env env) {
+    private static RouterServer.ConfigSource configSource(Env env, Warnings warnings) {
         if (!env.routerConfigUrl().isBlank()) {
             LOG.info("router configuration from {}", env.routerConfigUrl());
-            return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl());
+            return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings);
         }
         var queue = QueueConfig.of(defaultQueueUri(env));
         LOG.info("router using the default broker queue={}", queue.queueName());

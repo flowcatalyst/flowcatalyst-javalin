@@ -41,6 +41,13 @@ final class Http {
         ctx.status(503).json(new ErrorBody(message));
     }
 
+    /// 409, for a request refused because of *who is asking*, not what the
+    /// data looks like — currently only `POST /config/reload` on a follower
+    /// (R-33: a follower must never start consumers).
+    static void conflict(Context ctx, String message) {
+        ctx.status(409).json(new ErrorBody(message));
+    }
+
     /// The error envelope for this surface. Package-private rather than
     /// private to [Http] because the mock targets render it directly — a
     /// deliberate 500 from `/api/test/fail` must look like a real one.

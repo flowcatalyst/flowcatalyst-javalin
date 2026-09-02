@@ -129,6 +129,36 @@ class ConsumerLoopTest {
     }
 
     @Test
+    @DisplayName("§7.3: a run of failing polls raises exactly one CONNECTION warning, not one per attempt")
+    void failingPollStreakWarnsOnce() {
+        // Mirrors the POOL_CAPACITY transition rule: the warning marks
+        // entering the failing state, not every tick spent in it — otherwise
+        // a broker outage floods the warning store with one entry per second.
+        consumer.failAlwaysWith(new IllegalStateException("broker unreachable"));
+        start(manager());
+
+        await(() -> consumer.polls.get() >= 3);
+
+        assertThat(warnings.raised).hasSize(1);
+        assertThat(warnings.raised.getFirst())
+                .contains("WARNING").contains("CONNECTION").contains("queue-1").contains("broker unreachable");
+    }
+
+    @Test
+    @DisplayName("§7.3: the first successful poll after a failing streak raises an INFO CONNECTION recovery notice")
+    void connectionRecoveryRaisesInfo() {
+        consumer.failOnceWith(new IllegalStateException("blip"));
+        consumer.deliver(batch("m1"));
+        start(manager());
+
+        await(() -> delivered.contains("m1"));
+        await(() -> warnings.raised.size() >= 2);
+
+        assertThat(warnings.raised.get(0)).contains("WARNING").contains("CONNECTION");
+        assertThat(warnings.raised.get(1)).contains("INFO").contains("CONNECTION").contains("queue-1");
+    }
+
+    @Test
     @DisplayName("a stopped consumer ends its loop instead of spinning")
     void stoppedConsumerEndsTheLoop() {
         // Terminal: the restart watchdog rebuilds the consumer, and the loop

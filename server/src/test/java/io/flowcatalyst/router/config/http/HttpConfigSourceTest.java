@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
+import io.flowcatalyst.router.observability.Warnings;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,12 @@ class HttpConfigSourceTest {
     private HttpConfigSource source(List<String> urls, int maxAttempts, Duration interval, Duration requestTimeout) {
         var client = HttpClient.newBuilder().connectTimeout(requestTimeout).build();
         return new HttpConfigSource(urls, client, maxAttempts, interval, requestTimeout);
+    }
+
+    private HttpConfigSource sourceWithWarnings(List<String> urls, int maxAttempts, Duration interval,
+                                                Duration requestTimeout, Warnings warnings) {
+        var client = HttpClient.newBuilder().connectTimeout(requestTimeout).build();
+        return new HttpConfigSource(urls, client, maxAttempts, interval, requestTimeout, warnings);
     }
 
     // ---- URL parsing --------------------------------------------------------------
@@ -210,16 +217,96 @@ class HttpConfigSourceTest {
     }
 
     @Test
-    @DisplayName("tolerates a partial failure: the surviving URL's configuration is still returned")
-    void toleratesPartialFailure() {
-        var failing = startServer(exchange -> respondStatus(exchange, 500));
+    @DisplayName("a URL that has never succeeded has no last-known-good and is dropped")
+    void neverSucceededUrlIsDropped() {
+        var alwaysFailing = startServer(exchange -> respondStatus(exchange, 500));
         var succeeding = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://survivor/db", 42)));
 
-        var src = source(List.of(urlOf(failing), urlOf(succeeding)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
+        var src = source(List.of(urlOf(alwaysFailing), urlOf(succeeding)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
         var result = src.fetch();
 
         assertThat(result).isPresent();
         assertThat(result.get().queues()).extracting(QueueConfig::queueUri).containsExactly("postgres://survivor/db");
+    }
+
+    // ---- R-30: per-source last-known-good --------------------------------------------
+
+    @Test
+    @DisplayName("R-30: a source that starts failing after succeeding keeps serving its last-known-good pools")
+    void failingSourceServesLastKnownGood() {
+        var bIsFailing = new AtomicBoolean(false);
+        var b = startServer(exchange -> {
+            if (bIsFailing.get()) {
+                respondStatus(exchange, 500);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://b/db", 99));
+            }
+        });
+        var a = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://a/db", 1)));
+
+        var src = source(List.of(urlOf(a), urlOf(b)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
+        assertThat(src.fetch()).as("first fetch: both URLs succeed and seed the cache").isPresent();
+
+        bIsFailing.set(true);
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(result.get().queues()).extracting(QueueConfig::queueUri)
+                .as("B's last-known-good pools still participate, not just A's fresh ones")
+                .containsExactlyInAnyOrder("postgres://a/db", "postgres://b/db");
+    }
+
+    @Test
+    @DisplayName("R-30: a failing streak raises exactly one CONFIGURATION warning, not one per fetch")
+    void failingStreakWarnsOnce() {
+        var isFailing = new AtomicBoolean(false);
+        var server = startServer(exchange -> {
+            if (isFailing.get()) {
+                respondStatus(exchange, 500);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://a/db", 1));
+            }
+        });
+        var warnings = new RecordingWarnings();
+        var src = sourceWithWarnings(List.of(urlOf(server)), 2, Duration.ofMillis(10), Duration.ofSeconds(5), warnings);
+        assertThat(src.fetch()).isPresent();
+
+        isFailing.set(true);
+        src.fetch();
+        src.fetch();
+        src.fetch();
+
+        assertThat(warnings.raised).as("one warning for the whole streak, not one per fetch").hasSize(1);
+        assertThat(warnings.raised.getFirst())
+                .contains("WARNING").contains("CONFIGURATION").contains(urlOf(server));
+    }
+
+    @Test
+    @DisplayName("R-30: recovery raises an INFO notice and clears the streak, so a later failure warns again")
+    void recoveryClearsStreakThenWarnsAgain() {
+        var isFailing = new AtomicBoolean(false);
+        var server = startServer(exchange -> {
+            if (isFailing.get()) {
+                respondStatus(exchange, 500);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://a/db", 1));
+            }
+        });
+        var warnings = new RecordingWarnings();
+        var src = sourceWithWarnings(List.of(urlOf(server)), 2, Duration.ofMillis(10), Duration.ofSeconds(5), warnings);
+        src.fetch(); // seeds the cache
+
+        isFailing.set(true);
+        src.fetch(); // -> WARNING
+        isFailing.set(false);
+        src.fetch(); // -> INFO recovered
+        isFailing.set(true);
+        src.fetch(); // -> WARNING again
+
+        assertThat(warnings.raised).hasSize(3);
+        assertThat(warnings.raised.get(0)).contains("WARNING").contains("CONFIGURATION");
+        assertThat(warnings.raised.get(1)).contains("INFO").contains("CONFIGURATION").contains("recovered");
+        assertThat(warnings.raised.get(2)).contains("WARNING").contains("CONFIGURATION");
     }
 
     // ---- URL-order collection (first-definition-wins, independent of completion order) --
@@ -312,6 +399,15 @@ class HttpConfigSourceTest {
             Thread.sleep(duration);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private static final class RecordingWarnings implements Warnings {
+        final List<String> raised = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void raise(Severity severity, String category, String message) {
+            raised.add(severity + " " + category + " " + message);
         }
     }
 }

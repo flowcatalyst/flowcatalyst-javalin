@@ -215,7 +215,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                                 router.manager(), router.tracker(), router.warnings(), router.breakers(),
                                 router.election(), router.electionConfig(), Version.current(),
                                 env.routerHttpPrefix(), null, router.poolMetrics(),
-                                router.traffic(), router.brokerStats()));
+                                router.traffic(), router.brokerStats(), router.server()));
                 io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
                         cfg.routes, env.routerHttpPrefix());
             }

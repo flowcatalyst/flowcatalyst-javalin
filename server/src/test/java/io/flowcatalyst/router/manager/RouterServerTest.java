@@ -25,7 +25,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
@@ -262,6 +264,48 @@ class RouterServerTest {
         await(() -> router.activeLoops() == 1);
         assertThat(warnings.raised).anySatisfy(raised ->
                 assertThat(raised).contains("CONFIGURATION").contains("broken"));
+    }
+
+    @Test
+    @DisplayName("A-10: a second applyConfiguration() call raises a live pool's concurrency, not just its config record")
+    void secondApplyConfigurationAdjustsLivePoolConcurrency() throws InterruptedException {
+        // The config-poll task (Router.java, CONFIG_POLL_INTERVAL) exists to
+        // reach a pool that is already running: this proves a repeat call
+        // actually moves the running pool's admitted concurrency, not merely
+        // that RouterManager#reconfigure was invoked again.
+        var configRef = new AtomicReference<>(
+                new RouterConfig(List.of(new PoolSpec("A", 2, 0)), List.of(QueueConfig.of("q://1"))));
+        var release = new CountDownLatch(1);
+        Mediator blockingMediator = (message, recordFailure) -> {
+            release.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var localPools = new CopyOnWriteArrayList<Pool>();
+        var localManager = new RouterManager(tracker, warnings, clock, cfg -> {
+            var pool = new Pool(cfg, blockingMediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
+            localPools.add(pool);
+            return pool;
+        });
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(localManager, tracker, election, this::build,
+                () -> Optional.of(configRef.get()), warnings, clock, Duration.ofSeconds(1));
+
+        server.start();
+        await(() -> server.activeLoops() == 1);
+        var pool = localManager.pools().get("A");
+
+        for (int i = 0; i < 5; i++) {
+            pool.submit(message("m" + i));
+        }
+        await(() -> pool.activeWorkers() == 2);
+        assertThat(pool.activeWorkers()).as("the original concurrency caps active workers at 2").isEqualTo(2);
+
+        configRef.set(new RouterConfig(List.of(new PoolSpec("A", 5, 0)), List.of(QueueConfig.of("q://1"))));
+        server.applyConfiguration();
+
+        await(() -> pool.activeWorkers() == 5);
+
+        release.countDown();
     }
 
     @Test

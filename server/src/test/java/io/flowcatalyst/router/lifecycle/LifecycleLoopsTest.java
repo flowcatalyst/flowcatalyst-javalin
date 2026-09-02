@@ -120,6 +120,33 @@ class LifecycleLoopsTest {
         await(() -> cleanupCalls.get() >= 3);
     }
 
+    @Test
+    @DisplayName("A-10: a config-poll task composed alongside standard() actually fires on its own cadence")
+    void configPollTaskIsScheduledAndFires() {
+        // Router.java composes RouterServer#applyConfiguration into the same
+        // housekeeping set as standard(), named "config-poll" and scheduled
+        // at RouterServer.CONFIG_POLL_INTERVAL. LifecycleLoops has no
+        // special knowledge of that task — it is just another Task in the
+        // List — so what is worth pinning here is that the generic
+        // scheduling mechanism this composition depends on actually ticks a
+        // task under that name, the same way A-08 pinned warning-cleanup.
+        var stalls = new StallDetector(tracker, warnings, queueId -> null, StallDetector.Config.REPORT_ONLY, clock);
+        var configPolls = new AtomicInteger();
+        loops = new LifecycleLoops();
+
+        var tasks = new java.util.ArrayList<>(LifecycleLoops.standard(stalls, tracker, warnings,
+                () -> { }, () -> { }));
+        tasks.add(new LifecycleLoops.Task("config-poll", Duration.ofMillis(20), configPolls::incrementAndGet));
+        var fastTasks = tasks.stream()
+                .map(t -> "config-poll".equals(t.name())
+                        ? t
+                        : new LifecycleLoops.Task(t.name(), Duration.ofHours(1), t.action()))
+                .toList();
+        loops.start(fastTasks);
+
+        await(() -> configPolls.get() >= 3);
+    }
+
     // ── The scheduler ───────────────────────────────────────────────────
 
     @Test

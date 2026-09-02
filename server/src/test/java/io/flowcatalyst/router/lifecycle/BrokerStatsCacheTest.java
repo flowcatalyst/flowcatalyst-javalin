@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.lifecycle;
 
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,8 +10,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,6 +67,55 @@ class BrokerStatsCacheTest {
                 "good", () -> Optional.of(metrics(4, 1, 50, 40, 5))));
 
         assertThat(cache.latest()).containsOnlyKeys("good");
+    }
+
+    // ── §7.3: QUEUE_HEALTH ─────────────────────────────────────────────
+
+    @Test
+    @DisplayName("§7.3: a queue whose metrics go unreadable raises exactly one QUEUE_HEALTH warning across a failing streak")
+    void unreachableQueueWarnsOnce() {
+        var warnings = new RecordingWarnings();
+        var withWarnings = new BrokerStatsCache(clock, warnings);
+
+        withWarnings.refresh(Map.of("q1", Optional::empty));
+        withWarnings.refresh(Map.of("q1", Optional::empty));
+        withWarnings.refresh(Map.of("q1", Optional::empty));
+
+        assertThat(warnings.raised).hasSize(1);
+        assertThat(warnings.raised.getFirst()).contains("WARNING").contains("QUEUE_HEALTH").contains("q1");
+    }
+
+    @Test
+    @DisplayName("§7.3: recovery raises an INFO QUEUE_HEALTH notice, and a later failure warns again")
+    void recoveryRaisesInfoThenWarnsAgain() {
+        var warnings = new RecordingWarnings();
+        var withWarnings = new BrokerStatsCache(clock, warnings);
+
+        withWarnings.refresh(Map.of("q1", Optional::empty));
+        withWarnings.refresh(Map.of("q1", () -> Optional.of(metrics(1, 0, 1, 1, 0))));
+        withWarnings.refresh(Map.of("q1", Optional::empty));
+
+        assertThat(warnings.raised).hasSize(3);
+        assertThat(warnings.raised.get(0)).contains("WARNING").contains("QUEUE_HEALTH");
+        assertThat(warnings.raised.get(1)).contains("INFO").contains("QUEUE_HEALTH").contains("recovered");
+        assertThat(warnings.raised.get(2)).contains("WARNING").contains("QUEUE_HEALTH");
+    }
+
+    @Test
+    @DisplayName("§7.3: a throwing source is unreachable too, and shares the same once-per-streak warning")
+    void throwingSourceWarnsLikeAnEmptyOne() {
+        var warnings = new RecordingWarnings();
+        var withWarnings = new BrokerStatsCache(clock, warnings);
+
+        withWarnings.refresh(Map.of("bad", () -> {
+            throw new IllegalStateException("broker unreachable");
+        }));
+        withWarnings.refresh(Map.of("bad", () -> {
+            throw new IllegalStateException("still unreachable");
+        }));
+
+        assertThat(warnings.raised).hasSize(1);
+        assertThat(warnings.raised.getFirst()).contains("WARNING").contains("QUEUE_HEALTH").contains("bad");
     }
 
     @Test
@@ -168,6 +220,15 @@ class BrokerStatsCacheTest {
 
     private static QueueMetrics metrics(long pending, long inFlight, long polled, long acked, long nacked) {
         return new QueueMetrics(pending, inFlight, polled, acked, nacked);
+    }
+
+    private static final class RecordingWarnings implements Warnings {
+        final List<String> raised = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void raise(Severity severity, String category, String message) {
+            raised.add(severity + " " + category + " " + message);
+        }
     }
 
     private static final class TestClock extends Clock {

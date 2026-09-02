@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.lifecycle;
 
+import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +13,8 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /// Keeps broker-side queue depths without asking the broker per request
@@ -54,11 +57,23 @@ public final class BrokerStatsCache {
     /// Rolling snapshots, oldest first, trimmed to [#HISTORY].
     private final Deque<Snapshot> history = new ArrayDeque<>();
 
+    /// Queues currently unreadable, so the QUEUE_HEALTH warning fires once on
+    /// entry into a failing streak and clears with an INFO on recovery
+    /// (§7.3), the same shape as [io.flowcatalyst.router.manager.ConsumerLoop]'s
+    /// CONNECTION warning.
+    private final Set<String> unreachable = ConcurrentHashMap.newKeySet();
+
     private final Clock clock;
+    private final Warnings warnings;
     private volatile Instant lastRefresh;
 
     public BrokerStatsCache(Clock clock) {
+        this(clock, Warnings.NO_OP);
+    }
+
+    public BrokerStatsCache(Clock clock, Warnings warnings) {
         this.clock = clock;
+        this.warnings = warnings;
     }
 
     /// Samples every queue and records the result.
@@ -82,15 +97,40 @@ public final class BrokerStatsCache {
         var sampled = new HashMap<String, QueueMetrics>();
         queues.forEach((queueId, source) -> {
             try {
-                source.get().ifPresent(metrics -> sampled.put(queueId, metrics));
+                var result = source.get();
+                if (result.isPresent()) {
+                    sampled.put(queueId, result.get());
+                    recordReachable(queueId);
+                } else {
+                    recordUnreachable(queueId);
+                }
             } catch (RuntimeException e) {
                 log.warn("could not read broker metrics for queue {}", queueId, e);
+                recordUnreachable(queueId);
             }
         });
         // Stamped after the sampling, not before: the age answers "how stale
         // is the newest reading", and a slow sweep that started a minute ago
         // did not produce minute-old numbers.
         store(clock.instant(), sampled);
+    }
+
+    /// Raises the once-per-streak QUEUE_HEALTH warning the first time
+    /// `queueId`'s metrics go unreadable (§7.3) — an empty supplier answer or
+    /// a throwing one are both "the broker could not be asked", so both feed
+    /// the same streak.
+    private void recordUnreachable(String queueId) {
+        if (unreachable.add(queueId)) {
+            warnings.raise(Warnings.Severity.WARNING, "QUEUE_HEALTH",
+                    "queue " + queueId + " metrics are unreachable");
+        }
+    }
+
+    /// Clears a failing streak with an INFO recovery notice, once.
+    private void recordReachable(String queueId) {
+        if (unreachable.remove(queueId)) {
+            warnings.raise(Warnings.Severity.INFO, "QUEUE_HEALTH", "queue " + queueId + " metrics recovered");
+        }
     }
 
     /// Records one completed sample. Short and lock-held; no I/O.

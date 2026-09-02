@@ -14,6 +14,8 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -46,6 +48,13 @@ public final class RouterServer implements AutoCloseable {
     /// partially: the former wedges failover entirely.
     static final Duration TRANSITION_TIMEOUT = Duration.ofSeconds(30);
 
+    /// How often [#applyConfiguration] is re-run while leader, so a
+    /// configuration change on the source side reaches a router that never
+    /// lost and regained leadership (A-10). Env-tunability is a separate,
+    /// still-open question (R-31) — this stays a constant until that is
+    /// ruled.
+    public static final Duration CONFIG_POLL_INTERVAL = Duration.ofMinutes(5);
+
     private final RouterManager manager;
     private final InFlightTracker tracker;
     private final LeaderElection election;
@@ -56,8 +65,16 @@ public final class RouterServer implements AutoCloseable {
     private final Duration drainTimeout;
 
     /// The poll loop running for each queue, so a leadership loss can stop
-    /// exactly what a gain started.
-    private final Map<String, Thread> loops = new ConcurrentHashMap<>();
+    /// exactly what a gain started, and readiness can ask each loop whether
+    /// it is still making progress (R-36).
+    private final Map<String, Loop> loops = new ConcurrentHashMap<>();
+
+    /// A running poll loop's thread (the stop handle) alongside the
+    /// [ConsumerLoop] itself (the liveness handle) — kept together because
+    /// [#stalledConsumers] needs both a queue's heartbeat and when its loop
+    /// started, and a `Map<String, Thread>` alone cannot answer either.
+    private record Loop(Thread thread, ConsumerLoop consumerLoop) {
+    }
 
     private volatile boolean running;
 
@@ -112,6 +129,36 @@ public final class RouterServer implements AutoCloseable {
         return loops.size();
     }
 
+    /// Each running loop's last successful poll, for the readiness probe and
+    /// any operator surface that wants per-queue liveness rather than just a
+    /// count (R-36).
+    public Map<String, Optional<Instant>> consumerHeartbeats() {
+        Map<String, Optional<Instant>> out = new LinkedHashMap<>();
+        loops.forEach((queueId, loop) -> out.put(queueId, loop.consumerLoop().lastPoll()));
+        return Map.copyOf(out);
+    }
+
+    /// Queues whose poll loop has gone quiet: running for longer than
+    /// [ConsumerSupervisor#STALL_THRESHOLD] with no successful poll in that
+    /// same window (R-36). Unlike [ConsumerSupervisor#stalled], a loop that
+    /// has *never* polled counts here once it has been running long enough —
+    /// readiness is asking "is this router serving traffic", and a queue
+    /// that has been up for ten minutes without a single successful poll is
+    /// not, regardless of whether the restart watchdog would still call it
+    /// too young to judge.
+    public List<String> stalledConsumers() {
+        var now = clock.instant();
+        return loops.entrySet().stream()
+                .filter(entry -> Duration.between(entry.getValue().consumerLoop().startedAt(), now)
+                        .compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
+                .filter(entry -> entry.getValue().consumerLoop().lastPoll()
+                        .map(last -> Duration.between(last, now).compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
+                        .orElse(true))
+                .map(Map.Entry::getKey)
+                .sorted()
+                .toList();
+    }
+
     /// Starts contending for leadership and reacting to it.
     ///
     /// Returns once the first leadership decision has been acted on, so a
@@ -155,14 +202,23 @@ public final class RouterServer implements AutoCloseable {
     /// queue that is now running and stopping any whose consumer went away.
     ///
     /// Safe to call repeatedly: [RouterManager#reconfigure] leaves unchanged
-    /// queues alone, so a poll that finds nothing new costs nothing.
-    public synchronized void applyConfiguration() {
+    /// queues alone, so a poll that finds nothing new costs nothing — which
+    /// is what lets this run both on leadership gain and on a periodic
+    /// schedule ([#CONFIG_POLL_INTERVAL], A-10) without special-casing
+    /// either caller. A follower or a not-yet-running instance is a no-op,
+    /// answering empty rather than a zeroed result so a caller (the reload
+    /// route, R-33) can tell "nothing to do" from "nothing changed".
+    ///
+    /// @return what changed, or empty when this instance is not currently
+    ///         running (not leader) or the configuration source is
+    ///         momentarily unavailable
+    public synchronized Optional<RouterManager.ReconfigureResult> applyConfiguration() {
         if (!running) {
-            return;
+            return Optional.empty();
         }
         var config = configSource.fetch();
         if (config.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         var result = manager.reconfigure(config.get(), consumerFactory);
         if (!result.complete()) {
@@ -174,6 +230,7 @@ public final class RouterServer implements AutoCloseable {
                             + " configured queue(s): " + String.join(", ", result.failedQueues()));
         }
         syncLoops();
+        return Optional.of(result);
     }
 
     /// Starts a loop for every consumer that has one missing, and stops any
@@ -186,7 +243,7 @@ public final class RouterServer implements AutoCloseable {
             if (manager.consumer(entry.getKey()).isPresent()) {
                 return false;
             }
-            entry.getValue().interrupt();
+            entry.getValue().thread().interrupt();
             return true;
         });
 
@@ -200,9 +257,9 @@ public final class RouterServer implements AutoCloseable {
     }
 
     private void startLoop(Consumer consumer) {
-        var loop = new ConsumerLoop(consumer, manager, warnings, clock);
-        var thread = Thread.ofVirtual().name("poll-" + consumer.identifier()).start(loop);
-        loops.put(consumer.identifier(), thread);
+        var consumerLoop = new ConsumerLoop(consumer, manager, warnings, clock);
+        var thread = Thread.ofVirtual().name("poll-" + consumer.identifier()).start(consumerLoop);
+        loops.put(consumer.identifier(), new Loop(thread, consumerLoop));
     }
 
     /// Stops every source and hands back what they were holding, leaving the
@@ -216,7 +273,7 @@ public final class RouterServer implements AutoCloseable {
         // leadership gain has somewhere to put messages. Closing them here
         // is a bug that only appears on failover BACK.
         new RouterShutdown(tracker, drainTimeout, TRANSITION_TIMEOUT)
-                .standDown(List.copyOf(loops.values()), consumers, manager.pools().values());
+                .standDown(loops.values().stream().map(Loop::thread).toList(), consumers, manager.pools().values());
         loops.clear();
         manager.forgetConsumers();
     }

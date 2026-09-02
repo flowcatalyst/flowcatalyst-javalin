@@ -3,6 +3,7 @@ package io.flowcatalyst.router.config.http;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.manager.RouterServer;
+import io.flowcatalyst.router.observability.Warnings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -13,10 +14,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.StructuredTaskScope;
 
 /// Fetches the router's configuration from `FLOWCATALYST_CONFIG_URL`
@@ -41,12 +46,18 @@ import java.util.concurrent.StructuredTaskScope;
 /// [io.flowcatalyst.router.manager.RouterManager#reconfigure] is already
 /// idempotent against a repeated identical config.
 ///
-/// ### Failure is per-URL, and only total failure is "unavailable"
+/// ### Failure is per-URL, and a URL that has already succeeded once falls
+/// back to what it last returned (R-30, §5.6)
 ///
-/// A URL that exhausts its retries is logged and dropped; the merge carries
-/// on with whatever the other URLs returned. Only when **every** URL fails
-/// does [#fetch] answer [Optional#empty()] — the contract's definition of
-/// "genuinely unavailable".
+/// A URL that exhausts its retries but has a **last-known-good**
+/// configuration on file keeps contributing that configuration to the
+/// merge, with a `CONFIGURATION` warning naming the URL and when that
+/// configuration was fetched — a transient bad fetch from one source must
+/// not stop the traffic that source was driving. A URL that has never once
+/// succeeded has nothing to fall back to and is dropped, logged only, same
+/// as before. Only when **every** URL contributes nothing — fresh or
+/// cached — does [#fetch] answer [Optional#empty()], the contract's
+/// definition of "genuinely unavailable".
 public final class HttpConfigSource implements RouterServer.ConfigSource {
 
     private static final Logger log = LoggerFactory.getLogger(HttpConfigSource.class);
@@ -63,11 +74,25 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     private final int maxAttempts;
     private final Duration retryInterval;
     private final Duration requestTimeout;
+    private final Warnings warnings;
 
     /// Reported to `slog` only, never the operator warning store — matches
     /// Go's `mergeConfigs`, which treats a conflicting duplicate as a
     /// config-authoring problem rather than a runtime condition (§8.1).
     private final RouterConfig.ConflictReporter conflictReporter = message -> log.warn("config merge: {}", message);
+
+    /// Each URL's last successfully fetched configuration, held so a source
+    /// that starts failing keeps driving the traffic it was already driving
+    /// instead of that traffic simply stopping (R-30, §5.6).
+    private final Map<String, CachedFetch> lastKnownGood = new ConcurrentHashMap<>();
+
+    /// URLs currently in a failing streak, so the CONFIGURATION warning fires
+    /// once on entry rather than on every failed poll (§5.6: "raise... while
+    /// a source is failing/stale").
+    private final Set<String> failing = ConcurrentHashMap.newKeySet();
+
+    private record CachedFetch(RouterConfig config, Instant fetchedAt) {
+    }
 
     /// Full control for tests: a smaller [#maxAttempts]/[#retryInterval]
     /// keeps the retry *mechanism* under test without waiting out the
@@ -75,11 +100,21 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// needs no network double.
     HttpConfigSource(List<String> urls, HttpClient client, int maxAttempts,
                       Duration retryInterval, Duration requestTimeout) {
+        this(urls, client, maxAttempts, retryInterval, requestTimeout, Warnings.NO_OP);
+    }
+
+    /// As above, with the [Warnings] collaborator the last-known-good
+    /// CONFIGURATION notices go through (R-30). Package-private: only
+    /// [#create] builds a production instance, and other tests that do not
+    /// care about the notices use the [Warnings.NO_OP] convenience above.
+    HttpConfigSource(List<String> urls, HttpClient client, int maxAttempts, Duration retryInterval,
+                      Duration requestTimeout, Warnings warnings) {
         this.urls = List.copyOf(urls);
         this.client = client;
         this.maxAttempts = maxAttempts;
         this.retryInterval = retryInterval;
         this.requestTimeout = requestTimeout;
+        this.warnings = warnings;
     }
 
     /// The production source: `rawEnvValue` is `FLOWCATALYST_CONFIG_URL`
@@ -88,6 +123,12 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// default-broker config in that case (§8.4), so this never needs to be
     /// called at all when there is nothing to fetch.
     public static RouterServer.ConfigSource create(String rawEnvValue) {
+        return create(rawEnvValue, Warnings.NO_OP);
+    }
+
+    /// As above, wired to the operator warning store so a failing/stale
+    /// source (R-30) and its recovery are operator-visible.
+    public static RouterServer.ConfigSource create(String rawEnvValue, Warnings warnings) {
         var urls = parseUrls(rawEnvValue);
         if (urls.isEmpty()) {
             return Optional::empty;
@@ -95,7 +136,8 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         var client = HttpClient.newBuilder()
                 .connectTimeout(DEFAULT_REQUEST_TIMEOUT)
                 .build();
-        return new HttpConfigSource(urls, client, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_INTERVAL, DEFAULT_REQUEST_TIMEOUT);
+        return new HttpConfigSource(urls, client, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_INTERVAL,
+                DEFAULT_REQUEST_TIMEOUT, warnings);
     }
 
     /// Splits on `,`, trims each part, drops empties (§8.1).
@@ -123,24 +165,66 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
             return Optional.empty();
         }
 
-        var successes = new ArrayList<RouterConfig>(outcomes.size());
-        var failedCount = 0;
-        for (var outcome : outcomes) {
-            if (outcome instanceof FetchOutcome.Success success) {
-                successes.add(success.config());
-            } else {
-                failedCount++;
+        // Order preserved from `urls`, which is what keeps the merge's
+        // first-definition-wins precedence a property of configured order
+        // rather than of fetch outcome.
+        var effective = new ArrayList<RouterConfig>(outcomes.size());
+        var droppedCount = 0;
+        for (int i = 0; i < outcomes.size(); i++) {
+            var url = urls.get(i);
+            switch (outcomes.get(i)) {
+                case FetchOutcome.Success success -> effective.add(recordSuccess(url, success.config()));
+                case FetchOutcome.Failure ignored -> {
+                    var stale = lastKnownGoodFor(url);
+                    if (stale.isPresent()) {
+                        effective.add(stale.get());
+                    } else {
+                        droppedCount++;
+                    }
+                }
             }
         }
 
-        if (successes.isEmpty()) {
-            log.error("config fetch: all {} url(s) failed", urls.size());
+        if (effective.isEmpty()) {
+            log.error("config fetch: all {} url(s) failed with no last-known-good configuration to fall back to",
+                    urls.size());
             return Optional.empty();
         }
-        if (failedCount > 0) {
-            log.warn("config fetch: {} of {} url(s) failed; continuing with the rest", failedCount, urls.size());
+        if (droppedCount > 0) {
+            log.warn("config fetch: {} of {} url(s) failed with no last-known-good configuration; dropped",
+                    droppedCount, urls.size());
         }
-        return Optional.of(RouterConfig.merge(successes, conflictReporter));
+        return Optional.of(RouterConfig.merge(effective, conflictReporter));
+    }
+
+    /// Caches `config` as `url`'s last-known-good and, if `url` was in a
+    /// failing streak, clears it with an INFO recovery notice (R-30, §5.6).
+    ///
+    /// @return `config`, unchanged — so this can sit inline in the fetch loop
+    ///         above rather than needing a separate statement per URL
+    private RouterConfig recordSuccess(String url, RouterConfig config) {
+        lastKnownGood.put(url, new CachedFetch(config, Instant.now()));
+        if (failing.remove(url)) {
+            warnings.raise(Warnings.Severity.INFO, "CONFIGURATION", "config source " + url + " recovered");
+        }
+        return config;
+    }
+
+    /// `url`'s last-known-good configuration, raising the once-per-streak
+    /// CONFIGURATION warning the first time it is drawn on for this failure
+    /// (R-30, §5.6). Empty when `url` has never once succeeded — there is
+    /// nothing to fall back to, and it is dropped exactly as before.
+    private Optional<RouterConfig> lastKnownGoodFor(String url) {
+        var cached = lastKnownGood.get(url);
+        if (cached == null) {
+            return Optional.empty();
+        }
+        if (failing.add(url)) {
+            warnings.raise(Warnings.Severity.WARNING, "CONFIGURATION",
+                    "config source " + url + " is failing; using its last-known-good configuration, fetched at "
+                            + cached.fetchedAt());
+        }
+        return Optional.of(cached.config());
     }
 
     /// Forks one retrying fetch per URL and waits for all of them,

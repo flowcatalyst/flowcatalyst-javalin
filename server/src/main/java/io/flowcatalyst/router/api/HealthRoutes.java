@@ -41,7 +41,8 @@ final class HealthRoutes {
     private static void readiness(Context ctx, State s) {
         var h = healthSnapshot(s);
         if (h.degraded()) {
-            ctx.status(503).json(new Wire.ProbeResponse("NOT_READY"));
+            ctx.status(503).json(new Wire.ProbeResponse(
+                    h.stalledReason() != null ? "NOT_READY: " + h.stalledReason() : "NOT_READY"));
         } else {
             ctx.json(new Wire.ProbeResponse("READY"));
         }
@@ -95,21 +96,42 @@ final class HealthRoutes {
         ctx.json(new Wire.MonitoringResponse(h.status(), s.version(), healthReport, poolStats,
                 s.warnings().unacknowledged().size(), h.critical()));
     }
-    private record HealthSnapshot(String status, int active, int critical) {
+
+    /// @param stalledReason non-null only when a running router has a queue
+    ///                       whose poll loop has gone quiet (R-36); makes
+    ///                       readiness fail even though `status` — the
+    ///                       warning-driven HEALTHY/WARNING/DEGRADED text —
+    ///                       may still read HEALTHY, since consumer liveness
+    ///                       feeds readiness specifically, not the general
+    ///                       health status (spec §7.2)
+    private record HealthSnapshot(String status, int active, int critical, String stalledReason) {
         boolean degraded() {
-            return status.equals("DEGRADED");
+            return status.equals("DEGRADED") || stalledReason != null;
         }
     }
 
     /// The effective status rule (spec §9.4 table): Degraded if any unacked
     /// CRITICAL or active warnings > 20; Warning if active > 5; else Healthy.
-    /// The pool/consumer clauses never fire (never-fed models) and are
-    /// therefore not modelled at all.
+    /// The pool-success-rate clause never fires and is not modelled at all —
+    /// R-36 rules it out of readiness explicitly, and it was never wired
+    /// into this status text either.
     private static HealthSnapshot healthSnapshot(State s) {
         int active = s.warnings().active(Duration.ofMinutes(30)).size();
         int critical = s.warnings().critical().size();
         String status = critical > 0 || active > 20 ? "DEGRADED" : active > 5 ? "WARNING" : "HEALTHY";
-        return new HealthSnapshot(status, active, critical);
+        return new HealthSnapshot(status, active, critical, stalledConsumerReason(s));
+    }
+
+    /// The first stalled queue's reason, or null when there is none — a
+    /// follower (`server` null or not running) is unaffected by this rule,
+    /// so losing leadership never itself fails readiness on this account.
+    private static String stalledConsumerReason(State s) {
+        if (s.server() == null || !s.server().running()) {
+            return null;
+        }
+        return s.server().stalledConsumers().stream().findFirst()
+                .map(queue -> "consumer " + queue + " not polling")
+                .orElse(null);
     }
 
     private HealthRoutes() {

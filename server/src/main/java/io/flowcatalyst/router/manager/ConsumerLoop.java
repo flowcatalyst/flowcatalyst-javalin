@@ -53,6 +53,12 @@ public final class ConsumerLoop implements Runnable {
     private final Warnings warnings;
     private final Clock clock;
 
+    /// When this loop was built — essentially when its queue started being
+    /// polled. Read by [io.flowcatalyst.router.manager.RouterServer#stalledConsumers]
+    /// so a loop that has never once polled successfully is not judged
+    /// stalled until it has actually had time to (R-36).
+    private final Instant startedAt;
+
     /// When this loop last completed a poll, successfully. Read by the stall
     /// detector; never advanced by a failed poll.
     private final AtomicReference<Instant> lastPoll = new AtomicReference<>();
@@ -63,15 +69,27 @@ public final class ConsumerLoop implements Runnable {
     /// otherwise be flooded by a single busy period.
     private boolean pausedForCapacity;
 
+    /// Whether the loop is currently in a run of failing polls. Tracked the
+    /// same way as [#pausedForCapacity]: the CONNECTION warning fires once on
+    /// the transition into a failing streak, not on every failed poll, and
+    /// clears with an INFO on the first poll that succeeds again (§7.3).
+    private boolean pollFailing;
+
     public ConsumerLoop(Consumer consumer, RouterManager manager, Warnings warnings, Clock clock) {
         this.consumer = consumer;
         this.manager = manager;
         this.warnings = warnings;
         this.clock = clock;
+        this.startedAt = clock.instant();
     }
 
     public String queueId() {
         return consumer.identifier();
+    }
+
+    /// When this loop started polling. Never changes over the loop's life.
+    public Instant startedAt() {
+        return startedAt;
     }
 
     /// The last successful poll, or empty if there has not been one.
@@ -129,6 +147,11 @@ public final class ConsumerLoop implements Runnable {
             // No heartbeat: a queue whose polls are failing is not alive, and
             // recording one here would hide it from the stall detector.
             log.warn("poll failed on queue {}", queueId(), e);
+            if (!pollFailing) {
+                pollFailing = true;
+                warnings.raise(Warnings.Severity.WARNING, "CONNECTION",
+                        "poll failed on queue " + queueId() + ": " + e.getMessage());
+            }
             Thread.sleep(POLL_ERROR_PAUSE);
             return true;
         }
@@ -142,6 +165,11 @@ public final class ConsumerLoop implements Runnable {
             }
             case Consumer.PollResult.Delivered delivered -> {
                 lastPoll.set(clock.instant());
+                if (pollFailing) {
+                    pollFailing = false;
+                    warnings.raise(Warnings.Severity.INFO, "CONNECTION",
+                            "queue " + queueId() + " is polling again");
+                }
                 yield handleBatch(delivered);
             }
         };

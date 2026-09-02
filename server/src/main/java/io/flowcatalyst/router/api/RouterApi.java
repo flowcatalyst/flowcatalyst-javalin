@@ -3,6 +3,7 @@ package io.flowcatalyst.router.api;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
 import io.flowcatalyst.router.manager.RouterManager;
+import io.flowcatalyst.router.manager.RouterServer;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
@@ -111,11 +112,18 @@ public final class RouterApi {
     ///                       from two schedules and disagree on one dashboard.
     ///                       `null` → the two queue lists answer empty and the
     ///                       refresh mutation 503s
+    /// @param server        the running [RouterServer], for `POST
+    ///                       /config/reload` (R-33) and readiness's
+    ///                       consumer-liveness check (R-36) — `null` means
+    ///                       neither is wired: reload answers a no-op 200
+    ///                       and readiness ignores consumer liveness
+    ///                       entirely, the same degrade-safe shape as every
+    ///                       other nullable collaborator here
     public record State(RouterManager manager, InFlightTracker tracker, WarningStore warnings,
                         BreakerRegistry breakers, LeaderElection election, LeaderElection.Config electionConfig,
                         String version, String prefix, MockCounters mocks,
                         Map<String, PoolMetricsCollector> poolMetrics,
-                        Traffic traffic, BrokerStatsCache brokerStats) {
+                        Traffic traffic, BrokerStatsCache brokerStats, RouterServer server) {
 
         public State {
             Objects.requireNonNull(tracker, "tracker");
@@ -124,6 +132,18 @@ public final class RouterApi {
             prefix = prefix == null || prefix.isBlank() ? "/router" : prefix;
             mocks = mocks == null ? new MockCounters() : mocks;
             poolMetrics = poolMetrics == null ? Map.of() : Map.copyOf(poolMetrics);
+        }
+
+        /// Back-compat constructor for callers built before `/config/reload`
+        /// needed the running [RouterServer] (R-33): `server` is `null`,
+        /// which degrades reload to its old no-op-200 shape and leaves
+        /// readiness unaffected by consumer liveness.
+        public State(RouterManager manager, InFlightTracker tracker, WarningStore warnings,
+                    BreakerRegistry breakers, LeaderElection election, LeaderElection.Config electionConfig,
+                    String version, String prefix, MockCounters mocks,
+                    Map<String, PoolMetricsCollector> poolMetrics, Traffic traffic, BrokerStatsCache brokerStats) {
+            this(manager, tracker, warnings, breakers, election, electionConfig, version, prefix, mocks,
+                    poolMetrics, traffic, brokerStats, null);
         }
     }
 
