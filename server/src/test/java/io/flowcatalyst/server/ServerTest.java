@@ -83,4 +83,29 @@ class ServerTest {
         assertThat(r.statusCode()).isEqualTo(404);
         assertThat(r.body()).startsWith("{\"error\":\"NOT_FOUND\"");
     }
+
+    /// Dispatch-seam spec §7 audit item 1: `Platform.register()` used to
+    /// start a `DispatchJobReaper` and discard the handle, so nothing ever
+    /// stopped it — every test that built a `Platform`/`Server` leaked a
+    /// background thread that swept the shared test database. This boots and
+    /// stops its own [Server] (independent of the shared `running` instance,
+    /// since `stop()` only runs once for that one in `@AfterAll`) and asserts
+    /// the reaper's executor is actually shut down afterward — a state that
+    /// must change, not merely the absence of a symptom.
+    @Test
+    void stopClosesTheDispatchJobReaper() {
+        Env env = Env.load(Map.of(
+                "FC_API_PORT", "0",
+                "FC_METRICS_PORT", "0",
+                "FC_PLATFORM_ENABLED", "true",
+                "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
+        var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Frontend.embeddedOrNone(), new PrometheusRegistry());
+        var oneOff = server.start();
+        try {
+            assertThat(oneOff.dispatchJobReaperClosed()).isFalse();
+        } finally {
+            oneOff.stop();
+        }
+        assertThat(oneOff.dispatchJobReaperClosed()).isTrue();
+    }
 }

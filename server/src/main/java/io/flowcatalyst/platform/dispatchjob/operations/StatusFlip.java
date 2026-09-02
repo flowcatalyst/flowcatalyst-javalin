@@ -1,33 +1,17 @@
 package io.flowcatalyst.platform.dispatchjob.operations;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
-import io.flowcatalyst.platform.shared.auth.Auth;
-import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
-/// The shared opening of [CancelDispatchJob] and [CompleteDispatchJob]'s
-/// `execute` phase (dispatch-seam spec §8, mirroring Go's `statusFlip`):
-/// load-or-404, then a per-resource scope check that answers the SAME 404 a
-/// truly-missing id gets — not the 403 `SCOPE_FORBIDDEN` the read routes use.
-/// This unit's ruling: an operator *write* on a resource id must not let a
-/// caller distinguish "exists but not mine" from "does not exist" by status
-/// code, so [#loadOwn] never throws [UseCaseException#authorization].
+/// The status-flip precondition shared by [CancelDispatchJob] and
+/// [CompleteDispatchJob]'s `execute` phase (dispatch-seam spec §8, mirroring
+/// Go's `statusFlip`). The load-or-404 + scope check both operations open
+/// with is [Access#loadOwn] — shared with the read routes since PR-3 (ledger,
+/// ruled 2026-09-01), not private to this class any more.
 final class StatusFlip {
 
     private StatusFlip() {
-    }
-
-    /// @throws UseCaseException not-found `DispatchJob_NOT_FOUND` — for a
-    ///                          missing id AND for one outside the caller's
-    ///                          scope, byte-identical either way
-    static DispatchJob loadOwn(DispatchJobRepository repo, String id) {
-        DispatchJob j = repo.findById(id).orElseThrow(() -> UseCaseException.resourceNotFound("DispatchJob", id));
-        if (!Checks.canAccessScope(Auth.current(), j.clientId())) {
-            throw UseCaseException.resourceNotFound("DispatchJob", id);
-        }
-        return j;
     }
 
     /// Only a `FAILED` job may be overridden — 409 `NOT_FAILED` otherwise

@@ -216,12 +216,19 @@ unblocks the rest of its `BLOCK_ON_ERROR` group the moment
 `GroupHoldingStatusSQL` (§2.2 below) stops matching — the scheduler's next
 poll (when it exists) re-admits the siblings in order.
 
-**Unlike every read route on this aggregate, the post-load scope check on
-cancel/complete answers 404 `DispatchJob_NOT_FOUND` for an out-of-scope job
-— byte-identical to a truly missing id — not 403 `SCOPE_FORBIDDEN`.** This
-is a deliberate divergence from §5's read-path table: a write verb must not
-let a caller distinguish "exists but not mine" from "does not exist" by
-status code.
+**Every id-addressed route on this aggregate — `{id}`, `{id}/raw`,
+`{id}/attempts`, `{id}/cancel`, `{id}/complete` — answers 404
+`DispatchJob_NOT_FOUND` for an out-of-scope job, byte-identical to a truly
+missing id, never 403 `SCOPE_FORBIDDEN`.** This is ledger PR-3's ruling
+(`flowcatalyst-rust/docs/owner-questions.md`, ruled 2026-09-01): after the
+coarse permission gate, an out-of-scope target must not let a caller
+distinguish "exists but not mine" from "does not exist" by status code —
+either shape is an existence oracle for permissioned callers otherwise.
+**Wire change (audit finding, closes the divergence this section used to
+document):** before this ruling only cancel/complete answered 404 here;
+the three GET routes answered 403 `SCOPE_FORBIDDEN`. All five now share one
+helper, `operations.Access#loadOwn` (renamed from the write-only
+`StatusFlip.loadOwn` this section originally described — see §6).
 
 ### 2.2 The dispatch seam's platform-side infrastructure (Unit 6a)
 
@@ -276,11 +283,11 @@ pass). The literal segments (`list-raw`, `raw`, `filter-options`, `event/…`,
 | `GET /api/dispatch-jobs/filter-options` | view | — | `DispatchJobFilterOptionsResponse` | six facets, ≤ 200 distinct values each, ascending, **not tenant-scoped** (**accident?** a client viewer sees other tenants' client ids / codes) |
 | `GET /api/dispatch-jobs/event/{eventId}` | view | path | bare array of `DispatchJobRead` | newest first; rows filtered by `canAccessScope` (platform-scoped jobs visible to anchor / super-admin only) |
 | `GET /api/dispatch-jobs/by-event/{eventId}` | view | path | same | SDK alias |
-| `GET /api/dispatch-jobs/{id}` | view | path | `DispatchJobResponse` | 404 `DispatchJob_NOT_FOUND`; 403 `SCOPE_FORBIDDEN` when the caller cannot access the job's client (platform-scoped → anchor / super-admin) |
-| `GET /api/dispatch-jobs/{id}/raw` | view-raw | path | `DispatchJobResponse` | identical body to `{id}` — **accident?** |
-| `GET /api/dispatch-jobs/{id}/attempts` | view | path | bare array of `AttemptDTO` | the job is loaded first for 404 + scope; attempts oldest first |
+| `GET /api/dispatch-jobs/{id}` | view | path | `DispatchJobResponse` | 404 `DispatchJob_NOT_FOUND` for missing **and** out-of-scope, byte-identical (PR-3, §2.1; platform-scoped → anchor / super-admin, else 404) |
+| `GET /api/dispatch-jobs/{id}/raw` | view-raw | path | `DispatchJobResponse` | identical body to `{id}` — **accident?**; same 404 rule (PR-3, §2.1) |
+| `GET /api/dispatch-jobs/{id}/attempts` | view | path | bare array of `AttemptDTO` | the job is loaded first via `Access.loadOwn` (404 for missing **and** out-of-scope, PR-3, §2.1); attempts oldest first |
 | `POST /api/dispatch-jobs/requeue` | **view** | `RequeueRequest` `{ids[]}` | `RequeueResponse` `{requeued}` | a caller who can see a job may re-drive it — **load-bearing or accident?** (a write gated by a view permission) |
-| `POST /api/dispatch-jobs/{id}/cancel` | **view** | path `id` | `DispatchJobResponse` (reloaded) | 404 `DispatchJob_NOT_FOUND` for missing **and** out-of-scope (§2.1); 409 `NOT_FAILED` unless `status == FAILED` |
+| `POST /api/dispatch-jobs/{id}/cancel` | **view** | path `id` | `DispatchJobResponse` (reloaded) | 404 `DispatchJob_NOT_FOUND` for missing **and** out-of-scope, byte-identical (PR-3, §2.1); 409 `NOT_FAILED` unless `status == FAILED` |
 | `POST /api/dispatch-jobs/{id}/complete` | **view** | path `id` | `DispatchJobResponse` (reloaded) | same shape as cancel |
 
 Wire shapes (field order as listed; optional fields omitted when absent;
@@ -342,7 +349,7 @@ type scopes the events list, `event.md` §8).
 |---|---|
 | Handler | coarse gate (§3) |
 | Lists | SQL-side `Visibility` from the caller (`AuthContext.visibility()`, §4); by-event: in-memory `Checks.canAccessScope` per row |
-| Detail / raw / attempts | handler: 404 then `Checks.checkScopeAccess(caller, job.clientId)` |
+| Detail / raw / attempts | handler: `operations.Access#loadOwn` — 404 for missing **and** out-of-scope, byte-identical (PR-3, §2.1); no longer `Checks.checkScopeAccess`, which answered 403 |
 | Requeue — execute phase | `publicAccess` in `authorize`; per row, jobs the caller cannot access (`!Checks.canAccessScope`) are **silently skipped and not counted** (§6). Deviation from Go in one corner: Go scopes with `client_id = ANY(caller.clients)` which also drops platform-scoped (`NULL`) jobs for a **non-anchor super-admin**; `canAccessScope` lets a super-admin requeue them. **Owner: keep the platform's one scope predicate (this), or Go's?** |
 
 No `Checks.require*` inside `operations/`.
@@ -354,16 +361,18 @@ Go has no use case here — the handler ran the SQL directly and wrote no
 event or audit; this port lifts the action into the envelope, as the Go
 package doc already intended for "human-initiated actions"), and — new in
 Unit 6a — **`CancelDispatchJob`** / **`CompleteDispatchJob`** (commands
-`CancelCommand(id)` / `CompleteCommand(id)`), which share their
-load-or-404-with-scope-as-404 and `FAILED`-precondition logic in a
-package-private `StatusFlip` helper (mirrors Go's `operations/shared.go`
-`statusFlip`).
+`CancelCommand(id)` / `CompleteCommand(id)`), whose load-or-404-with-
+scope-as-404 opening is `operations.Access#loadOwn` (public — audit
+finding, promoted out of the package-private `StatusFlip` this section
+originally described, since PR-3 (§2.1) made the read routes need the
+identical rule; `StatusFlip` now holds only the `FAILED`-precondition
+check, `requireFailed`). Mirrors Go's `operations/shared.go` `statusFlip`.
 
 | Phase | `CancelDispatchJob` / `CompleteDispatchJob` | Error |
 |---|---|---|
 | validate | `id` non-blank | 400 `ID_REQUIRED` |
-| authorize | `publicAccess` — resource check is in `StatusFlip.loadOwn` | |
-| execute | `StatusFlip.loadOwn` (404 for missing **or** out-of-scope, §2.1) → `StatusFlip.requireFailed` (409 `NOT_FAILED`) → `job.cancel()`/`job.complete()` → `Plan.save` | |
+| authorize | `publicAccess` — resource check is in `Access.loadOwn` | |
+| execute | `Access.loadOwn` (404 for missing **or** out-of-scope, §2.1 — shared with the three GET routes) → `StatusFlip.requireFailed` (409 `NOT_FAILED`) → `job.cancel()`/`job.complete()` → `Plan.save` | |
 
 | Phase | Rule | Error |
 |---|---|---|
@@ -409,8 +418,7 @@ Each writes one `msg_events` row and one `aud_logs` row
 
 | Where | Condition | Code | Status |
 |---|---|---|---|
-| `GET {id}`, `{id}/raw`, `{id}/attempts` | no job with that id | `DispatchJob_NOT_FOUND` | 404 |
-| same | job not in caller's scope | `SCOPE_FORBIDDEN` | 403 |
+| `GET {id}`, `{id}/raw`, `{id}/attempts` | no job with that id **or** job not in caller's scope | `DispatchJob_NOT_FOUND` (both — byte-identical, PR-3 §2.1) | 404 |
 | requeue | unknown / inaccessible id | — (skipped) | 200 |
 | cancel / complete | no job with that id **or** job not in caller's scope | `DispatchJob_NOT_FOUND` (both — byte-identical, §2.1) | 404 |
 | cancel / complete | job exists, in scope, `status != FAILED` | `NOT_FAILED` | 409 |

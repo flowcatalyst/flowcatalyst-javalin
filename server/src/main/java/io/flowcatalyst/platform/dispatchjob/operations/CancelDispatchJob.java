@@ -21,9 +21,9 @@ public final class CancelDispatchJob {
     public static Operation<CancelCommand, DispatchJobCancelled> of(DispatchJobRepository repo) {
         return Operation.<CancelCommand, DispatchJobCancelled>named("CancelDispatchJob")
                 .validate(cmd -> UseCaseException.requireNonBlank(cmd.id(), "ID_REQUIRED", "id is required"))
-                .authorize(Operation.Authorize.publicAccess()) // per-resource check is in StatusFlip.loadOwn
+                .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadOwn
                 .execute((cmd, ec) -> {
-                    DispatchJob j = StatusFlip.requireFailed(StatusFlip.loadOwn(repo, cmd.id())).cancel();
+                    DispatchJob j = StatusFlip.requireFailed(Access.loadOwn(repo, cmd.id())).cancel();
                     return Plan.save(j, repo, DispatchJobCancelled.of(ec, j));
                 });
     }

@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
 import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
 import io.flowcatalyst.router.queue.postgres.PostgresQueue;
@@ -117,13 +118,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final Router router;
         private final DispatchScheduler scheduler;
         private final AutoCloseable schedulerLeaderResource;
+        private final DispatchJobReaper dispatchJobReaper;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
-        private Running(Javalin api, Metrics.Running metrics, Router router,
+        private Running(Javalin api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
                          DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource) {
             this.api = api;
             this.metrics = metrics;
             this.router = router;
+            this.dispatchJobReaper = dispatchJobReaper;
             this.scheduler = scheduler;
             this.schedulerLeaderResource = schedulerLeaderResource;
         }
@@ -149,6 +152,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 if (router != null) {
                     router.close();
                 }
+                if (dispatchJobReaper != null) {
+                    dispatchJobReaper.close();
+                }
                 if (scheduler != null) {
                     scheduler.close();
                 }
@@ -170,6 +176,12 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         public void awaitStop() throws InterruptedException {
             stopped.await();
         }
+
+        /// Test-only visibility hook (dispatch-seam spec §7 audit item 1):
+        /// whether the dispatch-job reaper's executor has shut down.
+        boolean dispatchJobReaperClosed() {
+            return dispatchJobReaper != null && dispatchJobReaper.isClosed();
+        }
     }
 
     public Running start() {
@@ -181,7 +193,8 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         // router is still deciding whether it holds leadership.
         Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
 
-        Javalin api = buildApi(router);
+        var built = buildApiAndReaper(router);
+        Javalin api = built.app();
 
         // ── background subsystems ───────────────────────────────────────────
         // TODO(port): purger (platform), scheduled-job scheduler, stream processor,
@@ -219,7 +232,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
         api.start(env.apiPort());
         LOG.info("api server listening addr=:{}", env.apiPort());
-        return new Running(api, metrics, router, scheduler, schedulerLeaderResource);
+        return new Running(api, metrics, router, built.dispatchJobReaper(), scheduler, schedulerLeaderResource);
     }
 
     /// The scheduler's [DispatchPublisher]: the built-in Postgres broker —
@@ -301,11 +314,19 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// The fully wired (not yet started) API app — exposed so the contract
     /// tests can enumerate the registered routes without binding a port.
     Javalin buildApi() {
-        return buildApi(null);
+        return buildApiAndReaper(null).app();
     }
 
-    Javalin buildApi(Router router) {
-        return Javalin.create(cfg -> {
+    /// The dispatch-job reaper [Platform#register] starts is a background
+    /// resource, not a route — it has to escape the `Javalin.create` lambda
+    /// below by some path other than the `Javalin` it returns, hence this
+    /// pair rather than a bare `Javalin`.
+    private record ApiAndReaper(Javalin app, DispatchJobReaper dispatchJobReaper) {
+    }
+
+    ApiAndReaper buildApiAndReaper(Router router) {
+        DispatchJobReaper[] reaperHolder = new DispatchJobReaper[1];
+        Javalin api = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
             cfg.jsonMapper(new JavalinJsonMapper());
@@ -317,7 +338,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             cfg.routes.get("/health", Health::handle);
 
             switch (mode) {
-                case Mode.Platform(var pool) -> new Platform(env, pool, loadSigningKeys()).register(cfg.routes);
+                case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(cfg.routes);
                 case Mode.Worker _, Mode.RouterOnly _ -> {
                     // no platform API on this instance
                 }
@@ -349,6 +370,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
         });
+        return new ApiAndReaper(api, reaperHolder[0]);
     }
 
     private SigningKeys loadSigningKeys() {

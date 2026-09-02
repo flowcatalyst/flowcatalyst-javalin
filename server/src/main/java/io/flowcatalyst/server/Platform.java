@@ -116,8 +116,11 @@ public final class Platform {
         return uow;
     }
 
-    /// Registers the whole platform surface on `routes`.
-    public void register(JavalinDefaultRoutingApi routes) {
+    /// Registers the whole platform surface on `routes`. Returns the started
+    /// dispatch-job reaper (dispatch-seam spec §7) so the caller can stop it —
+    /// `register` is the only place one gets constructed, so it is the only
+    /// place that can hand the handle back.
+    public DispatchJobReaper register(JavalinDefaultRoutingApi routes) {
         // ── cross-cutting ────────────────────────────────────────────────
         CorrelationId.install(routes);
         HttpError.install(routes);
@@ -169,8 +172,9 @@ public final class Platform {
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
         // The reaper (dispatch-seam spec §7) is not leader-gated — every sweep is one
         // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
-        // (not-yet-ported) scheduler loops Server.java's TODO(port) still lists.
-        new DispatchJobReaper(dispatchJobRepo).start();
+        // (not-yet-ported) scheduler loops Server.java's TODO(port) still lists. Returned below
+        // so Server.Running#stop() can close it.
+        var dispatchJobReaper = new DispatchJobReaper(dispatchJobRepo).start();
         // /api/dispatch/settled and /api/dispatch/process (dispatch-seam spec §5, §6, §11):
         // public routes, registered below via Platform.isPublicPath; fail-closed on a missing
         // FLOWCATALYST_APP_KEY, matching Go's scheduler + processing/settled mount ("refuses to
@@ -219,6 +223,7 @@ public final class Platform {
         new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
 
         LOG.info("platform API wired");
+        return dispatchJobReaper;
     }
 
     /// The bearer/cookie authenticator built from the signing keys: RS256,

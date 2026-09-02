@@ -233,18 +233,35 @@ class DispatchJobApiTest {
         assertThat(json(http.get("/api/dispatch-jobs/" + jobA + "/raw", ANCHOR))).as("raw is the same body").isEqualTo(json(http.get("/api/dispatch-jobs/" + jobA, ANCHOR)));
     }
 
+    /// PR-3 (ledger, ruled 2026-09-01): after the coarse permission gate, an
+    /// out-of-scope target answers 404 byte-identical to not-found — real-
+    /// but-forbidden and nonexistent must be indistinguishable, closing the
+    /// existence oracle a 403 `SCOPE_FORBIDDEN` would otherwise leak. Before
+    /// this ruling these three GET routes answered 403 here while
+    /// cancel/complete already answered 404 (`cancelAnswersTheSameNotFoundForMissingAndOutOfScope`
+    /// below) — this test pins that the read side now matches the write side.
     @Test
-    void getByIdIsNotFoundOrForbiddenOutsideTheCallersScope() {
+    void getByIdIsNotFoundByteIdenticallyForMissingAndOutOfScope() {
         var missing = http.get("/api/dispatch-jobs/" + Tsid.generate(), ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(404);
         assertThat(json(missing).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
 
-        var other = http.get("/api/dispatch-jobs/" + jobB, VIEWER_A);
-        assertThat(other.statusCode()).isEqualTo(403);
-        assertThat(json(other).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+        // jobB belongs to CLIENT_B; VIEWER_A only has CLIENT_A. Same status, same error code,
+        // same message shape (`DispatchJob not found: <id>`) as the genuinely-missing case above —
+        // the only difference is the id embedded in the message, which any id-addressed 404 carries.
+        var outOfScope = http.get("/api/dispatch-jobs/" + jobB, VIEWER_A);
+        assertThat(outOfScope.statusCode()).isEqualTo(404);
+        assertThat(json(outOfScope).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
+        assertThat(json(outOfScope).get("message").asText()).isEqualTo("DispatchJob not found: " + jobB);
 
-        assertThat(http.get("/api/dispatch-jobs/" + jobP, VIEWER_A).statusCode()).as("platform-scoped is anchor-only").isEqualTo(403);
-        assertThat(http.get("/api/dispatch-jobs/" + jobB + "/attempts", VIEWER_A).statusCode()).isEqualTo(403);
+        var rawOutOfScope = http.get("/api/dispatch-jobs/" + jobB + "/raw", RAW_VIEWER_A);
+        assertThat(rawOutOfScope.statusCode()).isEqualTo(404);
+        assertThat(json(rawOutOfScope).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
+
+        assertThat(http.get("/api/dispatch-jobs/" + jobP, VIEWER_A).statusCode()).as("platform-scoped is anchor-only").isEqualTo(404);
+        var attemptsOutOfScope = http.get("/api/dispatch-jobs/" + jobB + "/attempts", VIEWER_A);
+        assertThat(attemptsOutOfScope.statusCode()).isEqualTo(404);
+        assertThat(json(attemptsOutOfScope).get("error").asText()).isEqualTo("DispatchJob_NOT_FOUND");
         assertThat(http.get("/api/dispatch-jobs/" + Tsid.generate() + "/attempts", ANCHOR).statusCode()).isEqualTo(404);
     }
 

@@ -8,6 +8,8 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,7 +18,6 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Optional;
 
 /// The processing endpoint's actual webhook client: one POST to a dispatch
@@ -67,8 +68,9 @@ public final class SubscriberDelivery {
             return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "could not build request: " + e.getMessage());
         }
         try {
-            var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            return classify(response);
+            var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            byte[] cappedBody = readCapped(response.body());
+            return classify(response, cappedBody);
         } catch (HttpTimeoutException e) {
             return new DeliveryResult.Failed(AttemptErrorType.TIMEOUT, null, "request timeout");
         } catch (IOException e) {
@@ -82,13 +84,9 @@ public final class SubscriberDelivery {
     }
 
     private HttpRequest buildRequest(DispatchJob job, byte[] body, DeliveryCredentials.Resolved credentials, Instant at) {
-        Duration timeout = job.timeoutSeconds() > 0 ? Duration.ofSeconds(job.timeoutSeconds()) : DEFAULT_TIMEOUT;
-        if (timeout.compareTo(MAX_TIMEOUT) > 0) {
-            timeout = MAX_TIMEOUT;
-        }
         var builder = HttpRequest.newBuilder(URI.create(job.targetUrl()))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                .timeout(timeout)
+                .timeout(attemptTimeout(job.timeoutSeconds()))
                 .header("Content-Type", "application/json")
                 .header("X-Dispatch-Job-Id", job.id())
                 .header("X-Event-Type", job.code());
@@ -106,15 +104,28 @@ public final class SubscriberDelivery {
         return builder.build();
     }
 
+    /// The per-attempt timeout (spec §3's timing table): the job's own
+    /// `timeout_seconds` when positive, else [#DEFAULT_TIMEOUT] (30s),
+    /// clamped to [#MAX_TIMEOUT] (2 minutes) regardless — a job cannot ask
+    /// for a longer single attempt than the outer client ceiling allows.
+    /// A pure function, package-private for the test to pin the clamp
+    /// directly rather than driving a real (and possibly hanging) HTTP call.
+    static Duration attemptTimeout(int timeoutSeconds) {
+        Duration timeout = timeoutSeconds > 0 ? Duration.ofSeconds(timeoutSeconds) : DEFAULT_TIMEOUT;
+        return timeout.compareTo(MAX_TIMEOUT) > 0 ? MAX_TIMEOUT : timeout;
+    }
+
     /// The response → outcome table (spec §5's "Response classification"):
     /// 2xx with `{"ack":false}` → [DeliveryResult.Deferred]; 2xx otherwise →
     /// [DeliveryResult.Delivered]; 429 → [DeliveryResult.Deferred] on
     /// `Retry-After`; anything else → [DeliveryResult.Failed] `HTTP_ERROR`.
     /// Deliberately uniform across 3xx/4xx/5xx — no R-57 split (spec §5,
-    /// open question 1).
-    private DeliveryResult classify(HttpResponse<byte[]> response) {
+    /// open question 1). `cappedBody` is already bounded to
+    /// [#MAX_RESPONSE_BODY] by [#readCapped] — the network read itself is
+    /// capped, not just the stored value, so a chatty or hostile subscriber
+    /// cannot balloon this process's memory before the truncation runs.
+    private DeliveryResult classify(HttpResponse<InputStream> response, byte[] cappedBody) {
         int status = response.statusCode();
-        byte[] cappedBody = cap(response.body());
         String bodyStr = new String(cappedBody, StandardCharsets.UTF_8);
 
         if (status >= 200 && status < 300) {
@@ -162,7 +173,7 @@ public final class SubscriberDelivery {
     /// `Retry-After` in seconds, or the default when absent, negative or not
     /// an integer (the HTTP-date form is not honoured — silently mis-parsing
     /// a date into a huge delay is worse than the default).
-    private static int retryAfterSeconds(HttpResponse<byte[]> response) {
+    private static int retryAfterSeconds(HttpResponse<InputStream> response) {
         return response.headers().firstValue("Retry-After")
                 .map(String::trim)
                 .flatMap(SubscriberDelivery::parsePositiveInt)
@@ -178,7 +189,17 @@ public final class SubscriberDelivery {
         }
     }
 
-    private static byte[] cap(byte[] body) {
-        return body.length > MAX_RESPONSE_BODY ? Arrays.copyOf(body, MAX_RESPONSE_BODY) : body;
+    /// Reads at most [#MAX_RESPONSE_BODY] bytes off `in`, then discards
+    /// (never buffers) whatever the subscriber sent beyond that and closes
+    /// the stream — the network read is bounded, not just the value this
+    /// process keeps, so a 1 GiB response body costs this process 64 KiB of
+    /// heap, not 1 GiB (audit finding: `BodyHandlers.ofByteArray()` used to
+    /// materialise the whole body before the old `cap` truncated it).
+    private static byte[] readCapped(InputStream in) throws IOException {
+        try (in) {
+            byte[] captured = in.readNBytes(MAX_RESPONSE_BODY);
+            in.transferTo(OutputStream.nullOutputStream());
+            return captured;
+        }
     }
 }

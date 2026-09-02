@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.dispatchjob.processing;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.db.generated.Tables;
+import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
@@ -29,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -195,6 +197,22 @@ class ProcessingApiTest {
         var r = http.post("/api/dispatch/process", "{\"messageId\":\"%s\"}".formatted(id));
 
         assertThat(r.statusCode()).isEqualTo(401);
+        assertThat(hits.get()).isZero();
+    }
+
+    // ── oversized request body ──────────────────────────────────────────
+
+    /// Audit finding (test-gap): request-body caps had no test before this
+    /// unit. Go's own guard on this endpoint is 4 KiB
+    /// ([ProcessingApi#MAX_REQUEST_BODY_BYTES]) — a caller that sends more
+    /// gets the same 400 `ack:true` shape as a malformed body, never a
+    /// buffered read of the whole oversized payload.
+    @Test
+    void oversizedRequestBodyIsA400ThatStillAcks() {
+        String padding = "x".repeat(ProcessingApi.MAX_REQUEST_BODY_BYTES + 1);
+        var r = http.post("/api/dispatch/process", "{\"messageId\":\"" + padding + "\"}");
+        assertThat(r.statusCode()).isEqualTo(400);
+        assertThat(json(r).get("ack").asBoolean()).isTrue();
         assertThat(hits.get()).isZero();
     }
 
@@ -401,6 +419,39 @@ class ProcessingApiTest {
         }
     }
 
+    // ── oversized subscriber response is capped at the network read, not just on write ──
+
+    /// Audit finding: `SubscriberDelivery` used to read the WHOLE response
+    /// with `BodyHandlers.ofByteArray()` and truncate afterward — a hostile
+    /// or chatty subscriber could balloon this process's memory before the
+    /// cap ever ran. It now bounds the network read itself
+    /// ([SubscriberDelivery#MAX_RESPONSE_BODY], 64 KiB) via
+    /// `readNBytes`+discard. Pinned two ways: the stored attempt body is at
+    /// most the cap (not the full 1 MiB the subscriber sent), AND the
+    /// delivery still classifies as Delivered/COMPLETED — an oversized body
+    /// is not itself a failure.
+    @Test
+    void oversizedResponseBodyIsCappedAtTheNetworkReadAndStillClassifiesAsDelivered() {
+        String id = seedJob(Seed.of(code("proc-bigbody")));
+        status.set(200);
+        responseBody.set("x".repeat(1024 * 1024)); // 1 MiB, well over the 64 KiB cap
+
+        var r = process(id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(json(r).get("ack").asBoolean()).isTrue();
+        DispatchJob after = reload(id);
+        assertThat(after.status()).as("an oversized body is not a delivery failure")
+                .isEqualTo(DispatchJobStatus.COMPLETED);
+
+        var attempts = repo.attemptsByJob(id);
+        assertThat(attempts).hasSize(1);
+        var attempt = attempts.getFirst();
+        assertThat(attempt.success()).isTrue();
+        assertThat(attempt.responseBody()).as("stored body is capped, not the full 1 MiB the subscriber sent")
+                .hasSize(SubscriberDelivery.MAX_RESPONSE_BODY);
+    }
+
     // ── (i) redirects are not followed and count as a failure ──────────
 
     @Test
@@ -418,5 +469,148 @@ class ProcessingApiTest {
         DispatchJob after = reload(id);
         assertThat(after.status()).as("a redirect is a failure, not a success").isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after.attemptCount()).as("counts as an ordinary retryable failure").isEqualTo(1);
+    }
+
+    // ── injected repository failures: the three 500 ack:false branches (audit finding, test-gap) ──
+
+    /// A thin decorator over the real [DispatchJobRepository] (via
+    /// [ProcessingRepository], the seam `ProcessingApi` was narrowed to for
+    /// exactly this purpose): every call delegates except the ONE this test
+    /// configures to fail, so a genuine 500/`ack:false` branch is pinned
+    /// against a real database instead of only reasoned about from reading
+    /// the code — the three prior audit finding was that nothing could make
+    /// any of them actually happen.
+    private static final class FailingRepo implements ProcessingRepository {
+        private final ProcessingRepository delegate;
+        boolean failFindById;
+        boolean failGroupHeldBefore;
+        boolean failReschedule;
+
+        FailingRepo(ProcessingRepository delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Optional<DispatchJob> findById(String id) {
+            if (failFindById) throw new RuntimeException("injected: load failed");
+            return delegate.findById(id);
+        }
+
+        @Override
+        public boolean groupHeldBefore(DispatchJob job) {
+            if (failGroupHeldBefore) throw new RuntimeException("injected: groupHeldBefore failed");
+            return delegate.groupHeldBefore(job);
+        }
+
+        @Override
+        public void reschedule(String id, Instant createdAt, Instant scheduledFor) {
+            if (failReschedule) throw new RuntimeException("injected: reschedule failed");
+            delegate.reschedule(id, createdAt, scheduledFor);
+        }
+
+        @Override
+        public void markInProgress(String id, Instant createdAt) {
+            delegate.markInProgress(id, createdAt);
+        }
+
+        @Override
+        public void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
+                                   String responseBody, String errorMessage, AttemptErrorType errorType,
+                                   Instant attemptedAt, Instant completedAt, Long durationMillis) {
+            delegate.recordAttempt(jobId, attemptNumber, success, responseCode, responseBody, errorMessage,
+                    errorType, attemptedAt, completedAt, durationMillis);
+        }
+
+        @Override
+        public void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis) {
+            delegate.markCompleted(id, createdAt, completedAt, durationMillis);
+        }
+
+        @Override
+        public void scheduleRetry(String id, Instant createdAt, Instant scheduledFor, int attemptCount, String lastError) {
+            delegate.scheduleRetry(id, createdAt, scheduledFor, attemptCount, lastError);
+        }
+
+        @Override
+        public void markFailed(String id, Instant createdAt, String lastError) {
+            delegate.markFailed(id, createdAt, lastError);
+        }
+    }
+
+    private TestHttp httpOver(FailingRepo failing) {
+        return new TestHttp(cfg -> {
+            HttpError.install(cfg.routes);
+            ProcessingApi.register(cfg.routes,
+                    new ProcessingApi.State(failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
+        });
+    }
+
+    @Test
+    void loadFailureIsA500ThatNacksWithoutDelivering() {
+        var failing = new FailingRepo(repo);
+        failing.failFindById = true;
+        try (TestHttp failingHttp = httpOver(failing)) {
+            String id = seedJob(Seed.of(code("proc-loadfail")));
+
+            var body = "{\"messageId\":\"%s\"}".formatted(id);
+            var r = failingHttp.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(id));
+
+            assertThat(r.statusCode()).isEqualTo(500);
+            assertThat(json(r).get("ack").asBoolean()).isFalse();
+            assertThat(hits.get()).as("no delivery attempted").isZero();
+        }
+    }
+
+    @Test
+    void groupHeldBeforeFailureIsA500ThatNacksAndLeavesTheJobUntouched() {
+        var failing = new FailingRepo(repo);
+        failing.failGroupHeldBefore = true;
+        try (TestHttp failingHttp = httpOver(failing)) {
+            String group = "grp-checkfail-" + RUN;
+            String id = seedJob(Seed.of(code("proc-checkfail")).withMode("BLOCK_ON_ERROR")
+                    .withMessageGroup(group).withSequence(1));
+
+            var body = "{\"messageId\":\"%s\"}".formatted(id);
+            var r = failingHttp.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(id));
+
+            assertThat(r.statusCode()).isEqualTo(500);
+            assertThat(json(r).get("ack").asBoolean()).isFalse();
+            assertThat(hits.get()).as("no delivery attempted — the check failed before dispatch").isZero();
+            assertThat(reload(id).status()).as("job status untouched").isEqualTo(DispatchJobStatus.PENDING);
+        }
+    }
+
+    @Test
+    void rescheduleFailureWhileHeldIsA500ThatNacksAndLeavesTheJobUntouched() {
+        var failing = new FailingRepo(repo);
+        failing.failReschedule = true;
+        try (TestHttp failingHttp = httpOver(failing)) {
+            // A backed-off PENDING sibling (not a FAILED one) holds the group for
+            // groupHeldBefore's full holding predicate exactly like
+            // blockOnErrorJobHeldByAnEarlierBackedOffSiblingIsNeverDelivered above, but —
+            // deliberately, unlike a FAILED head — never matches sweepStrandedSiblings'
+            // narrower FAILED/ERROR-only predicate. This test intentionally leaves `id`
+            // stuck QUEUED (the injected failure IS the point); a FAILED head would leave a
+            // row the reaper's own sweep (or any other test's direct sweepStrandedSiblings
+            // call in this shared database) could later pick up and reset out from under
+            // this assertion — this shape can never be "stranded" from the reaper's view.
+            String group = "grp-revertfail-" + RUN;
+            String sibling = seedJob(Seed.of(code("proc-revertfail-sib")).withMode("BLOCK_ON_ERROR")
+                    .withMessageGroup(group).withSequence(1).withStatus("PENDING"));
+            backdate(sibling, Instant.now().plusSeconds(300));
+            String id = seedJob(Seed.of(code("proc-revertfail")).withMode("BLOCK_ON_ERROR").withMessageGroup(group)
+                    .withSequence(2).withStatus("QUEUED"));
+
+            var body = "{\"messageId\":\"%s\"}".formatted(id);
+            var r = failingHttp.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(id));
+
+            assertThat(r.statusCode()).isEqualTo(500);
+            assertThat(json(r).get("ack").asBoolean()).isFalse();
+            assertThat(hits.get()).as("group held — no HTTP call was ever made").isZero();
+            // A successful revert would have moved this to PENDING (spec §5, §9's first
+            // invariant); the injected failure means the job is left exactly as it was.
+            assertThat(reload(id).status()).as("job status untouched — still QUEUED, never reverted")
+                    .isEqualTo(DispatchJobStatus.QUEUED);
+        }
     }
 }

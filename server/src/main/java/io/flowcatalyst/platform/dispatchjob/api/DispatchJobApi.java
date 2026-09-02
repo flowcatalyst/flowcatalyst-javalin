@@ -8,6 +8,7 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobProjection;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.Facet;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ListFilter;
+import io.flowcatalyst.platform.dispatchjob.operations.Access;
 import io.flowcatalyst.platform.dispatchjob.operations.CancelCommand;
 import io.flowcatalyst.platform.dispatchjob.operations.CancelDispatchJob;
 import io.flowcatalyst.platform.dispatchjob.operations.CompleteCommand;
@@ -42,6 +43,14 @@ import static io.flowcatalyst.platform.shared.auth.Permission.DISPATCH_JOB_VIEW_
 /// exactly: coarse permission → command from DTO → `Operation.run` →
 /// response. Every handler runs inside [Auth#scoped].
 ///
+/// Every id-addressed route below (`{id}`, `{id}/raw`, `{id}/attempts`,
+/// `{id}/cancel`, `{id}/complete`) shares [io.flowcatalyst.platform.dispatchjob.operations.Access#loadOwn]
+/// for its load-or-404: after the coarse gate, an out-of-scope target
+/// answers 404 byte-identical to not-found (ledger PR-3, ruled 2026-09-01).
+/// Before that ruling the three GET routes answered 403 `SCOPE_FORBIDDEN`
+/// for an out-of-scope job while cancel/complete already answered 404 — the
+/// two families are now the same rule, not two.
+///
 /// | Method | Path | Gate | Status |
 /// |---|---|---|---|
 /// | GET | `/api/dispatch-jobs` | view | 200 `[DispatchJobRead]` |
@@ -50,9 +59,9 @@ import static io.flowcatalyst.platform.shared.auth.Permission.DISPATCH_JOB_VIEW_
 /// | GET | `/api/dispatch-jobs/filter-options` | view | 200 [DispatchJobFilterOptionsResponse] |
 /// | GET | `/api/dispatch-jobs/event/{eventId}` | view | 200 `[DispatchJobRead]` |
 /// | GET | `/api/dispatch-jobs/by-event/{eventId}` | view | 200 `[DispatchJobRead]` (SDK alias) |
-/// | GET | `/api/dispatch-jobs/{id}` | view | 200 [DispatchJobResponse] |
-/// | GET | `/api/dispatch-jobs/{id}/raw` | view-raw | 200 [DispatchJobResponse] |
-/// | GET | `/api/dispatch-jobs/{id}/attempts` | view | 200 `[AttemptDTO]` |
+/// | GET | `/api/dispatch-jobs/{id}` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope) |
+/// | GET | `/api/dispatch-jobs/{id}/raw` | view-raw | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope) |
+/// | GET | `/api/dispatch-jobs/{id}/attempts` | view | 200 `[AttemptDTO]`; 404 not-found (byte-identical for out-of-scope) |
 /// | POST | `/api/dispatch-jobs/requeue` | view | 200 [RequeueResponse] |
 /// | POST | `/api/dispatch-jobs/{id}/cancel` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
 /// | POST | `/api/dispatch-jobs/{id}/complete` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
@@ -101,16 +110,19 @@ public final class DispatchJobApi {
     }
 
     /// Detail and raw detail share one handler; only the gate differs (spec §3).
+    /// PR-3 (ledger, ruled 2026-09-01): out-of-scope answers 404
+    /// byte-identical to not-found, via the same [Access#loadOwn] the
+    /// cancel/complete operations use — never the 403 `SCOPE_FORBIDDEN` this
+    /// route answered before.
     private static void getById(Context ctx, State s, Permission gate) {
-        AuthContext ac = Auth.current();
-        Checks.require(ac, gate);
-        ctx.json(DispatchJobResponse.from(accessible(ac, s, ctx.pathParam("id"))));
+        Checks.require(Auth.current(), gate);
+        ctx.json(DispatchJobResponse.from(Access.loadOwn(s.repo(), ctx.pathParam("id"))));
     }
 
+    /// PR-3, same as [#getById]: 404 byte-identical for missing vs. out-of-scope.
     private static void attempts(Context ctx, State s) {
-        AuthContext ac = Auth.current();
-        Checks.require(ac, DISPATCH_JOB_VIEW);
-        DispatchJob job = accessible(ac, s, ctx.pathParam("id")); // 404 + scope before exposing the history
+        Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
+        DispatchJob job = Access.loadOwn(s.repo(), ctx.pathParam("id")); // 404 + scope before exposing the history
         ctx.json(s.repo().attemptsByJob(job.id()).stream().map(AttemptDTO::from).toList());
     }
 
@@ -160,13 +172,6 @@ public final class DispatchJobApi {
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────
-
-    /// Load-or-404 plus the per-resource scope check every by-id read applies (spec §5, §7).
-    private static DispatchJob accessible(AuthContext ac, State s, String id) {
-        DispatchJob job = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("DispatchJob", id));
-        Checks.checkScopeAccess(ac, job.clientId());
-        return job;
-    }
 
     /// Query params → filter (spec §4), plus the caller's SQL-side scope.
     private static ListFilter listFilter(Context ctx, AuthContext ac) {

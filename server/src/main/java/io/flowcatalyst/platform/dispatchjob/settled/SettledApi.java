@@ -60,6 +60,14 @@ public final class SettledApi {
     }
 
     private static void serve(Context ctx, State s) {
+        // Reject on the declared Content-Length BEFORE buffering the body (audit finding: a
+        // caller that declares a multi-GB body must not make this handler read it all into
+        // memory first only to discard it). `contentLength()` is -1 for a chunked body with no
+        // declared length, so the post-read check below is still needed for that case.
+        if (ctx.contentLength() > MAX_BODY_BYTES) {
+            ctx.status(400).json(SettledResponse.EMPTY);
+            return;
+        }
         byte[] body = ctx.bodyAsBytes();
         if (body.length > MAX_BODY_BYTES) {
             ctx.status(400).json(SettledResponse.EMPTY);

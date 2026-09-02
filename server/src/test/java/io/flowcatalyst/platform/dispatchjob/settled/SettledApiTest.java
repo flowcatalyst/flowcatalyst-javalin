@@ -131,6 +131,20 @@ class SettledApiTest {
         assertThat(r.statusCode()).isEqualTo(400);
     }
 
+    /// Audit finding (test-gap): the `MAX_BODY_BYTES` (1 MiB) branch had no
+    /// test at all before this. Also pins that the cap is now checked
+    /// against the declared `Content-Length` BEFORE the body is buffered
+    /// (`ctx.contentLength()`), not only after — see `SettledApi#serve`.
+    @Test
+    void oversizedBodyIsA400() {
+        var sb = new StringBuilder("{\"jobs\":[{\"id\":\"x\",\"token\":\"");
+        sb.append("y".repeat(2 * 1024 * 1024)); // over MAX_BODY_BYTES (1 MiB)
+        sb.append("\"}]}");
+        var r = http.post("/api/dispatch/settled", sb.toString());
+        assertThat(r.statusCode()).isEqualTo(400);
+        assertThat(json(r).get("settled").asInt()).isZero();
+    }
+
     @Test
     void aTerminalStatusIsNeverResurrected() {
         String id = seedWriteRow(Seed.of(code("settled")).withStatus("COMPLETED"));

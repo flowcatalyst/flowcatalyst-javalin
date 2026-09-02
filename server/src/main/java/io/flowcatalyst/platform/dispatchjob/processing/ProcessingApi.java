@@ -1,7 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.jfr.DispatchProcessedEvent;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -35,6 +34,7 @@ import java.util.Objects;
 ///
 /// | Condition | HTTP | `ack` |
 /// |---|---|---|
+/// | request body over [#MAX_REQUEST_BODY_BYTES] (4 KiB, Go's own guard) | 400 | `true` |
 /// | malformed/empty `messageId` | 400 | `true` |
 /// | bad/missing bearer token | 401 | `false` — the one deliberate NACK |
 /// | DB error loading the job | 500 | `false` |
@@ -52,13 +52,23 @@ public final class ProcessingApi {
     /// `attemptNumber - 1`, clamped to the last rung.
     private static final int[] BACKOFF_LADDER_SECONDS = {5, 15, 30, 60, 120};
 
+    /// Request body size cap (Go's own guard on this endpoint) — the body is
+    /// always a tiny `{"messageId":"…"}`, so anything past a few hundred
+    /// bytes is already pathological; 4 KiB leaves generous headroom without
+    /// letting a caller make this handler buffer an arbitrarily large body.
+    static final int MAX_REQUEST_BODY_BYTES = 4 * 1024;
+
     private ProcessingApi() {
     }
 
-    /// The handler's dependencies. `credentials` defaults to
+    /// The handler's dependencies. `repo` is typed as [ProcessingRepository]
+    /// — the handful of methods this handler actually calls — rather than
+    /// the concrete `DispatchJobRepository`, so a test can inject a failure
+    /// at exactly one call without mocking the whole repository (audit
+    /// finding, test-gap). `credentials` defaults to
     /// [DeliveryCredentials#none] and `clock` to [Clock#systemUTC] — both
     /// overridable for tests.
-    public record State(DispatchJobRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery,
+    public record State(ProcessingRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery,
                          DeliveryCredentials credentials, Clock clock) {
         public State {
             Objects.requireNonNull(repo, "repo");
@@ -68,7 +78,7 @@ public final class ProcessingApi {
             Objects.requireNonNull(clock, "clock");
         }
 
-        public State(DispatchJobRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery) {
+        public State(ProcessingRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery) {
             this(repo, verifier, delivery, DeliveryCredentials.none(), Clock.systemUTC());
         }
     }
@@ -78,9 +88,21 @@ public final class ProcessingApi {
     }
 
     private static void serve(Context ctx, State s) {
+        // Reject on the declared Content-Length BEFORE buffering the body — same reasoning as
+        // SettledApi's cap (audit finding); `contentLength()` is -1 for a chunked body with no
+        // declared length, so the post-read check below still catches that case.
+        if (ctx.contentLength() > MAX_REQUEST_BODY_BYTES) {
+            ack(ctx, 400, true, "invalid messageId");
+            return;
+        }
+        byte[] requestBody = ctx.bodyAsBytes();
+        if (requestBody.length > MAX_REQUEST_BODY_BYTES) {
+            ack(ctx, 400, true, "invalid messageId");
+            return;
+        }
         ProcessRequest req;
         try {
-            req = Json.MAPPER.readValue(ctx.bodyAsBytes(), ProcessRequest.class);
+            req = Json.MAPPER.readValue(requestBody, ProcessRequest.class);
         } catch (JacksonException e) {
             ack(ctx, 400, true, "invalid messageId");
             return;

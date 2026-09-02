@@ -20,9 +20,9 @@ public final class CompleteDispatchJob {
     public static Operation<CompleteCommand, DispatchJobCompleted> of(DispatchJobRepository repo) {
         return Operation.<CompleteCommand, DispatchJobCompleted>named("CompleteDispatchJob")
                 .validate(cmd -> UseCaseException.requireNonBlank(cmd.id(), "ID_REQUIRED", "id is required"))
-                .authorize(Operation.Authorize.publicAccess()) // per-resource check is in StatusFlip.loadOwn
+                .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadOwn
                 .execute((cmd, ec) -> {
-                    DispatchJob j = StatusFlip.requireFailed(StatusFlip.loadOwn(repo, cmd.id())).complete();
+                    DispatchJob j = StatusFlip.requireFailed(Access.loadOwn(repo, cmd.id())).complete();
                     return Plan.save(j, repo, DispatchJobCompleted.of(ec, j));
                 });
     }

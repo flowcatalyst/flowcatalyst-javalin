@@ -16,8 +16,8 @@ import java.util.Objects;
 /// aggregate, so operations never assemble metadata or payload fields by
 /// hand; the `data()` records are the wire payloads, field names verbatim.
 ///
-/// Only the operator's requeue emits events — the infrastructure writers
-/// (ingest, scheduler, processing, projector) never do.
+/// Only the operator's requeue/cancel/complete emit events — the
+/// infrastructure writers (ingest, scheduler, processing, projector) never do.
 public final class DispatchJobEvents {
 
     public static final String SOURCE = "platform:admin";

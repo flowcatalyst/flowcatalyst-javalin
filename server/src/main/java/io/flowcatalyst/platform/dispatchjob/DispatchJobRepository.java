@@ -8,6 +8,7 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobAttemptsRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsReadRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsRecord;
+import io.flowcatalyst.platform.dispatchjob.processing.ProcessingRepository;
 import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -46,7 +47,7 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOB_ATTEMPTS;
 /// `isString()`, which are NOT equivalent (throws on non-string, `null` not
 /// `""` for JSON `null`) — kept deliberately, suppressed rather than migrated.
 @SuppressWarnings("deprecation")
-public final class DispatchJobRepository implements Persist<DispatchJob> {
+public final class DispatchJobRepository implements Persist<DispatchJob>, ProcessingRepository {
 
     private static final MsgDispatchJobs T = MSG_DISPATCH_JOBS;
     private static final MsgDispatchJobsRead R = MSG_DISPATCH_JOBS_READ;
@@ -278,15 +279,25 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
     // one statement). Every flip carries `created_at` alongside `id` so the
     // statement prunes to one partition, exactly as the Go queries do.
 
+    /// The terminal-failure statuses a `BLOCK_ON_ERROR` head holds its group
+    /// behind on — `FAILED`, plus the legacy `ERROR` alias
+    /// ([DispatchJobStatus] §1.1) — shared verbatim between [#groupHolding]
+    /// (the claim-time / delivery-time gate) and [#SWEEP_STRANDED_SIBLINGS_SQL]
+    /// (the reaper's backstop sweep, spec §7) so the two predicates cannot
+    /// silently drift apart: a sweep that recognised only `FAILED` would
+    /// permanently strand siblings behind a legacy `ERROR` head, since that
+    /// head still blocks at claim time.
+    private static final String[] HOLDING_STATUSES = {"FAILED", "ERROR"};
+
     /// `GroupHolding` (spec §9): the ONE status predicate shared by every
     /// enforcement point that decides whether a row holds the rest of its
-    /// group behind it — `FAILED`/legacy `ERROR`, OR `PENDING` with a
-    /// **future** `scheduled_for` (mid-retry-backoff; excluded from the
-    /// ordinary claim query by that same future timestamp, so a check that
-    /// only looked at terminal statuses would miss it). Deliberately excludes
-    /// `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
+    /// group behind it — `FAILED`/legacy `ERROR` ([#HOLDING_STATUSES]), OR
+    /// `PENDING` with a **future** `scheduled_for` (mid-retry-backoff;
+    /// excluded from the ordinary claim query by that same future timestamp,
+    /// so a check that only looked at terminal statuses would miss it).
+    /// Deliberately excludes `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
     private static Condition groupHolding(Field<String> status, Field<OffsetDateTime> scheduledFor) {
-        return status.in("FAILED", "ERROR")
+        return status.in(HOLDING_STATUSES)
                 .or(status.eq("PENDING").and(scheduledFor.isNotNull()).and(scheduledFor.gt(DSL.currentOffsetDateTime())));
     }
 
@@ -523,12 +534,15 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
     /// never matched. Idempotent — a row already reset no longer matches
     /// `status IN ('QUEUED','PROCESSING')`. Returns the ids reset.
     ///
-    /// Note the join deliberately checks only `h.status IN ('FAILED',
-    /// 'ERROR')`, not the full [#groupHolding] predicate — a head mid-backoff
-    /// (`PENDING` + future `scheduled_for`) self-resolves once that timer
-    /// fires and needs no reaper.
+    /// Note the join checks `h.status = ANY(?)`, bound to [#HOLDING_STATUSES]
+    /// — the same array [#groupHolding] builds its `IN` predicate from — not
+    /// a second, independently-typed `'FAILED', 'ERROR'` literal; the two
+    /// gates share one Java constant so they cannot drift (spec §7, §9). Not
+    /// the full [#groupHolding] predicate — a head mid-backoff (`PENDING` +
+    /// future `scheduled_for`) self-resolves once that timer fires and needs
+    /// no reaper.
     public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
-        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, utc(processingLiveBefore), reason)
+        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, HOLDING_STATUSES, utc(processingLiveBefore), reason)
                 .getValues(T.ID.getName(), String.class);
     }
 
@@ -538,7 +552,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                   FROM msg_dispatch_jobs s
                   JOIN msg_dispatch_jobs h
                     ON h.message_group = s.message_group
-                   AND h.status IN ('FAILED', 'ERROR')
+                   AND h.status = ANY(?)
                    AND (h.sequence, h.created_at, h.id) < (s.sequence, s.created_at, s.id)
                  WHERE s.mode = 'BLOCK_ON_ERROR'
                    AND s.message_group IS NOT NULL

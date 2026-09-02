@@ -62,11 +62,14 @@ public final class DispatchJobReaper implements AutoCloseable {
         });
     }
 
-    /// Starts the periodic sweep (first run immediate, then every
-    /// [#interval]). A failed sweep is logged and retried on the next tick —
-    /// it never kills the loop.
+    /// Starts the periodic sweep. The first run waits one full [#interval] —
+    /// the sweep is a backstop for a rare failure, not a hot path (spec §3),
+    /// so nothing depends on sweeping the instant the platform boots, and a
+    /// zero initial delay only meant every test that builds a `Platform` paid
+    /// for an immediate, useless sweep of the shared test database. A failed
+    /// sweep is logged and retried on the next tick — it never kills the loop.
     public DispatchJobReaper start() {
-        executor.scheduleWithFixedDelay(this::sweepSafely, 0, interval.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(this::sweepSafely, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
         return this;
     }
 
@@ -87,14 +90,19 @@ public final class DispatchJobReaper implements AutoCloseable {
         }
     }
 
-    /// Stops the periodic sweep. Not currently invoked from
-    /// `Server.Running#stop()` (that shutdown path has no hook for this
-    /// unit's background subsystems yet — see `Server.java`'s own
-    /// `TODO(port)` for the purger/scheduler/stream/outbox loops); the
-    /// executor's threads are daemon threads, so an un-stopped reaper does
-    /// not keep the JVM alive.
+    /// Stops the periodic sweep. Invoked from `Server.Running#stop()`, which
+    /// holds the instance `Platform#register` returns for exactly this
+    /// purpose — a leaked, un-stopped reaper otherwise sweeps the shared test
+    /// database on a background thread for the life of the JVM.
     @Override
     public void close() {
         executor.shutdownNow();
+    }
+
+    /// Whether [#close()] has run — the executor accepts no further tasks.
+    /// Test-only: a pinning assertion needs an observable "this loop is
+    /// actually gone," not the absence of a symptom.
+    public boolean isClosed() {
+        return executor.isShutdown();
     }
 }
