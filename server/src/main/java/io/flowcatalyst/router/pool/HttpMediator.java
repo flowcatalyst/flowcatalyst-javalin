@@ -86,7 +86,10 @@ public final class HttpMediator implements Mediator {
                     "invalid mediation target: " + message.mediationTarget());
         }
 
-        var breaker = breakers.get(message.mediationTarget());
+        // Resolved once: the registry keys by origin + path (R-12), and the
+        // warning on a state change names that same key.
+        var breakerKey = BreakerRegistry.keyFor(message.mediationTarget());
+        var breaker = breakers.get(breakerKey);
         if (breaker.allow() instanceof CircuitBreaker.Admission.Rejected rejected) {
             // No call was made, so there is nothing to record: the breaker
             // already knows what it thinks of this endpoint.
@@ -94,7 +97,7 @@ public final class HttpMediator implements Mediator {
         }
 
         var outcome = attempt(message, target.get());
-        recordOnBreaker(breaker, outcome, recordFailure, BreakerRegistry.keyFor(message.mediationTarget()));
+        recordOnBreaker(breaker, outcome, recordFailure, breakerKey);
         return outcome;
     }
 
