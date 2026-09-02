@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 /// the in-flight tracker, which decides whether an arriving copy is new, a
 /// redelivery, or a duplicate from elsewhere) and **pool resolution**
 /// (`docs/spec/router.md` §3.3).
-public final class RouterManager {
+public final class RouterManager implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(RouterManager.class);
 
@@ -331,6 +331,26 @@ public final class RouterManager {
     /// on a caller to have closed first is a precondition invisible from the
     /// call site — exactly the shape of the pool-lifecycle bug this codebase
     /// already shipped once. Cheaper to be self-sufficient.
+    /// Terminal: closes every pool this manager owns — routing and draining
+    /// alike — and every consumer, active or lingering. Only the process-exit
+    /// path calls this; a leadership loss uses [#forgetConsumers] and keeps
+    /// the pools, because leadership can come back.
+    ///
+    /// Without this, a pool's worker executor outlived the manager that
+    /// created it: every worker parked on a permit or in a backoff stayed
+    /// parked for the life of the JVM. Harmless at process exit, but a test
+    /// that builds a manager per case leaked a set of virtual threads per
+    /// case, and a router that could be started and stopped inside one JVM
+    /// (fcdev, tests) accumulated them.
+    @Override
+    public void close() {
+        forgetConsumers();
+        List.copyOf(pools.values()).forEach(Pool::close);
+        pools.clear();
+        List.copyOf(drainingPools.values()).forEach(Pool::close);
+        drainingPools.clear();
+    }
+
     public void forgetConsumers() {
         consumers.values().forEach(RouterManager::closeQuietly);
         consumers.clear();

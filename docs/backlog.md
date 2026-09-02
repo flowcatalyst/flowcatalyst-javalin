@@ -438,11 +438,12 @@ later decision.
   idle (4/4 green, also with 32 carriers); the throttle path was made one
   act (reserve → record → wait) and the assertion now prints the pool's
   counters on failure. If it fails again, the message says what stalled.
-- **Router tests leak parked virtual threads** — a thread dump after the
-  router package shows ~84 parked virtual threads (loops from tests that
-  start a `RouterServer`/`LifecycleLoops` without closing them). Harmless to
-  correctness, but every leaked loop is a background thread for the rest of
-  the JVM; worth a sweep with an `@AfterEach` close in the offenders.
+- ~~Router tests leak parked virtual threads~~ — root cause was the
+  terminal path: nothing closed a manager's pools, so every worker parked on
+  a permit outlived its test. `RouterManager.close()` and a terminal
+  `RouterServer.close()` (drain, hand back, then close pools) fixed it; a
+  thread dump after the router package now shows zero leaked virtual threads
+  (2026-09-02).
 - **`Message.dispatchMode` is a raw nullable component with an overriding
   accessor**, so `equals`/`hashCode` compare the raw value while every reader
   sees the normalised one. Documented in the record; a sealed

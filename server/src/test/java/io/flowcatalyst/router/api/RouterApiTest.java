@@ -89,6 +89,8 @@ class RouterApiTest {
     private static BreakerRegistry breakers;
     private static RouterManager manager;
     private static Pool poolA;
+    /// Started once for the class; closed with it, or its heartbeat outlives the run.
+    private static LeaderElection election;
     private static PoolMetricsCollector poolAMetrics;
     private static RecordingConsumer consumerQ1;
     private static BrokerStatsCache brokerStats;
@@ -112,7 +114,7 @@ class RouterApiTest {
 
         var electionConfig = new LeaderElection.Config(true, "fc:test:leader", "instance-a",
                 Duration.ofSeconds(30), Duration.ofSeconds(10));
-        var election = new LeaderElection(electionConfig, new AlwaysAcquireStore(), CLOCK);
+        election = new LeaderElection(electionConfig, new AlwaysAcquireStore(), CLOCK);
         election.start();
 
         brokerStats = new BrokerStatsCache(CLOCK);
@@ -138,6 +140,7 @@ class RouterApiTest {
         http.close();
         bare.close();
         poolA.close();
+        election.close();
     }
 
     private static JsonNode json(HttpResponse<String> r) {

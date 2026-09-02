@@ -383,11 +383,34 @@ public final class RouterServer implements AutoCloseable {
         manager.forgetConsumers();
     }
 
-    /// Stops the router for good.
+    /// Stops the router for good (R-49): stop intake, let what is in the air
+    /// finish within the drain budget, hand the rest back to the broker, and
+    /// then — unlike a leadership loss — close the pools and consumers, since
+    /// nothing will ever use them again.
     @Override
     public void close() {
-        loseLeadership();
+        shutDownSources();
         election.close();
+        manager.close();
+    }
+
+    /// The terminal counterpart of [#stopSources]: the same order, but the
+    /// pools are closed rather than merely emptied, because this process is
+    /// not coming back as leader.
+    private synchronized void shutDownSources() {
+        if (!running) {
+            return;
+        }
+        log.info("router stopping; draining in-flight work and closing pools");
+        running = false;
+        var consumers = manager.consumerNames().stream()
+                .map(manager::consumer)
+                .flatMap(Optional::stream)
+                .toList();
+        new RouterShutdown(tracker, drainTimeout, TRANSITION_TIMEOUT)
+                .shutdown(loops.values().stream().map(Loop::thread).toList(), consumers, manager.pools().values());
+        loops.clear();
+        manager.forgetConsumers();
     }
 
     /// The queues a fixed configuration describes, for a caller assembling a

@@ -52,6 +52,9 @@ class ConsumerLoopTest {
     private Pool poolB;
     private Thread loopThread;
 
+    /// Every manager a test built, so its synthesised pools are closed too.
+    private final List<RouterManager> managers = new CopyOnWriteArrayList<>();
+
     private RouterManager manager() {
         Mediator mediator = (message, recordFailure) -> {
             // Held open so a test can fill the pool: with instant delivery the
@@ -68,6 +71,7 @@ class ConsumerLoopTest {
                 config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
         manager.registerPool(RouterManager.DEFAULT_POOL, pool);
         manager.registerConsumer(consumer);
+        managers.add(manager);
         return manager;
     }
 
@@ -89,6 +93,7 @@ class ConsumerLoopTest {
         manager.registerPool("A", pool);
         manager.registerPool("B", poolB);
         manager.registerConsumer(consumer);
+        managers.add(manager);
         return manager;
     }
 
@@ -101,6 +106,7 @@ class ConsumerLoopTest {
             topUp.interrupt();
         }
         deliveryBlocked.set(false);
+        managers.forEach(RouterManager::close);
         if (pool != null) {
             pool.close();
         }

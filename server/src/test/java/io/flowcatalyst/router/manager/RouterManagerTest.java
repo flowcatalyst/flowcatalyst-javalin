@@ -65,6 +65,10 @@ class RouterManagerTest {
         // hand-back timeout for a mediator this test parked deliberately.
         created.forEach(recording -> recording.blocked().set(false));
         created.forEach(recording -> recording.pool().close());
+        // Pools the manager synthesised or was handed directly (registerPool)
+        // are its to close — a test that forgets one leaks its workers for
+        // the life of the JVM.
+        manager.close();
     }
 
     // ── Ownership ───────────────────────────────────────────────────────
