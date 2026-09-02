@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 /// [HttpConfigSource] against `docs/spec/router.md` §8.1. Every test binds a
 /// real [HttpServer] on loopback — no mocking library, and no network beyond
@@ -254,6 +255,36 @@ class HttpConfigSourceTest {
         assertThat(result.get().queues()).extracting(QueueConfig::queueUri)
                 .as("B's last-known-good pools still participate, not just A's fresh ones")
                 .containsExactlyInAnyOrder("postgres://a/db", "postgres://b/db");
+    }
+
+    @Test
+    @DisplayName("R-30: a stale last-known-good from the first-declared URL still wins a merge conflict over a fresh, later URL")
+    void staleLastKnownGoodKeepsDeclaredOrderPrecedence() {
+        // Both URLs define the SAME queue; A is declared first and later
+        // fails, B stays fresh. Precedence is a property of the configured
+        // order, not of freshness — otherwise a source outage would silently
+        // flip which definition of a shared queue is live.
+        var aIsFailing = new AtomicBoolean(false);
+        var a = startServer(exchange -> {
+            if (aIsFailing.get()) {
+                respondStatus(exchange, 500);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://shared/db", 1));
+            }
+        });
+        var b = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://shared/db", 99)));
+
+        var src = source(List.of(urlOf(a), urlOf(b)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
+        assertThat(src.fetch()).as("first fetch seeds A's cache").isPresent();
+
+        aIsFailing.set(true);
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(result.get().queues())
+                .as("one definition of the shared queue, and it is A's cached one")
+                .extracting(QueueConfig::queueUri, QueueConfig::visibilityTimeout)
+                .containsExactly(tuple("postgres://shared/db", 1));
     }
 
     @Test

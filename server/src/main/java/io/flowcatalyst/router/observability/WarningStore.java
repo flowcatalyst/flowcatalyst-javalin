@@ -1,6 +1,5 @@
 package io.flowcatalyst.router.observability;
 
-import io.flowcatalyst.router.observability.Warnings;
 
 import java.time.Clock;
 import java.time.Duration;
