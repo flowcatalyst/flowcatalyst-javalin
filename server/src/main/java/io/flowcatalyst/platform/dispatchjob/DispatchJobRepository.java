@@ -103,6 +103,26 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
         }
     }
 
+    /// One `PENDING` row claimed by [#claimPending] — the dispatch-seam
+    /// spec §3 claim query's own column list, carrying just what the
+    /// scheduler poller needs (paused-subscription filter, the
+    /// [#groupHeldBefore(String,int,Instant,String)] hold-back, and
+    /// [io.flowcatalyst.platform.scheduler.PoolCodeResolver] resolution) —
+    /// not the full [DispatchJob] entity, which the claim query never reads.
+    /// `mode` is already parsed here (spec §2 "`dispatchMode` resolution"
+    /// starts from the stored raw value); every other nullable component is
+    /// `null` exactly when the column is `NULL`.
+    public record ClaimRow(
+            String id,
+            String subscriptionId,
+            String messageGroup,
+            DispatchMode mode,
+            String dispatchPoolId,
+            String clientId,
+            Instant createdAt,
+            int sequence) {
+    }
+
     /// The closed set of projection columns a facet may be taken over (spec §3).
     public enum Facet {
         STATUS(R.STATUS),
@@ -284,6 +304,105 @@ public final class DispatchJobRepository implements Persist<DispatchJob> {
                 .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
                 .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
                         .lt(DSL.row(job.sequence(), utc(job.createdAt()), job.id()))));
+    }
+
+    /// Claim-time equivalent of [#groupHeldBefore(DispatchJob)] (spec §3
+    /// `filterByDispatchMode`/§9): the SAME [#groupHolding] predicate and the
+    /// SAME positional `(sequence, created_at, id)` comparison, called
+    /// against a [ClaimRow]'s own position rather than a hydrated
+    /// [DispatchJob] — the poller has only the claim query's columns at this
+    /// point, and hydrating a full entity just to reuse the other overload
+    /// would be a second query for no new information. `messageGroup == null`
+    /// can never be held, mirroring the other overload exactly (a `NULL`
+    /// group is excluded from the claim-time check the same way it is
+    /// excluded from delivery-time).
+    public boolean groupHeldBefore(String messageGroup, int sequence, Instant createdAt, String id) {
+        if (messageGroup == null) return false;
+        return dsl.fetchExists(dsl.selectOne().from(T)
+                .where(T.MESSAGE_GROUP.eq(messageGroup))
+                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
+                .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
+                        .lt(DSL.row(sequence, utc(createdAt), id))));
+    }
+
+    /// The scheduler's claim query (spec §3, step 2): `SELECT ... FOR UPDATE
+    /// SKIP LOCKED`, ordered `message_group ASC NULLS LAST, sequence,
+    /// created_at, id` so the order is TOTAL — the positional hold-back
+    /// above depends on it. `tx` MUST be the caller's own open transaction
+    /// (not auto-commit): the claim's row locks are only useful held across
+    /// the mark-QUEUED [#markQueued] that follows, in the same transaction,
+    /// released together at commit.
+    public List<ClaimRow> claimPending(DbTx tx, int batchSize) {
+        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        return txDsl.select(T.ID, T.SUBSCRIPTION_ID, T.MESSAGE_GROUP, T.MODE, T.DISPATCH_POOL_ID, T.CLIENT_ID,
+                        T.CREATED_AT, T.SEQUENCE)
+                .from(T)
+                .where(T.STATUS.eq(DispatchJobStatus.PENDING.name()))
+                .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
+                .orderBy(T.MESSAGE_GROUP.asc().nullsLast(), T.SEQUENCE.asc(), T.CREATED_AT.asc(), T.ID.asc())
+                .limit(batchSize)
+                .forUpdate()
+                .skipLocked()
+                .fetch(r -> new ClaimRow(
+                        r.get(T.ID),
+                        r.get(T.SUBSCRIPTION_ID),
+                        r.get(T.MESSAGE_GROUP),
+                        DispatchMode.parse(r.get(T.MODE)),
+                        r.get(T.DISPATCH_POOL_ID),
+                        r.get(T.CLIENT_ID),
+                        r.get(T.CREATED_AT).toInstant(),
+                        r.get(T.SEQUENCE) == null ? 0 : r.get(T.SEQUENCE)));
+    }
+
+    /// Marks the survivors of one poll tick `QUEUED` (spec §3, step 4), in
+    /// the SAME transaction as [#claimPending] — no status guard needed, the
+    /// rows are already locked and known `PENDING`. Bounded by the batch's
+    /// own `created_at` span so the `created_at`-partitioned table prunes to
+    /// the partitions the claimed rows actually span, exactly as
+    /// [#claimPending]'s lock did.
+    public void markQueued(DbTx tx, List<String> ids, Instant spanStart, Instant spanEnd) {
+        if (ids.isEmpty()) return;
+        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        txDsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.QUEUED.name())
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.in(ids))
+                .and(T.CREATED_AT.ge(utc(spanStart)))
+                .and(T.CREATED_AT.le(utc(spanEnd)))
+                .execute();
+    }
+
+    /// Publish failure recovery (spec §3, step 6): reverts a claimed batch
+    /// `QUEUED` → `PENDING` in one statement, guarded `status = 'QUEUED'` so
+    /// a row the processing endpoint already advanced past `QUEUED` (or that
+    /// a concurrent stale-recovery/settled/reaper sweep already reset) is
+    /// left untouched. Runs AFTER the claim transaction has committed (spec
+    /// §3, step 5) — auto-commit, like every other infra write in this file.
+    /// Returns the ids actually reverted.
+    public List<String> revertQueuedToPending(List<String> ids) {
+        if (ids.isEmpty()) return List.of();
+        return dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PENDING.name())
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.ID.in(ids))
+                .and(T.STATUS.eq(DispatchJobStatus.QUEUED.name()))
+                .returning(T.ID)
+                .fetch(T.ID);
+    }
+
+    /// [io.flowcatalyst.platform.scheduler.StaleQueuedJobPoller]'s sweep
+    /// (spec §3 timing table `StaleAfter`, §4): every row stuck `QUEUED`
+    /// with `updated_at` older than `olderThan` reverts to `PENDING` —
+    /// recovers a crash between mark-QUEUED and a successful publish, or a
+    /// broker drop. Returns the ids reverted.
+    public List<String> reclaimStaleQueued(Instant olderThan) {
+        return dsl.update(T)
+                .set(T.STATUS, DispatchJobStatus.PENDING.name())
+                .set(T.UPDATED_AT, utc(Instant.now()))
+                .where(T.STATUS.eq(DispatchJobStatus.QUEUED.name()))
+                .and(T.UPDATED_AT.lt(utc(olderThan)))
+                .returning(T.ID)
+                .fetch(T.ID);
     }
 
     /// First delivery attempt begins (spec §4): `QUEUED` → `PROCESSING`,

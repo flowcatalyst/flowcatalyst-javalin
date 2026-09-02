@@ -1,18 +1,32 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.scheduler.DispatchPublisher;
+import io.flowcatalyst.platform.scheduler.DispatchScheduler;
+import io.flowcatalyst.platform.scheduler.NoopPublisher;
+import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.router.queue.postgres.PostgresQueue;
+import io.flowcatalyst.router.standby.LeaderElection;
+import io.flowcatalyst.router.standby.RedisLockStore;
 import io.javalin.Javalin;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import redis.clients.jedis.DefaultJedisClientConfig;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.SslOptions;
+import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.providers.PooledConnectionProvider;
 
 import javax.sql.DataSource;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.BooleanSupplier;
 
 /// The single orchestrator fc-server and fcdev both call (Go `server.Run`):
 ///
@@ -101,12 +115,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final Javalin api;
         private final Metrics.Running metrics;
         private final Router router;
+        private final DispatchScheduler scheduler;
+        private final AutoCloseable schedulerLeaderResource;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
-        private Running(Javalin api, Metrics.Running metrics, Router router) {
+        private Running(Javalin api, Metrics.Running metrics, Router router,
+                         DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource) {
             this.api = api;
             this.metrics = metrics;
             this.router = router;
+            this.scheduler = scheduler;
+            this.schedulerLeaderResource = schedulerLeaderResource;
         }
 
         public int apiPort() {
@@ -130,7 +149,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 if (router != null) {
                     router.close();
                 }
-                // TODO(port): stop scheduler / stream / outbox / mcp and wait for them
+                if (scheduler != null) {
+                    scheduler.close();
+                }
+                if (schedulerLeaderResource != null) {
+                    try {
+                        schedulerLeaderResource.close();
+                    } catch (Exception e) {
+                        LOG.warn("closing the scheduler's leader election failed", e);
+                    }
+                }
+                // TODO(port): stop stream / outbox / mcp and wait for them
                 LOG.info("server stopped");
             } finally {
                 stopped.countDown();
@@ -144,21 +173,20 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
+        DataSource dbPool = mode instanceof Mode.Platform(var pool) ? pool
+                : mode instanceof Mode.Worker(var pool) ? pool : null;
+
         // The router is started BEFORE the listeners bind, so a readiness
         // probe never sees a server that is accepting traffic while its
         // router is still deciding whether it holds leadership.
-        Router router = env.routerEnabled()
-                ? Router.start(env, mode instanceof Mode.Platform(var pool) ? pool
-                        : mode instanceof Mode.Worker(var pool) ? pool : null, Clock.systemUTC())
-                : null;
+        Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
 
         Javalin api = buildApi(router);
 
         // ── background subsystems ───────────────────────────────────────────
-        // TODO(port): purger (platform), scheduler, scheduled-job scheduler, stream processor,
+        // TODO(port): purger (platform), scheduled-job scheduler, stream processor,
         //   outbox processor, router engine, MCP — each leader-gated as in subsystems.go.
         var toggles = List.of(
-                new Toggle("scheduler", env.schedulerEnabled()),
                 new Toggle("scheduled-job", env.scheduledJobEnabled()),
                 new Toggle("stream", env.streamEnabled()),
                 new Toggle("outbox", env.outboxEnabled()),
@@ -167,12 +195,107 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             if (toggle.enabled()) LOG.warn("{} subsystem not yet ported; toggle ignored", toggle.subsystem());
         }
 
+        DispatchScheduler scheduler = null;
+        AutoCloseable schedulerLeaderResource = null;
+        if (env.schedulerEnabled()) {
+            if (dbPool == null) {
+                LOG.warn("scheduler enabled but no database pool is available; ignoring FC_SCHEDULER_ENABLED");
+            } else {
+                var leaderGate = schedulerLeader(env);
+                scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
+                        schedulerPublisher(env, dbPool), leaderGate.isLeader());
+                if (scheduler == null) {
+                    // Fail-closed (no FLOWCATALYST_APP_KEY): DispatchScheduler.start already
+                    // logged the ERROR; release the leader election we just started for nothing.
+                    closeQuietly(leaderGate.resource());
+                } else {
+                    schedulerLeaderResource = leaderGate.resource();
+                }
+            }
+        }
+
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
         api.start(env.apiPort());
         LOG.info("api server listening addr=:{}", env.apiPort());
-        return new Running(api, metrics, router);
+        return new Running(api, metrics, router, scheduler, schedulerLeaderResource);
+    }
+
+    /// The scheduler's [DispatchPublisher]: the built-in Postgres broker —
+    /// the SAME queue [Router]'s default-broker consumer drains (`FC_DEFAULT_BROKER=postgres`
+    /// plus a usable database URL) — or a loud-WARN [NoopPublisher] otherwise
+    /// (dispatch-seam spec §11: "explicitly called out as unsafe for production").
+    private static DispatchPublisher schedulerPublisher(Env env, DataSource pool) {
+        if ("postgres".equals(env.defaultBroker()) && !env.databaseUrl().isBlank()) {
+            String queueName = defaultQueueUri(env);
+            PostgresQueue.initSchema(pool);
+            LOG.info("scheduler: dispatch jobs published to the built-in postgres broker queue={}", queueName);
+            return new PostgresQueuePublisher(pool, queueName);
+        }
+        LOG.warn("scheduler running with a NOOP publisher: dispatch jobs will be claimed but NOT delivered; "
+                + "set FC_DEFAULT_BROKER=postgres (with a database URL) or wire a real publisher "
+                + "before enabling FC_SCHEDULER_ENABLED in production");
+        return new NoopPublisher();
+    }
+
+    /// Mirrors [Router#defaultQueueUri] (private there): the scheduler MUST
+    /// publish into the exact queue name the default-broker router consumes
+    /// from, so this one-line derivation from `FC_DATABASE_URL` is
+    /// deliberately duplicated rather than exposed across a new dependency
+    /// edge between the two composition roots.
+    private static String defaultQueueUri(Env env) {
+        return env.databaseUrl().replaceFirst("^postgresql://", "postgres://");
+    }
+
+    /// `isLeader`: `() -> true` when standby is disabled. `resource`: what
+    /// [#start] must close on shutdown — a no-op when standby is disabled,
+    /// the Redis client + [LeaderElection] otherwise.
+    private record SchedulerLeaderGate(BooleanSupplier isLeader, AutoCloseable resource) {
+    }
+
+    /// Mirrors Go's `newLeaderGate(ctx, cfg, "scheduler")`
+    /// (`internal/server/subsystems.go:152-186`): a dedicated Redis election
+    /// on a scheduler-suffixed lock key, independent of the router's own
+    /// election — a router leader and a scheduler leader may be different
+    /// instances (dispatch-seam spec §12; Go builds a fresh `standby.New`
+    /// per subsystem the same way, never sharing one election object across
+    /// subsystems even when they share a Redis server).
+    private static SchedulerLeaderGate schedulerLeader(Env env) {
+        if (!env.standbyEnabled()) {
+            return new SchedulerLeaderGate(() -> true, () -> { });
+        }
+        UnifiedJedis client = redisForScheduler(env);
+        var config = LeaderElection.Config.of(env.standbyLockKey() + ":scheduler");
+        var election = new LeaderElection(config, new RedisLockStore(client), Clock.systemUTC());
+        election.start();
+        AutoCloseable resource = () -> {
+            election.close();
+            client.close();
+        };
+        return new SchedulerLeaderGate(election::isLeader, resource);
+    }
+
+    /// A trimmed copy of [Router]'s own `redisFor`: the scheduler's election
+    /// needs its own connection (never the router's — see [#schedulerLeader]),
+    /// and `Router` exposes no accessor for its internal Redis client.
+    @SuppressWarnings("deprecation")
+    private static UnifiedJedis redisForScheduler(Env env) {
+        var uri = URI.create(env.standbyRedisUrl());
+        int port = uri.getPort() > 0 ? uri.getPort() : 6379;
+        var config = DefaultJedisClientConfig.builder()
+                .sslOptions("rediss".equalsIgnoreCase(uri.getScheme()) ? SslOptions.builder().build() : null)
+                .build();
+        var provider = new PooledConnectionProvider(new HostAndPort(uri.getHost(), port), config);
+        return new UnifiedJedis(provider, 3, Duration.ofSeconds(3));
+    }
+
+    private static void closeQuietly(AutoCloseable resource) {
+        try {
+            resource.close();
+        } catch (Exception e) {
+            LOG.warn("closing an unused scheduler leader election failed", e);
+        }
     }
 
     /// The fully wired (not yet started) API app — exposed so the contract
