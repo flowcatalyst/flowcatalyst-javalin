@@ -668,9 +668,13 @@ public final class Pool implements AutoCloseable {
             mediating.remove(worker);
         }
         var took = Duration.between(startedAt, clock.instant());
-        var attempt = resolve(message, outcome, took);
+        // Committed BEFORE the broker action: the event describes the
+        // attempt and its outcome, both known now, and anything watching
+        // the broker (a test awaiting the ack, an operator correlating a
+        // recording with a queue) must find the attempt already recorded
+        // once the ack is visible — the other order raced exactly that.
         dispatched(event, message, outcome);
-        return attempt;
+        return resolve(message, outcome, took);
     }
 
     /// The pool's own delivery metric — distinct from [PoolMetrics], which is
