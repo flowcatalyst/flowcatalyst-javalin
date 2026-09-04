@@ -3,8 +3,9 @@
 # Production image for the unified fc-server jar — the Java counterpart of
 # ../flowcatalyst-go/Dockerfile. Multi-stage:
 #   1. build the executable fc-server jar (the Vue SPA and the SQL migrations
-#      are classpath resources, so the runtime image needs ONLY the jar)
-#   2. minimal JRE runtime with a working HEALTHCHECK
+#      are classpath resources, so the runtime image needs ONLY the jar) and a
+#      jlink runtime holding just the JDK modules the jar needs
+#   2. bare Alpine + that runtime + the jar, with a working HEALTHCHECK
 #
 # Build:  docker build -t flowcatalyst-java .
 # Run:    docker run -p 8080:8080 -e FC_DATABASE_URL=... -e FC_PLATFORM_ENABLED=true flowcatalyst-java
@@ -14,7 +15,7 @@
 # which FC_*_ENABLED you pass (FC_PLATFORM_ENABLED=false for a router-only
 # instance, which then needs no database).
 
-# ── Stage 1 — fc-server jar ────────────────────────────────────────────────
+# ── Stage 1 — fc-server jar + jlink runtime ────────────────────────────────
 FROM maven:3.9-eclipse-temurin-25-alpine AS build
 WORKDIR /src
 # Dependency layer cached independently of source.
@@ -26,17 +27,31 @@ COPY fcdev/pom.xml fcdev/
 RUN mvn -q -B -pl server -am dependency:go-offline || true
 COPY . .
 RUN mvn -q -B -DskipTests -pl server -am package \
- && cp server/target/flowcatalyst-server-*-exec.jar /out-fc-server.jar
+ && cp server/target/flowcatalyst-server-*-exec.jar /fc-server.jar
+# jlink: the modules jdeps finds in the jar, plus the ones reached only by
+# reflection (TLS EC curves, Unsafe users, JNDI in Hikari/logback, JMX, zipfs).
+# --strip-debug/--compress halve the modules image; no JIT is removed — this is
+# still HotSpot with full peak performance, just without unused modules.
+RUN MODS=$(jdeps --ignore-missing-deps --multi-release 25 --print-module-deps /fc-server.jar) \
+ && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.management,jdk.zipfs" \
+          --strip-debug --no-header-files --no-man-pages --compress zip-6 \
+          --output /jre \
+ && /jre/bin/java -version
 
 # ── Stage 2 — runtime ──────────────────────────────────────────────────────
-# Alpine (not distroless) so the image carries wget for a self-contained
-# HEALTHCHECK. ca-certificates for outbound TLS (SQS/Secrets Manager/webhooks).
-FROM eclipse-temurin:25-jre-alpine AS runtime
+# Bare Alpine (not a JRE image): the jlink runtime above is the JRE. wget for
+# a self-contained HEALTHCHECK; ca-certificates for outbound TLS (SQS/Secrets
+# Manager/webhooks). The Temurin alpine JDK is musl-built, so its jlink output
+# runs here unchanged.
+FROM alpine:3.22 AS runtime
 RUN apk add --no-cache ca-certificates wget \
  && adduser -D -u 10001 flowcatalyst
+COPY --from=build /jre /opt/jre
+COPY --from=build /fc-server.jar /usr/local/lib/fc-server.jar
 USER flowcatalyst
-COPY --from=build /out-fc-server.jar /usr/local/lib/fc-server.jar
-ENV FC_API_PORT=8080
+ENV FC_API_PORT=8080 \
+    JAVA_HOME=/opt/jre \
+    PATH=/opt/jre/bin:$PATH
 # 8080 = API (+ embedded SPA), 9090 = Prometheus metrics.
 EXPOSE 8080 9090
 # GET (not --spider/HEAD): the /health route is GET-only, so a HEAD probe 405s.

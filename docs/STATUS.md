@@ -20,6 +20,12 @@ owner does not want to register with JBang yet).
   `fcdev`'s own shade is unchanged. `Dockerfile` + `.dockerignore` mirror the
   Go image: Temurin 25 JRE on Alpine, uid 10001, ports 8080/9090, the same
   `wget /health` check. README has a "Run" section.
+  **2026-09-05: the image ships a jlink runtime, not a stock JRE** — jdeps
+  picks the 13 modules the jar needs, jlink adds the reflection-only ones
+  (EC crypto, Unsafe users, JNDI, JMX, zipfs), stripped and compressed, on
+  bare Alpine. Image **121 MB** (the `eclipse-temurin:25-jre-alpine` base
+  alone is 225 MB); verified router-only in the container: health, router
+  health, healthcheck, uid 10001. Still HotSpot with the full JIT.
 - **Defect fixed (Java-only):** `Router.configSource` synthesised the Postgres
   broker queue whenever `FLOWCATALYST_CONFIG_URL` was blank, ignoring
   `FC_DEFAULT_BROKER`. Go (`server/run.go:346`) and spec §8.4 only do so when
@@ -110,85 +116,6 @@ per-platform Postgres archives, of which any machine uses one. The Go fcdev
 Maven Central on first run and caches it. Zonky's `PgBinaryResolver` hook
 makes the same change ~100 lines here and would put fcdev near 50 MB.
 Not done; owner's call.
-
-## fc-server packaging and the default-broker gate (2026-09-04)
-
-The owner restated the two deliverables, the same split as the Go repo:
-**`fcdev`** is the developer monolith (fc-server + embedded Postgres + the
-built-in Postgres broker + `start|stop|fresh|db upgrade`); **`fc-server`** is
-the production server with every subsystem behind `FC_*_ENABLED` and **no
-bundled broker** unless `FC_DEFAULT_BROKER=postgres`. Neither is a native
-binary: both are executable jars, and JBang is optional for `fcdev` (the
-owner does not want to register with JBang yet).
-
-- `server/pom.xml` now shades an attached `flowcatalyst-server-<v>-exec.jar`
-  (main class `io.flowcatalyst.server.Main`, `Implementation-Version` stamped
-  so `/health` reports the build). The thin jar stays the main artifact, so
-  `fcdev`'s own shade is unchanged. `Dockerfile` + `.dockerignore` mirror the
-  Go image: Temurin 25 JRE on Alpine, uid 10001, ports 8080/9090, the same
-  `wget /health` check. README has a "Run" section.
-- **Defect fixed (Java-only):** `Router.configSource` synthesised the Postgres
-  broker queue whenever `FLOWCATALYST_CONFIG_URL` was blank, ignoring
-  `FC_DEFAULT_BROKER`. Go (`server/run.go:346`) and spec §8.4 only do so when
-  the broker is `postgres`; otherwise "no pools will start". A production
-  router with neither would have built a queue from the database URL. Now
-  gated; the default path also runs `PostgresQueue.initSchema` when a data
-  source exists (Go does this in the router bootstrap, Java only did it in the
-  scheduler publisher), and a blank database URL falls back to Go's
-  `postgresql://postgres@localhost:5432/flowcatalyst`.
-  `RouterConfigSourceTest` pins all five branches; removing the gate fails
-  two of them (mutation-checked).
-- Smoke-verified from the jar: `FC_PLATFORM_ENABLED=false FC_ROUTER_ENABLED=true`
-  starts with no database, `/ready` shows only the router, `/router/health`
-  is HEALTHY, log says "no pools will start".
-- Still open for a router-only default-broker instance: `QueueFactory` needs
-  a `DataSource`, but `Main` only opens one for database-backed subsystems,
-  so `FC_DEFAULT_BROKER=postgres` on a router-only fc-server logs "needs
-  postgres but no database is configured" and starts nothing. Go opens its
-  own pgxpool from the URL. Owner question, not fixed here.
-
-## GraalVM native-image trial (2026-09-04) — it works
-
-Owner asked "just to see if it would work". It does: `server/target/fc-server`
-is a 183 MB arm64 Mach-O built in ~1m25s by `mvn -DskipTests -pl server -am
--Pnative package` under `mise install java@oracle-graalvm-25.0.4.1` (the
-project default JDK stays Temurin; the profile is opt-in). Verified with the
-binary, not the jar: router-only with no database; platform + router +
-default broker against a migrated database; and against an **empty**
-database, which Flyway migrated and the seeder populated. Every surface
-answered — `/health` with the stamped version, `/ready`, `/router/health`,
-the `/api/*` list routes, an event-type create (201), the embedded SPA,
-`/openapi.json`, `/metrics`. Router-only RSS 50 MB vs 181 MB for the same
-jar; both reach `/health` in under a second.
-
-Four build iterations, each fixing one thing:
-
-1. Jackson could not see record components → `tools/native-reflect-config.sh`
-   registers every `io.flowcatalyst` class (ours, so the cost is only size).
-2. jOOQ `SQLDataType.<clinit>` NPE: `Class.getArrayType()` returns null in an
-   image for unregistered array classes → third-party metadata captured with
-   the tracing agent into `server/native-config/` (README there says how to
-   re-capture; merge after any new "not registered" error).
-3. `/health` said `dev`: no jar manifest in an image → `-Dfc.version` plus
-   `--initialize-at-build-time=io.flowcatalyst.server.Version`.
-4. **Flyway found no migrations** ("unsupported protocol: resource") — on a
-   migrated database that was only a warning; on a fresh one the seeder
-   crashed into an empty schema. Fixed in production code, gated to images:
-   `IndexedMigrations` is a Flyway `ResourceProvider` over the committed
-   `db/migration.index`; `Migrator` installs it only when
-   `org.graalvm.nativeimage.imagecode` is set, so the JVM keeps scanning.
-   `IndexedMigrationsTest` pins index == directory listing **and** that an
-   indexed Flyway migrates a fresh database; an emptied index fails all
-   three (mutation-checked). **Adding a migration now needs an index line**
-   — the test tells you.
-
-Not done, deliberately: no native tests run in the image (the JVM suite is
-the authority), no Linux/Docker native stage (the Dockerfile ships the jar),
-no PGO/`-O3`, and the agent metadata covers only the routes exercised above
-— an unexercised reflective path (MCP, SQS, NATS, outbox, the auth surface
-once ported) will surface as a runtime "not registered" error, not at build
-time. The metadata repository has no entries for jOOQ, Flyway or Javalin, so
-that agent capture is load-bearing.
 
 ## Router completion drive (2026-09-02)
 
@@ -606,138 +533,16 @@ application code. Ported and recorded in `docs/spec/sdksync.md` §6:
   Go, and that an *unknown* mode is logged rather than folded into the
   default.
 
-## Next wave (in order)
+## Next wave
 
-### 1. Router / data plane — the current focus
-
-**Gate: `docs/spec/router.md` §0 must be cleared before any router Java.**
-The spec was extracted at Go `1e9d465`; three commits landed after it, all
-inside the subsystem, and §2/§3/§6/§7 are stale in the ways §0's table
-lists. §6 is the **wire contract** (the `flushGroup` mediation-response
-field), so implementing against the stale text would be actively wrong, not
-merely incomplete. The target is now stable — no router work is in flight —
-so this is a bounded, one-time re-extraction.
-
-Order of work:
-
-1. **Re-extract the drifted sections** (CONVENTIONS §8 step 1 — behaviour and
-   tables, never code) against Go `eff2a29`:
-   - §6.5 status → outcome table gains the `flushGroup` column; the
-     mediation-response parser and the golden vectors move with it.
-   - §2 gains `GroupFlushRegistry` and the group-flush state machine;
-     `common.Message.GroupID` now backs all group derivation.
-   - §3 gains the pre-rate-limit flush check (a flushed group spends neither
-     token nor slot).
-   - §2.6 / §13 Q1: per-mode blocking is now *implemented upstream*, so it is
-     settled behaviour, not an open question.
-   - §7 / `docs/spec/dispatchjob.md` §10: delivery-time blocked-group
-     hold-back (ACK + revert to `PENDING`, no attempt recorded, no retry
-     budget spent; DB error NACKs instead).
-2. **Owner rulings on the router questions.** 47 of 50 are open. Most are
-   "keep or change?" where *keep* is the safe default and the spec's standing
-   rule already applies ("until ruled on, the behaviour is kept"), so they do
-   **not** all gate code. The ones that do, because they change structure or
-   allege a defect, are: **Q27** (suspected startup defect, default-broker
-   `Reconfigure`), **Q43** (suspected auth defect, BasicAuth public-path
-   bypass under a path prefix), **Q16** (scheduler publishes without
-   `dispatchMode`/`poolCode`), **Q13** (ordered messages with no group id
-   share one global group), **Q35** (half-applied reconfigure). Surface these
-   before the units that touch them, not all at once.
-3. **Implement**, as if Go never existed, against the §8 idiom checklist —
-   sealed message taxonomies with exhaustive switch, topology restructured
-   (multiplex at producers, one queue per stage) rather than translated,
-   cancellation by interruption rather than a ported `ctx`,
-   `StructuredTaskScope` with completion policies rather than
-   `CompletableFuture` chains, panic-recovery blocks deleted but their retry
-   policies preserved as **named policy objects**, expected outcomes as
-   sealed result types vs exceptional as exceptions, JFR events at semantic
-   points. `--enable-preview` on `server` when `StructuredTaskScope` lands,
-   kept localised.
-
-   Suggested unit order, lowest dependency first:
-   - **wire contract**: `Message` model + `DispatchMode` + HMAC signing +
-     the mediation-response parser (incl. `flushGroup`, `ack:false`
-     precedence). Pure, golden-vector testable, and it is the contract
-     everything else is written against.
-   - **policy objects**: rate limiter, per-endpoint circuit breaker,
-     `GroupFlushRegistry`, the single named retry policy from Q3.
-   - **pool / worker topology** and the ordered-group machinery (Q1's two
-     modes and the review → re-queue flow).
-   - **queue backends**: SQS, Postgres, NATS behind one sealed contract.
-   - **loops**: stream processor, outbox processor, dispatch scheduler,
-     scheduled-job scheduler.
-   - **surrounds**: standby/Redis leadership, ALB, config sync, observability
-     (`/monitoring`, warnings, Prometheus), shutdown sequence, purger.
-4. **Conformance**: the golden vectors and the edge cases mined in §12 are
-   the seed suite. Q1's two modes and the ignore/completed/resend → re-queue
-   flow must be pinned by tests — that is a deliberate deviation from Go.
-
-Blocking dependency to note: the router Q1 ruling needs the dispatchjob
-*ignore* / *completed* routes, which require a **lockfile addition** (owner).
-
-### 2. Platform work — deferred, not cancelled
-
-Nothing here is blocked; it was overtaken by the router. Resume in this
-order:
-
-1. ~~**Audit `principal` and add `PrincipalApiTest`**~~ **DONE 2026-08-26/27.**
-   12 API tests, four security mutants killed (by-id client check, self-read
-   exemption, `DELETE` gate, and the post-load tenant check on the ungated
-   mutations). Checklist pass clean: no `-Xlint` warnings, no `""` sentinels,
-   every `Optional` a return type, all 29 routes in `Auth.scoped`, one
-   `DSLContext`. The oversized handlers are §7 compositions by design, not
-   drift.
-
-   Two findings worth carrying: **Java is structurally immune** to Go's
-   `de868dd` because all three single-row lookups share one
-   `findOne(Condition)` that hydrates every junction — promoted to
-   CONVENTIONS as a rule. And **§11 Q3 is about ordering only**: those
-   mutations have no coarse gate and leak existence, but
-   `Access.requireUserAdmin` does enforce the target's home client post-load,
-   now asserted rather than assumed. Smell recorded (`backlog.md`):
-   `PrincipalApi` is 1051 lines over 29 routes, the same shape `RouterApi`
-   had before its split.
-2. ~~**Finish `sdksync`**~~ **DONE 2026-08-26.** All ten routes, not the nine
-   the spec expected — `SyncPrincipals` was already ported, so the principals
-   route was built with the rest and `State` gained its repository.
-   `openapispecs` reaches the router here too. Coverage 180 → 190.
-   Raised for a ruling (`backlog.md`): `archiveUnlisted` on the scheduled-job
-   sync sweeps the whole `clientId` scope, ignoring the application the route
-   is mounted under, so two applications sharing a client can archive each
-   other's jobs. Go does the same; it bit the Java test immediately, which
-   archived 20 of other tests' jobs before being scoped.
-3. Remaining aggregates, three at a time: `serviceaccount` (14 ops),
-   `anchor-domains` (4), `auth-configs` (4), `idp-role-mappings` (3); then
-   the SDK ingest batch endpoints (`/api/events`, `/api/events/batch`,
-   `/api/dispatch-jobs/batch`, `/api/audit-logs/batch`) and the BFF
-   dashboards / `me` / `clientselection` (outside the lockfile).
-4. **Auth** — `auth-core.md` Q1–Q15 are ruled (table above); **Q16–Q29**
-   and all of `auth-identity.md` are not. `oauth-clients` (10 ops),
-   `portal-users` (5), `webauthn` (6), `reset-approvals` (3) belong here.
-   The Go-side fixes in `oauthapi-fixes.md` should land before the port
-   reproduces the corrected behaviour.
-5. Cross-cutting: CORS filter from the allowlist (owner ruled: implement),
-   pagination standard (wire change — owner), DB-backed `ClaimsResolver`,
-   Secrets Manager DB mode, JFR events, fcdev stubs
-   (`init`/`mcp`/`outbox`/`upgrade`).
-6. Drop-in verification: side-by-side replay harness against the Go binary,
-   frontend end-to-end through every BFF/auth route, cutover + rollback
-   rehearsal on a Go-created database.
-
-**Standing rule:** re-check `git log` in `../flowcatalyst-go` before starting
-any *platform* unit — that side is still moving.
-
-**The router is NOT stable any more** (checked 2026-08-26): six commits
-landed that day, several substantial — `2468140` *router: own the consumers,
-bound the retries, tell the truth about outcomes* (which adds a 470-line
-`mediation_conformance_test.go` and a `mediator_truthfulness_test.go`, so it
-looks like our `router-fixes.md` fixes plus the conformance corpus landing on
-the Go side), `89b195e` *platform: an unspecified dispatch mode means
-NEXT_ON_ERROR* (Go adopting our ruling), and `20e9fe7` *queue: key a message
-by its identity, not by its delivery*. **Unverified beyond the commit stats.**
-If that reading holds, several open items in `router-fixes.md` and rows in the
-standing-divergence table can be closed, and Go-runner Phases 1–2 may already
-be done. Worth a session of its own before any further router work.
+**Superseded 2026-09-05 by [`docs/port-plan.md`](port-plan.md)** — the router
+half of the old plan is done (drive closed 2026-09-02); the platform half is
+re-sequenced there with the Sonnet/orchestrator split. Short form: Phase 0
+housekeeping (auth ruling `3b64775`, the PoolTest flake, fcdev download-on-
+first-run) → Phase 1 remaining aggregates + SDK batch + BFF → Phase 2 stream,
+outbox, scheduled-job scheduler, purger, MCP, Secrets Manager → Phase 3 auth
+(gated on rulings, surfaced in three batches) → Phase 4 cross-cutting →
+Phase 5 drop-in verification and CI.
 
 ## Owner rulings taken 2026-08-25
 
