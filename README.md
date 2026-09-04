@@ -23,6 +23,31 @@ mvn -pl server -Pjooq-codegen process-test-classes   # regenerate jOOQ code afte
 tools/jooq-verify.sh                # CI drift check for the generated code
 ```
 
+## Run
+
+Two deliverables come out of the same tree, the same split as the Go repo:
+
+| | What | How |
+|---|---|---|
+| `fc-server` | The production server. The platform API is on by default; every other subsystem is **off** until its `FC_*_ENABLED` is set, and the router only runs the built-in Postgres broker when `FC_DEFAULT_BROKER=postgres`; otherwise it takes its queues from `FLOWCATALYST_CONFIG_URL`. | `mvn -q -DskipTests -pl server -am package` → `java --enable-preview -jar server/target/flowcatalyst-server-0.0.1-SNAPSHOT-exec.jar` |
+| `fcdev` | The developer monolith: fc-server plus embedded Postgres, dev defaults, and the `start\|stop\|fresh\|db upgrade` lifecycle. See [`docs/fcdev.md`](docs/fcdev.md). | `mvn -q -DskipTests package` → `java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar start` |
+
+Both are plain executable jars; JBang is optional for `fcdev`. The
+[`Dockerfile`](Dockerfile) builds the fc-server image (same ports and health
+check as the Go one).
+
+fc-server can also be a native binary (GraalVM, opt-in profile, see
+`docs/STATUS.md` for what it took):
+
+```sh
+mise install java@oracle-graalvm-25.0.4.1
+JAVA_HOME=$(mise where java@oracle-graalvm-25.0.4.1) mvn -q -DskipTests -pl server -am -Pnative package
+server/target/fc-server
+```
+
+A new SQL migration must also be listed in `server/src/main/resources/db/migration.index`;
+`IndexedMigrationsTest` fails until it is.
+
 ## Docs
 
 - [`docs/usecase-envelope.md`](docs/usecase-envelope.md) — the intent of the use-case / audit machinery and the Go → Java mapping, with a worked example.
