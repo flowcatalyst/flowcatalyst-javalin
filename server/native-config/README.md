@@ -11,7 +11,8 @@ surface, every `/api/*` list route and one event-type create:
       -jar server/target/flowcatalyst-server-0.0.1-SNAPSHOT-exec.jar
 
 It covers the third-party reflection the image needs (jOOQ data-type array
-classes, Jackson, the Postgres driver, Jetty). Our own classes are registered
-wholesale by `tools/native-reflect-config.sh` at build time, so this file only
-has to track library behaviour. Re-capture (merge) after exercising any code
+classes, Jackson, the Postgres driver, Jetty). Our own classes are registered by
+`io.flowcatalyst.tools.NativeReflectConfig` at build time (records, enums,
+Jackson-annotated DTOs, jOOQ record types), so this file only has to track
+library behaviour. Re-capture (merge) after exercising any code
 path that fails in the image with a "not registered" error.

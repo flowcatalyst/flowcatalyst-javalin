@@ -97,10 +97,26 @@
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sqs</artifactId>
+      <exclusions>
+        <!-- Only the sync clients are used (apache5-client); the async Netty client and
+             its 3 MB of Netty were dead weight in both the jar and the native image. -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>elasticloadbalancingv2</artifactId>
+      <exclusions>
+        <!-- Only the sync clients are used (apache5-client); the async Netty client and
+             its 3 MB of Netty were dead weight in both the jar and the native image. -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>io.nats</groupId>
@@ -237,7 +253,8 @@
       <id>native</id>
       <build>
         <plugins>
-          <!-- Register every io.flowcatalyst class for reflection (Jackson, jOOQ). -->
+          <!-- Reflection config for our own classes: records, enums, Jackson-annotated
+               DTOs and jOOQ record types only (io.flowcatalyst.tools.NativeReflectConfig). -->
           <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>exec-maven-plugin</artifactId>
@@ -246,10 +263,11 @@
                 <id>native-reflect-config</id>
                 <phase>prepare-package</phase>
                 <goals>
-                  <goal>exec</goal>
+                  <goal>java</goal>
                 </goals>
                 <configuration>
-                  <executable>${project.basedir}/../tools/native-reflect-config.sh</executable>
+                  <mainClass>io.flowcatalyst.tools.NativeReflectConfig</mainClass>
+                  <classpathScope>test</classpathScope>
                   <arguments>
                     <argument>${project.build.directory}/native-reflect-config.json</argument>
                     <argument>${project.build.outputDirectory}</argument>
@@ -283,7 +301,11 @@
                 <buildArg>--no-fallback</buildArg>
                 <buildArg>--enable-preview</buildArg>
                 <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
-                <buildArg>-H:IncludeResources=(db|frontend|openapi|docs|router|io)/.*</buildArg>
+                <!-- Exactly our runtime resources. An earlier `io/.*` here also swept every
+                     .class under io/netty, io/prometheus, io/nats and io/flowcatalyst into the
+                     image heap as bytes: 24 MB of bytecode the binary already contained as code. -->
+                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt</buildArg>
+                <buildArg>-Os</buildArg>
                 <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
                 <!-- Third-party reachability captured with the tracing agent (see native-config/README). -->
                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/native-config</buildArg>

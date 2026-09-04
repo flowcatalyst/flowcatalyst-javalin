@@ -40,6 +40,113 @@ owner does not want to register with JBang yet).
   postgres but no database is configured" and starts nothing. Go opens its
   own pgxpool from the URL. Owner question, not fixed here.
 
+## GraalVM native-image trial (2026-09-04/05) — it works, 89 MB
+
+Owner asked "just to see if it would work". It does: `server/target/fc-server`
+is an **89 MB** arm64 Mach-O built in ~56 s by `mvn -DskipTests -pl server -am
+-Pnative package` under `mise install java@oracle-graalvm-25.0.4.1` (the
+project default JDK stays Temurin; the profile is opt-in). Verified with the
+binary, not the jar: router-only with no database; platform + router +
+default broker against a migrated database; and against an **empty**
+database, which Flyway migrated and the seeder populated. Every surface
+answered — `/health` with the stamped version, `/ready`, `/router/health`,
+the `/api/*` list routes, an event-type create (201), the embedded SPA,
+`/openapi.json`, `/docs`, `/metrics`. RSS: 46 MB router-only, ~105 MB full
+platform; the same jar is 181 MB router-only.
+
+**The first working image was 183 MB.** The build report (`--emit
+build-report`) and analysis call tree found three causes, all self-inflicted:
+
+1. `-H:IncludeResources=(…|io)/.*` swept **every `.class` file under `io/`**
+   (netty, prometheus, nats, javalin, ours) into the image heap as bytes —
+   24 MB of bytecode the image already contained as code. The pattern now
+   names exactly our runtime resources (9 MB, mostly the SPA).
+2. The blanket reflection config made **15,000 of our methods entry points**
+   (every jOOQ generated method included), defeating dead-code elimination
+   and, via `org.jooq.tools.reflect.Compile`, pulling `jdk.compiler` in.
+   `io.flowcatalyst.tools.NativeReflectConfig` (test scope, uses the JDK
+   class-file API) now registers only records, enums, Jackson-annotated
+   classes and jOOQ record types: 906 entries instead of 1,399, and far
+   narrower ones.
+3. `netty-nio-client` came with the AWS SQS/ELBv2 artifacts as a runtime
+   dependency though only the sync clients (apache5) are used. Excluded in
+   `server/pom.xml`; the jar lost ~3 MB too. `-Os` added.
+
+Residual: `jdk.compiler` is still reachable (3.5 MB) because jOOQ's SQL
+parser (`DefaultParseContext.parseDataTypeEnum` → `Reflect.compile` →
+`ToolProvider.getSystemJavaCompiler`) is reachable from jOOQ-internal paths
+(`Convert$ConvertAll.from`, `TableImpl.accept`, `MetaImpl`), not from our
+code. Cutting it needs a GraalVM substitution and an SDK dependency in the
+production module; not worth 3.5 MB.
+
+Four earlier build iterations each fixed one thing: Jackson could not see
+record components (reflection config); jOOQ `SQLDataType.<clinit>` NPE on
+unregistered array classes (agent-captured metadata in
+`server/native-config/`, README there says how to re-capture); `/health`
+said `dev` (`-Dfc.version` + `--initialize-at-build-time` for `Version`);
+and **Flyway found no migrations** in an image ("unsupported protocol:
+resource") — fixed in production code, gated to images: `IndexedMigrations`
+is a Flyway `ResourceProvider` over the committed `db/migration.index`,
+installed by `Migrator` only when `org.graalvm.nativeimage.imagecode` is
+set. `IndexedMigrationsTest` pins index == directory listing **and** that an
+indexed Flyway migrates a fresh database; an emptied index fails all three.
+**Adding a migration now needs an index line** — the test tells you.
+
+Not done, deliberately: no native tests run in the image (the JVM suite is
+the authority), no Linux/Docker native stage (the Dockerfile ships the jar),
+no PGO, and the agent metadata covers only the routes exercised above — an
+unexercised reflective path (MCP, SQS, NATS, outbox, the auth surface once
+ported) surfaces as a runtime "not registered" error, not at build time.
+
+**Suite flake to fix:** `PoolTest.rateLimitWarnsOnceForARun` failed in two
+of three full `mvn clean test` runs on 2026-09-04/05 (the DIAG line shows the
+RATE_LIMIT warning *was* raised but the counter read 0) and passed alone
+every time. Order- or load-dependent, not caused by today's changes; commit
+`9e172f3` added the diagnostics for exactly this.
+
+**fcdev size (owner, 2026-09-05):** the 181 MB fcdev jar is 129.5 MB of six
+per-platform Postgres archives, of which any machine uses one. The Go fcdev
+(fergusstrange/embedded-postgres) downloads the matching zonky archive from
+Maven Central on first run and caches it. Zonky's `PgBinaryResolver` hook
+makes the same change ~100 lines here and would put fcdev near 50 MB.
+Not done; owner's call.
+
+## fc-server packaging and the default-broker gate (2026-09-04)
+
+The owner restated the two deliverables, the same split as the Go repo:
+**`fcdev`** is the developer monolith (fc-server + embedded Postgres + the
+built-in Postgres broker + `start|stop|fresh|db upgrade`); **`fc-server`** is
+the production server with every subsystem behind `FC_*_ENABLED` and **no
+bundled broker** unless `FC_DEFAULT_BROKER=postgres`. Neither is a native
+binary: both are executable jars, and JBang is optional for `fcdev` (the
+owner does not want to register with JBang yet).
+
+- `server/pom.xml` now shades an attached `flowcatalyst-server-<v>-exec.jar`
+  (main class `io.flowcatalyst.server.Main`, `Implementation-Version` stamped
+  so `/health` reports the build). The thin jar stays the main artifact, so
+  `fcdev`'s own shade is unchanged. `Dockerfile` + `.dockerignore` mirror the
+  Go image: Temurin 25 JRE on Alpine, uid 10001, ports 8080/9090, the same
+  `wget /health` check. README has a "Run" section.
+- **Defect fixed (Java-only):** `Router.configSource` synthesised the Postgres
+  broker queue whenever `FLOWCATALYST_CONFIG_URL` was blank, ignoring
+  `FC_DEFAULT_BROKER`. Go (`server/run.go:346`) and spec §8.4 only do so when
+  the broker is `postgres`; otherwise "no pools will start". A production
+  router with neither would have built a queue from the database URL. Now
+  gated; the default path also runs `PostgresQueue.initSchema` when a data
+  source exists (Go does this in the router bootstrap, Java only did it in the
+  scheduler publisher), and a blank database URL falls back to Go's
+  `postgresql://postgres@localhost:5432/flowcatalyst`.
+  `RouterConfigSourceTest` pins all five branches; removing the gate fails
+  two of them (mutation-checked).
+- Smoke-verified from the jar: `FC_PLATFORM_ENABLED=false FC_ROUTER_ENABLED=true`
+  starts with no database, `/ready` shows only the router, `/router/health`
+  is HEALTHY, log says "no pools will start".
+- Still open for a router-only default-broker instance: `QueueFactory` needs
+  a `DataSource`, but `Main` only opens one for database-backed subsystems,
+  so `FC_DEFAULT_BROKER=postgres` on a router-only fc-server logs "needs
+  postgres but no database is configured" and starts nothing. Go opens its
+  own pgxpool from the URL. Owner question, not fixed here.
+
 ## GraalVM native-image trial (2026-09-04) — it works
 
 Owner asked "just to see if it would work". It does: `server/target/fc-server`

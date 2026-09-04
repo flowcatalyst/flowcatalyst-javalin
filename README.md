@@ -36,8 +36,9 @@ Both are plain executable jars; JBang is optional for `fcdev`. The
 [`Dockerfile`](Dockerfile) builds the fc-server image (same ports and health
 check as the Go one).
 
-fc-server can also be a native binary (GraalVM, opt-in profile, see
-`docs/STATUS.md` for what it took):
+fc-server can also be an 89 MB native binary that starts in under a second
+and idles at 46 MB (GraalVM, opt-in profile, see `docs/STATUS.md` for what it
+took and where the remaining size goes):
 
 ```sh
 mise install java@oracle-graalvm-25.0.4.1
