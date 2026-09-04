@@ -423,6 +423,10 @@ limiter? See `docs/spec/auth-retention.md` §5.
 
 ## Deferred out of the port
 
+- **Outbox Mongo backend** (`FC_OUTBOX_BACKEND=mongo`, Go
+  `internal/outbox/mongo`). Owner ruling 2026-09-05: out of the port, Postgres
+  only; revisit if a consumer app needs it.
+
 Platform improvements that are deliberately **not** porting work live in
 `docs/improvements.md` — currently auth-core Q13 (no refresh-family
 revocation on authorization-code replay). Nothing there blocks a port unit;

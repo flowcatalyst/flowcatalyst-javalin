@@ -40,7 +40,10 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
 2. Fix the suite flake `PoolTest.rateLimitWarnsOnceForARun` (fails 2 of 3
    full runs, passes alone; the DIAG shows the warning raised but the counter
    0 — an ordering assumption in the test, not the pool).
-3. fcdev: download the Postgres archive on first run (zonky
+3. **Extract `docs/spec/auth-mfa.md`** from Go `internal/platform/mfa`
+   (1,137 lines): enrolment, verification, recovery codes, the login-flow
+   gate, retention. Behaviour tables and observed defects, never code.
+4. fcdev: download the Postgres archive on first run (zonky
    `PgBinaryResolver`, Go's pattern) — spec + test mine, code Sonnet. Drops
    the jar to ~50 MB and is a prerequisite for a native fcdev.
 
@@ -69,8 +72,8 @@ transaction by me, everything around it by Sonnet.
 
 1. **Stream processor** (1,305 Go lines) — `FC_STREAM_PROCESSOR_ENABLED` is
    already an `Env` toggle wired to nothing.
-2. **Outbox processor** (1,463) — `FC_OUTBOX_BACKEND` postgres|mongo in Go;
-   rule on whether mongo is in scope (owner).
+2. **Outbox processor** (1,463) — Postgres backend only. **Owner ruling
+   2026-09-05: the Mongo backend is out of the port, on the backlog.**
 3. **Scheduled-job scheduler** + **purger** — `scheduledjob.md` exists;
    `Server.java:200` lists both as TODO(port).
 4. **MCP** (785) — small; Sonnet end to end once the platform HTTP contract
@@ -98,8 +101,10 @@ mutation-checked). **Sonnet** — `oauth-clients` (10 ops), `portal-users`
 (5), `reset-approvals` (3), `webauthn` route/DTO layer, `passwordreset`
 flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 
-`mfa` has no Java spec yet; it is a Phase 0 extraction if the owner wants it
-in the first cut.
+**MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
+in use). It has no Java spec yet, so `auth-mfa.md` is a Phase 0 extraction
+(orchestrator — it is security-bearing), and its owner questions join batch
+(c).
 
 ## Phase 4 — cross-cutting
 
