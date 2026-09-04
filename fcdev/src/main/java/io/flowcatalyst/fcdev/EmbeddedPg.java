@@ -99,6 +99,14 @@ public final class EmbeddedPg implements AutoCloseable {
     /// binaries cached under `cacheDir`. Ensures the `flowcatalyst` database
     /// exists. The caller owns [#close()].
     public static EmbeddedPg start(Path dataPath, int port, Path cacheDir) throws IOException {
+        return start(dataPath, port, cacheDir, null);
+    }
+
+    /// As [#start(Path, int, Path)], with `offlineBinaryOverride` — an
+    /// operator-supplied `.txz` (`--embedded-db-binary` / `FC_EMBEDDED_DB_BINARY`)
+    /// used verbatim instead of resolving a binary from the classpath or
+    /// Maven Central. `null` for the normal resolution order.
+    public static EmbeddedPg start(Path dataPath, int port, Path cacheDir, Path offlineBinaryOverride) throws IOException {
         Files.createDirectories(dataPath);
         Files.createDirectories(cacheDir);
         var pg = EmbeddedPostgres.builder()
@@ -108,6 +116,7 @@ public final class EmbeddedPg implements AutoCloseable {
                 .setOverrideWorkingDirectory(cacheDir.toFile())
                 .setPort(port)
                 .setPGStartupWait(START_TIMEOUT)
+                .setPgBinaryResolver(new MavenCentralPgBinaryResolver(cacheDir, Version.embeddedPgVersion(), offlineBinaryOverride))
                 .start();
         var handle = new EmbeddedPg(pg, dataPath);
         try {

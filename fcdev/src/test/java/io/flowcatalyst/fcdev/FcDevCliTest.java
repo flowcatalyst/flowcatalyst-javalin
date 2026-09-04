@@ -51,7 +51,7 @@ class FcDevCliTest {
             assertThat(r.out()).contains("  " + name);
         }
         for (var flag : new String[]{"--api-port", "--metrics-port", "--embedded-db", "--embedded-db-port", "--embedded-db-path",
-                "--embedded-db-reset", "--database-url", "--scheduler", "--scheduled-job", "--stream", "--outbox", "--router", "--mcp", "--pid-file"}) {
+                "--embedded-db-reset", "--embedded-db-binary", "--database-url", "--scheduler", "--scheduled-job", "--stream", "--outbox", "--router", "--mcp", "--pid-file"}) {
             assertThat(r.out()).as(flag).contains(flag);
         }
         assertThat(run(Map.of(), "start", "--help").out()).contains("--pid-file");

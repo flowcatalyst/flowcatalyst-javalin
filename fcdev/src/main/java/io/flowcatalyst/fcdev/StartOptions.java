@@ -18,6 +18,7 @@ import java.util.Objects;
 /// | `--embedded-db-port` | `FC_EMBEDDED_DB_PORT` | 15432 |
 /// | `--embedded-db-path` | `FC_EMBEDDED_DB_PATH` | `<userDataDir>/flowcatalyst/embedded-pg` |
 /// | `--embedded-db-reset` | — | false |
+/// | `--embedded-db-binary` | `FC_EMBEDDED_DB_BINARY` | `""` (resolve from classpath/Maven Central) |
 /// | `--database-url` | `FC_DATABASE_URL` | `""` (embedded) |
 /// | `--scheduler` | `FC_SCHEDULER_ENABLED` | true |
 /// | `--scheduled-job` | `FC_SCHEDULED_JOB_ENABLED` | true |
@@ -50,6 +51,10 @@ public final class StartOptions {
     @Option(names = "--embedded-db-reset", arity = "0..1", fallbackValue = "true", paramLabel = "<bool>",
             description = "wipe the embedded Postgres data directory before starting")
     boolean embeddedDbReset;
+
+    @Option(names = "--embedded-db-binary", paramLabel = "<file>",
+            description = "use this .txz instead of resolving one from the classpath or Maven Central (FC_EMBEDDED_DB_BINARY)")
+    String embeddedDbBinary;
 
     @Option(names = "--database-url", paramLabel = "<url>", description = "Postgres URL (overrides --embedded-db) (FC_DATABASE_URL)")
     String databaseUrl;
@@ -101,6 +106,7 @@ public final class StartOptions {
         embeddedDbPort = env.integer("FC_EMBEDDED_DB_PORT", EmbeddedPg.DEFAULT_PORT);
         embeddedDbPath = env.str("FC_EMBEDDED_DB_PATH", paths.defaultEmbeddedPath().toString());
         embeddedDbReset = false;
+        embeddedDbBinary = env.str("FC_EMBEDDED_DB_BINARY", "");
         databaseUrl = env.str("FC_DATABASE_URL", "");
         scheduler = env.bool("FC_SCHEDULER_ENABLED", true);
         scheduledJob = env.bool("FC_SCHEDULED_JOB_ENABLED", true);
@@ -117,6 +123,7 @@ public final class StartOptions {
     public int embeddedDbPort() { return embeddedDbPort; }
     public String embeddedDbPath() { return embeddedDbPath; }
     public boolean embeddedDbReset() { return embeddedDbReset; }
+    public String embeddedDbBinary() { return embeddedDbBinary; }
     public String databaseUrl() { return databaseUrl; }
     public boolean scheduler() { return scheduler; }
     public boolean scheduledJob() { return scheduledJob; }

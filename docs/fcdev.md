@@ -53,10 +53,10 @@ artifact), and `jbang cache clear` if a SNAPSHOT got stuck.
 
 ### Without JBang: the executable jar
 
-`mvn -pl fcdev package` shades everything — fc-server, its dependencies and
-the PostgreSQL binaries for macOS (arm64 + amd64), Linux (amd64 + arm64) and
-Windows (amd64) — into one jar (≈ 170 MB, the PostgreSQL archives are ≈ 110 MB of
-it). That jar is the GitHub-Releases fallback:
+`mvn -pl fcdev package` shades fc-server and its dependencies into one jar
+(the PostgreSQL server binary is **not** bundled — see §2 — so the jar is a
+few tens of MB, not the ≈170 MB it would be with every platform's archive
+inside it). That jar is the GitHub-Releases fallback:
 
 ```sh
 java -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar            # = start
@@ -83,11 +83,24 @@ generated persistent JWT signing key at …/flowcatalyst/jwt-signing-key.pem
 api server listening addr=:8080
 ```
 
-There is **no download at run time**: the PostgreSQL server binaries for every
-supported platform ship inside the jar (zonky `embedded-postgres-binaries-*`,
-version pinned by `zonky-binaries.version` in the root POM, currently 18.4.0)
-and the one matching the host is extracted on first start. Subsequent starts
-reuse the extracted binaries and the existing cluster.
+**First start downloads the PostgreSQL server binary.** fcdev does not bundle
+`embedded-postgres-binaries-*` for every platform; instead
+`io.flowcatalyst.fcdev.MavenCentralPgBinaryResolver` fetches the one archive
+matching the host OS/arch from Maven Central (`io.zonky.test.postgres:embedded-postgres-binaries-<os>-<arch>`,
+version pinned by `zonky-binaries.version` in the root POM, currently 18.4.0),
+verifies it against the published `.sha1`, and caches the jar under
+`<userCacheDir>/flowcatalyst/embedded-pg/downloads/`. Zonky then extracts the
+`.txz` inside it into `PG-<md5>/` as before. Subsequent starts skip the
+download and reuse the cached jar and the existing cluster.
+
+- `FC_EMBEDDED_PG_REPO` overrides the repository base URL (default
+  `https://repo1.maven.org/maven2`) for mirrors or air-gapped setups.
+- `--embedded-db-binary <file.txz>` / `FC_EMBEDDED_DB_BINARY` skips the
+  classpath check and the download entirely and uses that file verbatim —
+  the fully offline path.
+- Unsupported host pairs (e.g. Windows on arm64, which zonky does not
+  publish) fail fast with a message linking
+  https://github.com/zonkyio/embedded-postgres#additional-architectures.
 
 Then open http://localhost:8080 (the embedded Vue SPA) and sign in with the
 bootstrap admin — `admin@flowcatalyst.local` / `DevPassword123!`.
@@ -109,8 +122,9 @@ Stop with Ctrl-C, or from another terminal with `fcdev stop`.
 ├── app-key                                  FLOWCATALYST_APP_KEY field-encryption key, 0600
 └── fcdev.pid                                PID of the running `fcdev start` (FC_DEV_PID_FILE / --pid-file)
 
-<userCacheDir>/flowcatalyst/embedded-pg/     re-creatable: the extracted PostgreSQL binaries
-└── PG-<md5-of-archive>/{bin,lib,share}      (zonky unpacks the bundled .txz here once; safe to delete)
+<userCacheDir>/flowcatalyst/embedded-pg/     re-creatable: downloaded + extracted PostgreSQL binaries
+├── downloads/<artifact>-<version>.jar       the sha1-verified Maven Central download (safe to delete)
+└── PG-<md5-of-archive>/{bin,lib,share}      (zonky unpacks the .txz from the jar here once; safe to delete)
 <userCacheDir>/flowcatalyst-dev/mcp-credentials.json    local MCP OAuth client (Go; not yet written by Java)
 ```
 
@@ -148,6 +162,7 @@ falls back to the built-in default), and an explicit flag wins. Booleans are
 | `--embedded-db-port` | `FC_EMBEDDED_DB_PORT` | `15432` (`0` = any free port) |
 | `--embedded-db-path` | `FC_EMBEDDED_DB_PATH` | `<userDataDir>/flowcatalyst/embedded-pg` |
 | `--embedded-db-reset` | — | `false` (wipe the data dir before starting) |
+| `--embedded-db-binary` | `FC_EMBEDDED_DB_BINARY` | `""` → resolve from the classpath or Maven Central; set = use this `.txz` verbatim |
 | `--database-url` | `FC_DATABASE_URL` | `""` → use the embedded Postgres; set = skip it |
 | `--scheduler` | `FC_SCHEDULER_ENABLED` | `true` |
 | `--scheduled-job` | `FC_SCHEDULED_JOB_ENABLED` | `true` |
@@ -271,10 +286,11 @@ PostgreSQL cannot start in the environment.
 
 ## 6. Differences from the Go binary worth knowing
 
-- **Binaries are bundled, not downloaded.** Go's fcdev downloads the
-  PostgreSQL archive on first run into `<cache>/flowcatalyst/embedded-pg/bin`;
-  Java extracts it from the jar into `<cache>/flowcatalyst/embedded-pg/PG-<md5>`.
-  Same cache dir, different layout; both are safe to delete.
+- **Both download, but not identically.** Go's fcdev downloads the PostgreSQL
+  archive on first run into `<cache>/flowcatalyst/embedded-pg/bin`; Java
+  downloads the zonky jar into `<cache>/flowcatalyst/embedded-pg/downloads/`
+  and zonky extracts it into `<cache>/flowcatalyst/embedded-pg/PG-<md5>`. Same
+  cache dir, different layout; both are safe to delete.
 - `--embedded-db-port 0` picks a free port (handy for tests); Go has no
   equivalent.
 - Not-yet-ported subcommands exit **2** with `fcdev <name>: not yet ported`;

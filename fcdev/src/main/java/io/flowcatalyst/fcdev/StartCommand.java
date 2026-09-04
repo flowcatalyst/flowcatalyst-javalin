@@ -120,7 +120,8 @@ public final class StartCommand implements Callable<Integer> {
                     EmbeddedPg.deleteTree(dataPath);
                 }
                 EmbeddedPg.assertCompatible(dataPath);
-                pg = EmbeddedPg.start(dataPath, opts.embeddedDbPort(), paths.embeddedPgCacheDir());
+                Path embeddedDbBinary = opts.embeddedDbBinary().isEmpty() ? null : Path.of(opts.embeddedDbBinary());
+                pg = EmbeddedPg.start(dataPath, opts.embeddedDbPort(), paths.embeddedPgCacheDir(), embeddedDbBinary);
                 databaseUrl = pg.url();
                 LOG.info("embedded postgres started port={} path={} version=PG{}", pg.port(), dataPath, EmbeddedPg.pinnedMajor());
             }

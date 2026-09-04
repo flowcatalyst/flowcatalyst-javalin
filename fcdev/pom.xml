@@ -36,37 +36,40 @@
       <artifactId>picocli</artifactId>
     </dependency>
 
-    <!-- Embedded PostgreSQL (zonky) + the per-platform server binaries. The binaries
-         are runtime-only: fcdev picks the one matching the host OS/arch at start-up,
-         so a single jar boots on every developer machine. -->
+    <!-- Embedded PostgreSQL (zonky). fcdev does NOT bundle the per-platform
+         embedded-postgres-binaries-* archives (that's the server module's tests,
+         see server/pom.xml) — io.flowcatalyst.fcdev.MavenCentralPgBinaryResolver
+         downloads the one matching the host OS/arch from Maven Central on first
+         run and caches it under DevPaths#embeddedPgCacheDir(), the same way the
+         Go fcdev does. The start flag embedded-db-binary (env FC_EMBEDDED_DB_BINARY)
+         overrides with a local .txz for offline/air-gapped use.
+
+         io.zonky.test:embedded-postgres itself declares four of the binary
+         archives (windows-amd64, darwin-amd64, linux-amd64, linux-amd64-alpine)
+         as plain non-optional runtime dependencies in its own POM — excluded
+         here, or they come along transitively regardless of what fcdev
+         declares directly. -->
     <dependency>
       <groupId>io.zonky.test</groupId>
       <artifactId>embedded-postgres</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>io.zonky.test.postgres</groupId>
-      <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
-      <scope>runtime</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-amd64-alpine</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- Logging: configured programmatically via io.flowcatalyst.server.Logging (no logback.xml). -->
