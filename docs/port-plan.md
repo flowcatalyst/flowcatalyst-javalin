@@ -34,19 +34,46 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
 
 ## Phase 0 — housekeeping (orchestrator, one session)
 
-1. Fold `3b64775` into `auth-core.md`; re-run the Go drift check on every
-   spec that has an unported implementation (`serviceaccount.md`,
-   `auth-*.md`, `scheduledjob.md`).
-2. Fix the suite flake `PoolTest.rateLimitWarnsOnceForARun` (fails 2 of 3
-   full runs, passes alone; the DIAG shows the warning raised but the counter
-   0 — an ordering assumption in the test, not the pool).
-3. **Drift-check `auth-identity.md` §6 (MFA) and §11.4–11.7** against Go
-   HEAD. The section is complete (all 22 `mfa.Service` calls, the 14
-   `/auth/2fa/*` routes, trusted devices, PINs, recovery codes), but two Go
-   commits touched the area after it was written: `6cbe708` *X-06 strict
-   enum reads across 18 modules + CHECK constraints* and `3b64775` (the
-   backoff ruling). Fold both in; no fresh extraction needed.
-4. fcdev: download the Postgres archive on first run (zonky
+1. ~~Fold `3b64775`; drift-check the unported specs~~ **Done 2026-09-05:**
+   the ruling lives in `loginattempt.md` §5 and `login-backoff-lock.md` (it
+   is a repository bound, not an auth-core rule) and is implemented. Drift
+   found and queued below (items 4–6); the three serviceaccount commits of
+   2026-08-27 were already in `serviceaccount.md` / `-fixes.md`.
+2. ~~Fix the suite flake `PoolTest.rateLimitWarnsOnceForARun`~~ **Done
+   2026-09-05 (`931d5a7`):** the test awaited the rate-limited counter, which
+   the pool bumps before raising the warning on the same worker; the first
+   unlimited delivery now completes before the burst and the await includes
+   the warning.
+3. ~~Drift-check `auth-identity.md` §6 (MFA)~~ **Done 2026-09-05:** `6cbe708`
+   touches no file under `internal/platform/mfa`, `auth/twofa` or
+   `auth/mfatoken`; its auth-side change is the strict `rowToOAuthClient`
+   decode (X-06, noted in `auth-core.md`). `3b64775` is folded into
+   `loginattempt.md` / `login-backoff-lock.md` and implemented (`931d5a7`).
+   §6 stands as written.
+4. **Schema drift — adopt Go migrations 046–052 as Flyway V2–V7.** Found
+   2026-09-05: a Go database at HEAD carries seven migrations past our V1
+   baseline (oauth secret grace 046/047, dispatch-mode default 048,
+   **`iam_login_attempts` range-partitioned by quarter 049**, X-06 CHECK
+   constraints 051/052). Mirror them idempotently, regenerate
+   `go-schema.sql` + fingerprint from a Go-HEAD database, jOOQ regen,
+   `GoAdoptionTest` on goose 052. Sonnet translates; the tests are reviewed
+   and mutation-checked here.
+5. **X-06 strict stored-enum reads** across the platform. Java's `parse`
+   methods default unknown stored values (`AttemptOutcome` → `SUCCESS`,
+   `ScopeType` → `ANCHOR` — a corrupt row reads as a login success, or as
+   the most privileged scope). Replicate the dispatchjob unit's
+   `Corrupt…Exception(rowId)` pattern everywhere; one test per module that
+   inserts an impossible value and expects the typed read error. Sonnet
+   sweep; security assertions reviewed here.
+6. **`e6a33ba` drift (PR-3/PR-4, X-02, X-08):** principal by-id and
+   mutations answer **404, byte-identical to not-found**, never 403, for an
+   out-of-scope id (`PrincipalApi.java:228` still throws forbidden);
+   scheduled-job sync `archiveUnlisted` and role sync `removeUnlisted`
+   contained to the syncing application, platform-scope sweep anchor-only
+   (`ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP`); sync rollup message groups
+   `platform:<aggregate>:<applicationCode>` (bare when no application).
+   Sonnet, after the X-06 sweep lands (same modules).
+7. fcdev: download the Postgres archive on first run (zonky
    `PgBinaryResolver`, Go's pattern) — spec + test mine, code Sonnet. Drops
    the jar to ~50 MB and is a prerequisite for a native fcdev.
 

@@ -83,6 +83,15 @@ auth: this side is still moving.
 
 ---
 
+> **Drift note 2026-09-05 (Go `6cbe708`, ledger X-06):** `oauth_clients`
+> reads are now a strict typed decode — `rowToOAuthClient` fails the row on an
+> unrecognised `client_type`, `config_type` or `auth_provider` instead of
+> defaulting. Apply the platform-wide `CorruptRowException` pattern when this
+> aggregate is ported. Schema: migrations 046/047 add
+> `previous_secret_ref`, `previous_secret_expires_at`,
+> `previous_secret_last_used_at` (secret-rotation grace) — adopted as Flyway
+> V2/V3.
+
 ## 1. Purpose & boundaries
 
 The auth core is four cooperating things that share **one RSA key pair**

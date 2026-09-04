@@ -4,6 +4,19 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Phase 0 of the continuation plan (2026-09-05, in progress)
+
+`docs/port-plan.md` Phase 0. Landed: the dormant-identifier backoff ruling
+(`lastSuccessAt` bounded to 400 days, `931d5a7`) and the PoolTest flake.
+Found while drift-checking, now queued as Phase 0 items 4–6: Go migrations
+046–052 are missing from our Flyway chain (a Go-HEAD database is
+range-partitioned on `iam_login_attempts` and carries X-06 CHECK
+constraints); Java's stored-enum reads still default unknown values
+(`AttemptOutcome` → SUCCESS, `ScopeType` → ANCHOR) against ledger X-06; and
+`e6a33ba` (principal 404 oracle, X-02 sync containment, X-08 per-application
+rollup groups) is unabsorbed. Three Sonnet agents are on the first two and
+fcdev's Postgres download; the third follows the X-06 sweep.
+
 ## fc-server packaging and the default-broker gate (2026-09-04)
 
 The owner restated the two deliverables, the same split as the Go repo:
