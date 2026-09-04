@@ -166,6 +166,7 @@ Go and Java both, driven off the same table:
 | Ceiling outlives the lock | 100 failures spread, last 20 min ago, count still ≥100 | denied, `RetryAfterSecs` = time to `countEnds`, **not** 900 |
 | Lock expires | last failure 901 s ago, count fallen below ceiling | allowed |
 | Success clears both | a success after the trip | allowed (cutoff moves to `lastSuccess`) |
+| Dormant identifier (ruling 2026-09-03, Go `3b64775`) | last success 401 days ago, then failures | treated exactly as never-succeeded: the 30-day window in full, no unbounded lookup — pinned on the repository (`LoginAttemptRepositoryTest`, 399 vs 401 days) |
 | `Retry-After` is honest | wait exactly the advertised interval, retry | allowed — the assertion the whole change exists for |
 | Denied attempts don't extend | trip, then 5 denied attempts, then wait 900 s from the *last recorded failure* | allowed — pins §4 |
 

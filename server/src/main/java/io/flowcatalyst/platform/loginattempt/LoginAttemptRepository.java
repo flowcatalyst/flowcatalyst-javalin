@@ -10,6 +10,7 @@ import org.jooq.impl.DSL;
 
 import javax.sql.DataSource;
 import java.time.Instant;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -113,13 +114,32 @@ public final class LoginAttemptRepository {
     // step when it has no IP — spec §5). Identifier equality is raw; the
     // callers normalise (open question 6).
 
-    /// When the identifier last logged in successfully; empty when never.
+    /// How far back [#lastSuccessAt] looks. `iam_login_attempts` is
+    /// range-partitioned by `attempted_at` (Go migration 049), so an
+    /// unbounded `MAX` would touch every partition on every login — and a
+    /// never-succeeded identifier, which is what every enumeration probe
+    /// is, would pay that on every attempt. Owner ruling (2026-09-03, Go
+    /// `3b64775`): a success older than this bound reads as **never
+    /// succeeded** — the standard 30-day window applies in full; dormancy
+    /// never weakens the lockout — and there is deliberately no second,
+    /// unbounded query to recover the true stale timestamp.
+    public static final Duration LAST_SUCCESS_LOOKBACK = Duration.ofDays(400);
+
+    /// When the identifier last logged in successfully within
+    /// [#LAST_SUCCESS_LOOKBACK]; empty when never, or not within it.
     /// Bounds the failure-counting window of the backoff (spec §5).
     public Optional<Instant> lastSuccessAt(String identifier) {
+        return lastSuccessAt(identifier, Instant.now());
+    }
+
+    Optional<Instant> lastSuccessAt(String identifier, Instant now) {
         Objects.requireNonNull(identifier, "identifier");
         var last = DSL.max(T.ATTEMPTED_AT);
+        OffsetDateTime since = now.minus(LAST_SUCCESS_LOOKBACK).atOffset(ZoneOffset.UTC);
         OffsetDateTime lastAt = dsl.select(last).from(T)
-                .where(T.OUTCOME.eq(AttemptOutcome.SUCCESS.name()).and(T.IDENTIFIER.eq(identifier)))
+                .where(T.OUTCOME.eq(AttemptOutcome.SUCCESS.name())
+                        .and(T.IDENTIFIER.eq(identifier))
+                        .and(T.ATTEMPTED_AT.ge(since)))
                 .fetchSingle(last);
         return Optional.ofNullable(lastAt).map(OffsetDateTime::toInstant);
     }

@@ -109,7 +109,7 @@ does not come back to this package.
 | `recordAttempt(attempt)` | inserts the row as given (`NULL` for every absent optional); **direct write, autocommit, no unit of work, no event, no audit row** (§6) |
 | `findPage(filter, after, limit)` | §3: every non-null filter ANDed, strictly before `after` when given, `attempted_at DESC, id DESC`, at most `limit` rows (`limit` must be `>= 1`; the API bounds it — no silent correction) |
 | `findRecentByIdentifier(identifier, limit)` | the newest `limit` rows for the identifier, `attempted_at DESC` (the login session-history panel reads 20) |
-| `lastSuccessAt(identifier)` | `MAX(attempted_at)` over `SUCCESS` rows for the identifier; empty when there has never been one |
+| `lastSuccessAt(identifier)` | `MAX(attempted_at)` over `SUCCESS` rows for the identifier **within the last 400 days** (`LAST_SUCCESS_LOOKBACK`); empty when there has never been one *or the last one is older than that*. **Owner ruling 2026-09-03 (Go `3b64775`):** a dormant identifier reads as never-succeeded — the standard 30-day window applies in full, dormancy never weakens the lockout — and there is no unbounded fallback lookup (the table is range-partitioned on `attempted_at` since Go 049; an unbounded `MAX` would scan every partition on every attempt, including every enumeration probe) |
 | `failureStatsSince(identifier, ip, since)` | `(count, lastFailureAt)` over `FAILURE` rows for the `(identifier, ip)` pair with `attempted_at >= since`; `lastFailureAt` absent when the count is 0 |
 | `countFailuresSince(identifier, since)` | `FAILURE` rows for the identifier across all IPs with `attempted_at >= since` |
 
@@ -126,7 +126,7 @@ IP never counts towards a pair). `lastSuccessAt` is an `Optional` return,
 refuses `count < 0` and a `lastFailureAt` without failures.
 
 How `loginbackoff` composes these (for the auth port; not implemented here):
-`lastSuccessAt` bounds the failure window (fallback: now − 30 days); with an
+`lastSuccessAt` bounds the failure window (fallback: now − 30 days, which is also what a success older than 400 days collapses to — ruling above); with an
 IP, `failureStatsSince(identifier, ip, bound)` drives the per-pair
 exponential delay (free attempts, base delay, cap; the delay is measured
 from `lastFailureAt`); then `countFailuresSince(identifier, max(bound,

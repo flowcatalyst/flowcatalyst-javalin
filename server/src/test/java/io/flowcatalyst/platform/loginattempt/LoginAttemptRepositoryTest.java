@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -66,6 +67,24 @@ class LoginAttemptRepositoryTest {
 
     private static ListFilter ada() {
         return new ListFilter(null, null, ADA, null, null, null);
+    }
+
+    // ── Last success is bounded (owner ruling 2026-09-03, Go 3b64775) ──────
+
+    @Test
+    void aSuccessBeyondTheLookbackReadsAsNeverSucceeded() {
+        // Dormancy must never weaken the lockout: a success older than the
+        // 400-day bound is indistinguishable from none, so the standard
+        // 30-day failure window applies in full. Pinned by the bound itself:
+        // the same row is found at 399 days and gone at 401.
+        String dormant = "dormant." + RUN + "@example.test";
+        Instant success = Instant.parse("2025-01-15T09:00:00Z");
+        record(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, dormant, PRINCIPAL, IP_A, null, null, success);
+
+        Instant justInside = success.plus(LoginAttemptRepository.LAST_SUCCESS_LOOKBACK).minus(Duration.ofDays(1));
+        Instant justOutside = success.plus(LoginAttemptRepository.LAST_SUCCESS_LOOKBACK).plus(Duration.ofDays(1));
+        assertThat(repo.lastSuccessAt(dormant, justInside)).as("399 days: still a success").contains(success);
+        assertThat(repo.lastSuccessAt(dormant, justOutside)).as("401 days: never succeeded").isEmpty();
     }
 
     // ── Write ──────────────────────────────────────────────────────────────

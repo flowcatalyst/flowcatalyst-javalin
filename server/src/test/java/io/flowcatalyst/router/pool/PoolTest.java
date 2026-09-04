@@ -629,18 +629,28 @@ class PoolTest {
         // A burst that keeps observing the limiter as holding messages back
         // must not flood the warning store — one INFO entry for the
         // transition into limiting, not one per limited delivery.
+        //
+        // Deterministic shape: the FIRST delivery goes through unlimited
+        // (rate 1/min, one token) and is allowed to finish before the burst,
+        // so the "proceeded unlimited → re-arm the warning" reset cannot race
+        // the burst's own warning. The burst is then 19 deliveries that are
+        // all limited, so exactly one transition into limiting can occur.
         IntStream.range(0, 20).forEach(i -> mediator.answer("m" + i, MediationOutcome.Success.of(200)));
         var raised = new CopyOnWriteArrayList<String>();
         Warnings warnings = (severity, category, message) -> raised.add(severity + "/" + category);
         pool = new Pool(new Pool.Config("POOL-A", 20, 1), FAST, mediator, broker, metrics,
                 Clock.systemUTC(), warnings);
 
-        IntStream.range(0, 20).forEach(i -> pool.submit(immediate("m" + i)));
+        pool.submit(immediate("m0"));
+        await(() -> broker.acked.contains("m0"));
+        IntStream.range(1, 20).forEach(i -> pool.submit(immediate("m" + i)));
 
         // At least five DIFFERENT deliveries must have observed the limiter
-        // as limited — a counter that must change — proving the single
+        // as limited — a counter that must change — AND the warning must
+        // have landed (it is raised after the counter moves, on the same
+        // worker; awaiting only the counter raced it), proving the single
         // warning survived repeated observations, not just one lucky check.
-        await(() -> metrics.rateLimited.get() >= 5);
+        await(() -> metrics.rateLimited.get() >= 5 && raised.contains("INFO/RATE_LIMIT"));
         assertThat(raised.stream().filter("INFO/RATE_LIMIT"::equals).count())
                 .as("one warning for the burst, not one per limited delivery [DIAG rateLimited=%d acked=%d nacked=%d queueSize=%d active=%d success=%d limited=%s raised=%s]",
                         metrics.rateLimited.get(), broker.acked.size(), broker.nacked.size(), pool.queueSize(),
