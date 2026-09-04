@@ -40,9 +40,12 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
 2. Fix the suite flake `PoolTest.rateLimitWarnsOnceForARun` (fails 2 of 3
    full runs, passes alone; the DIAG shows the warning raised but the counter
    0 — an ordering assumption in the test, not the pool).
-3. **Extract `docs/spec/auth-mfa.md`** from Go `internal/platform/mfa`
-   (1,137 lines): enrolment, verification, recovery codes, the login-flow
-   gate, retention. Behaviour tables and observed defects, never code.
+3. **Drift-check `auth-identity.md` §6 (MFA) and §11.4–11.7** against Go
+   HEAD. The section is complete (all 22 `mfa.Service` calls, the 14
+   `/auth/2fa/*` routes, trusted devices, PINs, recovery codes), but two Go
+   commits touched the area after it was written: `6cbe708` *X-06 strict
+   enum reads across 18 modules + CHECK constraints* and `3b64775` (the
+   backoff ruling). Fold both in; no fresh extraction needed.
 4. fcdev: download the Postgres archive on first run (zonky
    `PgBinaryResolver`, Go's pattern) — spec + test mine, code Sonnet. Drops
    the jar to ~50 MB and is a prerequisite for a native fcdev.
@@ -102,9 +105,14 @@ mutation-checked). **Sonnet** — `oauth-clients` (10 ops), `portal-users`
 flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
-in use). It has no Java spec yet, so `auth-mfa.md` is a Phase 0 extraction
-(orchestrator — it is security-bearing), and its owner questions join batch
-(c).
+in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP
+(RFC 6238, ±1 step, replay guard), e-mail PIN, recovery codes, trusted
+devices, the login-decision gate and the change-password interplay. Its
+owner questions join batch (c). The TOTP/PIN/recovery crypto and the
+replay and single-use guarantees are orchestrator code with mutation-checked
+tests; the 14 routes and the DTOs are Sonnet's. Note the `/auth/2fa/*`
+routes sit outside the lockfile (only `/api/principals/{id}/reset-2fa` is
+in it), so the frontend is their acceptance test.
 
 ## Phase 4 — cross-cutting
 
