@@ -45,12 +45,28 @@ public final class Migrator {
     private Migrator() {
     }
 
+    /// `true` inside a GraalVM native image, where Flyway's classpath
+    /// scanner cannot enumerate `db/migration` (see [IndexedMigrations]).
+    static final boolean NATIVE_IMAGE = System.getProperty("org.graalvm.nativeimage.imagecode") != null;
+
     /// Builds the configured Flyway instance without running anything
     /// (for `info()` / diagnostics).
     public static Flyway flyway(DataSource dataSource) {
-        return Flyway.configure()
+        return flyway(dataSource, NATIVE_IMAGE);
+    }
+
+    /// `indexed`: locate migrations through `db/migration.index` instead of
+    /// scanning the classpath. What a native image needs; what the JVM
+    /// path could also use, kept off there so scanning stays the reference.
+    static Flyway flyway(DataSource dataSource, boolean indexed) {
+        var config = Flyway.configure()
                 .dataSource(dataSource)
-                .locations("classpath:db/migration")
+                .locations("classpath:db/migration");
+        if (indexed) {
+            var index = IndexedMigrations.load();
+            config = config.resourceProvider(index).javaMigrationClassProvider(index);
+        }
+        return config
                 .table(HISTORY_TABLE)
                 .baselineOnMigrate(true)
                 .baselineVersion(BASELINE_VERSION)

@@ -222,6 +222,83 @@
 
   <profiles>
     <!--
+      GraalVM native image — an experiment (2026-09-04) to see whether fc-server
+      can be a real static binary like the Go one. Needs a GraalVM JDK:
+
+        mise install java@oracle-graalvm-25.0.4.1
+        JAVA_HOME=$(mise where java@oracle-graalvm-25.0.4.1) mvn -q -DskipTests -pl server -am -Pnative package
+        server/target/fc-server
+
+      Reachability metadata for the third-party libraries comes from the
+      GraalVM metadata repository; anything it does not cover surfaces as a
+      runtime "not registered for reflection" error, not at build time.
+    -->
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <!-- Register every io.flowcatalyst class for reflection (Jackson, jOOQ). -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>native-reflect-config</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${project.basedir}/../tools/native-reflect-config.sh</executable>
+                  <arguments>
+                    <argument>${project.build.directory}/native-reflect-config.json</argument>
+                    <argument>${project.build.outputDirectory}</argument>
+                    <argument>${project.basedir}/../usecase/target/classes</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <version>1.1.12</version>
+            <extensions>true</extensions>
+            <executions>
+              <execution>
+                <id>build-native</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>compile-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <imageName>fc-server</imageName>
+              <mainClass>io.flowcatalyst.server.Main</mainClass>
+              <metadataRepository>
+                <enabled>true</enabled>
+              </metadataRepository>
+              <buildArgs>
+                <buildArg>--no-fallback</buildArg>
+                <buildArg>--enable-preview</buildArg>
+                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
+                <buildArg>-H:IncludeResources=(db|frontend|openapi|docs|router|io)/.*</buildArg>
+                <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
+                <!-- Third-party reachability captured with the tracing agent (see native-config/README). -->
+                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/native-config</buildArg>
+                <!-- No jar manifest in a native image; Version reads this property instead. -->
+                <buildArg>-Dfc.version=${project.version}</buildArg>
+                <buildArg>--initialize-at-build-time=io.flowcatalyst.server.Version</buildArg>
+                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+              </buildArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!--
       jOOQ code generation (docs/database.md). Starts an embedded PostgreSQL,
       runs the Flyway migrations, and regenerates io.flowcatalyst.db.generated
       (tables + records, committed) into src/main/java:

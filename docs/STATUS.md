@@ -4,6 +4,85 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## fc-server packaging and the default-broker gate (2026-09-04)
+
+The owner restated the two deliverables, the same split as the Go repo:
+**`fcdev`** is the developer monolith (fc-server + embedded Postgres + the
+built-in Postgres broker + `start|stop|fresh|db upgrade`); **`fc-server`** is
+the production server with every subsystem behind `FC_*_ENABLED` and **no
+bundled broker** unless `FC_DEFAULT_BROKER=postgres`. Neither is a native
+binary: both are executable jars, and JBang is optional for `fcdev` (the
+owner does not want to register with JBang yet).
+
+- `server/pom.xml` now shades an attached `flowcatalyst-server-<v>-exec.jar`
+  (main class `io.flowcatalyst.server.Main`, `Implementation-Version` stamped
+  so `/health` reports the build). The thin jar stays the main artifact, so
+  `fcdev`'s own shade is unchanged. `Dockerfile` + `.dockerignore` mirror the
+  Go image: Temurin 25 JRE on Alpine, uid 10001, ports 8080/9090, the same
+  `wget /health` check. README has a "Run" section.
+- **Defect fixed (Java-only):** `Router.configSource` synthesised the Postgres
+  broker queue whenever `FLOWCATALYST_CONFIG_URL` was blank, ignoring
+  `FC_DEFAULT_BROKER`. Go (`server/run.go:346`) and spec §8.4 only do so when
+  the broker is `postgres`; otherwise "no pools will start". A production
+  router with neither would have built a queue from the database URL. Now
+  gated; the default path also runs `PostgresQueue.initSchema` when a data
+  source exists (Go does this in the router bootstrap, Java only did it in the
+  scheduler publisher), and a blank database URL falls back to Go's
+  `postgresql://postgres@localhost:5432/flowcatalyst`.
+  `RouterConfigSourceTest` pins all five branches; removing the gate fails
+  two of them (mutation-checked).
+- Smoke-verified from the jar: `FC_PLATFORM_ENABLED=false FC_ROUTER_ENABLED=true`
+  starts with no database, `/ready` shows only the router, `/router/health`
+  is HEALTHY, log says "no pools will start".
+- Still open for a router-only default-broker instance: `QueueFactory` needs
+  a `DataSource`, but `Main` only opens one for database-backed subsystems,
+  so `FC_DEFAULT_BROKER=postgres` on a router-only fc-server logs "needs
+  postgres but no database is configured" and starts nothing. Go opens its
+  own pgxpool from the URL. Owner question, not fixed here.
+
+## GraalVM native-image trial (2026-09-04) — it works
+
+Owner asked "just to see if it would work". It does: `server/target/fc-server`
+is a 183 MB arm64 Mach-O built in ~1m25s by `mvn -DskipTests -pl server -am
+-Pnative package` under `mise install java@oracle-graalvm-25.0.4.1` (the
+project default JDK stays Temurin; the profile is opt-in). Verified with the
+binary, not the jar: router-only with no database; platform + router +
+default broker against a migrated database; and against an **empty**
+database, which Flyway migrated and the seeder populated. Every surface
+answered — `/health` with the stamped version, `/ready`, `/router/health`,
+the `/api/*` list routes, an event-type create (201), the embedded SPA,
+`/openapi.json`, `/metrics`. Router-only RSS 50 MB vs 181 MB for the same
+jar; both reach `/health` in under a second.
+
+Four build iterations, each fixing one thing:
+
+1. Jackson could not see record components → `tools/native-reflect-config.sh`
+   registers every `io.flowcatalyst` class (ours, so the cost is only size).
+2. jOOQ `SQLDataType.<clinit>` NPE: `Class.getArrayType()` returns null in an
+   image for unregistered array classes → third-party metadata captured with
+   the tracing agent into `server/native-config/` (README there says how to
+   re-capture; merge after any new "not registered" error).
+3. `/health` said `dev`: no jar manifest in an image → `-Dfc.version` plus
+   `--initialize-at-build-time=io.flowcatalyst.server.Version`.
+4. **Flyway found no migrations** ("unsupported protocol: resource") — on a
+   migrated database that was only a warning; on a fresh one the seeder
+   crashed into an empty schema. Fixed in production code, gated to images:
+   `IndexedMigrations` is a Flyway `ResourceProvider` over the committed
+   `db/migration.index`; `Migrator` installs it only when
+   `org.graalvm.nativeimage.imagecode` is set, so the JVM keeps scanning.
+   `IndexedMigrationsTest` pins index == directory listing **and** that an
+   indexed Flyway migrates a fresh database; an emptied index fails all
+   three (mutation-checked). **Adding a migration now needs an index line**
+   — the test tells you.
+
+Not done, deliberately: no native tests run in the image (the JVM suite is
+the authority), no Linux/Docker native stage (the Dockerfile ships the jar),
+no PGO/`-O3`, and the agent metadata covers only the routes exercised above
+— an unexercised reflective path (MCP, SQS, NATS, outbox, the auth surface
+once ported) will surface as a runtime "not registered" error, not at build
+time. The metadata repository has no entries for jOOQ, Flyway or Javalin, so
+that agent capture is load-bearing.
+
 ## Router completion drive (2026-09-02)
 
 The owner asked for the full router port to be completed against the
