@@ -235,6 +235,19 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
                 .execute() == 1;
     }
 
+    /// The purger's sweep: a superseded secret whose overlap window has
+    /// closed is cleared at rest (verification already refuses it). Returns
+    /// the number of clients cleared.
+    public int clearLapsedPreviousSecrets(Instant now) {
+        return dsl.update(T)
+                .setNull(T.PREVIOUS_SECRET_REF)
+                .setNull(T.PREVIOUS_SECRET_EXPIRES_AT)
+                .where(T.PREVIOUS_SECRET_REF.isNotNull())
+                .and(T.PREVIOUS_SECRET_EXPIRES_AT.isNotNull())
+                .and(T.PREVIOUS_SECRET_EXPIRES_AT.lt(utcOrNull(now)))
+                .execute();
+    }
+
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static OAuthClient toEntity(OauthClientsRecord row, List<String> redirectUris, List<String> postLogoutUris,

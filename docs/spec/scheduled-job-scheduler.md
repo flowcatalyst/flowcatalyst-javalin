@@ -103,10 +103,15 @@ each step independently logged on failure and the loop continues:
 | OAuth previous secrets | clear `previous_secret_*` where the rotation window has lapsed |
 | **Login-attempt partitions** | `EnsureQuarterlyPartition(now)` and `(now + 3 months)` — `iam_login_attempts_YYYY_qN` as migration 049 names them, `CREATE TABLE IF NOT EXISTS … PARTITION OF … FOR VALUES FROM (quarter start) TO (next quarter start)`; then `DropPartitionsOlderThan(now − 3 years)` — a schema-level `DROP TABLE` of quarterly partitions whose range ends before the cutoff; the default partition is never touched |
 
-Until the auth aggregate is ported, the Java purger runs the steps whose
-tables it owns today (**rate-limit events if that table is written by
-Java; the login-attempt partitions**) and gains the auth tables with the
-auth port. The partition step is what keeps `lastSuccessAt`'s 400-day
+The Java purger (2026-09-05) runs every step above plus the four ruling
+I-Q17 sweeps — expired e-mail PINs and trusted devices
+(`iam_mfa_email_pins`, `iam_mfa_trusted_devices`), expired password-reset
+tokens, and PENDING reset-approval requests past expiry marked `EXPIRED`
+(defect 11, never deleted). Login-facing rows keep a **24 h grace** after
+expiry before removal (`Purger.EXPIRED_ROW_GRACE`): every reader already
+refuses an expired row, so the grace only preserves a day of evidence
+for support questions. The rate-limit retention is `Policies.maxWindow()
++ 10 min`, mirroring Go's margin. The partition step is what keeps `lastSuccessAt`'s 400-day
 window partition-pruned; without it every attempt after the pre-created
 quarters lands in the default partition.
 

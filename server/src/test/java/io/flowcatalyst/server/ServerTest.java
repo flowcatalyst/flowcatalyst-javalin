@@ -45,11 +45,16 @@ class ServerTest {
 
     @Test
     void healthOnBothListeners() throws Exception {
-        for (int port : new int[]{running.apiPort(), running.metricsPort()}) {
-            var r = get(port, "/health");
-            assertThat(r.statusCode()).isEqualTo(200);
-            assertThat(r.body()).isEqualTo("{\"status\":\"UP\",\"version\":\"dev\"}\n");
-        }
+        // The API listener carries the readiness checks (ruling C-Q23): the
+        // login-attempt partitions the backoff store needs are present here
+        // because the migrations and the purger create them.
+        var api = get(running.apiPort(), "/health");
+        assertThat(api.statusCode()).as(api.body()).isEqualTo(200);
+        assertThat(api.body()).isEqualTo("{\"status\":\"UP\",\"version\":\"dev\",\"checks\":{\"loginAttemptPartitions\":\"ok\"}}\n");
+        // The metrics listener has no checks to run.
+        var metrics = get(running.metricsPort(), "/health");
+        assertThat(metrics.statusCode()).isEqualTo(200);
+        assertThat(metrics.body()).isEqualTo("{\"status\":\"UP\",\"version\":\"dev\"}\n");
     }
 
     @Test

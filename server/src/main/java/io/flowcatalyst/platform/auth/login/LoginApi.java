@@ -188,6 +188,7 @@ public final class LoginApi {
                 // Fail closed (ruling C-Q23): a backoff-store error during a
                 // brute force must not switch the lock off.
                 LOG.error("login backoff check failed; refusing login", e);
+                AuthAlarms.backoffStoreError();
                 backoffUnavailable(ctx);
                 return;
             }

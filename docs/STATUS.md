@@ -41,6 +41,8 @@ in its worktree; main's full suite is re-run after each merge.
 | `6b26f29` | **Phase 3 A3 — OAuth-client aggregate + admin API** (12 routes; `acceptsSecret` both-compares; empty grant list ⇒ none, C-Q20) | Sonnet in a worktree, strong; six mutants (five agent, one orchestrator on the null-vs-empty junction split); coverage 229/245 |
 | `4643de0` | **Phase 3 A4a — grant store, refresh rotation, rate-limit store + governor** | orchestrator; mutants; JSONB/precision test pitfalls documented in the tests |
 | `0d98358` | **Phase 3 A4b — the OAuth / OIDC provider** (`/oauth/authorize`, `/oauth/token` ×3 grants + developer branch, `/oauth/introspect`, `/oauth/revoke`, `/oauth/userinfo`, discovery, JWKS, `/auth/refresh`; per-IP and per-client throttles; A-22 previous-secret signal) | orchestrator; 42 HTTP tests over embedded Postgres, six mutants killed (state ≤116, code↔client binding, previous-secret stamp, apiAccess ceiling narrowing, refresh client binding, introspection `client_id` = azp); wired in `Platform` |
+| `fa3a8a9` | **Phase 3 A5 core — the second factor** (TOTP RFC 6238 + QR, e-mail PIN, recovery codes, trusted devices, the HS256 mfa token, the §6.2 login gate, domain policy with the I-Q11 internal term) | orchestrator; 50 tests; seven mutants incl. the two-halved TOTP replay guard; Sonnet unit for the 14 routes + change-password briefed (`docs/process/briefs/2026-09-05-a5-mfa-routes.md`) |
+| `(next)` | **Purger sweeps + readiness + alarm** — the ten-step purger (Go's order: payloads, OIDC states, portal flows, rate-limit events at MaxWindow+10 min, lapsed OAuth previous secrets, MFA PINs/devices, reset tokens, approvals marked `EXPIRED`, partitions); `/health` readiness check for the login-attempt partitions (C-Q23) with 503 `DOWN`; `fc_auth_backoff_store_errors_total` alarm counter | orchestrator; five mutants; expired auth rows keep a 24 h grace before removal (I-Q17 "expiry + grace") |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events
@@ -55,10 +57,12 @@ OAuth-client aggregate (`6b26f29`, Sonnet), A4a the grant store, refresh
 rotation and rate limiting (`4643de0`), A4b the whole OAuth / OIDC provider
 (row below). Found while porting A2: Go anchors the enforced lock to the
 oldest failure of the ceiling set, not the last failure the spec names —
-`docs/backlog.md`. **Next:** A5 MFA (orchestrator core + Sonnet routes),
-then the purger sweeps for `iam_rate_limit_events` + the four auth tables,
-the login-attempt partition readiness check (C-Q23), then Batch B (OIDC
-bridge, portal) and Batch C (WebAuthn, password reset, approvals, mail).
+`docs/backlog.md`. A5's core is in (`fa3a8a9`); its 14 routes and
+change-password are a Sonnet unit in flight. The purger's ten sweeps, the
+C-Q23 readiness check and the backoff alarm counter followed (row below).
+**Next:** merge the A5 routes, then Batch B (OIDC bridge, portal) and
+Batch C (WebAuthn, password reset, approvals, mail; the I-Q16
+`FlowCatalyst` default spelling lands with branding).
 Until the portal unit lands, `/oauth/token` refuses a `ptu_` code with
 `invalid_grant "Portal subjects are not supported"`.
 

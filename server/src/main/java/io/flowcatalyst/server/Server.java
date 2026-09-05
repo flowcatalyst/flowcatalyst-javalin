@@ -7,6 +7,10 @@ import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
 import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.purger.Purger;
+import java.time.Instant;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
+import io.flowcatalyst.platform.auth.login.AuthAlarms;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
 import io.flowcatalyst.mcp.McpConfig;
@@ -379,7 +383,8 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         // Not leader-gated (purger spec §4): every instance purges, whenever a
         // pool exists at all — the statements are idempotent/`IF EXISTS`, so a
         // duplicate pass from a second instance is harmless.
-        Purger purger = dbPool != null ? Purger.start(dbPool) : null;
+        Purger purger = dbPool != null ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system())) : null;
+        registry.register(AuthAlarms.collector());
 
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
@@ -527,7 +532,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             cfg.http.prefer405over404 = false;
             cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
 
-            cfg.routes.get("/health", Health::handle);
+            cfg.routes.get("/health", health(mode)::handle);
 
             switch (mode) {
                 case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(cfg.routes);
@@ -573,4 +578,18 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         return signingKeys;
     }
 
+    /// Readiness (ruling C-Q23): a platform instance is not ready while the
+    /// login-attempt partitions the backoff store writes into are missing.
+    private static Health health(Mode mode) {
+        return switch (mode) {
+            case Mode.Platform(var pool) -> {
+                var attempts = new LoginAttemptRepository(pool);
+                yield new Health(List.of(new Health.Check("loginAttemptPartitions", () -> {
+                    var missing = attempts.missingQuarterlyPartitions(Instant.now());
+                    return missing.isEmpty() ? "" : "missing partitions: " + String.join(", ", missing);
+                })));
+            }
+            case Mode.Worker _, Mode.RouterOnly _ -> Health.noChecks();
+        };
+    }
 }

@@ -527,6 +527,16 @@ archival is separate), or purge on a retention of days — well above
 `GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
 limiter? See `docs/spec/auth-retention.md` §5.
 
+## Readiness and alarms beyond C-Q23 (2026-09-05)
+
+`/health` now carries readiness checks (a failing one is 503 `DOWN`) and
+the first check is the login-attempt partitions. Candidates for later, not
+done: a pool-connectivity check (a `SELECT 1` with a short timeout), the
+signing key's presence, and the rate-limit store when Redis lands. The
+alarm counters are process-global (`AuthAlarms`); a `/auth/2fa/verify`
+backoff-store error should increment the same counter (the Sonnet route
+unit is told to reuse `LoginApi`'s pattern).
+
 ## Full-suite one-offs under machine load (2026-09-05)
 
 Two consecutive `mvn -pl server clean test` runs on main each failed in

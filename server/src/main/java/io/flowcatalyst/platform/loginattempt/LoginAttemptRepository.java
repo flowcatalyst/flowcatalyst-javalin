@@ -258,6 +258,21 @@ public final class LoginAttemptRepository {
     /// or before `cutoff` (purger spec §4). Only names matching the
     /// `_YYYY_qN` shape are ever considered — the default partition (and
     /// anything else) is left alone by construction, not by an extra check.
+    /// The readiness check (ruling C-Q23): the quarterly partitions the
+    /// backoff store needs *now* — this quarter's and next quarter's, the
+    /// two the purger keeps ahead — that do not exist. Empty means ready.
+    public List<String> missingQuarterlyPartitions(Instant now) {
+        var missing = new java.util.ArrayList<String>();
+        for (Instant at : List.of(now, now.atZone(ZoneOffset.UTC).plusMonths(3).toInstant())) {
+            String name = quarterlyPartitionName(quarterStart(at));
+            String found = dsl.fetchOne("SELECT to_regclass(?)", name).get(0, String.class);
+            if (found == null) {
+                missing.add(name);
+            }
+        }
+        return missing;
+    }
+
     public void dropPartitionsOlderThan(Instant cutoff) {
         for (String child : quarterlyPartitionNames()) {
             Optional<Instant> end = parseQuarterlyPartitionEnd(child);

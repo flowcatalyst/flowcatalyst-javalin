@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.purger;
 
-import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.purger.jfr.PurgerStepEvent;
 import io.flowcatalyst.testjfr.Recorded;
 import io.flowcatalyst.testpg.TestPg;
@@ -20,17 +20,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PurgerEventsTest {
 
     private static final DataSource DS = TestPg.dataSource();
+    private static final Purger.Sweeps SWEEPS = Purger.Sweeps.over(DS,
+            RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(java.util.Map.of())));
+    private static final List<String> STEPS = List.of("oauth-payloads", "oidc-login-states", "portal-login-flows",
+            "rate-limit-events", "oauth-previous-secrets", "mfa-email-pins", "mfa-trusted-devices",
+            "password-reset-tokens", "reset-approval-requests", "login-attempt-partitions");
 
     @Test
-    @DisplayName("a normal tick records both steps succeeded, with no error")
-    void aNormalTickRecordsBothStepsSucceeded() throws Exception {
-        var loginAttempts = new LoginAttemptRepository(DS);
+    @DisplayName("a normal tick records every step succeeded, with no error")
+    void aNormalTickRecordsEveryStepSucceeded() throws Exception {
+        var events = Recorded.from(PurgerStepEvent.class, () -> Purger.tick(SWEEPS, Instant.now()));
 
-        var events = Recorded.from(PurgerStepEvent.class, () -> Purger.tick(loginAttempts, Instant.now()));
-
-        assertThat(events).hasSize(2);
-        assertThat(events).extracting(e -> e.getString("step"))
-                .containsExactlyInAnyOrder("login-attempt-partitions", "rate-limit-events");
+        assertThat(events).hasSize(STEPS.size());
+        assertThat(events).extracting(e -> e.getString("step")).containsExactlyElementsOf(STEPS);
         for (RecordedEvent event : events) {
             assertThat(event.getBoolean("succeeded")).as(event.getString("step") + " succeeded").isTrue();
             assertThat(event.getString("error")).as(event.getString("step") + " error").isNull();
@@ -39,18 +41,17 @@ class PurgerEventsTest {
 
     @Test
     @DisplayName("a step whose action throws records succeeded=false with the exception text, "
-            + "and the other step's event is still present")
+            + "and the other steps' events are still present")
     void aFailingStepRecordsTheError() throws Exception {
-        var loginAttempts = new LoginAttemptRepository(DS);
 
         // Instant.MAX's year (10^9) overflows YearMonth's range, so
         // ensureQuarterlyPartition throws a real DateTimeException before
         // ever touching the database — a genuine failing dependency, not a
         // mock, pinning "one table's problem never stops the rest of the
         // pass" (class doc, Purger) against an actual thrown exception.
-        var events = Recorded.from(PurgerStepEvent.class, () -> Purger.tick(loginAttempts, Instant.MAX));
+        var events = Recorded.from(PurgerStepEvent.class, () -> Purger.tick(SWEEPS, Instant.MAX));
 
-        assertThat(events).hasSize(2);
+        assertThat(events).as("every step still records, whatever the others did").hasSize(STEPS.size());
         var partitions = only(events, "login-attempt-partitions");
         assertThat(partitions.getBoolean("succeeded")).isFalse();
         assertThat(partitions.getString("error")).contains("DateTimeException");

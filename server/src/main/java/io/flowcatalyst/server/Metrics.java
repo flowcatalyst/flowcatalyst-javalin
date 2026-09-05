@@ -39,7 +39,7 @@ public final class Metrics {
         var app = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
-            cfg.routes.get("/health", Health::handle);
+            cfg.routes.get("/health", Health.noChecks()::handle);
             cfg.routes.get("/ready", this::ready);
             cfg.routes.get("/metrics", ctx -> scrape(ctx, formats));
         }).start(env.metricsPort());

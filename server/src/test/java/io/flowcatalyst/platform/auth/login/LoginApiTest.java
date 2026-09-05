@@ -228,10 +228,12 @@ class LoginApiTest {
             HttpError.install(cfg.routes);
             LoginApi.register(cfg.routes, state(brokenAttempts, new BackoffCheck(brokenAttempts, BackoffPolicy.DEFAULT), MfaChallenge.none()));
         })) {
+            long alarmsBefore = AuthAlarms.backoffStoreErrors();
             var r = closed.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
             assertThat(r.statusCode()).as("ruling C-Q23: the lock is never switched off by a store error").isEqualTo(503);
             assertThat(json(r).get("error").asString()).isEqualTo("BACKOFF_UNAVAILABLE");
             assertThat(r.headers().firstValue("set-cookie")).isEmpty();
+            assertThat(AuthAlarms.backoffStoreErrors()).as("the refusal is counted, so an operator can alarm on the first one").isEqualTo(alarmsBefore + 1);
         }
     }
 
