@@ -690,3 +690,11 @@ later decision.
   caller; Go's BFF scheduled-job list hides them from a client-scoped one
   (while, in the same list, showing another client's job — the leak above).
   Owner: are platform-scoped jobs visible to client users? Allow-listed.
+- **Go's fcdev cannot boot a fresh database (blocks the Go column of the
+  frontend e2e).** `fcdev start` seeds `schema_type = 'JSON'` against its own
+  migration 051 CHECK (the seeder defect already listed above). The parity
+  harness works around it because it owns the database; the e2e runner goes
+  through `fcdev start`, which seeds and exits. Until Go's seeder is fixed,
+  `pnpm e2e:both` reports the Go side as failed to start and `pnpm e2e:java`
+  is the usable command. Owner: the Go fix is one literal in
+  `internal/platform/seed/event_types.go`.
