@@ -26,11 +26,12 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **principal 404 oracle (PR-3/PR-4), X-02 sync containment, X-08 per-app rollup groups, five residual X-06 readers** | Sonnet; orchestrator mutation-checked the 404 (seven assertions) |
 | `(merge)` | **stream processor** (Phase 2 unit 1): fan-out, projections, partition manager, health | spec `stream.md` by orchestrator; Sonnet port; orchestrator mutation-checked the claim transaction |
 | `(merge)` | **outbox processor** (Phase 2 unit 2) | spec `outbox.md` by orchestrator; Sonnet port; orchestrator replaced a racy exclusivity test with a held-transaction one that kills the no-lock mutant |
+| `7391dbe` | **scheduled-job scheduler + purger** (Phase 2 unit 3): poller, HMAC-signed dispatcher with credential cache, login-attempt partition maintenance | spec `scheduled-job-scheduler.md` by orchestrator; Sonnet port (five mutants killed); orchestrator killed a sixth (signing with the token instead of the secret) |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Sonnet, own worktrees; merge pending orchestrator review):**
-- Scheduled-job scheduler + purger port against `scheduled-job-scheduler.md` (Phase 2 unit 3).
 - BFF + `/api/me` port against `bff.md`.
+- MCP server port against `mcp.md` (Phase 2 unit 4).
 
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
 (seed `'JSON'`, unextended partitions, dispatch-ingest permission); the

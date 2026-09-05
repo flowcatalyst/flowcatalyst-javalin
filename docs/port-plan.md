@@ -108,9 +108,9 @@ transaction by me, everything around it by Sonnet.
 1. ~~Stream processor~~ **Done 2026-09-05** (spec `docs/spec/stream.md`).
 2. ~~Outbox processor~~ **Done 2026-09-05** (spec `docs/spec/outbox.md`;
    Postgres only — Mongo on the backlog by ruling).
-3. **Scheduled-job scheduler** + **purger** — spec
-   `docs/spec/scheduled-job-scheduler.md` written 2026-09-05 (the purger
-   also owns the login-attempt quarterly partitions).
+3. ~~Scheduled-job scheduler + purger~~ **Done 2026-09-05** (spec
+   `docs/spec/scheduled-job-scheduler.md`; the purger also owns the
+   login-attempt quarterly partitions).
 4. **MCP** (785) — spec `docs/spec/mcp.md` written 2026-09-05; the Java
    MCP SDK is already managed in the parent POM. Sonnet end to end.
 5. **AWS Secrets Manager DB mode + rotation** (318) — spec
