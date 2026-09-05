@@ -227,7 +227,7 @@ public final class Platform {
         var mail = MailService.fromEnv(EnvReader.system());
         var notices = new Notifications(mail, mfaBranding::platformName);
         var mfa = new Mfa(new MfaRepository(pool), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
-                MailSender.of(mail), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC());
+                MailSender.of(mail), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC(), new AuditLogRepository(pool));
         var mfaTokens = new MfaToken(signingKeys.privateKey(), env.jwtIssuer());
         var trustedDeviceCookie = new TrustedDeviceCookie(cookiesSecure);
         var mfaGate = new LoginMfaGate(mfa, new DomainPolicy.Evaluator(loginMappingRepo), mfaTokens, trustedDeviceCookie);
@@ -280,10 +280,8 @@ public final class Platform {
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
-        // TODO(port): the registrations from wire_routes.go still missing are all Phase 3
-        //   (docs/port-plan.md, gated on docs/auth-rulings.md):
-        //   OIDC bridge + portal auth, portalusers, resetapproval, webauthn,
-        //   clientselection. Everything else below is registered in Go's order.
+        // Registered in Go's wire_routes.go order. Still missing from Go's list:
+        // clientselection (/auth/client/*) — see docs/port-plan.md.
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);

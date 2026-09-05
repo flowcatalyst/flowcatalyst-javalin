@@ -18,6 +18,11 @@ public interface MfaService {
     /// @throws UseCaseException internal `MFA_NOT_CONFIGURED` | `MFA`
     void resetAll(String principalId);
 
+    /// The admin reset (auth-identity §6.9): clears everything like
+    /// [#resetAll] and writes the `2FA_RESET_BY_ADMIN` audit row with the
+    /// administrator as the actor.
+    void resetAllByAdmin(String principalId, String adminId, String adminName);
+
     /// Whether a real service is wired; the by-id read enriches only then.
     boolean configured();
 
@@ -30,6 +35,11 @@ public interface MfaService {
 
             @Override
             public void resetAll(String principalId) {
+                throw UseCaseException.internal("MFA_NOT_CONFIGURED", "Two-factor service not configured", null);
+            }
+
+            @Override
+            public void resetAllByAdmin(String principalId, String adminId, String adminName) {
                 throw UseCaseException.internal("MFA_NOT_CONFIGURED", "Two-factor service not configured", null);
             }
 

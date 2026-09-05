@@ -314,6 +314,24 @@ class MfaServiceTest {
         assertThat(MFA.removeMethod(other, MfaMethod.TOTP)).as("nothing to remove").isFalse();
     }
 
+    @Test
+    void anAdminResetWipesEverythingAndAuditsTheAdministratorAsTheActor() {
+        String pid = principal();
+        var e = MFA.beginTotpEnrollment(pid, "a@example.com");
+        MFA.confirmTotpEnrollment(pid, Totp.code(e.secret(), Totp.stepOf(CLOCK.get())));
+        var audited = new Mfa(REPO, Optional.of(ENC), MAIL, () -> "X", Mfa.Config.DEFAULT, MOVABLE,
+                new io.flowcatalyst.platform.audit.AuditLogRepository(DS));
+        audited.resetAllByAdmin(pid, "prn_admin_" + RUN, "Ada Admin");
+        assertThat(MFA.confirmed(pid)).isEmpty();
+        var row = DB.selectFrom(io.flowcatalyst.db.generated.Tables.AUD_LOGS)
+                .where(io.flowcatalyst.db.generated.Tables.AUD_LOGS.ENTITY_ID.eq(pid)).fetchOne();
+        assertThat(row).as("the 2FA_RESET_BY_ADMIN row").isNotNull();
+        assertThat(row.getOperation()).isEqualTo("2FA_RESET_BY_ADMIN");
+        assertThat(row.getPrincipalId()).as("the administrator is the actor").isEqualTo("prn_admin_" + RUN);
+        assertThat(row.getEntityType()).isEqualTo("PRINCIPAL");
+        DB.deleteFrom(io.flowcatalyst.db.generated.Tables.AUD_LOGS).where(io.flowcatalyst.db.generated.Tables.AUD_LOGS.ENTITY_ID.eq(pid)).execute();
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────
 
     private static String principal() {

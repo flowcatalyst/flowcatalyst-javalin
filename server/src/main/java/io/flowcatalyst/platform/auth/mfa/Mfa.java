@@ -1,6 +1,9 @@
 package io.flowcatalyst.platform.auth.mfa;
 
+import io.flowcatalyst.platform.audit.AuditLog;
+import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
+import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.platform.principal.MfaService;
 import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
@@ -72,20 +75,28 @@ public final class Mfa implements MfaService {
     private final Supplier<String> issuerName;
     private final Config config;
     private final Clock clock;
+    private final AuditLogRepository audit;
 
     public Mfa(MfaRepository repo, Optional<Encryption> encryption, MailSender mail, Config config, Clock clock) {
-        this(repo, encryption, mail, config::issuer, config, clock);
+        this(repo, encryption, mail, config::issuer, config, clock, null);
     }
 
     /// @param issuerName the live platform name the TOTP label carries (overrides `config.issuer`)
     public Mfa(MfaRepository repo, Optional<Encryption> encryption, MailSender mail, Supplier<String> issuerName,
                Config config, Clock clock) {
+        this(repo, encryption, mail, issuerName, config, clock, null);
+    }
+
+    /// @param audit where the admin reset's `2FA_RESET_BY_ADMIN` row goes; nullable ⇒ not written (logged)
+    public Mfa(MfaRepository repo, Optional<Encryption> encryption, MailSender mail, Supplier<String> issuerName,
+               Config config, Clock clock, AuditLogRepository audit) {
         this.repo = Objects.requireNonNull(repo, "repo");
         this.encryption = Objects.requireNonNull(encryption, "encryption");
         this.mail = Objects.requireNonNull(mail, "mail");
         this.issuerName = Objects.requireNonNull(issuerName, "issuerName");
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.audit = audit;
     }
 
     public Config config() {
@@ -113,6 +124,22 @@ public final class Mfa implements MfaService {
         repo.deleteRecoveryCodes(principalId);
         repo.deletePins(principalId);
         repo.revokeAllTrustedDevices(principalId);
+    }
+
+    /// §6.9: the same wipe, then the audit row naming the administrator.
+    @Override
+    public void resetAllByAdmin(String principalId, String adminId, String adminName) {
+        resetAll(principalId);
+        if (audit == null) {
+            LOG.warn("2FA_RESET_BY_ADMIN not audited: no audit repository wired (principal={} admin={})", principalId, adminId);
+            return;
+        }
+        try {
+            audit.insertBatch(List.of(new AuditLog(EntityType.AUDIT_LOG.generate(), "PRINCIPAL", principalId, "2FA_RESET_BY_ADMIN",
+                    null, adminId, adminName, null, null, clock.instant())));
+        } catch (RuntimeException e) {
+            LOG.warn("2FA_RESET_BY_ADMIN audit insert failed principal={} admin={}", principalId, adminId, e);
+        }
     }
 
     @Override

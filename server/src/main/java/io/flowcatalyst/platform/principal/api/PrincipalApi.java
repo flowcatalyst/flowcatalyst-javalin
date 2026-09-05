@@ -494,15 +494,15 @@ public final class PrincipalApi {
     /// Clears a user's enrolled 2FA (anchor or a client-administrator of the
     /// user's client). Without an MFA service this answers 500 before the load,
     /// as Go does. An out-of-scope target answers the same not-found
-    /// `principal(s, id)` already gives a missing id (PR-4). TODO(port): the
-    /// `2FA_RESET_BY_ADMIN` audit row once the audit repository gains a write
-    /// path (spec §12).
+    /// `principal(s, id)` already gives a missing id (PR-4). The service writes
+    /// the `2FA_RESET_BY_ADMIN` audit row with the administrator as the actor.
     private static void resetTwoFactor(Context ctx, State s) {
         if (!s.mfa().configured()) throw UseCaseException.internal("MFA_NOT_CONFIGURED", "Two-factor service not configured", null);
         Principal p = principal(s, ctx.pathParam("id"));
         Access.requireUserAdmin(p, "Principal");
         if (!p.isUser()) throw UseCaseException.validation("NOT_USER", "Two-factor reset only applies to user accounts");
-        s.mfa().resetAll(p.id());
+        AuthContext admin = Auth.current();
+        s.mfa().resetAllByAdmin(p.id(), admin.principalId(), admin.name());
         if (p.email() != null) s.notifier().twoFactorReset(p.email());
         ctx.json(new StatusChangeResponse("Two-factor authentication reset"));
     }
