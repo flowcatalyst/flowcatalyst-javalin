@@ -193,7 +193,7 @@ in it), so the frontend is their acceptance test.
   subprocess vs Java in-process, scenario corpus S0–S3, allow-list with
   rulings, coverage gate. ~~Harness + S0~~ **Done** (Sonnet, `0abc08d`); S1 (28 lockfile
   groups, three agents), S2 (auth surface, orchestrator-reviewed), S3
-  (rest + threshold 1.0); then triage per spec §9. ~~Frontend end-to-end
+  (rest + threshold 1.0); then triage per spec §9 — **all done 2026-09-06: the corpus is 1,145 steps, 0 DIFF, 0 ERROR; the frontend e2e is 49 flows green on Java.** ~~Frontend end-to-end
   design~~ **Designed 2026-09-05** (`docs/spec/frontend-e2e.md`: Playwright
   against both sides, ~40 flows in nine groups, three Sonnet briefs after
   the parity harness lands); `tools/sync-frontend.sh` keeps the embedded

@@ -54,7 +54,7 @@ in its worktree; main's full suite is re-run after each merge.
 | `a674149` | **Branding fallback `FlowCatalyst`** (I-Q16 applied to `Branding.DEFAULT_PLATFORM_NAME` too — owner to confirm the public endpoint's spelling, `docs/backlog.md`) | orchestrator |
 | `1fd26e7` | **Admin 2FA reset audit row** (`MfaService.resetAllByAdmin`; the last `TODO(port)` in `PrincipalApi`) | orchestrator; pinned in `MfaServiceTest` |
 | `c4b4a14` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
-| `(next)` | **Request schema validation in huma's shape** (`shared/openapi/{SchemaValidation,SchemaValidator,ValidationMessages,GoNumbers}`): a before-filter after the authenticator validates every lockfile operation's body and query/path parameters against the lockfile schemas and answers `VALIDATION` with per-field `details.errors` the SPA renders; the startup keyword gate refuses an unimplemented schema keyword; 17 `*ApiTest`s moved from absent-field to blank-field for their domain codes. Three spec corrections proven against huma's source (one alphabetical pass, the query-parameter message, `additionalProperties` as the lockfile has it). **The parity corpus has no VALIDATION diff left and the seven message texts match Go** | Sonnet (strong: read huma rather than trusting my spec); orchestrator mutant on parameter validation killed |
+| `37a6288` | **Request schema validation in huma's shape** (`shared/openapi/{SchemaValidation,SchemaValidator,ValidationMessages,GoNumbers}`): a before-filter after the authenticator validates every lockfile operation's body and query/path parameters against the lockfile schemas and answers `VALIDATION` with per-field `details.errors` the SPA renders; the startup keyword gate refuses an unimplemented schema keyword; 17 `*ApiTest`s moved from absent-field to blank-field for their domain codes. Three spec corrections proven against huma's source (one alphabetical pass, the query-parameter message, `additionalProperties` as the lockfile has it). **The parity corpus has no VALIDATION diff left and the seven message texts match Go** | Sonnet (strong: read huma rather than trusting my spec); orchestrator mutant on parameter validation killed |
 | `a2aa48f` | **Frontend e2e — 2fa, passkeys, tenancy, authorization, identity** (the confinement flow verified non-vacuous; a real passkey ceremony via CDP; TOTP with computed codes) — **the whole e2e suite is 49 flows on the Java side, all green**; the Go column waits on Go's seeder fix | Sonnet (strong; six SPA behaviours documented, none skipped); orchestrator ran all groups together |
 | `0453596` | **Frontend e2e — catalogue, authentication admin, platform** (29 screens, 36 flows incl. the auth group, all on reloaded state; Java 36/36; one expected failure pinning the `clientScoped` drop on both sides) | Sonnet (strong: six SPA traps documented, two product defects found); orchestrator reran the suite |
 | `095291e` | **SDK on Jackson 3 only** (owner ruling): the generator emits models only, a nine-line `sdk.generated.ApiClient` serves the two helpers the models call, the Jackson 2 databind/jsr310 dependencies are gone; the SDK's tree is `tools.jackson` + the `jackson-annotations` jar Jackson 3 itself uses. Also ruled: yubico stays for WebAuthn (the server's one runtime-scope Jackson 2 jar), no hand-rolled verifier | orchestrator; `GeneratedModelsOnJackson3Test` round-trips models incl. an `OffsetDateTime`; sdk 47 tests green, fcdev compiles |
@@ -98,26 +98,25 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 
-**Where to resume (2026-09-06, early):** Phase 3 complete; lockfile
-245/245 at threshold 1.0. **Phase 5 is running on the parity harness**
-(`parity/`, spec `docs/spec/parity-harness.md`): the S0/S1/S2 corpus is on
-main and every lockfile operation is hit by a scenario; ~150 first-run diffs
-were triaged (Java fixes in code, rulings allow-listed by id in
-`parity/expected-diffs.json`, Go defects in `docs/backlog.md`). Three
-Sonnet units in flight from briefs in `docs/process/briefs/`:
-`request-schema-validation` (huma's per-field VALIDATION envelope before
-every handler — the last systemic diff class, SPA-visible),
-`service-account-oauth-client` (retires the `unavailable:auth-not-ported`
-stub), and `p5-s3-scenarios` (the 105 routes outside the lockfile,
-`parity/surface.json`). Merge each with the usual discipline and rerun the
-full corpus (`PARITY_GO_SRC=/Users/andrewgraaff/Developer/flowcatalyst-go
-mvn -q -pl parity -am test -Dtest=ParityRunTest
--Dsurefire.failIfNoSpecifiedTests=false`, ~12 min; a stale allow-list
-entry fails a full run). After that: `docs/spec/frontend-e2e.md` (Playwright
-against both servers) and `docs/spec/cutover.md` (the rehearsal). Owner
-items are in `docs/backlog.md`: `$schema`, introspection `client_id`, the
-WebAuthn option defaults, the service-principal `name`, the
-`client_credentials` 500, the brand spelling, pagination.
+**Where to resume (2026-09-06, evening):** Phase 3 complete; lockfile
+245/245 at threshold 1.0. **Phase 5's verification is in place and clean.**
+The parity harness (`parity/`, spec `parity-harness.md`) runs 1,145 steps
+across every lockfile operation and every route outside it against a
+Go-created database and reports **0 DIFF, 0 ERROR** (`37a6288`); every
+deliberate difference sits in `parity/expected-diffs.json` with its ruling
+id, every Go defect in `docs/backlog.md`. The frontend e2e suite (`e2e/`,
+Playwright, spec `frontend-e2e.md`) is 49 flows across nine groups, all
+green on Java; its Go column waits on Go's one-literal seeder fix
+(backlog). Run them with
+`PARITY_GO_SRC=/Users/andrewgraaff/Developer/flowcatalyst-go mvn -q -pl
+parity -am test -Dtest=ParityRunTest -Dsurefire.failIfNoSpecifiedTests=false`
+(~12 min) and `cd e2e && pnpm e2e:java`. **What is left of Phase 5 is
+`docs/spec/cutover.md`**: the staging rehearsal, which needs an environment
+only the owner can provide, and the CI matrix item from `port-plan.md`.
+Owner items are in `docs/backlog.md` (the OpenAPI documents, `$schema`,
+introspection `client_id`, the WebAuthn option defaults, platform-scoped
+scheduled jobs, `clientScoped` on event-type create, the brand spelling,
+pagination, TypeBox as the contract source after cutover).
 
 **Sonnet, honestly, across eleven ports:** reliable when the brief names
 the template class, the exact routes and the mutants to run; two agents
