@@ -34,8 +34,17 @@ in its worktree; main's full suite is re-run after each merge.
 | `c55d6dd` | **AWS Secrets Manager DB mode + rotation** (Phase 2 unit 5, last) | spec `db-secret.md` by orchestrator; Sonnet port — the cleanest of the night: ten mutants incl. the disabled timer, a clear report; orchestrator killed an eleventh (credentials clobbered on a failed refresh) |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
-**In flight:** nothing. No worktrees, no background agents, working tree
-clean. Final whole-reactor `mvn clean test` on main at the end of the run:
+**In flight (Phase 4, started 2026-09-05 on the owner's go-ahead; Sonnet,
+own worktrees; merge pending orchestrator review):**
+- CORS filter from the allowlist — contract `docs/spec/cors.md` §9
+  (matching, headers, cache, invalidation decided by the orchestrator; open
+  question 3 settled there).
+- JFR events for the five Phase 2 loops — `docs/spec/jfr-events.md`.
+- fcdev `mcp`, `outbox` (+ `create-table`), `upgrade` — `docs/spec/fcdev-commands.md`
+  §2–§4. `init` (§1) follows when a slot frees; its OAuth-client step and
+  the MCP credential bootstrap stay deferred to Phase 3 (§0).
+
+Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 

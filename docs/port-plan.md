@@ -157,14 +157,20 @@ in it), so the frontend is their acceptance test.
 
 ## Phase 4 — cross-cutting
 
-- **CORS filter from the allowlist** (ruled: implement) — Sonnet.
+- **CORS filter from the allowlist** (ruled: implement) — Sonnet. *In flight
+  2026-09-05; contract `docs/spec/cors.md` §9.*
 - **Pagination envelope** — wire change; owner decides; lockfile bump +
   SDK/frontend regen.
-- **JFR events** at the semantic points the router spec names — Sonnet.
+- **JFR events** — the router's three landed `246e270`; the five Phase 2
+  loops get theirs per `docs/spec/jfr-events.md`. Sonnet. *In flight 2026-09-05.*
 - **fcdev stubs** `init`, `mcp`, `outbox`, `upgrade` — Sonnet, after Phase 2
-  gives them something to drive.
+  gives them something to drive. *In flight 2026-09-05; spec
+  `docs/spec/fcdev-commands.md`. `init`'s OAuth-client step and the MCP
+  credential bootstrap wait for Phase 3.*
 - **Native fcdev** (optional): per-platform GraalVM builds, picocli codegen;
-  removes JBang and the JDK from the developer install.
+  removes JBang and the JDK from the developer install. *Not built yet — only
+  fc-server has the `-Pnative` profile (88.8 MB on disk, 32.7 MB gzipped).
+  Expect fcdev to land near the same size; the Go release binary is 59 MB.*
 
 ## Phase 5 — drop-in verification and release
 

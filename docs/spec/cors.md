@@ -131,34 +131,101 @@ the row. `description` is stored as given (`null` when absent on the wire —
 an empty string on the wire is stored as an empty string: **accident?**,
 harmless, the same as other aggregates).
 
-## 9. Consumer: the CORS filter (owner decision — Java WILL emit CORS headers)
+## 9. Consumer: the CORS filter (owner decision — Java WILL emit CORS headers) [C]
 
 The Go platform stored this allowlist but never emitted CORS headers from it
-(the browser-facing surface was fronted by something else). The owner has
-ruled that the Java platform **will** drive its CORS response headers from
-this allowlist. The filter is **not** part of this unit; this section fixes
-what the filter needs from the aggregate so the repository exposes it now.
+(the browser-facing surface was fronted by something else). The owner ruled
+that the Java platform **drives its CORS response headers from this
+allowlist**. Decided 2026-09-05 by the orchestrator, with open question 3
+below settled here (no ruling arrived; these are the safe defaults).
 
-What the filter will need:
+### 9.1 Where it runs
 
-- A read of the current allowlist as origin strings:
-  `CorsOriginRepository.allowedOrigins()` → `List<String>` ordered by origin —
-  exactly the list `GET /api/platform/cors/allowed` serves, so the SPA and
-  the filter can never disagree. Exposed in this unit.
-- A **cache** in front of that read: the filter runs on every request and
-  must not hit Postgres per request. The cache is the filter's (an
-  `AtomicReference<Set<String>>` or similar with a bounded TTL as the
-  fallback refresh).
-- **Invalidation on change**: the `origin-added` / `origin-deleted` events
-  (§7) are the signal. The filter subscribes to them (in-process after
-  commit, or via the platform's own event delivery) and reloads
-  `allowedOrigins()`; the TTL covers the multi-node case until a cross-node
-  invalidation exists. Until the filter exists nothing consumes these
-  events beyond the event log.
-- Matching semantics are the filter's decision and **open question 3**
-  below: exact string match on the `Origin` request header (the safe
-  default), and whether the `*` the format admits becomes a wildcard host
-  match.
+A Javalin `before` handler installed in `Platform.register` **ahead of the
+authenticator**, for every path `Platform.isPlatformPath` accepts (`/api/`,
+`/auth/`, `/oauth/`, `/bff/`, `/portal/`, `/.well-known/`). The router
+prefix, the metrics listener and the MCP listener are not covered. A request
+without an `Origin` header is untouched (same-origin browser calls, curl,
+SDKs).
+
+### 9.2 Matching — `CorsAllowlist.matches(origin)`
+
+- Exact, case-sensitive string comparison of the request's `Origin` header
+  against each allowlist entry, scheme and port included (`https://a.example.com`
+  ≠ `https://a.example.com:443`; the browser never sends the default port,
+  and neither should the entry).
+- An entry whose host contains `*` is a **wildcard host**: `*` matches one
+  or more DNS labels. `https://*.example.com` matches
+  `https://app.example.com` and `https://a.b.example.com`; it does not match
+  `https://example.com`, `http://app.example.com`, or
+  `https://app.example.com:8443`. Bare `https://*` matches any https origin
+  (the format admits it; an operator who adds it gets what they asked for).
+- The allowlist never produces `Access-Control-Allow-Origin: *`. A match
+  **echoes the request's `Origin`**, because credentials are allowed (below)
+  and the CORS spec forbids `*` with credentials.
+
+### 9.3 Headers
+
+On a match, every response (including error responses and preflights) carries:
+
+| Header | Value |
+|---|---|
+| `Access-Control-Allow-Origin` | the request's `Origin`, verbatim |
+| `Access-Control-Allow-Credentials` | `true` — the SPA authenticates with the `fc_session` cookie |
+| `Vary` | `Origin` (appended if a `Vary` is already present) |
+
+A **preflight** (`OPTIONS` with `Access-Control-Request-Method`) from a
+matching origin is answered by the filter itself — `204`, no body, the
+chain stops so the authenticator and the route never see it — with, in
+addition to the three above:
+
+| Header | Value |
+|---|---|
+| `Access-Control-Allow-Methods` | `GET, POST, PUT, PATCH, DELETE, OPTIONS` |
+| `Access-Control-Allow-Headers` | the request's `Access-Control-Request-Headers` echoed verbatim when present, else `Authorization, Content-Type, X-Requested-With` |
+| `Access-Control-Max-Age` | `600` |
+
+A preflight from a **non-matching** origin gets `403` with no CORS headers
+and the platform error envelope `CORS_ORIGIN_NOT_ALLOWED` (a clear signal in
+the browser console; nothing else is revealed). A non-preflight request
+from a non-matching origin passes through unchanged and gets no CORS
+headers — the browser blocks the response, the server's semantics do not
+change (a POST still executes; that is how CORS works everywhere).
+
+### 9.4 The cache
+
+The filter runs per request and must not touch Postgres per request.
+`CorsAllowlist` holds an immutable snapshot (`List<String>` origins →
+precompiled matchers) in an `AtomicReference`, loaded from
+`CorsOriginRepository.allowedOrigins()`:
+
+- at construction (a failure logs at ERROR and starts **empty** — fail
+  closed, no origin allowed — and the TTL retries);
+- on `invalidate()`, called by `CorsOriginApi` after `AddOrigin` /
+  `DeleteOrigin` commit (`CorsOriginApi.State` carries a `Runnable
+  onChange`; `Platform` passes `allowlist::invalidate`); a reload failure
+  keeps the previous snapshot and logs at WARN;
+- when the snapshot is older than the TTL (`FC_CORS_CACHE_TTL_MS`, default
+  30 000; the multi-node fallback until cross-node invalidation exists).
+  The reload on TTL happens on the calling request's thread; it is one
+  indexed read.
+
+### 9.5 Tests (`CorsAllowlistTest`, `CorsFilterTest`)
+
+Matching: exact match; scheme, port and case mismatch rejected; wildcard
+matches one and several labels, not the bare apex, not another scheme/port;
+`https://*` matches any https origin. Filter over `TestHttp` with a real
+repository on the embedded Postgres: allowed origin → the three headers and
+the response body unchanged; disallowed → none of the headers, same
+status/body; no `Origin` → none; preflight from allowed → 204, all six
+headers, echoed request-headers, and the route handler was **not** invoked
+(a counter); preflight from disallowed → 403 envelope, no CORS headers;
+router-prefix path → untouched. Invalidation: with the TTL set to an hour,
+`POST /api/platform/cors` as anchor then an immediate request from the new
+origin is allowed; the mutant that drops `invalidate()` must fail that test.
+Mutants to run: echo replaced by `*`; wildcard matching the apex; the
+preflight not stopping the chain (handler counter); credentials header
+dropped.
 
 ## 10. Open questions for the owner (summary)
 
@@ -171,7 +238,9 @@ What the filter will need:
    `CorsOrigin_NOT_FOUND` (pinned by its test); Java follows the template
    and returns 400 `ID_REQUIRED`. Only reachable with a whitespace path
    segment. Keep the template rule?
-3. Filter matching semantics (exact vs wildcard host; whether
+3. *Settled 2026-09-05 (§9, no ruling arrived):* exact match, `*` as a
+   one-or-more-labels host wildcard, credentials allowed with the origin
+   echoed. Filter matching semantics (exact vs wildcard host; whether
    `Access-Control-Allow-Credentials` is emitted) — decided when the filter
    is specified, not here.
 4. `description` `""` vs `null` on the wire are stored as given — normalise
