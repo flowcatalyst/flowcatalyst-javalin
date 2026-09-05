@@ -126,6 +126,9 @@ Rule stands: no ruling → keep Go's behaviour, but the defects need a yes/no
 each before code. I surface them in three batches so no session has to rule
 on forty questions: (a) token issuance + sessions, (b) OIDC bridge + portal
 auth, (c) WebAuthn + MFA + password reset + reset approvals.
+**The batches are written: `docs/auth-rulings.md` (2026-09-05)** — every
+question with a recommendation and the default if unanswered, so a batch
+can be ruled with one line.
 
 Split: **mine** — JWT/RS256 issuance and validation, PKCE, session cookies,
 password hashing and the dormant-identifier backoff, WebAuthn ceremonies,

@@ -34,6 +34,11 @@ in its worktree; main's full suite is re-run after each merge.
 - AWS Secrets Manager DB mode + rotation against `db-secret.md` (Phase 2 unit 5).
 - MCP server port against `mcp.md` (Phase 2 unit 4).
 
+**For the owner — Phase 3 gate:** `docs/auth-rulings.md` groups the 44
+open auth questions and 15 observed defects into three batches, each row
+with a recommendation and the no-answer default. Batch A unblocks the
+first auth cut (JWT/RS256, PKCE, sessions, `/auth/login`, MFA).
+
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
 (seed `'JSON'`, unextended partitions, dispatch-ingest permission); the
 wire-side leniency the X-06 sweep preserved under `parseWire` (role
