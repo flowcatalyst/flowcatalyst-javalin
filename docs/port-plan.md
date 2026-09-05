@@ -161,8 +161,8 @@ in it), so the frontend is their acceptance test.
   `docs/spec/cors.md` §9; `FC_CORS_CACHE_TTL_MS`).
 - **Pagination envelope** — wire change; owner decides; lockfile bump +
   SDK/frontend regen.
-- **JFR events** — the router's three landed `246e270`; the five Phase 2
-  loops get theirs per `docs/spec/jfr-events.md`. Sonnet. *In flight 2026-09-05.*
+- ~~JFR events~~ **Done 2026-09-05** — the router's three landed `246e270`;
+  the five Phase 2 loops have theirs per `docs/spec/jfr-events.md`.
 - **fcdev stubs** `init`, `mcp`, `outbox`, `upgrade` — Sonnet, after Phase 2
   gives them something to drive. *In flight 2026-09-05; spec
   `docs/spec/fcdev-commands.md`. `init`'s OAuth-client step and the MCP
