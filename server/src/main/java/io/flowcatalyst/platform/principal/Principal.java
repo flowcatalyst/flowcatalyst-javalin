@@ -251,6 +251,30 @@ public record Principal(
         return withRoles(roles.stream().filter(ra -> !ra.hasSource(source)).toList(), Instant.now());
     }
 
+    /// [#hasRolesFrom(String)] narrowed to one application's sync (spec
+    /// X-02(c), ruled 2026-09-01): role names are app-prefixed `app:role`
+    /// (see `RoleAssignment`/the role aggregate), so `applicationCode`
+    /// selects only the assignments THAT sync could have produced. A blank
+    /// or `null` `applicationCode` (the platform-level sync) matches every
+    /// assignment tagged `source`, same as the single-argument form.
+    public boolean hasRolesFrom(String source, String applicationCode) {
+        return roles.stream().anyMatch(ra -> ra.hasSource(source) && belongsToApplicationSync(ra, applicationCode));
+    }
+
+    /// [#stripSourcedRoles(String)] narrowed to one application's sync (spec
+    /// X-02(c)): a `removeUnlisted` sweep drops only THIS sync's own
+    /// `source`-tagged, app-prefixed assignments — another application's
+    /// `source`-tagged roles survive. A blank or `null` `applicationCode`
+    /// strips every assignment tagged `source`, same as the single-argument form.
+    public Principal stripSourcedRoles(String source, String applicationCode) {
+        return withRoles(roles.stream().filter(ra -> !(ra.hasSource(source) && belongsToApplicationSync(ra, applicationCode))).toList(),
+                Instant.now());
+    }
+
+    private static boolean belongsToApplicationSync(RoleAssignment ra, String applicationCode) {
+        return applicationCode == null || applicationCode.isBlank() || ra.role().startsWith(applicationCode + ":");
+    }
+
     /// The outcome of an application-access change.
     public record AccessChanged(Principal principal, List<String> added, List<String> removed) {
         public AccessChanged {

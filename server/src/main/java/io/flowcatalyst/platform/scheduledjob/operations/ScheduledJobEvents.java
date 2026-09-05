@@ -27,7 +27,8 @@ public final class ScheduledJobEvents {
     public static final String FIRED_MANUALLY = "platform:admin:scheduled-job:fired-manually";
     public static final String SYNCED = "platform:admin:scheduledjobs:synced";
 
-    /// The sync rollup's message group: one FIFO for every application's syncs.
+    /// The sync rollup's bare (no-application) message group (spec X-08,
+    /// ruled 2026-09-01: per application, see [ScheduledJobsSynced#messageGroup()]).
     public static final String SYNC_MESSAGE_GROUP = "platform:scheduledjobs:synced";
 
     private ScheduledJobEvents() {
@@ -199,9 +200,14 @@ public final class ScheduledJobEvents {
                     applicationCode, clientId, created, updated, archived);
         }
 
+        /// One FIFO lane per application (spec X-08, ruled 2026-09-01):
+        /// `platform:scheduledjobs:<code>`, the bare [#SYNC_MESSAGE_GROUP]
+        /// (`platform:scheduledjobs:synced`) when there's no application in scope.
         @Override
         public String messageGroup() {
-            return SYNC_MESSAGE_GROUP;
+            return applicationCode == null || applicationCode.isBlank()
+                    ? SYNC_MESSAGE_GROUP
+                    : "platform:scheduledjobs:" + applicationCode;
         }
 
         @Override

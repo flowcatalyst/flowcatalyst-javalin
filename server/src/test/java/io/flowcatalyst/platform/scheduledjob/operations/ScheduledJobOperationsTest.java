@@ -451,7 +451,8 @@ class ScheduledJobOperationsTest {
         assertThat(first.archived()).isEmpty();
         assertThat(first.applicationCode()).isEqualTo("sjsyncapp" + RUN);
         assertThat(first.subject()).isEqualTo("platform.scheduledjobs.synced.sjsyncapp" + RUN);
-        assertThat(first.messageGroup()).isEqualTo("platform:scheduledjobs:synced");
+        // X-08: a per-application group, not the bare fallback, since this sync names an application.
+        assertThat(first.messageGroup()).isEqualTo("platform:scheduledjobs:sjsyncapp" + RUN);
 
         var jobA = repo.findByCode("sjsync-a", clientId).orElseThrow();
         assertThat(jobA.status()).isEqualTo(ScheduledJobStatus.ACTIVE);
@@ -494,7 +495,7 @@ class ScheduledJobOperationsTest {
         var rollups = DB.fetch("SELECT message_group, data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
                 ScheduledJobEvents.syncSubjectFor("sjsyncapp" + RUN), ScheduledJobEvents.SYNCED);
         assertThat(rollups).hasSize(4);
-        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:scheduledjobs:synced");
+        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:scheduledjobs:sjsyncapp" + RUN);
         var rollupData = json(rollups.getFirst().get("data", String.class));
         assertThat(rollupData.get("created")).hasSize(3);
         assertThat(rollupData.get("updated").isArray()).as("empty lists serialise as arrays").isTrue();
@@ -512,6 +513,46 @@ class ScheduledJobOperationsTest {
                 List.of(entry("sjsync-backfill", "Backfill")), false));
         assertThat(resync.updated()).as("NULL → set application linkage counts as a change").hasSize(1);
         assertThat(reload(seeded.created().getFirst()).applicationId()).isEqualTo("app_bf_" + RUN);
+    }
+
+    /// X-02(a) (ruled 2026-09-01): `archiveUnlisted` narrows to
+    /// `clientId` + `applicationId` — a sibling application's job in the
+    /// SAME client survives a sync that never mentions it. Asserts a count
+    /// that must change (X's job archives) alongside one that must NOT
+    /// (Y's job stays ACTIVE and its version is untouched) — a bug that
+    /// swept every job in the client would still leave Y's row *present*,
+    /// so presence alone would not catch it.
+    @Test
+    void archiveUnlistedNarrowsToTheSyncingApplicationNotTheWholeClient() {
+        String clientId = "cli_" + RUN + "_x02a";
+        var appX = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand("sjx02x" + RUN, "app_x02x_" + RUN, clientId, List.of(entry("sjx02-x", "X")), false));
+        var appY = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand("sjx02y" + RUN, "app_x02y_" + RUN, clientId, List.of(entry("sjx02-y", "Y")), false));
+        var jobY = repo.findByCode("sjx02-y", clientId).orElseThrow();
+        assertThat(jobY.version()).isEqualTo(1);
+
+        // App X syncs again with an EMPTY payload and archiveUnlisted — under
+        // the old clientId-only sweep this would archive Y's job too.
+        var swept = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand("sjx02x" + RUN, "app_x02x_" + RUN, clientId, List.of(), true));
+        assertThat(swept.archived()).as("only X's own job may be swept").containsExactly(appX.created().getFirst());
+
+        assertThat(reload(appX.created().getFirst()).status())
+                .as("X's own unlisted job is archived").isEqualTo(ScheduledJobStatus.ARCHIVED);
+        var jobYAfter = reload(jobY.id());
+        assertThat(jobYAfter.status()).as("a sibling application's job must survive an unrelated app's sweep")
+                .isEqualTo(ScheduledJobStatus.ACTIVE);
+        assertThat(jobYAfter.version()).as("Y's row must not even be touched, not just left ACTIVE").isEqualTo(1);
+    }
+
+    /// X-02(d): the platform-scope refusal is anchor-tier only — an anchor
+    /// caller may still perform a clientId-less sweep.
+    @Test
+    void anchorMaySweepThePlatformScope() {
+        var ok = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand("sjx02dan" + RUN, "app_" + RUN, null, List.of(entry("sjx02d-anchor", "A")), true));
+        assertThat(ok.created()).hasSize(1);
     }
 
     static Stream<Arguments> malformedSyncEntries() {
@@ -543,9 +584,11 @@ class ScheduledJobOperationsTest {
         // A CLIENT principal may sync its own client but not the platform scope or another client.
         var clientCtx = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of("cli_" + RUN + "_sa"),
                 List.of(), List.of(), true, List.of());
+        // X-02(d): a platform-scope (clientId-less) sync is refused for a
+        // non-anchor with a dedicated code, not the generic SCOPE_FORBIDDEN.
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> SyncScheduledJobs.of(repo).run(uow,
                         sync("sjsyncauth" + RUN, null, false, entry("sjsync-auth", "A")), ExecutionContext.of(clientCtx.principalId()))),
-                UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
+                UseCaseError.Authorization.class, "ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP");
         var ok = Auth.runAs(clientCtx, () -> SyncScheduledJobs.of(repo).run(uow,
                 sync("sjsyncauth" + RUN, "cli_" + RUN + "_sa", false, entry("sjsync-auth", "A")), ExecutionContext.of(clientCtx.principalId())));
         assertThat(ok.created()).hasSize(1);

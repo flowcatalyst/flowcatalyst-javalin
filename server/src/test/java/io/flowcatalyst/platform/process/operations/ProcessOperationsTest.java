@@ -334,7 +334,8 @@ class ProcessOperationsTest {
                 .containsExactly(application + ":orders:flow-a", application + ":orders:flow-b", application + ":ui:kept");
         assertThat(first.eventType()).isEqualTo(ProcessEvents.SYNCED);
         assertThat(first.subject()).isEqualTo(ProcessEvents.syncSubjectFor(application));
-        assertThat(first.messageGroup()).isEqualTo(ProcessEvents.SYNC_MESSAGE_GROUP);
+        // X-08 (ruled 2026-09-01): one FIFO lane per application.
+        assertThat(first.messageGroup()).isEqualTo(ProcessEvents.SYNC_MESSAGE_GROUP + ":" + application);
 
         var a = repo.findByCode(application + ":orders:flow-a").orElseThrow();
         assertThat(a.source()).as("sync-created rows are API-sourced").isEqualTo(ProcessSource.API);
@@ -370,9 +371,24 @@ class ProcessOperationsTest {
         var rollups = DB.fetch("SELECT type, message_group, data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
                 ProcessEvents.syncSubjectFor(application), ProcessEvents.SYNCED);
         assertThat(rollups).hasSize(2);
-        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:processes");
+        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:processes:" + application);
         assertThat(json(rollups.getFirst().get("data", String.class)).propertyNames())
                 .containsExactlyInAnyOrder("applicationCode", "created", "updated", "deleted", "syncedCodes");
+    }
+
+    /// X-08: two applications' syncs land in two different FIFO lanes.
+    @Test
+    void syncOfDifferentApplicationsProduceDifferentMessageGroups() {
+        String appOne = app("prgrp1");
+        String appTwo = app("prgrp2");
+        var one = runAsAnchor(SyncProcesses.of(repo), new SyncProcessesCommand(appOne, EntityType.APPLICATION.generate(),
+                List.of(new SyncProcessInput(appOne + ":sub:a", "A", null, null, null, null)), false));
+        var two = runAsAnchor(SyncProcesses.of(repo), new SyncProcessesCommand(appTwo, EntityType.APPLICATION.generate(),
+                List.of(new SyncProcessInput(appTwo + ":sub:a", "A", null, null, null, null)), false));
+        assertThat(one.messageGroup()).isEqualTo(ProcessEvents.SYNC_MESSAGE_GROUP + ":" + appOne);
+        assertThat(two.messageGroup()).isEqualTo(ProcessEvents.SYNC_MESSAGE_GROUP + ":" + appTwo);
+        assertThat(one.messageGroup()).as("mutant: revert ProcessesSynced#messageGroup to the shared constant")
+                .isNotEqualTo(two.messageGroup());
     }
 
     /// `CODE`-sourced rows (the seeded catalogue) are sync-managed too (spec §7, open question 3).

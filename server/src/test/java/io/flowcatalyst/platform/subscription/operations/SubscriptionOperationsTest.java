@@ -477,7 +477,8 @@ class SubscriptionOperationsTest {
         assertThat(first.syncedCodes()).containsExactly(code("subsync-a"), code("subsync-b"), code("subsync-ui-kept"));
         assertThat(first.eventType()).isEqualTo(SubscriptionEvents.SYNCED);
         assertThat(first.subject()).isEqualTo(SubscriptionEvents.syncSubjectFor(appCode));
-        assertThat(first.messageGroup()).isEqualTo("platform:subscriptions");
+        // X-08 (ruled 2026-09-01): one FIFO lane per application.
+        assertThat(first.messageGroup()).isEqualTo("platform:subscriptions:" + appCode);
 
         var a = repo.findByCodeAndClient(code("subsync-a"), null).orElseThrow();
         assertThat(a.source()).as("synced rows are API-sourced").isEqualTo(SubscriptionSource.API);
@@ -524,8 +525,21 @@ class SubscriptionOperationsTest {
         var rollups = DB.fetch("SELECT type, message_group, data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
                 SubscriptionEvents.syncSubjectFor(appCode), SubscriptionEvents.SYNCED);
         assertThat(rollups).hasSize(2);
-        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:subscriptions");
+        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:subscriptions:" + appCode);
         assertThat(rollups).extracting(r -> json(r.get("data", String.class)).get("syncedCodes").size()).containsExactlyInAnyOrder(3, 1);
+    }
+
+    /// X-08: two applications' syncs land in two different FIFO lanes.
+    @Test
+    void syncOfDifferentApplicationsProduceDifferentMessageGroups() {
+        String appOne = "subgrp1" + RUN;
+        String appTwo = "subgrp2" + RUN;
+        var one = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appOne, false, row(code("subgrp1-a"), "A")));
+        var two = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appTwo, false, row(code("subgrp2-a"), "A")));
+        assertThat(one.messageGroup()).isEqualTo("platform:subscriptions:" + appOne);
+        assertThat(two.messageGroup()).isEqualTo("platform:subscriptions:" + appTwo);
+        assertThat(one.messageGroup()).as("mutant: revert SubscriptionsSynced#messageGroup to the shared constant")
+                .isNotEqualTo(two.messageGroup());
     }
 
     static Stream<Arguments> badSyncCommands() {

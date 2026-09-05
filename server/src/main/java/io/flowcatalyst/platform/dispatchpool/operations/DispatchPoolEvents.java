@@ -28,7 +28,8 @@ public final class DispatchPoolEvents {
     public static final String ACTIVATED = "platform:admin:dispatch-pool:activated";
     public static final String SYNCED = "platform:admin:dispatch-pools:synced";
 
-    /// The one message group shared by every sync rollup (spec §8, open question 7).
+    /// The sync rollup's bare (no-application) message group (spec X-08,
+    /// ruled 2026-09-01: per application, see [DispatchPoolsSynced#messageGroup()]).
     public static final String SYNC_MESSAGE_GROUP = "platform:dispatchpools";
 
     private DispatchPoolEvents() {
@@ -183,9 +184,9 @@ public final class DispatchPoolEvents {
     }
 
     /// The rollup emitted by [SyncDispatchPools]: subject
-    /// `platform.dispatchpools.{applicationCode}`, message group
-    /// [#SYNC_MESSAGE_GROUP]. `deleted` counts the pools *archived* by
-    /// `removeUnlisted` (spec §7).
+    /// `platform.dispatchpools.{applicationCode}`, message group per
+    /// application (spec X-08, ruled 2026-09-01 — see [#messageGroup()]).
+    /// `deleted` counts the pools *archived* by `removeUnlisted` (spec §7).
     public record DispatchPoolsSynced(EventMetadata metadata, String applicationCode, int created, int updated,
                                       int deleted, List<String> syncedCodes) implements DomainEvent {
 
@@ -199,9 +200,13 @@ public final class DispatchPoolEvents {
                     applicationCode, created, updated, deleted, syncedCodes);
         }
 
+        /// One FIFO lane per application (spec X-08): `platform:dispatchpools:<code>`,
+        /// the bare [#SYNC_MESSAGE_GROUP] when there's no application in scope.
         @Override
         public String messageGroup() {
-            return SYNC_MESSAGE_GROUP;
+            return applicationCode == null || applicationCode.isBlank()
+                    ? SYNC_MESSAGE_GROUP
+                    : SYNC_MESSAGE_GROUP + ":" + applicationCode;
         }
 
         @Override

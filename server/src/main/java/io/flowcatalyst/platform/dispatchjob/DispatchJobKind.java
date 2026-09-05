@@ -7,9 +7,27 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 public enum DispatchJobKind {
     EVENT, TASK;
 
-    /// Lenient reader for stored values: unknown (and `null`) → `EVENT`.
+    /// Strict reader for stored values (dispatch-seam spec §1.1, X-06): never
+    /// a silent default. Only used for the stored column — nothing parses
+    /// this enum from the wire. See [DispatchJobRepository]'s row mapper,
+    /// which wraps [UnrecognisedDispatchJobKindException] in
+    /// [CorruptDispatchJobException] carrying the row id.
+    ///
+    /// @throws UnrecognisedDispatchJobKindException `s` is `null` or not `EVENT`/`TASK`
     public static DispatchJobKind parse(String s) {
-        return "TASK".equals(s) ? TASK : EVENT;
+        return switch (s) {
+            case "EVENT" -> EVENT;
+            case "TASK" -> TASK;
+            case null, default -> throw new UnrecognisedDispatchJobKindException(s);
+        };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedDispatchJobKindException extends RuntimeException {
+        public UnrecognisedDispatchJobKindException(String raw) {
+            super("unrecognised dispatch job kind: " + raw);
+        }
     }
 
     /// Strict reader for the ingest wire boundary (sdk-ingest spec §4.1,

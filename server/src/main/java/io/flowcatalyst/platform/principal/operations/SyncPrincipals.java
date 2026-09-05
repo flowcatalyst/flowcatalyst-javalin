@@ -8,6 +8,8 @@ import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.PrincipalsSynced;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserCreated;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserUpdated;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncDelete;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncSave;
@@ -26,15 +28,23 @@ import java.util.Set;
 /// normalised email; an existing principal keeps its non-`SDK_SYNC` roles
 /// and has its `SDK_SYNC` set replaced, name and active updated, a carried
 /// password hash stored verbatim; a new principal is a CLIENT-scoped USER
-/// with the `SDK_SYNC` roles. `removeUnlisted` never deletes — it strips the
-/// `SDK_SYNC` roles of every USER absent from the payload (counted as
-/// "deactivated"). Per-row [UserCreated]/[UserUpdated] plus one
-/// [PrincipalsSynced] rollup, atomic with the writes.
+/// with the `SDK_SYNC` roles. `removeUnlisted` never deletes — it strips,
+/// from every USER absent from the payload, only the `SDK_SYNC` roles
+/// belonging to **this sync's application** (spec X-02(c), ruled
+/// 2026-09-01: role names are app-prefixed `app:role`, so an app-scoped sync
+/// with `removeUnlisted` must not strip a different application's SDK_SYNC
+/// roles from a principal that simply lacks a role from THIS payload) —
+/// counted as "deactivated" in the rollup.
 ///
-/// [Operation.Authorize#publicAccess()]: reached by the app-scoped SDK sync
-/// and the platform-level `POST /api/principals/sync`, each with its own
-/// gate; users are global (matched by email) so there is no per-resource
-/// dimension the operation itself could check.
+/// Authorization is mostly delegated to two entry points with different
+/// gating — the app-scoped SDK sync (`CanSyncPrincipals` + per-application
+/// access) and the platform-level `POST /api/principals/sync`
+/// (`CanSyncPrincipals` only, no application); each keeps its own gate, and
+/// users are global (matched by email) so there is no per-resource
+/// dimension the operation itself could check — EXCEPT one (X-02(d)): a
+/// `removeUnlisted` sweep with no `applicationCode` is a platform-wide sweep
+/// (every application's `SDK_SYNC` roles are up for stripping), so that
+/// combination alone is gated here, anchor-only, regardless of entry point.
 public final class SyncPrincipals {
 
     private SyncPrincipals() {
@@ -47,7 +57,14 @@ public final class SyncPrincipals {
                         throw UseCaseException.validation("PRINCIPALS_REQUIRED", "At least one principal must be provided");
                     }
                 })
-                .authorize(Operation.Authorize.publicAccess())
+                .authorize(cmd -> {
+                    if (!cmd.removeUnlisted() || (cmd.applicationCode() != null && !cmd.applicationCode().isBlank())) return;
+                    AuthContext ac = Auth.current();
+                    if (ac == null || (!ac.isAnchor() && !ac.isSuperAdmin())) {
+                        throw UseCaseException.authorization("ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP",
+                                "Only anchor users may sweep (removeUnlisted) principal roles with no application scope");
+                    }
+                })
                 .execute((cmd, ec) -> {
                     Instant now = Instant.now();
                     var saves = new ArrayList<SyncSave<Principal>>(cmd.principals().size());
@@ -85,8 +102,10 @@ public final class SyncPrincipals {
                         for (Principal pr : repo.findAll()) {
                             if (!pr.isUser() || pr.email() == null) continue;
                             if (synced.contains(EmailAddress.normalise(pr.email()))) continue;
-                            if (!pr.hasRolesFrom(RoleAssignment.SDK_SYNC)) continue;
-                            Principal stripped = pr.stripSourcedRoles(RoleAssignment.SDK_SYNC);
+                            // X-02(c): only THIS sync's own application's SDK_SYNC
+                            // roles are in scope — another application's survive.
+                            if (!pr.hasRolesFrom(RoleAssignment.SDK_SYNC, cmd.applicationCode())) continue;
+                            Principal stripped = pr.stripSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode());
                             saves.add(new SyncSave<>(stripped, UserUpdated.of(ec, stripped)));
                             deactivated++;
                         }

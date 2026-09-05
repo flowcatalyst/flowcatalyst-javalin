@@ -438,7 +438,9 @@ class RoleOperationsTest {
                 .containsExactly(application + ":editor", application + ":viewer");
         assertThat(first.eventType()).isEqualTo(RoleEvents.SYNCED);
         assertThat(first.subject()).isEqualTo(RoleEvents.SYNC_SUBJECT);
-        assertThat(first.messageGroup()).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP);
+        // X-08 (ruled 2026-09-01): one FIFO lane per application, not the
+        // shared bare group.
+        assertThat(first.messageGroup()).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP + ":" + application);
 
         var editor = byName(application + ":editor");
         assertThat(editor.source()).isEqualTo(RoleSource.SDK);
@@ -480,12 +482,29 @@ class RoleOperationsTest {
         assertThat(auditsFor(editor.id(), "SyncRolesCommand")).hasSize(3);
         var rollup = DB.fetch("SELECT data::text AS data, message_group FROM msg_events WHERE id = ?", first.eventId());
         assertThat(rollup).hasSize(1);
-        assertThat(rollup.getFirst().get("message_group")).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP);
+        assertThat(rollup.getFirst().get("message_group")).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP + ":" + application);
         var data = json(rollup.getFirst().get("data", String.class));
         assertThat(data.get("created").asInt()).isEqualTo(2);
         assertThat(data.get("total").asInt()).isEqualTo(2);
         assertThat(data.get("applicationCode").asText()).isEqualTo(application);
         assertThat(data.get("syncedCodes")).hasSize(2);
+    }
+
+    /// X-08 (ruled 2026-09-01): two applications' syncs land in two
+    /// different FIFO lanes — a shared bare group would serialise unrelated
+    /// applications' rollups behind one another for no reason.
+    @Test
+    void syncRolesOfDifferentApplicationsProduceDifferentMessageGroups() {
+        String appOne = app("rolesyncgroupone");
+        String appTwo = app("rolesyncgrouptwo");
+        var one = runAsAnchor(SyncRoles.of(repo), new SyncRolesCommand(appOne, EntityType.APPLICATION.generate(),
+                List.of(new SyncRoleInput("Viewer", null, null, List.of(), false)), false));
+        var two = runAsAnchor(SyncRoles.of(repo), new SyncRolesCommand(appTwo, EntityType.APPLICATION.generate(),
+                List.of(new SyncRoleInput("Viewer", null, null, List.of(), false)), false));
+        assertThat(one.messageGroup()).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP + ":" + appOne);
+        assertThat(two.messageGroup()).isEqualTo(RoleEvents.SYNC_MESSAGE_GROUP + ":" + appTwo);
+        assertThat(one.messageGroup()).as("mutant: revert RolesSynced#messageGroup to the shared constant")
+                .isNotEqualTo(two.messageGroup());
     }
 
     /// `removeUnlisted` refuses to drop a role that principals still hold —

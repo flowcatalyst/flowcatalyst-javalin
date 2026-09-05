@@ -299,7 +299,7 @@ public final class PrincipalRepository implements Persist<Principal> {
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static Principal toEntity(IamPrincipalsRecord row, List<RoleAssignment> roles, List<String> grants, List<String> apps) {
-        PrincipalType type = PrincipalType.parse(row.getType());
+        PrincipalType type = principalType(row.getId(), row.getType());
         UserIdentity identity = type == PrincipalType.USER && row.getEmail() != null
                 ? new UserIdentity(row.getEmail(), row.getIdpType(), row.getExternalIdpId(), row.getPasswordHash(),
                         instant(row.getLastLoginAt()), row.getDevClientSecretRef(), instant(row.getDevClientSecretUpdatedAt()))
@@ -309,7 +309,7 @@ public final class PrincipalRepository implements Persist<Principal> {
         return new Principal(
                 row.getId(),
                 type,
-                UserScope.parse(row.getScope()),
+                userScope(row.getId(), row.getScope()),
                 row.getClientId(),
                 row.getApplicationId(),
                 row.getName(),
@@ -323,6 +323,26 @@ public final class PrincipalRepository implements Persist<Principal> {
                 external,
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [PrincipalType#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06) instead of propagating a bare
+    /// [PrincipalType.UnrecognisedPrincipalTypeException] with no context.
+    private static PrincipalType principalType(String rowId, String stored) {
+        try {
+            return PrincipalType.parse(stored);
+        } catch (PrincipalType.UnrecognisedPrincipalTypeException e) {
+            throw new CorruptPrincipalException(rowId, e);
+        }
+    }
+
+    /// [UserScope#parse], wrapped the same way as [#principalType] (X-06).
+    private static UserScope userScope(String rowId, String stored) {
+        try {
+            return UserScope.parse(stored);
+        } catch (UserScope.UnrecognisedUserScopeException e) {
+            throw new CorruptPrincipalException(rowId, e);
+        }
     }
 
     private static Instant instant(OffsetDateTime t) {

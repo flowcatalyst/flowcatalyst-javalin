@@ -217,26 +217,32 @@ public final class PrincipalApi {
 
     /// Any principal may read its own record (the Profile page's developer
     /// credential status needs this without `USER_VIEW`); anyone else's needs
-    /// the permission and, for a client-homed target, access to that client.
+    /// the permission and, for a client-homed target, access to that client —
+    /// an out-of-scope target answers the same not-found a missing id would,
+    /// never 403 (ledger PR-4, ruled 2026-09-01): a 403 here would be an
+    /// existence oracle over the principal table.
     private static void getById(Context ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         boolean self = isSelf(ac, id);
         if (!self) Checks.require(ac, USER_VIEW);
         Principal p = principal(s, id);
-        if (!self && p.clientId() != null && !ac.canAccessClient(p.clientId())) {
-            throw HttpError.forbidden("No access to this principal");
-        }
+        if (!self) Access.requireReadable(p);
         List<String> twoFactor = s.mfa().configured() ? s.mfa().confirmedMethods(p.id()) : null;
         ctx.json(PrincipalResponse.from(p, twoFactor));
     }
 
     /// When the principal (or a role it holds) last changed — an SDK's
-    /// revocation check. Self needs no permission; anyone else's needs `USER_VIEW`.
+    /// revocation check. Self needs no permission; anyone else's needs
+    /// `USER_VIEW` plus the same out-of-scope-is-not-found scope check as the
+    /// by-id read (PR-4).
     private static void getVersion(Context ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
-        if (!isSelf(ac, id)) Checks.require(ac, USER_VIEW);
+        if (!isSelf(ac, id)) {
+            Checks.require(ac, USER_VIEW);
+            Access.requireReadable(principal(s, id));
+        }
         Instant at = s.repo().lookupVersion(id).orElseThrow(() -> HttpError.notFound("Principal", id));
         ctx.json(new PrincipalVersionResponse(at));
     }
@@ -251,12 +257,14 @@ public final class PrincipalApi {
     private static void listRoles(Context ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
+        Access.requireReadable(p);
         ctx.json(new PrincipalRoleListResponse(PrincipalRoleAssignmentDTO.listFor(p)));
     }
 
     private static void listApplicationAccess(Context ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
+        Access.requireReadable(p);
         List<ApplicationAccessResponse> apps = resolveApplications(s, p.accessibleApplicationIds());
         ctx.json(new ApplicationAccessListResponse(apps, apps.size(), p.allApplications()));
     }
@@ -267,6 +275,7 @@ public final class PrincipalApi {
         AuthContext ac = Auth.current();
         Checks.require(ac, USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
+        Access.requireReadable(p);
         Set<String> allowed = ac.isAnchor() ? null : clientApplicationIds(s, p.clientId());
         List<PrincipalAvailableApplication> out = s.applications()
                 .findWithFilters(new ApplicationRepository.ListFilter(null, true)).stream()
@@ -456,24 +465,27 @@ public final class PrincipalApi {
 
     /// The per-resource scope check lives here (not in the operation) because
     /// the operation is shared with the unauthenticated reset-confirm flow.
+    /// An out-of-scope target answers the same not-found a missing id would,
+    /// never 403 (PR-4) — `principal(s, id)` above already answers
+    /// `Principal_NOT_FOUND` for a missing id, so [Access#requireManageable]
+    /// (not `requireUserAdmin`) matches that spelling for the scope check too.
     private static void resetPassword(Context ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.requireAny(ac, USER_CREATE, USER_UPDATE, USER_DELETE);
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
-        Access.blockNonClientTarget(ac, p);
-        Checks.checkScopeAccess(ac, p.clientId());
+        Access.requireManageable(p);
         ResetPassword.of(s.repo()).run(s.uow(), ctx.bodyAsClass(ResetPasswordRequest.class).toCommand(id), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Password reset successfully"));
     }
 
-    /// Body optional: no body = plain reset email.
+    /// Body optional: no body = plain reset email. An out-of-scope target
+    /// answers the same not-found `principal(s, id)` already gives a missing
+    /// id (PR-4) — [Access#requireUserAdmin] with the `Principal` spelling.
     private static void sendPasswordReset(Context ctx, State s) {
-        AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
-        Checks.requireUserAdmin(ac, p.clientId());
-        Access.blockNonClientTarget(ac, p);
+        Access.requireUserAdmin(p, "Principal");
         boolean reset2fa = !ctx.body().isBlank() && Boolean.TRUE.equals(ctx.bodyAsClass(SendPasswordResetInputBody.class).reset2fa());
         SendPasswordReset.run(s.repo(), s.passwordEmailer(), new SendPasswordResetCommand(id, reset2fa));
         ctx.json(new StatusChangeResponse("Password reset email sent"));
@@ -481,14 +493,14 @@ public final class PrincipalApi {
 
     /// Clears a user's enrolled 2FA (anchor or a client-administrator of the
     /// user's client). Without an MFA service this answers 500 before the load,
-    /// as Go does. TODO(port): the `2FA_RESET_BY_ADMIN` audit row once the
-    /// audit repository gains a write path (spec §12).
+    /// as Go does. An out-of-scope target answers the same not-found
+    /// `principal(s, id)` already gives a missing id (PR-4). TODO(port): the
+    /// `2FA_RESET_BY_ADMIN` audit row once the audit repository gains a write
+    /// path (spec §12).
     private static void resetTwoFactor(Context ctx, State s) {
-        AuthContext ac = Auth.current();
         if (!s.mfa().configured()) throw UseCaseException.internal("MFA_NOT_CONFIGURED", "Two-factor service not configured", null);
         Principal p = principal(s, ctx.pathParam("id"));
-        Checks.requireUserAdmin(ac, p.clientId());
-        Access.blockNonClientTarget(ac, p);
+        Access.requireUserAdmin(p, "Principal");
         if (!p.isUser()) throw UseCaseException.validation("NOT_USER", "Two-factor reset only applies to user accounts");
         s.mfa().resetAll(p.id());
         if (p.email() != null) s.notifier().twoFactorReset(p.email());
@@ -526,11 +538,18 @@ public final class PrincipalApi {
         ctx.json(new RolesAssignedResponse(PrincipalRoleAssignmentDTO.listFor(principal(s, id)), added, removed));
     }
 
-    /// Adds one role (no-op when already held).
+    /// Adds one role (no-op when already held). The per-resource gate
+    /// [Access#requireUserAdmin] runs BEFORE the idempotent early-return
+    /// (PR-4): that branch never reaches [AssignRoles] (and therefore never
+    /// reaches its own copy of the same gate), so without this a cross-tenant
+    /// caller could "add" a role the target already holds and read back
+    /// another tenant's full [PrincipalResponse] for free — an out-of-scope
+    /// target answers the same not-found `principal(s, id)` gives a missing id.
     private static void addRole(Context ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
+        Access.requireUserAdmin(p, "Principal");
         String role = ctx.bodyAsClass(AddRoleRequest.class).role();
         if (!ac.isAnchor()) assertAssignableRoles(s, List.of(role), clientApplicationIds(s, p.clientId()));
         if (!p.hasRole(role)) {
@@ -543,11 +562,14 @@ public final class PrincipalApi {
     }
 
     /// Removes one role (no-op when not held). A non-anchor may only remove
-    /// roles it could also assign, so it cannot strip platform / other-app roles.
+    /// roles it could also assign, so it cannot strip platform / other-app
+    /// roles. Same pre-idempotent-check gate as [#addRole] and for the same
+    /// reason (PR-4).
     private static void removeRole(Context ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
+        Access.requireUserAdmin(p, "Principal");
         String role = ctx.pathParam("role");
         if (!ac.isAnchor()) assertAssignableRoles(s, List.of(role), clientApplicationIds(s, p.clientId()));
         if (p.hasRole(role)) {

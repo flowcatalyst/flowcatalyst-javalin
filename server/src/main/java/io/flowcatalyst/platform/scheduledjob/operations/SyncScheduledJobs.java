@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.Sched
 import io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.ScheduledJobUpdated;
 import io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.ScheduledJobsSynced;
 import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncSave;
@@ -20,6 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -28,13 +30,19 @@ import java.util.stream.Collectors;
 /// is reconciled ([ScheduledJob#reconcile] — persisted and reported only
 /// when something differs, re-activated if it was paused/archived), a new
 /// code is created, and with `archiveUnlisted` every `ACTIVE` job in scope
-/// that is not declared is archived. One per-row event per row touched plus
-/// one [ScheduledJobsSynced] rollup carrying the affected ids.
+/// **belonging to this sync's application** that is not declared is archived
+/// (ledger X-02(a), ruled 2026-09-01 — narrowed from "every job in the
+/// client scope": a sibling application's job in the same client must
+/// survive a sync that never mentions it). One per-row event per row
+/// touched plus one [ScheduledJobsSynced] rollup carrying the affected ids.
 ///
 /// Authorization is resource-level on both dimensions: the application the
 /// sync is scoped to (`Checks.checkApplicationAccess`) and the target client
-/// scope (`checkScopeAccess`); the coarse sync permission and the
-/// `appCode → id` resolution belong to the sdksync handler.
+/// scope (`checkScopeAccess`) — except a platform scope (`clientId == null`)
+/// sync, which X-02(d) refuses outright for a non-anchor caller with the
+/// specific `ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP` code, not the generic
+/// `SCOPE_FORBIDDEN` [Checks#checkScopeAccess] would raise. The coarse sync
+/// permission and the `appCode → id` resolution belong to the sdksync handler.
 public final class SyncScheduledJobs {
 
     private SyncScheduledJobs() {
@@ -49,7 +57,11 @@ public final class SyncScheduledJobs {
                 })
                 .authorize(cmd -> {
                     Checks.checkApplicationAccess(Auth.current(), cmd.applicationId(), cmd.applicationCode());
-                    Checks.checkScopeAccess(Auth.current(), cmd.clientId());
+                    if (cmd.clientId() == null) {
+                        requireAnchorForPlatformSweep(Auth.current());
+                    } else {
+                        Checks.checkScopeAccess(Auth.current(), cmd.clientId());
+                    }
                 })
                 .execute((cmd, ec) -> {
                     Map<String, ScheduledJob> existingByCode = repo.findInScope(ClientFilter.scope(cmd.clientId())).stream()
@@ -78,6 +90,13 @@ public final class SyncScheduledJobs {
                     if (cmd.archiveUnlisted()) {
                         for (ScheduledJob unlisted : existingByCode.values()) {
                             if (unlisted.status() != ScheduledJobStatus.ACTIVE) continue;
+                            // X-02(a): never sweep a sibling application's job just
+                            // because this sync's payload omitted it. A job with no
+                            // application_id yet (not stamped by any sync) falls back
+                            // to the pre-fix client-only scope, same as Go.
+                            if (cmd.applicationId() != null && !cmd.applicationId().equals(unlisted.applicationId())) {
+                                continue;
+                            }
                             ScheduledJob j = unlisted.archive(ec.principalId());
                             saves.add(new SyncSave<>(j, ScheduledJobArchived.of(ec, j)));
                             archived.add(j.id());
@@ -87,6 +106,16 @@ public final class SyncScheduledJobs {
                     var rollup = ScheduledJobsSynced.of(ec, cmd.applicationCode(), cmd.clientId(), created, updated, archived);
                     return Plan.sync(repo, saves, List.of(), rollup);
                 });
+    }
+
+    /// X-02(d): a platform-scope (`clientId == null`) sync sweeps every
+    /// client, so it is refused for anyone but an anchor/super-admin, with a
+    /// code distinct from the generic per-resource `SCOPE_FORBIDDEN`.
+    private static void requireAnchorForPlatformSweep(AuthContext ac) {
+        if (ac == null || (!ac.isAnchor() && !ac.isSuperAdmin())) {
+            throw UseCaseException.authorization("ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP",
+                    "Only anchor users can sync platform-scoped (clientId-less) scheduled jobs");
+        }
     }
 
     /// The entry rules (spec §5): code, name and at least one cron, with one

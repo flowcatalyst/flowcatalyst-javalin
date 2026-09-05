@@ -25,9 +25,13 @@ public final class RoleEvents {
     public static final String PERMISSION_REVOKED = "platform:admin:role:permission-revoked";
     public static final String SYNCED = "platform:admin:roles:synced";
 
-    /// Subject and message group of the sync rollup — the same for the SDK
-    /// and the catalogue sync (spec §8, open question 7).
+    /// Subject of the sync rollup — the same for the SDK and the catalogue sync.
     public static final String SYNC_SUBJECT = "platform.roles";
+
+    /// The sync rollup's bare (no-application) message group — the
+    /// catalogue sync's group, and the fallback for an application-less SDK
+    /// sync (spec X-08, ruled 2026-09-01: normally per-application, see
+    /// [RolesSynced#messageGroup()]).
     public static final String SYNC_MESSAGE_GROUP = "platform:roles";
 
     private RoleEvents() {
@@ -130,9 +134,10 @@ public final class RoleEvents {
     }
 
     /// The rollup emitted by [SyncRoles] and [SyncPlatformRoles]: subject
-    /// `platform.roles`, message group `platform:roles`. `total` is the size
-    /// of the input (the batch, or the code catalogue) — not a row count
-    /// after the sync. `applicationCode` / `syncedCodes` are set only by the
+    /// `platform.roles`, message group per application (spec X-08, ruled
+    /// 2026-09-01 — see [#messageGroup()]). `total` is the size of the input
+    /// (the batch, or the code catalogue) — not a row count after the sync.
+    /// `applicationCode` / `syncedCodes` are set only by the
     /// application-scoped SDK sync and omitted from the payload otherwise.
     public record RolesSynced(EventMetadata metadata, int created, int updated, int removed, int total,
                               String applicationCode, List<String> syncedCodes) implements DomainEvent {
@@ -153,7 +158,17 @@ public final class RoleEvents {
         }
 
         private static EventMetadata syncMetadata(ExecutionContext ec) {
-            return EventMetadata.of(ec, SYNCED, SOURCE, SYNC_SUBJECT).withMessageGroup(SYNC_MESSAGE_GROUP);
+            return EventMetadata.of(ec, SYNCED, SOURCE, SYNC_SUBJECT);
+        }
+
+        /// One FIFO lane per application (spec X-08): `platform:roles:<code>`
+        /// for the application-scoped SDK sync, the bare
+        /// [#SYNC_MESSAGE_GROUP] for the catalogue sync (no application code).
+        @Override
+        public String messageGroup() {
+            return applicationCode == null || applicationCode.isBlank()
+                    ? SYNC_MESSAGE_GROUP
+                    : SYNC_MESSAGE_GROUP + ":" + applicationCode;
         }
 
         @Override

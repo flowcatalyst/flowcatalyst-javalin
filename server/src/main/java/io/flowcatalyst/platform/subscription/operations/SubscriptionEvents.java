@@ -27,7 +27,8 @@ public final class SubscriptionEvents {
     /// Singular `subscription:synced` — unlike the other sync rollups (spec §8, open question 12).
     public static final String SYNCED = "platform:admin:subscription:synced";
 
-    /// The one message group every sync rollup shares (spec §8, open question 12).
+    /// The sync rollup's bare (no-application) message group (spec X-08,
+    /// ruled 2026-09-01: per application, see [SubscriptionsSynced#messageGroup()]).
     public static final String SYNC_MESSAGE_GROUP = "platform:subscriptions";
 
     private SubscriptionEvents() {
@@ -160,8 +161,8 @@ public final class SubscriptionEvents {
     }
 
     /// The rollup emitted by [SyncSubscriptions]: subject
-    /// `platform.subscriptions.{applicationCode}`, message group
-    /// [#SYNC_MESSAGE_GROUP] (shared by every application's syncs).
+    /// `platform.subscriptions.{applicationCode}`, message group per
+    /// application (spec X-08, ruled 2026-09-01 — see [#messageGroup()]).
     public record SubscriptionsSynced(EventMetadata metadata, String applicationCode, int created, int updated,
                                       int deleted, List<String> syncedCodes) implements DomainEvent {
 
@@ -175,9 +176,13 @@ public final class SubscriptionEvents {
                     applicationCode, created, updated, deleted, syncedCodes);
         }
 
+        /// One FIFO lane per application (spec X-08): `platform:subscriptions:<code>`,
+        /// the bare [#SYNC_MESSAGE_GROUP] when there's no application in scope.
         @Override
         public String messageGroup() {
-            return SYNC_MESSAGE_GROUP;
+            return applicationCode == null || applicationCode.isBlank()
+                    ? SYNC_MESSAGE_GROUP
+                    : SYNC_MESSAGE_GROUP + ":" + applicationCode;
         }
 
         @Override

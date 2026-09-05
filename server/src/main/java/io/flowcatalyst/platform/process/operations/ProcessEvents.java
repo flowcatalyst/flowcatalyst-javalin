@@ -25,7 +25,8 @@ public final class ProcessEvents {
     public static final String DELETED = "platform:admin:process:deleted";
     public static final String SYNCED = "platform:admin:processes:synced";
 
-    /// The sync rollup's message group — one constant, not per application (spec §8, open question 4).
+    /// The sync rollup's bare (no-application) message group (spec X-08,
+    /// ruled 2026-09-01: per application, see [ProcessesSynced#messageGroup()]).
     public static final String SYNC_MESSAGE_GROUP = "platform:processes";
 
     private ProcessEvents() {
@@ -136,7 +137,8 @@ public final class ProcessEvents {
     }
 
     /// The rollup emitted by [SyncProcesses]: subject
-    /// `platform.processes.{applicationCode}`, message group [#SYNC_MESSAGE_GROUP].
+    /// `platform.processes.{applicationCode}`, message group per application
+    /// (spec X-08, ruled 2026-09-01 — see [#messageGroup()]).
     public record ProcessesSynced(EventMetadata metadata, String applicationCode, int created, int updated,
                                   int deleted, List<String> syncedCodes) implements DomainEvent {
 
@@ -150,9 +152,13 @@ public final class ProcessEvents {
                     applicationCode, created, updated, deleted, syncedCodes);
         }
 
+        /// One FIFO lane per application (spec X-08): `platform:processes:<code>`,
+        /// the bare [#SYNC_MESSAGE_GROUP] when there's no application in scope.
         @Override
         public String messageGroup() {
-            return SYNC_MESSAGE_GROUP;
+            return applicationCode == null || applicationCode.isBlank()
+                    ? SYNC_MESSAGE_GROUP
+                    : SYNC_MESSAGE_GROUP + ":" + applicationCode;
         }
 
         @Override

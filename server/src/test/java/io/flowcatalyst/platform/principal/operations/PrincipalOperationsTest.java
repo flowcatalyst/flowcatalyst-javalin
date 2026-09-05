@@ -246,7 +246,10 @@ class PrincipalOperationsTest {
         var admin = clientAdmin(clientA);
 
         assertThat(runAs(admin, DeactivateUser.of(repo), new DeactivateCommand(inA)).userId()).isEqualTo(inA);
-        assertUseCaseError(() -> runAs(admin, ActivateUser.of(repo), new ActivateCommand(inB)), UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
+        // PR-4 (ruled 2026-09-01): a target outside the caller's client scope
+        // answers the same not-found a missing id would, never 403 — a 403
+        // would be an existence oracle over the principal table.
+        assertUseCaseError(() -> runAs(admin, ActivateUser.of(repo), new ActivateCommand(inB)), UseCaseError.NotFound.class, "Principal_NOT_FOUND");
         assertUseCaseError(() -> runAs(admin, UpdateUser.of(repo), new UpdateCommand(partner, "x", null, null)), UseCaseError.Authorization.class, "FORBIDDEN");
         assertUseCaseError(() -> runAs(admin, AssignRoles.of(repo, roles), new AssignRolesCommand(partner, List.of())), UseCaseError.Authorization.class, "FORBIDDEN");
         assertUseCaseError(() -> runAs(null, DeleteUser.of(repo), new DeleteCommand(inA)), UseCaseError.Authorization.class, "UNAUTHENTICATED");
@@ -458,6 +461,58 @@ class PrincipalOperationsTest {
         assertUseCaseError(() -> runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(), false)), UseCaseError.Validation.class, "PRINCIPALS_REQUIRED");
     }
 
+    /// X-02(c) (ruled 2026-09-01): `removeUnlisted` strips only the SDK_SYNC
+    /// roles belonging to THE SYNCING APPLICATION (role names are
+    /// app-prefixed `app:role`) — a different application's SDK_SYNC role on
+    /// a principal absent from THIS payload must survive. Asserts a count
+    /// that must change (X's role is gone) alongside one that must NOT (Y
+    /// keeps its role AND its `updatedAt` is untouched — a bug that swept
+    /// every absent principal's SDK_SYNC roles would still leave Y's role
+    /// name present if Y only had X's, but here Y's own role is a distinct
+    /// value the old bug would have deleted).
+    @Test
+    void syncPrincipalsRemoveUnlistedStripsOnlyTheSyncingApplicationsSdkSyncRoles() {
+        String userX = createdUser("x02cx", "CLIENT", seedClient("x02cx"));
+        String userY = createdUser("x02cy", "CLIENT", seedClient("x02cy"));
+        runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cx"), "X", List.of("x02cappx" + RUN + ":viewer"), true, null)), false));
+        runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappy" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cy"), "Y", List.of("x02cappy" + RUN + ":viewer"), true, null)), false));
+        var yBefore = reload(userY);
+        assertThat(yBefore.roleNames()).containsExactly("x02cappy" + RUN + ":viewer");
+
+        // App X sweeps with removeUnlisted and an EMPTY payload — X is now
+        // absent from its own app's payload, and so is Y (Y was never in it).
+        // Under the old (unscoped) sweep this would strip Y's role too.
+        var swept = runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cz-not-present"), "Z", List.of(), true, null)), true));
+        assertThat(swept.deactivated()).as("only X's own role is in this sweep's scope").isEqualTo(1);
+        assertThat(reload(userX).roleNames()).as("X's role from the syncing application is stripped").isEmpty();
+        var yAfter = reload(userY);
+        assertThat(yAfter.roleNames()).as("a different application's role survives an unrelated app's sweep")
+                .containsExactly("x02cappy" + RUN + ":viewer");
+        assertThat(yAfter.updatedAt()).as("Y's row must not even be touched, not just left with the same role")
+                .isEqualTo(yBefore.updatedAt());
+    }
+
+    /// X-02(d): a `removeUnlisted` sweep with no `applicationCode` (the
+    /// platform-level route) is a platform-wide sweep of every application's
+    /// SDK_SYNC roles, so it is refused for a non-anchor even though the
+    /// coarse sync permission is otherwise unchecked by this operation.
+    @Test
+    void syncPrincipalsPlatformScopeRemoveUnlistedRefusesNonAnchor() {
+        var nonAnchor = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of("cli_x02d"),
+                List.of(), List.of(), true, List.of());
+        assertUseCaseError(() -> runAs(nonAnchor, SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("x02d-refused"), "D", List.of(), true, null)), true)),
+                UseCaseError.Authorization.class, "ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP");
+        // The same non-anchor may still sync WITHOUT removeUnlisted, or WITH
+        // an application code — neither is a platform-wide sweep.
+        var ok = runAs(nonAnchor, SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(
+                new SyncPrincipalInput(email("x02d-ok"), "D", List.of(), true, null)), false));
+        assertThat(ok.created()).isEqualTo(1);
+    }
+
     // ── Developer credential ───────────────────────────────────────────────
 
     @Test
@@ -493,7 +548,12 @@ class PrincipalOperationsTest {
         assertUseCaseError(() -> runAsAnchor(SetDeveloperCredential.of(repo, DeveloperSecrets.unconfigured(), disclosed::set), new SetDeveloperCredentialCommand(id)), UseCaseError.Internal.class, "SECRET");
         var stranger = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "s@x.io", List.of(), List.of(), List.of(), false, List.of());
         var refused = new java.util.concurrent.atomic.AtomicReference<String>();
-        assertUseCaseError(() -> runAs(stranger, SetDeveloperCredential.of(repo, secrets, refused::set), new SetDeveloperCredentialCommand(id)), UseCaseError.Authorization.class, "ANCHOR_REQUIRED");
+        // PR-4 (ruled 2026-09-01): blockNonClientTarget ("wrong kind of
+        // administrator") now runs before the scope check, so a non-anchor
+        // targeting a non-CLIENT-scope (here ANCHOR) principal is FORBIDDEN,
+        // not ANCHOR_REQUIRED — both are 403, but the block check is the one
+        // that fires first (ledger PR-3/PR-4's requireUserAdmin ordering).
+        assertUseCaseError(() -> runAs(stranger, SetDeveloperCredential.of(repo, secrets, refused::set), new SetDeveloperCredentialCommand(id)), UseCaseError.Authorization.class, "FORBIDDEN");
         assertThat(refused.get()).as("an unauthorised caller never reaches the minting path").isNull();
     }
 

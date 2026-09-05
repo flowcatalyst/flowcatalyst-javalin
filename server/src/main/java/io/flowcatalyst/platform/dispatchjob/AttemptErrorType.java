@@ -5,16 +5,34 @@ package io.flowcatalyst.platform.dispatchjob;
 public enum AttemptErrorType {
     CONNECTION, TIMEOUT, HTTP_ERROR, VALIDATION, UNKNOWN;
 
-    /// Lenient reader for stored values: unknown (and `null`) → `UNKNOWN`.
-    /// The repository maps a `NULL` column to "no error type" *before*
-    /// calling this, so `UNKNOWN` only ever means "a value we don't know".
+    /// Strict reader for stored values (spec §1.2, X-06): never a silent
+    /// default. The repository maps a `NULL` column to "no error type"
+    /// *before* calling this, so this never sees `null` in practice; a
+    /// literal `UNKNOWN` is a recognised stored value like any other
+    /// constant name, distinct from a genuinely unrecognised one. Only used
+    /// for the stored column — nothing parses this enum from the wire. See
+    /// [DispatchJobRepository]'s row mapper, which wraps
+    /// [UnrecognisedAttemptErrorTypeException] in [CorruptDispatchJobException]
+    /// carrying the row id.
+    ///
+    /// @throws UnrecognisedAttemptErrorTypeException `s` is `null` or not one
+    ///                                               of the five constant names
     public static AttemptErrorType parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
             case "CONNECTION" -> CONNECTION;
             case "TIMEOUT" -> TIMEOUT;
             case "HTTP_ERROR" -> HTTP_ERROR;
             case "VALIDATION" -> VALIDATION;
-            default -> UNKNOWN;
+            case "UNKNOWN" -> UNKNOWN;
+            case null, default -> throw new UnrecognisedAttemptErrorTypeException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedAttemptErrorTypeException extends RuntimeException {
+        public UnrecognisedAttemptErrorTypeException(String raw) {
+            super("unrecognised attempt error type: " + raw);
+        }
     }
 }

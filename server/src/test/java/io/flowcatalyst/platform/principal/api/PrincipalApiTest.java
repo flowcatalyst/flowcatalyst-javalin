@@ -193,7 +193,7 @@ class PrincipalApiTest {
                 .as("the exemption must not generalise to other principals").isEqualTo(403);
     }
 
-    // ── Client scoping (§11 Q4: the by-id leak) ────────────────────────────
+    // ── Client scoping (ledger PR-3/PR-4, ruled 2026-09-01) ────────────────
 
     @Test
     @DisplayName("the list hides other clients' principals")
@@ -204,64 +204,117 @@ class PrincipalApiTest {
         assertThat(ids).contains(userInA).doesNotContain(userInB);
     }
 
+    /// The core PR-4 assertion, pinning `PrincipalApi#requireReadable` /
+    /// `Access#requireReadable`: an out-of-scope target answers the SAME
+    /// 404 a genuinely missing id would, never a distinguishing 403 — a 403
+    /// here is an existence oracle over the principal table. Compares the
+    /// out-of-scope body to a truly-missing-id body at the SAME route,
+    /// normalising the id substring each message names (the only part that
+    /// legitimately differs — the caller already knows both ids).
     @Test
-    @DisplayName("the by-id read IS client-scoped: a clientA admin cannot read a clientB principal")
+    @DisplayName("the by-id read answers the same not-found for an out-of-scope target as for a missing id")
     void byIdReadIsClientScoped() {
-        // §3: "non-self + clientId != null + no access -> 403 FORBIDDEN".
-        // This is the safe half and is worth pinning, because §11 Q4's
-        // wording ("read routes under /{id}/...") is easy to read as covering
-        // this route too — it does not, and a future "fix" that removes this
-        // check would be a cross-tenant leak.
-        var r = http.get("/api/principals/" + userInB, client(clientA, "platform:iam:user:view"));
-        assertThat(r.statusCode()).isEqualTo(403);
-        assertThat(json(r).get("error").asText()).isEqualTo("FORBIDDEN");
+        var viewer = client(clientA, "platform:iam:user:view");
+        var outOfScope = http.get("/api/principals/" + userInB, viewer);
+        var missing = http.get("/api/principals/prn_doesnotexist99", viewer);
+
+        assertThat(outOfScope.statusCode()).as("out-of-scope, mutant: restore 403 FORBIDDEN here").isEqualTo(404);
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(json(outOfScope).get("error").asText()).isEqualTo("Principal_NOT_FOUND");
+        assertThat(normalisedBody(outOfScope, userInB)).as("byte-identical to a missing id, id substring aside")
+                .isEqualTo(normalisedBody(missing, "prn_doesnotexist99"));
+    }
+
+    /// `<resource>_NOT_FOUND` with the id substring replaced by a fixed
+    /// placeholder, so two different (but both absent-to-the-caller) ids
+    /// compare equal — the whole point of PR-4.
+    private static String normalisedBody(java.net.http.HttpResponse<String> r, String id) {
+        return r.body().replace(id, "<ID>");
     }
 
     @Test
-    @DisplayName("§11 Q4, UNRULED: the /{id}/roles sub-route is NOT client-scoped, so it reads across clients")
-    void subRoutesAreNotClientScoped() {
-        // Q4 is about the routes UNDER /{id}/, not the by-id read. `GET
-        // /{id}/roles` checks USER_VIEW and loads — with no client check — so
-        // a clientA administrator can enumerate a clientB principal's roles
-        // even though byIdReadIsClientScoped denies reading the principal
-        // itself, and the list route hides it entirely.
-        //
-        // Pinned as current behaviour, awaiting a ruling. If it is scoped,
-        // this flips to 403 and the change is visible rather than silent.
+    @DisplayName("PR-4: the /{id}/roles sub-route now answers the same not-found as the by-id read, not 200")
+    void rolesSubRouteIsNowClientScoped() {
         var r = http.get("/api/principals/" + userInB + "/roles", client(clientA, "platform:iam:user:view"));
-        assertThat(r.statusCode())
-                .as("cross-client role read currently succeeds — spec §11 Q4")
-                .isEqualTo(200);
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).get("error").asText()).isEqualTo("Principal_NOT_FOUND");
     }
 
-    // ── §11 Q3: the existence oracle on role mutations ─────────────────────
+    @Test
+    @DisplayName("PR-4: /{id}/version, /application-access and /available-applications are also client-scoped")
+    void otherReadSubRoutesAreClientScoped() {
+        var viewer = client(clientA, "platform:iam:user:view");
+        assertThat(http.get("/api/principals/" + userInB + "/version", viewer).statusCode()).isEqualTo(404);
+        assertThat(http.get("/api/principals/" + userInB + "/application-access", viewer).statusCode()).isEqualTo(404);
+        assertThat(http.get("/api/principals/" + userInB + "/available-applications", viewer).statusCode()).isEqualTo(404);
+    }
 
     @Test
-    @DisplayName("§11 Q3, UNRULED: role mutation has no coarse gate, so 404 vs 403 tells an outsider which ids exist")
-    void roleMutationIsAnExistenceOracle() {
-        // §3: "PUT /{id}/roles — **no coarse gate**; load (404)". The load
-        // happens before any authorisation, so a caller with NO user
-        // permissions gets a different status for a real id than a fake one.
-        // That is an existence oracle over the principal table.
+    @DisplayName("the self-read exemption still works for the by-id read and for /version")
+    void selfExemptionStillWorksAfterThePr4Change() {
+        var me = self(userInA, "");
+        assertThat(http.get("/api/principals/" + userInA, me).statusCode()).isEqualTo(200);
+        assertThat(http.get("/api/principals/" + userInA + "/version", me).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("a caller with no permission at all still gets 403 on a principal in its own scope")
+    void noPermissionAtAllStillMeans403WithinScope() {
+        // Same client as userInA (in scope), zero principal permissions —
+        // this must stay a permission 403, not a scope 404: PR-4 only
+        // changes the answer for a target the caller CANNOT reach.
+        var noPermission = client(clientA, "");
+        var r = http.get("/api/principals/" + userInA, noPermission);
+        assertThat(r.statusCode()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+    }
+
+    // ── The former existence oracle on role mutations, now closed ──────────
+
+    @Test
+    @DisplayName("PR-4 closes the role-mutation existence oracle: a real out-of-scope id now answers the same 404 as a fake one")
+    void roleMutationNoLongerDistinguishesRealFromFakeIds() {
+        // Before the ruling, a caller with NO user permissions got a
+        // DIFFERENT status for a real (but out-of-scope) id than a fake one
+        // — an existence oracle over the principal table. The per-resource
+        // scope check now runs (via Access#requireUserAdmin) before either
+        // the load-vs-missing distinction or a permission check can leak
+        // anything: both answer 404 Principal_NOT_FOUND.
         var outsider = client(clientA, "platform:messaging:process:view");
 
         var unknown = http.put("/api/principals/prn_doesnotexist99/roles", "{\"roles\":[]}", outsider);
         var real = http.put("/api/principals/" + userInB + "/roles", "{\"roles\":[]}", outsider);
 
         assertThat(unknown.statusCode()).as("unknown id").isEqualTo(404);
-        assertThat(real.statusCode()).as("real id — a DIFFERENT status, which is the leak").isNotEqualTo(404);
+        assertThat(real.statusCode()).as("real, out-of-scope id — mutant: revert Access#requireUserAdmin's scope check").isEqualTo(404);
+        assertThat(json(real).get("error").asText()).isEqualTo(json(unknown).get("error").asText());
     }
 
-    // ── The tenant boundary on the ungated mutations ───────────────────────
+    @Test
+    @DisplayName("PR-4: add/removeRole check scope BEFORE the idempotent early-return, closing the read-back IDOR")
+    void addAndRemoveRoleCheckScopeBeforeTheIdempotentSkip() {
+        // Before the fix, addRole/removeRole's idempotent skip (role already
+        // held / never held) never reached AssignRoles' own scope check, so
+        // a cross-tenant caller could "add" a role userInB already didn't
+        // have and read back userInB's full PrincipalResponse for free.
+        var adminOfA = client(clientA, "platform:iam:user:view,platform:iam:user:update,platform:iam:user:assign-roles");
+        var add = http.post("/api/principals/" + userInB + "/roles", "{\"role\":\"platform:developer\"}", adminOfA);
+        assertThat(add.statusCode()).as("mutant: remove the pre-idempotent-check Access#requireUserAdmin call").isEqualTo(404);
+        var remove = http.delete("/api/principals/" + userInB + "/roles/platform:developer", adminOfA);
+        assertThat(remove.statusCode()).isEqualTo(404);
+    }
+
+    // ── The tenant boundary on the mutations ────────────────────────────────
 
     @Test
-    @DisplayName("§11 Q3 is about ORDERING only: the mutations still refuse a target in another client")
-    void ungatedMutationsStillEnforceTheTenantBoundary() {
+    @DisplayName("PR-4: out-of-scope mutations answer 404, and the same administrator can still act within its own client")
+    void mutationsAnswerNotFoundOutOfScopeAndStillWorkInScope() {
         // The role / application-access / developer-credential routes have no
-        // coarse handler gate and load before authorising, which is the
-        // existence oracle in Q3. What they do NOT lack is the check itself:
-        // Access.requireUserAdmin runs post-load and tests the TARGET's home
-        // client, so a clientA administrator cannot reach a clientB principal.
+        // coarse handler gate and load before authorising (a separate,
+        // unruled-here ordering concern). What matters for PR-4: the
+        // per-resource check (Access.requireUserAdmin) runs post-load and
+        // tests the TARGET's home client — out of scope now answers the same
+        // 404 a missing id would, never a distinguishing 403.
         //
         // Asserted rather than read, because "the check exists somewhere
         // downstream" is exactly the belief that turns into a tenant breach
@@ -269,17 +322,23 @@ class PrincipalApiTest {
         var adminOfA = client(clientA, "platform:iam:user:view,platform:iam:user:update,platform:iam:user:assign-roles");
 
         var roles = http.put("/api/principals/" + userInB + "/roles", "{\"roles\":[]}", adminOfA);
-        assertThat(roles.statusCode()).as("roles, body was: %s", roles.body()).isEqualTo(403);
+        assertThat(roles.statusCode()).as("roles, body was: %s", roles.body()).isEqualTo(404);
+        assertThat(json(roles).get("error").asText()).isEqualTo("Principal_NOT_FOUND");
 
         var apps = http.put("/api/principals/" + userInB + "/application-access",
                 "{\"applicationIds\":[]}", adminOfA);
-        assertThat(apps.statusCode()).as("application access, body was: %s", apps.body()).isEqualTo(403);
+        assertThat(apps.statusCode()).as("application access, body was: %s", apps.body()).isEqualTo(404);
+        assertThat(json(apps).get("error").asText()).isEqualTo("Principal_NOT_FOUND");
 
+        // developer-credential's own missing-id path never pre-loads (it
+        // loads only inside the operation via Access.loadUser), so its own
+        // spelling is "User_NOT_FOUND" — see Access#requireUserAdmin(Principal).
         var cred = http.post("/api/principals/" + userInB + "/developer-credential", null, adminOfA);
-        assertThat(cred.statusCode()).as("developer credential, body was: %s", cred.body()).isEqualTo(403);
+        assertThat(cred.statusCode()).as("developer credential, body was: %s", cred.body()).isEqualTo(404);
+        assertThat(json(cred).get("error").asText()).isEqualTo("User_NOT_FOUND");
 
         // ...and the same administrator CAN do it inside its own client, so
-        // the 403s above are the boundary and not a blanket denial.
+        // the 404s above are the boundary and not a blanket denial.
         var ownClient = http.put("/api/principals/" + userInA + "/roles", "{\"roles\":[]}", adminOfA);
         assertThat(ownClient.statusCode()).as("own client, body was: %s", ownClient.body()).isEqualTo(200);
     }

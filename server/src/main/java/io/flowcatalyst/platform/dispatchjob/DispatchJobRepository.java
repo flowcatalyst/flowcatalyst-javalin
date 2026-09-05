@@ -634,7 +634,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         return new DispatchJob(
                 row.getId(),
                 row.getExternalId(),
-                DispatchJobKind.parse(row.getKind()),
+                kind(row.getId(), row.getKind()),
                 row.getCode(),
                 row.getSource(),
                 row.getSubject(),
@@ -655,7 +655,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getTimeoutSeconds(),
                 row.getSchemaId(),
                 row.getMaxRetries(),
-                RetryStrategy.parse(row.getRetryStrategy()),
+                retryStrategy(row.getId(), row.getRetryStrategy()),
                 status(row.getId(), row.getStatus()),
                 row.getAttemptCount(),
                 row.getLastError(),
@@ -675,7 +675,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getId(),
                 row.getExternalId(),
                 row.getSource(),
-                DispatchJobKind.parse(row.getKind()),
+                kind(row.getId(), row.getKind()),
                 row.getCode(),
                 row.getSubject(),
                 row.getEventId(),
@@ -692,7 +692,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getTimeoutSeconds() == null ? 0 : row.getTimeoutSeconds(),
                 status(row.getId(), row.getStatus()),
                 row.getMaxRetries(),
-                RetryStrategy.parse(row.getRetryStrategy()),
+                retryStrategy(row.getId(), row.getRetryStrategy()),
                 instant(row.getScheduledFor()),
                 instant(row.getExpiresAt()),
                 row.getAttemptCount(),
@@ -717,7 +717,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getResponseBody(),
                 "SUCCESS".equals(row.getStatus()),
                 row.getErrorMessage(),
-                row.getErrorType() == null ? null : AttemptErrorType.parse(row.getErrorType()));
+                row.getErrorType() == null ? null : attemptErrorType(row.getDispatchJobId(), row.getErrorType()));
     }
 
     /// The metadata list as the SDK's JSON array of `{key, value}` pairs; `[]` when empty.
@@ -755,6 +755,35 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
             return DispatchJobStatus.parse(stored);
         } catch (DispatchJobStatus.UnrecognisedStatusException e) {
             throw new CorruptDispatchJobException(rowId, e);
+        }
+    }
+
+    /// [DispatchJobKind#parse], wrapped the same way as [#status] (X-06).
+    private static DispatchJobKind kind(String rowId, String stored) {
+        try {
+            return DispatchJobKind.parse(stored);
+        } catch (DispatchJobKind.UnrecognisedDispatchJobKindException e) {
+            throw new CorruptDispatchJobException(rowId, e);
+        }
+    }
+
+    /// [RetryStrategy#parse], wrapped the same way as [#status] (X-06).
+    private static RetryStrategy retryStrategy(String rowId, String stored) {
+        try {
+            return RetryStrategy.parse(stored);
+        } catch (RetryStrategy.UnrecognisedRetryStrategyException e) {
+            throw new CorruptDispatchJobException(rowId, e);
+        }
+    }
+
+    /// [AttemptErrorType#parse], wrapped the same way as [#status] (X-06);
+    /// `dispatchJobId` names the parent job since an attempt has no
+    /// separately reported id in this exception shape.
+    private static AttemptErrorType attemptErrorType(String dispatchJobId, String stored) {
+        try {
+            return AttemptErrorType.parse(stored);
+        } catch (AttemptErrorType.UnrecognisedAttemptErrorTypeException e) {
+            throw new CorruptDispatchJobException(dispatchJobId, e);
         }
     }
 

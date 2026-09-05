@@ -46,10 +46,29 @@ class PrincipalTest {
 
     // ── Enum readers ───────────────────────────────────────────────────────
 
+    // X-06 (ruled 2026-09-01): the STORED readers below used to default
+    // silently to CLIENT / USER on an unrecognised or null value; they now
+    // fail loudly (see PrincipalRepositoryTest for the corrupt-row wiring).
+    // The WIRE reader (parseStrict) is untouched — out of scope for X-06.
+
     @ParameterizedTest
-    @CsvSource({"ANCHOR,ANCHOR", "PARTNER,PARTNER", "CLIENT,CLIENT", "GLOBAL,CLIENT", ",CLIENT"})
-    void scopeReadsLenientlyToClient(String stored, UserScope expected) {
+    @CsvSource({"ANCHOR,ANCHOR", "PARTNER,PARTNER", "CLIENT,CLIENT"})
+    void scopeReadsStrictly(String stored, UserScope expected) {
         assertThat(UserScope.parse(stored)).isEqualTo(expected);
+    }
+
+    /// Mutation check: restoring the old `default -> CLIENT` branch makes
+    /// this fail, since `parse("GLOBAL")`/`parse(null)` would return CLIENT
+    /// instead of throwing.
+    @ParameterizedTest
+    @ValueSource(strings = {"GLOBAL", "anchor", ""})
+    void scopeRejectsAnyUnrecognisedStoredValue(String stored) {
+        assertThatThrownBy(() -> UserScope.parse(stored)).isInstanceOf(UserScope.UnrecognisedUserScopeException.class);
+    }
+
+    @Test
+    void scopeRejectsNullStoredValue() {
+        assertThatThrownBy(() -> UserScope.parse(null)).isInstanceOf(UserScope.UnrecognisedUserScopeException.class);
     }
 
     @ParameterizedTest
@@ -59,10 +78,23 @@ class PrincipalTest {
     }
 
     @Test
-    void typeReadsLenientlyToUser() {
+    void typeReadsStrictly() {
+        assertThat(PrincipalType.parse("USER")).isEqualTo(PrincipalType.USER);
         assertThat(PrincipalType.parse("SERVICE")).isEqualTo(PrincipalType.SERVICE);
-        assertThat(PrincipalType.parse("BOT")).isEqualTo(PrincipalType.USER);
-        assertThat(PrincipalType.parse(null)).isEqualTo(PrincipalType.USER);
+    }
+
+    /// Mutation check: restoring the old `"SERVICE".equals(s) ? SERVICE :
+    /// USER` body makes this fail, since both cases would return USER
+    /// instead of throwing.
+    @ParameterizedTest
+    @ValueSource(strings = {"BOT", "user", ""})
+    void typeRejectsAnyUnrecognisedStoredValue(String stored) {
+        assertThatThrownBy(() -> PrincipalType.parse(stored)).isInstanceOf(PrincipalType.UnrecognisedPrincipalTypeException.class);
+    }
+
+    @Test
+    void typeRejectsNullStoredValue() {
+        assertThatThrownBy(() -> PrincipalType.parse(null)).isInstanceOf(PrincipalType.UnrecognisedPrincipalTypeException.class);
     }
 
     @Test

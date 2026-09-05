@@ -409,7 +409,8 @@ class DispatchPoolOperationsTest {
                 .as("absent concurrency defaults to 10").isEqualTo(DispatchPool.DEFAULT_CONCURRENCY);
         assertThat(first.eventType()).isEqualTo(DispatchPoolEvents.SYNCED);
         assertThat(first.subject()).isEqualTo(DispatchPoolEvents.syncSubjectFor(appCode));
-        assertThat(first.messageGroup()).isEqualTo("platform:dispatchpools");
+        // X-08 (ruled 2026-09-01): one FIFO lane per application.
+        assertThat(first.messageGroup()).isEqualTo("platform:dispatchpools:" + appCode);
 
         var second = runAsAnchor(SyncDispatchPools.of(repo), sync(appCode, false,
                 input(one, "A renamed", 60, 7), input(two, "B", 1, null)));
@@ -434,9 +435,22 @@ class DispatchPoolOperationsTest {
         var rollups = DB.fetch("SELECT type, message_group, data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
                 DispatchPoolEvents.syncSubjectFor(appCode), DispatchPoolEvents.SYNCED);
         assertThat(rollups).hasSize(2);
-        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:dispatchpools");
+        assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:dispatchpools:" + appCode);
         assertThat(rollups).extracting(r -> json(r.get("data", String.class)).get("syncedCodes").size()).containsExactlyInAnyOrder(3, 2);
         assertThat(auditsFor(appCode, "SyncDispatchPoolsCommand")).hasSize(2);
+    }
+
+    /// X-08: two applications' syncs land in two different FIFO lanes.
+    @Test
+    void syncOfDifferentApplicationsProduceDifferentMessageGroups() {
+        String appOne = "dpgrp1" + RUN;
+        String appTwo = "dpgrp2" + RUN;
+        var one = runAsAnchor(SyncDispatchPools.of(repo), sync(appOne, false, input(code("dpgrp1-a"), "A", null, null)));
+        var two = runAsAnchor(SyncDispatchPools.of(repo), sync(appTwo, false, input(code("dpgrp2-a"), "A", null, null)));
+        assertThat(one.messageGroup()).isEqualTo("platform:dispatchpools:" + appOne);
+        assertThat(two.messageGroup()).isEqualTo("platform:dispatchpools:" + appTwo);
+        assertThat(one.messageGroup()).as("mutant: revert DispatchPoolsSynced#messageGroup to the shared constant")
+                .isNotEqualTo(two.messageGroup());
     }
 
     /// HAZARD (spec §7): sync matches globally and `removeUnlisted` archives

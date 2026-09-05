@@ -24,7 +24,12 @@ public final class AssignRoles {
                 .authorize(Operation.Authorize.publicAccess()) // per-resource rule runs post-load: Access.requireUserAdmin
                 .execute((cmd, ec) -> {
                     Principal p = Access.loadUser(repo, cmd.userId());
-                    Access.requireUserAdmin(p);
+                    // "Principal": the PUT/POST/DELETE .../roles routes all pre-load
+                    // with principal(s, id) ("Principal_NOT_FOUND"), so the
+                    // out-of-scope 404 must match that, not Access.loadUser's own
+                    // "User" spelling above (unreachable in practice — the handler
+                    // already proved the row exists).
+                    Access.requireUserAdmin(p, "Principal");
                     if (!p.isUser()) {
                         throw UseCaseException.businessRule("NOT_A_USER", "Roles can only be assigned to USER type principals");
                     }

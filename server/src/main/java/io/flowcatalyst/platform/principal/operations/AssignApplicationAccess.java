@@ -27,7 +27,10 @@ public final class AssignApplicationAccess {
                 .authorize(Operation.Authorize.publicAccess()) // per-resource rule runs post-load: Access.requireUserAdmin
                 .execute((cmd, ec) -> {
                     Principal p = Access.loadUser(repo, cmd.userId());
-                    Access.requireUserAdmin(p);
+                    // "Principal": the PUT .../application-access route pre-loads
+                    // with principal(s, id) ("Principal_NOT_FOUND"), so the
+                    // out-of-scope 404 must match that (see AssignRoles).
+                    Access.requireUserAdmin(p, "Principal");
                     for (String appId : cmd.applicationIds()) {
                         Application app = applications.findById(appId)
                                 .orElseThrow(() -> UseCaseException.validation("APPLICATION_NOT_FOUND", "Application not found: " + appId));

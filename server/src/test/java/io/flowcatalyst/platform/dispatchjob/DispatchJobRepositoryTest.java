@@ -18,6 +18,7 @@ import java.util.List;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS_READ;
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOB_ATTEMPTS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
@@ -321,6 +322,89 @@ class DispatchJobRepositoryTest {
                         .isInstanceOf(CorruptDispatchJobException.class);
             } finally {
                 DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.eq(corrupt.id())).execute();
+            }
+        });
+    }
+
+    @Test
+    void findByIdRejectsAnUnrecognisedKindInsteadOfDefaultingToEvent() {
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs", "chk_msg_dispatch_jobs_kind", () -> {
+            String id = seedWriteRow(Seed.of(code("corruptkind")).withKind("BOGUS_KIND"));
+            try {
+                assertThatThrownBy(() -> repo.findById(id))
+                        .isInstanceOf(CorruptDispatchJobException.class)
+                        .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(id));
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            }
+        });
+    }
+
+    @Test
+    void aCorruptKindFailsTheWholeListReadNotJustThatRow() {
+        String goodCode = code("corruptkindlist");
+        seed(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(22)));
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs_read", "chk_msg_dispatch_jobs_read_kind", () -> {
+            Seed corrupt = Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(23)).withKind("NOT_A_REAL_KIND");
+            seedProjection(corrupt);
+            try {
+                assertThatThrownBy(() -> repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(goodCode), null)))
+                        .isInstanceOf(CorruptDispatchJobException.class);
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.eq(corrupt.id())).execute();
+            }
+        });
+    }
+
+    @Test
+    void findByIdRejectsAnUnrecognisedRetryStrategyInsteadOfDefaultingToExponential() {
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs", "chk_msg_dispatch_jobs_retry_strategy", () -> {
+            String id = seedWriteRow(Seed.of(code("corruptretry")).withRetryStrategy("linear"));
+            try {
+                assertThatThrownBy(() -> repo.findById(id))
+                        .isInstanceOf(CorruptDispatchJobException.class)
+                        .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(id));
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            }
+        });
+    }
+
+    /// `retry_strategy` is nullable and a genuine `NULL` still defaults to
+    /// `EXPONENTIAL` (the column's documented "unset" state) rather than
+    /// failing — [DispatchJobTest#retryStrategyDefaultsOnlyTheDocumentedNullUnsetState]
+    /// pins that at the enum level; this pins that an actually-unrecognised
+    /// *non-null* value still fails loudly through the repository.
+    @Test
+    void aCorruptRetryStrategyFailsTheWholeListReadNotJustThatRow() {
+        String goodCode = code("corruptretrylist");
+        seed(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(24)));
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs_read", "chk_msg_dispatch_jobs_read_retry_strategy", () -> {
+            Seed corrupt = Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(25)).withRetryStrategy("NOT_A_REAL_STRATEGY");
+            seedProjection(corrupt);
+            try {
+                assertThatThrownBy(() -> repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(goodCode), null)))
+                        .isInstanceOf(CorruptDispatchJobException.class);
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.eq(corrupt.id())).execute();
+            }
+        });
+    }
+
+    @Test
+    void aCorruptAttemptErrorTypeFailsTheAttemptHistoryRead() {
+        String jobId = seed(Seed.of(code("corrupterrortype")));
+        seedAttempt(jobId, 1, true, 200, null, null, Instant.now());
+        TestPg.withConstraintDropped(DS, "msg_dispatch_job_attempts", "chk_msg_dispatch_job_attempts_error_type", () -> {
+            seedAttempt(jobId, 2, false, null, "boom", "NOT_REAL", Instant.now());
+            try {
+                assertThatThrownBy(() -> repo.attemptsByJob(jobId))
+                        .isInstanceOf(CorruptDispatchJobException.class)
+                        .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(jobId));
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOB_ATTEMPTS)
+                        .where(MSG_DISPATCH_JOB_ATTEMPTS.DISPATCH_JOB_ID.eq(jobId)).and(MSG_DISPATCH_JOB_ATTEMPTS.ATTEMPT_NUMBER.eq(2))
+                        .execute();
             }
         });
     }

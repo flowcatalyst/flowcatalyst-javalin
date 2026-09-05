@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Instant;
 import java.util.List;
@@ -146,32 +148,72 @@ class DispatchJobTest {
         assertThat(status.isTerminal()).isEqualTo(terminal);
     }
 
+    // X-06 (ruled 2026-09-01): these stored readers used to default silently
+    // on an unrecognised value; they now fail loudly (see
+    // DispatchJobRepositoryTest / PrincipalRepositoryTest for the corrupt-row
+    // wiring). Mutation check: restoring the old `default -> EVENT` (etc.)
+    // branch makes the "rejects" test below fail, since it would return a
+    // value instead of throwing.
+
     @ParameterizedTest(name = "kind ''{0}'' reads as {1}")
-    @CsvSource(nullValues = "NULL", value = {"EVENT, EVENT", "TASK, TASK", "task, EVENT", "NULL, EVENT"})
-    void kindParsesLeniently(String stored, DispatchJobKind expected) {
+    @CsvSource({"EVENT, EVENT", "TASK, TASK"})
+    void kindReadsStrictly(String stored, DispatchJobKind expected) {
         assertThat(DispatchJobKind.parse(stored)).isEqualTo(expected);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "EVENTX", ""})
+    @NullSource
+    void kindRejectsAnyUnrecognisedOrNullStoredValue(String stored) {
+        assertThatThrownBy(() -> DispatchJobKind.parse(stored))
+                .isInstanceOf(DispatchJobKind.UnrecognisedDispatchJobKindException.class);
+    }
+
     @ParameterizedTest(name = "retry strategy ''{0}'' reads as {1} (wire ''{2}'')")
-    @CsvSource(nullValues = "NULL", value = {
+    @CsvSource({
             "immediate, IMMEDIATE, immediate",
             "IMMEDIATE, IMMEDIATE, immediate",
             "fixed, FIXED, fixed",
             "FIXED_DELAY, FIXED, fixed",
-            "exponential, EXPONENTIAL, exponential",
-            "linear, EXPONENTIAL, exponential",
-            "NULL, EXPONENTIAL, exponential"})
-    void retryStrategyParsesLenientlyAndWritesLowercase(String stored, RetryStrategy expected, String wire) {
+            "exponential, EXPONENTIAL, exponential"})
+    void retryStrategyReadsStrictlyAndWritesLowercase(String stored, RetryStrategy expected, String wire) {
         assertThat(RetryStrategy.parse(stored)).isEqualTo(expected);
         assertThat(expected.wire()).isEqualTo(wire);
     }
 
+    /// `retry_strategy` is nullable specifically so this default applies
+    /// (migration `V7`'s check constraint: "nullable (defaults to
+    /// exponential when unset)") — `null` is the column's documented unset
+    /// state, not a corrupt value, so it alone still defaults.
+    @Test
+    void retryStrategyDefaultsOnlyTheDocumentedNullUnsetState() {
+        assertThat(RetryStrategy.parse(null)).isEqualTo(RetryStrategy.EXPONENTIAL);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"linear", "EXPONENTIAL", "", "Immediate"})
+    void retryStrategyRejectsAnyOtherUnrecognisedValue(String stored) {
+        assertThatThrownBy(() -> RetryStrategy.parse(stored))
+                .isInstanceOf(RetryStrategy.UnrecognisedRetryStrategyException.class);
+    }
+
     @ParameterizedTest(name = "error type ''{0}'' reads as {1}")
-    @CsvSource(nullValues = "NULL", value = {
-            "CONNECTION, CONNECTION", "TIMEOUT, TIMEOUT", "HTTP_ERROR, HTTP_ERROR", "VALIDATION, VALIDATION",
-            "UNKNOWN, UNKNOWN", "weird, UNKNOWN", "NULL, UNKNOWN"})
-    void errorTypeParsesLeniently(String stored, AttemptErrorType expected) {
+    @CsvSource({"CONNECTION, CONNECTION", "TIMEOUT, TIMEOUT", "HTTP_ERROR, HTTP_ERROR", "VALIDATION, VALIDATION",
+            "UNKNOWN, UNKNOWN"})
+    void errorTypeReadsStrictly(String stored, AttemptErrorType expected) {
         assertThat(AttemptErrorType.parse(stored)).isEqualTo(expected);
+    }
+
+    /// The repository maps a `NULL` column to "no error type" *before*
+    /// calling `parse` (a `NULL` never reaches here in production); a direct
+    /// null call is therefore treated as the programming error it would be,
+    /// not as "no error type".
+    @ParameterizedTest
+    @ValueSource(strings = {"weird", ""})
+    @NullSource
+    void errorTypeRejectsAnyUnrecognisedOrNullStoredValue(String stored) {
+        assertThatThrownBy(() -> AttemptErrorType.parse(stored))
+                .isInstanceOf(AttemptErrorType.UnrecognisedAttemptErrorTypeException.class);
     }
 
     @Test
