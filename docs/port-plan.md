@@ -93,9 +93,11 @@ Sonnet ports, three at a time, in this order; I audit each before its commit.
    `/api/dispatch-jobs/batch`, `/api/audit-logs/batch`. *I write this spec*:
    partial-failure semantics, idempotency on TSIDs, per-item error shape,
    the outbox seam. Sonnet implements; the batch-atomicity tests are mine.
-4. **BFF**: dashboards, `me`, `clientselection` (outside the lockfile;
-   `frontend-api-types-adoption.md` on the Go side is the contract).
-   Sonnet, with the frontend as the acceptance test.
+4. **BFF + `/api/me`** — spec `docs/spec/bff.md` written 2026-09-05
+   (dashboard, filter options, developer, event types, roles + permission
+   catalogue, scheduled jobs, the aggregate-mounted `/bff/*` prefixes,
+   `/api/me*`). Sonnet port next, with the frontend as the acceptance test.
+   `clientselection` belongs to the auth phase.
 
 ## Phase 2 — the remaining data-plane loops
 
@@ -105,13 +107,16 @@ transaction by me, everything around it by Sonnet.
 
 1. **Stream processor** (1,305 Go lines) — spec `docs/spec/stream.md`
    written 2026-09-05; port in flight.
-2. **Outbox processor** (1,463) — Postgres backend only. **Owner ruling
-   2026-09-05: the Mongo backend is out of the port, on the backlog.**
-3. **Scheduled-job scheduler** + **purger** — `scheduledjob.md` exists;
-   `Server.java:200` lists both as TODO(port).
-4. **MCP** (785) — small; Sonnet end to end once the platform HTTP contract
-   it proxies is stable.
-5. **AWS Secrets Manager DB mode + rotation** (318) — `Main.java:38`. Sonnet.
+2. **Outbox processor** (1,463) — spec `docs/spec/outbox.md` written
+   2026-09-05; port in flight. Postgres backend only (**owner ruling
+   2026-09-05: Mongo is on the backlog**).
+3. **Scheduled-job scheduler** + **purger** — spec
+   `docs/spec/scheduled-job-scheduler.md` written 2026-09-05 (the purger
+   also owns the login-attempt quarterly partitions).
+4. **MCP** (785) — spec `docs/spec/mcp.md` written 2026-09-05; the Java
+   MCP SDK is already managed in the parent POM. Sonnet end to end.
+5. **AWS Secrets Manager DB mode + rotation** (318) — spec
+   `docs/spec/db-secret.md` written 2026-09-05. Sonnet.
 
 Router follow-ups that ride along: SQS/NATS dispatch publishers (deferred in
 Go too); the `/metrics` alias under the router prefix; a router-only
