@@ -86,8 +86,8 @@ For an incoming request to a lockfile operation (method + path template):
 2. Each `parameters[]` with `in: query` / `in: path` that carries a schema:
    type (`integer`, `number`, `boolean`, `enum`), `minimum`/`maximum`,
    `format`. Location `query.<name>` / `path.<name>`. A required query
-   parameter that is absent is `expected required property <name> to be
-   present` at location `query`.
+   parameter that is absent is `required query parameter is missing` at
+   `query.<name>` (see the table in §1).
 
 Nullable: the lockfile marks optional members by omission from `required`,
 and huma treats an explicit JSON `null` on a non-nullable typed property as
