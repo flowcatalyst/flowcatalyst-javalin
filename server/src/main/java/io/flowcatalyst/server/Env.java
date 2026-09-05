@@ -27,11 +27,14 @@ import java.util.Map;
 /// Not here, on purpose: the JWT signing-key material itself
 /// ([io.flowcatalyst.platform.shared.auth.SigningKeys] reads the inline PEM
 /// variables), the log level/format ([Logging]), and the per-package
-/// `FromEnv`-style knobs (email, rate limiting, login backoff, scheduled-job
-/// scheduler) which belong to their own subsystems. The field-encryption
-/// keys *are* here ([#appKey()] / [#appKeyPrevious()]) so that every way of
-/// loading the environment — the process, a `.env` file, fcdev's map —
-/// reaches the encryption service the same way.
+/// `FromEnv`-style knobs (email, rate limiting, login backoff) which belong
+/// to their own subsystems. The field-encryption keys *are* here
+/// ([#appKey()] / [#appKeyPrevious()]) so that every way of loading the
+/// environment — the process, a `.env` file, fcdev's map — reaches the
+/// encryption service the same way. The scheduled-job scheduler's own
+/// cadence knobs are here too (`FC_SCHEDULED_JOB_*`), read once and passed
+/// as values through `ScheduledJobScheduler.Settings.fromEnv`, mirroring how
+/// [io.flowcatalyst.stream.StreamProcessor.Settings#fromEnv] takes an [Env].
 public record Env(
         // ── listeners ──────────────────────────────────────────────────────
         // `FC_API_PORT` (alias `PORT`), default 8080: the unified API listener.
@@ -103,6 +106,16 @@ public record Env(
         int streamPartitionScheduledJobRetentionDays,
         // `FC_STREAM_PARTITION_TICK_HOURS`, default 0 (= 24).
         int streamPartitionTickHours,
+
+        // ── scheduled-job scheduler (docs/spec/scheduled-job-scheduler.md §1) ─
+        // `FC_SCHEDULED_JOB_POLL_SECONDS`, default 0 (= 30s).
+        int scheduledJobPollSeconds,
+        // `FC_SCHEDULED_JOB_DISPATCH_SECONDS`, default 0 (= 5s).
+        int scheduledJobDispatchSeconds,
+        // `FC_SCHEDULED_JOB_DISPATCH_BATCH`, default 0 (= 32).
+        int scheduledJobDispatchBatch,
+        // `FC_SCHEDULED_JOB_HTTP_TIMEOUT_SECONDS`, default 0 (= 10s).
+        int scheduledJobHttpTimeoutSeconds,
 
         // ── outbox processor ───────────────────────────────────────────────
         // `FC_OUTBOX_PLATFORM_URL` (aliases `FC_OUTBOX_API_URL`, `FC_API_BASE_URL`, `FLOWCATALYST_URL`), no default.
@@ -285,6 +298,11 @@ public record Env(
                 e.integer("FC_STREAM_PARTITION_RETENTION_DAYS", 0),
                 e.integer("FC_STREAM_PARTITION_RETENTION_DAYS_SCHEDULED_JOBS", 0),
                 e.integer("FC_STREAM_PARTITION_TICK_HOURS", 0),
+
+                e.integer("FC_SCHEDULED_JOB_POLL_SECONDS", 0),
+                e.integer("FC_SCHEDULED_JOB_DISPATCH_SECONDS", 0),
+                e.integer("FC_SCHEDULED_JOB_DISPATCH_BATCH", 0),
+                e.integer("FC_SCHEDULED_JOB_HTTP_TIMEOUT_SECONDS", 0),
 
                 // FC_OUTBOX_API_URL / FC_OUTBOX_TOKEN and FC_API_BASE_URL / FC_API_TOKEN are
                 // legacy outbox-processor names honoured so existing deployments drop in.

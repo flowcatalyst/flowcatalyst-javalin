@@ -4,7 +4,9 @@ import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
 import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
+import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
+import io.flowcatalyst.platform.purger.Purger;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
 import io.flowcatalyst.outbox.HttpDispatcher;
@@ -129,12 +131,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final AutoCloseable outboxLeaderResource;
         private final StreamProcessor streamProcessor;
         private final AutoCloseable streamLeaderResource;
+        private final ScheduledJobScheduler scheduledJobScheduler;
+        private final AutoCloseable scheduledJobLeaderResource;
+        private final Purger purger;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
         private Running(Javalin api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
                          DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
                          OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
-                         StreamProcessor streamProcessor, AutoCloseable streamLeaderResource) {
+                         StreamProcessor streamProcessor, AutoCloseable streamLeaderResource,
+                         ScheduledJobScheduler scheduledJobScheduler, AutoCloseable scheduledJobLeaderResource,
+                         Purger purger) {
             this.api = api;
             this.metrics = metrics;
             this.router = router;
@@ -146,6 +153,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             this.outboxLeaderResource = outboxLeaderResource;
             this.streamProcessor = streamProcessor;
             this.streamLeaderResource = streamLeaderResource;
+            this.scheduledJobScheduler = scheduledJobScheduler;
+            this.scheduledJobLeaderResource = scheduledJobLeaderResource;
+            this.purger = purger;
         }
 
         public int apiPort() {
@@ -213,6 +223,22 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         LOG.warn("closing the stream processor's leader election failed", e);
                     }
                 }
+                // Scheduled-job scheduler and purger before the pool closes, same
+                // reasoning as the stream processor above: both interrupt-and-join
+                // their loops so no query is still in flight against the pool.
+                if (scheduledJobScheduler != null) {
+                    scheduledJobScheduler.close();
+                }
+                if (scheduledJobLeaderResource != null) {
+                    try {
+                        scheduledJobLeaderResource.close();
+                    } catch (Exception e) {
+                        LOG.warn("closing the scheduled-job scheduler's leader election failed", e);
+                    }
+                }
+                if (purger != null) {
+                    purger.close();
+                }
                 // TODO(port): stop mcp and wait for it
                 LOG.info("server stopped");
             } finally {
@@ -245,10 +271,8 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         Javalin api = built.app();
 
         // ── background subsystems ───────────────────────────────────────────
-        // TODO(port): purger (platform), scheduled-job scheduler,
-        //   router engine, MCP — each leader-gated as in subsystems.go.
+        // TODO(port): router engine, MCP — as in subsystems.go.
         var toggles = List.of(
-                new Toggle("scheduled-job", env.scheduledJobEnabled()),
                 new Toggle("mcp", env.mcpEnabled()));
         for (var toggle : toggles) {
             if (toggle.enabled()) LOG.warn("{} subsystem not yet ported; toggle ignored", toggle.subsystem());
@@ -315,6 +339,25 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
         }
 
+        ScheduledJobScheduler scheduledJobScheduler = null;
+        AutoCloseable scheduledJobLeaderResource = null;
+        if (env.scheduledJobEnabled()) {
+            if (dbPool == null) {
+                LOG.warn("scheduled-job scheduler enabled but no database pool is available; ignoring "
+                        + "FC_SCHEDULED_JOB_ENABLED");
+            } else {
+                var leaderGate = leaderGate(env, "scheduled-job");
+                scheduledJobScheduler = ScheduledJobScheduler.start(dbPool,
+                        ScheduledJobScheduler.Settings.fromEnv(env), leaderGate.isLeader());
+                scheduledJobLeaderResource = leaderGate.resource();
+            }
+        }
+
+        // Not leader-gated (purger spec §4): every instance purges, whenever a
+        // pool exists at all — the statements are idempotent/`IF EXISTS`, so a
+        // duplicate pass from a second instance is harmless.
+        Purger purger = dbPool != null ? Purger.start(dbPool) : null;
+
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
@@ -322,7 +365,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         LOG.info("api server listening addr=:{}", env.apiPort());
         return new Running(api, metrics, router, built.dispatchJobReaper(), scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
-                streamProcessor, streamLeaderResource);
+                streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger);
     }
 
     /// [Env]'s outbox fields, with the library defaults ([OutboxProcessor.Config#defaults])

@@ -12,10 +12,13 @@ import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.YearMonth;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_LOGIN_ATTEMPTS;
 
@@ -184,6 +187,87 @@ public final class LoginAttemptRepository {
     /// `limit` is bounded by the caller (the API, the panel) — no silent correction (spec §5).
     private static void requireLimit(int limit) {
         if (limit < 1) throw new IllegalArgumentException("limit < 1: " + limit);
+    }
+
+    // ── Quarterly partition maintenance (purger spec §4, migration V5) ──────
+    // `iam_login_attempts` is range-partitioned by quarter on `attempted_at`
+    // (`V5__partition_login_attempts.sql`, adopted from Go migration 049), with
+    // partitions named `iam_login_attempts_YYYY_qN` (N = 1-4, one-based, no
+    // zero-pad — exactly `to_char(quarter_start, 'YYYY') || '_q' ||
+    // to_char(quarter_start, 'Q')`) and an `iam_login_attempts_default` catch-all
+    // the purger must never touch.
+
+    private static final String PARTITION_PREFIX = "iam_login_attempts_";
+    private static final Pattern QUARTER_SUFFIX = Pattern.compile("^(\\d{4})_q([1-4])$");
+
+    /// The start (UTC) of the calendar quarter containing `at`.
+    static Instant quarterStart(Instant at) {
+        var z = at.atZone(ZoneOffset.UTC);
+        int quarterStartMonth = ((z.getMonthValue() - 1) / 3) * 3 + 1;
+        return YearMonth.of(z.getYear(), quarterStartMonth).atDay(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+    }
+
+    /// The migration's exact partition name for the quarter beginning at `quarterStart`.
+    static String quarterlyPartitionName(Instant quarterStart) {
+        var z = quarterStart.atZone(ZoneOffset.UTC);
+        int quarter = (z.getMonthValue() - 1) / 3 + 1;
+        return PARTITION_PREFIX + z.getYear() + "_q" + quarter;
+    }
+
+    /// `CREATE TABLE IF NOT EXISTS <name> PARTITION OF iam_login_attempts FOR
+    /// VALUES FROM (…) TO (…)` for the quarter containing `at` — idempotent,
+    /// safe to call every purger tick for "this quarter" and "next quarter"
+    /// (purger spec §4). Bound expressions are Postgres constants, not bind
+    /// parameters (`could not determine data type of parameter`), so the two
+    /// instants — both computed here, never user input — are rendered as
+    /// literals, matching [io.flowcatalyst.stream.PartitionManager#ensureForward].
+    public void ensureQuarterlyPartition(Instant at) {
+        Instant start = quarterStart(at);
+        Instant end = start.atZone(ZoneOffset.UTC).plusMonths(3).toInstant();
+        String name = quarterlyPartitionName(start);
+        dsl.execute("CREATE TABLE IF NOT EXISTS " + name + " PARTITION OF iam_login_attempts"
+                + " FOR VALUES FROM ('" + start + "') TO ('" + end + "')");
+    }
+
+    /// Drops every quarterly child of `iam_login_attempts` whose range ends at
+    /// or before `cutoff` (purger spec §4). Only names matching the
+    /// `_YYYY_qN` shape are ever considered — the default partition (and
+    /// anything else) is left alone by construction, not by an extra check.
+    public void dropPartitionsOlderThan(Instant cutoff) {
+        for (String child : quarterlyPartitionNames()) {
+            Optional<Instant> end = parseQuarterlyPartitionEnd(child);
+            if (end.isEmpty() || end.get().isAfter(cutoff)) {
+                continue;
+            }
+            dsl.execute("DROP TABLE IF EXISTS " + child);
+        }
+    }
+
+    /// The exclusive end of `childName`'s range, or empty when it is not
+    /// exactly a `iam_login_attempts_YYYY_qN` name — the default partition,
+    /// or anything else `pg_inherits` might list.
+    static Optional<Instant> parseQuarterlyPartitionEnd(String childName) {
+        if (!childName.startsWith(PARTITION_PREFIX)) {
+            return Optional.empty();
+        }
+        Matcher m = QUARTER_SUFFIX.matcher(childName.substring(PARTITION_PREFIX.length()));
+        if (!m.matches()) {
+            return Optional.empty();
+        }
+        int year = Integer.parseInt(m.group(1));
+        int quarter = Integer.parseInt(m.group(2));
+        int startMonth = (quarter - 1) * 3 + 1;
+        Instant start = YearMonth.of(year, startMonth).atDay(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        return Optional.of(start.atZone(ZoneOffset.UTC).plusMonths(3).toInstant());
+    }
+
+    private List<String> quarterlyPartitionNames() {
+        return dsl.resultQuery("""
+                SELECT c.relname FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                JOIN pg_class p ON p.oid = i.inhparent
+                WHERE p.relname = 'iam_login_attempts'
+                """).fetch(0, String.class);
     }
 
     // ── Row ↔ entity ───────────────────────────────────────────────────────

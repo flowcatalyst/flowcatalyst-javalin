@@ -87,6 +87,23 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
         return List.copyOf(rows.map(this::toEntity));
     }
 
+    /// The oldest active service account of `applicationId` — the scheduled-job
+    /// dispatcher's outbound-credentials resolution (`docs/spec/scheduled-job-scheduler.md`
+    /// §3 step 5). No roles hydration (the dispatcher needs only credentials);
+    /// legacy-secret upgrade still runs, matching every other single-row read.
+    public Optional<ServiceAccount> findFirstActiveByApplicationId(String applicationId) {
+        return dsl.selectFrom(T)
+                .where(T.APPLICATION_ID.eq(applicationId).and(T.ACTIVE.isTrue()))
+                .orderBy(T.CREATED_AT.asc())
+                .limit(1)
+                .fetchOptional()
+                .map(row -> {
+                    ServiceAccount sa = toEntity(row);
+                    upgradeLegacySecrets(row.getId(), row.getWhAuthTokenRef(), row.getWhSigningSecretRef());
+                    return sa;
+                });
+    }
+
     private Optional<ServiceAccount> findOne(Condition where) {
         return dsl.selectFrom(T).where(where).fetchOptional().map(row -> {
             ServiceAccount sa = toEntity(row).withRoles(rolesFor(row.getId()));

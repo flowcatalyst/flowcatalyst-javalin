@@ -64,6 +64,15 @@ public record ScheduledJobInstance(
                 TriggerKind.MANUAL, null, now, null, null, InstanceStatus.QUEUED, 0, null, null, null, correlationId, now);
     }
 
+    /// A `CRON` firing of `job` for `slot`, created at `firedAt` (spec §7).
+    /// Public — unlike [#manual], the caller is the poller, in the data-plane
+    /// package `io.flowcatalyst.platform.scheduler.jobs`, not this aggregate's
+    /// own `operations`.
+    public static ScheduledJobInstance cron(ScheduledJob job, Instant slot, Instant firedAt) {
+        return new ScheduledJobInstance(EntityType.SCHEDULED_JOB_INSTANCE.generate(), job.id(), job.clientId(), job.code(),
+                TriggerKind.CRON, slot, firedAt, null, null, InstanceStatus.QUEUED, 0, null, null, null, null, firedAt);
+    }
+
     public boolean isPlatformScoped() {
         return clientId == null;
     }

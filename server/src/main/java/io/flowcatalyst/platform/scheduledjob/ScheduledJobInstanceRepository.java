@@ -93,6 +93,15 @@ public final class ScheduledJobInstanceRepository {
                 .fetch().map(ScheduledJobInstanceRepository::toLog));
     }
 
+    /// The dispatcher's claim set (scheduler spec §3): up to `limit` `QUEUED`
+    /// instances, oldest first (`created_at, id` — a stable order on ties).
+    /// No `SKIP LOCKED`: correctness rests on the leader gate (spec §1, D3).
+    public List<ScheduledJobInstance> listQueuedOldestFirst(int limit) {
+        return List.copyOf(dsl.selectFrom(I).where(I.STATUS.eq(InstanceStatus.QUEUED.name()))
+                .orderBy(I.CREATED_AT.asc(), I.ID.asc()).limit(limit)
+                .fetch().map(ScheduledJobInstanceRepository::toEntity));
+    }
+
     private static Condition condition(ListFilter f) {
         Condition where = DSL.noCondition();
         if (f.scheduledJobId() != null) where = where.and(I.SCHEDULED_JOB_ID.eq(f.scheduledJobId()));
@@ -150,6 +159,41 @@ public final class ScheduledJobInstanceRepository {
                 .set(I.COMPLETION_STATUS, completionStatus)
                 .set(I.COMPLETION_RESULT, toJsonb(completionResult))
                 .set(I.COMPLETED_AT, utc(Instant.now()))
+                .where(I.ID.eq(instanceId))
+                .execute();
+    }
+
+    // ── Dispatcher transitions (data plane, scheduler spec §3) ─────────────
+
+    /// Step 2: `status = IN_FLIGHT`, `delivery_attempts += 1`, in one
+    /// `RETURNING` round trip so the new count (`attemptsAfter`) is read
+    /// atomically with the increment — no lost update if two dispatchers
+    /// ever raced the same row.
+    public int markInFlight(String instanceId) {
+        return dsl.update(I)
+                .set(I.STATUS, InstanceStatus.IN_FLIGHT.name())
+                .set(I.DELIVERY_ATTEMPTS, I.DELIVERY_ATTEMPTS.plus(1))
+                .where(I.ID.eq(instanceId))
+                .returning(I.DELIVERY_ATTEMPTS)
+                .fetchOne(I.DELIVERY_ATTEMPTS);
+    }
+
+    /// Step 6: any 2xx (spec: "not only 202").
+    public void markDelivered(String instanceId) {
+        dsl.update(I)
+                .set(I.STATUS, InstanceStatus.DELIVERED.name())
+                .set(I.DELIVERED_AT, utc(Instant.now()))
+                .where(I.ID.eq(instanceId))
+                .execute();
+    }
+
+    /// Step 7: `terminal` → `DELIVERY_FAILED`, else back to `QUEUED` for the
+    /// next dispatch tick — no backoff (spec §6 D2). `message` is always
+    /// recorded, terminal or not.
+    public void markDeliveryFailed(String instanceId, String message, boolean terminal) {
+        dsl.update(I)
+                .set(I.STATUS, terminal ? InstanceStatus.DELIVERY_FAILED.name() : InstanceStatus.QUEUED.name())
+                .set(I.DELIVERY_ERROR, message)
                 .where(I.ID.eq(instanceId))
                 .execute();
     }
