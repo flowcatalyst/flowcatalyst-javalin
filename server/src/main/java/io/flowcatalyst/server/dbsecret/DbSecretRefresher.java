@@ -1,6 +1,7 @@
 package io.flowcatalyst.server.dbsecret;
 
 import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.server.dbsecret.jfr.DbSecretRefreshEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,9 +72,25 @@ public final class DbSecretRefresher implements AutoCloseable {
     void refreshNow() {
         try {
             apply(DbSecretFetcher.fetch(source, arn));
+            recordRefresh(true, null);
         } catch (RuntimeException e) {
             LOG.warn("DB secret refresh failed; keeping current credentials arn={}", arn, e);
+            recordRefresh(false, e.getClass().getName() + ": " + e.getMessage());
         }
+    }
+
+    /// Records the refresh attempt, if anyone is recording
+    /// (`docs/spec/jfr-events.md` §5). `shouldCommit()` first so a disabled
+    /// recording costs one virtual call and no field writes. Never carries
+    /// credential material.
+    private static void recordRefresh(boolean succeeded, String error) {
+        var event = new DbSecretRefreshEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.succeeded = succeeded;
+        event.error = error;
+        event.commit();
     }
 
     private void apply(DbSecretFetcher.Credentials creds) {

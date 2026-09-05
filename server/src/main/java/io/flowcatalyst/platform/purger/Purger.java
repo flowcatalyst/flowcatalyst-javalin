@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.purger;
 
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.purger.jfr.PurgerStepEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -102,9 +103,25 @@ public final class Purger implements AutoCloseable {
     private static void step(String name, Runnable action) {
         try {
             action.run();
+            recordStep(name, true, null);
         } catch (RuntimeException e) {
             LOG.warn("purger step failed name={}", name, e);
+            recordStep(name, false, e.getClass().getName() + ": " + e.getMessage());
         }
+    }
+
+    /// Records the step's outcome, if anyone is recording
+    /// (`docs/spec/jfr-events.md` §4). `shouldCommit()` first so a disabled
+    /// recording costs one virtual call and no field writes.
+    private static void recordStep(String name, boolean succeeded, String error) {
+        var event = new PurgerStepEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.step = name;
+        event.succeeded = succeeded;
+        event.error = error;
+        event.commit();
     }
 
     private static boolean sleep(Duration duration) {

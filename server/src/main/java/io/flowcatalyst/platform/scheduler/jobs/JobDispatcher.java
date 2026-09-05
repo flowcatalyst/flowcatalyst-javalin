@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstance;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.TriggerKind;
+import io.flowcatalyst.platform.scheduler.jobs.jfr.JobFiredEvent;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.wire.WebhookSigner;
 import org.slf4j.Logger;
@@ -84,6 +85,7 @@ public final class JobDispatcher {
             // Step 1: orphan — no markInFlight; markDeliveryFailed directly, terminal.
             try {
                 instances.markDeliveryFailed(instance.id(), ORPHAN, true);
+                recordFired(instance.id(), instance.jobCode(), 0, "ORPHAN", true, 0, false);
                 LOG.warn("delivery exhausted retries instance={} message={}", instance.id(), ORPHAN);
             } catch (RuntimeException e) {
                 LOG.warn("failed to mark orphan instance {} DELIVERY_FAILED; left for next tick", instance.id(), e);
@@ -99,7 +101,7 @@ public final class JobDispatcher {
             return;
         }
         if (j.targetUrl() == null || j.targetUrl().isBlank()) {
-            fail(instance.id(), NO_TARGET_URL, attemptsAfter, j.deliveryMaxAttempts());
+            fail(instance.id(), instance.jobCode(), NO_TARGET_URL, attemptsAfter, j.deliveryMaxAttempts(), false, 0);
             return;
         }
         deliver(j, instance, attemptsAfter);
@@ -114,16 +116,21 @@ public final class JobDispatcher {
                     .timeout(timeout)
                     .header("Content-Type", "application/json");
         } catch (RuntimeException e) {
-            fail(instance.id(), "Network/HTTP error: " + e.getMessage(), attemptsAfter, job.deliveryMaxAttempts());
+            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + e.getMessage(), attemptsAfter,
+                    job.deliveryMaxAttempts(), false, 0);
             return;
         }
-        applyCredentials(builder, job, body);
+        // Whether the signature header was actually added — "signed" on the
+        // flight-recorder event means exactly this, not merely that a bearer
+        // token was attached.
+        boolean signed = applyCredentials(builder, job, body);
 
         HttpResponse<byte[]> response;
         try {
             response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
         } catch (IOException e) {
-            fail(instance.id(), "Network/HTTP error: " + e.getMessage(), attemptsAfter, job.deliveryMaxAttempts());
+            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + e.getMessage(), attemptsAfter,
+                    job.deliveryMaxAttempts(), signed, 0);
             return;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -136,16 +143,23 @@ public final class JobDispatcher {
                 instances.markDelivered(instance.id());
             } catch (RuntimeException e) {
                 LOG.warn("markDelivered failed for scheduled job instance {}; left for next tick", instance.id(), e);
+                return;
             }
+            recordFired(instance.id(), instance.jobCode(), attemptsAfter, "DELIVERED", true, status, signed);
             return;
         }
         byte[] responseBody = response.body() == null ? new byte[0] : response.body();
         String snippet = new String(responseBody, 0, Math.min(responseBody.length, 500), StandardCharsets.UTF_8);
-        fail(instance.id(), "HTTP " + status + " (expected 2xx): " + snippet, attemptsAfter, job.deliveryMaxAttempts());
+        fail(instance.id(), instance.jobCode(), "HTTP " + status + " (expected 2xx): " + snippet, attemptsAfter,
+                job.deliveryMaxAttempts(), signed, status);
     }
 
-    /// Step 7: `terminal = attemptsAfter >= deliveryMaxAttempts`.
-    private void fail(String instanceId, String message, int attemptsAfter, int deliveryMaxAttempts) {
+    /// Step 7: `terminal = attemptsAfter >= deliveryMaxAttempts`. The
+    /// flight-recorder event is committed only after `markDeliveryFailed`
+    /// has returned — never before, and not at all if it threw, since then
+    /// nothing is actually known to have happened to the row.
+    private void fail(String instanceId, String jobCode, String message, int attemptsAfter, int deliveryMaxAttempts,
+                       boolean signed, int statusCode) {
         boolean terminal = attemptsAfter >= deliveryMaxAttempts;
         try {
             instances.markDeliveryFailed(instanceId, message, terminal);
@@ -153,29 +167,54 @@ public final class JobDispatcher {
             LOG.warn("markDeliveryFailed failed for scheduled job instance {}; left for next tick", instanceId, e);
             return;
         }
+        recordFired(instanceId, jobCode, attemptsAfter, "FAILED", terminal, statusCode, signed);
         if (terminal) {
             LOG.warn("delivery exhausted retries instance={} message={}", instanceId, message);
         }
     }
 
-    /// Step 5: the five degraded-credentials cases all deliver anyway, WARN-logged.
-    private void applyCredentials(HttpRequest.Builder builder, ScheduledJob job, byte[] body) {
+    /// Records the firing's outcome, if anyone is recording
+    /// (`docs/spec/jfr-events.md` §3). `shouldCommit()` first so a disabled
+    /// recording costs one virtual call and no field writes.
+    private static void recordFired(String instanceId, String jobCode, int attempt, String outcome, boolean terminal,
+                                     int statusCode, boolean signed) {
+        var event = new JobFiredEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.instanceId = instanceId;
+        event.jobCode = jobCode;
+        event.attempt = attempt;
+        event.outcome = outcome;
+        event.terminal = terminal;
+        event.statusCode = statusCode;
+        event.signed = signed;
+        event.commit();
+    }
+
+    /// Step 5: the five degraded-credentials cases all deliver anyway,
+    /// WARN-logged.
+    ///
+    /// @return whether the signature header (`X-FlowCatalyst-Signature`) was
+    /// actually added — the fact the flight-recorder event's `signed` field
+    /// needs, distinct from whether a bearer token was attached.
+    private boolean applyCredentials(HttpRequest.Builder builder, ScheduledJob job, byte[] body) {
         String applicationId = job.applicationId();
         if (applicationId == null || applicationId.isBlank()) {
             LOG.warn("scheduled job {} has no application linkage; delivering unsigned — "
                     + "re-sync the job from its application", job.code());
-            return;
+            return false;
         }
         Optional<OutboundCredentials> resolved;
         try {
             resolved = credentials.apply(applicationId);
         } catch (RuntimeException e) {
             LOG.warn("outbound credentials lookup failed for scheduled job {}; delivering unsigned", job.code(), e);
-            return;
+            return false;
         }
         if (resolved.isEmpty()) {
             LOG.warn("scheduled job {} has no active service account credentials; delivering unsigned", job.code());
-            return;
+            return false;
         }
         OutboundCredentials creds = resolved.get();
         boolean hasToken = creds.token() != null && !creds.token().isEmpty();
@@ -195,6 +234,7 @@ public final class JobDispatcher {
             builder.header("X-FlowCatalyst-Signature", signature);
             builder.header("X-FlowCatalyst-Timestamp", timestamp);
         }
+        return hasSecret;
     }
 
     /// `hex(HMAC-SHA256(secret, timestamp || body))` (spec §3 step 5) — the

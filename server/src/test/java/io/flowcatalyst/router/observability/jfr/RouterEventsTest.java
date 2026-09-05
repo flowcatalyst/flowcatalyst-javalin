@@ -7,6 +7,7 @@ import io.flowcatalyst.router.queue.Acknowledger;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
+import io.flowcatalyst.testjfr.Recorded;
 import jdk.jfr.consumer.RecordedEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

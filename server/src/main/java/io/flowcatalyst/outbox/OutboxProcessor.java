@@ -1,5 +1,6 @@
 package io.flowcatalyst.outbox;
 
+import io.flowcatalyst.outbox.jfr.OutboxItemSettledEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -215,14 +216,16 @@ public final class OutboxProcessor implements AutoCloseable {
     private boolean applyOutcome(OutboxItem item, HttpDispatcher.ItemOutcome outcome, boolean grouped) {
         return switch (outcome) {
             case HttpDispatcher.ItemOutcome.Success ignored -> {
-                safely(() -> repository.markSuccess(List.of(item.id())));
+                boolean persisted = safely(() -> repository.markSuccess(List.of(item.id())));
                 totalSucceeded.incrementAndGet();
+                recordSettled(item, "SUCCESS", "DELIVERED", false, grouped, persisted);
                 yield true;
             }
             case HttpDispatcher.ItemOutcome.Failure(var status, var message) -> {
                 boolean requeue = status.retryable() && item.retryCount() + 1 < config.maxRetries();
-                safely(() -> repository.markFailed(List.of(item.id()), status, message, requeue));
+                boolean persisted = safely(() -> repository.markFailed(List.of(item.id()), status, message, requeue));
                 totalFailed.incrementAndGet();
+                recordSettled(item, "FAILURE", status.name(), requeue, grouped, persisted);
                 if (grouped && !requeue && config.blockOnError()) {
                     groupStates.block(item.messageGroup(), item.id(), message);
                     yield false;
@@ -232,12 +235,38 @@ public final class OutboxProcessor implements AutoCloseable {
         };
     }
 
-    private void safely(Runnable action) {
+    /// @return whether `action` completed without throwing — `false` is
+    /// what makes [#recordSettled]'s `persisted` field the thing an operator
+    /// needs: "the repository update failed and the item will be re-claimed".
+    private boolean safely(Runnable action) {
         try {
             action.run();
+            return true;
         } catch (RuntimeException e) {
             LOG.warn("outbox repository update failed", e);
+            return false;
         }
+    }
+
+    /// Records the item's outcome, if anyone is recording
+    /// (`docs/spec/jfr-events.md` §2). `shouldCommit()` first so a disabled
+    /// recording costs one virtual call and no field writes. Committed after
+    /// the repository mark call has returned or thrown — never before.
+    private static void recordSettled(OutboxItem item, String outcome, String status, boolean requeued,
+                                       boolean grouped, boolean persisted) {
+        var event = new OutboxItemSettledEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.itemId = item.id();
+        event.type = item.type().name();
+        event.group = item.messageGroup();
+        event.outcome = outcome;
+        event.status = status;
+        event.requeued = requeued;
+        event.grouped = grouped;
+        event.persisted = persisted;
+        event.commit();
     }
 
     // ── the recovery tick (spec §4) ──────────────────────────────────────────

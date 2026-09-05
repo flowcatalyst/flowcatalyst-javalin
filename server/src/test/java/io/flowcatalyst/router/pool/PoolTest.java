@@ -9,7 +9,7 @@ import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.observability.jfr.DispatchEvent;
 import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
-import io.flowcatalyst.router.observability.jfr.Recorded;
+import io.flowcatalyst.testjfr.Recorded;
 import io.flowcatalyst.router.policy.RetryPolicy;
 import io.flowcatalyst.router.settled.BlockedSiblings;
 import io.flowcatalyst.router.settled.SettledJob;

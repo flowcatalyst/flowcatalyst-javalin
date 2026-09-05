@@ -5,6 +5,7 @@ import io.flowcatalyst.db.generated.tables.MsgEvents;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
+import io.flowcatalyst.stream.jfr.FanOutBatchEvent;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -82,9 +83,45 @@ public final class FanOut implements Projector.Step {
     @Override
     public int step(int batchSize) {
         List<Subscription> subs = loadSubscriptions();
-        return StreamTx.run(dataSource, tx -> subs.isEmpty()
-                ? claimNoSubscriptions(tx, batchSize)
-                : claimAndFanOut(tx, subs, batchSize));
+        boolean noSubscriptions = subs.isEmpty();
+        // A one-element holder so the FanOutResult (event fields) survives
+        // StreamTx.run's ToIntFunction<DbTx> contract, which only returns the
+        // int Projector.Step needs; the flight-recorder event is committed
+        // below, outside the transaction, once it is known to have committed.
+        FanOutResult[] captured = new FanOutResult[1];
+        int eventsClaimed = StreamTx.run(dataSource, tx -> {
+            FanOutResult result = noSubscriptions
+                    ? claimNoSubscriptions(tx, batchSize)
+                    : claimAndFanOut(tx, subs, batchSize);
+            captured[0] = result;
+            return result.eventsClaimed();
+        });
+        if (eventsClaimed > 0) {
+            recordBatch(captured[0], subs.size(), noSubscriptions);
+        }
+        return eventsClaimed;
+    }
+
+    /// Records the batch, if anyone is recording (`docs/spec/jfr-events.md`
+    /// §1). `shouldCommit()` first so a disabled recording costs one virtual
+    /// call and no field writes.
+    private static void recordBatch(FanOutResult result, int subscriptions, boolean noSubscriptions) {
+        var event = new FanOutBatchEvent();
+        if (!event.shouldCommit()) {
+            return;
+        }
+        event.eventsClaimed = result.eventsClaimed();
+        event.jobsInserted = result.jobsInserted();
+        event.subscriptions = subscriptions;
+        event.noSubscriptions = noSubscriptions;
+        event.commit();
+    }
+
+    /// `claimAndFanOut`/`claimNoSubscriptions`'s result: events claimed
+    /// always matters to [Projector.Step]; jobs inserted only matters to the
+    /// flight-recorder event, so it rides along rather than needing its own
+    /// return path.
+    private record FanOutResult(int eventsClaimed, int jobsInserted) {
     }
 
     /// Reloads the cache when its TTL has lapsed; keeps the previous cache on
@@ -113,20 +150,22 @@ public final class FanOut implements Projector.Step {
     /// Stream spec §3 step 1: with zero cached subscriptions, stamp the
     /// oldest `batchSize` unfanned events and discard them — no jobs, no
     /// `SKIP LOCKED` (spec D1/D2).
-    private static int claimNoSubscriptions(DbTx tx, int batchSize) {
+    private static FanOutResult claimNoSubscriptions(DbTx tx, int batchSize) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
         List<String> ids = txDsl.select(E.ID).from(E).where(E.FANNED_OUT_AT.isNull())
                 .orderBy(E.CREATED_AT.asc()).limit(batchSize).fetch(E.ID);
-        if (ids.isEmpty()) return 0;
-        return txDsl.update(E).set(E.FANNED_OUT_AT, OffsetDateTime.now(ZoneOffset.UTC)).where(E.ID.in(ids)).execute();
+        if (ids.isEmpty()) return new FanOutResult(0, 0);
+        int updated = txDsl.update(E).set(E.FANNED_OUT_AT, OffsetDateTime.now(ZoneOffset.UTC))
+                .where(E.ID.in(ids)).execute();
+        return new FanOutResult(updated, 0);
     }
 
     /// Stream spec §3 steps 2-4: claim, match, insert, return the number of
-    /// **events** claimed (not jobs).
-    private static int claimAndFanOut(DbTx tx, List<Subscription> subs, int batchSize) {
+    /// **events** claimed (not jobs) alongside how many jobs were inserted.
+    private static FanOutResult claimAndFanOut(DbTx tx, List<Subscription> subs, int batchSize) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
         List<ClaimedEvent> claimed = claim(txDsl, batchSize);
-        if (claimed.isEmpty()) return 0;
+        if (claimed.isEmpty()) return new FanOutResult(0, 0);
 
         var insert = txDsl.insertInto(D, D.ID, D.CODE, D.SOURCE, D.SUBJECT, D.EVENT_ID, D.CORRELATION_ID,
                 D.CLIENT_ID, D.MESSAGE_GROUP, D.PAYLOAD, D.TARGET_URL, D.DATA_ONLY, D.SERVICE_ACCOUNT_ID,
@@ -150,7 +189,7 @@ public final class FanOut implements Projector.Step {
         if (jobCount > 0) {
             insert.onConflict(D.ID, D.CREATED_AT).doNothing().execute();
         }
-        return claimed.size();
+        return new FanOutResult(claimed.size(), jobCount);
     }
 
     /// The event's `data` as text, or the JSON literal `null` when the
