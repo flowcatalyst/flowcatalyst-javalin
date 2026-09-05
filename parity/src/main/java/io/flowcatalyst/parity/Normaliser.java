@@ -131,19 +131,19 @@ public final class Normaliser {
         JsonNode jws = tryDecodeJws(s, vars, baseUrl);
         if (jws != null) return jws;
 
-        for (var capture : vars.captures().entrySet()) {
-            if (s.equals(capture.getValue())) {
-                return Json.MAPPER.getNodeFactory().stringNode("«" + capture.getKey() + "»");
-            }
+        Map<String, String> labels = vars.labels();
+        String whole = labels.get(s);
+        if (whole != null) {
+            return Json.MAPPER.getNodeFactory().stringNode("«" + whole + "»");
         }
         // Rule 1, substring form: an id or token embedded in a message ("EventType
         // not found: evt_…") or a derived id ("<principalId>-role-0"). Only values
         // long enough that an accidental hit is implausible (a TSID is 17 chars).
         String out = s;
-        for (var capture : vars.captures().entrySet()) {
-            String value = capture.getValue();
+        for (var label : labels.entrySet()) {
+            String value = label.getKey();
             if (value.length() >= MIN_SUBSTRING_CAPTURE && out.contains(value)) {
-                out = out.replace(value, "«" + capture.getKey() + "»");
+                out = out.replace(value, "«" + label.getValue() + "»");
             }
         }
         out = baseUrl.isEmpty() ? out : out.replace(baseUrl, "«base»");

@@ -289,7 +289,7 @@ matched.
    refuses with `ROLE_HAS_ASSIGNMENTS`. Intended asymmetry?
 4. The catalogue delete (`DELETE /api/roles/permissions/{permission}`) is a
    direct repository write — no event, no audit.
-5. `/by-source/{anything-else}` lists `DATABASE` roles (lenient parse).
+5. ~~`/by-source/{anything-else}` lists `DATABASE` roles (lenient parse).~~ **Ruled 2026-09-05 (parity S1-A): 400 `INVALID_SOURCE`, Go's rule.**
 6. Create stores `roleName`/`displayName` untrimmed; update trims.
 7. The roles-synced rollup subject is always `platform.roles` (the per-app
    metadata subject is dead); audit `entity_id` is empty for it.

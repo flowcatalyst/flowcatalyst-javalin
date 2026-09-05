@@ -34,7 +34,19 @@ public final class Vars {
     private final String pkceVerifier;
     private final String pkceChallenge;
 
+    /// Every value captured on this side across the whole run, value → the name
+    /// it was captured under. Shared by every scenario's [Vars] of one side so
+    /// rule 1 also masks an id a *previous* scenario created (the clones are
+    /// mutated by every scenario in turn, and an unfiltered list shows them all).
+    private final Map<String, String> runLabels;
+
     public Vars(String adminEmail, String adminPassword, String run, String clientId, String appId, String adminId) {
+        this(adminEmail, adminPassword, run, clientId, appId, adminId, new LinkedHashMap<>());
+    }
+
+    public Vars(String adminEmail, String adminPassword, String run, String clientId, String appId, String adminId,
+                Map<String, String> runLabels) {
+        this.runLabels = Objects.requireNonNull(runLabels, "runLabels");
         this.adminEmail = Objects.requireNonNull(adminEmail, "adminEmail");
         this.adminPassword = Objects.requireNonNull(adminPassword, "adminPassword");
         this.run = Objects.requireNonNull(run, "run");
@@ -49,6 +61,15 @@ public final class Vars {
     /// (a scenario that captures the same name twice wants the latest one).
     public void capture(String name, String value) {
         captures.put(name, Objects.requireNonNull(value, "value"));
+        runLabels.put(value, name);
+    }
+
+    /// value → capture name, for normalisation rule 1: this scenario's own
+    /// captures win, then anything captured earlier in the run on this side.
+    public Map<String, String> labels() {
+        Map<String, String> out = new LinkedHashMap<>(runLabels);
+        captures.forEach((name, value) -> out.put(value, name));
+        return out;
     }
 
     public Optional<String> captured(String name) {

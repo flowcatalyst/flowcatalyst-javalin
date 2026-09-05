@@ -103,5 +103,40 @@
     "pointer": "/message",
     "reason": "same as /status on this step",
     "ruling": "defect 10 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "**/hasLoginClient",
+    "reason": "Go never computes hasLoginClient (always false); Java answers whether an authorization_code client is linked to the application",
+    "ruling": "application.md section 11 q3 \u2014 Go defect, Java kept"
+  },
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "**/permissions",
+    "reason": "an empty permission list: Go serialises its nil slice as null, Java answers []; a content difference would surface at an element pointer, not here",
+    "ruling": "CONVENTIONS.md section 2 (lists are never null) \u2014 Go accident"
+  },
+  {
+    "scenario": "*",
+    "step": "update-into-existing-domain",
+    "pointer": "/status",
+    "reason": "renaming an anchor domain onto an existing one: Go 500 PERSIST (no pre-check), Java 409 DOMAIN_EXISTS",
+    "ruling": "auth-admin-config.md section 8 D2"
+  },
+  {
+    "scenario": "*",
+    "step": "update-into-existing-domain",
+    "pointer": "/error",
+    "reason": "same step",
+    "ruling": "auth-admin-config.md section 8 D2"
+  },
+  {
+    "scenario": "*",
+    "step": "update-into-existing-domain",
+    "pointer": "/message",
+    "reason": "same step",
+    "ruling": "auth-admin-config.md section 8 D2"
   }
 ]

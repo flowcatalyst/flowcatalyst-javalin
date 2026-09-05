@@ -90,12 +90,14 @@ public final class Parity {
 
         List<ScenarioResult> results = new ArrayList<>();
         List<Runner.RequestedRoute> allRequested = new ArrayList<>();
+        Map<String, String> goRunLabels = new LinkedHashMap<>();
+        Map<String, String> javaRunLabels = new LinkedHashMap<>();
 
         for (ScenarioLoader.Loaded loaded : scenarios) {
             Scenario scenario = loaded.scenario();
             LOG.info("running scenario {}", scenario.name());
-            Vars goVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId());
-            Vars javaVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId());
+            Vars goVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId(), goRunLabels);
+            Vars javaVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId(), javaRunLabels);
 
             Runner.RunResult goRun = new Runner(go.baseUrl()).run(scenario, goVars);
             Runner.RunResult javaRun = new Runner(javaSide.baseUrl()).run(scenario, javaVars);

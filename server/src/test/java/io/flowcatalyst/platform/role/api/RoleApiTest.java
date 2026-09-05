@@ -170,12 +170,14 @@ class RoleApiTest {
         // A viewer (CLIENT scope, view permission) can read roles.
         assertThat(http.get("/api/roles/" + id, VIEWER).statusCode()).isEqualTo(200);
 
-        // by-source is a bare array (lenient: an unknown source lists DATABASE roles); filters list our code.
+        // by-source is a bare array; an unknown source is 400 INVALID_SOURCE (Go's rule); filters list our code.
         var bySource = http.get("/api/roles/by-source/DATABASE", ANCHOR);
         assertThat(bySource.statusCode()).isEqualTo(200);
         assertThat(json(bySource).isArray()).isTrue();
         assertThat(json(bySource).findValues("id")).extracting(JsonNode::asText).contains(id);
-        assertThat(json(http.get("/api/roles/by-source/bogus", ANCHOR)).findValues("id")).extracting(JsonNode::asText).contains(id);
+        var bogus = http.get("/api/roles/by-source/bogus", ANCHOR);
+        assertThat(bogus.statusCode()).as("Go's rule, adopted after the parity harness flagged the leniency").isEqualTo(400);
+        assertThat(json(bogus).get("error").asText()).isEqualTo("INVALID_SOURCE");
         assertThat(json(http.get("/api/roles/by-source/CODE", ANCHOR)).findValues("id")).extracting(JsonNode::asText).doesNotContain(id);
         var filters = http.get("/api/roles/filters/applications", ANCHOR);
         assertThat(filters.statusCode()).isEqualTo(200);

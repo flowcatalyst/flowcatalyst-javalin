@@ -20,6 +20,7 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.http.Context;
 import io.javalin.router.JavalinDefaultRoutingApi;
 
@@ -131,10 +132,18 @@ public final class RoleApi {
         ctx.json(RoleResponse.from(roleNamed(s, ctx.pathParam("code"))));
     }
 
-    /// Bare JSON array; the source segment is parsed leniently (spec §3, open question 5).
+    /// Bare JSON array; an unknown source segment is 400 `INVALID_SOURCE` — Go's
+    /// rule (`api.go` bySource), adopted 2026-09-05 when the parity harness
+    /// showed Java's earlier leniency (spec §3, open question 5, now ruled).
     private static void listBySource(Context ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
-        ctx.json(RoleResponse.from(s.roles().findBySource(RoleSource.parseWire(ctx.pathParam("source")))));
+        RoleSource source;
+        try {
+            source = RoleSource.parse(ctx.pathParam("source"));
+        } catch (RoleSource.UnrecognisedRoleSourceException e) {
+            throw UseCaseException.validation("INVALID_SOURCE", "source must be CODE, DATABASE, or SDK");
+        }
+        ctx.json(RoleResponse.from(s.roles().findBySource(source)));
     }
 
     /// Bare JSON array.
