@@ -250,6 +250,13 @@ public final class LoginApi {
     /// Mint the cookie, record the success, answer the login response.
     /// Public so the 2FA and passkey flows complete a login the same way.
     public static void completeLogin(Context ctx, State s, Principal p, String ip) {
+        completeLogin(ctx, s, p, ip, null);
+    }
+
+    /// [#completeLogin(Context, State, Principal, String)], with a first
+    /// recovery-code set to show once (§6.6 enrol-and-complete) — `null` or
+    /// empty when this login minted none.
+    public static void completeLogin(Context ctx, State s, Principal p, String ip, List<String> recoveryCodes) {
         String token;
         try {
             token = s.issuer().sessionToken(p.id(), p.email());
@@ -262,7 +269,7 @@ public final class LoginApi {
         }
         s.cookie().set(ctx, token);
         record(s, AttemptOutcome.SUCCESS, p.email() == null ? "" : p.email().toLowerCase(Locale.ROOT), p.id(), ip, null);
-        ctx.status(200).json(loginResponse(s, p));
+        ctx.status(200).json(loginResponse(s, p, recoveryCodes));
     }
 
     // ── /auth/logout ───────────────────────────────────────────────────────
@@ -328,6 +335,14 @@ public final class LoginApi {
     }
 
     static LoginResponse loginResponse(State s, Principal p) {
+        return loginResponse(s, p, null);
+    }
+
+    /// [#loginResponse(State, Principal)] with the first recovery-code set to
+    /// show once (§6.6); omitted (not an empty array) when `null` or empty —
+    /// the field carries no `@JsonInclude` of its own, so an empty list would
+    /// otherwise still be written under the mapper's `NON_ABSENT` default.
+    static LoginResponse loginResponse(State s, Principal p, List<String> recoveryCodes) {
         List<String> permissions;
         try {
             permissions = permissionList(s.resolver().resolveSession(p.id()).map(AuthContext::permissions).orElse(List.of()));
@@ -337,8 +352,9 @@ public final class LoginApi {
             LOG.warn("claims resolution failed after login for principal {}", p.id(), e);
             permissions = List.of();
         }
+        List<String> codes = recoveryCodes == null || recoveryCodes.isEmpty() ? null : recoveryCodes;
         return new LoginResponse("ok", p.id(), p.name(), p.email() == null ? "" : p.email(), p.roleNames(),
-                permissions, p.clientId(), null, ssoManaged(s, p));
+                permissions, p.clientId(), codes, ssoManaged(s, p));
     }
 
     /// The flattened permissions plus the literal `"*"` when the set holds
@@ -353,7 +369,8 @@ public final class LoginApi {
     }
 
     /// An external identity, or an e-mail domain mapped to an OIDC provider.
-    static boolean ssoManaged(State s, Principal p) {
+    /// Public: change-password closes on the same rule (auth-identity §4.10, §6.8).
+    public static boolean ssoManaged(State s, Principal p) {
         if (p.externalIdentity() != null) {
             return true;
         }

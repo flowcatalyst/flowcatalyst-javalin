@@ -18,6 +18,9 @@ import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaRepository;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.mfa.TrustedDeviceCookie;
+import io.flowcatalyst.platform.auth.mfa.TwoFactorNotifier;
+import io.flowcatalyst.platform.auth.mfa.api.ChangePasswordApi;
+import io.flowcatalyst.platform.auth.mfa.api.TwoFactorApi;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
 import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
@@ -203,12 +206,23 @@ public final class Platform {
         var mfa = new Mfa(new MfaRepository(pool), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
                 MailSender.logging(), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC());
         var mfaTokens = new MfaToken(signingKeys.privateKey(), env.jwtIssuer());
-        var mfaGate = new LoginMfaGate(mfa, new DomainPolicy.Evaluator(loginMappingRepo), mfaTokens,
-                new TrustedDeviceCookie(cookiesSecure));
-        LoginApi.register(routes, new LoginApi.State(loginPrincipalRepo, loginMappingRepo,
+        var trustedDeviceCookie = new TrustedDeviceCookie(cookiesSecure);
+        var mfaGate = new LoginMfaGate(mfa, new DomainPolicy.Evaluator(loginMappingRepo), mfaTokens, trustedDeviceCookie);
+        var loginState = new LoginApi.State(loginPrincipalRepo, loginMappingRepo,
                 new IdentityProviderRepository(pool), loginAttemptRepo, backoff, tokenIssuer,
                 new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), mfaGate,
-                new SessionCookie(cookiesSecure), pool, Clock.systemUTC()));
+                new SessionCookie(cookiesSecure), pool, Clock.systemUTC());
+        LoginApi.register(routes, loginState);
+        // The 2FA HTTP surface (auth-identity §6.3, §6.4, §6.6, §6.7) and
+        // change-password's MFA interplay (§6.8) share LoginApi's own state
+        // rather than duplicating principals/attempts/backoff/clock. GrantStore
+        // is built here — earlier than the OAuth provider below — so
+        // change-password can revoke every refresh token on a password change.
+        var grantStore = new GrantStore(pool);
+        TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, mfa, new DomainPolicy.Evaluator(loginMappingRepo),
+                mfaTokens, trustedDeviceCookie, new AuditLogRepository(pool), TwoFactorNotifier.logging()));
+        ChangePasswordApi.register(routes, new ChangePasswordApi.State(loginState, mfa, trustedDeviceCookie, grantStore,
+                TwoFactorNotifier.logging()));
         // TODO(port): password reset (/auth/password-reset/*). /oauth/authorize and
         //   /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
@@ -326,7 +340,7 @@ public final class Platform {
         // lets a request with no credentials through and 401s an explicit bad bearer
         // (ruling I-Q4). Per-IP throttles sit in front as `before` filters.
         var envReader = EnvReader.system();
-        var grantStore = new GrantStore(pool);
+        // grantStore was built above, alongside the 2FA / change-password wiring.
         var oauthState = new OAuthState(oauthClientRepo, loginPrincipalRepo, serviceAccountRepo, grantStore,
                 new RefreshRotation(grantStore, Clock.systemUTC()), tokenIssuer, new AccessTokenReader(buildVerifier()),
                 new DbClaimsResolver(loginPrincipalRepo, roleRepo), ClaimLabels.of(clientRepo, applicationRepo),
@@ -441,6 +455,13 @@ public final class Platform {
         String p = ctx.path();
         return p.equals("/auth/login") || p.equals("/auth/logout") || p.equals("/auth/check-domain")
                 || p.equals("/auth/refresh")
+                // The six token-gated 2FA routes (auth-identity §6.4, ruling I-Q20):
+                // a pending or enrol MfaToken stands in for a session. Every other
+                // /auth/2fa/* route and both change-password routes stay inside the
+                // authenticator.
+                || p.equals("/auth/2fa/verify") || p.equals("/auth/2fa/challenge/email")
+                || p.equals("/auth/2fa/enroll/totp/begin") || p.equals("/auth/2fa/enroll/totp/confirm")
+                || p.equals("/auth/2fa/enroll/email/begin") || p.equals("/auth/2fa/enroll/email/confirm")
                 || p.startsWith("/auth/password-reset/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")
