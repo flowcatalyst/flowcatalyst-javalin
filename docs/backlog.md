@@ -699,7 +699,16 @@ later decision.
   is the usable command. Owner: the Go fix is one literal in
   `internal/platform/seed/event_types.go`.
 
-## SDK on Jackson 3 (owner note, 2026-09-06)
+## SDK on Jackson 3 (owner note, 2026-09-06) — **done the same day**
+
+Turned out simpler than the note below: nothing in `sdk` or `fcdev` used the
+generated client at all (the SDK's own `io.flowcatalyst.sdk.http` is the
+client). The generator now emits models only; a nine-line hand-written
+`io.flowcatalyst.sdk.generated.ApiClient` supplies the two static helpers the
+models' `toUrlQueryString` call; the two Jackson 2 dependencies are gone.
+`mvn dependency:tree` on `sdk` shows `tools.jackson` databind/core and the
+`jackson-annotations` jar Jackson 3 itself depends on, nothing else.
+
 
 The `sdk` module's own code is already Jackson 3 (`tools.jackson.*`); the
 only Jackson 2 in it is what `openapi-generator-maven-plugin` 7.14's `java`

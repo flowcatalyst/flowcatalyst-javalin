@@ -37,17 +37,8 @@
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
-    <!-- The generated OpenAPI client (ApiClient, model classes) is hardcoded
-         to Jackson 2 by the openapi-generator-maven-plugin's own templates —
-         not something this module's own code controls. -->
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>com.fasterxml.jackson.datatype</groupId>
-      <artifactId>jackson-datatype-jsr310</artifactId>
-    </dependency>
+    <!-- The generated models carry com.fasterxml.jackson.annotation.* only, which
+         Jackson 3 databind depends on itself; no Jackson 2 databind here. -->
     <!-- compile-only: generated models carry JSR-305 @Nullable/@Nonnull and @Generated -->
     <dependency>
       <groupId>com.google.code.findbugs</groupId>
@@ -100,8 +91,11 @@
               <generateApis>false</generateApis>
               <generateModelDocumentation>false</generateModelDocumentation>
               <generateApiDocumentation>false</generateApiDocumentation>
-              <generateSupportingFiles>true</generateSupportingFiles>
-              <supportingFilesToGenerate>ApiClient.java,ApiException.java,ApiResponse.java,Pair.java,RFC3339DateFormat.java,RFC3339JavaTimeModule.java,RFC3339InstantDeserializer.java</supportingFilesToGenerate>
+              <!-- Models only. The generator's own client (ApiClient, the RFC3339 date
+                   classes) is Jackson 2 by template and nothing here used it; the SDK's
+                   client is io.flowcatalyst.sdk.http on Jackson 3 (owner ruling 2026-09-06:
+                   no Jackson 2 in the SDK). -->
+              <generateSupportingFiles>false</generateSupportingFiles>
               <configOptions>
                 <dateLibrary>java8</dateLibrary>
                 <openApiNullable>false</openApiNullable>
