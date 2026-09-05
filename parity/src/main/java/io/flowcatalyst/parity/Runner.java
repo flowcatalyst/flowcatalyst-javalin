@@ -337,6 +337,20 @@ public final class Runner {
                         .orElseThrow(() -> new IllegalStateException("capture '" + name + "': Location header not present"));
                 value = queryParam(location, param)
                         .orElseThrow(() -> new IllegalStateException("capture '" + name + "': Location has no query parameter " + param));
+            } else if (spec.startsWith("param:")) {
+                // `param:<pointer>?<name>` — a query parameter of a URL held in a body member
+                // (the invite link's token). The pointer is RFC 6901 into the JSON body.
+                String rest = spec.substring("param:".length());
+                int q = rest.lastIndexOf('?');
+                if (q < 0) throw new IllegalStateException("capture '" + name + "': param:<pointer>?<name> expected, got " + spec);
+                JsonNode body = sent.jsonBodyOrNull();
+                JsonNode at = body == null ? null : body.at(rest.substring(0, q));
+                if (at == null || at.isMissingNode() || !at.isString()) {
+                    throw new IllegalStateException("capture '" + name + "': pointer " + rest.substring(0, q) + " is not a string in the response body");
+                }
+                String param = rest.substring(q + 1);
+                value = queryParam(at.asString(), param)
+                        .orElseThrow(() -> new IllegalStateException("capture '" + name + "': " + rest.substring(0, q) + " has no query parameter " + param));
             } else if (spec.startsWith("cookie:")) {
                 String cookie = spec.substring("cookie:".length());
                 value = cookieValue(sent.headers(), cookie)

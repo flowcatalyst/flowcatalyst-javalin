@@ -51,11 +51,8 @@ worklist; smoke, `auth/*` and `webauthn/*` already cover a good part.
   /portal/auth/password-reset` (always a silent 200), `GET
   /portal/auth/oidc/login` for a domain with no IdP (the refusal shape).
   Specs `auth-identity.md` §5, §8. The token must be captured from the
-  invite URL: the runner has no query-parameter capture on a *body*
-  member, so capture the whole `inviteUrl` and pass it to a step that
-  does not need the bare token if one exists; if none does, write the
-  step with `"token": "${inviteUrl}"` and report the ERROR — the
-  orchestrator adds a `body-param:` capture form. Do not modify the harness.
+  invite URL with the `param:` capture form: `{"inviteToken": "param:/inviteUrl?token"}`
+  (spec §3). Do not modify the harness.
 - **auth-remainder**: `/auth/2fa/enroll/*` through the enrolment gate (an
   email-domain mapping with `require2fa` on, a fresh principal in that
   domain, login → `enrollment_required` + `enrollToken`, enrol TOTP with
