@@ -623,7 +623,7 @@ later decision.
   wire break for any client, or do we let it go? Until ruled the parity
   harness carries one wildcard allow-list entry (`**/$schema`,
   `parity-harness.md` §10).
-- **`FC_JWT_ACCESS_TOKEN_TTL_SECS` is not read by Java** (`TokenIssuer.ACCESS_TTL_SECONDS`
+- ~~**`FC_JWT_ACCESS_TOKEN_TTL_SECS` is not read by Java**~~ **Done** (same day) — (`TokenIssuer.ACCESS_TTL_SECONDS`
   is the constant 3600). Go sets the minted `exp` and the advertised
   `expires_in` from it together. The env-parity check in `cutover.md` §4 found
   it as the only server knob missing; wire it after the C4 merge (Env field →
