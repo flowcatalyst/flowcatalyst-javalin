@@ -111,7 +111,7 @@ item names its origin; items marked **owner** need Andrew's call.
   `/lookup` is ungated (spec OQ 1, **owner**). `EmailDomain.parse` accepts
   `.`, `example.`, `.com`, `exa_mple.com` (pinned, **owner**).
 
-## From the dispatchjob port (**owner**)
+## From the dispatchjob port (**owner**) **Ruled 2026-09-06 #12: requeue stays total; cancel/complete routes after cutover.**
 - Router Q1 mapping: *resend* = `POST /api/dispatch-jobs/requeue`; *ignore*
   (FAILED→CANCELLED) and *completed* (FAILED→COMPLETED) have NO routes in the
   lockfile today — two new operations + lockfile routes needed (wire change:
@@ -269,7 +269,7 @@ item names its origin; items marked **owner** need Andrew's call.
   unique index is `(deduplication_id, created_at)` (partition key) and
   `created_at` is stamped per insert, so an SDK replay with the same
   `deduplicationId` lands a second event. `docs/spec/sdk-ingest.md` §5 D6.
-- **Dispatch-job ingest is unusable by non-anchors.**
+- **Dispatch-job ingest is unusable by non-anchors.** **Ruled 2026-09-06 #9: Go adopts the seeded permission.**
   `internal/platform/shared/sdk/{dispatch_jobs_batch,dispatch_job_create}.go`
   gate on `CanWritePermission(ac, "WRITE_DISPATCH_JOBS")` — a permission
   string no seeded role grants (the catalogue has
@@ -278,7 +278,7 @@ item names its origin; items marked **owner** need Andrew's call.
   `PERMISSION_REQUIRED`. Java (`docs/spec/sdk-ingest.md` §5 D1) checks the
   seeded permission — deliberate deviation. One-line Go fix.
 
-- **X-06 at the wire (owner yes/no).** The Java sweep kept the pre-existing
+- **X-06 at the wire (owner yes/no).** **Ruled 2026-09-06 #19: reject with 400.** The Java sweep kept the pre-existing
   lenient WIRE parse under `parseWire` for role `/by-source/{source}`
   (unknown → DATABASE), `CreateIdentityProvider` type, platform-config
   `SetProperty` value type, and `UpdateConnection` status — because the
@@ -515,7 +515,7 @@ port. Re-check for further drift at every data-plane unit.
 
 **router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Q1 sub-question resolved by the human-review flow (ignore/completed/resend re-queues the group). **Q2 ruled**: no terminal give-up — messages live until the queue expires them; backoff + circuit breaker are the protection. **Q3 ruled**: collapse the in-call retries and pool backoff into ONE named retry policy, behaviour-preserving, pinned by a conformance test. Remaining 47 pending.
 
-## `ServiceAccountCode` vs the `app:<code>` convention (2026-09-05, **owner**)
+## `ServiceAccountCode` vs the `app:<code>` convention (2026-09-05, **owner**) **Ruled 2026-09-06 #16: reserved `app:` namespace.**
 
 `ServiceAccountCode.parse` rejects `:` (it validates user-chosen codes), yet
 the platform's own convention for an application's service account is
@@ -526,7 +526,7 @@ the parser. Question: should the value object admit a reserved `app:`
 namespace (and reject it from the API's create path), or should the
 convention change? Until ruled, the direct construction stays, commented.
 
-## `iam_login_attempts` has no retention (2026-08-24)
+## `iam_login_attempts` has no retention (2026-08-24) **Ruled 2026-09-06 #17: keep as history.**
 
 Surfaced while fixing Q12. No `DELETE` exists for `iam_login_attempts`
 anywhere in the Go tree, yet the login backoff queries it with
@@ -539,7 +539,7 @@ archival is separate), or purge on a retention of days — well above
 `GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
 limiter? See `docs/spec/auth-retention.md` §5.
 
-## I-Q16 applied to the public platform name too (2026-09-05, **owner to confirm**)
+## I-Q16 applied to the public platform name too (2026-09-05, **owner to confirm**) **Ruled 2026-09-06 #18: keep `FlowCatalyst`.**
 
 Ruling I-Q16 fixed the notification fallback brand as `FlowCatalyst`.
 `Branding.DEFAULT_PLATFORM_NAME` — what `/api/config/platform` answers
@@ -628,7 +628,7 @@ later decision.
 
 ## From the parity-harness design (2026-09-05, **owner**)
 
-- **`$schema` on every JSON response.** huma's schema-link transformer adds a
+- **`$schema` on every JSON response.** **Ruled 2026-09-06 #1: let it go.** huma's schema-link transformer adds a
   `"$schema": "<base>/schemas/<Model>.json"` member to every response Go
   sends; Java never emits it. The frontend's generated types declare it
   optional and no SDK reads it (checked 2026-09-05). Owner: is its absence a
@@ -640,7 +640,7 @@ later decision.
   `expires_in` from it together. The env-parity check in `cutover.md` §4 found
   it as the only server knob missing; wire it after the C4 merge (Env field →
   `TokenIssuer` → every `expires_in`), one test pinning both values.
-- **Introspection `client_id` (parity S2, 2026-09-05).** Java answers the
+- **Introspection `client_id` (parity S2, 2026-09-05).** **Ruled 2026-09-06 #3: RFC meaning; Go takes the patch.** Java answers the
   token's `azp` (RFC 7662: the client the token was issued to); Go answers
   the first entry of the `clients` tenant claim and omits it for the anchor
   wildcard. Owner: keep the RFC meaning (recommended — the Go value is a
@@ -648,7 +648,7 @@ later decision.
 - **Trusted-device cookie on password change (parity S2).** Both sides
   revoke the trusted-device rows; Java also expires the `__Host-fc_td`
   cookie in the browser, Go leaves it. Deliberate; Go-mirror candidate.
-- **`client_credentials` on a client without a principal answers 500
+- **`client_credentials` on a client without a principal answers 500 **Ruled 2026-09-06 #11: 400 `unauthorized_client` both sides.**
   `server_error` "Client not properly configured" on both sides.** RFC 6749
   §5.2 wants a 400 (`unauthorized_client`). Go defect mirrored for parity;
   Go-mirror candidate — fix both together.
@@ -659,20 +659,20 @@ later decision.
 - **`rememberDeviceAllowed` on the gated login response (parity S2).** Java
   adds it under I-Q11 so the SPA can hide the remember-device checkbox when
   the domain forbids it; Go emits nothing. Deliberate; Go-mirror candidate.
-- **Batch ingest with one invalid item (parity S1-C).** Java rejects the
+- **Batch ingest with one invalid item (parity S1-C).** **Ruled 2026-09-06 #10a: partial success with per-item results; the outbox poller reads them.** Java rejects the
   whole batch (`IngestApiTest`); Go writes the valid items and reports
   `SUCCESS` for the invalid one. Go defect; Java kept; allow-listed.
-- **Audit-log `principalId` default (parity S1-C).** Java defaults an absent
+- **Audit-log `principalId` default (parity S1-C).** **Ruled 2026-09-06 #10b: required on both sides.** Java defaults an absent
   `principalId` to the caller; Go stores NULL, so Go's by-principal filter
   misses those rows. Go defect; Java kept; allow-listed.
-- **WebAuthn ceremony option defaults (parity S1-B).** go-webauthn omits
+- **WebAuthn ceremony option defaults (parity S1-B).** **Ruled 2026-09-06 #4: accept the difference.** go-webauthn omits
   `attestation`, `userVerification`, `excludeCredentials`, `extensions`,
   `hints` and advertises COSE algorithms `-7,-35,-36,-257,-258,-259,-37,-38,-39,-8`;
   yubico emits `none`/`preferred`/`[]`/`credProps`/`[]` and cannot offer the
   PS* or Ed448 algorithms. Browsers accept both shapes; the timeout is now
   300 s on both sides. Owner: any client outside a browser reading these?
   Allow-listed meanwhile.
-- **OpenAPI documents (parity S3).** `/api/openapi.json`, `.yaml`, `/q/openapi`
+- **OpenAPI documents (parity S3).** **Ruled 2026-09-06 #2: Java serves the lockfile verbatim.** `/api/openapi.json`, `.yaml`, `/q/openapi`
   and the developer BFF's platform spec differ structurally: Go serves huma's
   generated document, Java its own generator's. Recommended: Java serves the
   vendored lockfile verbatim (it *is* Go's document) plus the A-22 route.
@@ -685,7 +685,7 @@ later decision.
 - **Send-email-code with no factor (parity S3).** Go answers `NO_EMAIL_2FA`
   for a principal with no factor at all; Java `NO_MFA` first. Go accident;
   allow-listed; Go-mirror candidate.
-- **Platform-scoped scheduled jobs for a client-scoped caller (parity S3).**
+- **Platform-scoped scheduled jobs for a client-scoped caller (parity S3).** **Ruled 2026-09-06 #6: hidden from client users.**
   Java's shared visibility rule lists `client_id IS NULL` rows to every
   caller; Go's BFF scheduled-job list hides them from a client-scoped one
   (while, in the same list, showing another client's job — the leak above).
@@ -751,7 +751,7 @@ the SDK is published.
   2026-09-06): keep yubico; a hand-rolled verifier is not worth it in so
   sensitive an area. The one runtime-scope Jackson 2 databind jar in the
   server artifact stays for that reason and no other.**
-- **Event-type `clientScoped` is dropped on create, both sides (frontend
+- **Event-type `clientScoped` is dropped on create, both sides (frontend **Ruled 2026-09-06 #7: honour the field.**
   e2e, 2026-09-06).** The SPA's create drawer sends `clientScoped: true`;
   Go's `eventtype/entity.go:208` hard-codes `false` at construction and the
   Java port mirrors it, so the detail page reads "Client Scoped: No". A
@@ -760,7 +760,7 @@ the SDK is published.
   field. Owner: honour it (Java first, then a Go mirror) or remove the toggle.
 - **Dispatch-pool "Delete" confirm copy (SPA).** The dialog says the pool
   will be archived; both servers delete the row. Frontend repo fix.
-- **The SPA cannot create an INTERNAL identity provider against the current
+- **The SPA cannot create an INTERNAL identity provider against the current **Ruled 2026-09-06 #8: Go DTO optional + lockfile re-dump.**
   contract (frontend e2e, 2026-09-06).** `IdentityProviderCreateDrawer.vue`
   sends `oidcMultiTenant` only for OIDC providers, but the lockfile (Go's
   huma schema, `CreateIdentityProviderRequest.required`) lists it — so Go

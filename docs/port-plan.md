@@ -175,13 +175,13 @@ in it), so the frontend is their acceptance test.
 - ~~CORS filter from the allowlist~~ **Done 2026-09-05** (contract
   `docs/spec/cors.md` §9; `FC_CORS_CACHE_TTL_MS`).
 - **Pagination envelope** — wire change; owner decides; lockfile bump +
-  SDK/frontend regen.
+  SDK/frontend regen. **Ruled 2026-09-06 #5: after cutover.**
 - ~~JFR events~~ **Done 2026-09-05** — the router's three landed `246e270`;
   the five Phase 2 loops have theirs per `docs/spec/jfr-events.md`.
 - ~~fcdev stubs `init`, `mcp`, `outbox`, `upgrade`~~ **Done 2026-09-05**
   (spec `docs/spec/fcdev-commands.md`; no stubs remain). `init`'s
   OAuth-client step and the MCP credential bootstrap wait for Phase 3.
-- **Native fcdev** (optional): per-platform GraalVM builds, picocli codegen;
+- **Native fcdev** (**ruled 2026-09-06 #20: before cutover**): per-platform GraalVM builds, picocli codegen;
   removes JBang and the JDK from the developer install. *Not built yet — only
   fc-server has the `-Pnative` profile (88.8 MB on disk, 32.7 MB gzipped).
   Expect fcdev to land near the same size; the Go release binary is 59 MB.*
