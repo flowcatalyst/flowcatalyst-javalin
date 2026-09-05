@@ -1,0 +1,130 @@
+{
+  "name": "portal-users: ensure (invite / invite-link / redirect validation), list, activate, deactivate, delete, confinement",
+  "why": "portalidentity's Ensure endpoint branches on SSO-managed domain, returnInviteLink, and registered portal redirect URIs (auth-identity.md §5.7); each branch produces a differently-shaped 200, and the redirect validation is the one 400 this aggregate documents.",
+  "covers": ["listPortalUsers", "ensurePortalUser", "activatePortalUser", "deactivatePortalUser", "deletePortalUser",
+             "createClient", "createOAuthClient", "createPrincipal"],
+  "steps": [
+    { "id": "login",
+      "request": { "method": "POST", "path": "/auth/login",
+                   "body": { "email": "${admin.email}", "password": "${admin.password}" } },
+      "expect": { "status": 200 } },
+
+    { "id": "create-client",
+      "request": { "method": "POST", "path": "/api/clients",
+                   "body": { "name": "Parity Portal Client", "identifier": "parity-portal-${run}" } },
+      "expect": { "status": 201 },
+      "capture": { "portalClientId": "/id" } },
+
+    { "id": "ensure-sends-invite",
+      "why": "no portal OAuth client is registered yet, so target is null; the invite is still sent (spec §5.7 non-SSO branch) — this exercises the send-mail path, not the mail content (out of reach in v1).",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-invite-${run}@example.com" } },
+      "expect": { "status": 200 },
+      "capture": { "identityId": "/identityId" } },
+
+    { "id": "ensure-again-already-has-password-false-idempotent",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-invite-${run}@example.com" } } },
+
+    { "id": "list-by-client",
+      "request": { "method": "GET", "path": "/api/portal-users", "query": { "clientId": "${portalClientId}" } },
+      "unordered": ["/portalUsers"] },
+
+    { "id": "list-missing-client-id",
+      "request": { "method": "GET", "path": "/api/portal-users" } },
+
+    { "id": "ensure-return-invite-link",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-link-${run}@example.com",
+                             "returnInviteLink": true } },
+      "expect": { "status": 200 },
+      "capture": { "linkIdentityId": "/identityId" } },
+
+    { "id": "create-portal-oauth-client",
+      "request": { "method": "POST", "path": "/api/oauth-clients",
+                   "body": { "clientName": "Parity Portal Entry ${run}", "clientType": "PUBLIC",
+                             "redirectUris": ["https://portal-${run}.example.com/callback"],
+                             "portalClientId": "${portalClientId}" } },
+      "expect": { "status": 201 } },
+
+    { "id": "ensure-with-valid-redirect",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-redirok-${run}@example.com",
+                             "redirectUri": "https://portal-${run}.example.com/callback", "returnInviteLink": true } },
+      "expect": { "status": 200 },
+      "capture": { "redirOkIdentityId": "/identityId" } },
+
+    { "id": "ensure-with-invalid-redirect",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-redirbad-${run}@example.com",
+                             "redirectUri": "https://evil.example.com/callback" } } },
+
+    { "id": "ensure-missing-client-id",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "email": "parity-portal-noclient-${run}@example.com" } } },
+
+    { "id": "activate",
+      "request": { "method": "POST", "path": "/api/portal-users/${identityId}/activate",
+                   "body": { "clientId": "${portalClientId}" } } },
+
+    { "id": "deactivate",
+      "request": { "method": "POST", "path": "/api/portal-users/${identityId}/deactivate",
+                   "body": { "clientId": "${portalClientId}" } } },
+
+    { "id": "list-after-deactivate",
+      "request": { "method": "GET", "path": "/api/portal-users", "query": { "clientId": "${portalClientId}" } },
+      "unordered": ["/portalUsers"] },
+
+    { "id": "activate-missing-client-id",
+      "request": { "method": "POST", "path": "/api/portal-users/${identityId}/activate", "body": {} } },
+
+    { "id": "delete",
+      "request": { "method": "DELETE", "path": "/api/portal-users/${identityId}",
+                   "query": { "clientId": "${portalClientId}" } } },
+
+    { "id": "list-after-delete",
+      "request": { "method": "GET", "path": "/api/portal-users", "query": { "clientId": "${portalClientId}" } },
+      "unordered": ["/portalUsers"] },
+
+    { "id": "delete-again",
+      "request": { "method": "DELETE", "path": "/api/portal-users/${identityId}",
+                   "query": { "clientId": "${portalClientId}" } } },
+
+    { "id": "create-second-client",
+      "request": { "method": "POST", "path": "/api/clients",
+                   "body": { "name": "Parity Portal Confinement Client", "identifier": "parity-portal-conf-${run}" } },
+      "expect": { "status": 201 },
+      "capture": { "confClientId": "/id" } },
+
+    { "id": "create-second-principal",
+      "request": { "method": "POST", "path": "/api/principals",
+                   "body": { "email": "parity-portal-conf-${run}@example.com", "name": "Parity Portal Confinement User",
+                             "scope": "CLIENT", "clientId": "${confClientId}",
+                             "password": "Correct-Harness-Battery-2381" } },
+      "expect": { "status": 201 },
+      "capture": { "confCallerId": "/id" } },
+
+    { "id": "grant-confinement-portal-role",
+      "why": "platform:portal-administrator is CLIENT-delegable (PlatformRoles): confinement here must come from the caller's own client scope (Checks.requirePortalUserManage), not from the role's own reach.",
+      "request": { "method": "PUT", "path": "/api/principals/${confCallerId}/roles",
+                   "body": { "roles": ["platform:portal-administrator"] } },
+      "expect": { "status": 200 } },
+
+    { "id": "login-as-confinement-caller",
+      "request": { "method": "POST", "path": "/auth/login",
+                   "body": { "email": "parity-portal-conf-${run}@example.com", "password": "Correct-Harness-Battery-2381" } },
+      "expect": { "status": 200 } },
+
+    { "id": "confinement-list-out-of-scope",
+      "why": "a portal-administrator scoped to confClientId reading another client's portal users — the refusal shape (403 vs 404, or an empty list) is what a wire diff would break.",
+      "request": { "method": "GET", "path": "/api/portal-users", "query": { "clientId": "${portalClientId}" } } },
+
+    { "id": "confinement-ensure-out-of-scope",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-portal-conf-shouldfail-${run}@example.com" } } },
+
+    { "id": "confinement-list-own-scope-ok",
+      "request": { "method": "GET", "path": "/api/portal-users", "query": { "clientId": "${confClientId}" } },
+      "unordered": ["/portalUsers"] }
+  ]
+}
