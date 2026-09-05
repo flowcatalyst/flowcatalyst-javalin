@@ -157,7 +157,7 @@ async function suspendPool() {
 
 function confirmDelete() {
 	confirm.require({
-		message: "Delete this dispatch pool? This action will archive it.",
+		message: "Delete this dispatch pool? This permanently deletes it and cannot be undone.",
 		header: "Delete Pool",
 		icon: "pi pi-exclamation-triangle",
 		acceptLabel: "Delete",
@@ -320,7 +320,7 @@ function getScopeLabel(p: DispatchPool) {
           <div class="action-item">
             <div class="action-info">
               <strong>Delete Pool</strong>
-              <p>Archive this pool. Cannot be undone if there are active subscriptions.</p>
+              <p>Permanently deletes this pool. Cannot be undone.</p>
             </div>
             <Button
               label="Delete"
