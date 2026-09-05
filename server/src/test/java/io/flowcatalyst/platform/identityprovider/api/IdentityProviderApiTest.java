@@ -57,6 +57,9 @@ class IdentityProviderApiTest {
     private static TestHttp http;
     private static TestHttp httpNoKey;
 
+    /// Provider ids the change hook (auth-identity ruling Q1) reported.
+    private static final java.util.List<String> CHANGED = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     @BeforeAll
     static void start() {
         http = server(ClientSecretEncryption.of(Optional.of(ENCRYPTION)));
@@ -67,7 +70,7 @@ class IdentityProviderApiTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        var state = new IdentityProviderApi.State(repo, mappings, uow, secrets);
+        var state = new IdentityProviderApi.State(repo, mappings, uow, secrets, CHANGED::add);
         return new TestHttp(cfg -> {
             HttpError.install(cfg.routes);
             cfg.routes.before("/api/*", auth);
@@ -172,8 +175,10 @@ class IdentityProviderApiTest {
     void updateReturns200WithTheProviderAndCanClearTheSecret() {
         String id = create(http, oidcBody(code("api-upd"), "\"encrypted:" + ENCRYPTION.encrypt("s") + "\"", ""));
 
+        assertThat(CHANGED).as("create does not fire the change hook (nothing cached yet)").doesNotContain(id);
         var put = http.put("/api/identity-providers/" + id, "{\"name\":\"  After  \",\"oidcMultiTenant\":true}", ANCHOR);
         assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
+        assertThat(CHANGED).as("ruling Q1: an update reports the provider id so the OIDC cache drops it").contains(id);
         assertThat(json(put).get("name").asText()).isEqualTo("After");
         assertThat(json(put).get("oidcMultiTenant").asBoolean()).isTrue();
         assertThat(json(put).get("hasClientSecret").asBoolean()).as("untouched secret").isTrue();
@@ -203,6 +208,7 @@ class IdentityProviderApiTest {
         String id = create(http, oidcBody(code("api-del"), null, ""));
         var del = http.delete("/api/identity-providers/" + id, ANCHOR);
         assertThat(del.statusCode()).isEqualTo(204);
+        assertThat(CHANGED).as("a delete reports the provider id too").contains(id);
         assertThat(del.body()).isEmpty();
         var gone = http.get("/api/identity-providers/" + id, ANCHOR);
         assertThat(gone.statusCode()).isEqualTo(404);

@@ -153,7 +153,8 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 - ~~A4b OAuth / OIDC provider: authorize, token (authorization_code / refresh_token / client_credentials + developer), introspect, revoke, userinfo, discovery, JWKS, `/auth/refresh`, per-IP + per-client throttles~~ **Done** (orchestrator; 42 HTTP tests, six mutants). Portal (`ptu_`) subjects are refused at the token endpoint until the portal unit lands.
 - ~~A5 MFA core~~ **Done** (`fa3a8a9`, orchestrator; 50 tests, seven mutants). A5 routes (14 `/auth/2fa/*` + change-password) — Sonnet, in flight on the brief `docs/process/briefs/2026-09-05-a5-mfa-routes.md`.
 - ~~Purger sweeps (ten steps), the C-Q23 partition readiness check on `/health`, the backoff-store alarm counter~~ **Done** (orchestrator; five mutants).
-- Next: merge A5 routes; Batch B (OIDC bridge, portal); Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
+- ~~B1 OIDC bridge (§4)~~ **Done** (orchestrator; fake-IdP end-to-end test, seven mutants; wiring after the A5-routes merge).
+- Next: merge A5 routes; B2 portal plane (§5: `/portal/authorize`, `/portal/auth/*`, portal identities + `/api/portal-users`, the bridge's portal SSO start/sink, the `/oauth/token` `ptu_` branch) — Sonnet on a brief for the aggregate + admin API, orchestrator for the code issuance and the sink; Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP

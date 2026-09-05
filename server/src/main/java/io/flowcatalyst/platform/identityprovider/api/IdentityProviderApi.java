@@ -19,6 +19,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /// The `/api/identity-providers` surface (spec §3). Identity providers are
 /// anchor-only: every handler opens with `requireAnchor`. A write handler
@@ -42,14 +43,24 @@ public final class IdentityProviderApi {
     }
 
     /// The handlers' dependencies. `mappings` feeds the domain orchestration
-    /// (spec §4); `secrets` is the client-secret at-rest policy (spec §5).
+    /// (spec §4); `secrets` is the client-secret at-rest policy (spec §5);
+    /// `onChange` runs with the provider id after every successful update
+    /// or delete — the OIDC bridge drops its cached client for that
+    /// provider (auth-identity ruling Q1). Same-node only; the cache's TTL
+    /// covers the other nodes.
     public record State(IdentityProviderRepository repo, EmailDomainMappingRepository mappings, UnitOfWork uow,
-                        ClientSecretEncryption secrets) {
+                        ClientSecretEncryption secrets, Consumer<String> onChange) {
+
+        public State(IdentityProviderRepository repo, EmailDomainMappingRepository mappings, UnitOfWork uow,
+                     ClientSecretEncryption secrets) {
+            this(repo, mappings, uow, secrets, _ -> { });
+        }
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(mappings, "mappings");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(secrets, "secrets");
+            Objects.requireNonNull(onChange, "onChange");
         }
     }
 
@@ -89,12 +100,14 @@ public final class IdentityProviderApi {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateIdentityProviderRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateIdentityProvider.of(s.repo(), s.mappings()).run(s.uow(), cmd, Auth.executionContext());
+        s.onChange().accept(ctx.pathParam("id"));
         ctx.json(IdentityProviderResponse.from(load(s, cmd.id())));
     }
 
     private static void delete(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteIdentityProvider.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        s.onChange().accept(ctx.pathParam("id"));
         ctx.status(204);
     }
 
