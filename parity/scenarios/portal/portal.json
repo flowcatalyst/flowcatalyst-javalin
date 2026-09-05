@@ -1,0 +1,121 @@
+{
+  "name": "portal: OAuth client + invite, password-reset set-password, authorize/check-domain/login/password-reset, SSO refusal",
+  "why": "PortalAuthApi and PortalSso are entirely public routes outside the lockfile (auth-identity.md §5.1-§5.6): a wire diff on the flow-id redirect, the check-domain SSO/PASSWORD branch, the authorization code embedded in the login response, or the always-silent password-reset would be invisible to the aggregate suites (which never call through the flow) but would break the portal SPA on cutover day.",
+  "covers": ["createClient", "createOAuthClient", "ensurePortalUser"],
+  "steps": [
+    { "id": "login",
+      "request": { "method": "POST", "path": "/auth/login",
+                   "body": { "email": "${admin.email}", "password": "${admin.password}" } },
+      "expect": { "status": 200 } },
+
+    { "id": "create-client",
+      "request": { "method": "POST", "path": "/api/clients",
+                   "body": { "name": "Parity S3 Portal Client", "identifier": "parity-s3-portal-${run}" } },
+      "expect": { "status": 201 },
+      "capture": { "portalClientId": "/id" } },
+
+    { "id": "ensure-portal-user-with-invite-link",
+      "why": "auth-identity.md §5.7: returnInviteLink hands back a set-password link the portal itself never sees by mail; the token is the query parameter of that URL (§3 param: capture form).",
+      "request": { "method": "POST", "path": "/api/portal-users",
+                   "body": { "clientId": "${portalClientId}", "email": "parity-s3-portal-${run}@example.com",
+                             "returnInviteLink": true } },
+      "expect": { "status": 200 },
+      "capture": { "identityId": "/identityId", "inviteUrl": "/inviteUrl", "inviteToken": "param:/inviteUrl?token" } },
+
+    { "id": "validate-invite-token",
+      "request": { "method": "GET", "path": "/auth/password-reset/validate", "query": { "token": "${inviteToken}" } } },
+
+    { "id": "validate-unknown-token",
+      "request": { "method": "GET", "path": "/auth/password-reset/validate", "query": { "token": "not-a-real-token" } } },
+
+    { "id": "confirm-portal-password",
+      "why": "PasswordResetApi#confirm branches on token.portalSubject() into confirmPortal (spec §8.5): no 2FA gate, its own {status,message,redirectUri?,portal:true} shape.",
+      "request": { "method": "POST", "path": "/auth/password-reset/confirm",
+                   "body": { "token": "${inviteToken}", "password": "Correct-Harness-Battery-7712" } },
+      "expect": { "status": 200 } },
+
+    { "id": "confirm-portal-password-token-already-burned",
+      "request": { "method": "POST", "path": "/auth/password-reset/confirm",
+                   "body": { "token": "${inviteToken}", "password": "Another-Correct-Battery-9931" } } },
+
+    { "id": "create-portal-oauth-client",
+      "why": "pkceRequired:false keeps the authorize/login round trip below out of PKCE (already pinned end to end for the employee plane in auth/oauth-code-flow.json).",
+      "request": { "method": "POST", "path": "/api/oauth-clients",
+                   "body": { "clientName": "Parity S3 Portal Entry ${run}", "clientType": "PUBLIC",
+                             "redirectUris": ["https://portal-s3-${run}.example.com/callback"],
+                             "pkceRequired": false, "portalClientId": "${portalClientId}" } },
+      "expect": { "status": 201 },
+      "capture": { "portalOAuthClientId": "/client/clientId" } },
+
+    { "id": "authorize-not-a-portal-client",
+      "why": "an oauth client not flagged portal-and-api-access is rejected before a flow is ever started (PortalAuthApi#authorize).",
+      "request": { "method": "GET", "path": "/portal/authorize",
+                   "query": { "state": "s3-${run}-x", "client_id": "does-not-exist-${run}",
+                              "redirect_uri": "https://portal-s3-${run}.example.com/callback", "response_type": "code" } } },
+
+    { "id": "authorize",
+      "request": { "method": "GET", "path": "/portal/authorize",
+                   "query": { "state": "s3-${run}", "client_id": "${portalOAuthClientId}",
+                              "redirect_uri": "https://portal-s3-${run}.example.com/callback", "response_type": "code" } },
+      "expect": { "status": 307 },
+      "capture": { "flowId": "location-param:flow" } },
+
+    { "id": "check-domain",
+      "request": { "method": "POST", "path": "/portal/auth/check-domain",
+                   "body": { "flowId": "${flowId}", "email": "parity-s3-portal-${run}@example.com" } } },
+
+    { "id": "check-domain-unknown-flow",
+      "request": { "method": "POST", "path": "/portal/auth/check-domain",
+                   "body": { "flowId": "not-a-real-flow", "email": "parity-s3-portal-${run}@example.com" } } },
+
+    { "id": "login-wrong-password",
+      "why": "a wrong password never consumes the flow (PortalAuthApi#login only consumes on success) — ${flowId} is still live for the next step.",
+      "request": { "method": "POST", "path": "/portal/auth/login",
+                   "body": { "flowId": "${flowId}", "email": "parity-s3-portal-${run}@example.com",
+                             "password": "definitely-wrong" } } },
+
+    { "id": "login-right-password",
+      "request": { "method": "POST", "path": "/portal/auth/login",
+                   "body": { "flowId": "${flowId}", "email": "parity-s3-portal-${run}@example.com",
+                             "password": "Correct-Harness-Battery-7712" } },
+      "expect": { "status": 200 },
+      "capture": { "portalAuthCode": "param:/redirectUrl?code" } },
+
+    { "id": "login-flow-already-consumed",
+      "request": { "method": "POST", "path": "/portal/auth/login",
+                   "body": { "flowId": "${flowId}", "email": "parity-s3-portal-${run}@example.com",
+                             "password": "Correct-Harness-Battery-7712" } } },
+
+    { "id": "authorize-again-for-password-reset",
+      "why": "a fresh flow: /portal/auth/password-reset does not consume it, but re-using the burned one above would only show FLOW_EXPIRED again.",
+      "request": { "method": "GET", "path": "/portal/authorize",
+                   "query": { "state": "s3-${run}-reset", "client_id": "${portalOAuthClientId}",
+                              "redirect_uri": "https://portal-s3-${run}.example.com/callback", "response_type": "code" } },
+      "expect": { "status": 307 },
+      "capture": { "resetFlowId": "location-param:flow" } },
+
+    { "id": "portal-password-reset-known-email",
+      "why": "always a silent 200 (spec §5.4), whether or not the identity exists — no account enumeration.",
+      "request": { "method": "POST", "path": "/portal/auth/password-reset",
+                   "body": { "flowId": "${resetFlowId}", "email": "parity-s3-portal-${run}@example.com" } },
+      "expect": { "status": 200 } },
+
+    { "id": "portal-password-reset-unknown-email",
+      "request": { "method": "POST", "path": "/portal/auth/password-reset",
+                   "body": { "flowId": "${resetFlowId}", "email": "parity-s3-portal-nobody-${run}@example.com" } },
+      "expect": { "status": 200 } },
+
+    { "id": "portal-oidc-login-missing-params",
+      "why": "no identity provider is configured for this domain in the seed — PortalSso#start's own gate, not the bridge's.",
+      "request": { "method": "GET", "path": "/portal/auth/oidc/login" } },
+
+    { "id": "portal-oidc-login-unknown-provider",
+      "why": "flow+provider_id both present consumes the parked flow before the provider lookup fails (PortalSso#start) — 500 OIDC_RESOLVE_FAILED, not a 400.",
+      "request": { "method": "GET", "path": "/portal/auth/oidc/login",
+                   "query": { "flow": "${resetFlowId}", "provider_id": "idp_doesnotexist${run}" } } },
+
+    { "id": "portal-oidc-login-flow-now-burned",
+      "request": { "method": "GET", "path": "/portal/auth/oidc/login",
+                   "query": { "flow": "${resetFlowId}", "provider_id": "idp_doesnotexist${run}" } } }
+  ]
+}

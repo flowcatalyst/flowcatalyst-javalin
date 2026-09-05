@@ -1,5 +1,4 @@
 [
-  "DELETE /api/config/{app}/{section}/{property}",
   "DELETE /auth/2fa/methods/{method}",
   "DELETE /auth/2fa/trusted-devices/{id}",
   "DELETE /auth/webauthn/credentials/{id}",
@@ -8,7 +7,6 @@
   "GET /.well-known/jwks.json",
   "GET /.well-known/openid-configuration",
   "GET /api/config/platform",
-  "GET /api/config/{app}/{section}/{property}",
   "GET /api/me",
   "GET /api/me/applications",
   "GET /api/me/clients",
@@ -101,7 +99,6 @@
   "POST /portal/auth/check-domain",
   "POST /portal/auth/login",
   "POST /portal/auth/password-reset",
-  "PUT /api/config/{app}/{section}/{property}",
   "PUT /bff/event-types/{id}",
   "PUT /bff/roles/{roleName}"
 ]
