@@ -90,20 +90,26 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 
-**Where to resume (2026-09-05, night):** Phase 3 is complete — C4 merged
-(`fe83fc5`). **Lockfile coverage is 245/245 with the
-threshold at 1.0** (`ec55164`) — every Go route, lockfile and chi-mounted, is
-in Java. **Phase 5 is under way**: the parity
-harness is on main (`0abc08d`, `parity/`, spec `parity-harness.md`) and
-its S0 smoke is clean against Go HEAD; the S1 corpus (28 lockfile groups,
-three Sonnet agents, brief `2026-09-05-p5-s1-scenarios.md`) and the S2
-auth scenarios (orchestrator, `parity/scenarios/auth/`) are next, then
-triage per spec §9, then the frontend e2e (`frontend-e2e.md`) and the
-cutover rehearsal (`cutover.md`). Merge discipline unchanged: read the code, own
-mutant, worktree suite green, squash. Open owner items in
-`docs/backlog.md`: the `$schema` member on responses, the `FlowCatalyst`
-spelling on the public endpoint, the pagination envelope, the access-token
-denylist (C-Q28), a Redis rate-limit store.
+**Where to resume (2026-09-06, early):** Phase 3 complete; lockfile
+245/245 at threshold 1.0. **Phase 5 is running on the parity harness**
+(`parity/`, spec `docs/spec/parity-harness.md`): the S0/S1/S2 corpus is on
+main and every lockfile operation is hit by a scenario; ~150 first-run diffs
+were triaged (Java fixes in code, rulings allow-listed by id in
+`parity/expected-diffs.json`, Go defects in `docs/backlog.md`). Three
+Sonnet units in flight from briefs in `docs/process/briefs/`:
+`request-schema-validation` (huma's per-field VALIDATION envelope before
+every handler — the last systemic diff class, SPA-visible),
+`service-account-oauth-client` (retires the `unavailable:auth-not-ported`
+stub), and `p5-s3-scenarios` (the 105 routes outside the lockfile,
+`parity/surface.json`). Merge each with the usual discipline and rerun the
+full corpus (`PARITY_GO_SRC=/Users/andrewgraaff/Developer/flowcatalyst-go
+mvn -q -pl parity -am test -Dtest=ParityRunTest
+-Dsurefire.failIfNoSpecifiedTests=false`, ~12 min; a stale allow-list
+entry fails a full run). After that: `docs/spec/frontend-e2e.md` (Playwright
+against both servers) and `docs/spec/cutover.md` (the rehearsal). Owner
+items are in `docs/backlog.md`: `$schema`, introspection `client_id`, the
+WebAuthn option defaults, the service-principal `name`, the
+`client_credentials` 500, the brand spelling, pagination.
 
 **Sonnet, honestly, across eleven ports:** reliable when the brief names
 the template class, the exact routes and the mutants to run; two agents
