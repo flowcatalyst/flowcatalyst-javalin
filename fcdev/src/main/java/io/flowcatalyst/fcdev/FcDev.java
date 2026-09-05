@@ -20,8 +20,11 @@ import java.util.concurrent.Callable;
 /// fcdev stop         stop a running dev monolith (graceful; via its PID file)
 /// fcdev fresh        truncate every FlowCatalyst table (preserves schema)
 /// fcdev db upgrade   re-initialise the embedded Postgres onto the bundled major
+/// fcdev mcp          run the FlowCatalyst MCP server (stdio by default; --http to listen)
+/// fcdev outbox       standalone outbox poller against an external app DB (+ create-table)
+/// fcdev upgrade      update fcdev to the latest GitHub release
 /// fcdev version      print the version
-/// fcdev init | mcp | outbox | upgrade    not yet ported (flags accepted, exit 2)
+/// fcdev init         not yet ported (flags accepted, exit 2)
 /// ```
 ///
 /// The root command carries the `start` flag set so `fcdev --api-port 9000`
@@ -40,10 +43,10 @@ import java.util.concurrent.Callable;
                 StopCommand.class,
                 NotPorted.Init.class,
                 FreshCommand.class,
-                NotPorted.Mcp.class,
-                NotPorted.Outbox.class,
+                McpCommand.class,
+                OutboxCommand.class,
                 DbCommand.class,
-                NotPorted.Upgrade.class,
+                UpgradeCommand.class,
                 VersionCommand.class,
                 CommandLine.HelpCommand.class})
 public final class FcDev implements Callable<Integer> {

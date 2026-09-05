@@ -38,6 +38,11 @@ public final class TokenManager {
     private final String tokenUrl;
     private final String clientId;
     private final String clientSecret;
+    /// Optional requested-scope narrowing (Go's standalone-outbox
+    /// `clientCredentialsTokenSource.scope`) — sent as the form field
+    /// `scope` only when non-blank; blank/`null` means "client ceiling"
+    /// (no narrowing requested).
+    private final String scope;
     private final HttpClient httpClient;
     private final Clock clock;
 
@@ -47,13 +52,25 @@ public final class TokenManager {
     private CachedToken cached;
 
     public TokenManager(String baseUrl, String clientId, String clientSecret) {
-        this(baseUrl, clientId, clientSecret, HttpClient.newHttpClient(), Clock.systemUTC());
+        this(baseUrl, clientId, clientSecret, null, HttpClient.newHttpClient(), Clock.systemUTC());
+    }
+
+    /// @param scope optional requested scope (Go's `--scope` /
+    ///               `FC_OUTBOX_SCOPE`); `null`/blank omits the form field
+    public TokenManager(String baseUrl, String clientId, String clientSecret, String scope) {
+        this(baseUrl, clientId, clientSecret, scope, HttpClient.newHttpClient(), Clock.systemUTC());
     }
 
     public TokenManager(String baseUrl, String clientId, String clientSecret, HttpClient httpClient, Clock clock) {
+        this(baseUrl, clientId, clientSecret, null, httpClient, clock);
+    }
+
+    public TokenManager(String baseUrl, String clientId, String clientSecret, String scope,
+                         HttpClient httpClient, Clock clock) {
         this.tokenUrl = trimTrailingSlash(Objects.requireNonNull(baseUrl, "baseUrl")) + "/oauth/token";
         this.clientId = Objects.requireNonNull(clientId, "clientId");
         this.clientSecret = Objects.requireNonNull(clientSecret, "clientSecret");
+        this.scope = scope;
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -75,10 +92,23 @@ public final class TokenManager {
         }
     }
 
+    /// Drops the cached token so the next [#token()] re-mints — called by a
+    /// caller (e.g. [io.flowcatalyst.outbox.HttpDispatcher.TokenSource#invalidate()])
+    /// after a 401, mirroring Go's standalone-outbox token source.
+    public void invalidate() {
+        lock.lock();
+        try {
+            cached = null;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private CachedToken fetch() {
         var form = "grant_type=client_credentials"
                 + "&client_id=" + encode(clientId)
-                + "&client_secret=" + encode(clientSecret);
+                + "&client_secret=" + encode(clientSecret)
+                + (scope != null && !scope.isBlank() ? "&scope=" + encode(scope) : "");
         var request = HttpRequest.newBuilder(URI.create(tokenUrl))
                 .POST(HttpRequest.BodyPublishers.ofString(form, StandardCharsets.UTF_8))
                 .header("Content-Type", "application/x-www-form-urlencoded")

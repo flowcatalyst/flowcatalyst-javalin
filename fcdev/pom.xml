@@ -36,6 +36,14 @@
       <artifactId>picocli</artifactId>
     </dependency>
 
+    <!-- fcdev outbox create-table (db-type mysql): mysql-connector-j is a
+         plain JDBC driver, loaded via DriverManager (no ORM/DSL layer needed
+         for one CREATE TABLE statement); see OutboxCommand.CreateTable. -->
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+    </dependency>
+
     <!-- Embedded PostgreSQL (zonky). fcdev does NOT bundle the per-platform
          embedded-postgres-binaries-* archives (that's the server module's tests,
          see server/pom.xml) — io.flowcatalyst.fcdev.MavenCentralPgBinaryResolver

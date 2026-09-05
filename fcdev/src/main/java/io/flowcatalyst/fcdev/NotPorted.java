@@ -3,7 +3,6 @@ package io.flowcatalyst.fcdev;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
-import picocli.CommandLine.ScopeType;
 import picocli.CommandLine.Spec;
 
 import java.util.concurrent.Callable;
@@ -11,6 +10,11 @@ import java.util.concurrent.Callable;
 /// The Go subcommands that keep their flag surface here but are not yet
 /// ported. Each prints `fcdev <name>: not yet ported` on stderr and exits 2
 /// (so a script notices). Flags are accepted and ignored; see `docs/fcdev.md`.
+///
+/// `mcp`, `outbox` (+ `outbox create-table`) and `upgrade` have real
+/// implementations now — [McpCommand], [OutboxCommand] (+
+/// [OutboxCommand.CreateTable]) and [UpgradeCommand]. Only `init` remains
+/// stubbed here.
 public final class NotPorted {
 
     /// The exit code every stub returns.
@@ -48,75 +52,6 @@ public final class NotPorted {
         @Override
         public Integer call() {
             return notYetPorted(spec, "init", "use the Go fcdev, or sign in with the bootstrap admin fcdev start creates");
-        }
-    }
-
-    /// `fcdev mcp` (Go `mcp.go`): the FlowCatalyst MCP server.
-    @Command(name = "mcp", description = "Run the FlowCatalyst MCP server (stdio by default; --http to listen) [not yet ported]",
-            mixinStandardHelpOptions = true, sortOptions = false)
-    public static final class Mcp implements Callable<Integer> {
-        @Spec CommandSpec spec;
-        @Option(names = "--http", paramLabel = "<addr>", description = "listen for streamable-HTTP MCP at this bind address (e.g. 127.0.0.1:8090); empty = stdio") String http;
-        @Option(names = "--platform-url", paramLabel = "<url>", description = "override FLOWCATALYST_URL (platform base URL)") String platformUrl;
-        @Option(names = "--client-id", paramLabel = "<id>", description = "override FLOWCATALYST_CLIENT_ID") String clientId;
-        @Option(names = "--client-secret", paramLabel = "<secret>", description = "override FLOWCATALYST_CLIENT_SECRET") String clientSecret;
-
-        @Override
-        public Integer call() {
-            return notYetPorted(spec, "mcp", "");
-        }
-    }
-
-    /// `fcdev outbox` (Go `outbox.go`): standalone outbox poller, plus `create-table`.
-    @Command(name = "outbox", description = "Standalone outbox poller against an external app DB → external platform [not yet ported]",
-            mixinStandardHelpOptions = true, sortOptions = false, subcommands = {OutboxCreateTable.class})
-    public static final class Outbox implements Callable<Integer> {
-        @Spec CommandSpec spec;
-        @Option(names = "--env-file", paramLabel = "<file>", scope = ScopeType.INHERIT,
-                description = "load environment from this dotenv file (does not override existing env) (default: .env)") String envFile = ".env";
-        @Option(names = "--source-db-url", paramLabel = "<url>", description = "external app's Postgres URL (required) (FC_OUTBOX_SOURCE_DB_URL)") String sourceDbUrl;
-        @Option(names = "--target-url", paramLabel = "<url>", description = "FlowCatalyst platform URL (FC_OUTBOX_PLATFORM_URL; default: http://localhost:8080)") String targetUrl;
-        @Option(names = "--auth-token", paramLabel = "<token>", description = "static bearer token for the platform (used when client-id/secret are not set) (FC_OUTBOX_PLATFORM_AUTH_TOKEN)") String authToken;
-        @Option(names = "--client-id", paramLabel = "<id>", description = "OAuth client_credentials client id (env FC_OUTBOX_CLIENT_ID, falls back to FLOWCATALYST_CLIENT_ID)") String clientId;
-        @Option(names = "--client-secret", paramLabel = "<secret>", description = "OAuth client_credentials client secret (env FC_OUTBOX_CLIENT_SECRET, falls back to FLOWCATALYST_CLIENT_SECRET)") String clientSecret;
-        @Option(names = "--token-url", paramLabel = "<url>", description = "OAuth token endpoint (env FC_OUTBOX_TOKEN_URL, default <target-url>/oauth/token)") String tokenUrl;
-        @Option(names = "--scope", paramLabel = "<scope>", description = "optional requested scope to narrow the minted token (env FC_OUTBOX_SCOPE)") String scope;
-        @Option(names = "--batch-size", paramLabel = "<n>", description = "rows per poll (0 = library default) (FC_OUTBOX_BATCH_SIZE)") int batchSize;
-        @Option(names = "--max-in-flight", paramLabel = "<n>", description = "outstanding HTTP requests cap (0 = library default) (FC_OUTBOX_MAX_IN_FLIGHT)") int maxInFlight;
-        @Option(names = "--poll-interval-ms", paramLabel = "<ms>", description = "sleep between empty polls in ms (0 = library default) (FC_OUTBOX_POLL_INTERVAL_MS)") int pollIntervalMs;
-
-        @Override
-        public Integer call() {
-            return notYetPorted(spec, "outbox", "");
-        }
-    }
-
-    /// `fcdev outbox create-table` (Go `outbox_create_table.go`).
-    @Command(name = "create-table", description = "Create the outbox_messages table/collection in a consumer app's DB [not yet ported]",
-            mixinStandardHelpOptions = true, sortOptions = false)
-    public static final class OutboxCreateTable implements Callable<Integer> {
-        @Spec CommandSpec spec;
-        @Option(names = "--db-type", paramLabel = "<type>", description = "target store: postgres | mysql | mongodb (FC_OUTBOX_BACKEND / FC_OUTBOX_DB_TYPE; default: postgres)") String dbType;
-        @Option(names = "--db-url", paramLabel = "<url>", description = "connection string/URL (required) (FC_OUTBOX_SOURCE_DB_URL / FC_OUTBOX_DB_URL / FC_OUTBOX_MONGO_URI)") String dbUrl;
-        @Option(names = "--db-name", paramLabel = "<name>", description = "MongoDB database name (mongodb only) (FC_OUTBOX_MONGO_DB; default: flowcatalyst)") String dbName;
-
-        @Override
-        public Integer call() {
-            return notYetPorted(spec, "outbox create-table", "");
-        }
-    }
-
-    /// `fcdev upgrade` (Go `upgrade.go`): self-update from GitHub Releases.
-    @Command(name = "upgrade", description = "Update fcdev to the latest release [not yet ported]",
-            mixinStandardHelpOptions = true, sortOptions = false)
-    public static final class Upgrade implements Callable<Integer> {
-        @Spec CommandSpec spec;
-        @Option(names = "--check", description = "only report whether a newer release exists; don't install") boolean check;
-        @Option(names = "--force", description = "reinstall even if already on the latest version") boolean force;
-
-        @Override
-        public Integer call() {
-            return notYetPorted(spec, "upgrade", "with JBang: `jbang app install --force fcdev@<catalog>`; with the jar: download the latest release");
         }
     }
 }

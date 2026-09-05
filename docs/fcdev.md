@@ -47,8 +47,9 @@ JAVA_HOME=$(mise where graalvm) mvn -q -pl fcdev -am -DskipTests install
 jbang fcdev/fcdev.java version                   # runs straight from ~/.m2
 ```
 
-**Upgrading.** `fcdev upgrade` (the Go self-updater) is not ported; with JBang
-an upgrade is `jbang app install --force fcdev@<catalog>` (re-resolves the
+**Upgrading.** `fcdev upgrade` self-updates from GitHub Releases
+(`docs/spec/fcdev-commands.md` §4); with JBang, an upgrade is also just
+`jbang app install --force fcdev@<catalog>` (re-resolves the
 artifact), and `jbang cache clear` if a SNAPSHOT got stuck.
 
 ### Without JBang: the executable jar
@@ -301,10 +302,12 @@ PostgreSQL cannot start in the environment.
 | subcommand | status |
 |---|---|
 | `fcdev init` | stub — flags accepted, exits 2 |
-| `fcdev mcp` | stub |
-| `fcdev outbox`, `fcdev outbox create-table` | stub |
-| `fcdev upgrade` | stub — use `jbang app install --force …` |
+| `fcdev outbox create-table --db-type mongodb` | not supported in the Java fcdev (Mongo outbox backend is on the backlog) — exits 2 |
 | MCP credential bootstrap (step 7) | `DevBootstrap.bootstrapMcpCredentials` logs and skips |
+
+`fcdev mcp`, `fcdev outbox` (+ `create-table` for postgres/mysql) and
+`fcdev upgrade` are real implementations now (`docs/spec/fcdev-commands.md`
+§2–§4).
 
 Everything else — the server-side subsystems the toggles enable (router,
 stream, schedulers, outbox, MCP) — is whatever `flowcatalyst-server` has

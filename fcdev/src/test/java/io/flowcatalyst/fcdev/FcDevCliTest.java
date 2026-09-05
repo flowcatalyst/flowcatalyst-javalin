@@ -84,13 +84,38 @@ class FcDevCliTest {
     }
 
     @Test
-    void notYetPortedCommandsKeepTheirFlagsAndExitTwo() {
-        assertThat(run(Map.of(), "init", "--yes", "--admin-email", "a@b.c", "--code", "orders", "--name", "Orders").exit()).isEqualTo(2);
-        assertThat(run(Map.of(), "mcp", "--http", "127.0.0.1:8090").exit()).isEqualTo(2);
-        assertThat(run(Map.of(), "outbox", "--source-db-url", "postgresql://x@y/z", "--batch-size", "10").exit()).isEqualTo(2);
-        assertThat(run(Map.of(), "outbox", "create-table", "--db-type", "pg", "--db-url", "postgresql://x@y/z").exit()).isEqualTo(2);
-        assertThat(run(Map.of(), "upgrade", "--check").exit()).isEqualTo(2);
-        assertThat(run(Map.of(), "upgrade").err()).contains("not yet ported");
+    void initRemainsStubbedAndExitsTwo() {
+        var r = run(Map.of(), "init", "--yes", "--admin-email", "a@b.c", "--code", "orders", "--name", "Orders");
+        assertThat(r.exit()).isEqualTo(2);
+        assertThat(r.err()).contains("not yet ported");
+    }
+
+    /// `mcp`, `outbox` (+ `create-table`) and `upgrade` are real commands
+    /// now, not stubs — each case below hits a fast, synchronous failure
+    /// path so this stays a quick CLI-wiring smoke test: `mcp` would
+    /// otherwise block on a listener forever, `outbox`/`create-table` would
+    /// otherwise attempt a real (slow, or hanging) database connection, and
+    /// `upgrade` would otherwise hit the real GitHub API — none of that
+    /// belongs in this test (see McpCommandTest / OutboxCommandTest /
+    /// CreateTableCommandTest / UpgradeCommandTest for the real behaviour,
+    /// stubbed). `FcDev.commandLine`'s exception handler logs the runtime
+    /// failure via SLF4J rather than picocli's captured `err` writer, so
+    /// only the exit code — 1, a real failure, never the stub's 2 — is
+    /// asserted here.
+    @Test
+    void mcpOutboxAndUpgradeAreRealCommandsNotStubs() {
+        var mcpBadBind = run(Map.of(), "mcp", "--http", "not-a-host-port");
+        assertThat(mcpBadBind.exit()).isEqualTo(1);
+
+        var outboxMissingSource = run(Map.of(), "outbox");
+        assertThat(outboxMissingSource.exit()).isEqualTo(1);
+
+        var createTableUnknownType = run(Map.of(), "outbox", "create-table", "--db-type", "bogus", "--db-url", "x://y");
+        assertThat(createTableUnknownType.exit()).isEqualTo(1);
+
+        var upgradeHelp = run(Map.of(), "upgrade", "--help");
+        assertThat(upgradeHelp.exit()).isZero();
+        assertThat(upgradeHelp.out()).contains("--check").contains("--force");
     }
 
     @Test

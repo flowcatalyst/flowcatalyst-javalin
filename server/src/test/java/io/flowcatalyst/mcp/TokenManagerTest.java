@@ -174,4 +174,42 @@ class TokenManagerTest {
 
         assertThat(hits).as("a defaulted 1h TTL must not be treated as already expired").hasValue(1);
     }
+
+    /// The outbox standalone poller's optional `--scope` narrowing
+    /// (`docs/spec/fcdev-commands.md` §3): sent as the form field only when
+    /// non-blank.
+    @Test
+    void aNonBlankScopeIsSentAsAFormField() {
+        var tm = new TokenManager(baseUrl, "cid", "csecret", "read:events", HttpClient.newHttpClient(), Clock.systemUTC());
+
+        tm.token();
+
+        assertThat(lastForm.get()).contains("scope=read%3Aevents");
+    }
+
+    @Test
+    void aBlankOrAbsentScopeOmitsTheFormFieldEntirely() {
+        var tm = new TokenManager(baseUrl, "cid", "csecret", "  ", HttpClient.newHttpClient(), Clock.systemUTC());
+
+        tm.token();
+
+        assertThat(lastForm.get()).doesNotContain("scope=");
+    }
+
+    /// [TokenManager#invalidate()] is the outbox dispatcher's 401 hook
+    /// (`HttpDispatcher.TokenSource#invalidate`): dropping the cache must
+    /// force a refetch even though the cached token is nowhere near expiry
+    /// — a broken `invalidate()` (a no-op) would still show `hits=1` here.
+    @Test
+    void invalidateForcesARefetchEvenWellBeforeExpiry() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var tm = new TokenManager(baseUrl, "cid", "csecret", HttpClient.newHttpClient(), clock);
+
+        tm.token();
+        tm.invalidate();
+        tm.token();
+
+        assertThat(hits).as("invalidate() must force a second HTTP call well before the cached token expires")
+                .hasValue(2);
+    }
 }
