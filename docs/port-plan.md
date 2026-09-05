@@ -93,11 +93,9 @@ Sonnet ports, three at a time, in this order; I audit each before its commit.
    `/api/dispatch-jobs/batch`, `/api/audit-logs/batch`. *I write this spec*:
    partial-failure semantics, idempotency on TSIDs, per-item error shape,
    the outbox seam. Sonnet implements; the batch-atomicity tests are mine.
-4. **BFF + `/api/me`** — spec `docs/spec/bff.md` written 2026-09-05
-   (dashboard, filter options, developer, event types, roles + permission
-   catalogue, scheduled jobs, the aggregate-mounted `/bff/*` prefixes,
-   `/api/me*`). Sonnet port next, with the frontend as the acceptance test.
-   `clientselection` belongs to the auth phase.
+4. ~~BFF + `/api/me`~~ **Done 2026-09-05** (spec `docs/spec/bff.md`; the
+   dashboard is admin-gated as Go's `IsAdmin` — the spec's first draft
+   said otherwise and was corrected in review).
 
 ## Phase 2 — the remaining data-plane loops
 
