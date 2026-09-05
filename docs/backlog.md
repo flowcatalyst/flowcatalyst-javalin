@@ -313,6 +313,19 @@ Rulings that change behaviour relative to Go HEAD, with the Go site. `docs/auth-
 | I-Q16 | Fallback brand `FlowCatalyst` | `notify/notify.go:43` |
 | I-Q22 | System actor `"system"` everywhere (JIT, role sync currently write `""`) | `bridge/login_endpoint.go:661,687,803` |
 
+### Batch C additions (2026-09-05)
+
+| Ruling | Go change | Go site |
+|---|---|---|
+| defect 10 | 2FA trusted-device / method DELETE → 404 when nothing deleted | `login/twofactor_selfservice.go` revoke handlers |
+| I-Q13 | Persist passkey sign counter + `last_used_at`, reject a backwards counter, emit `passkey:authenticated` | webauthn finish-login path (auth-identity.md §7.5) |
+| I-Q14 | Admin `send-password-reset` gains an option to clear MFA enrolments + trusted devices, notify the user, audit | `principal` admin reset op + `mfa` service |
+| I-Q15 | `Date`, `Message-ID`, RFC 2047 subject on outgoing mail | mail transport (auth-identity.md §9) |
+| I-Q17 | Purge expired PINs / trusted devices / reset tokens / approvals on the purger tick | `StartPurger` sweeps |
+| I-Q24 | `authenticate/begin` 429 in the platform `TOO_MANY_REQUESTS` envelope | webauthn API rate-limit path |
+| I-Q25 | Passkey events under `platform:iam` | webauthn events source |
+| defect 11 | Write `EXPIRED` (purger) and the reviewer `note` on approval requests | `resetapproval` ops + purger |
+
 Backlog-only (no Go change now): C-Q18 wire rate-limit policies + callers for introspect, revoke and check-domain; C-Q28 access-token denylist (cache first, table fallback). Not deviations: C-Q1 — Go already emits the real login time (`authservice.go:511`); the Java port follows.
 
 ## Owner questions collected from specs

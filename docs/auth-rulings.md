@@ -128,7 +128,22 @@ C-Q29 is ruled with I-Q9. Defects 2, 3 and 4 are dead code and are simply not po
 
 ---
 
-## What I will do without a ruling
+## Rulings — Batch C (owner, 2026-09-05, asked one by one)
+
+Defect 6 is ruled with I-Q5 (Batch A). **All three batches are ruled; Phase 3 is unblocked.**
+
+- **defect 10** — RULED 2026-09-05: `DELETE /auth/2fa/trusted-devices/{id}` and `/methods/{m}` return 404 when nothing was deleted (PR-3 oracle).
+- **I-Q13** — RULED: fix — persist the passkey sign counter and `last_used_at`; reject a counter that goes backwards; emit `passkey:authenticated`.
+- **I-Q14** — RULED: the admin-triggered reset keeps bypassing the factor (it is the lost-device recovery path; users are pushed to their own IdPs). It gains an **admin-only option** — never on the self-service path — that also clears the user's MFA enrolments and trusted devices, notifies the user, and writes an audit row; the domain policy then forces re-enrolment at next login.
+- **I-Q15** — RULED: add `Date`, `Message-ID` and RFC 2047 subject encoding to outgoing mail.
+- **I-Q17** — RULED: purge expired e-mail PINs, trusted devices, reset tokens and reset-approval requests on the purger tick (expiry + grace).
+- **I-Q19** — RULED: keep `RequireStrongFactorForReset = false`; the approval queue stays ported but idle.
+- **I-Q20** — RULED: keep the mounting as is — the mfaToken (purpose-bound, short-lived, never a cookie substitute) is the token routes' credential and the tests pin that; a remount would add the stale-Bearer 401 failure for no gain.
+- **I-Q24** — RULED: align `authenticate/begin`'s 429 to the platform `TOO_MANY_REQUESTS` envelope.
+- **I-Q25** — RULED: passkey events under `platform:iam`.
+- **defect 11** — RULED: write `EXPIRED` (purger marks PENDING past expiry) and the reviewer's `note`.
+
+## What I will do without a ruling (superseded — every batch is ruled)
 
 Batch A can start on the "keep" rows immediately; the eight "fix" rows are
 each a small, isolated deviation and are written so that flipping one back

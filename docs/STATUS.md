@@ -65,10 +65,12 @@ that was open to every user (BFF, flagged by the agent, my error), and
 one agent stalled twice waiting on its own test run and never wrote a
 report (MCP). Nothing it wrote reached main unread.
 
-**For the owner — Phase 3 gate:** `docs/auth-rulings.md` groups the 44
-open auth questions and 15 observed defects into three batches, each row
-with a recommendation and the no-answer default. Batch A unblocks the
-first auth cut (JWT/RS256, PKCE, sessions, `/auth/login`, MFA).
+**Phase 3 gate cleared (owner, 2026-09-05):** every question in
+`docs/auth-rulings.md` was asked one by one and ruled; the rulings are
+recorded there ("Rulings — Batch A/B/C"), in the Rust ledger, and as a Go
+mirror list in `docs/backlog.md` with a verified patch for the mechanical
+part in `docs/go-mirror/`. Auth (Phase 3) can start with the first cut:
+JWT/RS256 issuance, PKCE, sessions, `/auth/login`, MFA.
 
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
 (seed `'JSON'`, unextended partitions, dispatch-ingest permission); the
