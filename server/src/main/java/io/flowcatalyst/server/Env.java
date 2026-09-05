@@ -48,6 +48,10 @@ public record Env(
         // `FC_JWT_ISSUER` (aliases `FC_EXTERNAL_BASE_URL`, `EXTERNAL_BASE_URL`),
         // default `http://localhost:8080`: JWT issuer/audience and external base URL.
         String jwtIssuer,
+        // `FC_JWT_ACCESS_TOKEN_TTL_SECS`, default 3600: the access-token
+        // lifetime — sets the minted `exp` and the advertised `expires_in`
+        // together (A-23). Zero or negative refuses to start (TokenIssuer.Config).
+        long jwtAccessTokenTtlSeconds,
 
         // ── subsystem toggles ──────────────────────────────────────────────
         // `FC_PLATFORM_ENABLED` (alias `PLATFORM_ENABLED`), default true.
@@ -280,6 +284,7 @@ public record Env(
 
                 resolveDatabaseUrl(e),
                 e.firstSet("FC_JWT_ISSUER", "FC_EXTERNAL_BASE_URL", "EXTERNAL_BASE_URL").orElse("http://localhost:8080"),
+                e.longValue("FC_JWT_ACCESS_TOKEN_TTL_SECS", 3600L),
 
                 e.boolAlias("FC_PLATFORM_ENABLED", "PLATFORM_ENABLED", true),
                 e.boolAlias("FC_ROUTER_ENABLED", "MESSAGE_ROUTER_ENABLED", false),

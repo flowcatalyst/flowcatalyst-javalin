@@ -214,7 +214,8 @@ public final class Platform {
         var loginPrincipalRepo = new PrincipalRepository(pool);
         var loginAttemptRepo = new LoginAttemptRepository(pool);
         var loginMappingRepo = new EmailDomainMappingRepository(pool);
-        var tokenIssuer = new TokenIssuer(signingKeys, TokenIssuer.Config.of(env.jwtIssuer()));
+        var tokenIssuer = new TokenIssuer(signingKeys, new TokenIssuer.Config(env.jwtIssuer(), env.jwtIssuer(),
+                env.jwtAccessTokenTtlSeconds(), TokenIssuer.ID_TOKEN_TTL_SECONDS));
         var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(EnvReader.system()));
         // The second factor (auth-identity §6): TOTP secrets under the app key, e-mail
         // PINs through the mail transport, the pending /

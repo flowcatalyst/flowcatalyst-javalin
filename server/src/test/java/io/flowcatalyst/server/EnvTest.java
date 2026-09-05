@@ -24,6 +24,7 @@ class EnvTest {
         assertThat(env.metricsPort()).isEqualTo(9090);
         assertThat(env.databaseUrl()).isEqualTo("postgresql://postgres@localhost:5432/flowcatalyst");
         assertThat(env.jwtIssuer()).isEqualTo("http://localhost:8080");
+        assertThat(env.jwtAccessTokenTtlSeconds()).isEqualTo(3600L);
 
         assertThat(env.platformEnabled()).isTrue();
         assertThat(env.routerEnabled()).isFalse();
@@ -348,5 +349,15 @@ class EnvTest {
     @Test
     void webauthnOriginsDropBlanks() {
         assertThat(Env.webauthnOrigins(new EnvReader(Map.of("FC_WEBAUTHN_ORIGINS", " https://a , ,https://b,")))).isEqualTo(List.of("https://a", "https://b"));
+    }
+
+    /// `FC_JWT_ACCESS_TOKEN_TTL_SECS` (Go `wire_services.go`): the one server
+    /// knob the cutover env-parity check found unread. The value reaches the
+    /// minted `exp` and every `expires_in` through `TokenIssuer.Config`
+    /// (A-23: `expires_in` is the configured TTL, never a literal).
+    @Test
+    void accessTokenTtlIsReadFromTheGoVariable() {
+        assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "120")).jwtAccessTokenTtlSeconds()).isEqualTo(120L);
+        assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "not-a-number")).jwtAccessTokenTtlSeconds()).isEqualTo(3600L);
     }
 }
