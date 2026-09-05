@@ -28,9 +28,9 @@ public final class CreateOAuthClient {
     /// @param disclose receives the plaintext secret for a `CONFIDENTIAL`
     ///                 client, once, before commit — the handler reads it
     ///                 back only after `run` succeeds
-    public static Operation<CreateCommand, OAuthClientCreated> of(OAuthClientRepository repo, Optional<Encryption> encryption, Consumer<String> disclose) {
+    public static Operation<CreateOAuthClientCommand, OAuthClientCreated> of(OAuthClientRepository repo, Optional<Encryption> encryption, Consumer<String> disclose) {
         Objects.requireNonNull(disclose, "disclose");
-        return Operation.<CreateCommand, OAuthClientCreated>named("CreateOAuthClient")
+        return Operation.<CreateOAuthClientCommand, OAuthClientCreated>named("CreateOAuthClient")
                 .validate(cmd -> {
                     if (cmd.clientName() == null || cmd.clientName().isBlank()) {
                         throw UseCaseException.validation("CLIENT_NAME_REQUIRED", "clientName is required");

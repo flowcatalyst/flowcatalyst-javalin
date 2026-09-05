@@ -15,8 +15,8 @@ public final class DeactivateOAuthClient {
     private DeactivateOAuthClient() {
     }
 
-    public static Operation<DeactivateCommand, OAuthClientDeactivated> of(OAuthClientRepository repo) {
-        return Operation.<DeactivateCommand, OAuthClientDeactivated>named("DeactivateOAuthClient")
+    public static Operation<DeactivateOAuthClientCommand, OAuthClientDeactivated> of(OAuthClientRepository repo) {
+        return Operation.<DeactivateOAuthClientCommand, OAuthClientDeactivated>named("DeactivateOAuthClient")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

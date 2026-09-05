@@ -15,8 +15,8 @@ public final class ActivateOAuthClient {
     private ActivateOAuthClient() {
     }
 
-    public static Operation<ActivateCommand, OAuthClientActivated> of(OAuthClientRepository repo) {
-        return Operation.<ActivateCommand, OAuthClientActivated>named("ActivateOAuthClient")
+    public static Operation<ActivateOAuthClientCommand, OAuthClientActivated> of(OAuthClientRepository repo) {
+        return Operation.<ActivateOAuthClientCommand, OAuthClientActivated>named("ActivateOAuthClient")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

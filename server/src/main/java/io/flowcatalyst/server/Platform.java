@@ -218,7 +218,7 @@ public final class Platform {
         var loginMappingRepo = new EmailDomainMappingRepository(pool);
         var tokenIssuer = new TokenIssuer(signingKeys, new TokenIssuer.Config(env.jwtIssuer(), env.jwtIssuer(),
                 env.jwtAccessTokenTtlSeconds(), TokenIssuer.ID_TOKEN_TTL_SECONDS));
-        var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(EnvReader.system()));
+        var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(env.reader()));
         // The second factor (auth-identity §6): TOTP secrets under the app key, e-mail
         // PINs through the mail transport, the pending /
         // enrol token derived from the session key, the trusted-device cookie secure
@@ -228,7 +228,7 @@ public final class Platform {
         // Outbound mail (auth-identity §9): SMTP when FC_SMTP_HOST/SMTP_HOST is set,
         // else the logging transport. The security-notification catalogue (§10) and
         // every link mailer ride on it.
-        var mail = MailService.fromEnv(EnvReader.system());
+        var mail = MailService.fromEnv(env.reader());
         var notices = new Notifications(mail, mfaBranding::platformName);
         var mfa = new Mfa(new MfaRepository(pool), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
                 MailSender.of(mail), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC(), new AuditLogRepository(pool));
@@ -260,7 +260,7 @@ public final class Platform {
         // list are session-gated, authentication is public (isPublicPath) and shares the
         // login backoff budget.
         var passkeyRepo = new PasskeyRepository(pool);
-        var passkeyService = new PasskeyService(PasskeyService.Config.fromEnv(EnvReader.system(), mfaBranding.platformName()), passkeyRepo);
+        var passkeyService = new PasskeyService(PasskeyService.Config.fromEnv(env.reader(), mfaBranding.platformName()), passkeyRepo);
         PasskeyApi.register(routes, new PasskeyApi.State(passkeyService, passkeyRepo, new CeremonyRepository(pool), loginPrincipalRepo,
                 uow, tokenIssuer, new SessionCookie(cookiesSecure), notices, loginAttemptRepo, backoff, Clock.systemUTC()));
         // The portal identities are built later (after the OAuth-client store); the reset
@@ -412,7 +412,7 @@ public final class Platform {
         // and the portal plane's own public auth surface (`/portal/*`, isPublicPath below).
         // The portal SSO start/callback (§5.6) and the `/oauth/token` `ptu_` branch (§5.8)
         // are wired against these same repository instances by a later unit.
-        var portalEnvReader = EnvReader.system();
+        var portalEnvReader = env.reader();
         var portalIdentityRepo = new PortalIdentityRepository(pool);
         var portalAccess = new PortalIdentityAccess(portalIdentityRepo, uow);
         portalPasswordsHolder.set(portalAccess);
@@ -428,7 +428,7 @@ public final class Platform {
         // revocation, userinfo and discovery routes run INSIDE the authenticator, which
         // lets a request with no credentials through and 401s an explicit bad bearer
         // (ruling I-Q4). Per-IP throttles sit in front as `before` filters.
-        var envReader = EnvReader.system();
+        var envReader = env.reader();
         // grantStore was built above, alongside the 2FA / change-password wiring.
         var oauthState = new OAuthState(oauthClientRepo, loginPrincipalRepo, serviceAccountRepo, grantStore,
                 new RefreshRotation(grantStore, Clock.systemUTC()), tokenIssuer, new AccessTokenReader(buildVerifier()),

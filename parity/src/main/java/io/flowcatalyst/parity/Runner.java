@@ -290,10 +290,32 @@ public final class Runner {
     static void autoCaptureId(Step step, Sent sent, Vars vars) {
         if (sent.status() < 200 || sent.status() >= 300) return;
         JsonNode body = sent.jsonBodyOrNull();
-        if (body == null || !body.isObject()) return;
-        JsonNode id = body.get("id");
-        if (id != null && id.isString() && !id.asString().isEmpty()) {
-            vars.captureQuietly(step.id() + ".id", id.asString());
+        if (body == null) return;
+        autoCapture(body, "", step.id(), vars);
+    }
+
+    /// Members that are per-side by construction — ids, secrets, tokens,
+    /// cursors that encode an id, links that carry a token — anywhere in a 2xx
+    /// body. Captured quietly under `auto:<member>` so a later response
+    /// carrying the same value masks it (rule 1) with a label both sides share.
+    private static final java.util.regex.Pattern AUTO_CAPTURE_NAME =
+            java.util.regex.Pattern.compile("^(id|.*Id|.*Secret|.*SecretRef|.*Cursor|.*Token|.*Url|.*Link|challenge)$");
+
+    private static void autoCapture(JsonNode node, String pointer, String stepId, Vars vars) {
+        if (node.isObject()) {
+            node.properties().forEach(e -> {
+                JsonNode v = e.getValue();
+                if (v.isString() && AUTO_CAPTURE_NAME.matcher(e.getKey()).matches() && v.asString().length() >= Normaliser.MIN_SUBSTRING_CAPTURE) {
+                    // Labelled by member name only: the same row can surface at different
+                    // list positions on the two sides, and the label must still agree.
+                    vars.captureQuietly("auto:" + e.getKey(), v.asString());
+                } else {
+                    autoCapture(v, pointer + "/" + e.getKey(), stepId, vars);
+                }
+            });
+        } else if (node.isArray()) {
+            int i = 0;
+            for (JsonNode child : node) autoCapture(child, pointer + "/" + i++, stepId, vars);
         }
     }
 

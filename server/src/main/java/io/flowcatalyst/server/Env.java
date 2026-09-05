@@ -247,7 +247,12 @@ public record Env(
         String webauthnRpId,
         // `FC_WEBAUTHN_ORIGINS` (comma-separated; alias the legacy singular
         // `FC_WEBAUTHN_RP_ORIGIN`), default `[http://localhost:8080]`; blank entries dropped.
-        List<String> webauthnOrigins
+        List<String> webauthnOrigins,
+        // The reader every value above came from. Subsystems that parse their own
+        // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
+        // environment directly, or fcdev's map-loaded environment and the parity
+        // harness's per-side environment are silently ignored (found by the harness).
+        EnvReader reader
 ) {
 
     public static final String DEFAULT_DATABASE_URL = "postgresql://postgres@localhost:5432/flowcatalyst";
@@ -374,7 +379,8 @@ public record Env(
                 e.get("FC_MCP_PLATFORM_AUTH_TOKEN"),
 
                 e.or("FC_WEBAUTHN_RP_ID", "localhost"),
-                webauthnOrigins(e)
+                webauthnOrigins(e),
+                e
         );
     }
 

@@ -15,8 +15,8 @@ public final class UpdateOAuthClient {
     private UpdateOAuthClient() {
     }
 
-    public static Operation<UpdateCommand, OAuthClientUpdated> of(OAuthClientRepository repo) {
-        return Operation.<UpdateCommand, OAuthClientUpdated>named("UpdateOAuthClient")
+    public static Operation<UpdateOAuthClientCommand, OAuthClientUpdated> of(OAuthClientRepository repo) {
+        return Operation.<UpdateOAuthClientCommand, OAuthClientUpdated>named("UpdateOAuthClient")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

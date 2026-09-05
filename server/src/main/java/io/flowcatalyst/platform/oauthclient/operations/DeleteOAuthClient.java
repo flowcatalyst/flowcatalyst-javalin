@@ -15,8 +15,8 @@ public final class DeleteOAuthClient {
     private DeleteOAuthClient() {
     }
 
-    public static Operation<DeleteCommand, OAuthClientDeleted> of(OAuthClientRepository repo) {
-        return Operation.<DeleteCommand, OAuthClientDeleted>named("DeleteOAuthClient")
+    public static Operation<DeleteOAuthClientCommand, OAuthClientDeleted> of(OAuthClientRepository repo) {
+        return Operation.<DeleteOAuthClientCommand, OAuthClientDeleted>named("DeleteOAuthClient")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

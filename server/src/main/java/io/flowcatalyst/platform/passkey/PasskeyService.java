@@ -145,7 +145,7 @@ public final class PasskeyService {
         try {
             result = rp.finishRegistration(FinishRegistrationOptions.builder().request(request).response(response).build());
         } catch (RegistrationFailedException | RuntimeException e) {
-            throw new InvalidCredential("ATTESTATION_INVALID", e.getMessage() == null ? "attestation rejected" : e.getMessage());
+            throw new InvalidCredential("ATTESTATION_INVALID", rootMessage(e, "attestation rejected"));
         }
         List<String> transports = result.getKeyId().getTransports().map(t -> t.stream().map(x -> x.getId()).toList()).orElse(List.of());
         byte[] aaguid = result.getAaguid().getBytes();
@@ -186,7 +186,7 @@ public final class PasskeyService {
         try {
             result = rp.finishAssertion(FinishAssertionOptions.builder().request(request).response(response).build());
         } catch (AssertionFailedException | RuntimeException e) {
-            throw new InvalidCredential("INVALID_CREDENTIALS", e.getMessage() == null ? "assertion rejected" : e.getMessage());
+            throw new InvalidCredential("INVALID_CREDENTIALS", rootMessage(e, "assertion rejected"));
         }
         if (!result.isSuccess()) {
             throw new InvalidCredential("INVALID_CREDENTIALS", "assertion rejected");
@@ -209,7 +209,7 @@ public final class PasskeyService {
         RANDOM.nextBytes(fakeId);
         ObjectNode pk = Json.MAPPER.createObjectNode();
         pk.put("challenge", Base64.getUrlEncoder().withoutPadding().encodeToString(challenge));
-        pk.put("timeout", 300000);
+        pk.put("timeout", 60000); // the decoy keeps go-webauthn's 60 s; only real ceremonies use 300 s (parity S1-B)
         pk.put("rpId", config.rpId());
         ObjectNode allow = pk.putArray("allowCredentials").addObject();
         allow.put("type", "public-key");
@@ -252,7 +252,19 @@ public final class PasskeyService {
         public Set<PublicKeyCredentialDescriptor> getCredentialIdsForUsername(String username) {
             var out = new HashSet<PublicKeyCredentialDescriptor>();
             for (Passkey p : store.findByPrincipal(username)) {
-                out.add(PublicKeyCredentialDescriptor.builder().id(new ByteArray(p.credentialId())).build());
+                // The stored transports ride along so allowCredentials carries them, as
+                // go-webauthn's do (parity S1-B); an unknown name is dropped, never fatal.
+                var transports = new java.util.TreeSet<com.yubico.webauthn.data.AuthenticatorTransport>();
+                for (String t : p.transports()) {
+                    try {
+                        transports.add(com.yubico.webauthn.data.AuthenticatorTransport.of(t));
+                    } catch (RuntimeException ignored) {
+                        // not a transport this library names
+                    }
+                }
+                var descriptor = PublicKeyCredentialDescriptor.builder().id(new ByteArray(p.credentialId()));
+                if (!transports.isEmpty()) descriptor.transports(java.util.Optional.of(transports));
+                out.add(descriptor.build());
             }
             return out;
         }
@@ -283,5 +295,15 @@ public final class PasskeyService {
             return RegisteredCredential.builder().credentialId(new ByteArray(p.credentialId())).userHandle(handle(p.principalId()))
                     .publicKeyCose(new ByteArray(p.publicKeyCose())).signatureCount(p.signCount()).build();
         }
+    }
+
+    /// The innermost cause's own words, never an exception class name (the
+    /// library wraps a plain IllegalArgumentException in a failure whose
+    /// message starts with the class; parity S1-B saw it on the wire).
+    private static String rootMessage(Throwable e, String fallback) {
+        Throwable t = e;
+        while (t.getCause() != null && t.getCause() != t) t = t.getCause();
+        String m = t.getMessage();
+        return m == null || m.isBlank() ? fallback : m;
     }
 }

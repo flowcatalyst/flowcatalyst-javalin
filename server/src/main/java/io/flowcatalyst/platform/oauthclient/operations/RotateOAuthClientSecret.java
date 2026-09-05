@@ -30,10 +30,10 @@ public final class RotateOAuthClientSecret {
     }
 
     /// @param disclose receives the new plaintext secret, once, before commit
-    public static Operation<RotateSecretCommand, OAuthClientSecretRotated> of(
+    public static Operation<RotateOAuthClientSecretCommand, OAuthClientSecretRotated> of(
             OAuthClientRepository repo, Optional<Encryption> encryption, Consumer<String> disclose) {
         Objects.requireNonNull(disclose, "disclose");
-        return Operation.<RotateSecretCommand, OAuthClientSecretRotated>named("RotateOAuthClientSecret")
+        return Operation.<RotateOAuthClientSecretCommand, OAuthClientSecretRotated>named("RotateOAuthClientSecret")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

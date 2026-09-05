@@ -5,7 +5,7 @@ import java.util.List;
 /// `CreateOAuthClient`'s command (spec §6.3). `clientId` is internal-only —
 /// the HTTP request has no `clientId` field; it is always backend-generated
 /// there. A blank/`null` `clientId` here means "generate one".
-public record CreateCommand(
+public record CreateOAuthClientCommand(
         String clientId,
         String clientName,
         String clientType,

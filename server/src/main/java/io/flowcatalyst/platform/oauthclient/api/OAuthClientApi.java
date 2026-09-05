@@ -2,19 +2,19 @@ package io.flowcatalyst.platform.oauthclient.api;
 
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
-import io.flowcatalyst.platform.oauthclient.operations.ActivateCommand;
+import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClient;
-import io.flowcatalyst.platform.oauthclient.operations.CreateCommand;
+import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClient;
-import io.flowcatalyst.platform.oauthclient.operations.DeactivateCommand;
+import io.flowcatalyst.platform.oauthclient.operations.DeactivateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.DeactivateOAuthClient;
-import io.flowcatalyst.platform.oauthclient.operations.DeleteCommand;
+import io.flowcatalyst.platform.oauthclient.operations.DeleteOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.DeleteOAuthClient;
 import io.flowcatalyst.platform.oauthclient.operations.RevokeOAuthClientPreviousSecret;
-import io.flowcatalyst.platform.oauthclient.operations.RevokePreviousSecretCommand;
+import io.flowcatalyst.platform.oauthclient.operations.RevokeOAuthClientPreviousSecretCommand;
 import io.flowcatalyst.platform.oauthclient.operations.RotateOAuthClientSecret;
-import io.flowcatalyst.platform.oauthclient.operations.RotateSecretCommand;
-import io.flowcatalyst.platform.oauthclient.operations.UpdateCommand;
+import io.flowcatalyst.platform.oauthclient.operations.RotateOAuthClientSecretCommand;
+import io.flowcatalyst.platform.oauthclient.operations.UpdateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.UpdateOAuthClient;
 import io.flowcatalyst.platform.shared.apicommon.SuccessResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
@@ -141,13 +141,13 @@ public final class OAuthClientApi {
 
     private static void activate(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        ActivateOAuthClient.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
+        ActivateOAuthClient.of(s.repo()).run(s.uow(), new ActivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client activated"));
     }
 
     private static void deactivate(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        DeactivateOAuthClient.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
+        DeactivateOAuthClient.of(s.repo()).run(s.uow(), new DeactivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client deactivated"));
     }
 
@@ -157,7 +157,7 @@ public final class OAuthClientApi {
         Long graceSeconds = ctx.body().isBlank() ? null : ctx.bodyAsClass(RotateOAuthClientSecretRequest.class).graceSeconds();
         var secret = new AtomicReference<String>();
         var event = RotateOAuthClientSecret.of(s.repo(), s.encryption(), secret::set)
-                .run(s.uow(), new RotateSecretCommand(id, graceSeconds), Auth.executionContext());
+                .run(s.uow(), new RotateOAuthClientSecretCommand(id, graceSeconds), Auth.executionContext());
         OAuthClient c = s.repo().findById(event.oauthClientId()).orElseThrow(() -> HttpError.notFound("OAuthClient", id));
         ctx.json(new RotateOAuthClientSecretResponse(c.clientId(), secret.get(), event.previousSecretExpiresAt()));
     }
@@ -165,13 +165,13 @@ public final class OAuthClientApi {
     private static void revokePreviousSecret(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
         RevokeOAuthClientPreviousSecret.of(s.repo())
-                .run(s.uow(), new RevokePreviousSecretCommand(ctx.pathParam("id")), Auth.executionContext());
+                .run(s.uow(), new RevokeOAuthClientPreviousSecretCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "Previous client secret revoked"));
     }
 
     private static void delete(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        DeleteOAuthClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        DeleteOAuthClient.of(s.repo()).run(s.uow(), new DeleteOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
@@ -200,8 +200,8 @@ public final class OAuthClientApi {
             String principalId,
             String portalClientId,
             Boolean apiAccess) {
-        public CreateCommand toCommand() {
-            return new CreateCommand(null, clientName, clientType, redirectUris, postLogoutRedirectUris, grantTypes,
+        public CreateOAuthClientCommand toCommand() {
+            return new CreateOAuthClientCommand(null, clientName, clientType, redirectUris, postLogoutRedirectUris, grantTypes,
                     defaultScopes, allowedOrigins, applicationIds, principalId, pkceRequired, portalClientId, apiAccess);
         }
     }
@@ -220,8 +220,8 @@ public final class OAuthClientApi {
             Boolean pkceRequired,
             String portalClientId,
             Boolean apiAccess) {
-        public UpdateCommand toCommand(String id) {
-            return new UpdateCommand(id, clientName, redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes,
+        public UpdateOAuthClientCommand toCommand(String id) {
+            return new UpdateOAuthClientCommand(id, clientName, redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes,
                     allowedOrigins, applicationIds, pkceRequired, portalClientId, apiAccess);
         }
     }

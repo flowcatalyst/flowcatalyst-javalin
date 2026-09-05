@@ -18,8 +18,8 @@ public final class RevokeOAuthClientPreviousSecret {
     private RevokeOAuthClientPreviousSecret() {
     }
 
-    public static Operation<RevokePreviousSecretCommand, OAuthClientPreviousSecretRevoked> of(OAuthClientRepository repo) {
-        return Operation.<RevokePreviousSecretCommand, OAuthClientPreviousSecretRevoked>named("RevokeOAuthClientPreviousSecret")
+    public static Operation<RevokeOAuthClientPreviousSecretCommand, OAuthClientPreviousSecretRevoked> of(OAuthClientRepository repo) {
+        return Operation.<RevokeOAuthClientPreviousSecretCommand, OAuthClientPreviousSecretRevoked>named("RevokeOAuthClientPreviousSecret")
                 .validate(cmd -> {
                     if (cmd.id() == null || cmd.id().isBlank()) {
                         throw UseCaseException.validation("ID_REQUIRED", "id is required");

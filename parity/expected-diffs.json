@@ -408,15 +408,8 @@
   {
     "scenario": "webauthn*",
     "step": "*",
-    "pointer": "**/challenge",
-    "reason": "a fresh random challenge per request on both sides",
-    "ruling": "by construction (auth-identity.md section 7)"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/allowCredentials/0/id",
-    "reason": "the decoy credential id is random per request (PasskeyService.decoyChallenge)",
-    "ruling": "auth-identity.md section 7 (I-Q24 decoy)"
+    "pointer": "/options/publicKey/userVerification",
+    "reason": "yubico emits userVerification: preferred on assertion options; go-webauthn omits it",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults"
   }
 ]

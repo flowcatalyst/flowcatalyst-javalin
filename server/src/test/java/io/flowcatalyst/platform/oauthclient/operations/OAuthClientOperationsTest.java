@@ -74,7 +74,7 @@ class OAuthClientOperationsTest {
 
     private static OAuthClientCreated createPublic(String tag) {
         return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                new CreateCommand(null, clientName(tag), "PUBLIC", null, null, null, null, null, null, null, null, null, null));
+                new CreateOAuthClientCommand(null, clientName(tag), "PUBLIC", null, null, null, null, null, null, null, null, null, null));
     }
 
     private static OAuthClient reload(String id) {
@@ -106,7 +106,7 @@ class OAuthClientOperationsTest {
     @Test
     void createWritesTheRowTheEventAndTheAuditTogether() {
         var secret = secretSink();
-        var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secret::set), new CreateCommand(
+        var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secret::set), new CreateOAuthClientCommand(
                 null, clientName("create"), "CONFIDENTIAL", List.of("https://a.example/cb"), null,
                 List.of("authorization_code"), List.of("read"), null, null, null, null, null, null));
 
@@ -134,7 +134,7 @@ class OAuthClientOperationsTest {
         assertThat(data.get("oauthClientId").asText()).isEqualTo(ev.oauthClientId());
         assertThat(data.get("clientName").asText()).isEqualTo(clientName("create"));
 
-        var audits = auditsFor(ev.oauthClientId(), "CreateCommand");
+        var audits = auditsFor(ev.oauthClientId(), "CreateOAuthClientCommand");
         assertThat(audits).hasSize(1);
         assertThat(audits.getFirst().get("principal_id")).isEqualTo(PRINCIPAL);
     }
@@ -152,10 +152,10 @@ class OAuthClientOperationsTest {
     @Test
     void createRejectsAMissingNameOrInvalidClientType() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateCommand(null, " ", "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, " ", "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_NAME_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateCommand(null, clientName("badtype"), "BOGUS", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, clientName("badtype"), "BOGUS", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "INVALID_CLIENT_TYPE");
     }
 
@@ -164,14 +164,14 @@ class OAuthClientOperationsTest {
         var first = createPublic("dupid");
         var got = reload(first.oauthClientId());
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateCommand(got.clientId(), clientName("dupid2"), "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(got.clientId(), clientName("dupid2"), "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Conflict.class, "CLIENT_ID_EXISTS");
     }
 
     @Test
     void createRejectsThePortalApiAccessCombination() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateCommand(null, clientName("conflict"), "PUBLIC", null, null, null, null, null, null,
+                        new CreateOAuthClientCommand(null, clientName("conflict"), "PUBLIC", null, null, null, null, null, null,
                                 null, null, "cli_portal_owner", true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
     }
@@ -179,7 +179,7 @@ class OAuthClientOperationsTest {
     @Test
     void createFailsWithSecretWhenNoEncryptionIsConfigured() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, Optional.empty(), secretSink()::set),
-                        new CreateCommand(null, clientName("nokey"), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, clientName("nokey"), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Internal.class, "SECRET");
     }
 
@@ -188,7 +188,7 @@ class OAuthClientOperationsTest {
     @Test
     void updateAppliesFieldsAndIsAudited() {
         var seeded = createPublic("update");
-        var ev = runAsAnchor(UpdateOAuthClient.of(repo), new UpdateCommand(seeded.oauthClientId(), "Renamed",
+        var ev = runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(seeded.oauthClientId(), "Renamed",
                 List.of("https://new.example"), null, null, null, null, null, null, null, null));
         assertThat(ev.clientName()).isEqualTo("Renamed");
         assertThat(ev.eventType()).isEqualTo(OAuthClientEvents.UPDATED);
@@ -196,18 +196,18 @@ class OAuthClientOperationsTest {
         var got = reload(seeded.oauthClientId());
         assertThat(got.clientName()).isEqualTo("Renamed");
         assertThat(got.redirectUris()).containsExactly("https://new.example");
-        assertThat(auditsFor(seeded.oauthClientId(), "UpdateCommand")).hasSize(1);
+        assertThat(auditsFor(seeded.oauthClientId(), "UpdateOAuthClientCommand")).hasSize(1);
     }
 
     @Test
     void updateRejectsMissingIdBlankNameOrMissingRow() {
-        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateCommand(
+        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
                         null, "X", null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateCommand(
+        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
                         "oac_doesnotexist1", " ", null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_NAME_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateCommand(
+        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
                         "oac_doesnotexist1", "X", null, null, null, null, null, null, null, null, null)),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
@@ -215,7 +215,7 @@ class OAuthClientOperationsTest {
     @Test
     void updateRejectsThePortalApiAccessCombination() {
         var seeded = createPublic("updconflict");
-        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateCommand(
+        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
                         seeded.oauthClientId(), null, null, null, null, null, null, null, null, "cli_owner", true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
     }
@@ -226,27 +226,27 @@ class OAuthClientOperationsTest {
     void activateAndDeactivateAreIdempotentAndAudited() {
         var seeded = createPublic("lifecycle");
 
-        var deactivated = runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateCommand(seeded.oauthClientId()));
+        var deactivated = runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateOAuthClientCommand(seeded.oauthClientId()));
         assertThat(deactivated.eventType()).isEqualTo(OAuthClientEvents.DEACTIVATED);
         assertThat(reload(seeded.oauthClientId()).active()).isFalse();
 
         // A second deactivate does not error.
-        runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateCommand(seeded.oauthClientId()));
-        assertThat(auditsFor(seeded.oauthClientId(), "DeactivateCommand")).hasSize(2);
+        runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateOAuthClientCommand(seeded.oauthClientId()));
+        assertThat(auditsFor(seeded.oauthClientId(), "DeactivateOAuthClientCommand")).hasSize(2);
 
-        var activated = runAsAnchor(ActivateOAuthClient.of(repo), new ActivateCommand(seeded.oauthClientId()));
+        var activated = runAsAnchor(ActivateOAuthClient.of(repo), new ActivateOAuthClientCommand(seeded.oauthClientId()));
         assertThat(activated.eventType()).isEqualTo(OAuthClientEvents.ACTIVATED);
         assertThat(reload(seeded.oauthClientId()).active()).isTrue();
-        assertThat(auditsFor(seeded.oauthClientId(), "ActivateCommand")).hasSize(1);
+        assertThat(auditsFor(seeded.oauthClientId(), "ActivateOAuthClientCommand")).hasSize(1);
     }
 
     @Test
     void activateAndDeactivateRejectMissingIdOrRow() {
-        assertUseCaseError(() -> runAsAnchor(ActivateOAuthClient.of(repo), new ActivateCommand(" ")),
+        assertUseCaseError(() -> runAsAnchor(ActivateOAuthClient.of(repo), new ActivateOAuthClientCommand(" ")),
                 UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(ActivateOAuthClient.of(repo), new ActivateCommand("oac_doesnotexist1")),
+        assertUseCaseError(() -> runAsAnchor(ActivateOAuthClient.of(repo), new ActivateOAuthClientCommand("oac_doesnotexist1")),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
-        assertUseCaseError(() -> runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateCommand("oac_doesnotexist1")),
+        assertUseCaseError(() -> runAsAnchor(DeactivateOAuthClient.of(repo), new DeactivateOAuthClientCommand("oac_doesnotexist1")),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
 
@@ -255,17 +255,17 @@ class OAuthClientOperationsTest {
     @Test
     void deleteRemovesTheRowAndIsAudited() {
         var seeded = createPublic("delete");
-        var ev = runAsAnchor(DeleteOAuthClient.of(repo), new DeleteCommand(seeded.oauthClientId()));
+        var ev = runAsAnchor(DeleteOAuthClient.of(repo), new DeleteOAuthClientCommand(seeded.oauthClientId()));
         assertThat(ev.oauthClientId()).isEqualTo(seeded.oauthClientId());
         assertThat(repo.findById(seeded.oauthClientId())).as("deleted row must be gone").isEmpty();
-        assertThat(auditsFor(seeded.oauthClientId(), "DeleteCommand")).hasSize(1);
+        assertThat(auditsFor(seeded.oauthClientId(), "DeleteOAuthClientCommand")).hasSize(1);
     }
 
     @Test
     void deleteRejectsMissingIdOrRow() {
-        assertUseCaseError(() -> runAsAnchor(DeleteOAuthClient.of(repo), new DeleteCommand(" ")),
+        assertUseCaseError(() -> runAsAnchor(DeleteOAuthClient.of(repo), new DeleteOAuthClientCommand(" ")),
                 UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(DeleteOAuthClient.of(repo), new DeleteCommand("oac_doesnotexist1")),
+        assertUseCaseError(() -> runAsAnchor(DeleteOAuthClient.of(repo), new DeleteOAuthClientCommand("oac_doesnotexist1")),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
 
@@ -273,7 +273,7 @@ class OAuthClientOperationsTest {
 
     private static OAuthClientCreated createConfidential(String tag) {
         return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                new CreateCommand(null, clientName(tag), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null));
+                new CreateOAuthClientCommand(null, clientName(tag), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null));
     }
 
     @Test
@@ -283,7 +283,7 @@ class OAuthClientOperationsTest {
 
         var secret = secretSink();
         var ev = runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secret::set),
-                new RotateSecretCommand(seeded.oauthClientId(), null));
+                new RotateOAuthClientSecretCommand(seeded.oauthClientId(), null));
         assertThat(ev.eventType()).isEqualTo(OAuthClientEvents.SECRET_ROTATED);
         assertThat(ev.previousSecretExpiresAt()).as("default 24h grace, not an immediate cutover").isNotNull();
         assertThat(secret.get()).isNotBlank();
@@ -291,14 +291,14 @@ class OAuthClientOperationsTest {
         var got = reload(seeded.oauthClientId());
         assertThat(got.secretRef()).as("current secret changed").isNotEqualTo(originalSecretRef);
         assertThat(got.previousSecretRef()).isEqualTo(originalSecretRef);
-        assertThat(auditsFor(seeded.oauthClientId(), "RotateSecretCommand")).hasSize(1);
+        assertThat(auditsFor(seeded.oauthClientId(), "RotateOAuthClientSecretCommand")).hasSize(1);
     }
 
     @Test
     void rotateSecretWithZeroGraceIsAnImmediateCutoverOmittingTheExpiry() {
         var seeded = createConfidential("rotate0");
         var ev = runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secretSink()::set),
-                new RotateSecretCommand(seeded.oauthClientId(), 0L));
+                new RotateOAuthClientSecretCommand(seeded.oauthClientId(), 0L));
         assertThat(ev.previousSecretExpiresAt()).as("graceSeconds:0 keeps nothing").isNull();
         assertThat(reload(seeded.oauthClientId()).previousSecretRef()).isNull();
     }
@@ -307,13 +307,13 @@ class OAuthClientOperationsTest {
     void rotateSecretRejectsANegativeGraceAPublicClientOrAMissingRow() {
         var publicClient = createPublic("rotatepub");
         assertUseCaseError(() -> runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secretSink()::set),
-                        new RotateSecretCommand(publicClient.oauthClientId(), -1L)),
+                        new RotateOAuthClientSecretCommand(publicClient.oauthClientId(), -1L)),
                 UseCaseError.Validation.class, "GRACE_INVALID");
         assertUseCaseError(() -> runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secretSink()::set),
-                        new RotateSecretCommand(publicClient.oauthClientId(), null)),
+                        new RotateOAuthClientSecretCommand(publicClient.oauthClientId(), null)),
                 UseCaseError.Conflict.class, "NOT_CONFIDENTIAL");
         assertUseCaseError(() -> runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secretSink()::set),
-                        new RotateSecretCommand("oac_doesnotexist1", null)),
+                        new RotateOAuthClientSecretCommand("oac_doesnotexist1", null)),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
 
@@ -321,25 +321,25 @@ class OAuthClientOperationsTest {
     void revokePreviousSecretIsIdempotentAndAlwaysAudited() {
         var seeded = createConfidential("revoke");
         runAsAnchor(RotateOAuthClientSecret.of(repo, ENCRYPTION, secretSink()::set),
-                new RotateSecretCommand(seeded.oauthClientId(), null));
+                new RotateOAuthClientSecretCommand(seeded.oauthClientId(), null));
         assertThat(reload(seeded.oauthClientId()).previousSecretRef()).isNotNull();
 
-        var first = runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokePreviousSecretCommand(seeded.oauthClientId()));
+        var first = runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokeOAuthClientPreviousSecretCommand(seeded.oauthClientId()));
         assertThat(first.dropped()).isTrue();
         assertThat(reload(seeded.oauthClientId()).previousSecretRef()).isNull();
 
-        var second = runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokePreviousSecretCommand(seeded.oauthClientId()));
+        var second = runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokeOAuthClientPreviousSecretCommand(seeded.oauthClientId()));
         assertThat(second.dropped()).as("idempotent: nothing left to revoke").isFalse();
 
-        assertThat(auditsFor(seeded.oauthClientId(), "RevokePreviousSecretCommand"))
+        assertThat(auditsFor(seeded.oauthClientId(), "RevokeOAuthClientPreviousSecretCommand"))
                 .as("both calls are audited, whether or not anything changed").hasSize(2);
     }
 
     @Test
     void revokePreviousSecretRejectsMissingIdOrRow() {
-        assertUseCaseError(() -> runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokePreviousSecretCommand(" ")),
+        assertUseCaseError(() -> runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokeOAuthClientPreviousSecretCommand(" ")),
                 UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokePreviousSecretCommand("oac_doesnotexist1")),
+        assertUseCaseError(() -> runAsAnchor(RevokeOAuthClientPreviousSecret.of(repo), new RevokeOAuthClientPreviousSecretCommand("oac_doesnotexist1")),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
 

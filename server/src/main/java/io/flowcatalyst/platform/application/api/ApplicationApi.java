@@ -209,7 +209,7 @@ public final class ApplicationApi {
         String clientType = "CONFIDENTIAL".equals(body.clientType()) ? "CONFIDENTIAL" : "PUBLIC";
 
         var secret = new AtomicReference<String>();
-        var cmd = new io.flowcatalyst.platform.oauthclient.operations.CreateCommand(null, app.name() + " Login", clientType,
+        var cmd = new io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand(null, app.name() + " Login", clientType,
                 body.redirectUris(), null, List.of("authorization_code", "refresh_token"),
                 List.of("openid", "profile", "email"), body.allowedOrigins(), List.of(app.id()), null, null, null, null);
         OAuthClientCreated event = CreateOAuthClient.of(s.oauthClients(), s.encryption(), secret::set)

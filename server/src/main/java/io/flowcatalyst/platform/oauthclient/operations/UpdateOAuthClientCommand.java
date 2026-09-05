@@ -5,7 +5,7 @@ import java.util.List;
 /// `UpdateOAuthClient`'s command (spec §6.3): every field but `id` is
 /// optional — `null` = untouched, matching [io.flowcatalyst.platform.oauthclient.OAuthClient.Changes].
 /// `portalClientId`: `null` = untouched, blank = clear, non-blank = set.
-public record UpdateCommand(
+public record UpdateOAuthClientCommand(
         String id,
         String clientName,
         List<String> redirectUris,

@@ -32,7 +32,7 @@ public final class ParityEnv {
         env.put("FC_ALB_ENABLED", "false");
         env.put("FC_JWT_SIGNING_KEY_PATH", jwtKeyPath.toString());
         env.put("FLOWCATALYST_APP_KEY", appKeyBase64);
-        env.put("FC_WEBAUTHN_RP_ID", "localhost");
+        env.put("FC_WEBAUTHN_RP_ID", "127.0.0.1"); // the sides serve on 127.0.0.1; yubico requires the origin host to match the RP id
         env.put("FC_BOOTSTRAP_ADMIN_EMAIL", adminEmail);
         env.put("FC_BOOTSTRAP_ADMIN_PASSWORD", adminPassword);
         env.put("FLOWCATALYST_BOOTSTRAP_ADMIN_EMAIL", adminEmail);
