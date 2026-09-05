@@ -164,7 +164,11 @@ No YAML, no new dependency; Jackson 3 is already there.
 - **`covers`**: the lockfile `operationId`s the scenario claims. The runner
   checks the claim against what was actually requested (method + path
   template match) and fails the scenario on a false claim; §7 uses it.
-- Cookies: a jar per side, automatic (JDK `CookieManager`). Redirects are
+- Cookies: a jar per side. Not the JDK `CookieManager`: `fc_session` is
+  `Secure` and both sides serve plain loopback HTTP, so the JDK jar drops
+  it on every request after login (RFC 6265, correctly). The harness's own
+  jar carries whatever `Set-Cookie` sends and forgets a cookie set to an
+  empty value — the trusted local client the harness is. Redirects are
   never followed; `Location` is compared after normalisation.
 - Passkeys: the scenario step `"authenticator": "register" | "assert"` tells
   the runner to run the software authenticator (a copy of the server test's
@@ -192,7 +196,10 @@ the report.
 
 1. **Own captured values → `«name»`.** Every string equal to a value this
    side captured is replaced by the capture name, in bodies, headers and
-   `Location`. Ids, tokens, codes and flow ids therefore compare by *role*,
+   `Location`; a captured value of eight characters or more is also
+   replaced where it is *embedded* in a longer string (an id inside an
+   error message, a derived id like `<principalId>-role-0`) — the first
+   run showed both shapes. Ids, tokens, codes and flow ids therefore compare by *role*,
    not by value. A value that *should* have been captured and was not shows
    up as a diff — that is the scenario author's cue, not a normalisation gap.
 2. **Own base URL → `«base»`** (issuer, discovery document, redirect
@@ -209,7 +216,10 @@ the report.
    compared on every step that carries a token; this is where the C-Q1 /
    userinfo class of defect lives, and an opaque `«token»` would hide it.
 5. **Cookie values → `«cookie»`** (rule 4 has already compared the JWT
-   inside, because `fc_session` is captured as a cookie in the login step).
+   inside, because `fc_session` is captured as a cookie in the login step);
+   the attributes are compared as a set (RFC 6265 gives their order no
+   meaning and the two HTTP stacks differ), and an `Expires=` value is
+   `«time»`.
 6. **`unordered`** arrays sorted by their normalised JSON text.
 7. **`ignore`** pointers removed.
 
