@@ -81,6 +81,23 @@ public final class SubscriptionRepository implements Persist<Subscription> {
         return findMany(where);
     }
 
+    /// Every `ACTIVE` subscription, ordered by id — the fan-out subscription
+    /// cache's load (stream spec §3): "every `ACTIVE` `msg_subscriptions` row
+    /// with its `msg_subscription_event_types` patterns (`LEFT JOIN`, so a
+    /// subscription with no patterns is loaded and matches nothing), ordered
+    /// by id". [#bindingsFor] already implements the effective `LEFT JOIN` —
+    /// a subscription with no bindings gets `List.of()`, and
+    /// [Subscription#matchesEventType] on an empty list matches nothing.
+    public List<Subscription> findActiveOrderedById() {
+        var rows = dsl.selectFrom(T).where(T.STATUS.eq(SubscriptionStatus.ACTIVE.name())).orderBy(T.ID.asc()).fetch();
+        if (rows.isEmpty()) return List.of();
+        var ids = rows.getValues(T.ID);
+        var bindings = bindingsFor(ids);
+        var configs = configsFor(ids);
+        return List.copyOf(rows.map(row -> toEntity(row,
+                bindings.getOrDefault(row.getId(), List.of()), configs.getOrDefault(row.getId(), List.of()))));
+    }
+
     private Optional<Subscription> findOne(Condition where) {
         return dsl.selectFrom(T).where(where).fetchOptional().map(row -> {
             var ids = List.of(row.getId());

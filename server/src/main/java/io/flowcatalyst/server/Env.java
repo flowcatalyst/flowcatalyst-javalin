@@ -87,6 +87,12 @@ public record Env(
         boolean streamPartitionsEnabled,
         // `FC_STREAM_BATCH_SIZE`, default 0 (per-projection defaults).
         int streamBatchSize,
+        // `FC_STREAM_FAN_OUT_BATCH_SIZE`, default 0 (falls back to `streamBatchSize`, then 200).
+        int streamFanOutBatchSizeOverride,
+        // `FC_STREAM_EVENTS_BATCH_SIZE`, default 0 (falls back to `streamBatchSize`, then 100).
+        int streamEventsBatchSizeOverride,
+        // `FC_STREAM_DISPATCH_JOBS_BATCH_SIZE`, default 0 (falls back to `streamBatchSize`, then 100).
+        int streamDispatchJobsBatchSizeOverride,
         // `FC_STREAM_FAN_OUT_SUBS_REFRESH_SECS`, default 0 (= 5s).
         int streamFanOutSubsRefreshSecs,
         // `FC_STREAM_PARTITION_MONTHS_FORWARD`, default 0 (= 3).
@@ -271,6 +277,9 @@ public record Env(
                 e.bool("FC_STREAM_FAN_OUT_ENABLED", true),
                 e.boolAlias("FC_STREAM_PARTITION_MANAGER_ENABLED", "FC_STREAM_PARTITIONS_ENABLED", true),
                 e.integer("FC_STREAM_BATCH_SIZE", 0),
+                e.integer("FC_STREAM_FAN_OUT_BATCH_SIZE", 0),
+                e.integer("FC_STREAM_EVENTS_BATCH_SIZE", 0),
+                e.integer("FC_STREAM_DISPATCH_JOBS_BATCH_SIZE", 0),
                 e.integer("FC_STREAM_FAN_OUT_SUBS_REFRESH_SECS", 0),
                 e.integer("FC_STREAM_PARTITION_MONTHS_FORWARD", 0),
                 e.integer("FC_STREAM_PARTITION_RETENTION_DAYS", 0),
