@@ -6,6 +6,10 @@ import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.database.Migrator;
 import io.flowcatalyst.server.Server.Mode;
 import io.flowcatalyst.server.Server.Spa;
+import io.flowcatalyst.server.dbsecret.DbSecretDsn;
+import io.flowcatalyst.server.dbsecret.DbSecretFetcher;
+import io.flowcatalyst.server.dbsecret.DbSecretMode;
+import io.flowcatalyst.server.dbsecret.DbSecretRefresher;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,11 +37,45 @@ public final class Main {
                 || env.scheduledJobEnabled() || env.outboxEnabled();
 
         HikariDataSource pool = null;
+        DbSecretRefresher dbSecretRefresher = null;
         Mode mode;
         if (needsDb) {
-            // TODO(port): AWS Secrets Manager DB mode (DB_SECRET_ARN + DB_HOST) and credential rotation.
-            pool = Database.newPool(env.databaseUrl(), Math.max(4, Runtime.getRuntime().availableProcessors()));
+            // AWS Secrets Manager DB mode (docs/spec/db-secret.md): when DB_SECRET_ARN +
+            // DB_HOST are set (and no explicit FC_DATABASE_URL/DATABASE_URL), resolve the
+            // connection from the secret instead of env.databaseUrl(), and start a
+            // refresher that pushes rotated credentials into new pool connections.
+            // A failure here (bad provider, unreachable/malformed secret) is fatal —
+            // exit before any subsystem starts, exactly as the failed-startup path below.
+            var databaseUrl = env.databaseUrl();
+            DbSecretMode.Applicable secretMode = null;
+            try {
+                if (DbSecretMode.resolve(EnvReader.system()) instanceof DbSecretMode.Applicable applicable) {
+                    secretMode = applicable;
+                    var creds = DbSecretFetcher.fetch(DbSecretFetcher.aws(applicable.arn()), applicable.arn());
+                    databaseUrl = DbSecretDsn.build(creds.username(), creds.password(), applicable.host(),
+                            creds.port(), applicable.dbPort(), applicable.dbName());
+                    LOG.info("resolved database URL from AWS Secrets Manager");
+                }
+            } catch (RuntimeException e) {
+                LOG.error("resolve DB secret failed", e);
+                System.exit(1);
+                return;
+            }
+
+            pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
             LOG.info("postgres connected");
+
+            if (secretMode != null) {
+                try {
+                    dbSecretRefresher = DbSecretRefresher.start(pool, DbSecretFetcher.aws(secretMode.arn()),
+                            secretMode.arn(), secretMode.refreshIntervalMs());
+                } catch (RuntimeException e) {
+                    LOG.error("DB secret refresher init failed", e);
+                    System.exit(1);
+                    return;
+                }
+            }
+
             Migrator.migrate(pool);
             LOG.info("migrations applied");
             new Seeder(pool).run();
@@ -61,9 +99,11 @@ public final class Main {
         var running = new Server(env, mode, spa, PrometheusRegistry.defaultRegistry).start();
 
         HikariDataSource poolToClose = pool;
+        DbSecretRefresher dbSecretRefresherToClose = dbSecretRefresher;
         Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("shutdown").unstarted(() -> {
             LOG.info("shutdown signal received");
             running.stop();
+            if (dbSecretRefresherToClose != null) dbSecretRefresherToClose.close();
             if (poolToClose != null) poolToClose.close();
         }));
         running.awaitStop();

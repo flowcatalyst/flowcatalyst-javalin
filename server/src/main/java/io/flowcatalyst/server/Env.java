@@ -416,7 +416,9 @@ public record Env(
     /// Go's `url.QueryEscape`: unreserved `A-Z a-z 0-9 - _ . ~` pass through,
     /// space becomes `+`, everything else is `%XX` (upper-case hex) over UTF-8.
     /// (`java.net.URLEncoder` differs on `*` and `~`, hence the hand-rolled one.)
-    static String queryEscape(String s) {
+    /// Public: [io.flowcatalyst.server.dbsecret.DbSecretDsn] reuses it for the
+    /// same password-in-a-DSN escaping rule.
+    public static String queryEscape(String s) {
         var sb = new StringBuilder(s.length() + 8);
         for (var b : s.getBytes(StandardCharsets.UTF_8)) {
             var c = (char) (b & 0xFF);

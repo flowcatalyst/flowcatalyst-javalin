@@ -119,6 +119,18 @@
       </exclusions>
     </dependency>
     <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>secretsmanager</artifactId>
+      <exclusions>
+        <!-- Only the sync clients are used (apache5-client); the async Netty client and
+             its 3 MB of Netty were dead weight in both the jar and the native image. -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
       <groupId>io.nats</groupId>
       <artifactId>jnats</artifactId>
     </dependency>
