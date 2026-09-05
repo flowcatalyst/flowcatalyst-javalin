@@ -254,8 +254,10 @@ exactly).
 
 **`parity/expected-diffs.json`** is the allow-list:
 `{"scenario": "…", "step": "…", "pointer": "…", "reason": "…", "ruling": "A-22 | backlog#… | owner 2026-…"}`.
-`scenario` and `step` may be `"*"`, and `pointer` may start with `**/` to
-match a trailing segment at any depth (`**/$schema` matches `/$schema` and
+`scenario` and `step` may be `"*"`, `scenario` may end in `*` to match a
+name prefix (`"audit-logs*"`), `pointer` may start with `**/` to match a
+trailing segment at any depth or end in `/**` to match everything below a
+prefix (`**/$schema` matches `/$schema` and
 `/items/3/$schema`) — for a difference that is systemic, one entry with one
 reason, not one per step. A diff matching an entry is `ACCEPTED`. An entry
 that matched nothing in the run (wildcard entries included) is **stale and

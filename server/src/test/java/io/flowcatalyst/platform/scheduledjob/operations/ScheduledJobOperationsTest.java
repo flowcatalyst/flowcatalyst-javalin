@@ -241,7 +241,7 @@ class ScheduledJobOperationsTest {
 
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateScheduledJob.of(repo).run(uow,
                         createCommand(code("scope-platform"), null), clientEc)),
-                UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
+                UseCaseError.Authorization.class, "FORBIDDEN"); // Go's own code for the platform-scoped refusal
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateScheduledJob.of(repo).run(uow,
                         createCommand(code("scope-other"), "cli_" + RUN + "_so"), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");

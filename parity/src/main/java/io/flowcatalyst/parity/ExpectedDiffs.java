@@ -64,7 +64,8 @@ public final class ExpectedDiffs {
     }
 
     private static boolean matches(ExpectedDiff e, String scenario, String step, String pointer) {
-        boolean scenarioOk = "*".equals(e.scenario()) || e.scenario().equals(scenario);
+        boolean scenarioOk = "*".equals(e.scenario()) || e.scenario().equals(scenario)
+                || (e.scenario().endsWith("*") && scenario.startsWith(e.scenario().substring(0, e.scenario().length() - 1)));
         boolean stepOk = "*".equals(e.step()) || e.step().equals(step);
         boolean pointerOk;
         if (e.pointer().startsWith("**/")) {

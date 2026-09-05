@@ -27,7 +27,14 @@ public final class CreateScheduledJob {
                 // The target client is a command field, so the per-resource check
                 // can run before execute: a client-bound create needs access to that
                 // client; a platform-scoped (null clientId) create needs anchor.
-                .authorize(cmd -> Checks.checkScopeAccess(Auth.current(), cmd.clientId()))
+                .authorize(cmd -> {
+                    if (cmd.clientId() == null && Auth.current() != null && !Auth.current().isAnchor()) {
+                        // Go's own wording and code for this one refusal (ops.go): the parity
+                        // harness (S1-C) found Java answering the generic SCOPE_FORBIDDEN here.
+                        throw UseCaseException.authorization("FORBIDDEN", "Only anchor users can create platform-scoped jobs");
+                    }
+                    Checks.checkScopeAccess(Auth.current(), cmd.clientId());
+                })
                 .execute((cmd, ec) -> {
                     ScheduledJobCode code = ScheduledJobCode.parse(cmd.code());
                     if (repo.findByCode(code.value(), cmd.clientId()).isPresent()) {

@@ -317,7 +317,7 @@ class ScheduledJobApiTest {
         assertThat(json(scoped).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
         // Creating a platform-scoped job as a client writer is refused; in its own client it works.
         assertThat(json(http.post("/api/scheduled-jobs", "{\"code\":\"" + code("gate3") + "\",\"name\":\"X\",\"crons\":[\"0 0 * * * *\"],\"concurrent\":false,\"tracksCompletion\":false}", CLIENT_WRITER))
-                .get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+                .get("error").asText()).isEqualTo("FORBIDDEN") /* Go's own code for the platform-scoped refusal */;
         create(code("gate4"), ",\"clientId\":\"" + CLIENT + "\"", CLIENT_WRITER);
     }
 

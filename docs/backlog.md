@@ -659,3 +659,9 @@ later decision.
 - **`rememberDeviceAllowed` on the gated login response (parity S2).** Java
   adds it under I-Q11 so the SPA can hide the remember-device checkbox when
   the domain forbids it; Go emits nothing. Deliberate; Go-mirror candidate.
+- **Batch ingest with one invalid item (parity S1-C).** Java rejects the
+  whole batch (`IngestApiTest`); Go writes the valid items and reports
+  `SUCCESS` for the invalid one. Go defect; Java kept; allow-listed.
+- **Audit-log `principalId` default (parity S1-C).** Java defaults an absent
+  `principalId` to the caller; Go stores NULL, so Go's by-principal filter
+  misses those rows. Go defect; Java kept; allow-listed.

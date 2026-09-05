@@ -60,7 +60,8 @@ public final class AuthAdminConfigApi {
 
     /// The handlers' dependencies.
     public record State(AnchorDomainRepository anchorDomainRepo, ClientAuthConfigRepository authConfigRepo,
-                        IdpRoleMappingRepository idpRoleMappingRepo, UnitOfWork uow) {
+                        IdpRoleMappingRepository idpRoleMappingRepo, UnitOfWork uow,
+                        io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption secrets) {
         public State {
             Objects.requireNonNull(anchorDomainRepo, "anchorDomainRepo");
             Objects.requireNonNull(authConfigRepo, "authConfigRepo");
@@ -122,14 +123,14 @@ public final class AuthAdminConfigApi {
 
     private static void createAuthConfig(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        var cmd = ctx.bodyAsClass(CreateAuthConfigRequest.class).toCommand();
+        var cmd = ctx.bodyAsClass(CreateAuthConfigRequest.class).toCommand(s.secrets());
         var event = CreateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.authConfigId()));
     }
 
     private static void updateAuthConfig(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        var cmd = ctx.bodyAsClass(UpdateAuthConfigRequest.class).toCommand(ctx.pathParam("id"));
+        var cmd = ctx.bodyAsClass(UpdateAuthConfigRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
@@ -195,9 +196,14 @@ public final class AuthAdminConfigApi {
                                           List<String> additionalClientIds, List<String> grantedClientIds,
                                           String authProvider, String oidcIssuerUrl, String oidcClientId,
                                           boolean oidcMultiTenant, String oidcIssuerPattern, String oidcClientSecretRef) {
-        public CreateAuthConfigCommand toCommand() {
+        /// `oidcClientSecretRef` is sealed before the command exists (the same
+        /// at-rest policy as the identity-provider API, `identityprovider.md` §5):
+        /// Go encrypts it in the handler too (`auth/api/api.go encryptOIDCSecretRef`);
+        /// the parity harness (S1-A) found Java storing it verbatim.
+        public CreateAuthConfigCommand toCommand(io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption secrets) {
             return new CreateAuthConfigCommand(emailDomain, configType, primaryClientId, additionalClientIds,
-                    grantedClientIds, authProvider, oidcIssuerUrl, oidcClientId, oidcMultiTenant, oidcIssuerPattern, oidcClientSecretRef);
+                    grantedClientIds, authProvider, oidcIssuerUrl, oidcClientId, oidcMultiTenant, oidcIssuerPattern,
+                    secrets.atRest(oidcClientSecretRef));
         }
     }
 
@@ -206,9 +212,9 @@ public final class AuthAdminConfigApi {
                                           List<String> grantedClientIds, String authProvider, String oidcIssuerUrl,
                                           String oidcClientId, Boolean oidcMultiTenant, String oidcIssuerPattern,
                                           String oidcClientSecretRef) {
-        public UpdateAuthConfigCommand toCommand(String id) {
+        public UpdateAuthConfigCommand toCommand(String id, io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption secrets) {
             return new UpdateAuthConfigCommand(id, primaryClientId, additionalClientIds, grantedClientIds, authProvider,
-                    oidcIssuerUrl, oidcClientId, oidcMultiTenant, oidcIssuerPattern, oidcClientSecretRef);
+                    oidcIssuerUrl, oidcClientId, oidcMultiTenant, oidcIssuerPattern, secrets.atRest(oidcClientSecretRef));
         }
     }
 

@@ -138,5 +138,187 @@
     "pointer": "/message",
     "reason": "same step",
     "ruling": "auth-admin-config.md section 8 D2"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/status",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/error",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/message",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+    "pointer": "/status",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+    "pointer": "/error",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+    "pointer": "/message",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+    "pointer": "/status",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+    "pointer": "/error",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+    "pointer": "/message",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/status",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/error",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/message",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/status",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/error",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+    "pointer": "/message",
+    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+  },
+  {
+    "scenario": "scheduled-jobs*",
+    "step": "create-cron-invalid-shape",
+    "pointer": "/status",
+    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+    "ruling": "scheduledjob.md section 3"
+  },
+  {
+    "scenario": "scheduled-jobs*",
+    "step": "create-cron-invalid-shape",
+    "pointer": "/error",
+    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+    "ruling": "scheduledjob.md section 3"
+  },
+  {
+    "scenario": "scheduled-jobs*",
+    "step": "create-cron-invalid-shape",
+    "pointer": "/id",
+    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+    "ruling": "scheduledjob.md section 3"
+  },
+  {
+    "scenario": "scheduled-jobs*",
+    "step": "create-cron-invalid-shape",
+    "pointer": "/message",
+    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+    "ruling": "scheduledjob.md section 3"
+  },
+  {
+    "scenario": "events*",
+    "step": "batch-one-bad-item-rejects-the-whole-batch",
+    "pointer": "/status",
+    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
+    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "events*",
+    "step": "batch-one-bad-item-rejects-the-whole-batch",
+    "pointer": "/error",
+    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
+    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "events*",
+    "step": "batch-one-bad-item-rejects-the-whole-batch",
+    "pointer": "/message",
+    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
+    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "events*",
+    "step": "batch-one-bad-item-rejects-the-whole-batch",
+    "pointer": "/results",
+    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
+    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "audit-logs*",
+    "step": "*",
+    "pointer": "**/principalId",
+    "reason": "Java's ingest defaults an absent principalId to the caller (IngestApiTest pins it); Go leaves the column NULL",
+    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "audit-logs*",
+    "step": "*",
+    "pointer": "**/principalName",
+    "reason": "same as principalId",
+    "ruling": "sdk-ingest.md \u2014 Go defect"
+  },
+  {
+    "scenario": "audit-logs*",
+    "step": "by-principal-defaulted-to-caller",
+    "pointer": "/auditLogs/**",
+    "reason": "the by-principal filter finds every row Java attributed to the caller; Go finds only the one seeded with an explicit principalId",
+    "ruling": "sdk-ingest.md \u2014 Go defect"
   }
 ]

@@ -48,9 +48,12 @@ class AuthAdminConfigApiTest {
                     + "platform:iam:auth-config:view,platform:iam:auth-config:manage,"
                     + "platform:iam:idp-role-mapping:view,platform:iam:idp-role-mapping:manage"};
 
+    private static final io.flowcatalyst.platform.shared.encryption.Encryption ENCRYPTION =
+            io.flowcatalyst.platform.shared.encryption.Encryption.withKey(io.flowcatalyst.platform.shared.encryption.Encryption.generateKey());
     private static final AuthAdminConfigApi.State state = new AuthAdminConfigApi.State(
             new AnchorDomainRepository(TestPg.dataSource()), new ClientAuthConfigRepository(TestPg.dataSource()),
-            new IdpRoleMappingRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            new IdpRoleMappingRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)),
+            io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption.of(java.util.Optional.of(ENCRYPTION)));
     private static TestHttp http;
 
     @BeforeAll
@@ -113,6 +116,23 @@ class AuthAdminConfigApiTest {
         String id = json(r).get("id").asText();
         assertThat(id).startsWith("irm_");
         return id;
+    }
+
+    /// The OIDC client secret ref is sealed before the command is built — the
+    /// same at-rest policy as the identity-provider API; Go encrypts it in the
+    /// handler too. The parity harness (S1-A) found Java storing it verbatim.
+    @Test
+    void oidcClientSecretRefIsSealedAtRest() {
+        var r = http.post("/api/auth-configs", "{\"emailDomain\":\"sealed-" + RUN + ".example.com\",\"configType\":\"ANCHOR\","
+                + "\"authProvider\":\"OIDC\",\"oidcIssuerUrl\":\"https://idp.example.com\",\"oidcClientId\":\"cid\","
+                + "\"oidcMultiTenant\":false,\"oidcClientSecretRef\":\"plain-secret-" + RUN + "\"}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("id").asText();
+        String stored = state.authConfigRepo().findById(id).orElseThrow().oidcClientSecretRef();
+        assertThat(stored).startsWith("encrypted:");
+        assertThat(ENCRYPTION.decrypt(stored)).isInstanceOf(io.flowcatalyst.platform.shared.encryption.Decryption.Plaintext.class);
+        assertThat(((io.flowcatalyst.platform.shared.encryption.Decryption.Plaintext) ENCRYPTION.decrypt(stored)).value())
+                .isEqualTo("plain-secret-" + RUN);
     }
 
     // ── Anchor domains ───────────────────────────────────────────────────────

@@ -130,4 +130,14 @@ class ExpectedDiffsTest {
         assertThat(e.accepts("any", "s", "/entriesX")).isFalse();
         assertThat(e.stale()).isEmpty();
     }
+
+    /// `"scenario": "audit-logs*"` scopes an entry to every scenario whose name starts that way.
+    @Test
+    void aScenarioPrefixScopesAnEntry() throws Exception {
+        java.nio.file.Path f = java.nio.file.Files.createTempFile("expected", ".json");
+        java.nio.file.Files.writeString(f, "[{\"scenario\":\"audit-logs*\",\"step\":\"*\",\"pointer\":\"**/principalId\",\"reason\":\"r\",\"ruling\":\"x\"}]");
+        ExpectedDiffs e = ExpectedDiffs.load(f);
+        assertThat(e.accepts("audit-logs: cursor paging", "get", "/auditLogs/0/principalId")).isTrue();
+        assertThat(e.accepts("principals: CRUD", "get", "/principalId")).isFalse();
+    }
 }
