@@ -51,6 +51,21 @@ finding. §9 says how each finding is closed.
   only the platform enabled, waits for `GET /health` = 200 (Go migrates and
   seeds *before* it listens, `cmd/fc-server/main.go`), and stops it. `seed`
   now holds exactly what a Go deployment holds on day one.
+
+  *Amendment 2026-09-05 (found by the first run):* Go HEAD `cb83fd5` cannot
+  bootstrap a fresh database at all — its seeder writes `schema_type =
+  'JSON'` against the CHECK its own migration 051 added (`docs/backlog.md`,
+  Go defect on record). `fcdev init` therefore fails at the first
+  event-type spec version, after migrations, the platform application and
+  the roles. The harness recognises exactly that failure (SQLSTATE 23514 on
+  `chk_msg_event_type_spec_versions_schema_type`), fills the catalogue with
+  the **Java** seeder (idempotent over Go's rows, `JSON_SCHEMA` per the
+  seeder spec's ruling; no Flyway — the schema stays goose's), and runs
+  `fcdev init` again, which now skips every event type and creates the
+  admin. Any other init failure is still a hard stop. `seed` is Go-created
+  in every row but the spec versions, and the run log says which path was
+  taken. When Go fixes its seeder the first init succeeds and the
+  workaround is never entered.
 - **Two clones** by `CREATE DATABASE parity_go TEMPLATE seed` (and
   `parity_java`). Postgres template copies are byte-identical, so every
   seeded id and timestamp is the same on both sides — which is what lets the
