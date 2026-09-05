@@ -10,6 +10,11 @@ public interface MailSender {
 
     void send(String to, String subject, String html);
 
+    /// The real transport behind the seam.
+    static MailSender of(io.flowcatalyst.platform.mail.MailService mail) {
+        return (to, subject, html) -> mail.send(new io.flowcatalyst.platform.mail.Mail(to, subject, html));
+    }
+
     /// Go's `LogService`: the development transport that logs the message
     /// body — the PIN included — instead of sending it. Never for
     /// production; the SMTP transport lands with the mail unit.
