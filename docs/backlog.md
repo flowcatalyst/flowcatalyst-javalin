@@ -301,6 +301,18 @@ Rulings that change behaviour relative to Go HEAD, with the Go site. `docs/auth-
 | I-Q11 | Remember-device: only for internally managed identities, structurally absent for external-IdP domains, default off, on by explicit domain policy, audit rows for the policy change and each enrolment/revocation; a store error never enables it | `login/twofactor.go:89` (`rememberAllowed := mapping != nil && mapping.RememberDeviceEnabled`) + the domain-mapping default for `RememberDeviceEnabled` |
 | I-Q12 | `/auth/2fa/verify` enforces the domain's `Allowed2FAMethods` (was enrolment-only) | `login/twofactor*.go` verify path; `mapping.Allowed2FAMethods` |
 
+### Batch B additions (2026-09-05)
+
+| Ruling | Go change | Go site |
+|---|---|---|
+| I-Q1 | Refresh the cached OIDC client when the IdP row changes (invalidate on update + TTL) | `internal/platform/auth/bridge/oidc.go` provider cache |
+| I-Q3 | `OIDC_VERIFY`: fixed message to the browser, library error text to the log | `bridge/login_endpoint.go` callback verify branch |
+| I-Q6 | Refuse a CLIENT/PARTNER email-domain mapping without `primaryClientId` at create/update | `emaildomainmapping` operations |
+| I-Q9 / C-Q29 | `GET /auth/check-domain`: omit `authorizationUrl` instead of fabricating `issuer + "/authorize"` | auth-identity.md §4.10 site |
+| I-Q10 | Consume the portal login flow at the callback sink, not at SSO start | `portal` SSO start/callback (auth-identity.md §5.6) |
+| I-Q16 | Fallback brand `FlowCatalyst` | `notify/notify.go:43` |
+| I-Q22 | System actor `"system"` everywhere (JIT, role sync currently write `""`) | `bridge/login_endpoint.go:661,687,803` |
+
 Backlog-only (no Go change now): C-Q18 wire rate-limit policies + callers for introspect, revoke and check-domain; C-Q28 access-token denylist (cache first, table fallback). Not deviations: C-Q1 — Go already emits the real login time (`authservice.go:511`); the Java port follows.
 
 ## Owner questions collected from specs

@@ -90,6 +90,24 @@ Already ruled before this session and therefore not re-asked: C-Q5 (A-14), C-Q6 
 | I-Q22 / defect 12 | Unify the system actor spelling in `aud_logs` | **`"system"`** | two spellings break audit queries | keep |
 | defects 2, 3, 4 | Dead code in `LoginStateRepo`, unreachable `IDP_NOT_EXTERNAL`, dead finders after atomic consume | not ported | dead code is not behaviour | — |
 
+
+## Rulings — Batch B (owner, 2026-09-05, asked one by one)
+
+C-Q29 is ruled with I-Q9. Defects 2, 3 and 4 are dead code and are simply not ported (no question).
+
+- **I-Q1** — RULED 2026-09-05: yes — refresh the cached OIDC client when the identity-provider row changes (same-node invalidation + bounded TTL, the CORS allowlist pattern).
+- **I-Q2** — RULED: keep the empty-string storage marker; sealed mode in memory only.
+- **I-Q3** — RULED: fixed `OIDC_VERIFY` message; cause logged with the correlation id.
+- **I-Q4** — RULED: keep — a provider-direct IdP is an external directory whose admins already decide who exists; documented.
+- **I-Q6** — RULED: refuse a CLIENT/PARTNER mapping without `primaryClientId` at creation (authadmin); JIT keeps the check as a defence.
+- **I-Q7** — RULED: keep `/auth/oidc/login?provider_id=` for employee-plane (dashboard) users — the entry the I-Q4 case depends on.
+- **I-Q8** — RULED: keep — all-dangling `allowedRoleIds` rejects all roles (fail closed).
+- **I-Q9** — RULED (with C-Q29): keep the `check-domain` shape, **omit `authorizationUrl`** when it is not actually known (never fabricate `issuer + "/authorize"`).
+- **I-Q10** — RULED: consume the portal flow at the callback sink, like the password path (an IdP failure leaves it retryable within its TTL).
+- **I-Q16** — RULED: fallback brand `FlowCatalyst` (Go: `Flowcatalyst`, `notify/notify.go:43`).
+- **I-Q18** — RULED: keep 15 min portal flow / 10 min OIDC state.
+- **I-Q22** — RULED: unify the system actor on `"system"` for new rows; existing rows untouched.
+
 ## Batch C — passkeys, MFA details, password reset and approvals
 
 | # | Question | Recommend | Why | Unanswered ⇒ |
