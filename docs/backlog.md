@@ -685,3 +685,8 @@ later decision.
 - **Send-email-code with no factor (parity S3).** Go answers `NO_EMAIL_2FA`
   for a principal with no factor at all; Java `NO_MFA` first. Go accident;
   allow-listed; Go-mirror candidate.
+- **Platform-scoped scheduled jobs for a client-scoped caller (parity S3).**
+  Java's shared visibility rule lists `client_id IS NULL` rows to every
+  caller; Go's BFF scheduled-job list hides them from a client-scoped one
+  (while, in the same list, showing another client's job — the leak above).
+  Owner: are platform-scoped jobs visible to client users? Allow-listed.

@@ -93,7 +93,7 @@ spec), except `sync-platform` which is anchor-only.
 | Route | Backing (`docs/spec/role.md`) | Notes |
 |---|---|---|
 | `GET /bff/roles?application&source` | `findAll`, filtered | `{items, total}` |
-| `GET /bff/roles/filters/applications` | distinct application codes of the roles | `{options:[{id, code, name}]}` |
+| `GET /bff/roles/filters/applications` | **every active application** (Go `shared/bff/roles.go filterApplications`: `Applications.FindWithFilters(nil, active)` — not the roles' codes; corrected 2026-09-06 after the parity harness, S3) | `{options:[{id, code, name}]}` |
 | `GET /bff/roles/permissions?application` | **catalogue = the seeded platform permissions ∪ `iam_permissions` rows** (`PermissionRepository.findAll`), filtered by application, deduplicated by code | `{items, total}` |
 | `POST /bff/roles/permissions` `{application, context, aggregate, action, description?}` | anchor-only; `PermissionRepository.upsert` of `app:context:aggregate:action` | 201 |
 | `GET /bff/roles/permissions/{permission}` | one catalogue entry | 404 |

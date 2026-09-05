@@ -198,13 +198,27 @@ class RolesBffTest {
 
     // ── Filters/applications ─────────────────────────────────────────────
 
+    /// Go lists every active application here, not the roles' codes (bff.md,
+    /// corrected after the parity harness): a role for a code with no
+    /// application row does not appear; the seeded platform application does.
     @Test
-    void filterApplicationsListsDistinctRoleApplicationCodes() {
+    void filterApplicationsListsEveryActiveApplication() {
         String app = "rbfffa" + RUN;
         http.post("/bff/roles", "{\"applicationCode\":\"" + app + "\",\"roleName\":\"z\",\"displayName\":\"Z\"}", ANCHOR);
+        String active = "rbffact" + RUN;
+        String inactive = "rbffina" + RUN;
+        state.uow().inTransaction(tx -> {
+            state.applications().persist(io.flowcatalyst.platform.application.Application.create(
+                    io.flowcatalyst.platform.application.ApplicationType.APPLICATION, active, "Active " + RUN), tx.dbTx());
+            state.applications().persist(io.flowcatalyst.platform.application.Application.create(
+                    io.flowcatalyst.platform.application.ApplicationType.APPLICATION, inactive, "Inactive " + RUN).deactivate(), tx.dbTx());
+            return null;
+        });
         var body = json(http.get("/bff/roles/filters/applications", ANCHOR));
         assertThat(body.propertyNames()).containsExactly("options");
         var codes = body.get("options").findValuesAsString("code");
-        assertThat(codes).contains(app);
+        assertThat(codes).as("a role's code without an application row is not an application").doesNotContain(app);
+        assertThat(codes).as("an active application row is listed").contains(active);
+        assertThat(codes).as("an inactive one is not").doesNotContain(inactive);
     }
 }

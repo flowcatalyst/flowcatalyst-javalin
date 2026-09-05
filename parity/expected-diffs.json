@@ -551,5 +551,12 @@
     "pointer": "/message",
     "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
     "ruling": "PR-3 class (bff.md section 8)"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-scheduled-job-list-scoped-to-own-client",
+    "pointer": "/data/**",
+    "reason": "a platform-scoped job (client_id NULL) is listed to a client-scoped caller by Java's shared visibility rule (VisibilitySql: NULL rows fall through) and hidden by Go's BFF; every other aggregate's confinement matched Go",
+    "ruling": "owner? docs/backlog.md \u2014 which rule for platform-scoped scheduled jobs"
   }
 ]

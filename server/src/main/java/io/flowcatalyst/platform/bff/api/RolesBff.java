@@ -24,6 +24,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -121,12 +122,14 @@ public final class RolesBff {
         ctx.status(204);
     }
 
+    /// Every **active** application, not the roles' codes — Go's
+    /// `shared/bff/roles.go filterApplications` (the roles' codes are the
+    /// `/api/roles/filters/applications` route). Found by the parity harness (S3).
     private static void filterApplications(Context ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
-        List<ApplicationOption> options = s.roles().applicationCodes().stream()
-                .map(code -> s.applications().findByCode(code)
-                        .map(a -> new ApplicationOption(a.id(), a.code(), a.name()))
-                        .orElseGet(() -> new ApplicationOption(code, code, code)))
+        List<ApplicationOption> options = s.applications()
+                .findWithFilters(new ApplicationRepository.ListFilter(null, true)).stream()
+                .map(a -> new ApplicationOption(a.id(), a.code(), a.name()))
                 .toList();
         ctx.json(new ApplicationOptionsResponse(options));
     }
@@ -185,18 +188,62 @@ public final class RolesBff {
     /// [io.flowcatalyst.platform.shared.auth.Permission] constant, then every
     /// `iam_permissions` row not already present, filtered to `application`
     /// (the code's first segment) when given.
+    /// Go's `permissionCatalog` (`shared/bff/roles.go`), in its order and with
+    /// its precedence: for `application=platform` the built-in set; for no
+    /// filter the built-ins then every permission granted on a non-platform
+    /// role (deduplicated, sorted by code); for an application its roles'
+    /// permissions only. The persistent catalogue (`iam_permissions`) is merged
+    /// last, so a code already present keeps the earlier entry (and its lack of
+    /// description). No global sort. The parity harness (S3) found Java listing
+    /// only the seeded set and the catalogue, never the role-granted codes.
     private static List<Permission> catalogue(State s, String application) {
-        Map<String, Permission> byCode = new LinkedHashMap<>();
-        for (var seeded : io.flowcatalyst.platform.shared.auth.Permission.values()) {
-            byCode.put(seeded.code(), Permission.define(seeded.code(), null));
+        List<Permission> base = new ArrayList<>();
+        if ("platform".equals(application)) {
+            base.addAll(builtin());
+        } else if (application == null || application.isEmpty()) {
+            base.addAll(builtin());
+            base.addAll(roleDerived(s, null));
+        } else {
+            base.addAll(roleDerived(s, application));
         }
-        for (Permission stored : s.permissions().findAll()) {
-            byCode.putIfAbsent(stored.code(), stored);
-        }
-        return byCode.values().stream()
-                .filter(p -> application == null || application.equals(p.subdomain()))
-                .sorted(Comparator.comparing(Permission::code))
+        List<Permission> catalog = s.permissions().findAll().stream()
+                .filter(p -> application == null || application.isEmpty() || application.equals(p.subdomain()))
                 .toList();
+        Map<String, Permission> merged = new LinkedHashMap<>();
+        for (Permission p : base) merged.putIfAbsent(p.code(), p);
+        for (Permission p : catalog) merged.putIfAbsent(p.code(), p);
+        return List.copyOf(merged.values());
+    }
+
+    private static List<Permission> builtin() {
+        List<Permission> out = new ArrayList<>();
+        for (var seeded : io.flowcatalyst.platform.shared.auth.Permission.values()) {
+            out.add(Permission.define(seeded.code(), null));
+        }
+        return out;
+    }
+
+    /// The distinct, well-formed permission codes granted on roles — every
+    /// non-platform role, or the named application's — sorted by code.
+    private static List<Permission> roleDerived(State s, String application) {
+        Map<String, Permission> seen = new java.util.TreeMap<>();
+        for (Role role : s.roles().findAll()) {
+            String code = role.applicationCode();
+            if ("platform".equals(code)) continue;
+            if (application != null && !application.equals(code)) continue;
+            for (String granted : role.permissions()) {
+                if (seen.containsKey(granted)) continue;
+                Permission p;
+                try {
+                    p = Permission.define(granted, null);
+                } catch (RuntimeException notWellFormed) {
+                    continue;
+                }
+                if (application != null && !application.equals(p.subdomain())) continue;
+                seen.put(granted, p);
+            }
+        }
+        return List.copyOf(seen.values());
     }
 
     // ── Wire DTOs (SPA shape, bff spec §6) ──────────────────────────────────

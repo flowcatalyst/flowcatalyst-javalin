@@ -431,7 +431,8 @@
       },
       "unordered": [
         "/options"
-      ]
+      ],
+      "why": "every active application; Go lists them in no declared order"
     },
     {
       "id": "bff-list-permissions",
