@@ -88,7 +88,8 @@ Sonnet ports, three at a time, in this order; I audit each before its commit.
    and the mint's audit row wait for the auth aggregate (`backlog.md`).
 2. ~~`anchor-domains`, `auth-configs`, `idp-role-mappings`~~ **Done
    2026-09-05 (`9a4e6fc`, spec `auth-admin-config.md`; coverage 203).**
-3. **SDK ingest batch endpoints** — `/api/events`, `/api/events/batch`,
+3. ~~SDK ingest batch endpoints~~ **Done 2026-09-05 (spec `sdk-ingest.md`;
+   coverage 208).** Was: `/api/events`, `/api/events/batch`,
    `/api/dispatch-jobs/batch`, `/api/audit-logs/batch`. *I write this spec*:
    partial-failure semantics, idempotency on TSIDs, per-item error shape,
    the outbox seam. Sonnet implements; the batch-atomicity tests are mine.
@@ -102,8 +103,8 @@ Each is a poll loop with one transaction boundary that matters. Spec by me
 (behaviour tables, never code), loop skeleton + claim/commit/publish
 transaction by me, everything around it by Sonnet.
 
-1. **Stream processor** (1,305 Go lines) — `FC_STREAM_PROCESSOR_ENABLED` is
-   already an `Env` toggle wired to nothing.
+1. **Stream processor** (1,305 Go lines) — spec `docs/spec/stream.md`
+   written 2026-09-05; port in flight.
 2. **Outbox processor** (1,463) — Postgres backend only. **Owner ruling
    2026-09-05: the Mongo backend is out of the port, on the backlog.**
 3. **Scheduled-job scheduler** + **purger** — `scheduledjob.md` exists;

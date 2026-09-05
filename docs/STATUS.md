@@ -22,11 +22,12 @@ in its worktree; main's full suite is re-run after each merge.
 | `22bbffc` | **X-06 strict stored-enum reads across twelve modules** | Sonnet sweep + orchestrator merge fix-up (CHECK constraints landed underneath it). `AttemptOutcome` no longer reads a corrupt row as a login SUCCESS; `ScopeType` no longer defaults to ANCHOR. Shared `CorruptRowException` → 500 `CORRUPT_ROW` |
 | `9a4e6fc` | **authadmin**: anchor domains, client auth configs, IdP role mappings (11 ops) | spec `auth-admin-config.md` by orchestrator; Sonnet port; coverage **203/245** |
 | `(merge)` | **serviceaccount** (14 ops), RS256 mint under the platform key, CAS plaintext upgrade, OAuth marker | Sonnet port; orchestrator replaced an HS256-under-app-key minter and a fake OAuth pair in review; coverage **206/245** |
+| `(merge)` | **SDK ingest** (5 routes: events, dispatch jobs, audit logs) | Sonnet port; found Go's cross-request event dedup never fires (index includes `created_at`); coverage **208/245** |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Sonnet, own worktrees; merge pending orchestrator review):**
 - `e6a33ba` unit: principal 404 oracle (PR-3/PR-4), X-02 sync containment, X-08 per-application rollup groups, and the five lenient stored readers the X-06 sweep left (`DispatchJobKind`, `RetryStrategy`, `AttemptErrorType`, `PrincipalType`, `UserScope`).
-- SDK ingest port (5 routes) against `sdk-ingest.md`.
+- Stream processor port against `stream.md` (Phase 2 unit 1; spec written by the orchestrator).
 
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
 (seed `'JSON'`, unextended partitions, dispatch-ingest permission); the
