@@ -9,6 +9,10 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.purger.Purger;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.mcp.McpConfig;
+import io.flowcatalyst.mcp.McpServer;
+import io.flowcatalyst.mcp.PlatformClient;
+import io.flowcatalyst.mcp.TokenManager;
 import io.flowcatalyst.outbox.HttpDispatcher;
 import io.flowcatalyst.outbox.OutboxAdminApi;
 import io.flowcatalyst.outbox.OutboxProcessor;
@@ -134,6 +138,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final ScheduledJobScheduler scheduledJobScheduler;
         private final AutoCloseable scheduledJobLeaderResource;
         private final Purger purger;
+        private final McpServer.Running mcp;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
         private Running(Javalin api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
@@ -141,7 +146,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                          OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
                          StreamProcessor streamProcessor, AutoCloseable streamLeaderResource,
                          ScheduledJobScheduler scheduledJobScheduler, AutoCloseable scheduledJobLeaderResource,
-                         Purger purger) {
+                         Purger purger, McpServer.Running mcp) {
             this.api = api;
             this.metrics = metrics;
             this.router = router;
@@ -156,6 +161,12 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             this.scheduledJobScheduler = scheduledJobScheduler;
             this.scheduledJobLeaderResource = scheduledJobLeaderResource;
             this.purger = purger;
+            this.mcp = mcp;
+        }
+
+        /// `-1` when `FC_MCP_ENABLED` is off.
+        public int mcpPort() {
+            return mcp == null ? -1 : mcp.port();
         }
 
         public int apiPort() {
@@ -239,7 +250,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 if (purger != null) {
                     purger.close();
                 }
-                // TODO(port): stop mcp and wait for it
+                // MCP last: its own listener + session store, independent of every
+                // subsystem above (no database, no leader election).
+                if (mcp != null) {
+                    mcp.stop();
+                }
                 LOG.info("server stopped");
             } finally {
                 stopped.countDown();
@@ -271,11 +286,19 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         Javalin api = built.app();
 
         // ── background subsystems ───────────────────────────────────────────
-        // TODO(port): router engine, MCP — as in subsystems.go.
-        var toggles = List.of(
-                new Toggle("mcp", env.mcpEnabled()));
-        for (var toggle : toggles) {
-            if (toggle.enabled()) LOG.warn("{} subsystem not yet ported; toggle ignored", toggle.subsystem());
+        McpServer.Running mcp = null;
+        if (env.mcpEnabled()) {
+            // No database needed (`docs/spec/mcp.md` §1) — it must work on the
+            // router-only/MCP-only path Main already has, so this reads
+            // straight from Env rather than dbPool.
+            var mcpConfig = McpConfig.resolve(env.mcpPlatformUrl(), env.mcpClientId(), env.mcpClientSecret(),
+                    env.apiPort());
+            var tokenManager = mcpConfig.hasCredentials()
+                    ? new TokenManager(mcpConfig.baseUrl(), mcpConfig.clientId(), mcpConfig.clientSecret())
+                    : null;
+            var auth = PlatformClient.AuthMode.resolve(mcpConfig, tokenManager, env.mcpPlatformAuthToken());
+            var platformClient = new PlatformClient(mcpConfig.baseUrl(), auth);
+            mcp = McpServer.start(platformClient, env.mcpBind(), env.mcpPort(), Version.current());
         }
 
         DispatchScheduler scheduler = null;
@@ -365,7 +388,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         LOG.info("api server listening addr=:{}", env.apiPort());
         return new Running(api, metrics, router, built.dispatchJobReaper(), scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
-                streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger);
+                streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
     }
 
     /// [Env]'s outbox fields, with the library defaults ([OutboxProcessor.Config#defaults])
@@ -550,7 +573,4 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         return signingKeys;
     }
 
-    /// A subsystem toggle from [Env] that has no implementation behind it yet.
-    private record Toggle(String subsystem, boolean enabled) {
-    }
 }

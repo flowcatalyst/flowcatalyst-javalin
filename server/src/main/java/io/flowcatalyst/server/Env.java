@@ -224,6 +224,11 @@ public record Env(
         String mcpClientId,
         // `FLOWCATALYST_CLIENT_SECRET`, no default.
         String mcpClientSecret,
+        // `FC_MCP_PLATFORM_AUTH_TOKEN`, no default: a Java-only interim static
+        // bearer, used in place of the client_credentials token manager until
+        // the Java platform has an `/oauth/token` endpoint of its own
+        // (`docs/spec/mcp.md` §2).
+        String mcpPlatformAuthToken,
 
         // ── WebAuthn ───────────────────────────────────────────────────────
         // `FC_WEBAUTHN_RP_ID`, default `localhost`.
@@ -351,6 +356,7 @@ public record Env(
                 e.firstSet("FLOWCATALYST_URL", "FC_MCP_PLATFORM_URL").orElse(""),
                 e.get("FLOWCATALYST_CLIENT_ID"),
                 e.get("FLOWCATALYST_CLIENT_SECRET"),
+                e.get("FC_MCP_PLATFORM_AUTH_TOKEN"),
 
                 e.or("FC_WEBAUTHN_RP_ID", "localhost"),
                 webauthnOrigins(e)

@@ -142,6 +142,19 @@
       <artifactId>prometheus-metrics-exposition-formats</artifactId>
     </dependency>
 
+    <!-- MCP server: `mcp` pulls in mcp-core (the streamable-HTTP servlet transport,
+         HttpServletStreamableServerTransportProvider, mounted on Javalin's embedded
+         Jetty via JettyConfig#modifyServletContextHandler — see McpServer) and
+         mcp-json-jackson3. jakarta.servlet-api itself comes from Javalin's own
+         Jetty EE10 dependency (6.0.0); mcp-core compiles against 6.1.0 but only
+         as `provided` (so it is not pulled in transitively) — the Servlet API's
+         core surface (HttpServlet/HttpServletRequest/Response) is unchanged
+         between 6.0 and 6.1, so Javalin's 6.0.0 satisfies it at runtime. -->
+    <dependency>
+      <groupId>io.modelcontextprotocol.sdk</groupId>
+      <artifactId>mcp</artifactId>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
