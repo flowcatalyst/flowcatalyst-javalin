@@ -158,7 +158,7 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 - ~~C2 password reset core (§8.1–§8.5)~~ **Done** (orchestrator; five mutants). Left for a Sonnet unit: the reset-approvals aggregate + `/api/reset-approvals` (§8.6, idle per I-Q19) and wiring the principal admin routes to `ResetLinks`.
 - ~~Platform wiring of the deferred units~~ **Done** (`3175698`). ~~B2 portal plane~~ **Done** (`fa3bd57`, Sonnet + review).
 - ~~The portal SSO start/sink, the `PortalPasswords` seam, the `/oauth/token` `ptu_` branch~~ **Done** (orchestrator). ~~C3 passkeys~~ **Done** (orchestrator; real ceremonies in the test); then a Sonnet unit for reset-approvals (§8.6) and the branding I-Q16 spelling; Phase 5.
-- ~~Client selection (`/auth/client/*`, the last unported Go route group)~~ **Done** (orchestrator; spec §6.5 written from Go). ~~Admin 2FA reset audit row~~ **Done**. ~~I-Q16 branding spelling~~ **Done**. C4 reset-approvals — Sonnet, in flight; then Phase 5.
+- ~~Client selection (`/auth/client/*`, the last unported Go route group)~~ **Done** (orchestrator; spec §6.5 written from Go). ~~Admin 2FA reset audit row~~ **Done**. ~~I-Q16 branding spelling~~ **Done**. ~~C4 reset-approvals~~ **Done** (Sonnet, `fe83fc5`). Application `provision-*` (the last two lockfile operations) — Sonnet, in flight; Phase 5 under way.
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP

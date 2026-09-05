@@ -54,6 +54,7 @@ in its worktree; main's full suite is re-run after each merge.
 | `a674149` | **Branding fallback `FlowCatalyst`** (I-Q16 applied to `Branding.DEFAULT_PLATFORM_NAME` too — owner to confirm the public endpoint's spelling, `docs/backlog.md`) | orchestrator |
 | `1fd26e7` | **Admin 2FA reset audit row** (`MfaService.resetAllByAdmin`; the last `TODO(port)` in `PrincipalApi`) | orchestrator; pinned in `MfaServiceTest` |
 | `c4b4a14` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
+| `fe83fc5` | **Phase 3 C4 — reset approvals** (`platform.resetapproval`: the guarded-UPDATE decision, the real `ApprovalQueue` behind `/auth/password-reset` notifying `platform:client-admin` holders, `GET /api/reset-approvals` + approve/deny with the reviewer's note, 400 `ALREADY_DECIDED`) | Sonnet (strong: five mutants, the decision-outside-the-Plan trade-off argued and recorded); orchestrator mutant on the expiry guard killed; worktree suite 3453 green; coverage 243/245 — the two `provision-*` routes are the last gap (brief `2026-09-05-application-provisioning.md`, Sonnet) |
 | `f66f7b1` | **`FC_JWT_ACCESS_TOKEN_TTL_SECS` read; `MigrationsAreAdditiveTest`** — the one server knob the env-parity check found unread now reaches `TokenIssuer.Config` (exp + `expires_in`); the guard cutover.md §1 asks for rejects DROP/RENAME/retype in any non-mirrored migration after V1 (predicate unit-tested; scan vacuous today) | orchestrator; EnvTest/OAuthProviderTest/ServerTest green; Platform wiring line unpinned until parity S2 |
 | `4fdc802` | **Phase 5 — cutover + rollback rehearsal design** (`docs/spec/cutover.md`: why the shared database makes rollback "start Go again", seven gates, the nine timed steps incl. cross-side token continuity and a rollback drill every rehearsal, env parity re-derived — 152/160 Go variables read by Java, 7 SDK-only, 1 missing: the access-token TTL, backlogged) | orchestrator |
 | `a6f840f` | **Phase 5 — frontend e2e design + embedded SPA refresh** (`docs/spec/frontend-e2e.md`: Playwright in `e2e/`, the same flows against Go and Java started through each side's `fcdev`, index.html equality gate, mail links read from the servers' logs, confinement flow mandatory; `tools/sync-frontend.sh` rebuilds the SPA out of tree from the Go repo and syncs it — the embedded copy dated from the bootstrap commit and is now at frontend source `89b195e`) | orchestrator; `FrontendTest` green on the refreshed copy |
@@ -85,21 +86,19 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 
-**Where to resume (2026-09-05, end of day):** Phase 3 is complete except
-the C4 reset-approvals unit (Sonnet, in flight on
-`docs/process/briefs/2026-09-05-c4-reset-approvals.md`; merge it with the
-usual discipline — read, own mutant, worktree suite green). Every Go
-route group is in Java, including client selection; lockfile coverage
-is 240/245 and reaches 245 with C4. The only `TODO(port)` left is the
-router's `/metrics` alias in `Server`. Open owner items sit in
-`docs/backlog.md`: the `FlowCatalyst` spelling on the public platform
-endpoint, the pagination envelope (Phase 4), the access-token denylist
-(C-Q28), a Redis rate-limit store. **Next phase is 5** — the platform
-half of `docs/spec/dropin-verification.md` still needs its design: a
-recorded-request replay of the 245 lockfile operations plus the auth
-surface against Go and Java on a Go-created database, response bodies
-normalised (ids, times, tokens) and diffed; then the frontend end to end
-through every BFF/auth route, then the cutover rehearsal.
+**Where to resume (2026-09-05, night):** Phase 3 is complete — C4 merged
+(`fe83fc5`). Lockfile coverage 243/245; the two application `provision-*`
+routes are a Sonnet unit in flight (brief
+`docs/process/briefs/2026-09-05-application-provisioning.md`) that takes
+`REQUIRED_COVERAGE` to 1.0. **Phase 5 is designed and under way**: the
+parity harness (`docs/spec/parity-harness.md`) is being built by a Sonnet
+agent from `2026-09-05-p5-parity-harness.md` with the S0 smoke scenario;
+the frontend e2e plan (`frontend-e2e.md`) and the cutover rehearsal
+(`cutover.md`) follow it. Merge discipline unchanged: read the code, own
+mutant, worktree suite green, squash. Open owner items in
+`docs/backlog.md`: the `$schema` member on responses, the `FlowCatalyst`
+spelling on the public endpoint, the pagination envelope, the access-token
+denylist (C-Q28), a Redis rate-limit store.
 
 **Sonnet, honestly, across eleven ports:** reliable when the brief names
 the template class, the exact routes and the mutants to run; two agents
