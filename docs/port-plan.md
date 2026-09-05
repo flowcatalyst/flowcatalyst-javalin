@@ -163,10 +163,9 @@ in it), so the frontend is their acceptance test.
   SDK/frontend regen.
 - ~~JFR events~~ **Done 2026-09-05** — the router's three landed `246e270`;
   the five Phase 2 loops have theirs per `docs/spec/jfr-events.md`.
-- **fcdev stubs** `init`, `mcp`, `outbox`, `upgrade` — Sonnet, after Phase 2
-  gives them something to drive. *In flight 2026-09-05; spec
-  `docs/spec/fcdev-commands.md`. `init`'s OAuth-client step and the MCP
-  credential bootstrap wait for Phase 3.*
+- ~~fcdev stubs `init`, `mcp`, `outbox`, `upgrade`~~ **Done 2026-09-05**
+  (spec `docs/spec/fcdev-commands.md`; no stubs remain). `init`'s
+  OAuth-client step and the MCP credential bootstrap wait for Phase 3.
 - **Native fcdev** (optional): per-platform GraalVM builds, picocli codegen;
   removes JBang and the JDK from the developer install. *Not built yet — only
   fc-server has the `-Pnative` profile (88.8 MB on disk, 32.7 MB gzipped).

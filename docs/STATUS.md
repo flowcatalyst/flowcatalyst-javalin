@@ -35,12 +35,13 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **CORS filter** (Phase 4): allowlist-driven headers, preflight answered ahead of the authenticator, 30 s cache + invalidation | contract `cors.md` §9 by orchestrator; Sonnet port (five mutants); orchestrator added the preflight headers its worktree's spec lacked (specs must be committed before worktrees are cut) and a scope test, two more mutants |
 | `(merge)` | **JFR events** for the five Phase 2 loops (Phase 4) | spec `jfr-events.md` by orchestrator; Sonnet (seven mutants, a strong report — it found the spec in the main checkout when its worktree lacked it); orchestrator added the outbox `persisted=false` case and its mutant |
 | `(merge)` | **fcdev `mcp`, `outbox` + `create-table`, `upgrade`** (Phase 4) | spec `fcdev-commands.md` §2–§4 by orchestrator; Sonnet (five mutants; found that worktree agents' `mvn install` into the shared `~/.m2` clobber each other — now in `CLAUDE.md`); orchestrator added two tests + mutants |
+| `(merge)` | **fcdev `init`** (Phase 4, last stub) | spec `fcdev-commands.md` §1; Sonnet (four mutants; two judgement calls reported, both sound); orchestrator resolved the stub-file conflict, wrote the §4 docs, killed the skipped-admin mutant |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
-**In flight (Phase 4, started 2026-09-05 on the owner's go-ahead; Sonnet,
-own worktrees; merge pending orchestrator review):**
-- fcdev `init` — `docs/spec/fcdev-commands.md` §1; its OAuth-client step
-  and the MCP credential bootstrap stay deferred to Phase 3 (§0).
+**Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events
+for the Phase 2 loops, and all four fcdev stubs landed** — rows above.
+Left in Phase 4: the pagination envelope (owner decision, wire change) and
+the optional native fcdev build. **In flight:** nothing; no worktrees.
 
 Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
