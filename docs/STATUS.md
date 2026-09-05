@@ -54,6 +54,7 @@ in its worktree; main's full suite is re-run after each merge.
 | `a674149` | **Branding fallback `FlowCatalyst`** (I-Q16 applied to `Branding.DEFAULT_PLATFORM_NAME` too — owner to confirm the public endpoint's spelling, `docs/backlog.md`) | orchestrator |
 | `1fd26e7` | **Admin 2FA reset audit row** (`MfaService.resetAllByAdmin`; the last `TODO(port)` in `PrincipalApi`) | orchestrator; pinned in `MfaServiceTest` |
 | `c4b4a14` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
+| `(next)` | **Phase 5 — platform parity harness design** (`docs/spec/parity-harness.md`): Go-seeded template database cloned for each side, Go as a subprocess, Java in-process through the adoption path, JSON scenarios with per-side captures, seven fixed normalisation rules (tokens decoded and compared as claim sets), a named allow-list that fails when stale, lockfile + outside-lockfile coverage as a gate; corpus in four phases S0–S3; brief for the harness + S0 smoke | orchestrator; Sonnet builds the harness from the brief |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events

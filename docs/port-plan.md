@@ -188,9 +188,14 @@ in it), so the frontend is their acceptance test.
 
 ## Phase 5 — drop-in verification and release
 
-- Side-by-side replay harness against the Go binary on a Go-created database
-  (design mine, harness Sonnet); frontend end-to-end through every BFF/auth
-  route; cutover + rollback rehearsal.
+- ~~Side-by-side replay harness design~~ **Designed 2026-09-05**
+  (`docs/spec/parity-harness.md`): Go-created template database, Go
+  subprocess vs Java in-process, scenario corpus S0–S3, allow-list with
+  rulings, coverage gate. Harness + S0: Sonnet
+  (`docs/process/briefs/2026-09-05-p5-parity-harness.md`); S1 (28 lockfile
+  groups, three agents), S2 (auth surface, orchestrator-reviewed), S3
+  (rest + threshold 1.0); then triage per spec §9. Frontend end-to-end
+  through every BFF/auth route; cutover + rollback rehearsal.
 - CI: Linux native build in a matrix (only macOS arm64 is proven), the jlink
   image as the default deployable, the native binary for the router tier.
 
