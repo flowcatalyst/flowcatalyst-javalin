@@ -155,6 +155,7 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 - ~~Purger sweeps (ten steps), the C-Q23 partition readiness check on `/health`, the backoff-store alarm counter~~ **Done** (orchestrator; five mutants).
 - ~~B1 OIDC bridge (§4)~~ **Done** (orchestrator; fake-IdP end-to-end test, seven mutants; wiring after the A5-routes merge).
 - ~~C1 mail transport (§9) + notification catalogue (§10)~~ **Done** (orchestrator; four mutants; wiring with the A5-routes merge).
+- ~~C2 password reset core (§8.1–§8.5)~~ **Done** (orchestrator; five mutants). Left for a Sonnet unit: the reset-approvals aggregate + `/api/reset-approvals` (§8.6, idle per I-Q19) and wiring the principal admin routes to `ResetLinks`.
 - Next: merge A5 routes; B2 portal plane (§5: `/portal/authorize`, `/portal/auth/*`, portal identities + `/api/portal-users`, the bridge's portal SSO start/sink, the `/oauth/token` `ptu_` branch) — Sonnet on a brief for the aggregate + admin API, orchestrator for the code issuance and the sink; Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
