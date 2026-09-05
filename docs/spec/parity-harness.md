@@ -199,7 +199,10 @@ the report.
    targets, JWKS `jku`).
 3. **RFC 3339 timestamps → `«time»`**, whole-string match only. `null`,
    absent and `«time»` stay three different things.
-4. **JWS strings** (three base64url segments with a JSON header) →
+4. **JWS strings** (three base64url segments with a JSON header; on any
+   one string this rule is tried *before* rule 1, otherwise a token that
+   was also captured — the session cookie — would collapse to its capture
+   name and never be compared as a structure) →
    `{"«jwt»": {"header": …, "claims": …}}` with `iat`, `exp`, `nbf`,
    `auth_time` → `«time»`, `jti` → `«id»`, `iss` through rule 2, and any
    claim equal to a captured value through rule 1. Token *structure* is
