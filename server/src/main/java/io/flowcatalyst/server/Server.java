@@ -7,6 +7,10 @@ import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.outbox.HttpDispatcher;
+import io.flowcatalyst.outbox.OutboxAdminApi;
+import io.flowcatalyst.outbox.OutboxProcessor;
+import io.flowcatalyst.outbox.PostgresOutboxRepository;
 import io.flowcatalyst.router.queue.postgres.PostgresQueue;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.RedisLockStore;
@@ -120,12 +124,16 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final DispatchScheduler scheduler;
         private final AutoCloseable schedulerLeaderResource;
         private final DispatchJobReaper dispatchJobReaper;
+        private final OutboxProcessor outboxProcessor;
+        private final Javalin outboxAdminApi;
+        private final AutoCloseable outboxLeaderResource;
         private final StreamProcessor streamProcessor;
         private final AutoCloseable streamLeaderResource;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
         private Running(Javalin api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
                          DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
+                         OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
                          StreamProcessor streamProcessor, AutoCloseable streamLeaderResource) {
             this.api = api;
             this.metrics = metrics;
@@ -133,6 +141,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             this.dispatchJobReaper = dispatchJobReaper;
             this.scheduler = scheduler;
             this.schedulerLeaderResource = schedulerLeaderResource;
+            this.outboxProcessor = outboxProcessor;
+            this.outboxAdminApi = outboxAdminApi;
+            this.outboxLeaderResource = outboxLeaderResource;
             this.streamProcessor = streamProcessor;
             this.streamLeaderResource = streamLeaderResource;
         }
@@ -171,6 +182,24 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         LOG.warn("closing the scheduler's leader election failed", e);
                     }
                 }
+                // The admin listener first (stop accepting operator control),
+                // then the processor's background loops/drainers, then its
+                // leader election — same order as the scheduler above, and
+                // before the pool itself closes (Main/StartCommand close the
+                // pool after Running#stop returns).
+                if (outboxAdminApi != null) {
+                    outboxAdminApi.stop();
+                }
+                if (outboxProcessor != null) {
+                    outboxProcessor.close();
+                }
+                if (outboxLeaderResource != null) {
+                    try {
+                        outboxLeaderResource.close();
+                    } catch (Exception e) {
+                        LOG.warn("closing the outbox's leader election failed", e);
+                    }
+                }
                 // Stream before the pool closes: StreamProcessor#close interrupts and
                 // joins every projector, so no claim/insert is still in flight against
                 // the pool by the time the caller tears it down.
@@ -184,7 +213,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         LOG.warn("closing the stream processor's leader election failed", e);
                     }
                 }
-                // TODO(port): stop outbox / mcp and wait for them
+                // TODO(port): stop mcp and wait for it
                 LOG.info("server stopped");
             } finally {
                 stopped.countDown();
@@ -217,10 +246,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
         // ── background subsystems ───────────────────────────────────────────
         // TODO(port): purger (platform), scheduled-job scheduler,
-        //   outbox processor, router engine, MCP — each leader-gated as in subsystems.go.
+        //   router engine, MCP — each leader-gated as in subsystems.go.
         var toggles = List.of(
                 new Toggle("scheduled-job", env.scheduledJobEnabled()),
-                new Toggle("outbox", env.outboxEnabled()),
                 new Toggle("mcp", env.mcpEnabled()));
         for (var toggle : toggles) {
             if (toggle.enabled()) LOG.warn("{} subsystem not yet ported; toggle ignored", toggle.subsystem());
@@ -245,6 +273,34 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
         }
 
+        OutboxProcessor outboxProcessor = null;
+        Javalin outboxAdminApi = null;
+        AutoCloseable outboxLeaderResource = null;
+        if (env.outboxEnabled()) {
+            if (dbPool == null) {
+                LOG.warn("outbox enabled but no database pool is available; ignoring FC_OUTBOX_ENABLED");
+            } else if (env.outboxPlatformUrl().isBlank()) {
+                LOG.warn("outbox enabled but FC_OUTBOX_PLATFORM_URL (or an alias) is not set; "
+                        + "ignoring FC_OUTBOX_ENABLED");
+            } else {
+                var leaderGate = leaderGate(env, "outbox");
+                var repository = new PostgresOutboxRepository(dbPool);
+                repository.initSchema();
+                var dispatcher = new HttpDispatcher(HttpDispatcher.defaultClient(), env.outboxPlatformUrl(),
+                        OutboxProcessor.Config.DEFAULT_HTTP_TIMEOUT, null, env.outboxPlatformAuthToken());
+                var config = outboxConfig(env);
+                outboxProcessor = new OutboxProcessor(repository, dispatcher, config, leaderGate.isLeader());
+                outboxProcessor.start();
+                outboxLeaderResource = leaderGate.resource();
+                LOG.info("outbox processor started platform_url={} poll_interval={} admin_port={}",
+                        env.outboxPlatformUrl(), config.pollInterval(), env.outboxAdminPort());
+                if (env.outboxAdminPort() > 0) {
+                    outboxAdminApi = OutboxAdminApi.start(outboxProcessor, env.outboxAdminPort());
+                    LOG.info("outbox admin api listening addr=127.0.0.1:{}", env.outboxAdminPort());
+                }
+            }
+        }
+
         StreamProcessor streamProcessor = null;
         AutoCloseable streamLeaderResource = null;
         if (env.streamEnabled()) {
@@ -265,7 +321,25 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         api.start(env.apiPort());
         LOG.info("api server listening addr=:{}", env.apiPort());
         return new Running(api, metrics, router, built.dispatchJobReaper(), scheduler, schedulerLeaderResource,
+                outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource);
+    }
+
+    /// [Env]'s outbox fields, with the library defaults ([OutboxProcessor.Config#defaults])
+    /// filling in every `0`/unset knob (spec §4: `FC_OUTBOX_BATCH_SIZE` etc.
+    /// default to "0 (library default …)").
+    private static OutboxProcessor.Config outboxConfig(Env env) {
+        var d = OutboxProcessor.Config.defaults();
+        return new OutboxProcessor.Config(
+                env.outboxBatchSize() > 0 ? env.outboxBatchSize() : d.batchSize(),
+                env.outboxMaxInFlight() > 0 ? env.outboxMaxInFlight() : d.maxInFlight(),
+                env.outboxPollIntervalMs() > 0 ? Duration.ofMillis(env.outboxPollIntervalMs()) : d.pollInterval(),
+                env.outboxMaxConcurrentGroups() > 0 ? env.outboxMaxConcurrentGroups() : d.maxConcurrentGroups(),
+                env.outboxBlockOnError(),
+                d.maxRetries(),
+                d.recoveryInterval(),
+                d.recoveryThreshold(),
+                d.httpTimeout());
     }
 
     /// The scheduler's [DispatchPublisher]: the built-in Postgres broker —
@@ -330,6 +404,22 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// its internal Redis client.
     @SuppressWarnings("deprecation")
     private static UnifiedJedis redisForSubsystem(Env env) {
+        var uri = URI.create(env.standbyRedisUrl());
+        int port = uri.getPort() > 0 ? uri.getPort() : 6379;
+        var config = DefaultJedisClientConfig.builder()
+                .sslOptions("rediss".equalsIgnoreCase(uri.getScheme()) ? SslOptions.builder().build() : null)
+                .build();
+        var provider = new PooledConnectionProvider(new HostAndPort(uri.getHost(), port), config);
+        return new UnifiedJedis(provider, 3, Duration.ofSeconds(3));
+    }
+
+
+
+    /// A trimmed copy of [Router]'s own `redisFor` — the outbox processor's
+    /// election needs its own connection, never the scheduler's or the
+    /// router's (see [#outboxLeader]).
+    @SuppressWarnings("deprecation")
+    private static UnifiedJedis redisForOutbox(Env env) {
         var uri = URI.create(env.standbyRedisUrl());
         int port = uri.getPort() > 0 ? uri.getPort() : 6379;
         var config = DefaultJedisClientConfig.builder()
