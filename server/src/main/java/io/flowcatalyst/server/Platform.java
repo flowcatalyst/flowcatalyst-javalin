@@ -7,6 +7,7 @@ import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.api.AuditLogApi;
+import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.bff.DashboardRepository;
 import io.flowcatalyst.platform.bff.api.DashboardBff;
 import io.flowcatalyst.platform.bff.api.DeveloperBff;
@@ -309,9 +310,12 @@ public final class Platform {
                 .map(SigningKeys.PublicKeyEntry::publicKey)
                 .toList();
         var verifier = new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(), JwtVerifier.RsaKeys.of(verificationKeys)));
-        // TODO(port): DB-backed ClaimsResolver (authProvider.ResolveClaims) for the fc_session cookie path
-        //   and role → permission flattening. Until then cookie sessions resolve to unauthenticated.
-        return new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(env.authAllowTestHeaders()));
+        // The store-backed resolver: a cookie session is re-resolved from the
+        // principal and role stores on every request, and a bearer that
+        // carries roles but no scope has its permissions flattened from them
+        // (auth-core §3.5, Go provider.ResolveClaims / FlattenPermissions).
+        var resolver = new DbClaimsResolver(new PrincipalRepository(pool), new RoleRepository(pool));
+        return new Authenticator(verifier, resolver, Authenticator.Config.of(env.authAllowTestHeaders()));
     }
 
     /// Go applies the Authenticator to the chi Group that holds every

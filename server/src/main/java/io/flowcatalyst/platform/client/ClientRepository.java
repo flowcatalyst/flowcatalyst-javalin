@@ -155,4 +155,13 @@ public final class ClientRepository implements Persist<Client> {
     private static Instant instant(OffsetDateTime odt) {
         return odt == null ? null : odt.toInstant();
     }
+
+    /// `id → identifier` for the given ids, for the `clients` claim's
+    /// `"{id}:{identifier}"` pairs ([io.flowcatalyst.platform.auth.token.ClaimLabels]).
+    /// Unknown ids are simply absent.
+    public java.util.Map<String, String> identifiersByIds(java.util.Collection<String> ids) {
+        if (ids.isEmpty()) return java.util.Map.of();
+        return dsl.select(T.ID, T.IDENTIFIER).from(T).where(T.ID.in(ids))
+                .fetchMap(T.ID, T.IDENTIFIER);
+    }
 }

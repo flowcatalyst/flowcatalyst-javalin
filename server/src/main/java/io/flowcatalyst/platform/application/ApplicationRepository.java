@@ -149,4 +149,13 @@ public final class ApplicationRepository implements Persist<Application> {
     private static OffsetDateTime utc(Instant instant) {
         return instant.atOffset(ZoneOffset.UTC);
     }
+
+    /// `id → code` for the given ids, for the `applications` claim's
+    /// `"{id}:{code}"` pairs ([io.flowcatalyst.platform.auth.token.ClaimLabels]).
+    /// Unknown ids are simply absent.
+    public java.util.Map<String, String> codesByIds(java.util.Collection<String> ids) {
+        if (ids.isEmpty()) return java.util.Map.of();
+        return dsl.select(T.ID, T.CODE).from(T).where(T.ID.in(ids))
+                .fetchMap(T.ID, T.CODE);
+    }
 }
