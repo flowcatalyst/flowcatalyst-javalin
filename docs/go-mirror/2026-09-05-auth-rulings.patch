@@ -1,0 +1,424 @@
+--- a/internal/platform/auth/oauthapi/token.go
++++ b/internal/platform/auth/oauthapi/token.go
+@@ -871,14 +871,14 @@
+ 
+ // grantAllowed reports whether the client's registered grant-type
+ // allowlist (oauth_client_grant_types, managed via the admin API) permits
+-// the given grant. An empty allowlist means the client never declared one
+-// — e.g. registered before grant-type enforcement existed — and is treated
+-// as unrestricted so those clients keep working; a non-empty list is
+-// enforced strictly. Shared by /oauth/authorize (authorization_code) and
+-// /oauth/token (all grants).
++// the given grant. An empty allowlist permits NOTHING (owner ruling C-Q20,
++// 2026-09-05): a client registered before grant-type enforcement existed
++// must have its grants set explicitly before it can mint again — fail
++// closed rather than treat "never declared" as "everything". Shared by
++// /oauth/authorize (authorization_code) and /oauth/token (all grants).
+ func grantAllowed(client *auth.OAuthClient, grant string) bool {
+-	if client == nil || len(client.GrantTypes) == 0 {
+-		return true
++	if client == nil {
++		return false
+ 	}
+ 	return slices.Contains(client.GrantTypes, grant)
+ }
+--- a/internal/platform/auth/oauthapi/introspect_revoke.go
++++ b/internal/platform/auth/oauthapi/introspect_revoke.go
+@@ -91,8 +91,13 @@
+ 	if claims.Scope != "" {
+ 		resp.Scope = new(claims.Scope)
+ 	}
+-	if len(claims.Clients) > 0 {
+-		resp.ClientID = new(claims.Clients[0])
++	// RFC 7662 `client_id` is the OAuth client the token was minted through
++	// (the `azp` claim), not the tenant pair — owner ruling C-Q26,
++	// 2026-09-05. A token minted outside an OAuth client (password login)
++	// carries no azp and so no client_id; the tenant list stays in the
++	// token's own `clients` claim.
++	if claims.AZP != nil && *claims.AZP != "" {
++		resp.ClientID = new(*claims.AZP)
+ 	}
+ 	if claims.ExpiresAt != nil {
+ 		resp.Exp = new(claims.ExpiresAt.Unix())
+--- a/internal/platform/auth/oauthapi/authorize.go
++++ b/internal/platform/auth/oauthapi/authorize.go
+@@ -20,6 +20,10 @@
+ // RegisterAuthorizeRoutes mounts GET /oauth/authorize. It MUST be mounted
+ // OUTSIDE the session-auth middleware: an absent/expired session is a
+ // redirect-to-login case here, not a 401.
++// maxStateLen is the longest `state` the pending-auth row can key
++// (VARCHAR(128) minus the "PendingAuth:" prefix).
++const maxStateLen = 116
++
+ func (s *State) RegisterAuthorizeRoutes(r chi.Router) {
+ 	r.Get("/oauth/authorize", s.Authorize)
+ }
+@@ -58,7 +62,9 @@
+ 
+ 	// Cluster-wide per-client_id throttle, before the DB lookup.
+ 	if rej := ratelimit.Enforce(r.Context(), s.RateLimit, ratelimit.BucketOAuthAuthorizeClient, clientID, s.RateLimitPolicies.OAuthAuthorizeClient); rej != nil {
+-		ratelimit.WriteTooManyRequests(w, rej.RetryAfterSecs, "rate limit exceeded")
++		// RFC 6749 error shape on both OAuth endpoints (owner ruling C-Q27,
++		// 2026-09-05) — the same writer /oauth/token uses.
++		writeOAuthRateLimited(w, rej.RetryAfterSecs, "rate limit exceeded")
+ 		return
+ 	}
+ 
+@@ -83,6 +89,15 @@
+ 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "Invalid redirect_uri")
+ 		return
+ 	}
++	// `state` becomes the pending-auth row's key ("PendingAuth:" + state) in
++	// a VARCHAR(128) column; a longer value would fail that insert and
++	// surface as server_error. Reject it here, after redirect_uri is
++	// trusted, as the RFC-correct invalid_request (owner ruling C-Q22,
++	// 2026-09-05).
++	if len(stateParam) > maxStateLen {
++		errorRedirect(w, r, redirectURI, "invalid_request", "`state` must be at most 116 characters", stateParam)
++		return
++	}
+ 	// Plane separation (docs/portal-identity-plan.md Phase 2.5 v2): a
+ 	// portal-flagged client belongs to the portal identity plane and must
+ 	// enter through /portal/authorize — otherwise a misconfigured portal
+--- a/internal/platform/auth/oauthapi/authorize_test.go
++++ b/internal/platform/auth/oauthapi/authorize_test.go
+@@ -125,9 +125,28 @@
+ 
+ // activeClient is a minimal active client with one registered redirect_uri.
+ func activeClient(redirectURIs ...string) *auth.OAuthClient {
+-	return &auth.OAuthClient{Active: true, RedirectURIs: redirectURIs}
++	// Grants are declared explicitly: an empty list permits nothing (owner
++	// ruling C-Q20, 2026-09-05).
++	return &auth.OAuthClient{Active: true, RedirectURIs: redirectURIs, GrantTypes: []string{"authorization_code"}}
+ }
+ 
++// A client that never declared its grants gets nothing — not "everything"
++// (owner ruling C-Q20, 2026-09-05). The refusal bounces to the vetted
++// redirect_uri as unauthorized_client.
++func TestAuthorizeEmptyGrantListIsRefused(t *testing.T) {
++	s := &State{OAuthClients: fakeClientFinder{client: &auth.OAuthClient{Active: true, RedirectURIs: []string{"https://app/cb"}}}}
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("GET", "/oauth/authorize?response_type=code&client_id=c&redirect_uri=https://app/cb&state=xyz", nil)
++	s.Authorize(rec, req)
++
++	if rec.Code != 307 {
++		t.Fatalf("status = %d, want 307", rec.Code)
++	}
++	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "error=unauthorized_client") {
++		t.Fatalf("Location = %q, want error=unauthorized_client", loc)
++	}
++}
++
+ // Once the client + redirect_uri are validated, an unsupported response_type
+ // is reported by bouncing back to the (now-vetted) redirect_uri.
+ func TestAuthorizeUnsupportedResponseType(t *testing.T) {
+--- a/internal/platform/auth/authservice/authservice.go
++++ b/internal/platform/auth/authservice/authservice.go
+@@ -287,6 +287,10 @@
+ 		rsaComponents: components,
+ 	}, nil
+ }
++
++// hs256MinSecretBytes is the shortest HS256 secret the factory accepts
++// (owner ruling C-Q19, 2026-09-05).
++const hs256MinSecretBytes = 32
+ 
+ // NewWithSecret builds an HS256 service from the config's SecretKey.
+ func NewWithSecret(config Config) *AuthService {
+@@ -333,10 +337,14 @@
+ 		}
+ 		return svc, nil
+ 	}
+-	// No RSA configured → HS256 (development only). Refuse an empty secret,
+-	// which would make every token forgeable by anyone.
++	// No RSA configured → HS256 (development only). Refuse a missing or
++	// short secret: an HMAC key under 32 bytes is brute-forceable offline,
++	// which makes every token forgeable (owner ruling C-Q19, 2026-09-05).
+ 	if config.SecretKey == "" {
+-		return nil, errors.New("no signing key configured: set an RSA private key (production) or a non-empty HS256 SecretKey (development)")
++		return nil, errors.New("no signing key configured: set an RSA private key (production) or an HS256 SecretKey of at least 32 bytes (development)")
++	}
++	if len(config.SecretKey) < hs256MinSecretBytes {
++		return nil, fmt.Errorf("HS256 SecretKey is %d bytes; at least %d are required", len(config.SecretKey), hs256MinSecretBytes)
+ 	}
+ 	return NewWithSecret(config), nil
+ }
+--- a/internal/platform/auth/login/endpoint.go
++++ b/internal/platform/auth/login/endpoint.go
+@@ -235,10 +235,10 @@
+ 				if idp.Type == identityprovider.TypeOIDC {
+ 					resp.AuthMethod = "OIDC"
+ 				}
+-				if idp.OIDCIssuerURL != nil {
+-					au := strings.TrimRight(*idp.OIDCIssuerURL, "/") + "/authorize"
+-					resp.AuthorizationURL = &au
+-				}
++				// authorizationUrl is no longer fabricated as issuer + "/authorize"
++				// (wrong for most IdPs); it is omitted until a real value exists
++				// (owner ruling I-Q9 / C-Q29, 2026-09-05). The field stays for
++				// wire compatibility.
+ 			}
+ 		}
+ 	}
+@@ -398,7 +398,17 @@
+ 	// Brute-force backoff: per-(email, IP) exponential delay + per-email
+ 	// global ceiling. Runs before credentials are evaluated.
+ 	if e.cfg.LoginAttempts != nil {
+-		if d, err := loginbackoff.Check(r.Context(), e.cfg.LoginAttempts, e.cfg.BackoffPolicy, email, ip); err == nil && !d.Allowed {
++		d, err := loginbackoff.Check(r.Context(), e.cfg.LoginAttempts, e.cfg.BackoffPolicy, email, ip)
++		if err != nil {
++			// Fail closed (owner ruling C-Q23, 2026-09-05): a backoff-store
++			// error during a brute force must not switch the lock off. The
++			// store is the platform database, so this is rarely reachable
++			// without the login itself failing — but a missing partition is.
++			slog.Error("login backoff check failed; refusing login", "err", err)
++			writeBackoffUnavailable(w)
++			return
++		}
++		if !d.Allowed {
+ 			writeTooManyRequests(w, d.RetryAfterSecs)
+ 			return
+ 		}
+@@ -615,6 +625,10 @@
+ 		email = p.UserIdentity.Email
+ 	}
+ 	writeJSON(w, http.StatusOK, loginResponse{
++		// Populated (owner ruling C-Q24, 2026-09-05): the same "ok" a completed
++		// login answers, so a reader treating the two shapes alike sees one
++		// value rather than an empty string.
++		Status:      "ok",
+ 		PrincipalID: p.ID,
+ 		Name:        p.Name,
+ 		Email:       email,
+@@ -664,6 +678,15 @@
+ 
+ // writeTooManyRequests emits a 429 with a Retry-After header (the
+ // backoff rejection).
++// writeBackoffUnavailable is the fail-closed answer when the login-backoff
++// store cannot be consulted (owner ruling C-Q23, 2026-09-05).
++func writeBackoffUnavailable(w http.ResponseWriter) {
++	writeJSON(w, http.StatusServiceUnavailable, map[string]any{
++		"code":    "BACKOFF_UNAVAILABLE",
++		"message": "login is temporarily unavailable; try again shortly",
++	})
++}
++
+ func writeTooManyRequests(w http.ResponseWriter, retryAfterSecs uint32) {
+ 	w.Header().Set("Content-Type", "application/json")
+ 	w.Header().Set("Retry-After", strconv.FormatUint(uint64(retryAfterSecs), 10))
+--- a/internal/platform/auth/login/twofactor.go
++++ b/internal/platform/auth/login/twofactor.go
+@@ -86,7 +86,11 @@
+ 	}
+ 	mapping, internalDomain := e.domainPolicy(r.Context(), email)
+ 	domainRequires := mapping != nil && mapping.Require2FA && internalDomain
+-	rememberAllowed := mapping != nil && mapping.RememberDeviceEnabled
++	// Remember-device exists only for internally managed identities; an
++	// external IdP's domain decides its own device trust (owner ruling I-Q11,
++	// 2026-09-05). rememberDevice() applies the same rule when the cookie is
++	// issued, so this only stops the option being offered.
++	rememberAllowed := mapping != nil && mapping.RememberDeviceEnabled && internalDomain
+ 
+ 	confirmed, err := e.cfg.MFA.ConfirmedMethods(r.Context(), p.ID)
+ 	if err != nil {
+@@ -170,7 +174,14 @@
+ 	ip := clientIP(r)
+ 	email := emailOf(p)
+ 	if e.cfg.LoginAttempts != nil {
+-		if d, derr := loginbackoff.Check(r.Context(), e.cfg.LoginAttempts, e.cfg.BackoffPolicy, email, ip); derr == nil && !d.Allowed {
++		d, derr := loginbackoff.Check(r.Context(), e.cfg.LoginAttempts, e.cfg.BackoffPolicy, email, ip)
++		if derr != nil {
++			// Fail closed, as the password step does (owner ruling C-Q23).
++			slog.Error("2FA backoff check failed; refusing verify", "err", derr)
++			writeBackoffUnavailable(w)
++			return
++		}
++		if !d.Allowed {
+ 			writeTooManyRequests(w, d.RetryAfterSecs)
+ 			return
+ 		}
+@@ -179,6 +190,15 @@
+ 	var ok bool
+ 	var err error
+ 	method := strings.ToUpper(strings.TrimSpace(req.Method))
++	// The domain's allowed-method list applies at verify, not only at
++	// enrolment (owner ruling I-Q12, 2026-09-05): an admin who removes a
++	// method expects it to stop working. Recovery codes back up whichever
++	// methods are allowed and are never restricted here.
++	if (method == string(mfa.MethodTOTP) || method == string(mfa.MethodEmailPin)) &&
++		!e.methodAllowed(r.Context(), p, mfa.MethodType(method)) {
++		writeJSON(w, http.StatusForbidden, map[string]any{"code": "METHOD_NOT_ALLOWED", "message": "this 2FA method is not allowed for your domain"})
++		return
++	}
+ 	switch method {
+ 	case string(mfa.MethodTOTP):
+ 		ok, err = e.cfg.MFA.VerifyTOTP(r.Context(), p.ID, req.Code)
+@@ -369,7 +389,7 @@
+ // its own recovery channel, so an email-only user never gets them.
+ func (e *Endpoint) ensureRecoveryCodes(ctx context.Context, p *principal.Principal) []string {
+ 	confirmed, err := e.cfg.MFA.ConfirmedMethods(ctx, p.ID)
+-	if err != nil || !slices.Contains(confirmed, mfa.MethodTOTP) {
++	if err != nil || !containsMethodType(confirmed, mfa.MethodTOTP) {
+ 		return nil
+ 	}
+ 	n, err := e.cfg.MFA.RemainingRecoveryCodes(ctx, p.ID)
+@@ -418,7 +438,7 @@
+ 	if mapping == nil || !mapping.Require2FA || !internal {
+ 		return true
+ 	}
+-	return slices.Contains(mapping.Allowed2FAMethods, string(t))
++	return containsString(mapping.Allowed2FAMethods, string(t))
+ }
+ 
+ // rememberDevice issues a trusted-device token and sets the cookie, honouring
+@@ -515,18 +535,26 @@
+ 		out = append(out, string(m))
+ 	}
+ 	return out
++}
++
++func containsMethodType(ms []mfa.MethodType, t mfa.MethodType) bool {
++	return slices.Contains(ms, t)
+ }
+ 
+ func intersect(a, allowed []string) []string {
+ 	out := make([]string, 0, len(a))
+ 	for _, x := range a {
+-		if slices.Contains(allowed, x) {
++		if containsString(allowed, x) {
+ 			out = append(out, x)
+ 		}
+ 	}
+ 	return out
+ }
+ 
++func containsString(xs []string, s string) bool {
++	return slices.Contains(xs, s)
++}
++
+ func userAgentLabel(r *http.Request) *string {
+ 	ua := strings.TrimSpace(r.UserAgent())
+ 	if ua == "" {
+--- a/internal/platform/auth/login/twofactor_selfservice.go
++++ b/internal/platform/auth/login/twofactor_selfservice.go
+@@ -1,8 +1,8 @@
+ package login
+ 
+ import (
++	"github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/jsontime"
+ 	"net/http"
+-	"slices"
+ 
+ 	"github.com/go-chi/chi/v5"
+ 
+@@ -228,7 +228,7 @@
+ 		writeServerError(w, "REGEN_FAILED", "could not load methods")
+ 		return
+ 	}
+-	if !slices.Contains(confirmed, mfa.MethodTOTP) {
++	if !containsMethodType(confirmed, mfa.MethodTOTP) {
+ 		writeJSON(w, http.StatusBadRequest, errBody("NO_TOTP", "recovery codes apply to authenticator-app 2FA"))
+ 		return
+ 	}
+@@ -254,9 +254,38 @@
+ 		writeServerError(w, "LIST_FAILED", "could not list devices")
+ 		return
+ 	}
+-	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
++	out := make([]trustedDeviceResponse, 0, len(devices))
++	for _, d := range devices {
++		out = append(out, newTrustedDeviceResponse(d))
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+ }
+ 
++// trustedDeviceResponse is the wire shape of one remembered device: the
++// platform's fixed-precision time shape, and no principalId — the caller is
++// always that principal (owner ruling I-Q21, 2026-09-05).
++type trustedDeviceResponse struct {
++	ID         string         `json:"id"`
++	Label      *string        `json:"label,omitempty"`
++	ExpiresAt  jsontime.Time  `json:"expiresAt"`
++	CreatedAt  jsontime.Time  `json:"createdAt"`
++	LastUsedAt *jsontime.Time `json:"lastUsedAt,omitempty"`
++}
++
++func newTrustedDeviceResponse(d mfa.TrustedDevice) trustedDeviceResponse {
++	r := trustedDeviceResponse{
++		ID:        d.ID,
++		Label:     d.Label,
++		ExpiresAt: jsontime.New(d.ExpiresAt),
++		CreatedAt: jsontime.New(d.CreatedAt),
++	}
++	if d.LastUsedAt != nil {
++		t := jsontime.New(*d.LastUsedAt)
++		r.LastUsedAt = &t
++	}
++	return r
++}
++
+ func (e *Endpoint) handle2FARevokeTrustedDevice(w http.ResponseWriter, r *http.Request) {
+ 	p := e.principalFromSession(w, r)
+ 	if p == nil {
+--- a/internal/platform/auth/bridge/login_endpoint.go
++++ b/internal/platform/auth/bridge/login_endpoint.go
+@@ -440,7 +440,11 @@
+ 	}
+ 	idToken, err := oidcClient.VerifyIDToken(r.Context(), rawIDToken)
+ 	if err != nil {
+-		httperror.Write(w, usecase.Authorization("OIDC_VERIFY", "id_token verification failed: "+err.Error()))
++		// The verifier's error text names the failing claim — an oracle for
++		// anyone probing the bridge. Fixed message out, cause in the log
++		// (owner ruling I-Q3, 2026-09-05).
++		slog.Warn("id_token verification failed", "err", err)
++		httperror.Write(w, usecase.Authorization("OIDC_VERIFY", "id_token verification failed"))
+ 		return
+ 	}
+ 	var claims struct {
+@@ -658,7 +662,7 @@
+ 	// being created by the system in response to a self-service login,
+ 	// not by an authenticated actor. Audit rows will record an empty
+ 	// principal — the convention for self-provisioning.
+-	ec := usecase.NewExecutionContext("")
++	ec := usecase.NewExecutionContext("system")
+ 	event, err := usecaseop.Run(ctx, e.uow, principalops.CreateUser(e.principals), cmd, ec)
+ 	if err != nil {
+ 		return nil, err
+@@ -684,7 +688,7 @@
+ 		Email:    email,
+ 		Provider: &provider,
+ 	}
+-	ec := usecase.NewExecutionContext("")
++	ec := usecase.NewExecutionContext("system")
+ 	event, err := usecaseop.Run(ctx, e.uow, principalops.CreatePortalUser(e.principals), cmd, ec)
+ 	if err != nil {
+ 		return nil, err
+@@ -800,7 +804,7 @@
+ 	}
+ 	// The actor here is the system, not an authenticated user — match
+ 	// the auto-provision pattern of an empty principal id.
+-	ec := usecase.NewExecutionContext("")
++	ec := usecase.NewExecutionContext("system")
+ 	if _, err := usecaseop.Run(ctx, e.uow, principalops.SyncIdpRoles(e.principals, e.roles), cmd, ec); err != nil {
+ 		return err
+ 	}
+@@ -964,7 +968,7 @@
+ 			portalidentity.EnsureCommand{
+ 				ClientID: portalClientID, Email: email, Name: namePtr,
+ 				Source: string(portalidentity.SourceJIT),
+-			}, usecase.NewExecutionContext(""))
++			}, usecase.NewExecutionContext("system"))
+ 		if eerr != nil {
+ 			httperror.Write(w, eerr)
+ 			return
+--- a/internal/platform/notify/notify.go
++++ b/internal/platform/notify/notify.go
+@@ -40,7 +40,7 @@
+ 			return s
+ 		}
+ 	}
+-	return "Flowcatalyst"
++	return "FlowCatalyst" // owner ruling I-Q16, 2026-09-05
+ }
+ 
+ // send is the best-effort core: nil receiver / nil service → no-op; errors are

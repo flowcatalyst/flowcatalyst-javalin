@@ -60,7 +60,7 @@ Already ruled before this session and therefore not re-asked: C-Q5 (A-14), C-Q6 
 - **C-Q19** — RULED: require ≥ 32 bytes; startup fails with a clear message.
 - **C-Q20** — RULED: **empty grant list ⇒ no grant allowed** (fail closed). Cutover: existing rows with an empty list stop minting until their grants are set — data migration / seeder + `fcdev init` set grants explicitly; Go's behaviour recorded as a defect in `docs/backlog.md`.
 - **C-Q22** — RULED: reject a `state` > 116 chars up front with `invalid_request`; the cap stays.
-- **C-Q23** — RULED: rate-limit store fails open; backoff store fails **closed** (deny the login, 503).
+- **C-Q23** — RULED: rate-limit store fails open; backoff store fails **closed** (deny the login, 503). *Scope note (owner, later the same day):* the backoff store is the platform database, so this adds no new hard dependency; the residual failure is a missing `iam_login_attempts` partition. Phase 3 therefore also ships a readiness check that the current and next quarterly partitions exist, and a counter for backoff-store errors that alarms on the first one.
 - **C-Q24** — RULED: populate `status` with the principal's real status (the field already exists, so no reader breaks); verify the SPA/SDK types treat it as optional.
 - **C-Q25** — RULED: keep both orders as Go.
 - **C-Q26** — RULED: **RFC 7662** — `client_id` is the OAuth client that minted the token. Verified 2026-09-05: no caller of introspection in InhanceMono (`apps`, `packages_root/packages`) or any SDK; the Go SDK's `IntrospectToken` has no callers; the tenant pair stays in the token's `clients` claim.
