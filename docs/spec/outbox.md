@@ -175,6 +175,13 @@ the spec keeps Go's shape.
   change: the poison row stays terminal in the table, the group runs again
   and delivers its later items out of order past the poison. Persist the
   block, or derive it from the table on start?
+- **D5** A row whose `type` is not `EVENT`/`DISPATCH_JOB`/`AUDIT_LOG` fails
+  the claim transaction (X-06: no silent default) — and because the row
+  stays PENDING, **every subsequent poll fails the same way**: one corrupt
+  row stops the whole outbox. Go has the same shape. Options: mark such a
+  row terminal (`BAD_REQUEST`, "unknown item type") inside the claim and
+  continue, or exclude it from the claim. Owner to rule; Java keeps the loud
+  failure until then.
 - **Q1** Where does the admin API live in Java (loopback port as Go, or
   the router prefix)?
 - **Q2** Mongo/SQLite backends: on the backlog by ruling; the `Repository`
