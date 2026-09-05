@@ -34,3 +34,8 @@ Thumbs.db
 
 # maven-shade-plugin writes this beside the pom, not into target/
 server/dependency-reduced-pom.xml
+
+# Frontend e2e (docs/spec/frontend-e2e.md)
+e2e/node_modules
+e2e/test-results
+e2e/playwright-report

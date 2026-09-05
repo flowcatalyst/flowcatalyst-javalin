@@ -39,7 +39,9 @@ Three things the wire comparison cannot see:
   `tools/sync-frontend.sh` (an out-of-tree Vite build of the Go repo's
   `frontend/src`, stamped with the source commit in
   `server/src/main/resources/frontend.source-commit`, outside the served tree). The runner fetches `/index.html` from both
-  sides and refuses to run when the two differ — a mismatched build is a
+  sides, blanks Vite's per-build asset hashes (two builds of one source
+  differ only in `index-<hash>.js`), and refuses to run when the documents
+  still differ — a mismatched build is a
   finding of its own, not a source of forty spurious ones. (The Go repo's
   `frontend/dist` is a local build artefact, not committed; the owner
   refreshes it with `make frontend` there.)

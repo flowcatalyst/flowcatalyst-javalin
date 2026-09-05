@@ -1,0 +1,20 @@
+{
+  "name": "flowcatalyst-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "e2e": "tsx scripts/run-one.ts",
+    "e2e:go": "E2E_SIDE=go tsx scripts/run-one.ts",
+    "e2e:java": "E2E_SIDE=java tsx scripts/run-one.ts",
+    "e2e:both": "tsx scripts/run-both.ts",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.0.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "5.0.0"
+  }
+}
