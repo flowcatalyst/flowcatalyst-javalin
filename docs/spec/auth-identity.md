@@ -35,6 +35,38 @@ lists exactly what these flows do to it.
 
 ---
 
+## 0.5 Owner rulings in force (2026-09-05) — override the sections below
+
+Every question in §19 and every defect in §18 was ruled on 2026-09-05
+(`docs/auth-rulings.md`, "Rulings — Batch A/B/C"). Where a ruling changes a
+section below, **the ruling wins**; the text is left as extracted so the Go
+behaviour stays visible.
+
+| Ruling | Effect on this spec |
+|---|---|
+| Q1 | The cached OIDC client is refreshed when the identity-provider row changes (same-node invalidation + TTL). §4.1 |
+| Q2 | Storage keeps the empty-string provider-direct marker; the domain models a sealed mode. §3.1 |
+| Q3 | `OIDC_VERIFY` is a fixed message; the verifier's error goes to the log. §4.4 |
+| Q4, Q7, Q8, Q18, Q19, Q20, Q23 | Kept as Go (documented product decisions). |
+| Q5 / defect 6 | Session-mint failure → the `ErrorModel` 500 envelope, fixed message, cause logged. §4.6 |
+| Q6 | A CLIENT/PARTNER mapping without `primaryClientId` is refused at create/update (authadmin); JIT keeps the check as defence. §4.7 |
+| Q9 (with core Q29) | `check-domain`: same shape, `authorizationUrl` omitted unless real. §4.10 |
+| Q10 | The portal login flow is consumed at the callback sink, like the password path. §5.6 |
+| Q11 / defect 7 | Remember-device exists only for internally managed identities, structurally absent for external-IdP domains, **off by default**, on only by explicit domain policy; the policy change and each enrolment / revocation are audit-logged; a store error never enables it. Verify Go's stored default at cutover. §6.1, §6.7 |
+| Q12 / defect 9 | `/auth/2fa/verify` enforces the domain's allowed-method list (403 `METHOD_NOT_ALLOWED`); recovery codes are never restricted. §6.4 |
+| Q13 / defect 1 | Passkey sign counter + `last_used_at` persisted; a counter that goes backwards is rejected; `passkey:authenticated` emitted. §7.5 |
+| Q14 / defect 8 | Admin-triggered resets keep bypassing the factor (lost-device recovery). The admin action gains an option — never on self-service — that also clears MFA enrolments + trusted devices, notifies the user and writes an audit row; the domain policy forces re-enrolment. §8.1, §8.7 |
+| Q15 / defect 15 | `Date`, `Message-ID`, RFC 2047 subject on outgoing mail. §9 |
+| Q16 | Fallback brand `FlowCatalyst`. §10 |
+| Q17 / defect 5 | The purger sweeps expired e-mail PINs, trusted devices, reset tokens and approval requests. §14 |
+| Q21 | Trusted-device items use the platform time shape; no `principalId`. §6.4 |
+| Q22 / defect 12 | System actor spelled `"system"` for new rows. §2 |
+| Q24 | `authenticate/begin` 429 in the platform `TOO_MANY_REQUESTS` envelope. §7 |
+| Q25 / defect 13 | Passkey events under `platform:iam`. §7.5 |
+| defect 10 | 2FA trusted-device / method DELETE → 404 when nothing was deleted. §6.4 |
+| defect 11 | `EXPIRED` written by the purger; the reviewer `note` persisted. §3.7, §8.6 |
+| defects 2, 3, 4 | Dead code; not ported. |
+
 ## 1. Purpose & boundaries
 
 Five cooperating surfaces, one per section below:

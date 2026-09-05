@@ -92,6 +92,30 @@ auth: this side is still moving.
 > `previous_secret_last_used_at` (secret-rotation grace) — adopted as Flyway
 > V2/V3.
 
+## 0.5 Owner rulings in force (2026-09-05) — override the sections below
+
+Every open question in §19 was ruled on 2026-09-05 (`docs/auth-rulings.md`,
+"Rulings — Batch A/B/C"; ledger `../flowcatalyst-rust/docs/owner-questions.md`).
+Where a ruling changes a row below, **the ruling wins**; the row is left as
+extracted so the Go behaviour stays visible.
+
+| Ruling | Effect on this spec |
+|---|---|
+| Q1 | `auth_time` = the real login time (rides the code → refresh family → rotation), as Go's `5e4d0f9`. §3.2 row corrected. |
+| Q5 / A-14, Q6 / A-13, Q7 / A-15, Q8 / A-16, Q10 / A-18, Q11 / A-19, Q12 / A-20, Q14 / A-22, Q15 / A-23 | As recorded in Part A of the ledger. |
+| Q13 / A-21 | Code replay does **not** revoke the refresh family (kept). |
+| Q16 | `RefreshTokenExpirySecs` / `SessionTokenExpirySecs` are dead: 7 d / 24 h fixed. |
+| Q17, Q20 → **empty grant list ⇒ no grant** (fail closed; existing rows need grants set), Q25, Q28 (refresh-only revocation; access-token denylist on the backlog) | §3.6, §6.2, §7.3 |
+| Q18 | The three caller-less buckets **keep their names**; wiring policies + callers for introspect / revoke / check-domain is a backlog item. |
+| Q19 | HS256 secret must be ≥ 32 bytes; refuse to start otherwise. §4 row. |
+| Q21 / X-06 | Unknown `clientType` on create → 400, never PUBLIC. |
+| Q22 | `state` > 116 chars → `invalid_request` before any write. §7.3.1. |
+| Q23 | Rate-limit store fails **open**; login-backoff store fails **closed** (503 `BACKOFF_UNAVAILABLE`); plus a readiness check that the current + next `iam_login_attempts` partitions exist and a counter that alarms on the first backoff-store error. §7.2. |
+| Q24 | `/auth/me` answers `status: "ok"`. §6.1. |
+| Q26 | Introspection `client_id` = the token's `azp` (RFC 7662). §6.2. |
+| Q27 | Per-client 429 on `/oauth/authorize` uses the RFC 6749 error shape (`rate_limit_exceeded`), as `/oauth/token`. §6.2. SDK/SPA follow-up on the backlog. |
+| Q29 (with identity Q9) | `check-domain` keeps its shape but never fabricates `authorizationUrl`. §6.1. |
+
 ## 1. Purpose & boundaries
 
 The auth core is four cooperating things that share **one RSA key pair**
