@@ -142,7 +142,9 @@ No YAML, no new dependency; Jackson 3 is already there.
 - **Captured values** are per side: `capture` maps a name to a JSON Pointer
   (RFC 6901, Jackson `at()`) into the response body. A missing pointer is a
   scenario error on that side. `capture` may also name a header:
-  `{"loc": "header:Location"}` and a cookie: `{"sess": "cookie:fc_session"}`.
+  `{"loc": "header:Location"}`, one query parameter of the `Location` URL:
+  `{"code": "location-param:code"}` (the authorization code), and a
+  cookie: `{"sess": "cookie:fc_session"}`.
 - **Built-ins**: `${admin.email}`, `${admin.password}`; `${run}` (one short
   random token per harness run, the same on both sides, so codes and names
   are unique across runs but identical across sides); `${client.id}`,

@@ -282,6 +282,12 @@ public final class Runner {
                 String header = spec.substring("header:".length());
                 value = sent.headers().firstValue(header)
                         .orElseThrow(() -> new IllegalStateException("capture '" + name + "': header " + header + " not present"));
+            } else if (spec.startsWith("location-param:")) {
+                String param = spec.substring("location-param:".length());
+                String location = sent.headers().firstValue("Location")
+                        .orElseThrow(() -> new IllegalStateException("capture '" + name + "': Location header not present"));
+                value = queryParam(location, param)
+                        .orElseThrow(() -> new IllegalStateException("capture '" + name + "': Location has no query parameter " + param));
             } else if (spec.startsWith("cookie:")) {
                 String cookie = spec.substring("cookie:".length());
                 value = cookieValue(sent.headers(), cookie)
@@ -296,6 +302,24 @@ public final class Runner {
             }
             vars.capture(name, value);
         });
+    }
+
+    /// One decoded query parameter of a URL (`location-param:<name>` — the
+    /// authorization code an `/oauth/authorize` redirect carries).
+    static java.util.Optional<String> queryParam(String url, String param) {
+        int q = url.indexOf('?');
+        if (q < 0) return java.util.Optional.empty();
+        String query = url.substring(q + 1);
+        int hash = query.indexOf('#');
+        if (hash >= 0) query = query.substring(0, hash);
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            String k = eq < 0 ? pair : pair.substring(0, eq);
+            if (java.net.URLDecoder.decode(k, StandardCharsets.UTF_8).equals(param)) {
+                return java.util.Optional.of(eq < 0 ? "" : java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+            }
+        }
+        return java.util.Optional.empty();
     }
 
     /// The value of one cookie out of every `Set-Cookie` response header.

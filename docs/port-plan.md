@@ -191,8 +191,7 @@ in it), so the frontend is their acceptance test.
 - ~~Side-by-side replay harness design~~ **Designed 2026-09-05**
   (`docs/spec/parity-harness.md`): Go-created template database, Go
   subprocess vs Java in-process, scenario corpus S0–S3, allow-list with
-  rulings, coverage gate. Harness + S0: Sonnet
-  (`docs/process/briefs/2026-09-05-p5-parity-harness.md`); S1 (28 lockfile
+  rulings, coverage gate. ~~Harness + S0~~ **Done** (Sonnet, `0abc08d`); S1 (28 lockfile
   groups, three agents), S2 (auth surface, orchestrator-reviewed), S3
   (rest + threshold 1.0); then triage per spec §9. ~~Frontend end-to-end
   design~~ **Designed 2026-09-05** (`docs/spec/frontend-e2e.md`: Playwright
