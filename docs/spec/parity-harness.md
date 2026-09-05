@@ -216,8 +216,12 @@ exactly).
 
 **`parity/expected-diffs.json`** is the allow-list:
 `{"scenario": "…", "step": "…", "pointer": "…", "reason": "…", "ruling": "A-22 | backlog#… | owner 2026-…"}`.
-A diff matching an entry is `ACCEPTED`. An entry that matched nothing in the
-run is **stale and fails the run** — the file cannot rot, and a Java fix
+`scenario` and `step` may be `"*"`, and `pointer` may start with `**/` to
+match a trailing segment at any depth (`**/$schema` matches `/$schema` and
+`/items/3/$schema`) — for a difference that is systemic, one entry with one
+reason, not one per step. A diff matching an entry is `ACCEPTED`. An entry
+that matched nothing in the run (wildcard entries included) is **stale and
+fails the run** — the file cannot rot, and a Java fix
 that removes a difference has to remove its excuse too. No `ruling` field, no
 entry (the reviewer rejects it).
 
@@ -291,10 +295,12 @@ fixed; only the allow-list grows, and every entry in it has a name.
 
 ## 10. Owner questions
 
-- **`$schema` on responses.** huma puts a `$schema` URL on every model. If
-  Java does not emit it, is that a wire break for any client? (The generated
-  SDKs ignore unknown members; the frontend types are generated with it
-  optional.) Until ruled: accepted diff, cited here.
+- **`$schema` on responses.** huma's schema-link transformer puts a
+  `$schema` URL on every JSON response Go sends; Java never emits it
+  (checked 2026-09-05: no emitter in `server`; the frontend's generated
+  types declare it optional; no SDK reads it). Is its absence a wire break
+  for any client the owner knows of? Until ruled: one wildcard allow-list
+  entry `**/$schema`, cited here, and a `docs/backlog.md` line.
 - **Where the harness runs.** Locally on demand is enough for Phase 5. In CI
   it needs a Go toolchain on the runner; the module's JUnit entry is skipped
   unless `PARITY_GO_SRC` or `PARITY_GO_BIN` is set, so `mvn test` stays

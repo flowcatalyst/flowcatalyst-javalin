@@ -613,3 +613,13 @@ later decision.
 - **Processing endpoint 5xx classification** is uniform (every non-2xx/429
   consumes budget), not the router's 502/503/504-vs-other split; open owner
   question in `docs/spec/dispatch-seam.md` §14.
+
+## From the parity-harness design (2026-09-05, **owner**)
+
+- **`$schema` on every JSON response.** huma's schema-link transformer adds a
+  `"$schema": "<base>/schemas/<Model>.json"` member to every response Go
+  sends; Java never emits it. The frontend's generated types declare it
+  optional and no SDK reads it (checked 2026-09-05). Owner: is its absence a
+  wire break for any client, or do we let it go? Until ruled the parity
+  harness carries one wildcard allow-list entry (`**/$schema`,
+  `parity-harness.md` §10).
