@@ -4,10 +4,12 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
-## Overnight run 2026-09-05 — Phase 0 done, Phase 1 in flight (handover)
+## Overnight run 2026-09-05 — Phases 0, 1 and 2 done; Phase 3 gated on rulings (handover)
 
-Owner asleep; orchestrator ran `docs/port-plan.md` Phase 0 to completion and
-started Phase 1. Every unit below was reviewed by the orchestrator (code
+Owner asleep; orchestrator ran `docs/port-plan.md` Phases 0, 1 and 2 to
+completion (eleven Sonnet ports merged, every Phase 2 spec written first),
+wrote the auth rulings batches that gate Phase 3, and stopped there — no
+auth Java without Batch A. Every unit below was reviewed by the orchestrator (code
 read, not the report), mutation-checked on its security-bearing assertion,
 and merged only after the unit's tests plus the lockfile check were green
 in its worktree; main's full suite is re-run after each merge.
@@ -29,10 +31,31 @@ in its worktree; main's full suite is re-run after each merge.
 | `7391dbe` | **scheduled-job scheduler + purger** (Phase 2 unit 3): poller, HMAC-signed dispatcher with credential cache, login-attempt partition maintenance | spec `scheduled-job-scheduler.md` by orchestrator; Sonnet port (five mutants killed); orchestrator killed a sixth (signing with the token instead of the secret) |
 | `5b88313` | **BFF + `/api/me`** (Phase 1 last unit): dashboard, filter options, developer, event types, roles, scheduled jobs, `/bff/*` aggregate mounts, `/api/me*` | spec `bff.md` by orchestrator; Sonnet port (eight mutants); orchestrator admin-gated the dashboard (spec draft was wrong, agent flagged it) and killed a ninth mutant |
 | `(merge)` | **MCP server** (Phase 2 unit 4): 12 tools, 9 resources, streamable HTTP on its own listener, client-credentials token manager + interim static bearer | spec `mcp.md` by orchestrator; Sonnet port (the agent stalled twice waiting on its own suite and never wrote a report — the orchestrator read the code, added the bearer assertion, killed two mutants); coverage unchanged |
+| `c55d6dd` | **AWS Secrets Manager DB mode + rotation** (Phase 2 unit 5, last) | spec `db-secret.md` by orchestrator; Sonnet port — the cleanest of the night: ten mutants incl. the disabled timer, a clear report; orchestrator killed an eleventh (credentials clobbered on a failed refresh) |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
-**In flight (Sonnet, own worktrees; merge pending orchestrator review):**
-- AWS Secrets Manager DB mode + rotation against `db-secret.md` (Phase 2 unit 5).
+**In flight:** nothing. No worktrees, no background agents, working tree
+clean. Final whole-reactor `mvn clean test` on main at the end of the run:
+**usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
+2772 when the night started).
+
+**Where to resume:** Phase 3 needs Batch A of `docs/auth-rulings.md`
+ruled. Until then the unblocked work is Phase 4's CORS filter and JFR
+events (Sonnet, small) and the fcdev stubs `mcp` / `outbox` / `upgrade`,
+which Phase 2 now gives something to drive. The `TODO(port)` markers left
+in `Server`/`Platform` are the router's `/metrics` alias and the Phase 3
+auth registrations (incl. the DB-backed `ClaimsResolver`); `Main` has none.
+
+**Sonnet, honestly, across eleven ports:** reliable when the brief names
+the template class, the exact routes and the mutants to run; two agents
+produced the best work of the night on exactly that shape (outbox
+concurrency aside, db-secret). Unreliable on unbriefed judgment — it
+invented an HS256 minter under the encryption key and a fake OAuth pair
+(serviceaccount), wrote a barrier-based "exclusivity" test that could not
+fail (outbox), followed a wrong line in my own spec into an admin gate
+that was open to every user (BFF, flagged by the agent, my error), and
+one agent stalled twice waiting on its own test run and never wrote a
+report (MCP). Nothing it wrote reached main unread.
 
 **For the owner — Phase 3 gate:** `docs/auth-rulings.md` groups the 44
 open auth questions and 15 observed defects into three batches, each row

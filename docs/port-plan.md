@@ -111,8 +111,15 @@ transaction by me, everything around it by Sonnet.
    login-attempt quarterly partitions).
 4. ~~MCP~~ **Done 2026-09-05** (spec `docs/spec/mcp.md`; static bearer
    interim until `/oauth/token` lands in Phase 3).
-5. **AWS Secrets Manager DB mode + rotation** (318) — spec
-   `docs/spec/db-secret.md` written 2026-09-05. Sonnet.
+5. ~~AWS Secrets Manager DB mode + rotation~~ **Done 2026-09-05** (spec
+   `docs/spec/db-secret.md`; rotation via Hikari's config MXBean, new
+   physical connections only, as Go's pgx `BeforeConnect`).
+
+**Phase 2 complete 2026-09-05.** Every `FC_*_ENABLED` subsystem of
+`subsystems.go` except auth now has a Java implementation behind the same
+toggle. The `TODO(port)` markers left in `Server`/`Platform`/`Main` are the
+router's `/metrics` alias, the Phase 3 auth registrations, and the DB-backed
+`ClaimsResolver` for the session cookie (also Phase 3).
 
 Router follow-ups that ride along: SQS/NATS dispatch publishers (deferred in
 Go too); the `/metrics` alias under the router prefix; a router-only

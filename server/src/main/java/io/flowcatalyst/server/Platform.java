@@ -150,13 +150,11 @@ public final class Platform {
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
-        // TODO(port): the remaining aggregate registrations from wire_routes.go, in order:
-        //   client, role, application, principal, portalusers, resetapproval, serviceaccount,
-        //   auth (OAuth clients), oauth token/introspect/revoke/userinfo/discovery, OIDC bridge
-        //   + portal auth, cors, connection, subscription, dispatchpool, [eventtype: done],
-        //   sdksync, event, audit, docs, dispatchjob, identityprovider, emaildomain,
-        //   loginattempt, platformconfig, process, scheduledjob, webauthn; then bff/*, me,
-        //   clientselection, sdk batch endpoints.
+        // TODO(port): the registrations from wire_routes.go still missing are all Phase 3
+        //   (docs/port-plan.md, gated on docs/auth-rulings.md): auth (OAuth clients),
+        //   oauth token/introspect/revoke/userinfo/discovery, OIDC bridge + portal auth,
+        //   portalusers, resetapproval, webauthn, clientselection; plus the CORS filter
+        //   (Phase 4). Everything else below is registered in Go's order.
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
@@ -196,8 +194,8 @@ public final class Platform {
         DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
         // The reaper (dispatch-seam spec §7) is not leader-gated — every sweep is one
         // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
-        // (not-yet-ported) scheduler loops Server.java's TODO(port) still lists. Returned below
-        // so Server.Running#stop() can close it.
+        // leader-gated loops Server starts. Returned below so Server.Running#stop() can
+        // close it.
         var dispatchJobReaper = new DispatchJobReaper(dispatchJobRepo).start();
         // /api/dispatch/settled and /api/dispatch/process (dispatch-seam spec §5, §6, §11):
         // public routes, registered below via Platform.isPublicPath; fail-closed on a missing
