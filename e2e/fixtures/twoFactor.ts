@@ -38,7 +38,7 @@ export async function createTwoFactorTestUser(request: APIRequestContext): Promi
 export async function createRememberDeviceUser(request: APIRequestContext): Promise<TwoFactorTestUser> {
     const idpCode = unique("e2e-2fa-idp");
     const idpRes = await request.post("/api/identity-providers", {
-        data: { code: idpCode, name: `E2E 2FA IdP ${idpCode}`, type: "INTERNAL" },
+        data: { code: idpCode, name: `E2E 2FA IdP ${idpCode}`, type: "INTERNAL", oidcMultiTenant: false }, // required by the lockfile on both sides
     });
     if (!idpRes.ok()) {
         throw new Error(`createRememberDeviceUser: POST /api/identity-providers -> ${idpRes.status()} ${await idpRes.text()}`);

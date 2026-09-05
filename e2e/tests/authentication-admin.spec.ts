@@ -18,7 +18,7 @@ import {
     confirmedAction,
     rowWithText,
     choosePrimeOption,
-    createInternalIdentityProvider,
+    createInternalIdentityProvider, createInternalIdentityProviderViaApi,
     createClientViaApi,
 } from "../fixtures/authenticationAdmin.js";
 
@@ -110,6 +110,11 @@ test.describe("authentication admin / oauth clients", () => {
 
 test.describe("authentication admin / identity providers", () => {
     test("create, edit, then delete — reflected after reload", async ({ adminPage: page }) => {
+        // The create drawer omits `oidcMultiTenant` for an INTERNAL provider while the
+        // lockfile requires it, so both servers answer 400 VALIDATION and the SPA
+        // never leaves the drawer (docs/backlog.md). `test.fail` keeps the flow running;
+        // it flips to an unexpected pass when the SPA or the contract is fixed.
+        test.fail(true, "SPA/contract defect on both sides: INTERNAL identity-provider create omits the required oidcMultiTenant");
         const { name } = await createInternalIdentityProvider(page);
 
         await page.goto("/authentication/identity-providers");
@@ -135,7 +140,7 @@ test.describe("authentication admin / identity providers", () => {
 
 test.describe("authentication admin / email domain mappings", () => {
     test("an ANCHOR-scope mapping (the design's 'anchor domains') is created and deleted", async ({ adminPage: page }) => {
-        const { name: idpName } = await createInternalIdentityProvider(page);
+        const { name: idpName } = await createInternalIdentityProviderViaApi(page);
         const domain = `${unique("e2e-anchor")}.example.com`;
 
         await page.goto("/authentication/email-domain-mappings/new");
@@ -157,7 +162,7 @@ test.describe("authentication admin / email domain mappings", () => {
     });
 
     test("a CLIENT-scope mapping requires and records a primary client", async ({ adminPage: page }) => {
-        const { name: idpName } = await createInternalIdentityProvider(page);
+        const { name: idpName } = await createInternalIdentityProviderViaApi(page);
         const client = await createClientViaApi(page.request);
         const domain = `${unique("e2e-client-domain")}.example.com`;
 

@@ -760,3 +760,11 @@ the SDK is published.
   field. Owner: honour it (Java first, then a Go mirror) or remove the toggle.
 - **Dispatch-pool "Delete" confirm copy (SPA).** The dialog says the pool
   will be archived; both servers delete the row. Frontend repo fix.
+- **The SPA cannot create an INTERNAL identity provider against the current
+  contract (frontend e2e, 2026-09-06).** `IdentityProviderCreateDrawer.vue`
+  sends `oidcMultiTenant` only for OIDC providers, but the lockfile (Go's
+  huma schema, `CreateIdentityProviderRequest.required`) lists it — so Go
+  answers 400 VALIDATION, and Java now does too. A frontend/contract
+  mismatch that predates the port: either the drawer always sends
+  `oidcMultiTenant: false`, or Go's DTO makes it optional and the lockfile
+  is re-dumped. The e2e flow pins it as an expected failure meanwhile.

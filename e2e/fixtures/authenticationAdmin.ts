@@ -91,6 +91,25 @@ export async function createInternalIdentityProvider(page: Page, opts?: { code?:
     return { code, name, id };
 }
 
+/// Creates an INTERNAL identity provider through the admin API, with the
+/// `oidcMultiTenant` member the lockfile requires on both sides — for flows
+/// that only need a provider to exist (the email-domain-mapping drawer's
+/// picker). The UI path above is pinned separately as an SPA defect: the
+/// create drawer omits `oidcMultiTenant` for non-OIDC providers and both
+/// servers refuse the body (`docs/backlog.md`).
+export async function createInternalIdentityProviderViaApi(page: Page, opts?: { code?: string; name?: string }): Promise<{ code: string; name: string; id: string }> {
+    const code = opts?.code ?? unique("e2e-idp");
+    const name = opts?.name ?? `E2E Identity Provider ${code}`;
+    const res = await page.request.post("/api/identity-providers", {
+        data: { code, name, type: "INTERNAL", oidcMultiTenant: false },
+    });
+    if (res.status() !== 201) {
+        throw new Error(`createInternalIdentityProviderViaApi: ${res.status()} ${await res.text()}`);
+    }
+    const body = (await res.json()) as { id: string };
+    return { code, name, id: body.id };
+}
+
 /// Creates a client via the admin API — a prerequisite for a CLIENT-scoped
 /// email domain mapping. Client CRUD itself is E2E-A's tenancy group; this
 /// exists only to satisfy that one required field, not to exercise the
