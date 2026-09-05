@@ -30,7 +30,11 @@ server/src/test/java/io/flowcatalyst/server/LockfileCoverageTest.java           
 
 `Platform.java`: only the `ApplicationApi.State` construction gains the
 repositories the handlers need (service accounts, principals, OAuth
-clients, `Optional<Encryption>`); do not touch any other line.
+clients, `Optional<Encryption>`); do not touch any other line. Note the
+OAuth-client repository is currently constructed ~90 lines *after*
+`ApplicationApi.register` — the repositories are stateless over the pool,
+so construct the instances the State needs right where the State is built
+rather than reordering the file.
 
 ## `POST /api/applications/{id}/provision-service-account`
 
