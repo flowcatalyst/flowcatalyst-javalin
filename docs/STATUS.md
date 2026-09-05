@@ -18,7 +18,7 @@ in its worktree; main's full suite is re-run after each merge.
 |---|---|---|
 | `931d5a7` | Backoff ruling `3b64775` (`lastSuccessAt` bounded to 400 d) + PoolTest flake fix | orchestrator |
 | `c6d7e36` | fcdev downloads its Postgres archive on first run — jar 181 → 47 MB | Sonnet; orchestrator added HTTP timeouts. Found zonky's own POM drags four archives in transitively |
-| `dd1874b` | Flyway V2–V7 = Go 046–052 (secret grace, dispatch-mode default, **login-attempts partitioned**, X-06 CHECK constraints); Go schema re-captured at HEAD | Sonnet; two Go HEAD defects found → `backlog.md` (seeder writes `'JSON'` against its own CHECK; login-attempt partitions never extended) |
+| `dd1874b` | Flyway V2–V7 = Go 046–052 (secret grace, dispatch-mode default, **login-attempts partitioned**, X-06 CHECK constraints); Go schema re-captured at HEAD | Sonnet; two Go HEAD defects found → `backlog.md` (seeder writes `'JSON'` against its own CHECK; the login-attempt partition note was later corrected — Go's purger maintains them) |
 | `22bbffc` | **X-06 strict stored-enum reads across twelve modules** | Sonnet sweep + orchestrator merge fix-up (CHECK constraints landed underneath it). `AttemptOutcome` no longer reads a corrupt row as a login SUCCESS; `ScopeType` no longer defaults to ANCHOR. Shared `CorruptRowException` → 500 `CORRUPT_ROW` |
 | `9a4e6fc` | **authadmin**: anchor domains, client auth configs, IdP role mappings (11 ops) | spec `auth-admin-config.md` by orchestrator; Sonnet port; coverage **203/245** |
 | `(merge)` | **serviceaccount** (14 ops), RS256 mint under the platform key, CAS plaintext upgrade, OAuth marker | Sonnet port; orchestrator replaced an HS256-under-app-key minter and a fake OAuth pair in review; coverage **206/245** |

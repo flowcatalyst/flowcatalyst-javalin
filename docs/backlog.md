@@ -244,14 +244,14 @@ item names its origin; items marked **owner** need Andrew's call.
   the same literal and now writes `SchemaType.JSON_SCHEMA` — a **deliberate
   deviation** (correctness over conformance); `go-seed-expected.tsv` updated
   for the 72 schema rows. Go needs the one-word fix.
-- **`iam_login_attempts` partitions are created once, at migration 049.**
-  Quarters from the oldest row to now + 6 months, plus a default partition.
-  Go's `stream.PartitionManager` lists seven `msg_*` parents and not this
-  table, so nothing creates later quarters: after the pre-created range,
-  every login attempt lands in `iam_login_attempts_default` and the
-  partition pruning the migration exists for stops applying. Either add the
-  table to the partition maintainer (Java: Phase 2 stream work) or accept the
-  default-partition tail. Ruling wanted.
+- ~~`iam_login_attempts` partitions are created once, at migration 049~~
+  **Corrected 2026-09-05:** Go's always-on **purger** (`StartPurger`, every
+  minute) calls `EnsureQuarterlyPartition(now)` and `(now + 3 months)` and
+  drops quarters older than three years — the stream `PartitionManager`
+  deliberately excludes this table. The Java purger is Phase 2 work
+  (`docs/spec/scheduled-job-scheduler.md` §4); until it lands, a Java-only
+  deployment stops getting new quarters after the ones migration 049
+  pre-created. No owner question after all.
 
 - **Event deduplication never fires across requests.** `msg_events`'
   unique index is `(deduplication_id, created_at)` (partition key) and

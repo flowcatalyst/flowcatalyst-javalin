@@ -131,7 +131,8 @@ projected_at` on conflict. Derived: `is_completed = status = 'COMPLETED'`;
 `PartitionedTables` = `msg_events`, `msg_events_read`, `msg_dispatch_jobs`,
 `msg_dispatch_jobs_read`, `msg_dispatch_job_attempts`,
 `msg_scheduled_job_instances`, `msg_scheduled_job_instance_logs` (**not**
-`iam_login_attempts` — `backlog.md`, owner question). Config
+`iam_login_attempts` — its quarterly partitions are the purger's job,
+`scheduled-job-scheduler.md` §4). Config
 `MonthsForward=3`, `RetentionDays=90`, `ScheduledJobRetentionDays=30` (for
 the two `msg_scheduled_job_instance*` parents), `TickInterval=24 h`; env
 `FC_STREAM_PARTITION_MONTHS_FORWARD`, `…_RETENTION_DAYS`,
