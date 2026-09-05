@@ -95,6 +95,18 @@
       <groupId>com.google.zxing</groupId>
       <artifactId>core</artifactId>
     </dependency>
+    <dependency>
+      <!-- Passkeys (auth-identity §7): registration and assertion ceremonies -->
+      <groupId>com.yubico</groupId>
+      <artifactId>webauthn-server-core</artifactId>
+    </dependency>
+    <dependency>
+      <!-- The WebAuthn library serialises its options with Jackson 2 (com.fasterxml), which
+           lives beside the platform's Jackson 3 (tools.jackson) without overlap; it declares
+           databind at runtime scope only, so the annotation types must be here for javac. -->
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
 
     <!-- Infra -->
     <!-- Router queue backends. Versions are pinned by the parent's

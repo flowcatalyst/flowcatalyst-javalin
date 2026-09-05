@@ -350,10 +350,12 @@ public final class GrantStore {
     // ── housekeeping ──────────────────────────────────────────────────────
 
     /// Deletes expired rows of every type this store writes; the purger's sweep.
+    /// Every expired payload row, whatever wrote it — codes, refresh tokens,
+    /// pending auths and the passkey ceremonies share this table (Go's
+    /// `payloadRepo.PurgeExpired`).
     public int deleteExpired() {
         return dsl.deleteFrom(OAUTH_OIDC_PAYLOADS)
-                .where(OAUTH_OIDC_PAYLOADS.TYPE.in(TYPE_AUTH_CODE, TYPE_REFRESH_TOKEN, TYPE_PENDING_AUTH))
-                .and(OAUTH_OIDC_PAYLOADS.EXPIRES_AT.lt(DSL.currentOffsetDateTime()))
+                .where(OAUTH_OIDC_PAYLOADS.EXPIRES_AT.lt(DSL.currentOffsetDateTime()))
                 .execute();
     }
 
