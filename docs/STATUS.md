@@ -28,11 +28,11 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **outbox processor** (Phase 2 unit 2) | spec `outbox.md` by orchestrator; Sonnet port; orchestrator replaced a racy exclusivity test with a held-transaction one that kills the no-lock mutant |
 | `7391dbe` | **scheduled-job scheduler + purger** (Phase 2 unit 3): poller, HMAC-signed dispatcher with credential cache, login-attempt partition maintenance | spec `scheduled-job-scheduler.md` by orchestrator; Sonnet port (five mutants killed); orchestrator killed a sixth (signing with the token instead of the secret) |
 | `5b88313` | **BFF + `/api/me`** (Phase 1 last unit): dashboard, filter options, developer, event types, roles, scheduled jobs, `/bff/*` aggregate mounts, `/api/me*` | spec `bff.md` by orchestrator; Sonnet port (eight mutants); orchestrator admin-gated the dashboard (spec draft was wrong, agent flagged it) and killed a ninth mutant |
+| `(merge)` | **MCP server** (Phase 2 unit 4): 12 tools, 9 resources, streamable HTTP on its own listener, client-credentials token manager + interim static bearer | spec `mcp.md` by orchestrator; Sonnet port (the agent stalled twice waiting on its own suite and never wrote a report — the orchestrator read the code, added the bearer assertion, killed two mutants); coverage unchanged |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Sonnet, own worktrees; merge pending orchestrator review):**
 - AWS Secrets Manager DB mode + rotation against `db-secret.md` (Phase 2 unit 5).
-- MCP server port against `mcp.md` (Phase 2 unit 4).
 
 **For the owner — Phase 3 gate:** `docs/auth-rulings.md` groups the 44
 open auth questions and 15 observed defects into three batches, each row

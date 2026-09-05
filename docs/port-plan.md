@@ -109,8 +109,8 @@ transaction by me, everything around it by Sonnet.
 3. ~~Scheduled-job scheduler + purger~~ **Done 2026-09-05** (spec
    `docs/spec/scheduled-job-scheduler.md`; the purger also owns the
    login-attempt quarterly partitions).
-4. **MCP** (785) — spec `docs/spec/mcp.md` written 2026-09-05; the Java
-   MCP SDK is already managed in the parent POM. Sonnet end to end.
+4. ~~MCP~~ **Done 2026-09-05** (spec `docs/spec/mcp.md`; static bearer
+   interim until `/oauth/token` lands in Phase 3).
 5. **AWS Secrets Manager DB mode + rotation** (318) — spec
    `docs/spec/db-secret.md` written 2026-09-05. Sonnet.
 
