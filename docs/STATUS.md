@@ -24,11 +24,12 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **serviceaccount** (14 ops), RS256 mint under the platform key, CAS plaintext upgrade, OAuth marker | Sonnet port; orchestrator replaced an HS256-under-app-key minter and a fake OAuth pair in review; coverage **206/245** |
 | `(merge)` | **SDK ingest** (5 routes: events, dispatch jobs, audit logs) | Sonnet port; found Go's cross-request event dedup never fires (index includes `created_at`); coverage **208/245** |
 | `(merge)` | **principal 404 oracle (PR-3/PR-4), X-02 sync containment, X-08 per-app rollup groups, five residual X-06 readers** | Sonnet; orchestrator mutation-checked the 404 (seven assertions) |
+| `(merge)` | **stream processor** (Phase 2 unit 1): fan-out, projections, partition manager, health | spec `stream.md` by orchestrator; Sonnet port; orchestrator mutation-checked the claim transaction |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Sonnet, own worktrees; merge pending orchestrator review):**
 - Outbox processor port against `outbox.md` (Phase 2 unit 2).
-- Stream processor port against `stream.md` (Phase 2 unit 1; spec written by the orchestrator).
+- BFF + `/api/me` port against `bff.md`.
 
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
 (seed `'JSON'`, unextended partitions, dispatch-ingest permission); the

@@ -105,8 +105,7 @@ Each is a poll loop with one transaction boundary that matters. Spec by me
 (behaviour tables, never code), loop skeleton + claim/commit/publish
 transaction by me, everything around it by Sonnet.
 
-1. **Stream processor** (1,305 Go lines) — spec `docs/spec/stream.md`
-   written 2026-09-05; port in flight.
+1. ~~Stream processor~~ **Done 2026-09-05** (spec `docs/spec/stream.md`).
 2. **Outbox processor** (1,463) — spec `docs/spec/outbox.md` written
    2026-09-05; port in flight. Postgres backend only (**owner ruling
    2026-09-05: Mongo is on the backlog**).
