@@ -50,7 +50,8 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
    decode (X-06, noted in `auth-core.md`). `3b64775` is folded into
    `loginattempt.md` / `login-backoff-lock.md` and implemented (`931d5a7`).
    §6 stands as written.
-4. **Schema drift — adopt Go migrations 046–052 as Flyway V2–V7.** Found
+4. ~~Schema drift — adopt Go migrations 046–052 as Flyway V2–V7~~ **Done
+   2026-09-05 (`dd1874b`).** Found
    2026-09-05: a Go database at HEAD carries seven migrations past our V1
    baseline (oauth secret grace 046/047, dispatch-mode default 048,
    **`iam_login_attempts` range-partitioned by quarter 049**, X-06 CHECK
@@ -58,7 +59,8 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
    `go-schema.sql` + fingerprint from a Go-HEAD database, jOOQ regen,
    `GoAdoptionTest` on goose 052. Sonnet translates; the tests are reviewed
    and mutation-checked here.
-5. **X-06 strict stored-enum reads** across the platform. Java's `parse`
+5. ~~X-06 strict stored-enum reads across the platform~~ **Done 2026-09-05
+   (`22bbffc`)**, five residual readers in the `e6a33ba` unit. Java's `parse`
    methods default unknown stored values (`AttemptOutcome` → `SUCCESS`,
    `ScopeType` → `ANCHOR` — a corrupt row reads as a login success, or as
    the most privileged scope). Replicate the dispatchjob unit's
@@ -73,7 +75,8 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
    (`ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP`); sync rollup message groups
    `platform:<aggregate>:<applicationCode>` (bare when no application).
    Sonnet, after the X-06 sweep lands (same modules).
-7. fcdev: download the Postgres archive on first run (zonky
+7. ~~fcdev: download the Postgres archive on first run~~ **Done 2026-09-05
+   (`c6d7e36`, 181 → 47 MB).** (zonky
    `PgBinaryResolver`, Go's pattern) — spec + test mine, code Sonnet. Drops
    the jar to ~50 MB and is a prerequisite for a native fcdev.
 
@@ -84,8 +87,8 @@ Sonnet ports, three at a time, in this order; I audit each before its commit.
 1. **`serviceaccount`** (14 ops; `serviceaccount.md` + `serviceaccount-fixes.md`
    exist). The Go-side fixes in the fixes doc land in the spec first so the
    port does not reproduce the corrected defect.
-2. **`anchor-domains`** (4), **`auth-configs`** (4), **`idp-role-mappings`** (3)
-   — small, share the `identityprovider` shape; one spec addendum from me.
+2. ~~`anchor-domains`, `auth-configs`, `idp-role-mappings`~~ **Done
+   2026-09-05 (`9a4e6fc`, spec `auth-admin-config.md`; coverage 203).**
 3. **SDK ingest batch endpoints** — `/api/events`, `/api/events/batch`,
    `/api/dispatch-jobs/batch`, `/api/audit-logs/batch`. *I write this spec*:
    partial-failure semantics, idempotency on TSIDs, per-item error shape,

@@ -4,25 +4,36 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
-## Phase 0 of the continuation plan (2026-09-05, in progress)
+## Overnight run 2026-09-05 — Phase 0 done, Phase 1 in flight (handover)
 
-`docs/port-plan.md` Phase 0. Landed: the dormant-identifier backoff ruling
-(`lastSuccessAt` bounded to 400 days, `931d5a7`) and the PoolTest flake.
-Found while drift-checking, now queued as Phase 0 items 4–6: Go migrations
-046–052 are missing from our Flyway chain (a Go-HEAD database is
-range-partitioned on `iam_login_attempts` and carries X-06 CHECK
-constraints); Java's stored-enum reads still default unknown values
-(`AttemptOutcome` → SUCCESS, `ScopeType` → ANCHOR) against ledger X-06; and
-`e6a33ba` (principal 404 oracle, X-02 sync containment, X-08 per-application
-rollup groups) is unabsorbed. **Landed since:** fcdev downloads its Postgres archive on first run
-(181 → 47 MB jar, `c6d7e36`); Flyway V2–V7 mirror Go 046–052 byte for byte,
-`go-schema.sql` re-captured from a Go-HEAD database (18.3) and the
-fingerprint normalised across point-release CHECK-deparse differences,
-jOOQ regenerated, `GoAdoptionTest` on goose 052 (V2–V7 apply as no-ops on a
-Go database). Two Go HEAD defects surfaced doing it — `backlog.md` "Go HEAD
-defects found adopting migrations 046–052" (the seeder's `'JSON'` literal
-fails Go's own CHECK; login-attempt partitions are never extended). The
-X-06 sweep is in flight; the `e6a33ba` unit follows it.
+Owner asleep; orchestrator ran `docs/port-plan.md` Phase 0 to completion and
+started Phase 1. Every unit below was reviewed by the orchestrator (code
+read, not the report), mutation-checked on its security-bearing assertion,
+and merged only after the unit's tests plus the lockfile check were green
+in its worktree; main's full suite is re-run after each merge.
+
+**Landed on `main`, in order:**
+
+| Commit | Unit | Notes |
+|---|---|---|
+| `931d5a7` | Backoff ruling `3b64775` (`lastSuccessAt` bounded to 400 d) + PoolTest flake fix | orchestrator |
+| `c6d7e36` | fcdev downloads its Postgres archive on first run — jar 181 → 47 MB | Sonnet; orchestrator added HTTP timeouts. Found zonky's own POM drags four archives in transitively |
+| `dd1874b` | Flyway V2–V7 = Go 046–052 (secret grace, dispatch-mode default, **login-attempts partitioned**, X-06 CHECK constraints); Go schema re-captured at HEAD | Sonnet; two Go HEAD defects found → `backlog.md` (seeder writes `'JSON'` against its own CHECK; login-attempt partitions never extended) |
+| `22bbffc` | **X-06 strict stored-enum reads across twelve modules** | Sonnet sweep + orchestrator merge fix-up (CHECK constraints landed underneath it). `AttemptOutcome` no longer reads a corrupt row as a login SUCCESS; `ScopeType` no longer defaults to ANCHOR. Shared `CorruptRowException` → 500 `CORRUPT_ROW` |
+| `9a4e6fc` | **authadmin**: anchor domains, client auth configs, IdP role mappings (11 ops) | spec `auth-admin-config.md` by orchestrator; Sonnet port; coverage **203/245** |
+| `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
+
+**In flight (Sonnet, own worktrees; merge pending orchestrator review):**
+- `serviceaccount` port (14 ops) against `serviceaccount.md` + the two later Go commits (CAS plaintext upgrade on read, strict auth type).
+- `e6a33ba` unit: principal 404 oracle (PR-3/PR-4), X-02 sync containment, X-08 per-application rollup groups, and the five lenient stored readers the X-06 sweep left (`DispatchJobKind`, `RetryStrategy`, `AttemptErrorType`, `PrincipalType`, `UserScope`).
+- SDK ingest port (5 routes) against `sdk-ingest.md`.
+
+**For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
+(seed `'JSON'`, unextended partitions, dispatch-ingest permission); the
+wire-side leniency the X-06 sweep preserved under `parseWire` (role
+`/by-source`, identity-provider create, platform-config value type,
+connection update status) — Go's X-06 rejects unknown wire values too, so
+this is a yes/no; and the questions in the two new specs' §8/§5.
 
 ## fc-server packaging and the default-broker gate (2026-09-04)
 

@@ -262,6 +262,13 @@ item names its origin; items marked **owner** need Andrew's call.
   `PERMISSION_REQUIRED`. Java (`docs/spec/sdk-ingest.md` §5 D1) checks the
   seeded permission — deliberate deviation. One-line Go fix.
 
+- **X-06 at the wire (owner yes/no).** The Java sweep kept the pre-existing
+  lenient WIRE parse under `parseWire` for role `/by-source/{source}`
+  (unknown → DATABASE), `CreateIdentityProvider` type, platform-config
+  `SetProperty` value type, and `UpdateConnection` status — because the
+  specs record those as open questions. Go's `6cbe708` rejects unknown wire
+  values with 400 in the same places. Reject at the wire too?
+
 ## Owner questions collected from specs
 
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
