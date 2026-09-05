@@ -64,7 +64,9 @@ public final class RsaServiceAccountTokenMinter implements ServiceAccountTokenMi
                 .claim("name", principal.name())
                 .claim("clients", clientsClaim(principal))
                 .claim("roles", List.copyOf(principal.roleNames()))
-                .claim("applications", List.copyOf(principal.accessibleApplicationIds()))
+                // Go's authservice: the wildcard when the principal has every application
+                // (parity S1-B: a resource server reading this claim saw "confined to none").
+                .claim("applications", principal.allApplications() ? List.of("*") : List.copyOf(principal.accessibleApplicationIds()))
                 .claim("all_applications", principal.allApplications())
                 .claim("token_use", TOKEN_USE_API);
         if (permissions != null && !permissions.isEmpty()) {

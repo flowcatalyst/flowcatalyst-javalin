@@ -5,6 +5,7 @@ import io.flowcatalyst.parity.model.Scenario;
 import io.flowcatalyst.parity.model.Step;
 import io.flowcatalyst.platform.shared.json.Json;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.net.URI;
@@ -96,10 +97,20 @@ public final class Runner {
 
         for (Step step : scenario.steps()) {
             try {
-                JsonNode requestBody = step.authenticator() != null ? null : Substitution.resolve(step.request().body(), vars);
+                JsonNode requestBody = Substitution.resolve(step.request().body(), vars);
                 if (step.authenticator() != null) {
                     if (authenticator == null) authenticator = new SoftAuthenticator();
-                    requestBody = runAuthenticator(step, authenticator, lastBody, vars);
+                    // The previous response wraps the ceremony options as {stateId, options:{publicKey}};
+                    // the authenticator wants the `options` node. Its output becomes the step body's
+                    // `credential` member when the scenario gave a body ({stateId, name, …}), else
+                    // the whole body.
+                    JsonNode options = lastBody == null ? null : lastBody.has("options") ? lastBody.get("options") : lastBody;
+                    JsonNode credential = runAuthenticator(step, authenticator, options, vars);
+                    if (requestBody != null && requestBody.isObject()) {
+                        ((ObjectNode) requestBody).set("credential", credential);
+                    } else {
+                        requestBody = credential;
+                    }
                 }
                 Sent sent = send(step.request(), requestBody, vars);
                 requested.add(new RequestedRoute(step.request().method(), sent.path()));

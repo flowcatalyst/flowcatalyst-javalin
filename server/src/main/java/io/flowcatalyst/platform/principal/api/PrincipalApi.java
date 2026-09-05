@@ -967,7 +967,7 @@ public final class PrincipalApi {
             Instant updatedAt,
             boolean hasDeveloperCredential,
             Instant developerCredentialUpdatedAt,
-            List<String> twoFactorMethods) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<String> twoFactorMethods) {
 
         public static PrincipalResponse from(Principal p) {
             return from(p, null);

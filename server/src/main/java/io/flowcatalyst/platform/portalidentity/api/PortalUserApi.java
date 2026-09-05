@@ -72,7 +72,7 @@ public final class PortalUserApi {
     private static void list(Context ctx, State s) {
         String clientId = ctx.queryParam("clientId");
         if (clientId == null || clientId.isBlank()) {
-            throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId is required");
+            throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId query param is required");
         }
         Checks.requirePortalUserView(Auth.current(), clientId);
         List<PortalUserListItem> items = s.repo().findByClient(clientId).stream().map(PortalUserListItem::from).toList();
@@ -92,7 +92,7 @@ public final class PortalUserApi {
         if (requestedRedirect != null && !requestedRedirect.isBlank()) {
             if (!portalRedirectUris.contains(requestedRedirect)) {
                 throw UseCaseException.validation("REDIRECT_URI_INVALID",
-                        "redirectUri must be a registered redirect URI of a portal client for this client");
+                        "redirectUri must exactly match a registered redirect URI of one of the client's portal OAuth clients");
             }
             target = requestedRedirect;
         } else {
@@ -247,7 +247,7 @@ public final class PortalUserApi {
             Instant lastLoginAt, Instant createdAt, Instant updatedAt) {
 
         static PortalUserListItem from(PortalIdentity pi) {
-            return new PortalUserListItem(pi.id(), pi.email(), pi.name(), pi.status().name(), pi.source().name(),
+            return new PortalUserListItem(pi.id(), pi.email(), pi.name() == null ? "" : pi.name(), pi.status().name(), pi.source().name(), // name is required on the wire; Go writes ""
                     pi.canSignInWithPassword(), pi.lastLoginAt(), pi.createdAt(), pi.updatedAt());
         }
     }

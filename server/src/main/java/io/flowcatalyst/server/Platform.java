@@ -417,11 +417,11 @@ public final class Platform {
         var portalAccess = new PortalIdentityAccess(portalIdentityRepo, uow);
         portalPasswordsHolder.set(portalAccess);
         PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
-                identityProviderRepo, uow, PortalInviteEmailer.logging()));
+                identityProviderRepo, uow, new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
         PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,
                 identityProviderRepo, grantStore, RateLimitStores.build(portalEnvReader, pool),
-                RateLimit.Policies.fromEnv(portalEnvReader), PortalInviteEmailer.logging()));
+                RateLimit.Policies.fromEnv(portalEnvReader), new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
 
         // The OAuth / OIDC provider (auth-core §6.2, §6.2a, §6.2b). /oauth/authorize
         // and /auth/refresh are public (isPublicPath); the token, introspection,

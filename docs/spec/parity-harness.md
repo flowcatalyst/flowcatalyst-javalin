@@ -176,9 +176,11 @@ No YAML, no new dependency; Jackson 3 is already there.
   never followed; `Location` is compared after normalisation.
 - Passkeys: the scenario step `"authenticator": "register" | "assert"` tells
   the runner to run the software authenticator (a copy of the server test's
-  `SoftAuthenticator`, ES256 + CBOR) over the previous step's options and
-  send its output as the body. One authenticator instance per scenario per
-  side.
+  `SoftAuthenticator`, ES256 + CBOR) over the previous step's `options`
+  node (the begin responses are `{stateId, options: {publicKey}}`). Its
+  output is the step body's `credential` member when the step gives a body
+  (`{"stateId": "${stateId}", "name": "…"}` for `register/complete`), else
+  the whole body. One authenticator instance per scenario per side.
 
 ## 4. What is compared, per step
 

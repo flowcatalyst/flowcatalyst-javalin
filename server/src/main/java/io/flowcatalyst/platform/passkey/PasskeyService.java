@@ -116,7 +116,7 @@ public final class PasskeyService {
             PublicKeyCredentialCreationOptions options = rp.startRegistration(StartRegistrationOptions.builder().user(user)
                     .authenticatorSelection(AuthenticatorSelectionCriteria.builder()
                             .userVerification(UserVerificationRequirement.PREFERRED).build())
-                    .timeout(60_000L)
+                    .timeout(300_000L)
                     .build());
             return new Started(Json.MAPPER.readTree(options.toCredentialsCreateJson()), options.toJson());
         } catch (IOException | RuntimeException e) {
@@ -139,7 +139,7 @@ public final class PasskeyService {
         try {
             response = PublicKeyCredential.parseRegistrationResponseJson(credentialJson);
         } catch (IOException | RuntimeException e) {
-            throw new InvalidCredential("INVALID_CREDENTIAL", e.getMessage() == null ? "credential is not parseable" : e.getMessage());
+            throw new InvalidCredential("INVALID_CREDENTIAL", "Parse error for Registration"); // go-webauthn's wording; never the parser's own text (parity S1-B)
         }
         RegistrationResult result;
         try {
@@ -159,7 +159,7 @@ public final class PasskeyService {
     public Started beginAssertion(String principalId) throws CeremonyException {
         try {
             AssertionRequest request = rp.startAssertion(StartAssertionOptions.builder().userHandle(handle(principalId))
-                    .userVerification(UserVerificationRequirement.PREFERRED).timeout(60_000L).build());
+                    .userVerification(UserVerificationRequirement.PREFERRED).timeout(300_000L).build());
             return new Started(Json.MAPPER.readTree(request.toCredentialsGetJson()), request.toJson());
         } catch (IOException | RuntimeException e) {
             throw new CeremonyException("begin assertion failed", e);
@@ -180,7 +180,7 @@ public final class PasskeyService {
         try {
             response = PublicKeyCredential.parseAssertionResponseJson(credentialJson);
         } catch (IOException | RuntimeException e) {
-            throw new InvalidCredential("INVALID_CREDENTIALS", "credential is not parseable");
+            throw new InvalidCredential("INVALID_CREDENTIALS", "Parse error for Assertion"); // go-webauthn's wording
         }
         AssertionResult result;
         try {
@@ -209,7 +209,7 @@ public final class PasskeyService {
         RANDOM.nextBytes(fakeId);
         ObjectNode pk = Json.MAPPER.createObjectNode();
         pk.put("challenge", Base64.getUrlEncoder().withoutPadding().encodeToString(challenge));
-        pk.put("timeout", 60000);
+        pk.put("timeout", 300000);
         pk.put("rpId", config.rpId());
         ObjectNode allow = pk.putArray("allowCredentials").addObject();
         allow.put("type", "public-key");

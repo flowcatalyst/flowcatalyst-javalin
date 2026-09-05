@@ -320,5 +320,103 @@
     "pointer": "/auditLogs/**",
     "reason": "the by-principal filter finds every row Java attributed to the caller; Go finds only the one seeded with an explicit principalId",
     "ruling": "sdk-ingest.md \u2014 Go defect"
+  },
+  {
+    "scenario": "idp-role-mappings*",
+    "step": "create-duplicate-idp-role-name",
+    "pointer": "/status",
+    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+    "ruling": "auth-admin-config.md section 8 D1"
+  },
+  {
+    "scenario": "idp-role-mappings*",
+    "step": "create-duplicate-idp-role-name",
+    "pointer": "/error",
+    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+    "ruling": "auth-admin-config.md section 8 D1"
+  },
+  {
+    "scenario": "idp-role-mappings*",
+    "step": "create-duplicate-idp-role-name",
+    "pointer": "/message",
+    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+    "ruling": "auth-admin-config.md section 8 D1"
+  },
+  {
+    "scenario": "principals*",
+    "step": "confinement-write-out-of-scope-roles",
+    "pointer": "/error",
+    "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
+    "ruling": "principal.md section 11 Q7 \u2014 Go accident"
+  },
+  {
+    "scenario": "principals*",
+    "step": "confinement-write-out-of-scope-roles",
+    "pointer": "/message",
+    "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
+    "ruling": "principal.md section 11 Q7 \u2014 Go accident"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/attestation",
+    "reason": "yubico emits attestation: none; go-webauthn omits the member",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/authenticatorSelection/userVerification",
+    "reason": "yubico emits userVerification: preferred; go-webauthn omits it",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/excludeCredentials",
+    "reason": "yubico emits an empty list; go-webauthn omits it",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/extensions",
+    "reason": "yubico asks for credProps; go-webauthn sends no extensions",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/hints",
+    "reason": "yubico emits an empty hints list; go-webauthn omits it",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/pubKeyCredParams/**",
+    "reason": "the two libraries advertise different COSE algorithm sets in different orders (Go includes PS256/384/512 and Ed448; yubico cannot)",
+    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/rp/name",
+    "reason": "the relying-party name carries the platform brand: Go Flowcatalyst, Java FlowCatalyst",
+    "ruling": "I-Q16 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "**/challenge",
+    "reason": "a fresh random challenge per request on both sides",
+    "ruling": "by construction (auth-identity.md section 7)"
+  },
+  {
+    "scenario": "webauthn*",
+    "step": "*",
+    "pointer": "/options/publicKey/allowCredentials/0/id",
+    "reason": "the decoy credential id is random per request (PasskeyService.decoyChallenge)",
+    "ruling": "auth-identity.md section 7 (I-Q24 decoy)"
   }
 ]

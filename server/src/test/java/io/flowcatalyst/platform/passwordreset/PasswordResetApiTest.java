@@ -329,6 +329,14 @@ class PasswordResetApiTest {
 
         // A portal subject: validate says portal; confirm needs the portal plane.
         String identityId = "ptu_" + RUN + "x";
+        // The link the portal admin API hands back with returnInviteLink=true (PortalInvites → here):
+        // a real set-password token for the ptu_ subject carrying the redirect — the parity harness
+        // (S1-B) found the logging stub answering "null?invite=<id>" in production.
+        String portalLink = LINKS.portalInviteLink(identityId, "https://portal.example/cb");
+        assertThat(portalLink).startsWith(BASE + "/auth/set-password?token=");
+        var portalToken = TOKENS.findByHash(ResetToken.hash(portalLink.substring(portalLink.indexOf("token=") + 6))).orElseThrow();
+        assertThat(portalToken.purpose()).isEqualTo(ResetToken.Purpose.INVITE);
+        assertThat(portalToken.redirectUri()).isEqualTo("https://portal.example/cb");
         SENT.clear();
         LINKS.sendPortalInvite(identityId, "p@example.com", "https://portal.example/");
         assertThat(SENT.getFirst().subject()).isEqualTo("Join the portal");

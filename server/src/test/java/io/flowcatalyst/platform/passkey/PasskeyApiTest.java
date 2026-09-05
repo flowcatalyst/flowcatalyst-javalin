@@ -236,7 +236,7 @@ class PasskeyApiTest {
         JsonNode pk = unknown.get("options").get("publicKey");
         assertThat(unknown.get("stateId").asString()).hasSize(22);
         assertThat(pk.get("rpId").asString()).isEqualTo("localhost");
-        assertThat(pk.get("timeout").asInt()).isEqualTo(60000);
+        assertThat(pk.get("timeout").asInt()).isEqualTo(300000); // go-webauthn's default, matched (parity S1-B)
         assertThat(pk.get("userVerification").asString()).isEqualTo("preferred");
         assertThat(pk.get("allowCredentials").get(0).get("type").asString()).isEqualTo("public-key");
         assertThat(pk.get("allowCredentials").get(0).get("id").asString()).hasSize(43);

@@ -665,3 +665,10 @@ later decision.
 - **Audit-log `principalId` default (parity S1-C).** Java defaults an absent
   `principalId` to the caller; Go stores NULL, so Go's by-principal filter
   misses those rows. Go defect; Java kept; allow-listed.
+- **WebAuthn ceremony option defaults (parity S1-B).** go-webauthn omits
+  `attestation`, `userVerification`, `excludeCredentials`, `extensions`,
+  `hints` and advertises COSE algorithms `-7,-35,-36,-257,-258,-259,-37,-38,-39,-8`;
+  yubico emits `none`/`preferred`/`[]`/`credProps`/`[]` and cannot offer the
+  PS* or Ed448 algorithms. Browsers accept both shapes; the timeout is now
+  300 s on both sides. Owner: any client outside a browser reading these?
+  Allow-listed meanwhile.
