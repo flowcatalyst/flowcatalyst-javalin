@@ -90,6 +90,11 @@
       <groupId>com.password4j</groupId>
       <artifactId>password4j</artifactId>
     </dependency>
+    <dependency>
+      <!-- TOTP enrolment QR (auth-identity §6.5); pure Java, no AWT -->
+      <groupId>com.google.zxing</groupId>
+      <artifactId>core</artifactId>
+    </dependency>
 
     <!-- Infra -->
     <!-- Router queue backends. Versions are pinned by the parent's

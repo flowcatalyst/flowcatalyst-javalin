@@ -10,8 +10,14 @@ import io.flowcatalyst.platform.audit.api.AuditLogApi;
 import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
-import io.flowcatalyst.platform.auth.login.MfaChallenge;
 import io.flowcatalyst.platform.auth.login.LoginApi;
+import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
+import io.flowcatalyst.platform.auth.mfa.LoginMfaGate;
+import io.flowcatalyst.platform.auth.mfa.MailSender;
+import io.flowcatalyst.platform.auth.mfa.Mfa;
+import io.flowcatalyst.platform.auth.mfa.MfaRepository;
+import io.flowcatalyst.platform.auth.mfa.MfaToken;
+import io.flowcatalyst.platform.auth.mfa.TrustedDeviceCookie;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
 import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
@@ -79,7 +85,6 @@ import io.flowcatalyst.platform.role.api.RoleApi;
 import io.flowcatalyst.platform.principal.AnchorDomains;
 import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
 import io.flowcatalyst.platform.principal.InviteEmailer;
-import io.flowcatalyst.platform.principal.MfaService;
 import io.flowcatalyst.platform.principal.Notifier;
 import io.flowcatalyst.platform.principal.PasswordResetEmailer;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
@@ -186,12 +191,24 @@ public final class Platform {
         // and the 2FA routes land with the grant store and the MFA unit.
         var loginPrincipalRepo = new PrincipalRepository(pool);
         var loginAttemptRepo = new LoginAttemptRepository(pool);
+        var loginMappingRepo = new EmailDomainMappingRepository(pool);
         var tokenIssuer = new TokenIssuer(signingKeys, TokenIssuer.Config.of(env.jwtIssuer()));
         var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(EnvReader.system()));
-        LoginApi.register(routes, new LoginApi.State(loginPrincipalRepo, new EmailDomainMappingRepository(pool),
+        // The second factor (auth-identity §6): TOTP secrets under the app key, e-mail
+        // PINs through the mail seam (logging until the mail unit lands), the pending /
+        // enrol token derived from the session key, the trusted-device cookie secure
+        // whenever the session cookie is. The TOTP label carries the live platform name.
+        var cookiesSecure = !env.authAllowTestHeaders();
+        var mfaBranding = new Branding(new PlatformConfigRepository(pool));
+        var mfa = new Mfa(new MfaRepository(pool), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
+                MailSender.logging(), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC());
+        var mfaTokens = new MfaToken(signingKeys.privateKey(), env.jwtIssuer());
+        var mfaGate = new LoginMfaGate(mfa, new DomainPolicy.Evaluator(loginMappingRepo), mfaTokens,
+                new TrustedDeviceCookie(cookiesSecure));
+        LoginApi.register(routes, new LoginApi.State(loginPrincipalRepo, loginMappingRepo,
                 new IdentityProviderRepository(pool), loginAttemptRepo, backoff, tokenIssuer,
-                new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), MfaChallenge.none(),
-                new SessionCookie(!env.authAllowTestHeaders()), pool, Clock.systemUTC()));
+                new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), mfaGate,
+                new SessionCookie(cookiesSecure), pool, Clock.systemUTC()));
         // TODO(port): password reset (/auth/password-reset/*). /oauth/authorize and
         //   /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
@@ -274,7 +291,7 @@ public final class Platform {
         PrincipalApi.register(routes, new PrincipalApi.State(principalRepo, new ClientAccessGrantRepository(pool), roleRepo,
                 applicationRepo, new ClientConfigRepository(pool), clientRepo, emailDomainMappingRepo, identityProviderRepo,
                 AnchorDomains.inDatabase(pool), PasswordResetEmailer.notConfigured(), InviteEmailer.logging(), Notifier.logging(),
-                MfaService.notConfigured(),
+                mfa,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()).map(DeveloperSecrets::withEncryption).orElseGet(DeveloperSecrets::unconfigured),
                 uow));
 
