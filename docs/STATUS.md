@@ -25,10 +25,11 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **SDK ingest** (5 routes: events, dispatch jobs, audit logs) | Sonnet port; found Go's cross-request event dedup never fires (index includes `created_at`); coverage **208/245** |
 | `(merge)` | **principal 404 oracle (PR-3/PR-4), X-02 sync containment, X-08 per-app rollup groups, five residual X-06 readers** | Sonnet; orchestrator mutation-checked the 404 (seven assertions) |
 | `(merge)` | **stream processor** (Phase 2 unit 1): fan-out, projections, partition manager, health | spec `stream.md` by orchestrator; Sonnet port; orchestrator mutation-checked the claim transaction |
+| `(merge)` | **outbox processor** (Phase 2 unit 2) | spec `outbox.md` by orchestrator; Sonnet port; orchestrator replaced a racy exclusivity test with a held-transaction one that kills the no-lock mutant |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Sonnet, own worktrees; merge pending orchestrator review):**
-- Outbox processor port against `outbox.md` (Phase 2 unit 2).
+- Scheduled-job scheduler + purger port against `scheduled-job-scheduler.md` (Phase 2 unit 3).
 - BFF + `/api/me` port against `bff.md`.
 
 **For the owner, collected in `docs/backlog.md`:** three Go HEAD defects
