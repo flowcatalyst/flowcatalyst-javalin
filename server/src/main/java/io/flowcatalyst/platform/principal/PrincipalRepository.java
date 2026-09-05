@@ -52,6 +52,10 @@ public final class PrincipalRepository implements Persist<Principal> {
     private static final IamPrincipalApplicationAccess PA = IAM_PRINCIPAL_APPLICATION_ACCESS;
     private static final IamRoles R = IAM_ROLES;
 
+    /// The delegated-user-management role ([io.flowcatalyst.platform.seed.PlatformRoles]'
+    /// `client-admin`) — [#findClientAdminEmails]'s notification audience.
+    private static final String CLIENT_ADMIN_ROLE = "platform:client-admin";
+
     /// Reads: jOOQ acquires and releases a pooled connection per query.
     private final DSLContext dsl;
 
@@ -86,6 +90,20 @@ public final class PrincipalRepository implements Persist<Principal> {
     /// Every USER on `domain` (lower-cased), by email.
     public List<Principal> findUsersByEmailDomain(String domain) {
         return findMany(P.TYPE.eq(PrincipalType.USER.name()).and(P.EMAIL_DOMAIN.eq(EmailAddress.normalise(domain))), P.EMAIL.asc());
+    }
+
+    /// Active principals holding role `platform:client-admin` for `clientId`
+    /// — who to notify when a lost-device reset needs approval (spec
+    /// `auth-identity.md` §8.6). Blank/`null` e-mails are dropped: nothing
+    /// to notify.
+    public List<String> findClientAdminEmails(String clientId) {
+        return dsl.selectDistinct(P.EMAIL).from(P).join(PR).on(PR.PRINCIPAL_ID.eq(P.ID))
+                .where(PR.ROLE_NAME.eq(CLIENT_ADMIN_ROLE))
+                .and(P.CLIENT_ID.eq(clientId))
+                .and(P.ACTIVE.isTrue())
+                .fetch(P.EMAIL).stream()
+                .filter(e -> e != null && !e.isBlank())
+                .toList();
     }
 
     /// Every principal, newest first.

@@ -33,11 +33,13 @@ import io.flowcatalyst.platform.passkey.CeremonyRepository;
 import io.flowcatalyst.platform.passkey.PasskeyRepository;
 import io.flowcatalyst.platform.passkey.PasskeyService;
 import io.flowcatalyst.platform.passkey.api.PasskeyApi;
-import io.flowcatalyst.platform.passwordreset.ApprovalQueue;
 import io.flowcatalyst.platform.passwordreset.PasswordResetApi;
 import io.flowcatalyst.platform.passwordreset.PortalPasswords;
 import io.flowcatalyst.platform.passwordreset.ResetLinks;
 import io.flowcatalyst.platform.passwordreset.ResetTokenRepository;
+import io.flowcatalyst.platform.resetapproval.ResetApprovalQueue;
+import io.flowcatalyst.platform.resetapproval.ResetApprovalRepository;
+import io.flowcatalyst.platform.resetapproval.api.ResetApprovalApi;
 import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
 import io.flowcatalyst.platform.auth.oauth.AuthRefreshApi;
 import io.flowcatalyst.platform.auth.oauth.OAuthAuthorizeApi;
@@ -250,7 +252,9 @@ public final class Platform {
                 notices));
         // Password reset (auth-identity §8): the link minter/mailer serves the public
         // /auth/password-reset/* flow here and the principal admin routes below. The
-        // portal confirm and the approval queue are seams until their units land.
+        // The approval queue (C4) is wired for real below — ruling I-Q19 keeps
+        // requireStrongFactorForReset false, so it stays idle in production, but is
+        // ported for feature parity. Portal confirm is late-bound (holder below).
         // Passkeys (auth-identity §7): the relying party from FC_WEBAUTHN_RP_ID / _ORIGINS
         // with the platform name read once at startup; registration and the credential
         // list are session-gated, authentication is public (isPublicPath) and shares the
@@ -275,9 +279,11 @@ public final class Platform {
         };
         var resetTokenRepo = new ResetTokenRepository(pool);
         var resetLinks = new ResetLinks(resetTokenRepo, mail, mfaBranding::emailTheme, env.jwtIssuer(), Clock.systemUTC());
+        var resetApprovalRepo = new ResetApprovalRepository(pool);
+        var resetApprovalQueue = new ResetApprovalQueue(resetApprovalRepo, loginPrincipalRepo, notices, uow, env.jwtIssuer());
         PasswordResetApi.register(routes, new PasswordResetApi.State(resetLinks, resetTokenRepo, loginPrincipalRepo, uow, mfa,
                 mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, portalPasswords,
-                ApprovalQueue.none(), false, Clock.systemUTC()));
+                resetApprovalQueue, false, Clock.systemUTC()));
         // /oauth/authorize and /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
@@ -304,6 +310,9 @@ public final class Platform {
         ProcessApi.register(routes, new ProcessApi.State(processRepo, uow));
         CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow, corsAllowlist::invalidate));
         AuditLogApi.register(routes, new AuditLogApi.State(new AuditLogRepository(pool)));
+        // Reset approvals (auth-identity §8.6, C4): the admin surface over the
+        // queue wired above, alongside `PasswordResetApi`.
+        ResetApprovalApi.register(routes, new ResetApprovalApi.State(resetApprovalRepo, loginPrincipalRepo, resetLinks, uow));
 
         var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
         EmailDomainMappingApi.register(routes, new EmailDomainMappingApi.State(emailDomainMappingRepo, uow));
