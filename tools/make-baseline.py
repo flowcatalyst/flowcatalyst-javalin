@@ -14,11 +14,13 @@ for i, m in enumerate(ms):
     end = ms[i+1].start() if i+1 < len(ms) else len(text)
     body = text[m.end():end]
     parts.append((m.group('name'), m.group('type'), body))
-dated = re.compile(r'_\d{4}_\d{2}(?![0-9])')
+# Dated monthly (_YYYY_MM) and quarterly (_YYYY_qN) partitions, plus a
+# table's DEFAULT partition (named "<parent>_default").
+dated = re.compile(r'_\d{4}_\d{2}(?![0-9])|_\d{4}_q\d(?![0-9])|_default$')
 stats = collections.Counter(); dropped = collections.Counter()
 out = []
 for name, typ, body in parts:
-    dated_body = re.compile(r'public\.\w+_\d{4}_\d{2}(?![0-9])')
+    dated_body = re.compile(r'public\.\w+_\d{4}_\d{2}(?![0-9])|public\.\w+_\d{4}_q\d(?![0-9])|public\.\w+_default\b')
     if typ in ('TABLE ATTACH', 'INDEX ATTACH') or dated.search(name) or dated_body.search(body) or 'goose_db_version' in name:
         dropped[typ] += 1; continue
     # strip trailing psql noise, SET, etc. from body

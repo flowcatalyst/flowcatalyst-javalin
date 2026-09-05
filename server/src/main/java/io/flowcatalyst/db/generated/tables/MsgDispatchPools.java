@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -152,6 +153,13 @@ public class MsgDispatchPools extends TableImpl<MsgDispatchPoolsRecord> {
     @Override
     public UniqueKey<MsgDispatchPoolsRecord> getPrimaryKey() {
         return Keys.MSG_DISPATCH_POOLS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgDispatchPoolsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_dispatch_pools_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'SUSPENDED'::character varying, 'ARCHIVED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

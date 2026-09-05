@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -179,6 +180,14 @@ public class TntClientAuthConfigs extends TableImpl<TntClientAuthConfigsRecord> 
     @Override
     public List<UniqueKey<TntClientAuthConfigsRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.TNT_CLIENT_AUTH_CONFIGS_EMAIL_DOMAIN_KEY);
+    }
+
+    @Override
+    public List<Check<TntClientAuthConfigsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_tnt_client_auth_configs_auth_provider"), "(((auth_provider)::text = ANY ((ARRAY['INTERNAL'::character varying, 'OIDC'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_tnt_client_auth_configs_config_type"), "(((config_type)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[])))", true)
+        );
     }
 
     @Override

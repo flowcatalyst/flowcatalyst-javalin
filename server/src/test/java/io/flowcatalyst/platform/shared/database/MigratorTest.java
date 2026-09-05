@@ -41,13 +41,14 @@ class MigratorTest {
     @Test
     void freshDatabaseAppliesV1() {
         assertThat(first.success).isTrue();
-        assertThat(first.migrationsExecuted).isEqualTo(1);
-        assertThat(first.migrations).extracting(m -> m.version).containsExactly("1");
+        assertThat(first.migrationsExecuted).isEqualTo(7);
+        assertThat(first.migrations).extracting(m -> m.version)
+                .containsExactly("1", "2", "3", "4", "5", "6", "7");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(1);
-        assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
-        assertThat(applied[0].getState()).isEqualTo(MigrationState.SUCCESS);
+        assertThat(applied).hasSize(7);
+        assertThat(applied[applied.length - 1].getVersion().getVersion()).isEqualTo("7");
+        assertThat(applied[applied.length - 1].getState()).isEqualTo(MigrationState.SUCCESS);
         assertThat(Migrator.flyway(ds).info().pending()).isEmpty();
     }
 
@@ -56,7 +57,7 @@ class MigratorTest {
         MigrateResult second = Migrator.migrate(ds);
         assertThat(second.success).isTrue();
         assertThat(second.migrationsExecuted).isZero();
-        assertThat(Migrator.flyway(ds).info().applied()).hasSize(1);
+        assertThat(Migrator.flyway(ds).info().applied()).hasSize(7);
     }
 
     @Test

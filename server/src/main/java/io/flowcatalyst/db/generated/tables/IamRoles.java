@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.ForeignKey;
@@ -203,6 +204,13 @@ public class IamRoles extends TableImpl<IamRolesRecord> {
             _iamRolePermissions = new IamRolePermissionsPath(this, null, Keys.IAM_ROLE_PERMISSIONS__IAM_ROLE_PERMISSIONS_ROLE_ID_FKEY.getInverseKey());
 
         return _iamRolePermissions;
+    }
+
+    @Override
+    public List<Check<IamRolesRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_iam_roles_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'DATABASE'::character varying, 'SDK'::character varying])::text[])))", true)
+        );
     }
 
     @Override

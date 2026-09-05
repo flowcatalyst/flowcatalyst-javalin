@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -136,12 +137,19 @@ public class IamLoginAttempts extends TableImpl<IamLoginAttemptsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_IAM_LOGIN_ATTEMPTS_AT, Indexes.IDX_IAM_LOGIN_ATTEMPTS_FAILURE_THROTTLE, Indexes.IDX_IAM_LOGIN_ATTEMPTS_IDENTIFIER, Indexes.IDX_IAM_LOGIN_ATTEMPTS_OUTCOME, Indexes.IDX_IAM_LOGIN_ATTEMPTS_PRINCIPAL, Indexes.IDX_IAM_LOGIN_ATTEMPTS_TYPE);
+        return Arrays.asList(Indexes.IDX_IAM_LOGIN_ATTEMPTS_AT, Indexes.IDX_IAM_LOGIN_ATTEMPTS_FAILURE_THROTTLE, Indexes.IDX_IAM_LOGIN_ATTEMPTS_IDENTIFIER_AT, Indexes.IDX_IAM_LOGIN_ATTEMPTS_IDENTIFIER_IP_AT, Indexes.IDX_IAM_LOGIN_ATTEMPTS_OUTCOME, Indexes.IDX_IAM_LOGIN_ATTEMPTS_PRINCIPAL, Indexes.IDX_IAM_LOGIN_ATTEMPTS_TYPE);
     }
 
     @Override
     public UniqueKey<IamLoginAttemptsRecord> getPrimaryKey() {
         return Keys.IAM_LOGIN_ATTEMPTS_PKEY;
+    }
+
+    @Override
+    public List<Check<IamLoginAttemptsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_iam_login_attempts_outcome"), "(((outcome)::text = ANY ((ARRAY['SUCCESS'::character varying, 'FAILURE'::character varying])::text[])))", true)
+        );
     }
 
     @Override

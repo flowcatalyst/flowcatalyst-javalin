@@ -14,8 +14,15 @@ range-partitioned on `iam_login_attempts` and carries X-06 CHECK
 constraints); Java's stored-enum reads still default unknown values
 (`AttemptOutcome` → SUCCESS, `ScopeType` → ANCHOR) against ledger X-06; and
 `e6a33ba` (principal 404 oracle, X-02 sync containment, X-08 per-application
-rollup groups) is unabsorbed. Three Sonnet agents are on the first two and
-fcdev's Postgres download; the third follows the X-06 sweep.
+rollup groups) is unabsorbed. **Landed since:** fcdev downloads its Postgres archive on first run
+(181 → 47 MB jar, `c6d7e36`); Flyway V2–V7 mirror Go 046–052 byte for byte,
+`go-schema.sql` re-captured from a Go-HEAD database (18.3) and the
+fingerprint normalised across point-release CHECK-deparse differences,
+jOOQ regenerated, `GoAdoptionTest` on goose 052 (V2–V7 apply as no-ops on a
+Go database). Two Go HEAD defects surfaced doing it — `backlog.md` "Go HEAD
+defects found adopting migrations 046–052" (the seeder's `'JSON'` literal
+fails Go's own CHECK; login-attempt partitions are never extended). The
+X-06 sweep is in flight; the `e6a33ba` unit follows it.
 
 ## fc-server packaging and the default-broker gate (2026-09-04)
 

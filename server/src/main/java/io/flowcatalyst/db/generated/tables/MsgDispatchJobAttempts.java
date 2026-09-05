@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -165,6 +166,13 @@ public class MsgDispatchJobAttempts extends TableImpl<MsgDispatchJobAttemptsReco
     @Override
     public UniqueKey<MsgDispatchJobAttemptsRecord> getPrimaryKey() {
         return Keys.MSG_DISPATCH_JOB_ATTEMPTS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgDispatchJobAttemptsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_dispatch_job_attempts_error_type"), "(((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))", true)
+        );
     }
 
     @Override

@@ -32,8 +32,9 @@ class IndexedMigrationsTest {
         DataSource ds = TestPg.newDatabase("indexed_migrations_test");
         MigrateResult result = Migrator.flyway(ds, true).migrate();
         assertThat(result.success).isTrue();
-        assertThat(result.migrationsExecuted).isEqualTo(1);
-        assertThat(result.migrations).extracting(m -> m.version).containsExactly("1");
+        int expected = IndexedMigrations.load().names().size();
+        assertThat(result.migrationsExecuted).isEqualTo(expected);
+        assertThat(result.migrations).hasSize(expected);
         // The scanning configuration agrees the database is now current.
         assertThat(Migrator.flyway(ds, false).info().pending()).isEmpty();
     }

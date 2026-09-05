@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -192,6 +193,13 @@ public class IamServiceAccounts extends TableImpl<IamServiceAccountsRecord> {
     @Override
     public List<UniqueKey<IamServiceAccountsRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.IAM_SERVICE_ACCOUNTS_CODE_KEY);
+    }
+
+    @Override
+    public List<Check<IamServiceAccountsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_iam_service_accounts_wh_auth_type"), "(((wh_auth_type IS NULL) OR ((wh_auth_type)::text = ANY ((ARRAY['NONE'::character varying, 'BEARER_TOKEN'::character varying, 'BASIC_AUTH'::character varying, 'API_KEY'::character varying, 'HMAC_SIGNATURE'::character varying])::text[]))))", true)
+        );
     }
 
     @Override

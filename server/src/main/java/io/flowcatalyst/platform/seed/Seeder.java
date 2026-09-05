@@ -11,6 +11,7 @@ import static io.flowcatalyst.db.generated.Tables.MSG_PROCESSES;
 import static io.flowcatalyst.db.generated.Tables.OAUTH_IDENTITY_PROVIDERS;
 import static io.flowcatalyst.db.generated.Tables.TNT_EMAIL_DOMAIN_MAPPINGS;
 
+import io.flowcatalyst.platform.eventtype.SchemaType;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
@@ -246,7 +247,10 @@ public final class Seeder {
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, "v1")
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.MIME_TYPE, "application/schema+json")
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.SCHEMA_CONTENT, JSONB.valueOf(Json.write(d.schema())))
-                    .set(MSG_EVENT_TYPE_SPEC_VERSIONS.SCHEMA_TYPE, "JSON")
+                    // "JSON" (not a SchemaType constant) predates chk_msg_event_type_spec_versions_schema_type
+                    // (migration 051); ported from Go's internal/platform/seed/event_types.go, which still
+                    // has the same defect as of flowcatalyst-go HEAD (fcdev's own seed run fails the same way).
+                    .set(MSG_EVENT_TYPE_SPEC_VERSIONS.SCHEMA_TYPE, SchemaType.JSON_SCHEMA.name())
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.STATUS, "CURRENT")
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.CREATED_AT, now)
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.UPDATED_AT, now)

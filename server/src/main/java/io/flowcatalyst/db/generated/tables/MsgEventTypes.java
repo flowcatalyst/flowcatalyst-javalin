@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -167,6 +168,14 @@ public class MsgEventTypes extends TableImpl<MsgEventTypesRecord> {
     @Override
     public List<UniqueKey<MsgEventTypesRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.MSG_EVENT_TYPES_CODE_KEY);
+    }
+
+    @Override
+    public List<Check<MsgEventTypesRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_event_types_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_event_types_status"), "(((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

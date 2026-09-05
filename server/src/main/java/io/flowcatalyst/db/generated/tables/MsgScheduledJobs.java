@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -203,6 +204,13 @@ public class MsgScheduledJobs extends TableImpl<MsgScheduledJobsRecord> {
     @Override
     public UniqueKey<MsgScheduledJobsRecord> getPrimaryKey() {
         return Keys.MSG_SCHEDULED_JOBS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgScheduledJobsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_scheduled_jobs_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying, 'ARCHIVED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -172,6 +173,14 @@ public class MsgProcesses extends TableImpl<MsgProcessesRecord> {
     @Override
     public List<UniqueKey<MsgProcessesRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.MSG_PROCESSES_CODE_KEY);
+    }
+
+    @Override
+    public List<Check<MsgProcessesRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_processes_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_processes_status"), "(((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

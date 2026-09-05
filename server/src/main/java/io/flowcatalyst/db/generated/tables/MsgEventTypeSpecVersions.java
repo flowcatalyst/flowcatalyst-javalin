@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -148,6 +149,14 @@ public class MsgEventTypeSpecVersions extends TableImpl<MsgEventTypeSpecVersions
     @Override
     public UniqueKey<MsgEventTypeSpecVersionsRecord> getPrimaryKey() {
         return Keys.MSG_EVENT_TYPE_SPEC_VERSIONS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgEventTypeSpecVersionsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_event_type_spec_versions_schema_type"), "(((schema_type)::text = ANY ((ARRAY['JSON_SCHEMA'::character varying, 'XSD'::character varying, 'XML_SCHEMA'::character varying, 'PROTO'::character varying, 'PROTOBUF'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_event_type_spec_versions_status"), "(((status)::text = ANY ((ARRAY['FINALISING'::character varying, 'CURRENT'::character varying, 'DEPRECATED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

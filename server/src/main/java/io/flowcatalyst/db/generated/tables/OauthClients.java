@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.ForeignKey;
@@ -131,6 +132,22 @@ public class OauthClients extends TableImpl<OauthClientsRecord> {
      */
     public final TableField<OauthClientsRecord, Boolean> API_ACCESS = createField(DSL.name("api_access"), SQLDataType.BOOLEAN.nullable(false).defaultValue(DSL.field(DSL.raw("false"), SQLDataType.BOOLEAN)), this, "");
 
+    /**
+     * The column <code>public.oauth_clients.previous_secret_ref</code>.
+     */
+    public final TableField<OauthClientsRecord, String> PREVIOUS_SECRET_REF = createField(DSL.name("previous_secret_ref"), SQLDataType.CLOB, this, "");
+
+    /**
+     * The column <code>public.oauth_clients.previous_secret_expires_at</code>.
+     */
+    public final TableField<OauthClientsRecord, OffsetDateTime> PREVIOUS_SECRET_EXPIRES_AT = createField(DSL.name("previous_secret_expires_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
+
+    /**
+     * The column
+     * <code>public.oauth_clients.previous_secret_last_used_at</code>.
+     */
+    public final TableField<OauthClientsRecord, OffsetDateTime> PREVIOUS_SECRET_LAST_USED_AT = createField(DSL.name("previous_secret_last_used_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
+
     private OauthClients(Name alias, Table<OauthClientsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }
@@ -200,7 +217,7 @@ public class OauthClients extends TableImpl<OauthClientsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_OAUTH_CLIENTS_SERVICE_ACCOUNT_PRINCIPAL, Indexes.OAUTH_CLIENTS_ACTIVE_IDX, Indexes.OAUTH_CLIENTS_CLIENT_ID_IDX);
+        return Arrays.asList(Indexes.IDX_OAUTH_CLIENTS_PREVIOUS_SECRET_EXPIRES_AT, Indexes.IDX_OAUTH_CLIENTS_SERVICE_ACCOUNT_PRINCIPAL, Indexes.OAUTH_CLIENTS_ACTIVE_IDX, Indexes.OAUTH_CLIENTS_CLIENT_ID_IDX);
     }
 
     @Override
@@ -294,6 +311,13 @@ public class OauthClients extends TableImpl<OauthClientsRecord> {
             _oauthClientRedirectUris = new OauthClientRedirectUrisPath(this, null, Keys.OAUTH_CLIENT_REDIRECT_URIS__OAUTH_CLIENT_REDIRECT_URIS_OAUTH_CLIENT_ID_FKEY.getInverseKey());
 
         return _oauthClientRedirectUris;
+    }
+
+    @Override
+    public List<Check<OauthClientsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_oauth_clients_client_type"), "(((client_type)::text = ANY ((ARRAY['PUBLIC'::character varying, 'CONFIDENTIAL'::character varying])::text[])))", true)
+        );
     }
 
     @Override

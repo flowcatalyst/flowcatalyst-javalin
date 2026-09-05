@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.ForeignKey;
@@ -356,6 +357,14 @@ public class IamPrincipals extends TableImpl<IamPrincipalsRecord> {
             _webauthnCredentials = new WebauthnCredentialsPath(this, null, Keys.WEBAUTHN_CREDENTIALS__WEBAUTHN_CREDENTIALS_PRINCIPAL_ID_FKEY.getInverseKey());
 
         return _webauthnCredentials;
+    }
+
+    @Override
+    public List<Check<IamPrincipalsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_iam_principals_scope"), "(((scope IS NULL) OR ((scope)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[]))))", true),
+            Internal.createCheck(this, DSL.name("chk_iam_principals_type"), "(((type)::text = ANY ((ARRAY['USER'::character varying, 'SERVICE'::character varying])::text[])))", true)
+        );
     }
 
     @Override

@@ -8,6 +8,7 @@ import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
+import io.flowcatalyst.testpg.TestPg;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +17,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS_READ;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
@@ -277,10 +279,24 @@ class DispatchJobRepositoryTest {
 
     @Test
     void findByIdRejectsAnUnrecognisedStatusInsteadOfDefaultingSilently() {
-        String id = seedWriteRow(Seed.of(code("corrupt")).withStatus("BOGUS_STATUS"));
-        assertThatThrownBy(() -> repo.findById(id))
-                .isInstanceOf(CorruptDispatchJobException.class)
-                .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(id));
+        // Since migration 052, chk_msg_dispatch_jobs_status blocks a fresh write
+        // of an unrecognised status at the DB boundary. The read-side defence
+        // this test pins exists for a row that predates the constraint (or
+        // arrives out-of-band), so the constraint is dropped for the seed
+        // insert AND the assertion, and the corrupt row is deleted again
+        // before the constraint is restored — otherwise restoring it would
+        // itself fail by re-validating against the row we just inserted
+        // (io.flowcatalyst.testpg.TestPg, ported from Go's testpg.WithConstraintDropped).
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs", "chk_msg_dispatch_jobs_status", () -> {
+            String id = seedWriteRow(Seed.of(code("corrupt")).withStatus("BOGUS_STATUS"));
+            try {
+                assertThatThrownBy(() -> repo.findById(id))
+                        .isInstanceOf(CorruptDispatchJobException.class)
+                        .satisfies(e -> assertThat(((CorruptDispatchJobException) e).dispatchJobId()).isEqualTo(id));
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            }
+        });
     }
 
     @Test
@@ -293,9 +309,20 @@ class DispatchJobRepositoryTest {
     void aCorruptRowFailsTheWholeListReadNotJustThatRow() {
         String goodCode = code("corruptlist");
         seed(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(20)));
-        seedProjection(Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(21)).withStatus("NOT_A_REAL_STATUS"));
-        assertThatThrownBy(() -> repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(goodCode), null)))
-                .isInstanceOf(CorruptDispatchJobException.class);
+        // chk_msg_dispatch_jobs_read_status (migration 052) guards this projection
+        // table too; drop it for the corrupt seed insert AND the assertion, then
+        // delete the row before restoring (see the comment on
+        // findByIdRejectsAnUnrecognisedStatusInsteadOfDefaultingSilently above).
+        TestPg.withConstraintDropped(DS, "msg_dispatch_jobs_read", "chk_msg_dispatch_jobs_read_status", () -> {
+            Seed corrupt = Seed.of(goodCode).withCreatedAt(BASE.plusSeconds(21)).withStatus("NOT_A_REAL_STATUS");
+            seedProjection(corrupt);
+            try {
+                assertThatThrownBy(() -> repo.findWithFilters(filter(Visibility.Everything.INSTANCE, List.of(goodCode), null)))
+                        .isInstanceOf(CorruptDispatchJobException.class);
+            } finally {
+                DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.eq(corrupt.id())).execute();
+            }
+        });
     }
 
     // ── GroupHolding / groupHeldBefore (spec §9) ────────────────────────────

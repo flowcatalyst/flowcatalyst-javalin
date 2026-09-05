@@ -8,7 +8,7 @@ import io.flowcatalyst.db.generated.tables.IamLoginAttempts;
 
 import java.time.OffsetDateTime;
 
-import org.jooq.Record1;
+import org.jooq.Record2;
 import org.jooq.impl.UpdatableRecordImpl;
 
 
@@ -151,8 +151,8 @@ public class IamLoginAttemptsRecord extends UpdatableRecordImpl<IamLoginAttempts
     // -------------------------------------------------------------------------
 
     @Override
-    public Record1<String> key() {
-        return (Record1) super.key();
+    public Record2<String, OffsetDateTime> key() {
+        return (Record2) super.key();
     }
 
     // -------------------------------------------------------------------------

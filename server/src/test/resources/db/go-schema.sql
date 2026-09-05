@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict joGFbiQvkb630hRGVGDi7znV5CkjhE6EPO8ar24ERSp3l2ETnYNIyLQl2hY3Ycf
+\restrict J9hWsk47OylKxBI4UeZVES8IVNcGK1xZmSq353Kuy9h1tsh3tkVPwb5cQBM8V1f
 
 -- Dumped from database version 18.3
--- Dumped by pg_dump version 18.4
+-- Dumped by pg_dump version 18.6
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -39,7 +39,8 @@ CREATE TABLE public.app_application_openapi_specs (
     synced_at timestamp with time zone DEFAULT now() NOT NULL,
     synced_by character varying(17),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_app_application_openapi_specs_status CHECK (((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))
 );
 
 
@@ -61,7 +62,8 @@ CREATE TABLE public.app_applications (
     service_account_id character varying(17),
     active boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_app_applications_type CHECK (((type)::text = ANY ((ARRAY['APPLICATION'::character varying, 'INTEGRATION'::character varying])::text[])))
 );
 
 
@@ -124,7 +126,9 @@ CREATE TABLE public.app_platform_configs (
     value text NOT NULL,
     description text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_app_platform_configs_scope CHECK (((scope)::text = ANY ((ARRAY['GLOBAL'::character varying, 'CLIENT'::character varying])::text[]))),
+    CONSTRAINT chk_app_platform_configs_value_type CHECK (((value_type)::text = ANY ((ARRAY['PLAIN'::character varying, 'SECRET'::character varying])::text[])))
 );
 
 
@@ -212,15 +216,71 @@ CREATE TABLE public.iam_client_access_grants (
 --
 
 CREATE TABLE public.iam_login_attempts (
-    id character varying(17) NOT NULL,
-    attempt_type character varying(30) NOT NULL,
-    outcome character varying(20) NOT NULL,
+    id character varying(17) CONSTRAINT iam_login_attempts_new_id_not_null NOT NULL,
+    attempt_type character varying(30) CONSTRAINT iam_login_attempts_new_attempt_type_not_null NOT NULL,
+    outcome character varying(20) CONSTRAINT iam_login_attempts_new_outcome_not_null NOT NULL,
     failure_reason character varying(100),
     identifier character varying(255),
     principal_id character varying(17),
     ip_address character varying(45),
     user_agent text,
-    attempted_at timestamp with time zone DEFAULT now() NOT NULL
+    attempted_at timestamp with time zone DEFAULT now() CONSTRAINT iam_login_attempts_new_attempted_at_not_null NOT NULL,
+    CONSTRAINT chk_iam_login_attempts_outcome CHECK (((outcome)::text = ANY ((ARRAY['SUCCESS'::character varying, 'FAILURE'::character varying])::text[])))
+)
+PARTITION BY RANGE (attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q3; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.iam_login_attempts_2026_q3 (
+    id character varying(17) CONSTRAINT iam_login_attempts_new_id_not_null NOT NULL,
+    attempt_type character varying(30) CONSTRAINT iam_login_attempts_new_attempt_type_not_null NOT NULL,
+    outcome character varying(20) CONSTRAINT iam_login_attempts_new_outcome_not_null NOT NULL,
+    failure_reason character varying(100),
+    identifier character varying(255),
+    principal_id character varying(17),
+    ip_address character varying(45),
+    user_agent text,
+    attempted_at timestamp with time zone DEFAULT now() CONSTRAINT iam_login_attempts_new_attempted_at_not_null NOT NULL,
+    CONSTRAINT chk_iam_login_attempts_outcome CHECK (((outcome)::text = ANY ((ARRAY['SUCCESS'::character varying, 'FAILURE'::character varying])::text[])))
+);
+
+
+--
+-- Name: iam_login_attempts_2026_q4; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.iam_login_attempts_2026_q4 (
+    id character varying(17) CONSTRAINT iam_login_attempts_new_id_not_null NOT NULL,
+    attempt_type character varying(30) CONSTRAINT iam_login_attempts_new_attempt_type_not_null NOT NULL,
+    outcome character varying(20) CONSTRAINT iam_login_attempts_new_outcome_not_null NOT NULL,
+    failure_reason character varying(100),
+    identifier character varying(255),
+    principal_id character varying(17),
+    ip_address character varying(45),
+    user_agent text,
+    attempted_at timestamp with time zone DEFAULT now() CONSTRAINT iam_login_attempts_new_attempted_at_not_null NOT NULL,
+    CONSTRAINT chk_iam_login_attempts_outcome CHECK (((outcome)::text = ANY ((ARRAY['SUCCESS'::character varying, 'FAILURE'::character varying])::text[])))
+);
+
+
+--
+-- Name: iam_login_attempts_default; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.iam_login_attempts_default (
+    id character varying(17) CONSTRAINT iam_login_attempts_new_id_not_null NOT NULL,
+    attempt_type character varying(30) CONSTRAINT iam_login_attempts_new_attempt_type_not_null NOT NULL,
+    outcome character varying(20) CONSTRAINT iam_login_attempts_new_outcome_not_null NOT NULL,
+    failure_reason character varying(100),
+    identifier character varying(255),
+    principal_id character varying(17),
+    ip_address character varying(45),
+    user_agent text,
+    attempted_at timestamp with time zone DEFAULT now() CONSTRAINT iam_login_attempts_new_attempted_at_not_null NOT NULL,
+    CONSTRAINT chk_iam_login_attempts_outcome CHECK (((outcome)::text = ANY ((ARRAY['SUCCESS'::character varying, 'FAILURE'::character varying])::text[])))
 );
 
 
@@ -291,7 +351,8 @@ CREATE TABLE public.iam_password_reset_tokens (
     reset_2fa boolean DEFAULT false NOT NULL,
     requires_factor boolean DEFAULT false NOT NULL,
     factor_attempts integer DEFAULT 0 NOT NULL,
-    redirect_uri character varying(2000)
+    redirect_uri character varying(2000),
+    CONSTRAINT chk_iam_password_reset_tokens_purpose CHECK (((purpose)::text = ANY ((ARRAY['reset'::character varying, 'invite'::character varying])::text[])))
 );
 
 
@@ -358,7 +419,9 @@ CREATE TABLE public.iam_principals (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     all_applications boolean DEFAULT true NOT NULL,
     dev_client_secret_ref text,
-    dev_client_secret_updated_at timestamp with time zone
+    dev_client_secret_updated_at timestamp with time zone,
+    CONSTRAINT chk_iam_principals_scope CHECK (((scope IS NULL) OR ((scope)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[])))),
+    CONSTRAINT chk_iam_principals_type CHECK (((type)::text = ANY ((ARRAY['USER'::character varying, 'SERVICE'::character varying])::text[])))
 );
 
 
@@ -458,7 +521,8 @@ CREATE TABLE public.iam_roles (
     source character varying(50) DEFAULT 'DATABASE'::character varying NOT NULL,
     client_managed boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_iam_roles_source CHECK (((source)::text = ANY ((ARRAY['CODE'::character varying, 'DATABASE'::character varying, 'SDK'::character varying])::text[])))
 );
 
 
@@ -483,7 +547,8 @@ CREATE TABLE public.iam_service_accounts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     scope character varying(20),
-    client_ids text[]
+    client_ids text[],
+    CONSTRAINT chk_iam_service_accounts_wh_auth_type CHECK (((wh_auth_type IS NULL) OR ((wh_auth_type)::text = ANY ((ARRAY['NONE'::character varying, 'BEARER_TOKEN'::character varying, 'BASIC_AUTH'::character varying, 'API_KEY'::character varying, 'HMAC_SIGNATURE'::character varying])::text[]))))
 );
 
 
@@ -530,7 +595,8 @@ CREATE TABLE public.msg_connections (
     client_id character varying(17),
     client_identifier character varying(100),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_connections_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))
 );
 
 
@@ -551,30 +617,10 @@ CREATE TABLE public.msg_dispatch_job_attempts (
     duration_millis bigint,
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_dispatch_job_attempts_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_dispatch_job_attempts_2026_07 (
-    id character varying(13) CONSTRAINT msg_dispatch_job_attempts_id_not_null NOT NULL,
-    dispatch_job_id character varying(13) CONSTRAINT msg_dispatch_job_attempts_dispatch_job_id_not_null NOT NULL,
-    attempt_number integer,
-    status character varying(20),
-    response_code integer,
-    response_body text,
-    error_message text,
-    error_stack_trace text,
-    error_type character varying(20),
-    duration_millis bigint,
-    attempted_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL
-);
 
 
 --
@@ -594,7 +640,8 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_08 (
     duration_millis bigint,
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
 
@@ -615,7 +662,8 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_09 (
     duration_millis bigint,
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
 
@@ -636,7 +684,8 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_10 (
     duration_millis bigint,
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
 
@@ -657,7 +706,30 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_11 (
     duration_millis bigint,
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
+);
+
+
+--
+-- Name: msg_dispatch_job_attempts_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_dispatch_job_attempts_2026_12 (
+    id character varying(13) CONSTRAINT msg_dispatch_job_attempts_id_not_null NOT NULL,
+    dispatch_job_id character varying(13) CONSTRAINT msg_dispatch_job_attempts_dispatch_job_id_not_null NOT NULL,
+    attempt_number integer,
+    status character varying(20),
+    response_code integer,
+    response_body text,
+    error_message text,
+    error_stack_trace text,
+    error_type character varying(20),
+    duration_millis bigint,
+    attempted_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
 
@@ -718,7 +790,7 @@ CREATE TABLE public.msg_dispatch_jobs (
     service_account_id character varying(17),
     client_id character varying(17),
     subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying NOT NULL,
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying NOT NULL,
     dispatch_pool_id character varying(17),
     message_group character varying(200),
     sequence integer DEFAULT 99 NOT NULL,
@@ -738,55 +810,12 @@ CREATE TABLE public.msg_dispatch_jobs (
     queued_at timestamp with time zone,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_dispatch_jobs_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_dispatch_jobs_2026_07 (
-    id character varying(13) CONSTRAINT msg_dispatch_jobs_id_not_null NOT NULL,
-    external_id character varying(100),
-    source character varying(500),
-    kind character varying(20) DEFAULT 'EVENT'::character varying CONSTRAINT msg_dispatch_jobs_kind_not_null NOT NULL,
-    code character varying(200) CONSTRAINT msg_dispatch_jobs_code_not_null NOT NULL,
-    subject character varying(500),
-    event_id character varying(13),
-    correlation_id character varying(100),
-    metadata jsonb DEFAULT '[]'::jsonb,
-    target_url character varying(500) CONSTRAINT msg_dispatch_jobs_target_url_not_null NOT NULL,
-    protocol character varying(30) DEFAULT 'HTTP_WEBHOOK'::character varying CONSTRAINT msg_dispatch_jobs_protocol_not_null NOT NULL,
-    payload text,
-    payload_content_type character varying(100) DEFAULT 'application/json'::character varying,
-    data_only boolean DEFAULT true CONSTRAINT msg_dispatch_jobs_data_only_not_null NOT NULL,
-    service_account_id character varying(17),
-    client_id character varying(17),
-    subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
-    dispatch_pool_id character varying(17),
-    message_group character varying(200),
-    sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
-    timeout_seconds integer DEFAULT 30 CONSTRAINT msg_dispatch_jobs_timeout_seconds_not_null NOT NULL,
-    schema_id character varying(17),
-    status character varying(20) DEFAULT 'PENDING'::character varying CONSTRAINT msg_dispatch_jobs_status_not_null NOT NULL,
-    max_retries integer DEFAULT 3 CONSTRAINT msg_dispatch_jobs_max_retries_not_null NOT NULL,
-    retry_strategy character varying(50) DEFAULT 'exponential'::character varying,
-    scheduled_for timestamp with time zone,
-    expires_at timestamp with time zone,
-    attempt_count integer DEFAULT 0 CONSTRAINT msg_dispatch_jobs_attempt_count_not_null NOT NULL,
-    last_attempt_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    duration_millis bigint,
-    last_error text,
-    idempotency_key character varying(100),
-    queued_at timestamp with time zone,
-    projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL
-);
 
 
 --
@@ -811,7 +840,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_08 (
     service_account_id character varying(17),
     client_id character varying(17),
     subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
     dispatch_pool_id character varying(17),
     message_group character varying(200),
     sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
@@ -831,7 +860,10 @@ CREATE TABLE public.msg_dispatch_jobs_2026_08 (
     queued_at timestamp with time zone,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL
+    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -857,7 +889,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_09 (
     service_account_id character varying(17),
     client_id character varying(17),
     subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
     dispatch_pool_id character varying(17),
     message_group character varying(200),
     sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
@@ -877,7 +909,10 @@ CREATE TABLE public.msg_dispatch_jobs_2026_09 (
     queued_at timestamp with time zone,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL
+    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -903,7 +938,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_10 (
     service_account_id character varying(17),
     client_id character varying(17),
     subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
     dispatch_pool_id character varying(17),
     message_group character varying(200),
     sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
@@ -923,7 +958,10 @@ CREATE TABLE public.msg_dispatch_jobs_2026_10 (
     queued_at timestamp with time zone,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL
+    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -949,7 +987,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_11 (
     service_account_id character varying(17),
     client_id character varying(17),
     subscription_id character varying(17),
-    mode character varying(30) DEFAULT 'IMMEDIATE'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
     dispatch_pool_id character varying(17),
     message_group character varying(200),
     sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
@@ -969,7 +1007,59 @@ CREATE TABLE public.msg_dispatch_jobs_2026_11 (
     queued_at timestamp with time zone,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL
+    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
+);
+
+
+--
+-- Name: msg_dispatch_jobs_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_dispatch_jobs_2026_12 (
+    id character varying(13) CONSTRAINT msg_dispatch_jobs_id_not_null NOT NULL,
+    external_id character varying(100),
+    source character varying(500),
+    kind character varying(20) DEFAULT 'EVENT'::character varying CONSTRAINT msg_dispatch_jobs_kind_not_null NOT NULL,
+    code character varying(200) CONSTRAINT msg_dispatch_jobs_code_not_null NOT NULL,
+    subject character varying(500),
+    event_id character varying(13),
+    correlation_id character varying(100),
+    metadata jsonb DEFAULT '[]'::jsonb,
+    target_url character varying(500) CONSTRAINT msg_dispatch_jobs_target_url_not_null NOT NULL,
+    protocol character varying(30) DEFAULT 'HTTP_WEBHOOK'::character varying CONSTRAINT msg_dispatch_jobs_protocol_not_null NOT NULL,
+    payload text,
+    payload_content_type character varying(100) DEFAULT 'application/json'::character varying,
+    data_only boolean DEFAULT true CONSTRAINT msg_dispatch_jobs_data_only_not_null NOT NULL,
+    service_account_id character varying(17),
+    client_id character varying(17),
+    subscription_id character varying(17),
+    mode character varying(30) DEFAULT 'NEXT_ON_ERROR'::character varying CONSTRAINT msg_dispatch_jobs_mode_not_null NOT NULL,
+    dispatch_pool_id character varying(17),
+    message_group character varying(200),
+    sequence integer DEFAULT 99 CONSTRAINT msg_dispatch_jobs_sequence_not_null NOT NULL,
+    timeout_seconds integer DEFAULT 30 CONSTRAINT msg_dispatch_jobs_timeout_seconds_not_null NOT NULL,
+    schema_id character varying(17),
+    status character varying(20) DEFAULT 'PENDING'::character varying CONSTRAINT msg_dispatch_jobs_status_not_null NOT NULL,
+    max_retries integer DEFAULT 3 CONSTRAINT msg_dispatch_jobs_max_retries_not_null NOT NULL,
+    retry_strategy character varying(50) DEFAULT 'exponential'::character varying,
+    scheduled_for timestamp with time zone,
+    expires_at timestamp with time zone,
+    attempt_count integer DEFAULT 0 CONSTRAINT msg_dispatch_jobs_attempt_count_not_null NOT NULL,
+    last_attempt_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    duration_millis bigint,
+    last_error text,
+    idempotency_key character varying(100),
+    queued_at timestamp with time zone,
+    projected_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -1014,54 +1104,12 @@ CREATE TABLE public.msg_dispatch_jobs_read (
     aggregate character varying(100),
     updated_at timestamp with time zone NOT NULL,
     projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_dispatch_jobs_read_2026_07 (
-    id character varying(13) CONSTRAINT msg_dispatch_jobs_read_id_not_null NOT NULL,
-    external_id character varying(100),
-    source character varying(500),
-    kind character varying(20) CONSTRAINT msg_dispatch_jobs_read_kind_not_null NOT NULL,
-    code character varying(200) CONSTRAINT msg_dispatch_jobs_read_code_not_null NOT NULL,
-    subject character varying(500),
-    event_id character varying(13),
-    correlation_id character varying(100),
-    target_url character varying(500) CONSTRAINT msg_dispatch_jobs_read_target_url_not_null NOT NULL,
-    protocol character varying(30) CONSTRAINT msg_dispatch_jobs_read_protocol_not_null NOT NULL,
-    service_account_id character varying(17),
-    client_id character varying(17),
-    subscription_id character varying(17),
-    dispatch_pool_id character varying(17),
-    mode character varying(30) CONSTRAINT msg_dispatch_jobs_read_mode_not_null NOT NULL,
-    message_group character varying(200),
-    sequence integer DEFAULT 99,
-    timeout_seconds integer DEFAULT 30,
-    status character varying(20) CONSTRAINT msg_dispatch_jobs_read_status_not_null NOT NULL,
-    max_retries integer CONSTRAINT msg_dispatch_jobs_read_max_retries_not_null NOT NULL,
-    retry_strategy character varying(50),
-    scheduled_for timestamp with time zone,
-    expires_at timestamp with time zone,
-    attempt_count integer DEFAULT 0 CONSTRAINT msg_dispatch_jobs_read_attempt_count_not_null NOT NULL,
-    last_attempt_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    duration_millis bigint,
-    last_error text,
-    idempotency_key character varying(100),
-    is_completed boolean,
-    is_terminal boolean,
-    application character varying(100),
-    subdomain character varying(100),
-    aggregate character varying(100),
-    updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
-    projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL
-);
 
 
 --
@@ -1105,7 +1153,10 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_08 (
     aggregate character varying(100),
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -1150,7 +1201,10 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_09 (
     aggregate character varying(100),
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -1195,7 +1249,10 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_10 (
     aggregate character varying(100),
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -1240,7 +1297,58 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_11 (
     aggregate character varying(100),
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
+);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_dispatch_jobs_read_2026_12 (
+    id character varying(13) CONSTRAINT msg_dispatch_jobs_read_id_not_null NOT NULL,
+    external_id character varying(100),
+    source character varying(500),
+    kind character varying(20) CONSTRAINT msg_dispatch_jobs_read_kind_not_null NOT NULL,
+    code character varying(200) CONSTRAINT msg_dispatch_jobs_read_code_not_null NOT NULL,
+    subject character varying(500),
+    event_id character varying(13),
+    correlation_id character varying(100),
+    target_url character varying(500) CONSTRAINT msg_dispatch_jobs_read_target_url_not_null NOT NULL,
+    protocol character varying(30) CONSTRAINT msg_dispatch_jobs_read_protocol_not_null NOT NULL,
+    service_account_id character varying(17),
+    client_id character varying(17),
+    subscription_id character varying(17),
+    dispatch_pool_id character varying(17),
+    mode character varying(30) CONSTRAINT msg_dispatch_jobs_read_mode_not_null NOT NULL,
+    message_group character varying(200),
+    sequence integer DEFAULT 99,
+    timeout_seconds integer DEFAULT 30,
+    status character varying(20) CONSTRAINT msg_dispatch_jobs_read_status_not_null NOT NULL,
+    max_retries integer CONSTRAINT msg_dispatch_jobs_read_max_retries_not_null NOT NULL,
+    retry_strategy character varying(50),
+    scheduled_for timestamp with time zone,
+    expires_at timestamp with time zone,
+    attempt_count integer DEFAULT 0 CONSTRAINT msg_dispatch_jobs_read_attempt_count_not_null NOT NULL,
+    last_attempt_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    duration_millis bigint,
+    last_error text,
+    idempotency_key character varying(100),
+    is_completed boolean,
+    is_terminal boolean,
+    application character varying(100),
+    subdomain character varying(100),
+    aggregate character varying(100),
+    updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
+    projected_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
+    CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
 );
 
 
@@ -1259,7 +1367,8 @@ CREATE TABLE public.msg_dispatch_pools (
     client_identifier character varying(100),
     status character varying(20) DEFAULT 'ACTIVE'::character varying NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_dispatch_pools_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'SUSPENDED'::character varying, 'ARCHIVED'::character varying])::text[])))
 );
 
 
@@ -1310,7 +1419,9 @@ CREATE TABLE public.msg_event_type_spec_versions (
     schema_type character varying(20) NOT NULL,
     status character varying(20) DEFAULT 'FINALISING'::character varying NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_event_type_spec_versions_schema_type CHECK (((schema_type)::text = ANY ((ARRAY['JSON_SCHEMA'::character varying, 'XSD'::character varying, 'XML_SCHEMA'::character varying, 'PROTO'::character varying, 'PROTOBUF'::character varying])::text[]))),
+    CONSTRAINT chk_msg_event_type_spec_versions_status CHECK (((status)::text = ANY ((ARRAY['FINALISING'::character varying, 'CURRENT'::character varying, 'DEPRECATED'::character varying])::text[])))
 );
 
 
@@ -1331,7 +1442,9 @@ CREATE TABLE public.msg_event_types (
     aggregate character varying(100) NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_by character varying(17)
+    created_by character varying(17),
+    CONSTRAINT chk_msg_event_types_source CHECK (((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[]))),
+    CONSTRAINT chk_msg_event_types_status CHECK (((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))
 );
 
 
@@ -1358,30 +1471,6 @@ CREATE TABLE public.msg_events (
     fanned_out_at timestamp with time zone
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_events_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_events_2026_07 (
-    id character varying(13) CONSTRAINT msg_events_id_not_null NOT NULL,
-    spec_version character varying(20) DEFAULT '1.0'::character varying,
-    type character varying(200) CONSTRAINT msg_events_type_not_null NOT NULL,
-    source character varying(500) CONSTRAINT msg_events_source_not_null NOT NULL,
-    subject character varying(500),
-    "time" timestamp with time zone CONSTRAINT msg_events_time_not_null NOT NULL,
-    data jsonb,
-    correlation_id character varying(100),
-    causation_id character varying(100),
-    deduplication_id character varying(200),
-    message_group character varying(200),
-    client_id character varying(17),
-    context_data jsonb,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_created_at_not_null NOT NULL,
-    projected_at timestamp with time zone,
-    fanned_out_at timestamp with time zone
-);
 
 
 --
@@ -1481,6 +1570,30 @@ CREATE TABLE public.msg_events_2026_11 (
 
 
 --
+-- Name: msg_events_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_events_2026_12 (
+    id character varying(13) CONSTRAINT msg_events_id_not_null NOT NULL,
+    spec_version character varying(20) DEFAULT '1.0'::character varying,
+    type character varying(200) CONSTRAINT msg_events_type_not_null NOT NULL,
+    source character varying(500) CONSTRAINT msg_events_source_not_null NOT NULL,
+    subject character varying(500),
+    "time" timestamp with time zone CONSTRAINT msg_events_time_not_null NOT NULL,
+    data jsonb,
+    correlation_id character varying(100),
+    causation_id character varying(100),
+    deduplication_id character varying(200),
+    message_group character varying(200),
+    client_id character varying(17),
+    context_data jsonb,
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_created_at_not_null NOT NULL,
+    projected_at timestamp with time zone,
+    fanned_out_at timestamp with time zone
+);
+
+
+--
 -- Name: msg_events_read; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1504,31 +1617,6 @@ CREATE TABLE public.msg_events_read (
     projected_at timestamp with time zone DEFAULT now() NOT NULL
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_events_read_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_events_read_2026_07 (
-    id character varying(13) CONSTRAINT msg_events_read_id_not_null NOT NULL,
-    spec_version character varying(20),
-    type character varying(200) CONSTRAINT msg_events_read_type_not_null NOT NULL,
-    source character varying(500) CONSTRAINT msg_events_read_source_not_null NOT NULL,
-    subject character varying(500),
-    "time" timestamp with time zone CONSTRAINT msg_events_read_time_not_null NOT NULL,
-    data text,
-    correlation_id character varying(100),
-    causation_id character varying(100),
-    deduplication_id character varying(200),
-    message_group character varying(200),
-    client_id character varying(17),
-    application character varying(100),
-    subdomain character varying(100),
-    aggregate character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_read_created_at_not_null NOT NULL,
-    projected_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_read_projected_at_not_null NOT NULL
-);
 
 
 --
@@ -1632,6 +1720,31 @@ CREATE TABLE public.msg_events_read_2026_11 (
 
 
 --
+-- Name: msg_events_read_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_events_read_2026_12 (
+    id character varying(13) CONSTRAINT msg_events_read_id_not_null NOT NULL,
+    spec_version character varying(20),
+    type character varying(200) CONSTRAINT msg_events_read_type_not_null NOT NULL,
+    source character varying(500) CONSTRAINT msg_events_read_source_not_null NOT NULL,
+    subject character varying(500),
+    "time" timestamp with time zone CONSTRAINT msg_events_read_time_not_null NOT NULL,
+    data text,
+    correlation_id character varying(100),
+    causation_id character varying(100),
+    deduplication_id character varying(200),
+    message_group character varying(200),
+    client_id character varying(17),
+    application character varying(100),
+    subdomain character varying(100),
+    aggregate character varying(100),
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_read_created_at_not_null NOT NULL,
+    projected_at timestamp with time zone DEFAULT now() CONSTRAINT msg_events_read_projected_at_not_null NOT NULL
+);
+
+
+--
 -- Name: msg_processes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1649,7 +1762,9 @@ CREATE TABLE public.msg_processes (
     diagram_type character varying(20) DEFAULT 'mermaid'::character varying NOT NULL,
     tags text[] DEFAULT ARRAY[]::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_processes_source CHECK (((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[]))),
+    CONSTRAINT chk_msg_processes_status CHECK (((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))
 );
 
 
@@ -1668,22 +1783,6 @@ CREATE TABLE public.msg_scheduled_job_instance_logs (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_scheduled_job_instance_logs_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_scheduled_job_instance_logs_2026_07 (
-    id character varying(17) CONSTRAINT msg_scheduled_job_instance_logs_id_not_null NOT NULL,
-    instance_id character varying(17) CONSTRAINT msg_scheduled_job_instance_logs_instance_id_not_null NOT NULL,
-    scheduled_job_id character varying(17),
-    client_id character varying(17),
-    level character varying(10) DEFAULT 'INFO'::character varying CONSTRAINT msg_scheduled_job_instance_logs_level_not_null NOT NULL,
-    message text CONSTRAINT msg_scheduled_job_instance_logs_message_not_null NOT NULL,
-    metadata jsonb,
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instance_logs_created_at_not_null NOT NULL
-);
 
 
 --
@@ -1751,6 +1850,22 @@ CREATE TABLE public.msg_scheduled_job_instance_logs_2026_11 (
 
 
 --
+-- Name: msg_scheduled_job_instance_logs_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_scheduled_job_instance_logs_2026_12 (
+    id character varying(17) CONSTRAINT msg_scheduled_job_instance_logs_id_not_null NOT NULL,
+    instance_id character varying(17) CONSTRAINT msg_scheduled_job_instance_logs_instance_id_not_null NOT NULL,
+    scheduled_job_id character varying(17),
+    client_id character varying(17),
+    level character varying(10) DEFAULT 'INFO'::character varying CONSTRAINT msg_scheduled_job_instance_logs_level_not_null NOT NULL,
+    message text CONSTRAINT msg_scheduled_job_instance_logs_message_not_null NOT NULL,
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instance_logs_created_at_not_null NOT NULL
+);
+
+
+--
 -- Name: msg_scheduled_job_instances; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1770,33 +1885,11 @@ CREATE TABLE public.msg_scheduled_job_instances (
     completion_status character varying(20),
     completion_result jsonb,
     correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
 )
 PARTITION BY RANGE (created_at);
-
-
---
--- Name: msg_scheduled_job_instances_2026_07; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.msg_scheduled_job_instances_2026_07 (
-    id character varying(17) CONSTRAINT msg_scheduled_job_instances_id_not_null NOT NULL,
-    scheduled_job_id character varying(17) CONSTRAINT msg_scheduled_job_instances_scheduled_job_id_not_null NOT NULL,
-    client_id character varying(17),
-    job_code character varying(200) CONSTRAINT msg_scheduled_job_instances_job_code_not_null NOT NULL,
-    trigger_kind character varying(20) DEFAULT 'CRON'::character varying CONSTRAINT msg_scheduled_job_instances_trigger_kind_not_null NOT NULL,
-    scheduled_for timestamp with time zone,
-    fired_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_fired_at_not_null NOT NULL,
-    delivered_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    status character varying(20) DEFAULT 'QUEUED'::character varying CONSTRAINT msg_scheduled_job_instances_status_not_null NOT NULL,
-    delivery_attempts integer DEFAULT 0 CONSTRAINT msg_scheduled_job_instances_delivery_attempts_not_null NOT NULL,
-    delivery_error text,
-    completion_status character varying(20),
-    completion_result jsonb,
-    correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL
-);
 
 
 --
@@ -1819,7 +1912,9 @@ CREATE TABLE public.msg_scheduled_job_instances_2026_08 (
     completion_status character varying(20),
     completion_result jsonb,
     correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
 );
 
 
@@ -1843,7 +1938,9 @@ CREATE TABLE public.msg_scheduled_job_instances_2026_09 (
     completion_status character varying(20),
     completion_result jsonb,
     correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
 );
 
 
@@ -1867,7 +1964,9 @@ CREATE TABLE public.msg_scheduled_job_instances_2026_10 (
     completion_status character varying(20),
     completion_result jsonb,
     correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
 );
 
 
@@ -1891,7 +1990,35 @@ CREATE TABLE public.msg_scheduled_job_instances_2026_11 (
     completion_status character varying(20),
     completion_result jsonb,
     correlation_id character varying(100),
-    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
+);
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msg_scheduled_job_instances_2026_12 (
+    id character varying(17) CONSTRAINT msg_scheduled_job_instances_id_not_null NOT NULL,
+    scheduled_job_id character varying(17) CONSTRAINT msg_scheduled_job_instances_scheduled_job_id_not_null NOT NULL,
+    client_id character varying(17),
+    job_code character varying(200) CONSTRAINT msg_scheduled_job_instances_job_code_not_null NOT NULL,
+    trigger_kind character varying(20) DEFAULT 'CRON'::character varying CONSTRAINT msg_scheduled_job_instances_trigger_kind_not_null NOT NULL,
+    scheduled_for timestamp with time zone,
+    fired_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_fired_at_not_null NOT NULL,
+    delivered_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    status character varying(20) DEFAULT 'QUEUED'::character varying CONSTRAINT msg_scheduled_job_instances_status_not_null NOT NULL,
+    delivery_attempts integer DEFAULT 0 CONSTRAINT msg_scheduled_job_instances_delivery_attempts_not_null NOT NULL,
+    delivery_error text,
+    completion_status character varying(20),
+    completion_result jsonb,
+    correlation_id character varying(100),
+    created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_scheduled_job_instances_created_at_not_null NOT NULL,
+    CONSTRAINT chk_msg_scheduled_job_instances_status CHECK (((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'DELIVERY_FAILED'::character varying])::text[]))),
+    CONSTRAINT chk_msg_scheduled_job_instances_trigger_kind CHECK (((trigger_kind)::text = ANY ((ARRAY['CRON'::character varying, 'MANUAL'::character varying, 'BACKFILL'::character varying])::text[])))
 );
 
 
@@ -1920,7 +2047,8 @@ CREATE TABLE public.msg_scheduled_jobs (
     created_by character varying(17),
     updated_by character varying(17),
     version integer DEFAULT 1 NOT NULL,
-    application_id character varying(17)
+    application_id character varying(17),
+    CONSTRAINT chk_msg_scheduled_jobs_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying, 'ARCHIVED'::character varying])::text[])))
 );
 
 
@@ -2011,7 +2139,7 @@ CREATE TABLE public.msg_subscriptions (
     dispatch_pool_code character varying(100),
     delay_seconds integer DEFAULT 0 NOT NULL,
     sequence integer DEFAULT 99 NOT NULL,
-    mode character varying(20) DEFAULT 'IMMEDIATE'::character varying NOT NULL,
+    mode character varying(20) DEFAULT 'NEXT_ON_ERROR'::character varying NOT NULL,
     timeout_seconds integer DEFAULT 30 NOT NULL,
     max_retries integer DEFAULT 3 NOT NULL,
     service_account_id character varying(17),
@@ -2019,7 +2147,9 @@ CREATE TABLE public.msg_subscriptions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     connection_id character varying(17),
-    created_by character varying(17)
+    created_by character varying(17),
+    CONSTRAINT chk_msg_subscriptions_source CHECK (((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[]))),
+    CONSTRAINT chk_msg_subscriptions_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))
 );
 
 
@@ -2090,7 +2220,11 @@ CREATE TABLE public.oauth_clients (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     portal_client_id character varying(17),
-    api_access boolean DEFAULT false NOT NULL
+    api_access boolean DEFAULT false NOT NULL,
+    previous_secret_ref text,
+    previous_secret_expires_at timestamp with time zone,
+    previous_secret_last_used_at timestamp with time zone,
+    CONSTRAINT chk_oauth_clients_client_type CHECK (((client_type)::text = ANY ((ARRAY['PUBLIC'::character varying, 'CONFIDENTIAL'::character varying])::text[])))
 );
 
 
@@ -2172,7 +2306,8 @@ CREATE TABLE public.oauth_identity_providers (
     oidc_issuer_pattern character varying(500),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    sync_roles_from_idp boolean DEFAULT false NOT NULL
+    sync_roles_from_idp boolean DEFAULT false NOT NULL,
+    CONSTRAINT chk_oauth_identity_providers_type CHECK (((type)::text = ANY ((ARRAY['INTERNAL'::character varying, 'OIDC'::character varying])::text[])))
 );
 
 
@@ -2300,7 +2435,9 @@ CREATE TABLE public.tnt_client_auth_configs (
     oidc_issuer_pattern character varying(500),
     oidc_client_secret_ref character varying(1000),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_tnt_client_auth_configs_auth_provider CHECK (((auth_provider)::text = ANY ((ARRAY['INTERNAL'::character varying, 'OIDC'::character varying])::text[]))),
+    CONSTRAINT chk_tnt_client_auth_configs_config_type CHECK (((config_type)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[])))
 );
 
 
@@ -2317,7 +2454,8 @@ CREATE TABLE public.tnt_clients (
     status_changed_at timestamp with time zone,
     notes jsonb DEFAULT '[]'::jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_tnt_clients_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying, 'SUSPENDED'::character varying])::text[])))
 );
 
 
@@ -2475,7 +2613,8 @@ CREATE TABLE public.tnt_email_domain_mappings (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     require_2fa boolean DEFAULT false NOT NULL,
     remember_device_enabled boolean DEFAULT false NOT NULL,
-    remember_device_days integer DEFAULT 30 NOT NULL
+    remember_device_days integer DEFAULT 30 NOT NULL,
+    CONSTRAINT chk_tnt_email_domain_mappings_scope_type CHECK (((scope_type)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[])))
 );
 
 
@@ -2495,10 +2634,24 @@ CREATE TABLE public.webauthn_credentials (
 
 
 --
--- Name: msg_dispatch_job_attempts_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: iam_login_attempts_2026_q3; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q3 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+
+
+--
+-- Name: iam_login_attempts_2026_q4; Type: TABLE ATTACH; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q4 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2027-01-01 00:00:00+00');
+
+
+--
+-- Name: iam_login_attempts_default; Type: TABLE ATTACH; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_default DEFAULT;
 
 
 --
@@ -2530,10 +2683,10 @@ ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_di
 
 
 --
--- Name: msg_dispatch_jobs_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_job_attempts_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2565,10 +2718,10 @@ ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_j
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2600,10 +2753,10 @@ ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispa
 
 
 --
--- Name: msg_events_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2635,10 +2788,10 @@ ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_11 FO
 
 
 --
--- Name: msg_events_read_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2670,10 +2823,10 @@ ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_
 
 
 --
--- Name: msg_scheduled_job_instance_logs_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_events_read_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2705,10 +2858,10 @@ ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.
 
 
 --
--- Name: msg_scheduled_job_instances_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
+-- Name: msg_scheduled_job_instance_logs_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-08-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2737,6 +2890,13 @@ ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_
 --
 
 ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_11 FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12; Type: TABLE ATTACH; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_12 FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2925,7 +3085,31 @@ ALTER TABLE ONLY public.iam_client_access_grants
 --
 
 ALTER TABLE ONLY public.iam_login_attempts
-    ADD CONSTRAINT iam_login_attempts_pkey PRIMARY KEY (id);
+    ADD CONSTRAINT iam_login_attempts_pkey PRIMARY KEY (id, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q3 iam_login_attempts_2026_q3_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iam_login_attempts_2026_q3
+    ADD CONSTRAINT iam_login_attempts_2026_q3_pkey PRIMARY KEY (id, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q4 iam_login_attempts_2026_q4_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iam_login_attempts_2026_q4
+    ADD CONSTRAINT iam_login_attempts_2026_q4_pkey PRIMARY KEY (id, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_default iam_login_attempts_default_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iam_login_attempts_default
+    ADD CONSTRAINT iam_login_attempts_default_pkey PRIMARY KEY (id, attempted_at);
 
 
 --
@@ -3113,14 +3297,6 @@ ALTER TABLE ONLY public.msg_dispatch_job_attempts
 
 
 --
--- Name: msg_dispatch_job_attempts_2026_07 msg_dispatch_job_attempts_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_dispatch_job_attempts_2026_07
-    ADD CONSTRAINT msg_dispatch_job_attempts_2026_07_pkey PRIMARY KEY (id, created_at);
-
-
---
 -- Name: msg_dispatch_job_attempts_2026_08 msg_dispatch_job_attempts_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3153,6 +3329,14 @@ ALTER TABLE ONLY public.msg_dispatch_job_attempts_2026_11
 
 
 --
+-- Name: msg_dispatch_job_attempts_2026_12 msg_dispatch_job_attempts_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_dispatch_job_attempts_2026_12
+    ADD CONSTRAINT msg_dispatch_job_attempts_2026_12_pkey PRIMARY KEY (id, created_at);
+
+
+--
 -- Name: msg_dispatch_job_projection_feed msg_dispatch_job_projection_feed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3166,14 +3350,6 @@ ALTER TABLE ONLY public.msg_dispatch_job_projection_feed
 
 ALTER TABLE ONLY public.msg_dispatch_jobs
     ADD CONSTRAINT msg_dispatch_jobs_pkey PRIMARY KEY (id, created_at);
-
-
---
--- Name: msg_dispatch_jobs_2026_07 msg_dispatch_jobs_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_dispatch_jobs_2026_07
-    ADD CONSTRAINT msg_dispatch_jobs_2026_07_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3209,19 +3385,19 @@ ALTER TABLE ONLY public.msg_dispatch_jobs_2026_11
 
 
 --
+-- Name: msg_dispatch_jobs_2026_12 msg_dispatch_jobs_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_dispatch_jobs_2026_12
+    ADD CONSTRAINT msg_dispatch_jobs_2026_12_pkey PRIMARY KEY (id, created_at);
+
+
+--
 -- Name: msg_dispatch_jobs_read msg_dispatch_jobs_read_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.msg_dispatch_jobs_read
     ADD CONSTRAINT msg_dispatch_jobs_read_pkey PRIMARY KEY (id, created_at);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07 msg_dispatch_jobs_read_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_dispatch_jobs_read_2026_07
-    ADD CONSTRAINT msg_dispatch_jobs_read_2026_07_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3254,6 +3430,14 @@ ALTER TABLE ONLY public.msg_dispatch_jobs_read_2026_10
 
 ALTER TABLE ONLY public.msg_dispatch_jobs_read_2026_11
     ADD CONSTRAINT msg_dispatch_jobs_read_2026_11_pkey PRIMARY KEY (id, created_at);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12 msg_dispatch_jobs_read_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_dispatch_jobs_read_2026_12
+    ADD CONSTRAINT msg_dispatch_jobs_read_2026_12_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3305,14 +3489,6 @@ ALTER TABLE ONLY public.msg_events
 
 
 --
--- Name: msg_events_2026_07 msg_events_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_events_2026_07
-    ADD CONSTRAINT msg_events_2026_07_pkey PRIMARY KEY (id, created_at);
-
-
---
 -- Name: msg_events_2026_08 msg_events_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3345,19 +3521,19 @@ ALTER TABLE ONLY public.msg_events_2026_11
 
 
 --
+-- Name: msg_events_2026_12 msg_events_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_events_2026_12
+    ADD CONSTRAINT msg_events_2026_12_pkey PRIMARY KEY (id, created_at);
+
+
+--
 -- Name: msg_events_read msg_events_read_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.msg_events_read
     ADD CONSTRAINT msg_events_read_pkey PRIMARY KEY (id, created_at);
-
-
---
--- Name: msg_events_read_2026_07 msg_events_read_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_events_read_2026_07
-    ADD CONSTRAINT msg_events_read_2026_07_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3393,6 +3569,14 @@ ALTER TABLE ONLY public.msg_events_read_2026_11
 
 
 --
+-- Name: msg_events_read_2026_12 msg_events_read_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_events_read_2026_12
+    ADD CONSTRAINT msg_events_read_2026_12_pkey PRIMARY KEY (id, created_at);
+
+
+--
 -- Name: msg_processes msg_processes_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3414,14 +3598,6 @@ ALTER TABLE ONLY public.msg_processes
 
 ALTER TABLE ONLY public.msg_scheduled_job_instance_logs
     ADD CONSTRAINT msg_scheduled_job_instance_logs_pkey PRIMARY KEY (id, created_at);
-
-
---
--- Name: msg_scheduled_job_instance_logs_2026_07 msg_scheduled_job_instance_logs_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_scheduled_job_instance_logs_2026_07
-    ADD CONSTRAINT msg_scheduled_job_instance_logs_2026_07_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3457,19 +3633,19 @@ ALTER TABLE ONLY public.msg_scheduled_job_instance_logs_2026_11
 
 
 --
+-- Name: msg_scheduled_job_instance_logs_2026_12 msg_scheduled_job_instance_logs_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_scheduled_job_instance_logs_2026_12
+    ADD CONSTRAINT msg_scheduled_job_instance_logs_2026_12_pkey PRIMARY KEY (id, created_at);
+
+
+--
 -- Name: msg_scheduled_job_instances msg_scheduled_job_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.msg_scheduled_job_instances
     ADD CONSTRAINT msg_scheduled_job_instances_pkey PRIMARY KEY (id, created_at);
-
-
---
--- Name: msg_scheduled_job_instances_2026_07 msg_scheduled_job_instances_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.msg_scheduled_job_instances_2026_07
-    ADD CONSTRAINT msg_scheduled_job_instances_2026_07_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3502,6 +3678,14 @@ ALTER TABLE ONLY public.msg_scheduled_job_instances_2026_10
 
 ALTER TABLE ONLY public.msg_scheduled_job_instances_2026_11
     ADD CONSTRAINT msg_scheduled_job_instances_2026_11_pkey PRIMARY KEY (id, created_at);
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12 msg_scheduled_job_instances_2026_12_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msg_scheduled_job_instances_2026_12
+    ADD CONSTRAINT msg_scheduled_job_instances_2026_12_pkey PRIMARY KEY (id, created_at);
 
 
 --
@@ -3785,6 +3969,202 @@ ALTER TABLE ONLY public.webauthn_credentials
 
 
 --
+-- Name: idx_iam_login_attempts_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_type ON ONLY public.iam_login_attempts USING btree (attempt_type);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_attempt_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_attempt_type_idx ON public.iam_login_attempts_2026_q3 USING btree (attempt_type);
+
+
+--
+-- Name: idx_iam_login_attempts_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_at ON ONLY public.iam_login_attempts USING btree (attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_attempted_at_idx ON public.iam_login_attempts_2026_q3 USING btree (attempted_at);
+
+
+--
+-- Name: idx_iam_login_attempts_identifier_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_identifier_at ON ONLY public.iam_login_attempts USING btree (identifier, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_identifier_attempted_at_idx ON public.iam_login_attempts_2026_q3 USING btree (identifier, attempted_at);
+
+
+--
+-- Name: idx_iam_login_attempts_failure_throttle; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_failure_throttle ON ONLY public.iam_login_attempts USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_attempted_at_idx1; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_identifier_attempted_at_idx1 ON public.iam_login_attempts_2026_q3 USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text);
+
+
+--
+-- Name: idx_iam_login_attempts_identifier_ip_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_identifier_ip_at ON ONLY public.iam_login_attempts USING btree (identifier, ip_address, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_ip_address_attempted__idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_identifier_ip_address_attempted__idx ON public.iam_login_attempts_2026_q3 USING btree (identifier, ip_address, attempted_at);
+
+
+--
+-- Name: idx_iam_login_attempts_outcome; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_outcome ON ONLY public.iam_login_attempts USING btree (outcome);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_outcome_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_outcome_idx ON public.iam_login_attempts_2026_q3 USING btree (outcome);
+
+
+--
+-- Name: idx_iam_login_attempts_principal; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_iam_login_attempts_principal ON ONLY public.iam_login_attempts USING btree (principal_id);
+
+
+--
+-- Name: iam_login_attempts_2026_q3_principal_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q3_principal_id_idx ON public.iam_login_attempts_2026_q3 USING btree (principal_id);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_attempt_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_attempt_type_idx ON public.iam_login_attempts_2026_q4 USING btree (attempt_type);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_attempted_at_idx ON public.iam_login_attempts_2026_q4 USING btree (attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_identifier_attempted_at_idx ON public.iam_login_attempts_2026_q4 USING btree (identifier, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_attempted_at_idx1; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_identifier_attempted_at_idx1 ON public.iam_login_attempts_2026_q4 USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_ip_address_attempted__idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_identifier_ip_address_attempted__idx ON public.iam_login_attempts_2026_q4 USING btree (identifier, ip_address, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_outcome_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_outcome_idx ON public.iam_login_attempts_2026_q4 USING btree (outcome);
+
+
+--
+-- Name: iam_login_attempts_2026_q4_principal_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_2026_q4_principal_id_idx ON public.iam_login_attempts_2026_q4 USING btree (principal_id);
+
+
+--
+-- Name: iam_login_attempts_default_attempt_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_attempt_type_idx ON public.iam_login_attempts_default USING btree (attempt_type);
+
+
+--
+-- Name: iam_login_attempts_default_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_attempted_at_idx ON public.iam_login_attempts_default USING btree (attempted_at);
+
+
+--
+-- Name: iam_login_attempts_default_identifier_attempted_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_identifier_attempted_at_idx ON public.iam_login_attempts_default USING btree (identifier, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_default_identifier_attempted_at_idx1; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_identifier_attempted_at_idx1 ON public.iam_login_attempts_default USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text);
+
+
+--
+-- Name: iam_login_attempts_default_identifier_ip_address_attempted__idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_identifier_ip_address_attempted__idx ON public.iam_login_attempts_default USING btree (identifier, ip_address, attempted_at);
+
+
+--
+-- Name: iam_login_attempts_default_outcome_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_outcome_idx ON public.iam_login_attempts_default USING btree (outcome);
+
+
+--
+-- Name: iam_login_attempts_default_principal_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX iam_login_attempts_default_principal_id_idx ON public.iam_login_attempts_default USING btree (principal_id);
+
+
+--
 -- Name: idx_app_applications_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3971,48 +4351,6 @@ CREATE INDEX idx_iam_client_access_grants_client ON public.iam_client_access_gra
 --
 
 CREATE INDEX idx_iam_client_access_grants_principal ON public.iam_client_access_grants USING btree (principal_id);
-
-
---
--- Name: idx_iam_login_attempts_at; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_at ON public.iam_login_attempts USING btree (attempted_at);
-
-
---
--- Name: idx_iam_login_attempts_failure_throttle; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_failure_throttle ON public.iam_login_attempts USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text);
-
-
---
--- Name: idx_iam_login_attempts_identifier; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_identifier ON public.iam_login_attempts USING btree (identifier);
-
-
---
--- Name: idx_iam_login_attempts_outcome; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_outcome ON public.iam_login_attempts USING btree (outcome);
-
-
---
--- Name: idx_iam_login_attempts_principal; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_principal ON public.iam_login_attempts USING btree (principal_id);
-
-
---
--- Name: idx_iam_login_attempts_type; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_iam_login_attempts_type ON public.iam_login_attempts USING btree (attempt_type);
 
 
 --
@@ -4821,6 +5159,13 @@ CREATE INDEX idx_oauth_client_redirect_uris_client ON public.oauth_client_redire
 
 
 --
+-- Name: idx_oauth_clients_previous_secret_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_clients_previous_secret_expires_at ON public.oauth_clients USING btree (previous_secret_expires_at) WHERE (previous_secret_ref IS NOT NULL);
+
+
+--
 -- Name: idx_oauth_clients_service_account_principal; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4940,13 +5285,6 @@ CREATE INDEX idx_webauthn_credentials_principal ON public.webauthn_credentials U
 
 
 --
--- Name: msg_dispatch_job_attempts_2026_07_dispatch_job_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_job_attempts_2026_07_dispatch_job_id_idx ON public.msg_dispatch_job_attempts_2026_07 USING btree (dispatch_job_id);
-
-
---
 -- Name: msg_dispatch_job_attempts_2026_08_dispatch_job_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4975,66 +5313,45 @@ CREATE INDEX msg_dispatch_job_attempts_2026_11_dispatch_job_id_idx ON public.msg
 
 
 --
+-- Name: msg_dispatch_job_attempts_2026_12_dispatch_job_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_job_attempts_2026_12_dispatch_job_id_idx ON public.msg_dispatch_job_attempts_2026_12 USING btree (dispatch_job_id);
+
+
+--
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx1; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx1 ON public.msg_dispatch_job_attempts_2026_08 USING btree (dispatch_job_id, attempt_number, created_at);
+CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx1 ON public.msg_dispatch_job_attempts_2026_09 USING btree (dispatch_job_id, attempt_number, created_at);
 
 
 --
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx2 ON public.msg_dispatch_job_attempts_2026_09 USING btree (dispatch_job_id, attempt_number, created_at);
+CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx2 ON public.msg_dispatch_job_attempts_2026_10 USING btree (dispatch_job_id, attempt_number, created_at);
 
 
 --
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx3; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx3 ON public.msg_dispatch_job_attempts_2026_10 USING btree (dispatch_job_id, attempt_number, created_at);
+CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx3 ON public.msg_dispatch_job_attempts_2026_11 USING btree (dispatch_job_id, attempt_number, created_at);
 
 
 --
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx4; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx4 ON public.msg_dispatch_job_attempts_2026_11 USING btree (dispatch_job_id, attempt_number, created_at);
+CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx4 ON public.msg_dispatch_job_attempts_2026_12 USING btree (dispatch_job_id, attempt_number, created_at);
 
 
 --
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numbe_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numbe_idx ON public.msg_dispatch_job_attempts_2026_07 USING btree (dispatch_job_id, attempt_number, created_at);
-
-
---
--- Name: msg_dispatch_jobs_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_2026_07_created_at_idx ON public.msg_dispatch_jobs_2026_07 USING btree (created_at) WHERE ((projected_at IS NULL) OR (updated_at > projected_at));
-
-
---
--- Name: msg_dispatch_jobs_2026_07_message_group_sequence_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_2026_07_message_group_sequence_created_at_idx ON public.msg_dispatch_jobs_2026_07 USING btree (message_group, sequence, created_at) WHERE ((status)::text = 'PENDING'::text);
-
-
---
--- Name: msg_dispatch_jobs_2026_07_message_group_status_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_2026_07_message_group_status_idx ON public.msg_dispatch_jobs_2026_07 USING btree (message_group, status) WHERE ((status)::text = ANY ((ARRAY['FAILED'::character varying, 'ERROR'::character varying])::text[]));
-
-
---
--- Name: msg_dispatch_jobs_2026_07_queued_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_2026_07_queued_at_idx ON public.msg_dispatch_jobs_2026_07 USING btree (queued_at) WHERE ((status)::text = 'QUEUED'::text);
+CREATE UNIQUE INDEX msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numbe_idx ON public.msg_dispatch_job_attempts_2026_08 USING btree (dispatch_job_id, attempt_number, created_at);
 
 
 --
@@ -5150,66 +5467,31 @@ CREATE INDEX msg_dispatch_jobs_2026_11_queued_at_idx ON public.msg_dispatch_jobs
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_application_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_dispatch_jobs_read_2026_07_application_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (application);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_read_2026_07_client_id_created_at_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (client_id, created_at DESC);
+CREATE INDEX msg_dispatch_jobs_2026_12_created_at_idx ON public.msg_dispatch_jobs_2026_12 USING btree (created_at) WHERE ((projected_at IS NULL) OR (updated_at > projected_at));
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_code_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_message_group_sequence_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_dispatch_jobs_read_2026_07_code_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (code);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_read_2026_07_created_at_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (created_at);
+CREATE INDEX msg_dispatch_jobs_2026_12_message_group_sequence_created_at_idx ON public.msg_dispatch_jobs_2026_12 USING btree (message_group, sequence, created_at) WHERE ((status)::text = 'PENDING'::text);
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_dispatch_pool_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_message_group_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_dispatch_jobs_read_2026_07_dispatch_pool_id_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (dispatch_pool_id);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_event_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_read_2026_07_event_id_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (event_id);
+CREATE INDEX msg_dispatch_jobs_2026_12_message_group_status_idx ON public.msg_dispatch_jobs_2026_12 USING btree (message_group, status) WHERE ((status)::text = ANY ((ARRAY['FAILED'::character varying, 'ERROR'::character varying])::text[]));
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_message_group_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_queued_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_dispatch_jobs_read_2026_07_message_group_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (message_group);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_status_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_read_2026_07_status_created_at_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (status, created_at DESC);
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_subscription_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_dispatch_jobs_read_2026_07_subscription_id_idx ON public.msg_dispatch_jobs_read_2026_07 USING btree (subscription_id);
+CREATE INDEX msg_dispatch_jobs_2026_12_queued_at_idx ON public.msg_dispatch_jobs_2026_12 USING btree (queued_at) WHERE ((status)::text = 'QUEUED'::text);
 
 
 --
@@ -5465,38 +5747,66 @@ CREATE INDEX msg_dispatch_jobs_read_2026_11_subscription_id_idx ON public.msg_di
 
 
 --
--- Name: msg_events_2026_07_client_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_application_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_2026_07_client_id_idx ON public.msg_events_2026_07 USING btree (client_id);
-
-
---
--- Name: msg_events_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_events_2026_07_created_at_idx ON public.msg_events_2026_07 USING btree (created_at);
+CREATE INDEX msg_dispatch_jobs_read_2026_12_application_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (application);
 
 
 --
--- Name: msg_events_2026_07_created_at_idx1; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_2026_07_created_at_idx1 ON public.msg_events_2026_07 USING btree (created_at) WHERE (projected_at IS NULL);
-
-
---
--- Name: msg_events_2026_07_created_at_idx2; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_events_2026_07_created_at_idx2 ON public.msg_events_2026_07 USING btree (created_at) WHERE (fanned_out_at IS NULL);
+CREATE INDEX msg_dispatch_jobs_read_2026_12_client_id_created_at_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (client_id, created_at DESC);
 
 
 --
--- Name: msg_events_2026_07_deduplication_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_code_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX msg_events_2026_07_deduplication_id_created_at_idx ON public.msg_events_2026_07 USING btree (deduplication_id, created_at);
+CREATE INDEX msg_dispatch_jobs_read_2026_12_code_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (code);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_created_at_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (created_at);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_dispatch_pool_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_dispatch_pool_id_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (dispatch_pool_id);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_event_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_event_id_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (event_id);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_message_group_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_message_group_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (message_group);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_status_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_status_created_at_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (status, created_at DESC);
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_subscription_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_dispatch_jobs_read_2026_12_subscription_id_idx ON public.msg_dispatch_jobs_read_2026_12 USING btree (subscription_id);
 
 
 --
@@ -5640,52 +5950,38 @@ CREATE UNIQUE INDEX msg_events_2026_11_deduplication_id_created_at_idx ON public
 
 
 --
--- Name: msg_events_read_2026_07_aggregate_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_events_2026_12_client_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_read_2026_07_aggregate_idx ON public.msg_events_read_2026_07 USING btree (aggregate);
-
-
---
--- Name: msg_events_read_2026_07_application_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_events_read_2026_07_application_idx ON public.msg_events_read_2026_07 USING btree (application);
+CREATE INDEX msg_events_2026_12_client_id_idx ON public.msg_events_2026_12 USING btree (client_id);
 
 
 --
--- Name: msg_events_read_2026_07_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_read_2026_07_client_id_created_at_idx ON public.msg_events_read_2026_07 USING btree (client_id, created_at DESC);
-
-
---
--- Name: msg_events_read_2026_07_correlation_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_events_read_2026_07_correlation_id_idx ON public.msg_events_read_2026_07 USING btree (correlation_id);
+CREATE INDEX msg_events_2026_12_created_at_idx ON public.msg_events_2026_12 USING btree (created_at);
 
 
 --
--- Name: msg_events_read_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx1; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_read_2026_07_created_at_idx ON public.msg_events_read_2026_07 USING btree (created_at);
-
-
---
--- Name: msg_events_read_2026_07_subdomain_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_events_read_2026_07_subdomain_idx ON public.msg_events_read_2026_07 USING btree (subdomain);
+CREATE INDEX msg_events_2026_12_created_at_idx1 ON public.msg_events_2026_12 USING btree (created_at) WHERE (projected_at IS NULL);
 
 
 --
--- Name: msg_events_read_2026_07_type_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_events_read_2026_07_type_created_at_idx ON public.msg_events_read_2026_07 USING btree (type, created_at DESC);
+CREATE INDEX msg_events_2026_12_created_at_idx2 ON public.msg_events_2026_12 USING btree (created_at) WHERE (fanned_out_at IS NULL);
+
+
+--
+-- Name: msg_events_2026_12_deduplication_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX msg_events_2026_12_deduplication_id_created_at_idx ON public.msg_events_2026_12 USING btree (deduplication_id, created_at);
 
 
 --
@@ -5885,94 +6181,122 @@ CREATE INDEX msg_events_read_2026_11_type_created_at_idx ON public.msg_events_re
 
 
 --
+-- Name: msg_events_read_2026_12_aggregate_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_aggregate_idx ON public.msg_events_read_2026_12 USING btree (aggregate);
+
+
+--
+-- Name: msg_events_read_2026_12_application_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_application_idx ON public.msg_events_read_2026_12 USING btree (application);
+
+
+--
+-- Name: msg_events_read_2026_12_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_client_id_created_at_idx ON public.msg_events_read_2026_12 USING btree (client_id, created_at DESC);
+
+
+--
+-- Name: msg_events_read_2026_12_correlation_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_correlation_id_idx ON public.msg_events_read_2026_12 USING btree (correlation_id);
+
+
+--
+-- Name: msg_events_read_2026_12_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_created_at_idx ON public.msg_events_read_2026_12 USING btree (created_at);
+
+
+--
+-- Name: msg_events_read_2026_12_subdomain_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_subdomain_idx ON public.msg_events_read_2026_12 USING btree (subdomain);
+
+
+--
+-- Name: msg_events_read_2026_12_type_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_events_read_2026_12_type_created_at_idx ON public.msg_events_read_2026_12 USING btree (type, created_at DESC);
+
+
+--
 -- Name: msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx1; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx1 ON public.msg_scheduled_job_instance_logs_2026_08 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx1 ON public.msg_scheduled_job_instance_logs_2026_09 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx2 ON public.msg_scheduled_job_instance_logs_2026_09 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx2 ON public.msg_scheduled_job_instance_logs_2026_10 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx3; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx3 ON public.msg_scheduled_job_instance_logs_2026_10 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx3 ON public.msg_scheduled_job_instance_logs_2026_11 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx4; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx4 ON public.msg_scheduled_job_instance_logs_2026_11 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx4 ON public.msg_scheduled_job_instance_logs_2026_12 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_2026_instance_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_2026_instance_id_created_at_idx ON public.msg_scheduled_job_instance_logs_2026_07 USING btree (instance_id, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_2026_instance_id_created_at_idx ON public.msg_scheduled_job_instance_logs_2026_08 USING btree (instance_id, created_at);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_202_instance_id_created_at_idx1; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx1 ON public.msg_scheduled_job_instance_logs_2026_08 USING btree (instance_id, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx1 ON public.msg_scheduled_job_instance_logs_2026_09 USING btree (instance_id, created_at);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_202_instance_id_created_at_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx2 ON public.msg_scheduled_job_instance_logs_2026_09 USING btree (instance_id, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx2 ON public.msg_scheduled_job_instance_logs_2026_10 USING btree (instance_id, created_at);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_202_instance_id_created_at_idx3; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx3 ON public.msg_scheduled_job_instance_logs_2026_10 USING btree (instance_id, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx3 ON public.msg_scheduled_job_instance_logs_2026_11 USING btree (instance_id, created_at);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_202_instance_id_created_at_idx4; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx4 ON public.msg_scheduled_job_instance_logs_2026_11 USING btree (instance_id, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_202_instance_id_created_at_idx4 ON public.msg_scheduled_job_instance_logs_2026_12 USING btree (instance_id, created_at);
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_scheduled_job_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instance_logs_scheduled_job_id_created_at_idx ON public.msg_scheduled_job_instance_logs_2026_07 USING btree (scheduled_job_id, created_at DESC);
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_scheduled_job_instances_2026_07_client_id_created_at_idx ON public.msg_scheduled_job_instances_2026_07 USING btree (client_id, created_at DESC);
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_scheduled_job_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_scheduled_job_instances_2026_07_scheduled_job_id_idx ON public.msg_scheduled_job_instances_2026_07 USING btree (scheduled_job_id) WHERE ((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying])::text[]));
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_status_created_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX msg_scheduled_job_instances_2026_07_status_created_at_idx ON public.msg_scheduled_job_instances_2026_07 USING btree (status, created_at);
+CREATE INDEX msg_scheduled_job_instance_logs_scheduled_job_id_created_at_idx ON public.msg_scheduled_job_instance_logs_2026_08 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
@@ -6060,38 +6384,59 @@ CREATE INDEX msg_scheduled_job_instances_2026_11_status_created_at_idx ON public
 
 
 --
+-- Name: msg_scheduled_job_instances_2026_12_client_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_scheduled_job_instances_2026_12_client_id_created_at_idx ON public.msg_scheduled_job_instances_2026_12 USING btree (client_id, created_at DESC);
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_scheduled_job_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_scheduled_job_instances_2026_12_scheduled_job_id_idx ON public.msg_scheduled_job_instances_2026_12 USING btree (scheduled_job_id) WHERE ((status)::text = ANY ((ARRAY['QUEUED'::character varying, 'IN_FLIGHT'::character varying, 'DELIVERED'::character varying])::text[]));
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_status_created_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX msg_scheduled_job_instances_2026_12_status_created_at_idx ON public.msg_scheduled_job_instances_2026_12 USING btree (status, created_at);
+
+
+--
 -- Name: msg_scheduled_job_instances_202_scheduled_job_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instances_202_scheduled_job_id_created_at_idx ON public.msg_scheduled_job_instances_2026_07 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instances_202_scheduled_job_id_created_at_idx ON public.msg_scheduled_job_instances_2026_08 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx1; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx1 ON public.msg_scheduled_job_instances_2026_08 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx1 ON public.msg_scheduled_job_instances_2026_09 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx2 ON public.msg_scheduled_job_instances_2026_09 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx2 ON public.msg_scheduled_job_instances_2026_10 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx3; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx3 ON public.msg_scheduled_job_instances_2026_10 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx3 ON public.msg_scheduled_job_instances_2026_11 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
 -- Name: msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx4; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx4 ON public.msg_scheduled_job_instances_2026_11 USING btree (scheduled_job_id, created_at DESC);
+CREATE INDEX msg_scheduled_job_instances_20_scheduled_job_id_created_at_idx4 ON public.msg_scheduled_job_instances_2026_12 USING btree (scheduled_job_id, created_at DESC);
 
 
 --
@@ -6214,17 +6559,171 @@ CREATE UNIQUE INDEX uq_msg_spec_versions_event_type_version ON public.msg_event_
 
 
 --
--- Name: msg_dispatch_job_attempts_2026_07_dispatch_job_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: iam_login_attempts_2026_q3_attempt_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_job_attempts_job ATTACH PARTITION public.msg_dispatch_job_attempts_2026_07_dispatch_job_id_idx;
+ALTER INDEX public.idx_iam_login_attempts_type ATTACH PARTITION public.iam_login_attempts_2026_q3_attempt_type_idx;
 
 
 --
--- Name: msg_dispatch_job_attempts_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: iam_login_attempts_2026_q3_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.msg_dispatch_job_attempts_pkey ATTACH PARTITION public.msg_dispatch_job_attempts_2026_07_pkey;
+ALTER INDEX public.idx_iam_login_attempts_at ATTACH PARTITION public.iam_login_attempts_2026_q3_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_at ATTACH PARTITION public.iam_login_attempts_2026_q3_identifier_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_attempted_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_failure_throttle ATTACH PARTITION public.iam_login_attempts_2026_q3_identifier_attempted_at_idx1;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_identifier_ip_address_attempted__idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_ip_at ATTACH PARTITION public.iam_login_attempts_2026_q3_identifier_ip_address_attempted__idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_outcome_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_outcome ATTACH PARTITION public.iam_login_attempts_2026_q3_outcome_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.iam_login_attempts_pkey ATTACH PARTITION public.iam_login_attempts_2026_q3_pkey;
+
+
+--
+-- Name: iam_login_attempts_2026_q3_principal_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_principal ATTACH PARTITION public.iam_login_attempts_2026_q3_principal_id_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_attempt_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_type ATTACH PARTITION public.iam_login_attempts_2026_q4_attempt_type_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_at ATTACH PARTITION public.iam_login_attempts_2026_q4_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_at ATTACH PARTITION public.iam_login_attempts_2026_q4_identifier_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_attempted_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_failure_throttle ATTACH PARTITION public.iam_login_attempts_2026_q4_identifier_attempted_at_idx1;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_identifier_ip_address_attempted__idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_ip_at ATTACH PARTITION public.iam_login_attempts_2026_q4_identifier_ip_address_attempted__idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_outcome_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_outcome ATTACH PARTITION public.iam_login_attempts_2026_q4_outcome_idx;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.iam_login_attempts_pkey ATTACH PARTITION public.iam_login_attempts_2026_q4_pkey;
+
+
+--
+-- Name: iam_login_attempts_2026_q4_principal_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_principal ATTACH PARTITION public.iam_login_attempts_2026_q4_principal_id_idx;
+
+
+--
+-- Name: iam_login_attempts_default_attempt_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_type ATTACH PARTITION public.iam_login_attempts_default_attempt_type_idx;
+
+
+--
+-- Name: iam_login_attempts_default_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_at ATTACH PARTITION public.iam_login_attempts_default_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_default_identifier_attempted_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_at ATTACH PARTITION public.iam_login_attempts_default_identifier_attempted_at_idx;
+
+
+--
+-- Name: iam_login_attempts_default_identifier_attempted_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_failure_throttle ATTACH PARTITION public.iam_login_attempts_default_identifier_attempted_at_idx1;
+
+
+--
+-- Name: iam_login_attempts_default_identifier_ip_address_attempted__idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_identifier_ip_at ATTACH PARTITION public.iam_login_attempts_default_identifier_ip_address_attempted__idx;
+
+
+--
+-- Name: iam_login_attempts_default_outcome_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_outcome ATTACH PARTITION public.iam_login_attempts_default_outcome_idx;
+
+
+--
+-- Name: iam_login_attempts_default_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.iam_login_attempts_pkey ATTACH PARTITION public.iam_login_attempts_default_pkey;
+
+
+--
+-- Name: iam_login_attempts_default_principal_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_iam_login_attempts_principal ATTACH PARTITION public.iam_login_attempts_default_principal_id_idx;
 
 
 --
@@ -6284,6 +6783,20 @@ ALTER INDEX public.msg_dispatch_job_attempts_pkey ATTACH PARTITION public.msg_di
 
 
 --
+-- Name: msg_dispatch_job_attempts_2026_12_dispatch_job_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_job_attempts_job ATTACH PARTITION public.msg_dispatch_job_attempts_2026_12_dispatch_job_id_idx;
+
+
+--
+-- Name: msg_dispatch_job_attempts_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_dispatch_job_attempts_pkey ATTACH PARTITION public.msg_dispatch_job_attempts_2026_12_pkey;
+
+
+--
 -- Name: msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numb_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
@@ -6316,41 +6829,6 @@ ALTER INDEX public.idx_msg_dispatch_job_attempts_job_number ATTACH PARTITION pub
 --
 
 ALTER INDEX public.idx_msg_dispatch_job_attempts_job_number ATTACH PARTITION public.msg_dispatch_job_attempts_202_dispatch_job_id_attempt_numbe_idx;
-
-
---
--- Name: msg_dispatch_jobs_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_dispatch_jobs_dirty ATTACH PARTITION public.msg_dispatch_jobs_2026_07_created_at_idx;
-
-
---
--- Name: msg_dispatch_jobs_2026_07_message_group_sequence_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_dispatch_jobs_pending_poll ATTACH PARTITION public.msg_dispatch_jobs_2026_07_message_group_sequence_created_at_idx;
-
-
---
--- Name: msg_dispatch_jobs_2026_07_message_group_status_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_dispatch_jobs_blocked_groups ATTACH PARTITION public.msg_dispatch_jobs_2026_07_message_group_status_idx;
-
-
---
--- Name: msg_dispatch_jobs_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.msg_dispatch_jobs_pkey ATTACH PARTITION public.msg_dispatch_jobs_2026_07_pkey;
-
-
---
--- Name: msg_dispatch_jobs_2026_07_queued_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_dispatch_jobs_stale_queued ATTACH PARTITION public.msg_dispatch_jobs_2026_07_queued_at_idx;
 
 
 --
@@ -6494,73 +6972,38 @@ ALTER INDEX public.idx_dispatch_jobs_stale_queued ATTACH PARTITION public.msg_di
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_application_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_jobs_read_application ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_application_idx;
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_dispatch_jobs_read_client_created ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_client_id_created_at_idx;
+ALTER INDEX public.idx_msg_dispatch_jobs_dirty ATTACH PARTITION public.msg_dispatch_jobs_2026_12_created_at_idx;
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_code_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_message_group_sequence_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_jobs_read_code ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_code_idx;
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_dispatch_jobs_read_created_at ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_created_at_idx;
+ALTER INDEX public.idx_dispatch_jobs_pending_poll ATTACH PARTITION public.msg_dispatch_jobs_2026_12_message_group_sequence_created_at_idx;
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_dispatch_pool_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_message_group_status_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_jobs_read_dispatch_pool_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_dispatch_pool_id_idx;
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_event_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_dispatch_jobs_read_event_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_event_id_idx;
+ALTER INDEX public.idx_dispatch_jobs_blocked_groups ATTACH PARTITION public.msg_dispatch_jobs_2026_12_message_group_status_idx;
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_message_group_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_jobs_read_message_group ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_message_group_idx;
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.msg_dispatch_jobs_read_pkey ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_pkey;
+ALTER INDEX public.msg_dispatch_jobs_pkey ATTACH PARTITION public.msg_dispatch_jobs_2026_12_pkey;
 
 
 --
--- Name: msg_dispatch_jobs_read_2026_07_status_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_2026_12_queued_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_dispatch_jobs_read_status_created ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_status_created_at_idx;
-
-
---
--- Name: msg_dispatch_jobs_read_2026_07_subscription_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_dispatch_jobs_read_subscription_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_07_subscription_id_idx;
+ALTER INDEX public.idx_dispatch_jobs_stale_queued ATTACH PARTITION public.msg_dispatch_jobs_2026_12_queued_at_idx;
 
 
 --
@@ -6844,45 +7287,73 @@ ALTER INDEX public.idx_msg_dispatch_jobs_read_subscription_id ATTACH PARTITION p
 
 
 --
--- Name: msg_events_2026_07_client_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_application_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_client_id ATTACH PARTITION public.msg_events_2026_07_client_id_idx;
-
-
---
--- Name: msg_events_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_events_created_at ATTACH PARTITION public.msg_events_2026_07_created_at_idx;
+ALTER INDEX public.idx_msg_dispatch_jobs_read_application ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_application_idx;
 
 
 --
--- Name: msg_events_2026_07_created_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_unprojected ATTACH PARTITION public.msg_events_2026_07_created_at_idx1;
-
-
---
--- Name: msg_events_2026_07_created_at_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_events_unfanned ATTACH PARTITION public.msg_events_2026_07_created_at_idx2;
+ALTER INDEX public.idx_msg_dispatch_jobs_read_client_created ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_client_id_created_at_idx;
 
 
 --
--- Name: msg_events_2026_07_deduplication_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_code_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_deduplication ATTACH PARTITION public.msg_events_2026_07_deduplication_id_created_at_idx;
+ALTER INDEX public.idx_msg_dispatch_jobs_read_code ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_code_idx;
 
 
 --
--- Name: msg_events_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_dispatch_jobs_read_2026_12_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.msg_events_pkey ATTACH PARTITION public.msg_events_2026_07_pkey;
+ALTER INDEX public.idx_msg_dispatch_jobs_read_created_at ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_created_at_idx;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_dispatch_pool_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_jobs_read_dispatch_pool_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_dispatch_pool_id_idx;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_event_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_jobs_read_event_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_event_id_idx;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_message_group_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_jobs_read_message_group ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_message_group_idx;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_dispatch_jobs_read_pkey ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_pkey;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_status_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_jobs_read_status_created ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_status_created_at_idx;
+
+
+--
+-- Name: msg_dispatch_jobs_read_2026_12_subscription_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_dispatch_jobs_read_subscription_id ATTACH PARTITION public.msg_dispatch_jobs_read_2026_12_subscription_id_idx;
 
 
 --
@@ -7054,59 +7525,45 @@ ALTER INDEX public.msg_events_pkey ATTACH PARTITION public.msg_events_2026_11_pk
 
 
 --
--- Name: msg_events_read_2026_07_aggregate_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12_client_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_read_aggregate ATTACH PARTITION public.msg_events_read_2026_07_aggregate_idx;
-
-
---
--- Name: msg_events_read_2026_07_application_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_events_read_application ATTACH PARTITION public.msg_events_read_2026_07_application_idx;
+ALTER INDEX public.idx_msg_events_client_id ATTACH PARTITION public.msg_events_2026_12_client_id_idx;
 
 
 --
--- Name: msg_events_read_2026_07_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_read_client_created ATTACH PARTITION public.msg_events_read_2026_07_client_id_created_at_idx;
-
-
---
--- Name: msg_events_read_2026_07_correlation_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_events_read_correlation_id ATTACH PARTITION public.msg_events_read_2026_07_correlation_id_idx;
+ALTER INDEX public.idx_msg_events_created_at ATTACH PARTITION public.msg_events_2026_12_created_at_idx;
 
 
 --
--- Name: msg_events_read_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_read_created_at ATTACH PARTITION public.msg_events_read_2026_07_created_at_idx;
-
-
---
--- Name: msg_events_read_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.msg_events_read_pkey ATTACH PARTITION public.msg_events_read_2026_07_pkey;
+ALTER INDEX public.idx_msg_events_unprojected ATTACH PARTITION public.msg_events_2026_12_created_at_idx1;
 
 
 --
--- Name: msg_events_read_2026_07_subdomain_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12_created_at_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_read_subdomain ATTACH PARTITION public.msg_events_read_2026_07_subdomain_idx;
+ALTER INDEX public.idx_msg_events_unfanned ATTACH PARTITION public.msg_events_2026_12_created_at_idx2;
 
 
 --
--- Name: msg_events_read_2026_07_type_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: msg_events_2026_12_deduplication_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_msg_events_read_type_created ATTACH PARTITION public.msg_events_read_2026_07_type_created_at_idx;
+ALTER INDEX public.idx_msg_events_deduplication ATTACH PARTITION public.msg_events_2026_12_deduplication_id_created_at_idx;
+
+
+--
+-- Name: msg_events_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_events_pkey ATTACH PARTITION public.msg_events_2026_12_pkey;
 
 
 --
@@ -7334,6 +7791,62 @@ ALTER INDEX public.idx_msg_events_read_type_created ATTACH PARTITION public.msg_
 
 
 --
+-- Name: msg_events_read_2026_12_aggregate_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_aggregate ATTACH PARTITION public.msg_events_read_2026_12_aggregate_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_application_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_application ATTACH PARTITION public.msg_events_read_2026_12_application_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_client_created ATTACH PARTITION public.msg_events_read_2026_12_client_id_created_at_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_correlation_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_correlation_id ATTACH PARTITION public.msg_events_read_2026_12_correlation_id_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_created_at ATTACH PARTITION public.msg_events_read_2026_12_created_at_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_events_read_pkey ATTACH PARTITION public.msg_events_read_2026_12_pkey;
+
+
+--
+-- Name: msg_events_read_2026_12_subdomain_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_subdomain ATTACH PARTITION public.msg_events_read_2026_12_subdomain_idx;
+
+
+--
+-- Name: msg_events_read_2026_12_type_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_events_read_type_created ATTACH PARTITION public.msg_events_read_2026_12_type_created_at_idx;
+
+
+--
 -- Name: msg_scheduled_job_instance_log_scheduled_job_id_created_at_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
@@ -7362,13 +7875,6 @@ ALTER INDEX public.idx_msg_scheduled_job_instance_logs_job ATTACH PARTITION publ
 
 
 --
--- Name: msg_scheduled_job_instance_logs_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.msg_scheduled_job_instance_logs_pkey ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_07_pkey;
-
-
---
 -- Name: msg_scheduled_job_instance_logs_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
@@ -7394,6 +7900,13 @@ ALTER INDEX public.msg_scheduled_job_instance_logs_pkey ATTACH PARTITION public.
 --
 
 ALTER INDEX public.msg_scheduled_job_instance_logs_pkey ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_11_pkey;
+
+
+--
+-- Name: msg_scheduled_job_instance_logs_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_scheduled_job_instance_logs_pkey ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_12_pkey;
 
 
 --
@@ -7436,34 +7949,6 @@ ALTER INDEX public.idx_msg_scheduled_job_instance_logs_instance ATTACH PARTITION
 --
 
 ALTER INDEX public.idx_msg_scheduled_job_instance_logs_job ATTACH PARTITION public.msg_scheduled_job_instance_logs_scheduled_job_id_created_at_idx;
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_scheduled_job_instances_client ATTACH PARTITION public.msg_scheduled_job_instances_2026_07_client_id_created_at_idx;
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.msg_scheduled_job_instances_pkey ATTACH PARTITION public.msg_scheduled_job_instances_2026_07_pkey;
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_scheduled_job_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_scheduled_job_instances_active ATTACH PARTITION public.msg_scheduled_job_instances_2026_07_scheduled_job_id_idx;
-
-
---
--- Name: msg_scheduled_job_instances_2026_07_status_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
---
-
-ALTER INDEX public.idx_msg_scheduled_job_instances_status ATTACH PARTITION public.msg_scheduled_job_instances_2026_07_status_created_at_idx;
 
 
 --
@@ -7576,6 +8061,34 @@ ALTER INDEX public.idx_msg_scheduled_job_instances_active ATTACH PARTITION publi
 --
 
 ALTER INDEX public.idx_msg_scheduled_job_instances_status ATTACH PARTITION public.msg_scheduled_job_instances_2026_11_status_created_at_idx;
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_client_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_scheduled_job_instances_client ATTACH PARTITION public.msg_scheduled_job_instances_2026_12_client_id_created_at_idx;
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.msg_scheduled_job_instances_pkey ATTACH PARTITION public.msg_scheduled_job_instances_2026_12_pkey;
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_scheduled_job_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_scheduled_job_instances_active ATTACH PARTITION public.msg_scheduled_job_instances_2026_12_scheduled_job_id_idx;
+
+
+--
+-- Name: msg_scheduled_job_instances_2026_12_status_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+--
+
+ALTER INDEX public.idx_msg_scheduled_job_instances_status ATTACH PARTITION public.msg_scheduled_job_instances_2026_12_status_created_at_idx;
 
 
 --
@@ -7745,5 +8258,5 @@ ALTER TABLE ONLY public.webauthn_credentials
 -- PostgreSQL database dump complete
 --
 
-\unrestrict joGFbiQvkb630hRGVGDi7znV5CkjhE6EPO8ar24ERSp3l2ETnYNIyLQl2hY3Ycf
+\unrestrict J9hWsk47OylKxBI4UeZVES8IVNcGK1xZmSq353Kuy9h1tsh3tkVPwb5cQBM8V1f
 

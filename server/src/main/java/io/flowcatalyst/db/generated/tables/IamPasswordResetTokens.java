@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -154,6 +155,13 @@ public class IamPasswordResetTokens extends TableImpl<IamPasswordResetTokensReco
     @Override
     public List<UniqueKey<IamPasswordResetTokensRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.IAM_PASSWORD_RESET_TOKENS_TOKEN_HASH_KEY);
+    }
+
+    @Override
+    public List<Check<IamPasswordResetTokensRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_iam_password_reset_tokens_purpose"), "(((purpose)::text = ANY ((ARRAY['reset'::character varying, 'invite'::character varying])::text[])))", true)
+        );
     }
 
     @Override

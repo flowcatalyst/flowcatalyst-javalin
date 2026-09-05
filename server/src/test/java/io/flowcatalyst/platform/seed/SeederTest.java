@@ -120,7 +120,14 @@ class SeederTest {
             expectedSchemas.put(f[1], readTree(f[6]));
             assertThat(f[2]).isEqualTo("v1");
             assertThat(f[3]).isEqualTo("application/schema+json");
-            assertThat(f[4]).isEqualTo("JSON");
+            // "JSON" here (not a SchemaType constant) is a flowcatalyst-go seed
+            // defect: internal/platform/seed/event_types.go still writes the
+            // literal "JSON" as of HEAD, which chk_msg_event_type_spec_versions_schema_type
+            // (migration 051) would itself now reject on a fresh Go database
+            // (confirmed: `go run ./cmd/fcdev start` fails seeding on this).
+            // Java writes the correct SchemaType.JSON_SCHEMA and this fixture is
+            // deliberately corrected rather than reproducing the Go defect.
+            assertThat(f[4]).isEqualTo("JSON_SCHEMA");
             assertThat(f[5]).isEqualTo("CURRENT");
         }
         assertThat(expectedSchemas).hasSize(72);
@@ -138,7 +145,7 @@ class SeederTest {
             assertThat(r.value2()).startsWith("sch_");
             assertThat(r.value3()).isEqualTo("v1");
             assertThat(r.value4()).isEqualTo("application/schema+json");
-            assertThat(r.value5()).isEqualTo("JSON");
+            assertThat(r.value5()).isEqualTo("JSON_SCHEMA");
             assertThat(r.value6()).isEqualTo("CURRENT");
             actualSchemas.put(r.value1(), readTree(r.value7().data()));
         }

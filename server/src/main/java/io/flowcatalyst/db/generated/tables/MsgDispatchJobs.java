@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -144,7 +145,7 @@ public class MsgDispatchJobs extends TableImpl<MsgDispatchJobsRecord> {
     /**
      * The column <code>public.msg_dispatch_jobs.mode</code>.
      */
-    public final TableField<MsgDispatchJobsRecord, String> MODE = createField(DSL.name("mode"), SQLDataType.VARCHAR(30).nullable(false).defaultValue(DSL.field(DSL.raw("'IMMEDIATE'::character varying"), SQLDataType.VARCHAR)), this, "");
+    public final TableField<MsgDispatchJobsRecord, String> MODE = createField(DSL.name("mode"), SQLDataType.VARCHAR(30).nullable(false).defaultValue(DSL.field(DSL.raw("'NEXT_ON_ERROR'::character varying"), SQLDataType.VARCHAR)), this, "");
 
     /**
      * The column <code>public.msg_dispatch_jobs.dispatch_pool_id</code>.
@@ -288,6 +289,15 @@ public class MsgDispatchJobs extends TableImpl<MsgDispatchJobsRecord> {
     @Override
     public UniqueKey<MsgDispatchJobsRecord> getPrimaryKey() {
         return Keys.MSG_DISPATCH_JOBS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgDispatchJobsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_dispatch_jobs_kind"), "(((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_dispatch_jobs_retry_strategy"), "(((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[]))))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_dispatch_jobs_status"), "(((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

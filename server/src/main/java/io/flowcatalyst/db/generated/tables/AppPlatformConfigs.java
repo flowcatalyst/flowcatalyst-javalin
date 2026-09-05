@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -154,6 +155,14 @@ public class AppPlatformConfigs extends TableImpl<AppPlatformConfigsRecord> {
     @Override
     public UniqueKey<AppPlatformConfigsRecord> getPrimaryKey() {
         return Keys.APP_PLATFORM_CONFIGS_PKEY;
+    }
+
+    @Override
+    public List<Check<AppPlatformConfigsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_app_platform_configs_scope"), "(((scope)::text = ANY ((ARRAY['GLOBAL'::character varying, 'CLIENT'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_app_platform_configs_value_type"), "(((value_type)::text = ANY ((ARRAY['PLAIN'::character varying, 'SECRET'::character varying])::text[])))", true)
+        );
     }
 
     @Override

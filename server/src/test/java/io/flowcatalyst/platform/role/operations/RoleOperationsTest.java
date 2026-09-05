@@ -120,10 +120,14 @@ class RoleOperationsTest {
     /// junction has no foreign key on `role_name`).
     private static String seedPrincipalHolding(String roleName) {
         String principalId = EntityType.PRINCIPAL.generate();
+        // scope is guarded by chk_iam_principals_scope (migration 051, ANCHOR/
+        // PARTNER/CLIENT only) — this fixture predates that constraint and used
+        // the non-existent value "PLATFORM"; a role assignment doesn't depend
+        // on which valid scope the holding principal has.
         DB.insertInto(IAM_PRINCIPALS)
                 .set(IAM_PRINCIPALS.ID, principalId)
                 .set(IAM_PRINCIPALS.TYPE, "USER")
-                .set(IAM_PRINCIPALS.SCOPE, "PLATFORM")
+                .set(IAM_PRINCIPALS.SCOPE, "ANCHOR")
                 .set(IAM_PRINCIPALS.NAME, "Role Ops Test User")
                 .set(IAM_PRINCIPALS.ACTIVE, true)
                 .set(IAM_PRINCIPALS.EMAIL, principalId.toLowerCase(Locale.ROOT) + "@example.com")

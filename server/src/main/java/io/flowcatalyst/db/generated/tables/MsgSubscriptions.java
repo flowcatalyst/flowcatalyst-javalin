@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -143,7 +144,7 @@ public class MsgSubscriptions extends TableImpl<MsgSubscriptionsRecord> {
     /**
      * The column <code>public.msg_subscriptions.mode</code>.
      */
-    public final TableField<MsgSubscriptionsRecord, String> MODE = createField(DSL.name("mode"), SQLDataType.VARCHAR(20).nullable(false).defaultValue(DSL.field(DSL.raw("'IMMEDIATE'::character varying"), SQLDataType.VARCHAR)), this, "");
+    public final TableField<MsgSubscriptionsRecord, String> MODE = createField(DSL.name("mode"), SQLDataType.VARCHAR(20).nullable(false).defaultValue(DSL.field(DSL.raw("'NEXT_ON_ERROR'::character varying"), SQLDataType.VARCHAR)), this, "");
 
     /**
      * The column <code>public.msg_subscriptions.timeout_seconds</code>.
@@ -227,6 +228,14 @@ public class MsgSubscriptions extends TableImpl<MsgSubscriptionsRecord> {
     @Override
     public UniqueKey<MsgSubscriptionsRecord> getPrimaryKey() {
         return Keys.MSG_SUBSCRIPTIONS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgSubscriptionsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_subscriptions_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_subscriptions_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -148,6 +149,13 @@ public class TntClients extends TableImpl<TntClientsRecord> {
     @Override
     public List<UniqueKey<TntClientsRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.TNT_CLIENTS_IDENTIFIER_KEY);
+    }
+
+    @Override
+    public List<Check<TntClientsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_tnt_clients_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'INACTIVE'::character varying, 'SUSPENDED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

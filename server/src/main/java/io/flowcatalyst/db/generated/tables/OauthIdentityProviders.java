@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -163,6 +164,13 @@ public class OauthIdentityProviders extends TableImpl<OauthIdentityProvidersReco
     @Override
     public UniqueKey<OauthIdentityProvidersRecord> getPrimaryKey() {
         return Keys.OAUTH_IDENTITY_PROVIDERS_PKEY;
+    }
+
+    @Override
+    public List<Check<OauthIdentityProvidersRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_oauth_identity_providers_type"), "(((type)::text = ANY ((ARRAY['INTERNAL'::character varying, 'OIDC'::character varying])::text[])))", true)
+        );
     }
 
     @Override

@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.ForeignKey;
@@ -226,6 +227,13 @@ public class AppApplicationOpenapiSpecs extends TableImpl<AppApplicationOpenapiS
             _appApplications = new AppApplicationsPath(this, Keys.APP_APPLICATION_OPENAPI_SPECS__APP_APPLICATION_OPENAPI_SPECS_APPLICATION_ID_FKEY, null);
 
         return _appApplications;
+    }
+
+    @Override
+    public List<Check<AppApplicationOpenapiSpecsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_app_application_openapi_specs_status"), "(((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'ARCHIVED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

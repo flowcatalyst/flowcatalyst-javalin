@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -152,6 +153,13 @@ public class MsgConnections extends TableImpl<MsgConnectionsRecord> {
     @Override
     public UniqueKey<MsgConnectionsRecord> getPrimaryKey() {
         return Keys.MSG_CONNECTIONS_PKEY;
+    }
+
+    @Override
+    public List<Check<MsgConnectionsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_connections_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))", true)
+        );
     }
 
     @Override

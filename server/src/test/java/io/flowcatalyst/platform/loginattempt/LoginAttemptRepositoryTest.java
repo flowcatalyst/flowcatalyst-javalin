@@ -128,12 +128,14 @@ class LoginAttemptRepositoryTest {
 
     @Test
     void unknownStoredValuesReadLeniently() {
+        // attempt_type has no CHECK constraint (migration 051 only added one for
+        // outcome), so this column can still be corrupted with a plain INSERT.
         String id = EntityType.LOGIN_ATTEMPT.generate();
         String who = "foreign." + RUN + "@example.test";
         DB.insertInto(IAM_LOGIN_ATTEMPTS)
                 .set(IAM_LOGIN_ATTEMPTS.ID, id)
                 .set(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE, "SOMETHING_NEW")
-                .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "MAYBE")
+                .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "SUCCESS")
                 .set(IAM_LOGIN_ATTEMPTS.IDENTIFIER, who)
                 .execute();
         var a = repo.findRecentByIdentifier(who, 5).getFirst();
@@ -141,6 +143,16 @@ class LoginAttemptRepositoryTest {
         assertThat(a.attemptType()).isEqualTo(AttemptType.USER_LOGIN);
         assertThat(a.outcome()).isEqualTo(AttemptOutcome.SUCCESS);
         assertThat(a.attemptedAt()).as("the column default stamps now()").isNotNull();
+    }
+
+    // outcome IS guarded by chk_iam_login_attempts_outcome (migration 051), so
+    // AttemptOutcome.parse's "unknown -> SUCCESS" leniency for a legacy/corrupt
+    // row (one written before the constraint existed) is pinned as a pure unit
+    // test instead of via a DB insert the constraint would now reject.
+    @Test
+    void unknownStoredOutcomeParsesLeniently() {
+        assertThat(AttemptOutcome.parse("MAYBE")).isEqualTo(AttemptOutcome.SUCCESS);
+        assertThat(AttemptOutcome.parse("FAILURE")).isEqualTo(AttemptOutcome.FAILURE);
     }
 
     // ── Keyset read ────────────────────────────────────────────────────────

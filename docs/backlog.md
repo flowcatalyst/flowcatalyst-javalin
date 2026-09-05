@@ -234,6 +234,25 @@ item names its origin; items marked **owner** need Andrew's call.
 - `--enable-preview` for the server module when the router's
   `StructuredTaskScope` lands (keep usage localised).
 
+## Go HEAD defects found adopting migrations 046–052 (2026-09-05, **owner**)
+
+- **Go's seeder cannot seed a fresh database at HEAD.**
+  `internal/platform/seed/event_types.go:159` inserts `schema_type = 'JSON'`;
+  migration 051's `chk_msg_event_type_spec_versions_schema_type` allows only
+  `JSON_SCHEMA | XSD | XML_SCHEMA | PROTO | PROTOBUF`, so `fcdev start` on an
+  empty database fails its own seed (reproduced live). Java's `Seeder` had
+  the same literal and now writes `SchemaType.JSON_SCHEMA` — a **deliberate
+  deviation** (correctness over conformance); `go-seed-expected.tsv` updated
+  for the 72 schema rows. Go needs the one-word fix.
+- **`iam_login_attempts` partitions are created once, at migration 049.**
+  Quarters from the oldest row to now + 6 months, plus a default partition.
+  Go's `stream.PartitionManager` lists seven `msg_*` parents and not this
+  table, so nothing creates later quarters: after the pre-created range,
+  every login attempt lands in `iam_login_attempts_default` and the
+  partition pruning the migration exists for stops applying. Either add the
+  table to the partition maintainer (Java: Phase 2 stream work) or accept the
+  default-partition tail. Ruling wanted.
+
 ## Owner questions collected from specs
 
 Each spec's "load-bearing or accident?" list, summarised; the full wording is

@@ -27,8 +27,11 @@ public final class JooqCodegen {
     public static final String DEFAULT_PACKAGE = "io.flowcatalyst.db.generated";
 
     /// Excluded from generation: migration bookkeeping and the dated monthly
-    /// partitions (`<parent>_YYYY_MM`) — code targets the partitioned parents.
-    public static final String EXCLUDES = "flyway_schema_history|goose_db_version|.*_\\d{4}_\\d{2}";
+    /// (`<parent>_YYYY_MM`) and quarterly (`<parent>_YYYY_qN`) partitions, plus
+    /// DEFAULT partitions (`<parent>_default`) — code targets the partitioned
+    /// parents.
+    public static final String EXCLUDES =
+            "flyway_schema_history|goose_db_version|.*_\\d{4}_\\d{2}|.*_\\d{4}_q\\d|.*_default";
 
     private JooqCodegen() {
     }

@@ -1,1 +1,7 @@
 V1__baseline.sql
+V2__oauth_client_secret_grace.sql
+V3__oauth_previous_secret_last_used.sql
+V4__dispatch_mode_default.sql
+V5__partition_login_attempts.sql
+V6__x06_enum_check_constraints.sql
+V7__x06_dispatch_job_enum_check_constraints.sql

@@ -14,6 +14,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
@@ -165,6 +166,13 @@ public class TntEmailDomainMappings extends TableImpl<TntEmailDomainMappingsReco
     @Override
     public UniqueKey<TntEmailDomainMappingsRecord> getPrimaryKey() {
         return Keys.TNT_EMAIL_DOMAIN_MAPPINGS_PKEY;
+    }
+
+    @Override
+    public List<Check<TntEmailDomainMappingsRecord>> getChecks() {
+        return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_tnt_email_domain_mappings_scope_type"), "(((scope_type)::text = ANY ((ARRAY['ANCHOR'::character varying, 'PARTNER'::character varying, 'CLIENT'::character varying])::text[])))", true)
+        );
     }
 
     @Override

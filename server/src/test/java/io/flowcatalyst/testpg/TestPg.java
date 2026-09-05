@@ -77,6 +77,50 @@ public final class TestPg {
         }
     }
 
+    /// Runs `fn` with the named CHECK constraint on `table` temporarily
+    /// removed, then restores it (even if `fn` throws). This is how an X-06
+    /// "corrupt row fails loudly at read time" test seeds the corrupt row in
+    /// the first place: since migrations 051/052, the enum columns these
+    /// tests target are guarded by a CHECK constraint at the write boundary,
+    /// so a plain `INSERT` of a bad value is rejected before the
+    /// read-boundary code under test ever sees it. Dropping the constraint
+    /// for the duration of the seed insert honestly simulates the scenario
+    /// the read-boundary check exists for: a row written before the
+    /// constraint existed, or one that arrives via direct DBA action —
+    /// legacy or out-of-band corruption, not a new write through the app.
+    ///
+    /// Ported from Go's `internal/testpg.WithConstraintDropped`. Not safe to
+    /// run concurrently with another test against the same table: the
+    /// constraint is genuinely off table-wide for the window between the
+    /// drop and the restore.
+    public static void withConstraintDropped(DataSource ds, String table, String constraint, Runnable fn) {
+        String definition;
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement();
+             var rs = st.executeQuery(
+                     "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '" + constraint + "'")) {
+            if (!rs.next()) {
+                throw new IllegalStateException("no such constraint: " + constraint);
+            }
+            definition = rs.getString(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException("look up " + constraint, e);
+        }
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("ALTER TABLE " + table + " DROP CONSTRAINT " + constraint);
+        } catch (SQLException e) {
+            throw new IllegalStateException("drop " + constraint, e);
+        }
+        try {
+            fn.run();
+        } finally {
+            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE " + table + " ADD CONSTRAINT " + constraint + " " + definition);
+            } catch (SQLException e) {
+                throw new IllegalStateException("restore " + constraint, e);
+            }
+        }
+    }
+
     private static void stop() {
         synchronized (LOCK) {
             if (pg != null) {

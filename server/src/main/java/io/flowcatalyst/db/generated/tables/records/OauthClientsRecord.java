@@ -204,6 +204,50 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
         return (Boolean) get(12);
     }
 
+    /**
+     * Setter for <code>public.oauth_clients.previous_secret_ref</code>.
+     */
+    public void setPreviousSecretRef(String value) {
+        set(13, value);
+    }
+
+    /**
+     * Getter for <code>public.oauth_clients.previous_secret_ref</code>.
+     */
+    public String getPreviousSecretRef() {
+        return (String) get(13);
+    }
+
+    /**
+     * Setter for <code>public.oauth_clients.previous_secret_expires_at</code>.
+     */
+    public void setPreviousSecretExpiresAt(OffsetDateTime value) {
+        set(14, value);
+    }
+
+    /**
+     * Getter for <code>public.oauth_clients.previous_secret_expires_at</code>.
+     */
+    public OffsetDateTime getPreviousSecretExpiresAt() {
+        return (OffsetDateTime) get(14);
+    }
+
+    /**
+     * Setter for
+     * <code>public.oauth_clients.previous_secret_last_used_at</code>.
+     */
+    public void setPreviousSecretLastUsedAt(OffsetDateTime value) {
+        set(15, value);
+    }
+
+    /**
+     * Getter for
+     * <code>public.oauth_clients.previous_secret_last_used_at</code>.
+     */
+    public OffsetDateTime getPreviousSecretLastUsedAt() {
+        return (OffsetDateTime) get(15);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -227,7 +271,7 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
     /**
      * Create a detached, initialised OauthClientsRecord
      */
-    public OauthClientsRecord(String id, String clientId, String clientName, String clientType, String clientSecretRef, String defaultScopes, Boolean pkceRequired, String serviceAccountPrincipalId, Boolean active, OffsetDateTime createdAt, OffsetDateTime updatedAt, String portalClientId, Boolean apiAccess) {
+    public OauthClientsRecord(String id, String clientId, String clientName, String clientType, String clientSecretRef, String defaultScopes, Boolean pkceRequired, String serviceAccountPrincipalId, Boolean active, OffsetDateTime createdAt, OffsetDateTime updatedAt, String portalClientId, Boolean apiAccess, String previousSecretRef, OffsetDateTime previousSecretExpiresAt, OffsetDateTime previousSecretLastUsedAt) {
         super(OauthClients.OAUTH_CLIENTS);
 
         setId(id);
@@ -243,6 +287,9 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
         setUpdatedAt(updatedAt);
         setPortalClientId(portalClientId);
         setApiAccess(apiAccess);
+        setPreviousSecretRef(previousSecretRef);
+        setPreviousSecretExpiresAt(previousSecretExpiresAt);
+        setPreviousSecretLastUsedAt(previousSecretLastUsedAt);
         resetTouchedOnNotNull();
     }
 }

@@ -6,6 +6,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import javax.sql.DataSource;
 
@@ -13,16 +14,19 @@ import javax.sql.DataSource;
 /// (with relkind / partition key), columns, constraints (with definition),
 /// indexes (with definition and validity) and sequences.
 ///
-/// Dated monthly partitions (`<parent>_YYYY_MM` and everything hanging off
-/// them), `goose_db_version` and `flyway_schema_history` are excluded so the
-/// Java-migrated schema can be compared with the Go one regardless of the
-/// month in which either was created.
+/// Dated monthly (`<parent>_YYYY_MM`) and quarterly (`<parent>_YYYY_qN`)
+/// partitions, DEFAULT partitions (`<parent>_default`), and everything
+/// hanging off them, plus `goose_db_version` and `flyway_schema_history`, are
+/// excluded so the Java-migrated schema can be compared with the Go one
+/// regardless of the month/quarter in which either was created.
 public final class SchemaFingerprint {
 
-    /// SQL fragment: true when the relation name is a dated partition or a
-    /// migration bookkeeping table.
+    /// SQL fragment: true when the relation name is a dated (monthly or
+    /// quarterly) partition, a table's DEFAULT partition, or a migration
+    /// bookkeeping table.
     private static final String IGNORED_REL =
-            "(%s ~ '_[0-9]{4}_[0-9]{2}$' OR %s ~ '^(goose_db_version|flyway_schema_history)')";
+            "(%s ~ '_[0-9]{4}_[0-9]{2}$' OR %s ~ '_[0-9]{4}_q[0-9]$' OR %s ~ '_default$'"
+                    + " OR %s ~ '^(goose_db_version|flyway_schema_history)')";
 
     private SchemaFingerprint() {
     }
@@ -49,7 +53,7 @@ public final class SchemaFingerprint {
                 WHERE table_schema = 'public' AND NOT %s""".formatted(ignored("table_name")));
         // NOT NULL constraints (contype 'n', PG 18) are excluded: their names are
         // system-generated on partitions and they are already covered by is_nullable.
-        query(c, lines, "CONSTRAINT", """
+        queryConstraints(c, lines, """
                 SELECT cl.relname, con.conname, con.contype::text, pg_get_constraintdef(con.oid)
                 FROM pg_constraint con
                 JOIN pg_class cl ON cl.oid = con.conrelid
@@ -72,7 +76,7 @@ public final class SchemaFingerprint {
     }
 
     private static String ignored(String col) {
-        return IGNORED_REL.formatted(col, col);
+        return IGNORED_REL.formatted(col, col, col, col);
     }
 
     private static void query(Connection c, List<String> out, String kind, String sql) throws SQLException {
@@ -84,6 +88,37 @@ public final class SchemaFingerprint {
                     sb.append('\t').append(rs.getString(i));
                 }
                 out.add(sb.toString());
+            }
+        }
+    }
+
+    // `pg_get_constraintdef` renders a `col IN ('A', 'B')` CHECK constraint
+    // differently depending on the exact PostgreSQL point release that
+    // originally parsed it: some cast the whole literal array to the
+    // comparison type once (`(ARRAY['A'::t, 'B'::t])::text[]`), others cast
+    // each element individually (`ARRAY[('A'::t)::text, ('B'::t)::text]`).
+    // Both are the same expression; only the deparse style differs. Go's
+    // captured fixture and the Java-migrated schema can legitimately be
+    // built by different minor Postgres versions (Go's embedded-postgres-go
+    // vs zonky's embedded-postgres for tests), so the definition text is
+    // normalised to one canonical form before comparison.
+    private static final Pattern CAST_SUFFIX = Pattern.compile("::text\\[\\]|::character varying|::text");
+    private static final Pattern DOUBLE_WRAPPED_ARRAY = Pattern.compile("\\(\\(ARRAY(\\[[^\\]]*])\\)\\)");
+    private static final Pattern PARENTHESISED_LITERAL = Pattern.compile("\\('([^']*)'\\)");
+
+    static String normalizeConstraintDef(String def) {
+        String normalized = CAST_SUFFIX.matcher(def).replaceAll("");
+        normalized = DOUBLE_WRAPPED_ARRAY.matcher(normalized).replaceAll("(ARRAY$1)");
+        normalized = PARENTHESISED_LITERAL.matcher(normalized).replaceAll("'$1'");
+        return normalized;
+    }
+
+    private static void queryConstraints(Connection c, List<String> out, String sql) throws SQLException {
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                String def = normalizeConstraintDef(rs.getString(4));
+                out.add("CONSTRAINT" + '\t' + rs.getString(1) + '\t' + rs.getString(2) + '\t' + rs.getString(3)
+                        + '\t' + def);
             }
         }
     }

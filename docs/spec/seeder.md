@@ -9,6 +9,11 @@ timestamps stripped — byte-equal rows are the acceptance criterion.
 Items tagged **[owner?]** are "load-bearing or accident?" questions the
 owner rules on; until ruled on, the behaviour is kept as-is.
 
+> **Deliberate deviation (2026-09-05):** event-type spec versions are seeded
+> with `schema_type = JSON_SCHEMA`. Go writes the literal `'JSON'`, which is
+> not a `SchemaType` and fails Go's own migration-051 CHECK constraint on a
+> fresh database — recorded as a Go defect in `docs/backlog.md`.
+
 ## 1. When it runs, what it is
 
 - `Main`: connect → Flyway migrate → `new Seeder(pool).run()` → start HTTP.

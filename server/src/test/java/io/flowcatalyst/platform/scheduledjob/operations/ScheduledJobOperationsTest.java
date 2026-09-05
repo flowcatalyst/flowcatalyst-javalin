@@ -588,16 +588,27 @@ class ScheduledJobOperationsTest {
     @Test
     void legacyRowsReadBackLeniently() {
         // A row another writer produced: a 5-field cron, a JSON null payload, an unknown status.
+        // chk_msg_scheduled_jobs_status (migration 051) now blocks a fresh write of an
+        // unrecognised status, so the constraint is dropped for the seed insert AND the
+        // assertions, and the row is deleted again before restoring — otherwise restoring
+        // it would itself fail by re-validating against the row we just inserted
+        // (io.flowcatalyst.testpg.TestPg, ported from Go's testpg.WithConstraintDropped).
         String id = EntityType.SCHEDULED_JOB.generate();
-        DB.execute("INSERT INTO msg_scheduled_jobs (id, code, name, status, crons, timezone, payload, concurrent, tracks_completion, delivery_max_attempts, version) "
-                + "VALUES (?, ?, 'Legacy', 'WEIRD', ARRAY['* * * * *', '0 0 * * * *'], 'Mars/Olympus', 'null'::jsonb, false, false, 3, 1)", id, code("legacy"));
-        var got = reload(id);
-        assertThat(got.status()).isEqualTo(ScheduledJobStatus.ACTIVE);
-        assertThat(got.crons()).containsExactly("* * * * *", "0 0 * * * *");
-        assertThat(got.payload()).isNull();
-        assertThat(got.latestSlotInWindow(Instant.parse("2026-05-29T10:00:30Z"), Instant.parse("2026-05-29T11:00:00Z")))
-                .as("the unparseable legacy cron is skipped, the zone falls back to UTC").contains(Instant.parse("2026-05-29T11:00:00Z"));
-        assertThat(got.zoneId().getId()).isEqualTo("Z");
+        TestPg.withConstraintDropped(DS, "msg_scheduled_jobs", "chk_msg_scheduled_jobs_status", () -> {
+            DB.execute("INSERT INTO msg_scheduled_jobs (id, code, name, status, crons, timezone, payload, concurrent, tracks_completion, delivery_max_attempts, version) "
+                    + "VALUES (?, ?, 'Legacy', 'WEIRD', ARRAY['* * * * *', '0 0 * * * *'], 'Mars/Olympus', 'null'::jsonb, false, false, 3, 1)", id, code("legacy"));
+            try {
+                var got = reload(id);
+                assertThat(got.status()).isEqualTo(ScheduledJobStatus.ACTIVE);
+                assertThat(got.crons()).containsExactly("* * * * *", "0 0 * * * *");
+                assertThat(got.payload()).isNull();
+                assertThat(got.latestSlotInWindow(Instant.parse("2026-05-29T10:00:30Z"), Instant.parse("2026-05-29T11:00:00Z")))
+                        .as("the unparseable legacy cron is skipped, the zone falls back to UTC").contains(Instant.parse("2026-05-29T11:00:00Z"));
+                assertThat(got.zoneId().getId()).isEqualTo("Z");
+            } finally {
+                DB.execute("DELETE FROM msg_scheduled_jobs WHERE id = ?", id);
+            }
+        });
     }
 
     @Test
