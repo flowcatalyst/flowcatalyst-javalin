@@ -194,8 +194,11 @@ in it), so the frontend is their acceptance test.
   rulings, coverage gate. Harness + S0: Sonnet
   (`docs/process/briefs/2026-09-05-p5-parity-harness.md`); S1 (28 lockfile
   groups, three agents), S2 (auth surface, orchestrator-reviewed), S3
-  (rest + threshold 1.0); then triage per spec §9. Frontend end-to-end
-  through every BFF/auth route; cutover + rollback rehearsal.
+  (rest + threshold 1.0); then triage per spec §9. ~~Frontend end-to-end
+  design~~ **Designed 2026-09-05** (`docs/spec/frontend-e2e.md`: Playwright
+  against both sides, ~40 flows in nine groups, three Sonnet briefs after
+  the parity harness lands); `tools/sync-frontend.sh` keeps the embedded
+  SPA current. Cutover + rollback rehearsal.
 - CI: Linux native build in a matrix (only macOS arm64 is proven), the jlink
   image as the default deployable, the native binary for the router tier.
 
