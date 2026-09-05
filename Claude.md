@@ -67,3 +67,10 @@ alone.
 - Prefer `mvn clean test` after any interface change — incremental runs
   reuse stale classes and will hide a signature break.
 - Never treat a failure as flaky until it reproduces on an uncontended run.
+- **`~/.m2` is shared too.** A worktree agent that runs `mvn install` for
+  the server module overwrites the SNAPSHOT jar every other worktree's
+  `fcdev` build resolves — a sibling then compiles against someone else's
+  server. Build downstream modules through the reactor instead
+  (`mvn -pl fcdev -am test -Dtest=… -Dsurefire.failIfNoSpecifiedTests=false`),
+  which resolves siblings from their `target/classes`, and never install
+  from a worktree.
