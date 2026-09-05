@@ -39,7 +39,13 @@ class LockfileCoverageTest {
     /// route that IS lockfiled (`GET /api/dispatch-jobs` and
     /// `POST /api/dispatch-jobs/requeue` share the `/api/dispatch-jobs`
     /// prefix with this singular SDK-ingest create, sdk-ingest spec §1).
-    private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of("POST /api/dispatch-jobs");
+    /// `revoke-previous-secret` is A-22 (`docs/improvements.md`, the
+    /// OAuth-client secret-rotation grace window): the vendored lockfile
+    /// predates that ruling, so the route — real behaviour, not drift —
+    /// is named here rather than hand-edited into the lockfile
+    /// (CONVENTIONS §7: never edit the lockfile by hand).
+    private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of(
+            "POST /api/dispatch-jobs", "POST /api/oauth-clients/{id}/revoke-previous-secret");
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {

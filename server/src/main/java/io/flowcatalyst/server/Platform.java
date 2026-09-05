@@ -54,6 +54,8 @@ import io.flowcatalyst.platform.authadmin.api.AuthAdminConfigApi;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption;
 import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.oauthclient.api.OAuthClientApi;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.loginattempt.api.LoginAttemptApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
@@ -180,7 +182,7 @@ public final class Platform {
 
         // ── authenticated platform API ───────────────────────────────────
         // TODO(port): the registrations from wire_routes.go still missing are all Phase 3
-        //   (docs/port-plan.md, gated on docs/auth-rulings.md): auth (OAuth clients),
+        //   (docs/port-plan.md, gated on docs/auth-rulings.md):
         //   oauth token/introspect/revoke/userinfo/discovery, OIDC bridge + portal auth,
         //   portalusers, resetapproval, webauthn, clientselection; plus the CORS filter
         //   (Phase 4). Everything else below is registered in Go's order.
@@ -276,6 +278,15 @@ public final class Platform {
                 .toList();
         ServiceAccountApi.register(routes, new ServiceAccountApi.State(serviceAccountRepo, principalRepo, uow,
                 serviceAccountTokenMinter, flattenServiceAccountPermissions));
+
+        // oauthclient (docs/spec/auth-core.md §3.6, §6.3; A-22 secret-rotation grace):
+        // client secrets are encrypted at rest under the same app key as the developer
+        // and service-account secrets above. Registered in Go's wire_routes.go order —
+        // right after serviceaccount, ahead of the /oauth/* token routes that do not
+        // exist yet (Phase 3, still TODO above).
+        var oauthClientRepo = new OAuthClientRepository(pool, applicationRepo);
+        OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
 
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
