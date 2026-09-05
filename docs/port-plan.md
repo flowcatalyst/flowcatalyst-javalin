@@ -84,9 +84,8 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
 
 Sonnet ports, three at a time, in this order; I audit each before its commit.
 
-1. **`serviceaccount`** (14 ops; `serviceaccount.md` + `serviceaccount-fixes.md`
-   exist). The Go-side fixes in the fixes doc land in the spec first so the
-   port does not reproduce the corrected defect.
+1. ~~`serviceaccount`~~ **Done 2026-09-05 (coverage 206).** The OAuth client
+   and the mint's audit row wait for the auth aggregate (`backlog.md`).
 2. ~~`anchor-domains`, `auth-configs`, `idp-role-mappings`~~ **Done
    2026-09-05 (`9a4e6fc`, spec `auth-admin-config.md`; coverage 203).**
 3. **SDK ingest batch endpoints** — `/api/events`, `/api/events/batch`,
