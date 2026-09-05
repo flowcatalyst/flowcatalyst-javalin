@@ -32,13 +32,11 @@ in its worktree; main's full suite is re-run after each merge.
 | `5b88313` | **BFF + `/api/me`** (Phase 1 last unit): dashboard, filter options, developer, event types, roles, scheduled jobs, `/bff/*` aggregate mounts, `/api/me*` | spec `bff.md` by orchestrator; Sonnet port (eight mutants); orchestrator admin-gated the dashboard (spec draft was wrong, agent flagged it) and killed a ninth mutant |
 | `(merge)` | **MCP server** (Phase 2 unit 4): 12 tools, 9 resources, streamable HTTP on its own listener, client-credentials token manager + interim static bearer | spec `mcp.md` by orchestrator; Sonnet port (the agent stalled twice waiting on its own suite and never wrote a report — the orchestrator read the code, added the bearer assertion, killed two mutants); coverage unchanged |
 | `c55d6dd` | **AWS Secrets Manager DB mode + rotation** (Phase 2 unit 5, last) | spec `db-secret.md` by orchestrator; Sonnet port — the cleanest of the night: ten mutants incl. the disabled timer, a clear report; orchestrator killed an eleventh (credentials clobbered on a failed refresh) |
+| `(merge)` | **CORS filter** (Phase 4): allowlist-driven headers, preflight answered ahead of the authenticator, 30 s cache + invalidation | contract `cors.md` §9 by orchestrator; Sonnet port (five mutants); orchestrator added the preflight headers its worktree's spec lacked (specs must be committed before worktrees are cut) and a scope test, two more mutants |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **In flight (Phase 4, started 2026-09-05 on the owner's go-ahead; Sonnet,
 own worktrees; merge pending orchestrator review):**
-- CORS filter from the allowlist — contract `docs/spec/cors.md` §9
-  (matching, headers, cache, invalidation decided by the orchestrator; open
-  question 3 settled there).
 - JFR events for the five Phase 2 loops — `docs/spec/jfr-events.md`.
 - fcdev `mcp`, `outbox` (+ `create-table`), `upgrade` — `docs/spec/fcdev-commands.md`
   §2–§4. `init` (§1) follows when a slot frees; its OAuth-client step and
