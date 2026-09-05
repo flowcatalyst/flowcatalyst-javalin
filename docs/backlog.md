@@ -283,6 +283,26 @@ item names its origin; items marked **owner** need Andrew's call.
   mint emits no domain event. Either give the mint an event (spec §6 has
   none) or an audit-only plan. Security-relevant gap; owner to rule.
 
+## Go changes to mirror the Batch A auth rulings (2026-09-05, **owner is fixing Go too**)
+
+Rulings that change behaviour relative to Go HEAD, with the Go site. `docs/auth-rulings.md` "Rulings — Batch A" has the full wording.
+
+| Ruling | Go change | Go site |
+|---|---|---|
+| C-Q19 | HS256 fallback secret must be ≥ 32 bytes; refuse to start otherwise | `internal/platform/auth/authservice/authservice.go` (`SecretKey`, ~L182; the "non-empty" check near L330) |
+| C-Q20 | Empty `GrantTypes` ⇒ **no** grant allowed (was: every grant). Data: set grants on existing rows; `fcdev init` and any seeder write them explicitly | `internal/platform/auth/oauthapi/token.go:880` (`len(client.GrantTypes) == 0` branch) |
+| C-Q22 | `/oauth/authorize`: `state` > 116 chars → redirect `invalid_request` before any write (was: insert fails → `server_error`) | `oauthapi/authorize.go`, before the `PendingAuth:` payload write |
+| C-Q23 | Backoff store error ⇒ **deny** the login (503), not proceed; rate-limit store stays fail-open | `internal/platform/auth/login/endpoint.go:401` (`err == nil && !d.Allowed` — an error currently falls through to allow) |
+| C-Q24 | `/auth/me` `status` populated with the principal's real status (was always `""`) | `login/endpoint.go:347` |
+| C-Q26 | Introspection `client_id` = the minting OAuth client (RFC 7662), not `claims.Clients[0]` | `oauthapi/introspect_revoke.go:94-95` |
+| C-Q27 | `/oauth/authorize` per-client 429 in the RFC 6749 error shape (was the platform envelope); SDK/SPA parsing to follow | `oauthapi/authorize.go:61` (`ratelimit.WriteTooManyRequests`) |
+| I-Q5 | Session-mint failure after a correct password → the `ErrorModel` 500 envelope, fixed message, cause logged (was plain-text 500); same as A-18 | identity `SessionWriter` (auth-identity.md §4.6) |
+| I-Q21 | `GET /auth/2fa/trusted-devices` items on the platform `Time` shape, `principalId` dropped | `internal/platform/mfa/entity.go:44,69,100` (JSON tags) |
+| I-Q11 | Remember-device: only for internally managed identities, structurally absent for external-IdP domains, default off, on by explicit domain policy, audit rows for the policy change and each enrolment/revocation; a store error never enables it | `login/twofactor.go:89` (`rememberAllowed := mapping != nil && mapping.RememberDeviceEnabled`) + the domain-mapping default for `RememberDeviceEnabled` |
+| I-Q12 | `/auth/2fa/verify` enforces the domain's `Allowed2FAMethods` (was enrolment-only) | `login/twofactor*.go` verify path; `mapping.Allowed2FAMethods` |
+
+Backlog-only (no Go change now): C-Q18 wire rate-limit policies + callers for introspect, revoke and check-domain; C-Q28 access-token denylist (cache first, table fallback). Not deviations: C-Q1 — Go already emits the real login time (`authservice.go:511`); the Java port follows.
+
 ## Owner questions collected from specs
 
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
