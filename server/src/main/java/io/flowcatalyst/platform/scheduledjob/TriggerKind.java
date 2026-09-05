@@ -6,12 +6,27 @@ package io.flowcatalyst.platform.scheduledjob;
 public enum TriggerKind {
     CRON, MANUAL, BACKFILL;
 
-    /// Lenient reader for stored values: unknown → `CRON`.
+    /// Strict reader for stored values (X-06): never a silent default. See
+    /// [ScheduledJobInstanceRepository]'s row mapper, which wraps
+    /// [UnrecognisedTriggerKindException] in [CorruptScheduledJobException]
+    /// carrying the row id.
+    ///
+    /// @throws UnrecognisedTriggerKindException `s` is `null` or not one of
+    ///                                          `CRON` / `MANUAL` / `BACKFILL`
     public static TriggerKind parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "CRON" -> CRON;
             case "MANUAL" -> MANUAL;
             case "BACKFILL" -> BACKFILL;
-            default -> CRON;
+            case null, default -> throw new UnrecognisedTriggerKindException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedTriggerKindException extends RuntimeException {
+        public UnrecognisedTriggerKindException(String raw) {
+            super("unrecognised trigger kind: " + raw);
+        }
     }
 }

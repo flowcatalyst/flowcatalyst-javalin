@@ -126,33 +126,98 @@ class LoginAttemptRepositoryTest {
         assertThat(DB.fetchCount(DSL.table("msg_events"), DSL.field("subject", String.class).like("%" + adaNewestFirst.getFirst()))).isZero();
     }
 
+    // ── X-06: corrupt stored values fail loudly, never a silent default ────
+
     @Test
-    void unknownStoredValuesReadLeniently() {
-        // attempt_type has no CHECK constraint (migration 051 only added one for
-        // outcome), so this column can still be corrupted with a plain INSERT.
+    void aCorruptAttemptTypeFailsTheRowReadInsteadOfDefaultingToUserLogin() {
         String id = EntityType.LOGIN_ATTEMPT.generate();
         String who = "foreign." + RUN + "@example.test";
         DB.insertInto(IAM_LOGIN_ATTEMPTS)
                 .set(IAM_LOGIN_ATTEMPTS.ID, id)
                 .set(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE, "SOMETHING_NEW")
-                .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "SUCCESS")
+                .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "FAILURE")
                 .set(IAM_LOGIN_ATTEMPTS.IDENTIFIER, who)
                 .execute();
-        var a = repo.findRecentByIdentifier(who, 5).getFirst();
-        assertThat(a.id()).isEqualTo(id);
-        assertThat(a.attemptType()).isEqualTo(AttemptType.USER_LOGIN);
-        assertThat(a.outcome()).isEqualTo(AttemptOutcome.SUCCESS);
-        assertThat(a.attemptedAt()).as("the column default stamps now()").isNotNull();
+        assertThatThrownBy(() -> repo.findRecentByIdentifier(who, 5))
+                .isInstanceOf(CorruptLoginAttemptException.class)
+                .satisfies(e -> assertThat(((CorruptLoginAttemptException) e).rowId()).isEqualTo(id));
     }
 
-    // outcome IS guarded by chk_iam_login_attempts_outcome (migration 051), so
-    // AttemptOutcome.parse's "unknown -> SUCCESS" leniency for a legacy/corrupt
-    // row (one written before the constraint existed) is pinned as a pure unit
-    // test instead of via a DB insert the constraint would now reject.
+    /// `outcome` is guarded by `chk_iam_login_attempts_outcome` (migration
+    /// 051), so the constraint is dropped for the seed insert AND the
+    /// assertions, and the row is deleted again before restoring —
+    /// otherwise restoring it would itself fail by re-validating against
+    /// the row we just inserted (io.flowcatalyst.testpg.TestPg, ported from
+    /// Go's testpg.WithConstraintDropped).
     @Test
-    void unknownStoredOutcomeParsesLeniently() {
-        assertThat(AttemptOutcome.parse("MAYBE")).isEqualTo(AttemptOutcome.SUCCESS);
-        assertThat(AttemptOutcome.parse("FAILURE")).isEqualTo(AttemptOutcome.FAILURE);
+    void aCorruptOutcomeFailsTheRowReadInsteadOfDefaultingToSuccess() {
+        String id = EntityType.LOGIN_ATTEMPT.generate();
+        String who = "foreign2." + RUN + "@example.test";
+        TestPg.withConstraintDropped(DS, "iam_login_attempts", "chk_iam_login_attempts_outcome", () -> {
+            DB.insertInto(IAM_LOGIN_ATTEMPTS)
+                    .set(IAM_LOGIN_ATTEMPTS.ID, id)
+                    .set(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE, "USER_LOGIN")
+                    .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "MAYBE")
+                    .set(IAM_LOGIN_ATTEMPTS.IDENTIFIER, who)
+                    .execute();
+            try {
+                assertThatThrownBy(() -> repo.findRecentByIdentifier(who, 5))
+                        .isInstanceOf(CorruptLoginAttemptException.class)
+                        .satisfies(e -> assertThat(((CorruptLoginAttemptException) e).rowId()).isEqualTo(id));
+            } finally {
+                DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.ID.eq(id)).execute();
+            }
+        });
+    }
+
+    @Test
+    void aCorruptRowFailsTheWholeListReadNotJustThatRow() {
+        String who = "foreign3." + RUN + "@example.test";
+        record(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, who, null, IP_A, null, null, BASE);
+        String corruptId = EntityType.LOGIN_ATTEMPT.generate();
+        TestPg.withConstraintDropped(DS, "iam_login_attempts", "chk_iam_login_attempts_outcome", () -> {
+            DB.insertInto(IAM_LOGIN_ATTEMPTS)
+                    .set(IAM_LOGIN_ATTEMPTS.ID, corruptId)
+                    .set(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE, "USER_LOGIN")
+                    .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "BOGUS")
+                    .set(IAM_LOGIN_ATTEMPTS.IDENTIFIER, who)
+                    .execute();
+            try {
+                assertThatThrownBy(() -> repo.findRecentByIdentifier(who, 10))
+                        .isInstanceOf(CorruptLoginAttemptException.class);
+                assertThatThrownBy(() -> repo.findPage(new ListFilter(null, null, who, null, null, null), null, 10))
+                        .isInstanceOf(CorruptLoginAttemptException.class);
+            } finally {
+                DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.ID.eq(corruptId)).execute();
+            }
+        });
+    }
+
+    /// The security property (spec §5): a corrupt `outcome` must never read
+    /// as `SUCCESS` and reset the brute-force lockout window. Before this
+    /// fix, [AttemptOutcome#parse] defaulted an unrecognised value to
+    /// `SUCCESS`; a caller deriving "did this identifier ever succeed" from
+    /// that would have been handed a false positive.
+    @Test
+    void lastSuccessAtFailsLoudlyOnACorruptOutcomeRatherThanMaskingIt() {
+        String id = EntityType.LOGIN_ATTEMPT.generate();
+        String who = "corruptoutcome." + RUN + "@example.test";
+        TestPg.withConstraintDropped(DS, "iam_login_attempts", "chk_iam_login_attempts_outcome", () -> {
+            DB.insertInto(IAM_LOGIN_ATTEMPTS)
+                    .set(IAM_LOGIN_ATTEMPTS.ID, id)
+                    .set(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE, "USER_LOGIN")
+                    .set(IAM_LOGIN_ATTEMPTS.OUTCOME, "BANANA")
+                    .set(IAM_LOGIN_ATTEMPTS.IDENTIFIER, who)
+                    .execute();
+            try {
+                assertThatThrownBy(() -> repo.lastSuccessAt(who))
+                        .as("must throw, not silently report 'never succeeded' nor 'succeeded'")
+                        .isInstanceOf(CorruptLoginAttemptException.class)
+                        .satisfies(e -> assertThat(((CorruptLoginAttemptException) e).rowId()).isEqualTo(id));
+            } finally {
+                DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.ID.eq(id)).execute();
+            }
+        });
     }
 
     // ── Keyset read ────────────────────────────────────────────────────────

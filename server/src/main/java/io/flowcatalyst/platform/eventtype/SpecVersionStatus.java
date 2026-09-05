@@ -5,12 +5,27 @@ package io.flowcatalyst.platform.eventtype;
 public enum SpecVersionStatus {
     FINALISING, CURRENT, DEPRECATED;
 
-    /// Lenient reader for stored values: unknown → `FINALISING` (spec §1).
+    /// Strict reader for stored values (spec §1, X-06): never a silent
+    /// default. See [EventTypeRepository]'s row mapper, which wraps
+    /// [UnrecognisedSpecVersionStatusException] in
+    /// [CorruptEventTypeException] carrying the row id.
+    ///
+    /// @throws UnrecognisedSpecVersionStatusException `s` is `null` or not
+    ///                                                one of the three states
     public static SpecVersionStatus parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "FINALISING" -> FINALISING;
             case "CURRENT" -> CURRENT;
             case "DEPRECATED" -> DEPRECATED;
-            default -> FINALISING;
+            case null, default -> throw new UnrecognisedSpecVersionStatusException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedSpecVersionStatusException extends RuntimeException {
+        public UnrecognisedSpecVersionStatusException(String raw) {
+            super("unrecognised spec version status: " + raw);
+        }
     }
 }

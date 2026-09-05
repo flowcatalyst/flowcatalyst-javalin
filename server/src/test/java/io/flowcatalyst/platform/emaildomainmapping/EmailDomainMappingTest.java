@@ -75,10 +75,22 @@ class EmailDomainMappingTest {
     // ── Enums ──────────────────────────────────────────────────────────────
 
     @ParameterizedTest(name = "stored ''{0}'' reads as {1}")
-    @CsvSource({"ANCHOR,ANCHOR", "PARTNER,PARTNER", "CLIENT,CLIENT", "GLOBAL,ANCHOR", "'',ANCHOR"})
-    void scopeTypeReadsStoredValuesLeniently(String stored, ScopeType expected) {
+    @CsvSource({"ANCHOR,ANCHOR", "PARTNER,PARTNER", "CLIENT,CLIENT"})
+    void storedScopeTypeParsesTheThreeRecognisedValues(String stored, ScopeType expected) {
         assertThat(ScopeType.parse(stored)).isEqualTo(expected);
-        assertThat(ScopeType.parse(null)).isEqualTo(ScopeType.ANCHOR);
+    }
+
+    /// X-06: unknown used to default to `ANCHOR`, the MOST privileged scope —
+    /// a privilege-escalation bug on a corrupted column. There is no default now.
+    @ParameterizedTest
+    @ValueSource(strings = {"GLOBAL", ""})
+    void storedScopeTypeRejectsAnythingElseInsteadOfDefaultingToAnchor(String stored) {
+        assertThatThrownBy(() -> ScopeType.parse(stored)).isInstanceOf(ScopeType.UnrecognisedScopeTypeException.class);
+    }
+
+    @Test
+    void storedScopeTypeRejectsNull() {
+        assertThatThrownBy(() -> ScopeType.parse(null)).isInstanceOf(ScopeType.UnrecognisedScopeTypeException.class);
     }
 
     @ParameterizedTest

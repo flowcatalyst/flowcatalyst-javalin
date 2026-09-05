@@ -5,13 +5,29 @@ package io.flowcatalyst.platform.eventtype;
 public enum SchemaType {
     JSON_SCHEMA, XSD, PROTO;
 
-    /// Lenient reader for stored values, with the legacy aliases
-    /// `XML_SCHEMA` → `XSD` and `PROTOBUF` → `PROTO`; unknown → `JSON_SCHEMA`.
+    /// Strict reader for stored values (X-06), with the legacy aliases
+    /// `XML_SCHEMA` → `XSD` and `PROTOBUF` → `PROTO` accepted deliberately —
+    /// real values the column has held, not wire input — but any other
+    /// value is rejected. See [EventTypeRepository]'s row mapper, which
+    /// wraps [UnrecognisedSchemaTypeException] in
+    /// [CorruptEventTypeException] carrying the row id.
+    ///
+    /// @throws UnrecognisedSchemaTypeException `s` is `null` or not one of
+    ///                                         the recognised/legacy values
     public static SchemaType parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "JSON_SCHEMA" -> JSON_SCHEMA;
             case "XSD", "XML_SCHEMA" -> XSD;
             case "PROTO", "PROTOBUF" -> PROTO;
-            default -> JSON_SCHEMA;
+            case null, default -> throw new UnrecognisedSchemaTypeException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised/legacy
+    /// set — X-06: never a silent default.
+    public static final class UnrecognisedSchemaTypeException extends RuntimeException {
+        public UnrecognisedSchemaTypeException(String raw) {
+            super("unrecognised schema type: " + raw);
+        }
     }
 }

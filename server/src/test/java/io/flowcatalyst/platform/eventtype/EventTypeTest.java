@@ -137,27 +137,34 @@ class EventTypeTest {
         assertThat(SpecVersion.initial("evt_x", "1+build", null).major()).isEqualTo("1");
     }
 
-    // ── Lenient readers ────────────────────────────────────────────────────
+    // ── Stored enum reads are strict (X-06) ─────────────────────────────────
 
     @Test
-    void storedEnumValuesAreReadLenientlyWithDefaults() {
+    void storedEnumValuesParseTheirRecognisedSetIncludingLegacyAliases() {
         assertThat(EventTypeStatus.parse("ARCHIVED")).isEqualTo(EventTypeStatus.ARCHIVED);
-        assertThat(EventTypeStatus.parse("UNKNOWN")).isEqualTo(EventTypeStatus.CURRENT);
-        assertThat(EventTypeStatus.parse(null)).isEqualTo(EventTypeStatus.CURRENT);
-
         assertThat(EventTypeSource.parse("CODE")).isEqualTo(EventTypeSource.CODE);
         assertThat(EventTypeSource.parse("API")).isEqualTo(EventTypeSource.API);
-        assertThat(EventTypeSource.parse("UNKNOWN")).isEqualTo(EventTypeSource.UI);
-
         assertThat(SpecVersionStatus.parse("CURRENT")).isEqualTo(SpecVersionStatus.CURRENT);
         assertThat(SpecVersionStatus.parse("DEPRECATED")).isEqualTo(SpecVersionStatus.DEPRECATED);
-        assertThat(SpecVersionStatus.parse("anything")).isEqualTo(SpecVersionStatus.FINALISING);
 
         assertThat(SchemaType.parse("XSD")).isEqualTo(SchemaType.XSD);
         assertThat(SchemaType.parse("XML_SCHEMA")).isEqualTo(SchemaType.XSD);
         assertThat(SchemaType.parse("PROTO")).isEqualTo(SchemaType.PROTO);
         assertThat(SchemaType.parse("PROTOBUF")).isEqualTo(SchemaType.PROTO);
-        assertThat(SchemaType.parse("UNKNOWN")).isEqualTo(SchemaType.JSON_SCHEMA);
+    }
+
+    @Test
+    void storedEnumValuesRejectAnythingElseInsteadOfDefaultingSilently() {
+        assertThatThrownBy(() -> EventTypeStatus.parse("UNKNOWN"))
+                .isInstanceOf(EventTypeStatus.UnrecognisedEventTypeStatusException.class);
+        assertThatThrownBy(() -> EventTypeStatus.parse(null))
+                .isInstanceOf(EventTypeStatus.UnrecognisedEventTypeStatusException.class);
+        assertThatThrownBy(() -> EventTypeSource.parse("UNKNOWN"))
+                .isInstanceOf(EventTypeSource.UnrecognisedEventTypeSourceException.class);
+        assertThatThrownBy(() -> SpecVersionStatus.parse("anything"))
+                .isInstanceOf(SpecVersionStatus.UnrecognisedSpecVersionStatusException.class);
+        assertThatThrownBy(() -> SchemaType.parse("UNKNOWN"))
+                .isInstanceOf(SchemaType.UnrecognisedSchemaTypeException.class);
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {

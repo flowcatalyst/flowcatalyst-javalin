@@ -134,7 +134,7 @@ public final class RoleApi {
     /// Bare JSON array; the source segment is parsed leniently (spec §3, open question 5).
     private static void listBySource(Context ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
-        ctx.json(RoleResponse.from(s.roles().findBySource(RoleSource.parse(ctx.pathParam("source")))));
+        ctx.json(RoleResponse.from(s.roles().findBySource(RoleSource.parseWire(ctx.pathParam("source")))));
     }
 
     /// Bare JSON array.

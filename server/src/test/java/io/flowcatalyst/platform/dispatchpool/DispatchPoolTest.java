@@ -94,15 +94,21 @@ class DispatchPoolTest {
         assertThat(archived.activate().status()).isEqualTo(DispatchPoolStatus.ACTIVE);
     }
 
-    // ── Lenient reader ─────────────────────────────────────────────────────
+    // ── Strict reader (X-06) ─────────────────────────────────────────────────
 
     @Test
-    void storedStatusIsReadLenientlyWithActiveAsDefault() {
+    void storedStatusParsesTheThreeRecognisedValues() {
         assertThat(DispatchPoolStatus.parse("SUSPENDED")).isEqualTo(DispatchPoolStatus.SUSPENDED);
         assertThat(DispatchPoolStatus.parse("ARCHIVED")).isEqualTo(DispatchPoolStatus.ARCHIVED);
         assertThat(DispatchPoolStatus.parse("ACTIVE")).isEqualTo(DispatchPoolStatus.ACTIVE);
-        assertThat(DispatchPoolStatus.parse("UNKNOWN")).isEqualTo(DispatchPoolStatus.ACTIVE);
-        assertThat(DispatchPoolStatus.parse(null)).isEqualTo(DispatchPoolStatus.ACTIVE);
+    }
+
+    @Test
+    void storedStatusRejectsAnythingElseInsteadOfDefaultingToActive() {
+        assertThatThrownBy(() -> DispatchPoolStatus.parse("UNKNOWN"))
+                .isInstanceOf(DispatchPoolStatus.UnrecognisedDispatchPoolStatusException.class);
+        assertThatThrownBy(() -> DispatchPoolStatus.parse(null))
+                .isInstanceOf(DispatchPoolStatus.UnrecognisedDispatchPoolStatusException.class);
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {

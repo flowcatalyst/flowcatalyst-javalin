@@ -7,11 +7,26 @@ package io.flowcatalyst.platform.platformconfig;
 public enum ConfigScope {
     GLOBAL, CLIENT;
 
-    /// Lenient reader for stored values: unknown → `GLOBAL` (spec §1.1).
+    /// Strict reader for stored values (spec §1.1, X-06): never a silent
+    /// default. See [PlatformConfigRepository]'s row mapper, which wraps
+    /// [UnrecognisedConfigScopeException] in [CorruptPlatformConfigException]
+    /// carrying the row id.
+    ///
+    /// @throws UnrecognisedConfigScopeException `s` is `null` or not
+    ///                                          `GLOBAL` / `CLIENT`
     public static ConfigScope parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "GLOBAL" -> GLOBAL;
             case "CLIENT" -> CLIENT;
-            default -> GLOBAL;
+            case null, default -> throw new UnrecognisedConfigScopeException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedConfigScopeException extends RuntimeException {
+        public UnrecognisedConfigScopeException(String raw) {
+            super("unrecognised config scope: " + raw);
+        }
     }
 }

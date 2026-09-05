@@ -109,13 +109,33 @@ public final class PlatformConfigRepository implements Persist<PlatformConfig> {
                 row.getApplicationCode(),
                 row.getSection(),
                 row.getProperty(),
-                ConfigScope.parse(row.getScope()),
+                scope(row.getId(), row.getScope()),
                 row.getClientId(),
-                ConfigValueType.parse(row.getValueType()),
+                valueType(row.getId(), row.getValueType()),
                 row.getValue(),
                 row.getDescription(),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [ConfigScope#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static ConfigScope scope(String rowId, String stored) {
+        try {
+            return ConfigScope.parse(stored);
+        } catch (ConfigScope.UnrecognisedConfigScopeException e) {
+            throw new CorruptPlatformConfigException(rowId, e);
+        }
+    }
+
+    /// [ConfigValueType#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ConfigValueType valueType(String rowId, String stored) {
+        try {
+            return ConfigValueType.parse(stored);
+        } catch (ConfigValueType.UnrecognisedConfigValueTypeException e) {
+            throw new CorruptPlatformConfigException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

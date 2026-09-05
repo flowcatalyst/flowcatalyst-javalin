@@ -34,7 +34,7 @@ public final class SetProperty {
                 .authorize(cmd -> Access.requireWrite(grants, Auth.current(), cmd.applicationCode()))
                 .execute((cmd, ec) -> {
                     ConfigCoordinate coordinate = cmd.coordinate();
-                    ConfigValueType valueType = cmd.valueType() == null ? null : ConfigValueType.parse(cmd.valueType());
+                    ConfigValueType valueType = cmd.valueType() == null ? null : ConfigValueType.parseWire(cmd.valueType());
                     PlatformConfig c = configs.findByCoordinate(coordinate)
                             .orElseGet(() -> PlatformConfig.create(coordinate, cmd.value()))
                             .set(cmd.value(), valueType, cmd.description());

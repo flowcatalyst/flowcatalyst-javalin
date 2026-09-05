@@ -177,20 +177,29 @@ class SubscriptionTest {
         assertThat(bound.matchesClient(null)).as("a client-bound subscription never matches a client-less event").isFalse();
     }
 
-    // ── Lenient readers ────────────────────────────────────────────────────
+    // ── Strict readers (X-06) ────────────────────────────────────────────────
 
     @Test
-    void storedEnumValuesAreReadLenientlyWithDefaults() {
+    void storedEnumValuesParseTheirRecognisedSet() {
         assertThat(SubscriptionStatus.parse("PAUSED")).isEqualTo(SubscriptionStatus.PAUSED);
-        assertThat(SubscriptionStatus.parse("paused")).isEqualTo(SubscriptionStatus.ACTIVE);
-        assertThat(SubscriptionStatus.parse(null)).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(SubscriptionStatus.parse("ACTIVE")).isEqualTo(SubscriptionStatus.ACTIVE);
 
         assertThat(SubscriptionSource.parse("CODE")).isEqualTo(SubscriptionSource.CODE);
         assertThat(SubscriptionSource.parse("API")).isEqualTo(SubscriptionSource.API);
-        assertThat(SubscriptionSource.parse("anything")).isEqualTo(SubscriptionSource.UI);
+        assertThat(SubscriptionSource.parse("UI")).isEqualTo(SubscriptionSource.UI);
         assertThat(SubscriptionSource.API.isSyncManaged()).isTrue();
         assertThat(SubscriptionSource.CODE.isSyncManaged()).isTrue();
         assertThat(SubscriptionSource.UI.isSyncManaged()).isFalse();
+    }
+
+    @Test
+    void storedEnumValuesRejectAnythingElseInsteadOfDefaultingSilently() {
+        assertThatThrownBy(() -> SubscriptionStatus.parse("paused"))
+                .isInstanceOf(SubscriptionStatus.UnrecognisedSubscriptionStatusException.class);
+        assertThatThrownBy(() -> SubscriptionStatus.parse(null))
+                .isInstanceOf(SubscriptionStatus.UnrecognisedSubscriptionStatusException.class);
+        assertThatThrownBy(() -> SubscriptionSource.parse("anything"))
+                .isInstanceOf(SubscriptionSource.UnrecognisedSubscriptionSourceException.class);
 
         // DispatchMode's own lenient-parsing rules (X-01/A-09) are pinned in
         // io.flowcatalyst.platform.shared.dispatch.DispatchModeTest, now that

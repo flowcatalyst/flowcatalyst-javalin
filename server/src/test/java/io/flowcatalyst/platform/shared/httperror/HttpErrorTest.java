@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.shared.httperror;
 
+import io.flowcatalyst.platform.shared.CorruptRowException;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -40,6 +41,9 @@ class HttpErrorTest {
                         .withDetails(Map.of("errors", List.of(detail))));
             });
             cfg.routes.get("/boom", _ -> { throw new IllegalStateException("unexpected"); });
+            cfg.routes.get("/corrupt-row", _ -> {
+                throw new CorruptRowException("widget", "wid_123", new IllegalStateException("unrecognised status: BOGUS"));
+            });
             cfg.routes.get("/npe", _ -> { throw new NullPointerException(); });
             cfg.routes.post("/echo", ctx -> ctx.json(ctx.bodyAsClass(Body.class)));
             cfg.routes.get("/bare", ctx -> HttpError.write(ctx, "INVALID_JSON", "bad body"));
@@ -104,6 +108,13 @@ class HttpErrorTest {
             assertThat(r.statusCode()).isEqualTo(500);
             assertThat(r.body()).isEqualTo("{\"error\":\"INTERNAL\",\"message\":\"Internal server error\"}\n");
         }
+    }
+
+    @Test
+    void corruptRowExceptionIsADistinct500NotBareInternal() {
+        var r = http.get("/corrupt-row");
+        assertThat(r.statusCode()).isEqualTo(500);
+        assertThat(r.body()).isEqualTo("{\"error\":\"CORRUPT_ROW\",\"message\":\"widget wid_123 has a corrupt row: unrecognised status: BOGUS\"}\n");
     }
 
     @Test

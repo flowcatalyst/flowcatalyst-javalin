@@ -162,8 +162,8 @@ public final class EventTypeRepository implements Persist<EventType> {
                 row.getName(),
                 row.getDescription(),
                 specVersions,
-                EventTypeStatus.parse(row.getStatus()),
-                EventTypeSource.parse(row.getSource()),
+                status(row.getId(), row.getStatus()),
+                source(row.getId(), row.getSource()),
                 row.getClientScoped(),
                 row.getApplication(),
                 row.getSubdomain(),
@@ -182,10 +182,50 @@ public final class EventTypeRepository implements Persist<EventType> {
                 row.getVersion(),
                 row.getMimeType(),
                 fromJsonb(row.getSchemaContent()),
-                SchemaType.parse(row.getSchemaType()),
-                SpecVersionStatus.parse(row.getStatus()),
+                schemaType(row.getId(), row.getSchemaType()),
+                specVersionStatus(row.getId(), row.getStatus()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [EventTypeStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static EventTypeStatus status(String rowId, String stored) {
+        try {
+            return EventTypeStatus.parse(stored);
+        } catch (EventTypeStatus.UnrecognisedEventTypeStatusException e) {
+            throw new CorruptEventTypeException("event type", rowId, e);
+        }
+    }
+
+    /// [EventTypeSource#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static EventTypeSource source(String rowId, String stored) {
+        try {
+            return EventTypeSource.parse(stored);
+        } catch (EventTypeSource.UnrecognisedEventTypeSourceException e) {
+            throw new CorruptEventTypeException("event type", rowId, e);
+        }
+    }
+
+    /// [SchemaType#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static SchemaType schemaType(String rowId, String stored) {
+        try {
+            return SchemaType.parse(stored);
+        } catch (SchemaType.UnrecognisedSchemaTypeException e) {
+            throw new CorruptEventTypeException("event type spec version", rowId, e);
+        }
+    }
+
+    /// [SpecVersionStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static SpecVersionStatus specVersionStatus(String rowId, String stored) {
+        try {
+            return SpecVersionStatus.parse(stored);
+        } catch (SpecVersionStatus.UnrecognisedSpecVersionStatusException e) {
+            throw new CorruptEventTypeException("event type spec version", rowId, e);
+        }
     }
 
     private static JSONB toJsonb(JsonNode node) {

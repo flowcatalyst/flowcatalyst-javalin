@@ -173,10 +173,20 @@ public final class RoleRepository implements Persist<Role> {
                 row.getDescription(),
                 row.getApplicationCode(),
                 permissions,
-                RoleSource.parse(row.getSource()),
+                source(row.getId(), row.getSource()),
                 row.getClientManaged(),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [RoleSource#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static RoleSource source(String rowId, String stored) {
+        try {
+            return RoleSource.parse(stored);
+        } catch (RoleSource.UnrecognisedRoleSourceException e) {
+            throw new CorruptRoleException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

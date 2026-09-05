@@ -235,7 +235,7 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                 id,
                 row.getEmailDomain(),
                 row.getIdentityProviderId(),
-                ScopeType.parse(row.getScopeType()),
+                scopeType(id, row.getScopeType()),
                 row.getPrimaryClientId(),
                 j.additional.getOrDefault(id, List.of()),
                 j.granted.getOrDefault(id, List.of()),
@@ -247,6 +247,16 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                         row.getRememberDeviceDays()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [ScopeType#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static ScopeType scopeType(String rowId, String stored) {
+        try {
+            return ScopeType.parse(stored);
+        } catch (ScopeType.UnrecognisedScopeTypeException e) {
+            throw new CorruptEmailDomainMappingException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

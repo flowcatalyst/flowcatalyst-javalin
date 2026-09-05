@@ -134,15 +134,27 @@ public final class LoginAttemptRepository {
 
     Optional<Instant> lastSuccessAt(String identifier, Instant now) {
         Objects.requireNonNull(identifier, "identifier");
-        var last = DSL.max(T.ATTEMPTED_AT);
         OffsetDateTime since = now.minus(LAST_SUCCESS_LOOKBACK).atOffset(ZoneOffset.UTC);
-        OffsetDateTime lastAt = dsl.select(last).from(T)
-                .where(T.OUTCOME.eq(AttemptOutcome.SUCCESS.name())
-                        .and(T.IDENTIFIER.eq(identifier))
-                        .and(T.ATTEMPTED_AT.ge(since)))
-                .fetchSingle(last);
-        return Optional.ofNullable(lastAt).map(OffsetDateTime::toInstant);
+        // One scan of the identifier's window: the latest SUCCESS, and — X-06 —
+        // whether any row in scope carries an outcome that is neither SUCCESS
+        // nor FAILURE. Such a row must fail this read loudly rather than be
+        // silently left out of the aggregate as if it simply did not match:
+        // the caller would otherwise keep treating the identifier as never
+        // (or always) succeeded when the truth is unknown. This sits on the
+        // login hot path, so it is one indexed query, not two.
+        var last = DSL.max(T.ATTEMPTED_AT).filterWhere(T.OUTCOME.eq(AttemptOutcome.SUCCESS.name()));
+        var corruptId = DSL.min(T.ID).filterWhere(T.OUTCOME.notIn(KNOWN_OUTCOMES));
+        var corruptOutcome = DSL.min(T.OUTCOME).filterWhere(T.OUTCOME.notIn(KNOWN_OUTCOMES));
+        var row = dsl.select(last, corruptId, corruptOutcome).from(T)
+                .where(T.IDENTIFIER.eq(identifier).and(T.ATTEMPTED_AT.ge(since)))
+                .fetchSingle();
+        if (row.get(corruptId) != null) {
+            outcome(row.get(corruptId), row.get(corruptOutcome));
+        }
+        return Optional.ofNullable(row.get(last)).map(OffsetDateTime::toInstant);
     }
+
+    private static final List<String> KNOWN_OUTCOMES = List.of(AttemptOutcome.SUCCESS.name(), AttemptOutcome.FAILURE.name());
 
     /// Failures for the `(identifier, ip)` pair since `since` (inclusive):
     /// the count and the latest one. Drives the per-pair exponential backoff.
@@ -177,16 +189,37 @@ public final class LoginAttemptRepository {
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static LoginAttempt toEntity(Record row) {
+        String id = row.get(T.ID);
         return new LoginAttempt(
-                row.get(T.ID),
-                AttemptType.parse(row.get(T.ATTEMPT_TYPE)),
-                AttemptOutcome.parse(row.get(T.OUTCOME)),
+                id,
+                attemptType(id, row.get(T.ATTEMPT_TYPE)),
+                outcome(id, row.get(T.OUTCOME)),
                 row.get(T.FAILURE_REASON),
                 row.get(T.IDENTIFIER),
                 row.get(T.PRINCIPAL_ID),
                 row.get(T.IP_ADDRESS),
                 row.get(T.USER_AGENT),
                 row.get(T.ATTEMPTED_AT).toInstant());
+    }
+
+    /// [AttemptType#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static AttemptType attemptType(String rowId, String stored) {
+        try {
+            return AttemptType.parse(stored);
+        } catch (AttemptType.UnrecognisedAttemptTypeException e) {
+            throw new CorruptLoginAttemptException(rowId, e);
+        }
+    }
+
+    /// [AttemptOutcome#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static AttemptOutcome outcome(String rowId, String stored) {
+        try {
+            return AttemptOutcome.parse(stored);
+        } catch (AttemptOutcome.UnrecognisedOutcomeException e) {
+            throw new CorruptLoginAttemptException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant t) {

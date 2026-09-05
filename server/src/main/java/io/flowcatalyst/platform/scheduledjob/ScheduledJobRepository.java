@@ -205,7 +205,7 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
                 row.getCode(),
                 row.getName(),
                 row.getDescription(),
-                ScheduledJobStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 crons == null ? List.of() : Arrays.asList(crons),
                 row.getTimezone(),
                 fromJsonb(row.getPayload()),
@@ -234,6 +234,16 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
             return node.isNull() ? null : node;
         } catch (JacksonException e) {
             throw new IllegalStateException("stored jsonb is not valid JSON", e);
+        }
+    }
+
+    /// [ScheduledJobStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ScheduledJobStatus status(String rowId, String stored) {
+        try {
+            return ScheduledJobStatus.parse(stored);
+        } catch (ScheduledJobStatus.UnrecognisedScheduledJobStatusException e) {
+            throw new CorruptScheduledJobException("scheduled job", rowId, e);
         }
     }
 

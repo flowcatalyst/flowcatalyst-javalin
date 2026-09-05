@@ -117,8 +117,8 @@ public final class ProcessRepository implements Persist<Process> {
                 row.getCode(),
                 row.getName(),
                 row.getDescription(),
-                ProcessStatus.parse(row.getStatus()),
-                ProcessSource.parse(row.getSource()),
+                status(row.getId(), row.getStatus()),
+                source(row.getId(), row.getSource()),
                 row.getApplication(),
                 row.getSubdomain(),
                 row.getProcessName(),
@@ -128,6 +128,26 @@ public final class ProcessRepository implements Persist<Process> {
                 null, // createdBy: not a column (spec §1)
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [ProcessStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ProcessStatus status(String rowId, String stored) {
+        try {
+            return ProcessStatus.parse(stored);
+        } catch (ProcessStatus.UnrecognisedProcessStatusException e) {
+            throw new CorruptProcessException(rowId, e);
+        }
+    }
+
+    /// [ProcessSource#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ProcessSource source(String rowId, String stored) {
+        try {
+            return ProcessSource.parse(stored);
+        } catch (ProcessSource.UnrecognisedProcessSourceException e) {
+            throw new CorruptProcessException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

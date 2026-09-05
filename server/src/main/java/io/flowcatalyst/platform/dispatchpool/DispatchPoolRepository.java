@@ -116,9 +116,19 @@ public final class DispatchPoolRepository implements Persist<DispatchPool> {
                 row.getConcurrency(),
                 row.getClientId(),
                 row.getClientIdentifier(),
-                DispatchPoolStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [DispatchPoolStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static DispatchPoolStatus status(String rowId, String stored) {
+        try {
+            return DispatchPoolStatus.parse(stored);
+        } catch (DispatchPoolStatus.UnrecognisedDispatchPoolStatusException e) {
+            throw new CorruptDispatchPoolException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

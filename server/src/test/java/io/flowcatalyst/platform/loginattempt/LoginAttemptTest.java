@@ -62,30 +62,37 @@ class LoginAttemptTest {
         assertThat(a.cursor()).isEqualTo(new KeysetCursor(T, "lat_1"));
     }
 
-    // ── Lenient enum readers ───────────────────────────────────────────────
+    // ── Stored enum readers are strict (X-06) ───────────────────────────────
 
     @ParameterizedTest(name = "attempt_type {0} reads as {1}")
-    @CsvSource(nullValues = "NULL", value = {
+    @CsvSource(value = {
             "USER_LOGIN, USER_LOGIN",
             "SERVICE_ACCOUNT_TOKEN, SERVICE_ACCOUNT_TOKEN",
             "DEVELOPER_TOKEN, DEVELOPER_TOKEN",
-            "bogus, USER_LOGIN",
-            "'', USER_LOGIN",
-            "NULL, USER_LOGIN",
     })
-    void attemptTypeReadsLeniently(String stored, AttemptType expected) {
+    void attemptTypeParsesTheThreeRecognisedValues(String stored, AttemptType expected) {
         assertThat(AttemptType.parse(stored)).isEqualTo(expected);
     }
 
+    /// X-06: unknown used to default to `USER_LOGIN`. There is no default now.
+    @ParameterizedTest(name = "attempt_type ''{0}''")
+    @CsvSource(nullValues = "NULL", value = {"bogus", "''", "NULL"})
+    void attemptTypeRejectsAnythingElseInsteadOfDefaultingToUserLogin(String stored) {
+        assertThatThrownBy(() -> AttemptType.parse(stored)).isInstanceOf(AttemptType.UnrecognisedAttemptTypeException.class);
+    }
+
     @ParameterizedTest(name = "outcome {0} reads as {1}")
-    @CsvSource(nullValues = "NULL", value = {
-            "SUCCESS, SUCCESS",
-            "FAILURE, FAILURE",
-            "failure, SUCCESS",
-            "'', SUCCESS",
-            "NULL, SUCCESS",
-    })
-    void outcomeReadsLeniently(String stored, AttemptOutcome expected) {
+    @CsvSource(value = {"SUCCESS, SUCCESS", "FAILURE, FAILURE"})
+    void outcomeParsesTheTwoRecognisedValues(String stored, AttemptOutcome expected) {
         assertThat(AttemptOutcome.parse(stored)).isEqualTo(expected);
+    }
+
+    /// X-06: unknown used to default to `SUCCESS` — the security bug this
+    /// ruling exists to close (a corrupt `outcome` would have reset the
+    /// brute-force lockout window). There is no default now.
+    @ParameterizedTest(name = "outcome ''{0}''")
+    @CsvSource(nullValues = "NULL", value = {"failure", "''", "NULL"})
+    void outcomeRejectsAnythingElseInsteadOfDefaultingToSuccess(String stored) {
+        assertThatThrownBy(() -> AttemptOutcome.parse(stored)).isInstanceOf(AttemptOutcome.UnrecognisedOutcomeException.class);
     }
 }

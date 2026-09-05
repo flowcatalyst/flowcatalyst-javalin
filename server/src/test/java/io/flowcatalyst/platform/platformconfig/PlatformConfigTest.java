@@ -7,6 +7,7 @@ import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The aggregates' pure rules (spec §1–2): coordinate → scope derivation,
 /// the defaults of a fresh value / grant, the `set` and `grant` transitions
@@ -127,24 +128,40 @@ class PlatformConfigTest {
         assertThat(reader.createdAt()).isEqualTo(a.createdAt());
     }
 
-    // ── Lenient enum reads ─────────────────────────────────────────────────
+    // ── Stored enum reads are strict (X-06) ─────────────────────────────────
 
     @ParameterizedTest
-    @CsvSource({"GLOBAL,GLOBAL", "CLIENT,CLIENT", "banana,GLOBAL"})
-    void scopeParsesLeniently(String stored, ConfigScope expected) {
+    @CsvSource({"GLOBAL,GLOBAL", "CLIENT,CLIENT"})
+    void scopeParsesTheTwoRecognisedValues(String stored, ConfigScope expected) {
         assertThat(ConfigScope.parse(stored)).isEqualTo(expected);
     }
 
     @ParameterizedTest
     @NullAndEmptySource
+    @ValueSource(strings = {"banana"})
+    void scopeRejectsAnythingElseInsteadOfDefaultingToGlobal(String stored) {
+        assertThatThrownBy(() -> ConfigScope.parse(stored)).isInstanceOf(ConfigScope.UnrecognisedConfigScopeException.class);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
     @ValueSource(strings = {"secret", "BANANA"})
-    void unknownValueTypeReadsAsPlain(String stored) {
-        assertThat(ConfigValueType.parse(stored)).isEqualTo(ConfigValueType.PLAIN);
+    void unknownStoredValueTypeRejectsInsteadOfDefaultingToPlain(String stored) {
+        assertThatThrownBy(() -> ConfigValueType.parse(stored)).isInstanceOf(ConfigValueType.UnrecognisedConfigValueTypeException.class);
     }
 
     @Test
     void secretValueTypeIsRecognised() {
         assertThat(ConfigValueType.parse("SECRET")).isEqualTo(ConfigValueType.SECRET);
-        assertThat(ConfigScope.parse(null)).isEqualTo(ConfigScope.GLOBAL);
+        assertThat(ConfigValueType.parse("PLAIN")).isEqualTo(ConfigValueType.PLAIN);
+    }
+
+    /// [ConfigValueType#parseWire] is the wire-only lenient reader (the set
+    /// command's `valueType` field) — untouched by X-06.
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"secret", "BANANA"})
+    void unknownWireValueTypeReadsAsPlain(String given) {
+        assertThat(ConfigValueType.parseWire(given)).isEqualTo(ConfigValueType.PLAIN);
     }
 }

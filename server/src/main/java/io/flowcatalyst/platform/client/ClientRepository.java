@@ -120,7 +120,7 @@ public final class ClientRepository implements Persist<Client> {
                 row.getId(),
                 row.getName(),
                 row.getIdentifier(),
-                ClientStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 row.getStatusReason(),
                 instant(row.getStatusChangedAt()),
                 notesOf(row.getNotes()),
@@ -135,6 +135,16 @@ public final class ClientRepository implements Persist<Client> {
             return Json.MAPPER.readValue(jsonb.data(), NOTES);
         } catch (JacksonException e) {
             throw new IllegalStateException("tnt_clients.notes is not a valid note array", e);
+        }
+    }
+
+    /// [ClientStatus#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static ClientStatus status(String rowId, String stored) {
+        try {
+            return ClientStatus.parse(stored);
+        } catch (ClientStatus.UnrecognisedClientStatusException e) {
+            throw new CorruptClientException(rowId, e);
         }
     }
 

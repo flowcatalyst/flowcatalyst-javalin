@@ -160,9 +160,28 @@ class RoleTest {
     // ── Enum + catalogue entry ─────────────────────────────────────────────
 
     @ParameterizedTest(name = "''{0}'' → {1}")
-    @CsvSource({"CODE, CODE", "SDK, SDK", "DATABASE, DATABASE", "bogus, DATABASE", ", DATABASE"})
-    void sourceParsesLeniently(String raw, RoleSource expected) {
+    @CsvSource({"CODE, CODE", "SDK, SDK", "DATABASE, DATABASE"})
+    void storedSourceParsesTheThreeRecognisedValues(String raw, RoleSource expected) {
         assertThat(RoleSource.parse(raw)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest(name = "''{0}''")
+    @ValueSource(strings = {"bogus", ""})
+    void storedSourceRejectsAnythingElseInsteadOfDefaultingToDatabase(String raw) {
+        assertThatThrownBy(() -> RoleSource.parse(raw)).isInstanceOf(RoleSource.UnrecognisedRoleSourceException.class);
+    }
+
+    @Test
+    void storedSourceRejectsNull() {
+        assertThatThrownBy(() -> RoleSource.parse(null)).isInstanceOf(RoleSource.UnrecognisedRoleSourceException.class);
+    }
+
+    /// [RoleSource#parseWire] is the wire-only lenient reader (the
+    /// `/by-source/{source}` path segment) — untouched by X-06.
+    @ParameterizedTest(name = "''{0}'' → {1}")
+    @CsvSource({"CODE, CODE", "SDK, SDK", "DATABASE, DATABASE", "bogus, DATABASE", ", DATABASE"})
+    void wireSourceParsesLeniently(String raw, RoleSource expected) {
+        assertThat(RoleSource.parseWire(raw)).isEqualTo(expected);
     }
 
     @Test

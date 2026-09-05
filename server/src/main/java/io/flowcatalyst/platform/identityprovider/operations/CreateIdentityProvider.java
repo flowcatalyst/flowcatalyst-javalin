@@ -28,7 +28,7 @@ public final class CreateIdentityProvider {
                 .validate(cmd -> {
                     UseCaseException.requireNonBlank(cmd.code(), "CODE_REQUIRED", "code is required");
                     UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name is required");
-                    if (IdentityProviderType.parse(cmd.type()) == IdentityProviderType.OIDC) {
+                    if (IdentityProviderType.parseWire(cmd.type()) == IdentityProviderType.OIDC) {
                         UseCaseException.requireNonBlank(cmd.oidcIssuerUrl(), "OIDC_ISSUER_REQUIRED", "OIDC IDPs require oidcIssuerUrl");
                         UseCaseException.requireNonBlank(cmd.oidcClientId(), "OIDC_CLIENT_ID_REQUIRED", "OIDC IDPs require oidcClientId");
                     }
@@ -41,7 +41,7 @@ public final class CreateIdentityProvider {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Identity provider with code '" + cmd.code() + "' already exists");
                     }
-                    IdentityProvider ip = IdentityProvider.create(cmd.code(), cmd.name(), IdentityProviderType.parse(cmd.type()))
+                    IdentityProvider ip = IdentityProvider.create(cmd.code(), cmd.name(), IdentityProviderType.parseWire(cmd.type()))
                             .withOidc(cmd.oidcIssuerUrl(), cmd.oidcClientId(), cmd.oidcClientSecretRef(), cmd.oidcMultiTenant(), cmd.oidcIssuerPattern())
                             .withRoleSync(cmd.syncRolesFromIdp(), cmd.allowedRoleIds());
                     scoped.commit(ip, repo, IdentityProviderCreated.of(ec, ip), cmd);

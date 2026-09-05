@@ -26,17 +26,36 @@ class IdentityProviderTest {
                 .withOidc("https://login.example.com", "client-1", "encrypted:AAAA", true, null);
     }
 
-    // ── Type ───────────────────────────────────────────────────────────────
+    // ── Type: stored is strict (X-06), wire (create command) stays lenient ──
 
     @ParameterizedTest
-    @CsvSource({"OIDC, OIDC", "INTERNAL, INTERNAL", "oidc, INTERNAL", "anything, INTERNAL", "'', INTERNAL"})
-    void typeReadsOidcExactlyAndEverythingElseAsInternal(String stored, IdentityProviderType expected) {
+    @CsvSource({"OIDC, OIDC", "INTERNAL, INTERNAL"})
+    void storedTypeParsesTheTwoRecognisedValues(String stored, IdentityProviderType expected) {
         assertThat(IdentityProviderType.parse(stored)).isEqualTo(expected);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"oidc", "anything", ""})
+    void storedTypeRejectsAnythingElseInsteadOfDefaultingToInternal(String stored) {
+        assertThatThrownBy(() -> IdentityProviderType.parse(stored))
+                .isInstanceOf(IdentityProviderType.UnrecognisedIdentityProviderTypeException.class);
+    }
+
     @Test
-    void typeReadsNullAsInternal() {
-        assertThat(IdentityProviderType.parse(null)).isEqualTo(IdentityProviderType.INTERNAL);
+    void storedTypeRejectsNull() {
+        assertThatThrownBy(() -> IdentityProviderType.parse(null))
+                .isInstanceOf(IdentityProviderType.UnrecognisedIdentityProviderTypeException.class);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"OIDC, OIDC", "INTERNAL, INTERNAL", "oidc, INTERNAL", "anything, INTERNAL", "'', INTERNAL"})
+    void wireTypeReadsOidcExactlyAndEverythingElseAsInternal(String given, IdentityProviderType expected) {
+        assertThat(IdentityProviderType.parseWire(given)).isEqualTo(expected);
+    }
+
+    @Test
+    void wireTypeReadsNullAsInternal() {
+        assertThat(IdentityProviderType.parseWire(null)).isEqualTo(IdentityProviderType.INTERNAL);
     }
 
     // ── Create ─────────────────────────────────────────────────────────────

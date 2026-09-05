@@ -104,10 +104,12 @@ class ConnectionTest {
         assertThat(updated.createdAt()).isEqualTo(c.createdAt());
     }
 
-    // ── Lenient reader ─────────────────────────────────────────────────────
+    // ── Wire-side lenient reader (the update command's status field) ───────
 
     /// Exactly `PAUSED` pauses; anything else — other case, whitespace,
-    /// unknown, absent — reads as `ACTIVE` (spec §1, open question 4).
+    /// unknown, absent — reads as `ACTIVE` (spec §1, open question 4). This
+    /// is [ConnectionStatus#parseCommandStatus], the wire-only reader —
+    /// untouched by X-06, which governs stored rows, not request bodies.
     @ParameterizedTest(name = "''{0}'' → {1}")
     @CsvSource(nullValues = "null", value = {
             "PAUSED, PAUSED",
@@ -117,8 +119,26 @@ class ConnectionTest {
             "UNKNOWN, ACTIVE",
             "'', ACTIVE",
             "null, ACTIVE"})
-    void statusIsReadLenientlyWithActiveAsTheDefault(String raw, ConnectionStatus expected) {
+    void commandStatusIsReadLenientlyWithActiveAsTheDefault(String raw, ConnectionStatus expected) {
+        assertThat(ConnectionStatus.parseCommandStatus(raw)).isEqualTo(expected);
+    }
+
+    // ── Stored-side strict reader (X-06) ────────────────────────────────────
+
+    @ParameterizedTest(name = "''{0}'' → {1}")
+    @CsvSource({"ACTIVE, ACTIVE", "PAUSED, PAUSED"})
+    void storedStatusParsesTheTwoRecognisedValues(String raw, ConnectionStatus expected) {
         assertThat(ConnectionStatus.parse(raw)).isEqualTo(expected);
+    }
+
+    /// X-06: unlike [#commandStatusIsReadLenientlyWithActiveAsTheDefault],
+    /// the stored reader never defaults — an unrecognised or absent value is
+    /// a corrupt row, not a fallback to `ACTIVE`.
+    @ParameterizedTest(name = "''{0}''")
+    @CsvSource(nullValues = "null", value = {"UNKNOWN", "active", "'  PAUSED '", "''", "null"})
+    void storedStatusRejectsAnythingElse(String raw) {
+        assertThatThrownBy(() -> ConnectionStatus.parse(raw))
+                .isInstanceOf(ConnectionStatus.UnrecognisedConnectionStatusException.class);
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {

@@ -5,12 +5,27 @@ package io.flowcatalyst.platform.scheduledjob;
 public enum ScheduledJobStatus {
     ACTIVE, PAUSED, ARCHIVED;
 
-    /// Lenient reader for stored values: unknown → `ACTIVE` (spec §1).
+    /// Strict reader for stored values (spec §1, X-06): never a silent
+    /// default. See [ScheduledJobRepository]'s row mapper, which wraps
+    /// [UnrecognisedScheduledJobStatusException] in
+    /// [CorruptScheduledJobException] carrying the row id.
+    ///
+    /// @throws UnrecognisedScheduledJobStatusException `s` is `null` or not
+    ///                                                 one of the three states
     public static ScheduledJobStatus parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "ACTIVE" -> ACTIVE;
             case "PAUSED" -> PAUSED;
             case "ARCHIVED" -> ARCHIVED;
-            default -> ACTIVE;
+            case null, default -> throw new UnrecognisedScheduledJobStatusException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedScheduledJobStatusException extends RuntimeException {
+        public UnrecognisedScheduledJobStatusException(String raw) {
+            super("unrecognised scheduled job status: " + raw);
+        }
     }
 }

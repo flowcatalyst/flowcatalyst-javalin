@@ -180,7 +180,7 @@ public final class ScheduledJobApi {
         PageQuery page = PageQuery.from(ctx);
         String status = queryParam(ctx, "status");
         var filter = ScheduledJobInstanceRepository.ListFilter.forJob(ctx.pathParam("id"),
-                status == null ? null : InstanceStatus.parse(status));
+                status == null ? null : InstanceStatus.parseWire(status));
         var rows = s.instances().list(filter, page.pageSize(), (int) page.offset());
         ctx.json(OffsetPage.of(rows.stream().map(ScheduledJobInstanceResponse::from).toList(), page, s.instances().count(filter)));
     }
@@ -398,7 +398,7 @@ public final class ScheduledJobApi {
                 case "" -> new Completion(InstanceStatus.COMPLETED, outcome, payload);
                 case "SUCCESS", "FAILURE" -> new Completion(InstanceStatus.COMPLETED,
                         outcome != null ? outcome : given.toUpperCase(Locale.ROOT), payload);
-                default -> new Completion(InstanceStatus.parse(given), outcome, payload);
+                default -> new Completion(InstanceStatus.parseWire(given), outcome, payload);
             };
         }
     }

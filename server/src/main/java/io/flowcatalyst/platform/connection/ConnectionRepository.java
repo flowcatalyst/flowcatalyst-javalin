@@ -108,12 +108,22 @@ public final class ConnectionRepository implements Persist<Connection> {
                 row.getName(),
                 row.getDescription(),
                 row.getExternalId(),
-                ConnectionStatus.parse(row.getStatus()),
+                status(row.getId(), row.getStatus()),
                 row.getServiceAccountId(),
                 row.getClientId(),
                 row.getClientIdentifier(),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [ConnectionStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ConnectionStatus status(String rowId, String stored) {
+        try {
+            return ConnectionStatus.parse(stored);
+        } catch (ConnectionStatus.UnrecognisedConnectionStatusException e) {
+            throw new CorruptConnectionException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

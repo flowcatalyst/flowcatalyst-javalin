@@ -88,17 +88,35 @@ class ScheduledJobTest {
         assertUseCaseError(() -> ScheduledJobCode.verbatim(" "), UseCaseError.Validation.class, "CODE_REQUIRED");
     }
 
-    // ── Enums (lenient stored reads) ───────────────────────────────────────
+    // ── Enums: stored reads are strict (X-06) ───────────────────────────────
 
     @Test
-    void enumsReadStoredValuesLeniently() {
+    void enumsParseTheirRecognisedStoredValues() {
         assertThat(ScheduledJobStatus.parse("PAUSED")).isEqualTo(ScheduledJobStatus.PAUSED);
-        assertThat(ScheduledJobStatus.parse("garbage")).isEqualTo(ScheduledJobStatus.ACTIVE);
-        assertThat(ScheduledJobStatus.parse(null)).isEqualTo(ScheduledJobStatus.ACTIVE);
         assertThat(InstanceStatus.parse("DELIVERY_FAILED")).isEqualTo(InstanceStatus.DELIVERY_FAILED);
-        assertThat(InstanceStatus.parse("nope")).isEqualTo(InstanceStatus.QUEUED);
         assertThat(TriggerKind.parse("BACKFILL")).isEqualTo(TriggerKind.BACKFILL);
-        assertThat(TriggerKind.parse("")).isEqualTo(TriggerKind.CRON);
+    }
+
+    @Test
+    void enumsRejectAnUnrecognisedStoredValueInsteadOfDefaultingSilently() {
+        assertThatThrownBy(() -> ScheduledJobStatus.parse("garbage"))
+                .isInstanceOf(ScheduledJobStatus.UnrecognisedScheduledJobStatusException.class);
+        assertThatThrownBy(() -> ScheduledJobStatus.parse(null))
+                .isInstanceOf(ScheduledJobStatus.UnrecognisedScheduledJobStatusException.class);
+        assertThatThrownBy(() -> InstanceStatus.parse("nope"))
+                .isInstanceOf(InstanceStatus.UnrecognisedInstanceStatusException.class);
+        assertThatThrownBy(() -> TriggerKind.parse(""))
+                .isInstanceOf(TriggerKind.UnrecognisedTriggerKindException.class);
+    }
+
+    /// [InstanceStatus#parseWire] is the wire-only lenient reader (the
+    /// `?status=` filter and the completion request's `status` field) —
+    /// untouched by X-06, which governs stored rows, not request input.
+    @Test
+    void instanceStatusWireReaderStaysLenient() {
+        assertThat(InstanceStatus.parseWire("DELIVERY_FAILED")).isEqualTo(InstanceStatus.DELIVERY_FAILED);
+        assertThat(InstanceStatus.parseWire("nope")).isEqualTo(InstanceStatus.QUEUED);
+        assertThat(InstanceStatus.parseWire(null)).isEqualTo(InstanceStatus.QUEUED);
     }
 
     // ── Create / defaults ──────────────────────────────────────────────────

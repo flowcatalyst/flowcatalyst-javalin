@@ -54,12 +54,18 @@ class ClientTest {
     // ── Status ─────────────────────────────────────────────────────────────
 
     @Test
-    void statusReadsLenientlyDefaultingToActive() {
+    void statusParsesTheThreeRecognisedValues() {
         assertThat(ClientStatus.parse("SUSPENDED")).isEqualTo(ClientStatus.SUSPENDED);
         assertThat(ClientStatus.parse("INACTIVE")).isEqualTo(ClientStatus.INACTIVE);
         assertThat(ClientStatus.parse("ACTIVE")).isEqualTo(ClientStatus.ACTIVE);
-        assertThat(ClientStatus.parse("garbage")).isEqualTo(ClientStatus.ACTIVE);
-        assertThat(ClientStatus.parse(null)).isEqualTo(ClientStatus.ACTIVE);
+    }
+
+    @Test
+    void statusRejectsAnythingElseInsteadOfDefaultingToActive() {
+        assertThatThrownBy(() -> ClientStatus.parse("garbage"))
+                .isInstanceOf(ClientStatus.UnrecognisedClientStatusException.class);
+        assertThatThrownBy(() -> ClientStatus.parse(null))
+                .isInstanceOf(ClientStatus.UnrecognisedClientStatusException.class);
     }
 
     // ── Create ─────────────────────────────────────────────────────────────

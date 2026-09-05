@@ -8,14 +8,32 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 public enum ScopeType {
     ANCHOR, PARTNER, CLIENT;
 
-    /// Lenient reader for stored values: unknown (and `null`) → `ANCHOR`
-    /// (spec §1, open question 8).
+    /// Strict reader for stored values (spec §1, open question 8; X-06):
+    /// unknown (and `null`) used to default to `ANCHOR`, the MOST privileged
+    /// scope — a corrupted or truncated column would silently grant
+    /// platform-staff scope to a mapping that was never meant to have it.
+    /// There is no default here: [EmailDomainMappingRepository]'s row mapper
+    /// wraps [UnrecognisedScopeTypeException] in
+    /// [CorruptEmailDomainMappingException] carrying the row id.
+    ///
+    /// @throws UnrecognisedScopeTypeException `s` is `null` or not one of
+    ///                                        `ANCHOR` / `PARTNER` / `CLIENT`
     public static ScopeType parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "ANCHOR" -> ANCHOR;
             case "PARTNER" -> PARTNER;
             case "CLIENT" -> CLIENT;
-            default -> ANCHOR;
+            case null, default -> throw new UnrecognisedScopeTypeException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default (a privilege-escalation bug when the
+    /// default is the most-privileged scope).
+    public static final class UnrecognisedScopeTypeException extends RuntimeException {
+        public UnrecognisedScopeTypeException(String raw) {
+            super("unrecognised scope type: " + raw);
+        }
     }
 
     /// Strict reader for wire values (spec §4).

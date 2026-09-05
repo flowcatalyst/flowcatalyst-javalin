@@ -5,11 +5,26 @@ package io.flowcatalyst.platform.eventtype;
 public enum EventTypeStatus {
     CURRENT, ARCHIVED;
 
-    /// Lenient reader for stored values: unknown → `CURRENT` (spec §1).
+    /// Strict reader for stored values (spec §1, X-06): never a silent
+    /// default. See [EventTypeRepository]'s row mapper, which wraps
+    /// [UnrecognisedEventTypeStatusException] in [CorruptEventTypeException]
+    /// carrying the row id.
+    ///
+    /// @throws UnrecognisedEventTypeStatusException `s` is `null` or not
+    ///                                              `CURRENT` / `ARCHIVED`
     public static EventTypeStatus parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
+            case "CURRENT" -> CURRENT;
             case "ARCHIVED" -> ARCHIVED;
-            default -> CURRENT;
+            case null, default -> throw new UnrecognisedEventTypeStatusException(s);
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedEventTypeStatusException extends RuntimeException {
+        public UnrecognisedEventTypeStatusException(String raw) {
+            super("unrecognised event type status: " + raw);
+        }
     }
 }

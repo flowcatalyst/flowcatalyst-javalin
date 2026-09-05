@@ -162,7 +162,7 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
                 id,
                 row.getCode(),
                 row.getName(),
-                IdentityProviderType.parse(row.getType()),
+                type(id, row.getType()),
                 row.getOidcIssuerUrl(),
                 row.getOidcClientId(),
                 row.getOidcClientSecretRef(),
@@ -173,6 +173,16 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
                 children.rolesOf(id),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
+    }
+
+    /// [IdentityProviderType#parse], wrapped so a corrupt stored value
+    /// fails loudly with the offending row's id (X-06).
+    private static IdentityProviderType type(String rowId, String stored) {
+        try {
+            return IdentityProviderType.parse(stored);
+        } catch (IdentityProviderType.UnrecognisedIdentityProviderTypeException e) {
+            throw new CorruptIdentityProviderException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

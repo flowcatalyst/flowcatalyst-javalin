@@ -7,12 +7,19 @@ package io.flowcatalyst.platform.subscription;
 public enum SubscriptionSource {
     CODE, API, UI;
 
-    /// Lenient reader for stored values: unknown → `UI` (spec §1).
+    /// Strict reader for stored values (spec §1, X-06): never a silent
+    /// default. See [SubscriptionRepository]'s row mapper, which wraps
+    /// [UnrecognisedSubscriptionSourceException] in
+    /// [CorruptSubscriptionException] carrying the row id.
+    ///
+    /// @throws UnrecognisedSubscriptionSourceException `s` is `null` or not
+    ///                                                 one of `CODE` / `API` / `UI`
     public static SubscriptionSource parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
             case "CODE" -> CODE;
             case "API" -> API;
-            default -> UI;
+            case "UI" -> UI;
+            case null, default -> throw new UnrecognisedSubscriptionSourceException(s);
         };
     }
 
@@ -22,5 +29,13 @@ public enum SubscriptionSource {
             case CODE, API -> true;
             case UI -> false;
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedSubscriptionSourceException extends RuntimeException {
+        public UnrecognisedSubscriptionSourceException(String raw) {
+            super("unrecognised subscription source: " + raw);
+        }
     }
 }

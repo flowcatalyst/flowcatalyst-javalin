@@ -159,9 +159,9 @@ public final class ScheduledJobInstanceRepository {
     private static ScheduledJobInstance toEntity(MsgScheduledJobInstancesRecord r) {
         return new ScheduledJobInstance(
                 r.getId(), r.getScheduledJobId(), r.getClientId(), r.getJobCode(),
-                TriggerKind.parse(r.getTriggerKind()),
+                triggerKind(r.getId(), r.getTriggerKind()),
                 instant(r.getScheduledFor()), r.getFiredAt().toInstant(), instant(r.getDeliveredAt()), instant(r.getCompletedAt()),
-                InstanceStatus.parse(r.getStatus()),
+                status(r.getId(), r.getStatus()),
                 r.getDeliveryAttempts(), r.getDeliveryError(), r.getCompletionStatus(), fromJsonb(r.getCompletionResult()),
                 r.getCorrelationId(), r.getCreatedAt().toInstant());
     }
@@ -169,5 +169,25 @@ public final class ScheduledJobInstanceRepository {
     private static ScheduledJobInstanceLog toLog(MsgScheduledJobInstanceLogsRecord r) {
         return new ScheduledJobInstanceLog(r.getId(), r.getInstanceId(), r.getScheduledJobId(), r.getClientId(),
                 r.getLevel(), r.getMessage(), fromJsonb(r.getMetadata()), r.getCreatedAt().toInstant());
+    }
+
+    /// [TriggerKind#parse], wrapped so a corrupt stored value fails loudly
+    /// with the offending row's id (X-06).
+    private static TriggerKind triggerKind(String rowId, String stored) {
+        try {
+            return TriggerKind.parse(stored);
+        } catch (TriggerKind.UnrecognisedTriggerKindException e) {
+            throw new CorruptScheduledJobException("scheduled job instance", rowId, e);
+        }
+    }
+
+    /// [InstanceStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static InstanceStatus status(String rowId, String stored) {
+        try {
+            return InstanceStatus.parse(stored);
+        } catch (InstanceStatus.UnrecognisedInstanceStatusException e) {
+            throw new CorruptScheduledJobException("scheduled job instance", rowId, e);
+        }
     }
 }

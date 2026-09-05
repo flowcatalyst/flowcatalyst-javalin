@@ -6,12 +6,19 @@ package io.flowcatalyst.platform.process;
 public enum ProcessSource {
     CODE, API, UI;
 
-    /// Lenient reader for stored values: unknown → `UI` (spec §1).
+    /// Strict reader for stored values (spec §1, X-06): never a silent
+    /// default. See [ProcessRepository]'s row mapper, which wraps
+    /// [UnrecognisedProcessSourceException] in [CorruptProcessException]
+    /// carrying the row id.
+    ///
+    /// @throws UnrecognisedProcessSourceException `s` is `null` or not one
+    ///                                            of `CODE` / `API` / `UI`
     public static ProcessSource parse(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s) {
             case "CODE" -> CODE;
             case "API" -> API;
-            default -> UI;
+            case "UI" -> UI;
+            case null, default -> throw new UnrecognisedProcessSourceException(s);
         };
     }
 
@@ -23,5 +30,13 @@ public enum ProcessSource {
             case CODE, API -> true;
             case UI -> false;
         };
+    }
+
+    /// Thrown by [#parse] for a stored value outside the recognised set —
+    /// X-06: never a silent default.
+    public static final class UnrecognisedProcessSourceException extends RuntimeException {
+        public UnrecognisedProcessSourceException(String raw) {
+            super("unrecognised process source: " + raw);
+        }
     }
 }

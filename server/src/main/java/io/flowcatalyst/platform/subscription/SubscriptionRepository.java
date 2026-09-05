@@ -207,8 +207,8 @@ public final class SubscriptionRepository implements Persist<Subscription> {
                 row.getTarget(),
                 row.getQueue(),
                 customConfig,
-                SubscriptionSource.parse(row.getSource()),
-                SubscriptionStatus.parse(row.getStatus()),
+                source(row.getId(), row.getSource()),
+                status(row.getId(), row.getStatus()),
                 row.getMaxAgeSeconds(),
                 row.getDispatchPoolId(),
                 row.getDispatchPoolCode(),
@@ -230,6 +230,26 @@ public final class SubscriptionRepository implements Persist<Subscription> {
 
     private static ConfigEntry toConfigEntry(MsgSubscriptionCustomConfigsRecord row) {
         return new ConfigEntry(row.getConfigKey(), row.getConfigValue());
+    }
+
+    /// [SubscriptionStatus#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static SubscriptionStatus status(String rowId, String stored) {
+        try {
+            return SubscriptionStatus.parse(stored);
+        } catch (SubscriptionStatus.UnrecognisedSubscriptionStatusException e) {
+            throw new CorruptSubscriptionException(rowId, e);
+        }
+    }
+
+    /// [SubscriptionSource#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static SubscriptionSource source(String rowId, String stored) {
+        try {
+            return SubscriptionSource.parse(stored);
+        } catch (SubscriptionSource.UnrecognisedSubscriptionSourceException e) {
+            throw new CorruptSubscriptionException(rowId, e);
+        }
     }
 
     private static OffsetDateTime utc(Instant instant) {

@@ -131,18 +131,21 @@ class ProcessTest {
         assertThat(p.syncedFrom("N", "d", "graph", "mermaid", List.of("y")).diagramType()).isEqualTo("mermaid");
     }
 
-    // ── Lenient readers ────────────────────────────────────────────────────
+    // ── Stored enum reads are strict (X-06) ─────────────────────────────────
 
     @Test
-    void storedEnumValuesAreReadLenientlyWithDefaults() {
+    void storedEnumValuesParseTheirRecognisedSet() {
         assertThat(ProcessStatus.parse("ARCHIVED")).isEqualTo(ProcessStatus.ARCHIVED);
-        assertThat(ProcessStatus.parse("UNKNOWN")).isEqualTo(ProcessStatus.CURRENT);
-        assertThat(ProcessStatus.parse(null)).isEqualTo(ProcessStatus.CURRENT);
-
         assertThat(ProcessSource.parse("CODE")).isEqualTo(ProcessSource.CODE);
         assertThat(ProcessSource.parse("API")).isEqualTo(ProcessSource.API);
-        assertThat(ProcessSource.parse("UNKNOWN")).isEqualTo(ProcessSource.UI);
-        assertThat(ProcessSource.parse(null)).isEqualTo(ProcessSource.UI);
+    }
+
+    @Test
+    void storedEnumValuesRejectAnythingElseInsteadOfDefaultingSilently() {
+        assertThatThrownBy(() -> ProcessStatus.parse("UNKNOWN")).isInstanceOf(ProcessStatus.UnrecognisedProcessStatusException.class);
+        assertThatThrownBy(() -> ProcessStatus.parse(null)).isInstanceOf(ProcessStatus.UnrecognisedProcessStatusException.class);
+        assertThatThrownBy(() -> ProcessSource.parse("UNKNOWN")).isInstanceOf(ProcessSource.UnrecognisedProcessSourceException.class);
+        assertThatThrownBy(() -> ProcessSource.parse(null)).isInstanceOf(ProcessSource.UnrecognisedProcessSourceException.class);
     }
 
     @Test

@@ -30,7 +30,7 @@ public final class UpdateConnection {
                             .withExternalId(cmd.externalId());
                     if (cmd.status() != null) {
                         // The status field selects one of the two transitions (spec §4, open question 4).
-                        c = switch (ConnectionStatus.parse(cmd.status())) {
+                        c = switch (ConnectionStatus.parseCommandStatus(cmd.status())) {
                             case PAUSED -> c.pause();
                             case ACTIVE -> c.activate();
                         };

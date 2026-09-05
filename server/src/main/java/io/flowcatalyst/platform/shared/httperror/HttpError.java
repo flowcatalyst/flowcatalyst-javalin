@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.shared.httperror;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.flowcatalyst.platform.shared.CorruptRowException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -197,6 +198,10 @@ public record HttpError(
     /// Registers the exception handlers on `cfg.routes`:
     ///
     ///   - [UseCaseException] → its envelope at the kind's status;
+    ///   - [CorruptRowException] (any stored-enum row a strict `parse`
+    ///     rejected, X-06) → logged with the row id, 500 `CORRUPT_ROW` —
+    ///     distinct from bare `INTERNAL` so an operator can tell "a row is
+    ///     bad" from "something else broke";
     ///   - Javalin's own [HttpResponseException] (404 for an unmatched route
     ///     with `ctx.result` unset, validator failures, …) → envelope with a
     ///     status-derived code (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`,
@@ -208,6 +213,10 @@ public record HttpError(
     ///     superset).
     public static void install(JavalinDefaultRoutingApi routes) {
         routes.exception(UseCaseException.class, (e, ctx) -> write(ctx, e.error()));
+        routes.exception(CorruptRowException.class, (e, ctx) -> {
+            LOG.error("corrupt row on {} {}: entity={} rowId={}", ctx.method(), ctx.path(), e.entity(), e.rowId(), e);
+            writeRaw(ctx, 500, new HttpError("CORRUPT_ROW", e.getMessage()));
+        });
         routes.exception(HttpResponseException.class, (e, ctx) -> {
             var status = e.getStatus();
             var code = switch (status) {
