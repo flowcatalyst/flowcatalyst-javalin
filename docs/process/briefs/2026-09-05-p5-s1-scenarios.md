@@ -66,8 +66,8 @@ Rules:
 
 `export JAVA_HOME=$(mise where java)`; from your worktree root
 `PARITY_GO_SRC=/Users/andrewgraaff/Developer/flowcatalyst-go mvn -q -pl parity -am test -Dtest=ParityRunTest -Dsurefire.failIfNoSpecifiedTests=false`
-runs every scenario (add `-Dparity.only=<glob>` if the runner supports it —
-read `ParityRunTest`/`ParityMain` for the switch), report under
+runs every scenario; add `PARITY_ONLY='<your-group>/*'` to run only your
+own files (a glob over scenario paths). The report lands under
 `parity/target/parity-report/`. The Go repo is READ-ONLY. Never two Maven
 runs at once in your worktree. A run takes a few minutes (Go build + seed).
 
