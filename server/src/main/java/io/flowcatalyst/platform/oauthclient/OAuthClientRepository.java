@@ -67,6 +67,19 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
         return findOne(T.ID.eq(id));
     }
 
+    /// Whether an **active** client linked to `applicationId` allows the
+    /// `authorization_code` grant — the application aggregate's
+    /// `hasLoginClient` (spec `application.md` §3, §11 q3, now implemented:
+    /// the SPA gates its "provision login client" form on it).
+    public boolean hasLoginClientFor(String applicationId) {
+        return dsl.fetchExists(dsl.selectOne().from(T)
+                .join(OAUTH_CLIENT_APPLICATION_IDS).on(OAUTH_CLIENT_APPLICATION_IDS.OAUTH_CLIENT_ID.eq(T.ID))
+                .join(OAUTH_CLIENT_GRANT_TYPES).on(OAUTH_CLIENT_GRANT_TYPES.OAUTH_CLIENT_ID.eq(T.ID))
+                .where(OAUTH_CLIENT_APPLICATION_IDS.APPLICATION_ID.eq(applicationId))
+                .and(OAUTH_CLIENT_GRANT_TYPES.GRANT_TYPE.eq("authorization_code"))
+                .and(T.ACTIVE.isTrue()));
+    }
+
     public Optional<OAuthClient> findByClientId(String clientId) {
         return findOne(T.CLIENT_ID.eq(clientId));
     }

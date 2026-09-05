@@ -299,7 +299,15 @@ public final class Platform {
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));
         var applicationRepo = new ApplicationRepository(pool);
-        ApplicationApi.register(routes, new ApplicationApi.State(applicationRepo, new ClientConfigRepository(pool), roleRepo, uow));
+        // The provisioning routes (spec application.md §10) need the service-account,
+        // principal and OAuth-client repositories plus the app-key encryption; these
+        // repositories are stateless over the pool, so they are constructed again here
+        // (and again below, where each aggregate's own API is wired) rather than
+        // reordering this file to hoist a single shared instance.
+        ApplicationApi.register(routes, new ApplicationApi.State(applicationRepo, new ClientConfigRepository(pool), roleRepo, uow,
+                new ServiceAccountRepository(pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious())),
+                new PrincipalRepository(pool), new OAuthClientRepository(pool, applicationRepo),
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
         var clientRepo = new ClientRepository(pool);
         ClientApi.register(routes, new ClientApi.State(clientRepo, new ApplicationRepository(pool), new ClientConfigRepository(pool), uow));
         var subscriptionRepo = new SubscriptionRepository(pool);

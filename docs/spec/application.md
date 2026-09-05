@@ -82,14 +82,15 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | `POST /api/applications/{id}/clients/{clientId}/enable` | anchor | `EnableForClientCommand` | 204 | |
 | `POST /api/applications/{id}/clients/{clientId}/disable` | anchor | `DisableForClientCommand` | 204 | |
 | `GET /api/applications/by-id/{id}/roles` | `application:view` | — | 200 `ApplicationRolesResponse` `{roles: [name]}` | role **names** (canonical `app:short`), ordered by name; unknown id → `[]` |
-| `POST /api/applications/{id}/provision-service-account` | anchor | `ProvisionServiceAccountCommand{applicationId}` | 201 `ApplicationProvisionServiceAccountResponse` | **NOT PORTED YET** (§10) |
-| `POST /api/applications/{id}/provision-login-client` | anchor | `ProvisionLoginClientRequest` | 201 `ApplicationProvisionLoginClientResponse` | **NOT PORTED YET** (§10) |
+| `POST /api/applications/{id}/provision-service-account` | anchor | `ProvisionServiceAccountCommand{applicationId}` | 201 `ApplicationProvisionServiceAccountResponse` | see §10 |
+| `POST /api/applications/{id}/provision-login-client` | anchor | `ProvisionLoginClientRequest` | 201 `ApplicationProvisionLoginClientResponse` | see §10 |
 
 `ApplicationResponse` fields, in order: `id, type, code, name, description?,
 iconUrl?, website?, logo?, logoMimeType?, defaultBaseUrl?, serviceAccountId?,
 active, hasLoginClient, createdAt, updatedAt`. `hasLoginClient` is required
-by the schema and is **always `false`** — nothing computes it (the SPA gates
-its "provision login client" form on it). **load-bearing or accident?**
+by the schema; it is computed (§10) — true when an active client linked to
+the application allows the `authorization_code` grant (the SPA gates its
+"provision login client" form on it).
 
 `ClientConfigResponse`: `id, applicationId, clientId, enabled,
 baseUrlOverride?, configJson?, createdAt, updatedAt` — the two optionals are
@@ -204,29 +205,32 @@ the client / principal units landing concurrently; they move to those
 repositories' reads once they exist (backlog). The roles listing already
 uses `RoleRepository.findByApplicationId`.
 
-## 10. Not ported in this unit
+## 10. Provisioning (ported 2026-09-05, application-provisioning brief)
 
 - `POST …/provision-service-account` (`ProvisionServiceAccount`
   `TxOperation`): creates a service account (with generated webhook
   credentials), its `SERVICE` principal (app-scoped, granted the seeded
-  `platform:application-service` role, with role + application-access
-  junction rows), attaches it, and creates a `CONFIDENTIAL` OAuth client
-  (`client_credentials`+`refresh_token`, scope `openid`, secret encrypted
-  with `FLOWCATALYST_APP_KEY`, returned in plaintext exactly once) — four
-  aggregates and the encryption subsystem, none of which exist in Java yet.
-  Port it as a `TxOperation` once serviceaccount / principal / oauth client
-  land; its event is already in §8.
+  `platform:application-service` role with assignment source `PROVISIONED`,
+  with role + application-access junction rows), attaches it, and creates a
+  `CONFIDENTIAL` OAuth client (`client_credentials`+`refresh_token`, scope
+  `openid`, secret encrypted with `FLOWCATALYST_APP_KEY`, returned in
+  plaintext exactly once) — four aggregates in one transaction; no app key
+  configured fails the whole transaction (internal `SECRET`).
 - `POST …/provision-login-client`: a thin handler over the OAuth-client
   aggregate's `CreateOAuthClient` (`authorization_code`+`refresh_token`,
   scopes `openid profile email`, PKCE for `PUBLIC`); no application write.
-  Belongs with the OAuth client unit.
-- `hasLoginClient` stays `false` until the OAuth client aggregate can answer it.
+  **Deliberate deviation from Go** (`docs/backlog.md`): the request's
+  `allowedOrigins` field is declared on the lockfile schema but Go never
+  reads it (a Go defect); Java stores it on the created client.
+- `hasLoginClient` is now computed (`OAuthClientRepository#hasLoginClientFor`):
+  true when an **active** client linked to the application allows the
+  `authorization_code` grant (§11 q3, now implemented).
 
 ## 11. Open questions for the owner (summary)
 
 1. Activate / deactivate are idempotent (no 409 on a no-op) — keep?
 2. Attach answers `APPLICATION_HAS_SERVICE_ACCOUNT`, provision `ALREADY_PROVISIONED` (both 409) for the same state.
-3. `hasLoginClient` always `false`; `baseUrlOverride` / `configJson` never populated.
+3. ~~`hasLoginClient` always `false`~~ **Done (2026-09-05): implemented**, see §10; `baseUrlOverride` / `configJson` never populated.
 4. `active=<anything but "true">` lists inactive applications.
 5. `type` is not validated (unknown → `APPLICATION`).
 6. Delete leaves orphaned `app_client_configs` rows.

@@ -25,8 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// a hard assertion (see `REQUIRED_COVERAGE`).
 class LockfileCoverageTest {
 
-    /// Raise to 1.0 when the platform port is complete.
-    private static final double REQUIRED_COVERAGE = 0.0;
+    /// The platform port is complete: every lockfile operation must be routed.
+    private static final double REQUIRED_COVERAGE = 1.0;
 
     /// Paths Go serves outside the lockfile (chi-mounted: auth/session/OAuth/BFF/public/SPA/spec).
     private static final List<String> OUTSIDE_LOCKFILE_PREFIXES = List.of(

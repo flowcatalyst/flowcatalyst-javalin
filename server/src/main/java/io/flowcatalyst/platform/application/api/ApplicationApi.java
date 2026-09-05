@@ -21,14 +21,23 @@ import io.flowcatalyst.platform.application.operations.DisableApplicationForClie
 import io.flowcatalyst.platform.application.operations.DisableForClientCommand;
 import io.flowcatalyst.platform.application.operations.EnableApplicationForClient;
 import io.flowcatalyst.platform.application.operations.EnableForClientCommand;
+import io.flowcatalyst.platform.application.operations.ProvisionServiceAccount;
+import io.flowcatalyst.platform.application.operations.ProvisionServiceAccountCommand;
 import io.flowcatalyst.platform.application.operations.UpdateApplication;
 import io.flowcatalyst.platform.application.operations.UpdateCommand;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClient;
+import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents.OAuthClientCreated;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.javalin.http.Context;
 import io.javalin.router.JavalinDefaultRoutingApi;
@@ -36,6 +45,8 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.*;
 
@@ -60,21 +71,29 @@ import static io.flowcatalyst.platform.shared.auth.Permission.*;
 /// | GET | `/api/applications/{id}/clients/{clientId}` | 200 [ClientConfigResponse] |
 /// | POST | `/api/applications/{id}/clients/{clientId}/enable` | 204 |
 /// | POST | `/api/applications/{id}/clients/{clientId}/disable` | 204 |
-///
-/// Not mounted yet (spec §10): `POST …/{id}/provision-service-account`,
-/// `POST …/{id}/provision-login-client`.
+/// | POST | `/api/applications/{id}/provision-service-account` | 201 [ApplicationProvisionServiceAccountResponse] |
+/// | POST | `/api/applications/{id}/provision-login-client` | 201 [ApplicationProvisionLoginClientResponse] |
 public final class ApplicationApi {
 
     private ApplicationApi() {
     }
 
     /// The handlers' dependencies. `roles` answers the roles listing only.
-    public record State(ApplicationRepository repo, ClientConfigRepository configs, RoleRepository roles, UnitOfWork uow) {
+    /// `serviceAccounts` / `principals` / `oauthClients` / `encryption` back
+    /// the two provisioning routes (spec §10) and `hasLoginClient` (spec §11
+    /// q3).
+    public record State(ApplicationRepository repo, ClientConfigRepository configs, RoleRepository roles, UnitOfWork uow,
+                        ServiceAccountRepository serviceAccounts, PrincipalRepository principals,
+                        OAuthClientRepository oauthClients, Optional<Encryption> encryption) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(configs, "configs");
             Objects.requireNonNull(roles, "roles");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(serviceAccounts, "serviceAccounts");
+            Objects.requireNonNull(principals, "principals");
+            Objects.requireNonNull(oauthClients, "oauthClients");
+            Objects.requireNonNull(encryption, "encryption");
         }
     }
 
@@ -95,24 +114,29 @@ public final class ApplicationApi {
         routes.get("/api/applications/{id}/clients/{clientId}", Auth.scoped(ctx -> getClientConfig(ctx, s)));
         routes.post("/api/applications/{id}/clients/{clientId}/enable", Auth.scoped(ctx -> enableForClient(ctx, s)));
         routes.post("/api/applications/{id}/clients/{clientId}/disable", Auth.scoped(ctx -> disableForClient(ctx, s)));
+        routes.post("/api/applications/{id}/provision-service-account", Auth.scoped(ctx -> provisionServiceAccount(ctx, s)));
+        routes.post("/api/applications/{id}/provision-login-client", Auth.scoped(ctx -> provisionLoginClient(ctx, s)));
     }
 
     // ── Handlers: applications ─────────────────────────────────────────────
 
     private static void list(Context ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
-        List<ApplicationResponse> items = s.repo().findWithFilters(listFilter(ctx)).stream().map(ApplicationResponse::from).toList();
+        List<ApplicationResponse> items = s.repo().findWithFilters(listFilter(ctx)).stream()
+                .map(a -> ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id()))).toList();
         ctx.json(new ApplicationListResponse(items, items.size()));
     }
 
     private static void getById(Context ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
-        ctx.json(ApplicationResponse.from(applicationById(s, ctx.pathParam("id"))));
+        Application a = applicationById(s, ctx.pathParam("id"));
+        ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
     private static void getByCode(Context ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
-        ctx.json(ApplicationResponse.from(applicationByCode(s, ctx.pathParam("code"))));
+        Application a = applicationByCode(s, ctx.pathParam("code"));
+        ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
     private static void create(Context ctx, State s) {
@@ -134,7 +158,8 @@ public final class ApplicationApi {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         String id = ctx.pathParam("id");
         ActivateApplication.of(s.repo()).run(s.uow(), new ActivateCommand(id), Auth.executionContext());
-        ctx.json(ApplicationResponse.from(applicationById(s, id)));
+        Application a = applicationById(s, id);
+        ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
     /// Answers with the re-read application, as the lockfile says.
@@ -142,7 +167,8 @@ public final class ApplicationApi {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         String id = ctx.pathParam("id");
         DeactivateApplication.of(s.repo()).run(s.uow(), new DeactivateCommand(id), Auth.executionContext());
-        ctx.json(ApplicationResponse.from(applicationById(s, id)));
+        Application a = applicationById(s, id);
+        ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
     private static void delete(Context ctx, State s) {
@@ -156,6 +182,42 @@ public final class ApplicationApi {
         var cmd = ctx.bodyAsClass(AttachServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         AttachServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
+    }
+
+    /// Anchor-only (spec §10): creates + attaches a dedicated service account,
+    /// its `SERVICE` principal and a `CONFIDENTIAL` OAuth client atomically.
+    /// The response secret is the plaintext client secret, shown exactly once.
+    private static void provisionServiceAccount(Context ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        var result = ProvisionServiceAccount.of(s.repo(), s.serviceAccounts(), s.principals(), s.oauthClients(), s.encryption())
+                .run(s.uow(), new ProvisionServiceAccountCommand(ctx.pathParam("id")), Auth.executionContext());
+        ctx.status(201).json(new ApplicationProvisionServiceAccountResponse("Service account provisioned",
+                new ApplicationServiceAccountCredentials(result.principalId(), result.serviceAccountName(),
+                        new ApplicationOAuthClientCredentials(result.oauthClientId(), result.oauthClientClientId(), result.oauthClientSecret()))));
+    }
+
+    /// Anchor-only (spec §10): a thin handler over `CreateOAuthClient`, not a
+    /// new operation. `PUBLIC` (default) has no secret and PKCE required;
+    /// `CONFIDENTIAL` returns a plaintext secret once.
+    private static void provisionLoginClient(Context ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        var body = ctx.bodyAsClass(ProvisionLoginClientRequest.class);
+        if (body.redirectUris() == null || body.redirectUris().isEmpty()) {
+            throw UseCaseException.validation("REDIRECT_URIS_REQUIRED", "At least one redirect URI is required");
+        }
+        Application app = applicationById(s, ctx.pathParam("id"));
+        String clientType = "CONFIDENTIAL".equals(body.clientType()) ? "CONFIDENTIAL" : "PUBLIC";
+
+        var secret = new AtomicReference<String>();
+        var cmd = new io.flowcatalyst.platform.oauthclient.operations.CreateCommand(null, app.name() + " Login", clientType,
+                body.redirectUris(), null, List.of("authorization_code", "refresh_token"),
+                List.of("openid", "profile", "email"), body.allowedOrigins(), List.of(app.id()), null, null, null, null);
+        OAuthClientCreated event = CreateOAuthClient.of(s.oauthClients(), s.encryption(), secret::set)
+                .run(s.uow(), cmd, Auth.executionContext());
+
+        ctx.status(201).json(new ApplicationProvisionLoginClientResponse("Login client provisioned",
+                new ApplicationLoginClientCredentials(clientType, body.redirectUris(),
+                        new ApplicationOAuthClientCredentials(event.oauthClientId(), event.clientId(), secret.get()))));
     }
 
     // ── Handlers: client configs + roles ───────────────────────────────────
@@ -247,7 +309,8 @@ public final class ApplicationApi {
     }
 
     /// The wire shape of one application; optional fields are omitted when
-    /// `null`. `hasLoginClient` is always `false` (spec §3, open question 3).
+    /// `null`. `hasLoginClient` is resolved from the OAuth-client aggregate
+    /// (spec §3, §11 q3, now implemented — see [OAuthClientRepository#hasLoginClientFor]).
     public record ApplicationResponse(
             String id,
             String type,
@@ -265,10 +328,10 @@ public final class ApplicationApi {
             Instant createdAt,
             Instant updatedAt) {
 
-        public static ApplicationResponse from(Application a) {
+        public static ApplicationResponse from(Application a, boolean hasLoginClient) {
             return new ApplicationResponse(a.id(), a.type().name(), a.code(), a.name(), a.description(), a.iconUrl(),
                     a.website(), a.logo(), a.logoMimeType(), a.defaultBaseUrl(), a.serviceAccountId(), a.active(),
-                    false, a.createdAt(), a.updatedAt());
+                    hasLoginClient, a.createdAt(), a.updatedAt());
         }
     }
 
@@ -309,5 +372,45 @@ public final class ApplicationApi {
         public ApplicationRolesResponse {
             roles = roles == null ? List.of() : List.copyOf(roles);
         }
+    }
+
+    // ── Wire DTOs: provisioning (spec §10) ──────────────────────────────────
+
+    /// Body of `POST /api/applications/{id}/provision-login-client`.
+    /// `allowedOrigins` is a **deliberate deviation from Go** (`docs/backlog.md`):
+    /// Go declares the field on the request and never reads it (a defect);
+    /// Java stores it on the created client.
+    public record ProvisionLoginClientRequest(List<String> redirectUris, String clientType, List<String> allowedOrigins) {
+    }
+
+    /// One OAuth client's one-time credentials, shared by both provisioning
+    /// responses. `clientSecret` is absent for a `PUBLIC` client (the schema
+    /// does not require it).
+    public record ApplicationOAuthClientCredentials(String id, String clientId, String clientSecret) {
+        @Override
+        public String toString() {
+            return "ApplicationOAuthClientCredentials[id=" + id + ", clientId=" + clientId + ", clientSecret=***]";
+        }
+    }
+
+    /// `{principalId, name, oauthClient}` — `POST …/provision-service-account`'s
+    /// `serviceAccount` member.
+    public record ApplicationServiceAccountCredentials(String principalId, String name, ApplicationOAuthClientCredentials oauthClient) {
+    }
+
+    /// `{message, serviceAccount}` — `POST …/provision-service-account`'s body.
+    public record ApplicationProvisionServiceAccountResponse(String message, ApplicationServiceAccountCredentials serviceAccount) {
+    }
+
+    /// `{clientType, redirectUris, oauthClient}` — `POST …/provision-login-client`'s
+    /// `loginClient` member.
+    public record ApplicationLoginClientCredentials(String clientType, List<String> redirectUris, ApplicationOAuthClientCredentials oauthClient) {
+        public ApplicationLoginClientCredentials {
+            redirectUris = redirectUris == null ? List.of() : List.copyOf(redirectUris);
+        }
+    }
+
+    /// `{message, loginClient}` — `POST …/provision-login-client`'s body.
+    public record ApplicationProvisionLoginClientResponse(String message, ApplicationLoginClientCredentials loginClient) {
     }
 }

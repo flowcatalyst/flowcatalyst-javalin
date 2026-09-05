@@ -45,8 +45,20 @@ item names its origin; items marked **owner** need Andrew's call.
 - `ApplicationRepository.clientExists` / `servicePrincipalIdFor` are
   temporary cross-ownership reads (tnt_clients / iam_principals) — replace
   with `ClientRepository.findById(..).isPresent()` and a principal read once
-  principal lands. `ProvisionServiceAccount` / `provision-login-client`
-  not ported until serviceaccount + principal + OAuth client exist.
+  principal lands.
+- ~~`ProvisionServiceAccount` / `provision-login-client` not ported until
+  serviceaccount + principal + OAuth client exist~~ **Done (2026-09-05,
+  application-provisioning brief):** both routes land; `LockfileCoverageTest`
+  reports 245/245, `REQUIRED_COVERAGE = 1.0`. **Deliberate deviation from
+  Go, recorded per the brief:** `provision-login-client`'s `allowedOrigins`
+  field is declared on `ProvisionLoginClientRequest` in the lockfile but Go
+  never reads it (a Go defect — the field is dead on that side); the Java
+  handler stores it on the created OAuth client via `CreateOAuthClient`'s
+  existing `allowedOrigins` support. Also widened visibility, outside this
+  unit's originally-listed files: `serviceaccount.operations.WebhookSecrets`
+  and `oauthclient.operations.Secrets` (both were package-private; their
+  static mint/encrypt methods are now `public` so `ProvisionServiceAccount`,
+  in `application.operations`, can call them — no behaviour changed).
 
 ## From the client audit
 - Two "access to this client" gates with different wire codes:

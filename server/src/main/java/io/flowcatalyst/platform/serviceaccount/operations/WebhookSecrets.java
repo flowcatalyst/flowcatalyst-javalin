@@ -15,7 +15,13 @@ import java.util.Base64;
 /// Minting only — no stash. The plaintext this returns is handed straight to
 /// a caller-owned sink (spec §5): the operation writes to it after
 /// authorisation and after minting, never before.
-final class WebhookSecrets {
+///
+/// Public: `application.operations.ProvisionServiceAccount` (spec
+/// `application.md` §10) mints the same shape of webhook credentials for a
+/// provisioned service account's row, from outside this package. This is
+/// the one visibility widening this unit made outside its listed files —
+/// see the port brief's report for why.
+public final class WebhookSecrets {
 
     private static final String TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
     private static final int TOKEN_RANDOM_CHARS = 32;
@@ -26,7 +32,7 @@ final class WebhookSecrets {
     private WebhookSecrets() {
     }
 
-    static String generateAuthToken() {
+    public static String generateAuthToken() {
         var sb = new StringBuilder(3 + TOKEN_RANDOM_CHARS);
         sb.append("fc_");
         for (int i = 0; i < TOKEN_RANDOM_CHARS; i++) {
@@ -35,7 +41,7 @@ final class WebhookSecrets {
         return sb.toString();
     }
 
-    static String generateSigningSecret() {
+    public static String generateSigningSecret() {
         byte[] bytes = new byte[SIGNING_SECRET_BYTES];
         RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);

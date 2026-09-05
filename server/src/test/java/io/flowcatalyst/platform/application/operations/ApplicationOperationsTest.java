@@ -8,9 +8,18 @@ import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.application.ClientConfig;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.operations.ApplicationEvents.ApplicationCreated;
+import io.flowcatalyst.platform.oauthclient.ClientType;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.principal.Principal;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
+import io.flowcatalyst.platform.shared.encryption.Decryption;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
@@ -20,6 +29,7 @@ import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.sdk.usecase.op.Operation;
+import io.flowcatalyst.sdk.usecase.op.TxOperation;
 import io.flowcatalyst.testpg.TestPg;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.jooq.DSLContext;
@@ -33,14 +43,18 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.sql.DataSource;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
+import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
+import static io.flowcatalyst.db.generated.Tables.OAUTH_CLIENT_APPLICATION_IDS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,6 +76,10 @@ class ApplicationOperationsTest {
     private static final ApplicationRepository repo = new ApplicationRepository(DS);
     private static final ClientConfigRepository configs = new ClientConfigRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
+    private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
+    private static final ServiceAccountRepository serviceAccounts = new ServiceAccountRepository(DS, ENCRYPTION);
+    private static final PrincipalRepository principals = new PrincipalRepository(DS);
+    private static final OAuthClientRepository oauthClients = new OAuthClientRepository(DS, repo);
 
     /// Per-JVM namespace so codes never collide with another run on the same database.
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -73,6 +91,10 @@ class ApplicationOperationsTest {
     // ── Fixture ────────────────────────────────────────────────────────────
 
     private static <C, E extends DomainEvent> E runAsAnchor(Operation<C, E> op, C cmd) {
+        return Auth.runAs(ANCHOR, () -> op.run(uow, cmd, EC));
+    }
+
+    private static <C, R> R runAsAnchorTx(TxOperation<C, R> op, C cmd) {
         return Auth.runAs(ANCHOR, () -> op.run(uow, cmd, EC));
     }
 
@@ -344,6 +366,117 @@ class ApplicationOperationsTest {
         assertUseCaseError(() -> runAsAnchor(AttachServiceAccount.of(repo),
                         new AttachServiceAccountCommand(seeded.applicationId(), EntityType.SERVICE_ACCOUNT.generate(), null)),
                 UseCaseError.NotFound.class, "ServiceAccountPrincipal_NOT_FOUND");
+    }
+
+    // ── Provision service account ──────────────────────────────────────────
+
+    private static int countServiceAccountsForApp(String applicationId) {
+        return DB.fetchCount(IAM_SERVICE_ACCOUNTS, IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(applicationId));
+    }
+
+    private static int countPrincipalsForApp(String applicationId) {
+        return DB.fetchCount(DB.selectFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.SERVICE_ACCOUNT_ID.in(
+                DB.select(IAM_SERVICE_ACCOUNTS.ID).from(IAM_SERVICE_ACCOUNTS).where(IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(applicationId)))));
+    }
+
+    private static int countOAuthClientsForApp(String applicationId) {
+        return DB.fetchCount(OAUTH_CLIENT_APPLICATION_IDS, OAUTH_CLIENT_APPLICATION_IDS.APPLICATION_ID.eq(applicationId));
+    }
+
+    private static Optional<String> decrypt(String ref) {
+        return ENCRYPTION.get().decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
+    }
+
+    @Test
+    void provisionServiceAccountWritesAllFourAggregatesWithTheirJunctionsAndTheirEvents() {
+        var app = created("appprov", "Provisioned Co");
+
+        var result = runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, ENCRYPTION),
+                new ProvisionServiceAccountCommand(app.applicationId()));
+
+        // 1. Service account row.
+        ServiceAccount sa = serviceAccounts.findByCode("app:" + code("appprov")).orElseThrow();
+        assertThat(sa.applicationId()).isEqualTo(app.applicationId());
+        assertThat(sa.name()).isEqualTo("Provisioned Co Service Account");
+        assertThat(sa.description()).isEqualTo("Service account for application: Provisioned Co");
+        assertThat(sa.webhookCredentials().token()).as("webhook credentials really minted").isNotBlank();
+
+        // 2. SERVICE principal row + role junction + application-access junction — the
+        // observable effect a token depends on, not merely "a principal exists".
+        Principal principal = principals.findById(result.principalId()).orElseThrow();
+        assertThat(principal.isService()).isTrue();
+        assertThat(principal.allApplications()).as("confined, not all-applications").isFalse();
+        assertThat(principal.accessibleApplicationIds()).containsExactly(app.applicationId());
+        assertThat(principal.roleNames()).as("the seeded application-service role is actually granted")
+                .containsExactly("platform:application-service");
+        assertThat(principal.roles().getFirst().assignmentSource()).isEqualTo("PROVISIONED");
+
+        // 3. Application row: serviceAccountId is the PRINCIPAL id (spec §1.1 FK), not the SA id.
+        assertThat(reload(app.applicationId()).serviceAccountId())
+                .as("row stores the principal id, distinct from the service-account id")
+                .isEqualTo(result.principalId()).isNotEqualTo(sa.id());
+
+        // 4. OAuth client row, scoped to the principal and the application, and its
+        // secret really decrypts to the plaintext handed back once (works, not exists).
+        OAuthClient oc = oauthClients.findById(result.oauthClientId()).orElseThrow();
+        assertThat(oc.clientType()).isEqualTo(ClientType.CONFIDENTIAL);
+        assertThat(oc.principalId()).isEqualTo(result.principalId());
+        assertThat(oc.grantTypes()).containsExactlyInAnyOrder("client_credentials", "refresh_token");
+        assertThat(oc.defaultScopes()).containsExactly("openid");
+        assertThat(oc.applicationIds()).containsExactly(app.applicationId());
+        assertThat(oc.acceptsSecret(result.oauthClientSecret(), Instant.now(), ApplicationOperationsTest::decrypt))
+                .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
+
+        // Events + audit: the service-account-provisioned event carries the SA id, not
+        // the principal id (spec §8, kept accident).
+        var events = eventsFor(app.applicationId(), ApplicationEvents.SERVICE_ACCOUNT_PROVISIONED);
+        assertThat(events).hasSize(1);
+        var data = json(events.getFirst().get("data", String.class));
+        assertThat(data.get("serviceAccountId").asText()).isEqualTo(sa.id());
+        assertThat(auditsFor(app.applicationId(), "ProvisionServiceAccountCommand")).hasSize(1);
+    }
+
+    @Test
+    void provisionServiceAccountTwiceIsRejectedAndWritesNoDuplicateRows() {
+        var app = created("appprovdup", "Dup Co");
+        runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, ENCRYPTION),
+                new ProvisionServiceAccountCommand(app.applicationId()));
+
+        int saBefore = countServiceAccountsForApp(app.applicationId());
+        int principalsBefore = countPrincipalsForApp(app.applicationId());
+        int oauthBefore = countOAuthClientsForApp(app.applicationId());
+
+        assertUseCaseError(() -> runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, ENCRYPTION),
+                        new ProvisionServiceAccountCommand(app.applicationId())),
+                UseCaseError.Conflict.class, "ALREADY_PROVISIONED");
+
+        assertThat(countServiceAccountsForApp(app.applicationId())).as("no duplicate service account").isEqualTo(saBefore);
+        assertThat(countPrincipalsForApp(app.applicationId())).as("no duplicate principal").isEqualTo(principalsBefore);
+        assertThat(countOAuthClientsForApp(app.applicationId())).as("no duplicate oauth client").isEqualTo(oauthBefore);
+    }
+
+    @Test
+    void provisionServiceAccountFailsAtomicallyWithNoAppKeyConfigured() {
+        var app = created("appprovnokey", "No Key Co");
+
+        assertUseCaseError(() -> runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, Optional.empty()),
+                        new ProvisionServiceAccountCommand(app.applicationId())),
+                UseCaseError.Internal.class, "SECRET");
+
+        assertThat(countServiceAccountsForApp(app.applicationId())).as("no service account row survives the rollback").isZero();
+        assertThat(countPrincipalsForApp(app.applicationId())).as("no principal row survives the rollback").isZero();
+        assertThat(countOAuthClientsForApp(app.applicationId())).as("no oauth client row survives the rollback").isZero();
+        assertThat(reload(app.applicationId()).serviceAccountId()).as("the application row is untouched").isNull();
+    }
+
+    @Test
+    void provisionServiceAccountRejectsAMissingApplicationIdOrUnknownRow() {
+        assertUseCaseError(() -> runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, ENCRYPTION),
+                        new ProvisionServiceAccountCommand(" ")),
+                UseCaseError.Validation.class, "APPLICATION_ID_REQUIRED");
+        assertUseCaseError(() -> runAsAnchorTx(ProvisionServiceAccount.of(repo, serviceAccounts, principals, oauthClients, ENCRYPTION),
+                        new ProvisionServiceAccountCommand("app_doesnotexist1")),
+                UseCaseError.NotFound.class, "Application_NOT_FOUND");
     }
 
     // ── Enable / disable for client ────────────────────────────────────────

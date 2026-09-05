@@ -3,12 +3,19 @@ package io.flowcatalyst.platform.application.api;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
+import io.flowcatalyst.platform.oauthclient.ClientType;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
+import io.flowcatalyst.platform.shared.encryption.Decryption;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -23,13 +30,17 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
+import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,9 +69,13 @@ class ApplicationApiTest {
             Authenticator.TEST_PERMISSIONS, "platform:admin:application:view,platform:admin:application:update"};
 
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
+    private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
+    private static final OAuthClientRepository OAUTH_CLIENTS = new OAuthClientRepository(TestPg.dataSource(), new ApplicationRepository(TestPg.dataSource()));
     private static final ApplicationApi.State state = new ApplicationApi.State(new ApplicationRepository(TestPg.dataSource()),
             new ClientConfigRepository(TestPg.dataSource()), new RoleRepository(TestPg.dataSource()),
-            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)),
+            new ServiceAccountRepository(TestPg.dataSource(), ENCRYPTION), new PrincipalRepository(TestPg.dataSource()),
+            OAUTH_CLIENTS, ENCRYPTION);
     private static TestHttp http;
 
     @BeforeAll
@@ -133,7 +148,7 @@ class ApplicationApiTest {
         assertThat(app.get("description").asText()).isEqualTo("desc");
         assertThat(app.get("website").asText()).isEqualTo("https://o");
         assertThat(app.get("active").asBoolean()).isTrue();
-        assertThat(app.get("hasLoginClient").asBoolean()).as("never computed (spec §3)").isFalse();
+        assertThat(app.get("hasLoginClient").asBoolean()).as("no login client provisioned yet").isFalse();
         assertThat(app.has("iconUrl")).as("null optionals omitted").isFalse();
         assertThat(app.has("serviceAccountId")).isFalse();
         assertThat(app.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
@@ -270,6 +285,126 @@ class ApplicationApiTest {
         var again = http.post("/api/applications/" + id + "/service-account", body, ANCHOR);
         assertThat(again.statusCode()).as("business rule → 409").isEqualTo(409);
         assertThat(json(again).get("error").asText()).isEqualTo("APPLICATION_HAS_SERVICE_ACCOUNT");
+    }
+
+    // ── Provisioning (spec §10) ────────────────────────────────────────────
+
+    @Test
+    void provisionServiceAccountMintsWorkingCredentialsOnceThenRefusesASecondProvision() {
+        String id = create(code("prov"), "Provisioned Co", "");
+
+        var r = http.post("/api/applications/" + id + "/provision-service-account", null, ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var body = json(r);
+        assertThat(body.get("message").asText()).isEqualTo("Service account provisioned");
+        var sa = body.get("serviceAccount");
+        assertThat(sa.get("principalId").asText()).startsWith("prn_");
+        assertThat(sa.get("name").asText()).isEqualTo("Provisioned Co Service Account");
+        var oauth = sa.get("oauthClient");
+        assertThat(oauth.get("id").asText()).startsWith("oac_");
+        assertThat(oauth.get("clientId").asText()).startsWith("oac_");
+        String secret = oauth.get("clientSecret").asText();
+        assertThat(secret).isNotBlank();
+
+        // The application row now points at the principal, and the stored secret ref
+        // really decrypts to the plaintext just handed out — proves the credential
+        // works, not merely that some string was returned (CLAUDE.md testing policy).
+        var app = json(http.get("/api/applications/" + id, ANCHOR));
+        assertThat(app.get("serviceAccountId").asText()).isEqualTo(sa.get("principalId").asText());
+        OAuthClient oc = OAUTH_CLIENTS.findById(oauth.get("id").asText()).orElseThrow();
+        assertThat(oc.acceptsSecret(secret, Instant.now(), ApplicationApiTest::decrypt))
+                .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
+
+        int saBefore = countServiceAccountsForApp(id);
+        int principalsBefore = countPrincipalsForApp(id);
+        int oauthBefore = countOAuthClientsForApp(id);
+
+        var second = http.post("/api/applications/" + id + "/provision-service-account", null, ANCHOR);
+        assertThat(second.statusCode()).as(second.body()).isEqualTo(409);
+        assertThat(json(second).get("error").asText()).isEqualTo("ALREADY_PROVISIONED");
+        assertThat(countServiceAccountsForApp(id)).as("no duplicate service account row").isEqualTo(saBefore);
+        assertThat(countPrincipalsForApp(id)).as("no duplicate principal row").isEqualTo(principalsBefore);
+        assertThat(countOAuthClientsForApp(id)).as("no duplicate oauth client row").isEqualTo(oauthBefore);
+    }
+
+    @Test
+    void provisionServiceAccountIsAnchorOnly() {
+        String id = create(code("provanchor"), "Anchor Only", "");
+        var r = http.post("/api/applications/" + id + "/provision-service-account", null, WRITER);
+        assertThat(r.statusCode()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
+    }
+
+    @Test
+    void provisionLoginClientValidatesCreatesAndFlipsHasLoginClient() {
+        String id = create(code("login"), "Login App", "");
+
+        var noUris = http.post("/api/applications/" + id + "/provision-login-client", "{\"redirectUris\":[]}", ANCHOR);
+        assertThat(noUris.statusCode()).isEqualTo(400);
+        assertThat(json(noUris).get("error").asText()).isEqualTo("REDIRECT_URIS_REQUIRED");
+
+        var missing = http.post("/api/applications/app_doesnotexist1/provision-login-client",
+                "{\"redirectUris\":[\"https://a.example/cb\"]}", ANCHOR);
+        assertThat(missing.statusCode()).isEqualTo(404);
+
+        var forbidden = http.post("/api/applications/" + id + "/provision-login-client",
+                "{\"redirectUris\":[\"https://a.example/cb\"]}", WRITER);
+        assertThat(forbidden.statusCode()).isEqualTo(403);
+        assertThat(json(forbidden).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
+
+        assertThat(json(http.get("/api/applications/" + id, ANCHOR)).get("hasLoginClient").asBoolean())
+                .as("nothing provisioned yet").isFalse();
+
+        var pub = http.post("/api/applications/" + id + "/provision-login-client",
+                "{\"redirectUris\":[\"https://a.example/cb\"]}", ANCHOR);
+        assertThat(pub.statusCode()).as(pub.body()).isEqualTo(201);
+        var pubBody = json(pub);
+        assertThat(pubBody.get("message").asText()).isEqualTo("Login client provisioned");
+        var pubClient = pubBody.get("loginClient");
+        assertThat(pubClient.get("clientType").asText()).isEqualTo("PUBLIC");
+        assertThat(pubClient.get("redirectUris")).extracting(JsonNode::asText).containsExactly("https://a.example/cb");
+        assertThat(pubClient.get("oauthClient").has("clientSecret")).as("PUBLIC carries no secret").isFalse();
+
+        // Assert the persisted row, not just the echoed response — a mutant that always
+        // creates a CONFIDENTIAL client would still echo "PUBLIC" back if the response
+        // were built from the request instead of the saved aggregate.
+        OAuthClient pubOc = OAUTH_CLIENTS.findById(pubClient.get("oauthClient").get("id").asText()).orElseThrow();
+        assertThat(pubOc.clientType()).isEqualTo(ClientType.PUBLIC);
+        assertThat(pubOc.pkceRequired()).as("PKCE required for PUBLIC").isTrue();
+        assertThat(pubOc.secretRef()).isNull();
+
+        assertThat(json(http.get("/api/applications/" + id, ANCHOR)).get("hasLoginClient").asBoolean())
+                .as("an authorization_code client now exists for this application").isTrue();
+
+        var conf = http.post("/api/applications/" + id + "/provision-login-client",
+                "{\"redirectUris\":[\"https://b.example/cb\"],\"clientType\":\"CONFIDENTIAL\"}", ANCHOR);
+        assertThat(conf.statusCode()).as(conf.body()).isEqualTo(201);
+        var confClient = json(conf).get("loginClient");
+        assertThat(confClient.get("clientType").asText()).isEqualTo("CONFIDENTIAL");
+        String confSecret = confClient.get("oauthClient").get("clientSecret").asText();
+        assertThat(confSecret).isNotBlank();
+        OAuthClient confOc = OAUTH_CLIENTS.findById(confClient.get("oauthClient").get("id").asText()).orElseThrow();
+        assertThat(confOc.clientType()).isEqualTo(ClientType.CONFIDENTIAL);
+        assertThat(confOc.acceptsSecret(confSecret, Instant.now(), ApplicationApiTest::decrypt))
+                .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
+    }
+
+    private static Optional<String> decrypt(String ref) {
+        return ENCRYPTION.get().decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
+    }
+
+    private static int countServiceAccountsForApp(String applicationId) {
+        return DB.fetchCount(IAM_SERVICE_ACCOUNTS, IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(applicationId));
+    }
+
+    private static int countPrincipalsForApp(String applicationId) {
+        return DB.fetchCount(DB.selectFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.SERVICE_ACCOUNT_ID.in(
+                DB.select(IAM_SERVICE_ACCOUNTS.ID).from(IAM_SERVICE_ACCOUNTS).where(IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(applicationId)))));
+    }
+
+    private static int countOAuthClientsForApp(String applicationId) {
+        return DB.fetchCount(io.flowcatalyst.db.generated.Tables.OAUTH_CLIENT_APPLICATION_IDS,
+                io.flowcatalyst.db.generated.Tables.OAUTH_CLIENT_APPLICATION_IDS.APPLICATION_ID.eq(applicationId));
     }
 
     @Test
