@@ -81,9 +81,15 @@ public final class Vars {
 
     private String resolveDynamic(String key) {
         if (key.startsWith("totp:")) {
-            String secretVar = key.substring("totp:".length());
+            // `totp:<var>` or `totp:<var>:<step offset>` — the offset (-1, 0, +1) picks
+            // an adjacent 30-second step, all inside the ±1 window both sides accept, so
+            // two steps of one scenario can present two different codes without waiting.
+            String rest = key.substring("totp:".length());
+            int colon = rest.indexOf(':');
+            String secretVar = colon < 0 ? rest : rest.substring(0, colon);
+            long offset = colon < 0 ? 0 : Long.parseLong(rest.substring(colon + 1));
             String secret = captured(secretVar).orElseThrow(() -> new SubstitutionException(key));
-            return Totp.code(secret, Totp.stepOf(Instant.now()));
+            return Totp.code(secret, Totp.stepOf(Instant.now()) + offset);
         }
         if (key.startsWith("b64url:")) {
             String var = key.substring("b64url:".length());

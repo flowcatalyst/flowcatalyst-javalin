@@ -126,7 +126,13 @@ public final class Parity {
                 : List.of();
         Coverage.Result coverage = Coverage.compute(lockfileRoutes, surfaceRoutes, allRequested);
 
-        Report report = new Report(results, coverage, expected.stale());
+        // Stale allow-list entries are only meaningful on a full run: under a
+        // scenario filter the entries for the scenarios not run cannot match.
+        List<ExpectedDiff> stale = config.onlyGlob() == null || config.onlyGlob().isBlank() ? expected.stale() : List.of();
+        if (!stale.isEmpty() || config.onlyGlob() != null) {
+            LOG.info("stale allow-list check: {}", config.onlyGlob() == null ? stale.size() + " stale" : "skipped (PARITY_ONLY filter active)");
+        }
+        Report report = new Report(results, coverage, stale);
         ReportWriter.writeJson(report, config.reportDir().resolve("report.json"));
         ReportWriter.writeMarkdown(report, config.reportDir().resolve("report.md"));
         return report;

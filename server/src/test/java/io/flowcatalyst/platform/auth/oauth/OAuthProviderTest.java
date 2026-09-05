@@ -561,7 +561,11 @@ class OAuthProviderTest {
         assertThat(j.get("refreshToken").asString()).isNotEqualTo(issued.raw());
         var access = SignedJWT.parse(j.get("accessToken").asString()).getPayload().toJSONObject();
         assertThat(access.get("token_use")).isEqualTo("api");
-        assertThat(String.valueOf(access.get("scope"))).contains("billing:read").contains("crm:read");
+        // Go's GenerateAccessToken(p) advertises no scope on a full-authority mint;
+        // authority is re-derived from the roles claim per request (auth-core §3.1;
+        // parity S2 pinned the switch token the same way).
+        assertThat(access.get("scope")).as("no scope claim on a full-authority token").isNull();
+        assertThat(String.valueOf(access.get("roles"))).contains("billing-" + RUN);
 
         var bad = http.post("/auth/refresh", "{not json");
         assertThat(bad.statusCode()).isEqualTo(400);

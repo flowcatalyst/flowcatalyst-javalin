@@ -359,7 +359,8 @@ Java `SigningKeys` already implements loading/normalisation/kid (§17).
 
 | Shape | Where | Body | Headers | Cite |
 |---|---|---|---|---|
-| **Platform envelope** | `/auth/*`, `/api/*`, rate-limit middleware | `{"code":…, "message":…, "details"?:…}` — BUT the 429 helper writes `{"error":"TOO_MANY_REQUESTS","message":…}` (key `error`, not `code`) | `Retry-After` on 429 | httperror.go:55-78, RL:177-187, RLT:116-128 |
+| **Platform envelope** | everything written through `httperror` — `/api/*` and the `/auth/*` outcomes the `login` package routes there (`INVALID_JSON`, `EMAIL_REQUIRED`, `SSO_REQUIRED`, `MINT_FAILED`, the client-selection 403/404s) | `{"error":…, "message":…, "details"?:…}` — key **`error`** (`httperror.go:23`; the parity harness confirmed it 2026-09-05 — the earlier reading of `code` here was wrong) | `Retry-After` on 429 | httperror.go:20-78, RL:177-187 |
+| **Login-surface envelope** | what the `login` package hand-writes: `UNAUTHENTICATED` (incl. `/auth/refresh`'s 401s), `TOO_MANY_REQUESTS`, `MFA_EVAL_FAILED`, every `change_password.go` and `twofactor*.go` refusal and their `INVALID_JSON` | `{"code":…, "message":…}` — key **`code`** | `WWW-Authenticate: Cookie realm="fc_session"` on the 401s | LE:662-690, CP:28-66, TF:153-545 — Java: `HttpError.writeLoginSurface` |
 | **`/auth` 401** | login surface | `{"code":"UNAUTHENTICATED","message":…}` | `WWW-Authenticate: Cookie realm="fc_session"` | LE:676-684 |
 | **`/auth` backoff 429** | `/auth/login` (+2FA verify) | `{"code":"TOO_MANY_REQUESTS","message":"too many failed login attempts; try again later"}` | `Retry-After: <secs>` | LE:662-670 |
 | **RFC 6749 envelope** | `/oauth/*` | `{"error":…, "error_description"?:…}` | `Cache-Control: no-store`, `Pragma: no-cache` on **every** OAuth error and token success | TK:890-939 |

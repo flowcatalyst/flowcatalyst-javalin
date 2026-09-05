@@ -46,7 +46,14 @@ public final class Normaliser {
         Map<String, String> headers = new LinkedHashMap<>();
         record.headers().forEach((name, value) -> headers.put(name, normaliseHeader(name, value, vars, baseUrl)));
 
-        JsonNode body = normaliseNode(bodyOf(record), vars, baseUrl);
+        // A redirect's body and Content-Type are not part of any contract (Go's
+        // net/http writes an HTML stub, Javalin a text one); Location and status are.
+        if (record.status() >= 300 && record.status() < 400) {
+            headers.remove(ComparedHeaders.CONTENT_TYPE);
+        }
+        JsonNode body = record.status() >= 300 && record.status() < 400
+                ? Json.MAPPER.getNodeFactory().stringNode("«redirect»")
+                : normaliseNode(bodyOf(record), vars, baseUrl);
         body = applyUnordered(body, step.unordered());
         body = applyIgnore(body, step.ignore());
         return new Normalised(record.status(), headers, body);
@@ -94,7 +101,15 @@ public final class Normaliser {
         if (node == null || node.isNull() || node.isMissingNode()) return node == null ? Json.MAPPER.getNodeFactory().nullNode() : node;
         if (node.isObject()) {
             ObjectNode out = Json.MAPPER.createObjectNode();
-            node.properties().forEach(e -> out.set(e.getKey(), normaliseNode(e.getValue(), vars, baseUrl)));
+            node.properties().forEach(e -> {
+                // Rule 3, numeric form: an epoch-seconds member named like a JWT time
+                // claim (introspection echoes exp/iat) is a time, not a value.
+                if (JWT_TIME_CLAIMS.contains(e.getKey()) && e.getValue().isNumber()) {
+                    out.set(e.getKey(), Json.MAPPER.getNodeFactory().stringNode("«time»"));
+                } else {
+                    out.set(e.getKey(), normaliseNode(e.getValue(), vars, baseUrl));
+                }
+            });
             return out;
         }
         if (node.isArray()) {

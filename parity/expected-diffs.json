@@ -12,5 +12,96 @@
     "pointer": "/checks",
     "reason": "Java's /health carries per-check readiness (the login-attempt partition check, 503 DOWN when missing); Go has no checks member",
     "ruling": "C-Q23 (auth-core.md \u00a70.5, \u00a77.2)"
+  },
+  {
+    "scenario": "*",
+    "step": "change-password",
+    "pointer": "/headers/Set-Cookie",
+    "reason": "Java also expires the trusted-device cookie (__Host-fc_td) whose row the password change revoked; Go revokes the rows and leaves the dead cookie in the browser",
+    "ruling": "auth-identity.md \u00a711 (trusted devices revoked on password change) \u2014 Java clears the cookie too; recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "*",
+    "step": "change-password-back",
+    "pointer": "/headers/Set-Cookie",
+    "reason": "same as change-password",
+    "ruling": "auth-identity.md \u00a711 \u2014 Java clears the cookie too; recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "*",
+    "step": "introspect-active",
+    "pointer": "/client_id",
+    "reason": "introspection's client_id is the token's azp (RFC 7662: the client the token was issued to); Go emits the first tenant of `clients` and omits it for the anchor wildcard",
+    "ruling": "owner? docs/backlog.md (parity S2)"
+  },
+  {
+    "scenario": "*",
+    "step": "auth-me",
+    "pointer": "/status",
+    "reason": "/auth/me answers status ok in Java; Go leaves the login envelope's status empty on this route",
+    "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
+  },
+  {
+    "scenario": "*",
+    "step": "introspect-client-credentials-token",
+    "pointer": "/client_id",
+    "reason": "same as introspect-active: Java answers azp (absent on a client_credentials token minted without one), Go the first tenant of clients (the anchor wildcard)",
+    "ruling": "owner? docs/backlog.md (parity S2)"
+  },
+  {
+    "scenario": "*",
+    "step": "api-me-with-client-credentials-token",
+    "pointer": "/name",
+    "reason": "Go answers an empty name for a service principal at /api/me; Java echoes the service account's name. The SPA never presents a service token here",
+    "ruling": "owner? docs/backlog.md (parity S2) \u2014 accident on the Go side, Java kept"
+  },
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "/uri",
+    "reason": "the otpauth issuer/label carry the platform brand: Go spells Flowcatalyst, Java FlowCatalyst",
+    "ruling": "I-Q16 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "/rememberDeviceAllowed",
+    "reason": "Java tells the SPA whether the domain policy allows remembering this device so the checkbox can be hidden; Go emits nothing and the SPA guesses",
+    "ruling": "I-Q11 (auth-identity.md section 0.5) \u2014 Java addition, recorded in docs/backlog.md as a Go-mirror candidate"
+  },
+  {
+    "scenario": "*",
+    "step": "auth-me-after-verify",
+    "pointer": "/status",
+    "reason": "/auth/me answers status ok in Java; Go leaves it empty",
+    "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
+  },
+  {
+    "scenario": "*",
+    "step": "trusted-devices",
+    "pointer": "/devices",
+    "reason": "an empty trusted-device list: Go serialises its nil slice as null, Java answers []",
+    "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) \u2014 Go accident"
+  },
+  {
+    "scenario": "*",
+    "step": "remove-totp-again",
+    "pointer": "/status",
+    "reason": "removing a 2FA method the user never had: Go answers 200 'removed', Java 404",
+    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+  },
+  {
+    "scenario": "*",
+    "step": "remove-totp-again",
+    "pointer": "/error",
+    "reason": "same as /status on this step",
+    "ruling": "defect 10 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "*",
+    "step": "remove-totp-again",
+    "pointer": "/message",
+    "reason": "same as /status on this step",
+    "ruling": "defect 10 (auth-identity.md section 0.5)"
   }
 ]

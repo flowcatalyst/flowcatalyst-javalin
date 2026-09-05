@@ -75,7 +75,7 @@ public final class OAuthIntrospectionApi {
                 // Best-effort by RFC 7009; the answer is 200 regardless.
             }
         }
-        ctx.status(200).result("");
+        ctx.status(200); // no body at all — Go writes nothing, so no Content-Type either (ResponseDefaults)
     }
 
     /// A Bearer header, when present, must verify; otherwise the body's

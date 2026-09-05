@@ -237,7 +237,7 @@ public final class LoginApi {
         } catch (RuntimeException e) {
             // Fail closed: an evaluation error denies rather than bypassing 2FA.
             LOG.error("MFA evaluation failed for principal {}", p.id(), e);
-            HttpError.write(ctx, 500, "MFA_EVAL_FAILED", "could not evaluate second factor", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "MFA_EVAL_FAILED", "could not evaluate second factor");
             return;
         }
         if (challenge.isPresent()) {
@@ -451,15 +451,15 @@ public final class LoginApi {
 
     private static void unauthorized(Context ctx, String message) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
-        HttpError.write(ctx, 401, "UNAUTHENTICATED", message, Map.of());
+        HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 
     private static void tooManyRequests(Context ctx, long retryAfterSecs) {
         ctx.header("Retry-After", Long.toString(retryAfterSecs));
-        HttpError.write(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later", Map.of());
+        HttpError.writeLoginSurface(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later");
     }
 
     private static void backoffUnavailable(Context ctx) {
-        HttpError.write(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly", Map.of());
+        HttpError.writeLoginSurface(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly");
     }
 }

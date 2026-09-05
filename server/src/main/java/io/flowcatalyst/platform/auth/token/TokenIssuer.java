@@ -261,7 +261,8 @@ public final class TokenIssuer {
     /// RS256 under the current private key; `kid` stamped only where Go
     /// stamps it (access/ID tokens — never the session cookie).
     private String sign(JWTClaimsSet claims, boolean withKid) {
-        var header = new JWSHeader.Builder(JWSAlgorithm.RS256);
+        // `typ: JWT` as Go's jwt library stamps on every token (parity S2).
+        var header = new JWSHeader.Builder(JWSAlgorithm.RS256).type(com.nimbusds.jose.JOSEObjectType.JWT);
         if (withKid) {
             header.keyID(keys.kid());
         }

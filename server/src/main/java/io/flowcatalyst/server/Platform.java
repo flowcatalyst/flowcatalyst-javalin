@@ -568,6 +568,9 @@ public final class Platform {
         String p = ctx.path();
         return p.equals("/auth/login") || p.equals("/auth/logout") || p.equals("/auth/check-domain")
                 || p.equals("/auth/refresh")
+                // Go mounts userinfo on the public router (wire_public.go): an identity token
+                // must reach the handler, which validates it itself (auth-core §6.2 O5).
+                || p.equals("/oauth/userinfo")
                 // The six token-gated 2FA routes (auth-identity §6.4, ruling I-Q20):
                 // a pending or enrol MfaToken stands in for a session. Every other
                 // /auth/2fa/* route and both change-password routes stay inside the

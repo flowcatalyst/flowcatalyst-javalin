@@ -11,6 +11,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 import tools.jackson.databind.JsonNode;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -43,30 +44,38 @@ public final class AuthRefreshApi {
         try {
             result = s.rotation().rotate(raw, stored -> stored.oauthClientId() != null ? "Token was not issued to this client" : null);
         } catch (RefreshRotation.NotAuthorized e) {
-            HttpError.write(ctx, 401, "UNAUTHORIZED", "Token was not issued to this client", Map.of());
+            unauthenticated(ctx, "Token was not issued to this client");
             return;
         }
         if (result.stored().isEmpty()) {
-            HttpError.write(ctx, 401, "UNAUTHORIZED", "Invalid or expired refresh token", Map.of());
+            unauthenticated(ctx, "Invalid or expired refresh token");
             return;
         }
         RefreshToken stored = result.stored().get();
         Optional<Principal> found = s.principals().findById(stored.principalId());
         if (found.isEmpty()) {
-            HttpError.write(ctx, 401, "UNAUTHORIZED", "Invalid or expired refresh token", Map.of());
+            unauthenticated(ctx, "Invalid or expired refresh token");
             return;
         }
         Principal p = found.get();
         if (!p.active()) {
-            HttpError.write(ctx, 401, "UNAUTHORIZED", "Account is not active", Map.of());
+            unauthenticated(ctx, "Account is not active");
             return;
         }
-        String accessToken = s.issuer().accessToken(p, TokenIssuer.Authority.full(p, s.resolver().ceiling(p), s.labels()), null);
+        String accessToken = s.issuer().accessToken(p, TokenIssuer.Authority.full(p, List.of(), s.labels()), null);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("accessToken", accessToken);
         out.put("tokenType", "Bearer");
         out.put("expiresIn", s.issuer().config().accessTtlSeconds());
         result.newRaw().ifPresent(r -> out.put("refreshToken", r));
         ctx.status(200).header("Cache-Control", "no-store").json(out);
+    }
+
+    /// Go's `writeUnauthorized` on this handler: the login surface's own 401
+    /// envelope (`{"code":"UNAUTHENTICATED"}`, auth-core §5 row 2) with the
+    /// cookie realm — not the platform `error` key. Parity S2.
+    private static void unauthenticated(Context ctx, String message) {
+        ctx.header("WWW-Authenticate", "Cookie realm=\"fc_session\"");
+        HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 }

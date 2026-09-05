@@ -86,23 +86,23 @@ public final class ChangePasswordApi {
         // changes credentials at the provider now) plus an identity
         // provisioned as OIDC, which never had a password here.
         if (LoginApi.ssoManaged(s.login(), p) || p.isFederated()) {
-            HttpError.write(ctx, 400, "SSO_MANAGED",
-                    "Your password is managed by your identity provider and cannot be changed here.", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "SSO_MANAGED",
+                    "Your password is managed by your identity provider and cannot be changed here.");
             return;
         }
         if (p.userIdentity() == null || !p.userIdentity().hasPassword()) {
-            HttpError.write(ctx, 400, "NO_PASSWORD", "This account signs in without a password.", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_PASSWORD", "This account signs in without a password.");
             return;
         }
         String currentPassword = req.currentPassword() == null ? "" : req.currentPassword();
         if (!PasswordHash.matches(currentPassword, p.userIdentity().passwordHash())) {
-            HttpError.write(ctx, 401, "INVALID_CURRENT_PASSWORD", "Your current password is incorrect.", Map.of());
+            HttpError.writeLoginSurface(ctx, 401, "INVALID_CURRENT_PASSWORD", "Your current password is incorrect.");
             return;
         }
         String newPassword = req.newPassword() == null ? "" : req.newPassword();
         var verdict = PasswordPolicy.check(newPassword, p.email(), p.name());
         if (verdict instanceof PasswordPolicy.Rejected r) {
-            HttpError.write(ctx, 400, r.code(), r.message(), Map.of());
+            HttpError.writeLoginSurface(ctx, 400, r.code(), r.message());
             return;
         }
 
@@ -111,7 +111,7 @@ public final class ChangePasswordApi {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
             LOG.error("change-password: MFA status load failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status");
             return;
         }
         if (!confirmed.isEmpty()) {
@@ -123,14 +123,14 @@ public final class ChangePasswordApi {
                 return;
             }
             if (!verifyAnySecondFactor(s, p, confirmed, code)) {
-                HttpError.write(ctx, 400, "INVALID_CODE", "That code didn't match — try again.", Map.of());
+                HttpError.writeLoginSurface(ctx, 400, "INVALID_CODE", "That code didn't match — try again.");
                 return;
             }
         }
 
         String newHash = PasswordHash.hash(newPassword);
         if (!persistNewPassword(s, p, newHash)) {
-            HttpError.write(ctx, 500, "UPDATE_FAILED", "could not save the new password", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "UPDATE_FAILED", "could not save the new password");
             return;
         }
 
@@ -216,27 +216,27 @@ public final class ChangePasswordApi {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
             LOG.error("change-password send-email-code: MFA status load failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status");
             return;
         }
         if (confirmed.isEmpty()) {
-            HttpError.write(ctx, 400, "NO_MFA", "two-factor is not enabled", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_MFA", "two-factor is not enabled");
             return;
         }
         if (!confirmed.contains(MfaMethod.EMAIL_PIN)) {
-            HttpError.write(ctx, 400, "NO_EMAIL_2FA", "email codes are not enabled for your account", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL_2FA", "email codes are not enabled for your account");
             return;
         }
         String email = p.email();
         if (email == null || email.isBlank()) {
-            HttpError.write(ctx, 400, "NO_EMAIL", "account has no email", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL", "account has no email");
             return;
         }
         try {
             s.mfa().sendLoginEmailPin(p.id(), email);
         } catch (RuntimeException e) {
             LOG.error("change-password send-email-code failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "SEND_FAILED", "could not send the code", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "SEND_FAILED", "could not send the code");
             return;
         }
         ctx.json(Map.of("message", "A code has been sent to your email."));
@@ -260,14 +260,14 @@ public final class ChangePasswordApi {
 
     private static void unauthorized(Context ctx) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
-        HttpError.write(ctx, 401, "UNAUTHENTICATED", "Not authenticated", Map.of());
+        HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", "Not authenticated");
     }
 
     private static <T> T decode(Context ctx, Class<T> type) {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (JacksonException e) {
-            throw HttpError.invalidJson(e.getOriginalMessage() == null ? "malformed request body" : e.getOriginalMessage());
+            throw HttpError.loginSurfaceInvalidJson(e.getOriginalMessage() == null ? "malformed request body" : e.getOriginalMessage());
         }
     }
 }

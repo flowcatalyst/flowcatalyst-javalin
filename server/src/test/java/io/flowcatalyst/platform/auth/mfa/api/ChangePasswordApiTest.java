@@ -191,7 +191,7 @@ class ChangePasswordApiTest {
 
         var wrongCode = changePassword(pid, email, PASSWORD, "a whole new passphrase 43", "000000");
         assertThat(wrongCode.statusCode()).isEqualTo(400);
-        assertThat(json(wrongCode).get("error").asString()).isEqualTo("INVALID_CODE");
+        assertThat(json(wrongCode).get("code").asString()).isEqualTo("INVALID_CODE");
 
         String rightCode = Totp.code(secret, Totp.stepOf(Instant.now()) + 1);
         var ok = changePassword(pid, email, PASSWORD, "a whole new passphrase 43", rightCode);
@@ -220,7 +220,7 @@ class ChangePasswordApiTest {
         String pid = principal(email, PasswordHash.hash(PASSWORD));
         var r = changePassword(pid, email, "not the password", "a whole new passphrase 45", null);
         assertThat(r.statusCode()).isEqualTo(401);
-        assertThat(json(r).get("error").asString()).isEqualTo("INVALID_CURRENT_PASSWORD");
+        assertThat(json(r).get("code").asString()).isEqualTo("INVALID_CURRENT_PASSWORD");
     }
 
     @Test
@@ -230,7 +230,7 @@ class ChangePasswordApiTest {
         DB.update(IAM_PRINCIPALS).set(IAM_PRINCIPALS.IDP_TYPE, "OIDC").where(IAM_PRINCIPALS.ID.eq(pid)).execute();
         var r = changePassword(pid, email, PASSWORD, "a whole new passphrase 46", null);
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("SSO_MANAGED");
+        assertThat(json(r).get("code").asString()).isEqualTo("SSO_MANAGED");
     }
 
     @Test
@@ -251,7 +251,7 @@ class ChangePasswordApiTest {
             String pid = principal(email, PasswordHash.hash(PASSWORD));
             var r = changePassword(pid, email, PASSWORD, "a whole new passphrase 48", null);
             assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
-            assertThat(json(r).get("error").asString()).isEqualTo("SSO_MANAGED");
+            assertThat(json(r).get("code").asString()).isEqualTo("SSO_MANAGED");
         } finally {
             uow.inTransaction(tx -> { MAPPINGS.delete(mapping, tx.dbTx()); IDPS.delete(idp, tx.dbTx()); return null; });
         }
@@ -263,7 +263,7 @@ class ChangePasswordApiTest {
         String pid = principal(email, null);
         var r = changePassword(pid, email, "whatever", "a whole new passphrase 47", null);
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("NO_PASSWORD");
+        assertThat(json(r).get("code").asString()).isEqualTo("NO_PASSWORD");
     }
 
     @Test
@@ -272,7 +272,7 @@ class ChangePasswordApiTest {
         String pid = principal(email, PasswordHash.hash(PASSWORD));
         var r = changePassword(pid, email, PASSWORD, "short", null);
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("PASSWORD_TOO_SHORT");
+        assertThat(json(r).get("code").asString()).isEqualTo("PASSWORD_TOO_SHORT");
     }
 
     // ── send-email-code ──────────────────────────────────────────────────
@@ -284,12 +284,12 @@ class ChangePasswordApiTest {
 
         var noMfa = http.post("/auth/change-password/send-email-code", null, "Cookie", sessionCookieFor(pid, email));
         assertThat(noMfa.statusCode()).isEqualTo(400);
-        assertThat(json(noMfa).get("error").asString()).isEqualTo("NO_MFA");
+        assertThat(json(noMfa).get("code").asString()).isEqualTo("NO_MFA");
 
         enrolTotpDirect(pid);
         var noEmail2fa = http.post("/auth/change-password/send-email-code", null, "Cookie", sessionCookieFor(pid, email));
         assertThat(noEmail2fa.statusCode()).isEqualTo(400);
-        assertThat(json(noEmail2fa).get("error").asString()).isEqualTo("NO_EMAIL_2FA");
+        assertThat(json(noEmail2fa).get("code").asString()).isEqualTo("NO_EMAIL_2FA");
 
         MFA.beginEmailEnrollment(pid, email);
         MAIL_SENT.clear();
@@ -297,7 +297,7 @@ class ChangePasswordApiTest {
         // Email 2FA is only "confirmed" once the enrolment PIN is confirmed —
         // still pending here, so this is NO_EMAIL_2FA too.
         assertThat(ok.statusCode()).isEqualTo(400);
-        assertThat(json(ok).get("error").asString()).isEqualTo("NO_EMAIL_2FA");
+        assertThat(json(ok).get("code").asString()).isEqualTo("NO_EMAIL_2FA");
     }
 
     @Test
@@ -322,7 +322,7 @@ class ChangePasswordApiTest {
         var r = http.post("/auth/change-password", "{not json", "Content-Type", "application/json",
                 "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("INVALID_JSON");
+        assertThat(json(r).get("code").asString()).isEqualTo("INVALID_JSON");
     }
 
     @Test

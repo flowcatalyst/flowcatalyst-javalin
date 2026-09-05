@@ -154,7 +154,7 @@ class LoginApiTest {
         int before = attempts(userEmail);
         var r = login(userEmail, "not it");
         assertThat(r.statusCode()).isEqualTo(401);
-        assertThat(json(r).get("error").asString()).isEqualTo("UNAUTHENTICATED");
+        assertThat(json(r).get("code").asString()).isEqualTo("UNAUTHENTICATED");
         assertThat(json(r).get("message").asString()).isEqualTo("Invalid credentials");
         assertThat(r.headers().firstValue("WWW-Authenticate")).contains("Cookie realm=\"fc_session\"");
         assertThat(r.headers().firstValue("set-cookie")).isEmpty();
@@ -211,7 +211,7 @@ class LoginApiTest {
             int recorded = attempts(email);
             var denied = tight.post("/auth/login", body(email, PASSWORD), "Content-Type", "application/json");
             assertThat(denied.statusCode()).as("even the right password is refused while backed off").isEqualTo(429);
-            assertThat(json(denied).get("error").asString()).isEqualTo("TOO_MANY_REQUESTS");
+            assertThat(json(denied).get("code").asString()).isEqualTo("TOO_MANY_REQUESTS");
             assertThat(Long.parseLong(denied.headers().firstValue("Retry-After").orElseThrow())).isBetween(1L, 300L);
             assertThat(attempts(email)).as("a denied attempt is never recorded (spec §4)").isEqualTo(recorded);
         } finally {
@@ -231,7 +231,7 @@ class LoginApiTest {
             long alarmsBefore = AuthAlarms.backoffStoreErrors();
             var r = closed.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
             assertThat(r.statusCode()).as("ruling C-Q23: the lock is never switched off by a store error").isEqualTo(503);
-            assertThat(json(r).get("error").asString()).isEqualTo("BACKOFF_UNAVAILABLE");
+            assertThat(json(r).get("code").asString()).isEqualTo("BACKOFF_UNAVAILABLE");
             assertThat(r.headers().firstValue("set-cookie")).isEmpty();
             assertThat(AuthAlarms.backoffStoreErrors()).as("the refusal is counted, so an operator can alarm on the first one").isEqualTo(alarmsBefore + 1);
         }
@@ -256,7 +256,7 @@ class LoginApiTest {
         })) {
             var r = t.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
             assertThat(r.statusCode()).isEqualTo(500);
-            assertThat(json(r).get("error").asString()).isEqualTo("MFA_EVAL_FAILED");
+            assertThat(json(r).get("code").asString()).isEqualTo("MFA_EVAL_FAILED");
             assertThat(r.headers().firstValue("set-cookie")).isEmpty();
         }
     }

@@ -70,7 +70,7 @@ public final class RsaServiceAccountTokenMinter implements ServiceAccountTokenMi
         if (permissions != null && !permissions.isEmpty()) {
             claims.claim("scope", String.join(" ", permissions));
         }
-        var header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(keys.kid()).build();
+        var header = new JWSHeader.Builder(JWSAlgorithm.RS256).type(com.nimbusds.jose.JOSEObjectType.JWT).keyID(keys.kid()).build();
         var signed = new SignedJWT(header, claims.build());
         try {
             signed.sign(new RSASSASigner(keys.privateKey()));

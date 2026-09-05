@@ -640,3 +640,22 @@ later decision.
   `expires_in` from it together. The env-parity check in `cutover.md` §4 found
   it as the only server knob missing; wire it after the C4 merge (Env field →
   `TokenIssuer` → every `expires_in`), one test pinning both values.
+- **Introspection `client_id` (parity S2, 2026-09-05).** Java answers the
+  token's `azp` (RFC 7662: the client the token was issued to); Go answers
+  the first entry of the `clients` tenant claim and omits it for the anchor
+  wildcard. Owner: keep the RFC meaning (recommended — the Go value is a
+  tenant id under an OAuth name) or mirror Go? Allow-listed meanwhile.
+- **Trusted-device cookie on password change (parity S2).** Both sides
+  revoke the trusted-device rows; Java also expires the `__Host-fc_td`
+  cookie in the browser, Go leaves it. Deliberate; Go-mirror candidate.
+- **`client_credentials` on a client without a principal answers 500
+  `server_error` "Client not properly configured" on both sides.** RFC 6749
+  §5.2 wants a 400 (`unauthorized_client`). Go defect mirrored for parity;
+  Go-mirror candidate — fix both together.
+- **`/api/me` `name` for a service principal (parity S2).** Go answers `""`
+  for a `client_credentials` token's principal; Java answers the service
+  account's name. Go accident (the token's `name` claim is the principal
+  row's name, which Go's provisioning leaves blank); Java kept, allow-listed.
+- **`rememberDeviceAllowed` on the gated login response (parity S2).** Java
+  adds it under I-Q11 so the SPA can hide the remember-device checkbox when
+  the domain forbids it; Go emits nothing. Deliberate; Go-mirror candidate.

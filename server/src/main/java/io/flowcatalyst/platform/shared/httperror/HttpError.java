@@ -111,6 +111,44 @@ public record HttpError(
         writeRaw(ctx, status, new HttpError(code, message, details));
     }
 
+    /// The login surface's own envelope: `{"code":…,"message":…}` (key `code`,
+    /// not `error`). Go's `login` package hand-writes this shape for the
+    /// outcomes it owns — `UNAUTHENTICATED`, `TOO_MANY_REQUESTS`, the 2FA
+    /// and change-password refusals (`auth-core.md` §5 rows 2–3) — while
+    /// everything it routes through `httperror` keeps the platform key.
+    /// Found by the parity harness (S2): the SPA reads `code` on these.
+    public static void writeLoginSurface(Context ctx, int status, String code, String message) {
+        ctx.status(status).json(java.util.Map.of("code", code, "message", message));
+    }
+
+    /// The throwable form of [#writeLoginSurface] for the places a login-surface
+    /// handler cannot write and return (a body-parse helper); [#install]
+    /// renders it with the `code` key.
+    public static final class LoginSurfaceException extends RuntimeException {
+        private final int status;
+        private final String code;
+
+        public LoginSurfaceException(int status, String code, String message) {
+            super(message);
+            this.status = status;
+            this.code = Objects.requireNonNull(code, "code");
+        }
+
+        public int status() {
+            return status;
+        }
+
+        public String code() {
+            return code;
+        }
+    }
+
+    /// `400 INVALID_JSON` in the login surface's own envelope (Go
+    /// `twofactor.go` / `change_password.go` write it with `code`).
+    public static LoginSurfaceException loginSurfaceInvalidJson(String message) {
+        return new LoginSurfaceException(400, "INVALID_JSON", message);
+    }
+
     /// Renders a bare code/message at [#statusFor] (the huma `ErrorModel`
     /// fallback when no kind is known).
     public static void write(Context ctx, String code, String message) {
@@ -213,6 +251,7 @@ public record HttpError(
     ///     superset).
     public static void install(JavalinDefaultRoutingApi routes) {
         routes.exception(UseCaseException.class, (e, ctx) -> write(ctx, e.error()));
+        routes.exception(LoginSurfaceException.class, (e, ctx) -> writeLoginSurface(ctx, e.status(), e.code(), e.getMessage()));
         routes.exception(CorruptRowException.class, (e, ctx) -> {
             LOG.error("corrupt row on {} {}: entity={} rowId={}", ctx.method(), ctx.path(), e.entity(), e.rowId(), e);
             writeRaw(ctx, 500, new HttpError("CORRUPT_ROW", e.getMessage()));

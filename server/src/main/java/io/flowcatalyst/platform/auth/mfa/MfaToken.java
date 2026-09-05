@@ -96,7 +96,7 @@ public final class MfaToken {
                 .notBeforeTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(ttl)))
                 .build();
-        var jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+        var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.HS256).type(com.nimbusds.jose.JOSEObjectType.JWT).build(), claims);
         try {
             jwt.sign(new MACSigner(secret));
         } catch (JOSEException e) {

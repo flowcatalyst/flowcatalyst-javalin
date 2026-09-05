@@ -151,7 +151,9 @@ No YAML, no new dependency; Jackson 3 is already there.
   `${app.id}`, `${admin.id}` (read from the `seed` database once, before the
   clones are made, so they are the same on both sides);
   `${totp:secretVar}` (an RFC 6238 code from a captured base32 secret, for
-  the MFA scenarios); `${pkce.verifier}` / `${pkce.challenge}` (one pair per
+  the MFA scenarios; `${totp:secretVar:-1}` / `:+1` the adjacent step, so
+  a confirm and a verify in one scenario present different codes inside
+  the ±1 window and the replay guard can be pinned without waiting); `${pkce.verifier}` / `${pkce.challenge}` (one pair per
   run); `${b64url:var}` where a value needs re-encoding.
 - **`expect.status`** is a sanity check, not the oracle: the step is marked
   `ERROR` on the side that disagrees, and that is reported separately from a
@@ -185,6 +187,10 @@ body (JSON when the content type says so, else the raw text), and, for
 bodies that are not JSON but are known (the QR PNG, the OpenAPI document),
 their SHA-256.
 
+On a **3xx** response only the status and the headers below are compared;
+the body and `Content-Type` are not (Go's `net/http` writes an HTML stub,
+Javalin a text one — neither is a contract).
+
 Headers compared, by name, nothing else: `Content-Type`, `Location`,
 `WWW-Authenticate`, `Retry-After` (presence only), `Cache-Control`,
 `Set-Cookie` (cookie name + attributes; the value becomes `«cookie»`).
@@ -206,8 +212,10 @@ the report.
    up as a diff — that is the scenario author's cue, not a normalisation gap.
 2. **Own base URL → `«base»`** (issuer, discovery document, redirect
    targets, JWKS `jku`).
-3. **RFC 3339 timestamps → `«time»`**, whole-string match only. `null`,
-   absent and `«time»` stay three different things.
+3. **RFC 3339 timestamps → `«time»`**, whole-string match only, and a
+   *numeric* member named `iat`, `exp`, `nbf` or `auth_time` (epoch
+   seconds — introspection echoes them) likewise. `null`, absent and
+   `«time»` stay three different things.
 4. **JWS strings** (three base64url segments with a JSON header; on any
    one string this rule is tried *before* rule 1, otherwise a token that
    was also captured — the session cookie — would collapse to its capture
@@ -251,7 +259,8 @@ match a trailing segment at any depth (`**/$schema` matches `/$schema` and
 `/items/3/$schema`) — for a difference that is systemic, one entry with one
 reason, not one per step. A diff matching an entry is `ACCEPTED`. An entry
 that matched nothing in the run (wildcard entries included) is **stale and
-fails the run** — the file cannot rot, and a Java fix
+fails the run** — on a full run; under a `PARITY_ONLY` filter the stale
+check is skipped, since entries for scenarios not run cannot match — the file cannot rot, and a Java fix
 that removes a difference has to remove its excuse too. No `ruling` field, no
 entry (the reviewer rejects it).
 

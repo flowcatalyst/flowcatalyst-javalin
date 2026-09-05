@@ -33,6 +33,8 @@ public final class SessionCookie {
     /// which `net/http` renders as `Max-Age=0`; Javalin treats a negative
     /// max-age as "unset", so the zero is written explicitly.
     public void clear(Context ctx) {
-        ctx.cookie(new Cookie(NAME, "", "/", 0, secure, true, null, SameSite.LAX));
+        // Written by hand: Jetty renders a zero max-age as an `Expires=` in the past;
+        // Go's net/http writes `Max-Age=0`, and the wire should read the same (parity S2).
+        ctx.header("Set-Cookie", NAME + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" + (secure ? "; Secure" : ""));
     }
 }

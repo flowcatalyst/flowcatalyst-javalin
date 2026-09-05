@@ -69,7 +69,8 @@ public final class ClientSelectionApi {
     record SwitchResponse(String token, ClientInfo client, List<String> roles, List<String> permissions) {
     }
 
-    record CurrentResponse(ClientInfo client, boolean noClientContext) {
+    record CurrentResponse(@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS) ClientInfo client,
+                           boolean noClientContext) {
     }
 
     static void accessible(Context ctx, State s) {
@@ -99,7 +100,9 @@ public final class ClientSelectionApi {
             throw UseCaseException.authorization("FORBIDDEN", "Client is not active: " + c.name());
         }
         List<String> ceiling = s.resolver().ceiling(p);
-        String token = s.issuer().accessToken(p, TokenIssuer.Authority.full(p, ceiling, s.labels()), null);
+        // No scope claim: Go's full-authority mint (GenerateAccessToken) advertises none;
+        // authority is re-derived from roles at every request (auth-core §3.1, parity S2).
+        String token = s.issuer().accessToken(p, TokenIssuer.Authority.full(p, List.of(), s.labels()), null);
         ctx.json(new SwitchResponse(token, ClientInfo.of(c), p.roleNames(), s.resolver().flattenPermissions(p.roleNames())));
     }
 

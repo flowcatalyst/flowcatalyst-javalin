@@ -6,7 +6,8 @@ import io.javalin.config.JavalinConfig;
 /// and the test harness (`TestHttp`) install the same ones, so a test sees
 /// the wire a client sees.
 ///
-/// - **A 204 carries no `Content-Type`.** Javalin stamps its default
+/// - **A response without a body carries no `Content-Type`** (a 204, or a
+///   200 whose handler wrote nothing, like `/oauth/revoke`). Javalin stamps its default
 ///   `text/plain` on every response before a handler runs; a bodiless
 ///   status keeps it unless something removes it. Go's `net/http` sends
 ///   nothing on a 204, and the parity harness's first run (S0) flagged the
@@ -18,7 +19,9 @@ public final class ResponseDefaults {
 
     public static void register(JavalinConfig cfg) {
         cfg.routes.after(ctx -> {
-            if (ctx.statusCode() == 204) ctx.res().setContentType(null);
+            // No body (a 204, or a 200 whose handler set nothing — /oauth/revoke) → no
+            // Content-Type; Go's net/http sends none when nothing was written.
+            if (ctx.statusCode() == 204 || ctx.resultInputStream() == null) ctx.res().setContentType(null);
         });
     }
 }

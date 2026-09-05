@@ -118,19 +118,19 @@ public final class TwoFactorApi {
             } catch (RuntimeException e) {
                 LOG.error("2FA verify backoff check failed; refusing", e);
                 AuthAlarms.backoffStoreError();
-                HttpError.write(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly", Map.of());
+                HttpError.writeLoginSurface(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly");
                 return;
             }
             if (!d.allowed()) {
                 ctx.header("Retry-After", Long.toString(d.retryAfterSecs()));
-                HttpError.write(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later", Map.of());
+                HttpError.writeLoginSurface(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later");
                 return;
             }
         }
 
         String method = req.method() == null ? "" : req.method().trim().toUpperCase(Locale.ROOT);
         if (!method.equals("TOTP") && !method.equals("EMAIL_PIN") && !method.equals("RECOVERY_CODE")) {
-            HttpError.write(ctx, 400, "INVALID_METHOD", "unknown 2FA method", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_METHOD", "unknown 2FA method");
             return;
         }
         // Ruling I-Q12: verify enforces the domain's allowed-method list —
@@ -138,7 +138,7 @@ public final class TwoFactorApi {
         if (!method.equals("RECOVERY_CODE")) {
             MfaMethod m = MfaMethod.valueOf(method);
             if (!s.policy().evaluate(p.email()).permits(m)) {
-                HttpError.write(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(m), Map.of());
+                HttpError.writeLoginSurface(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(m));
                 return;
             }
         }
@@ -152,7 +152,7 @@ public final class TwoFactorApi {
             };
         } catch (RuntimeException e) {
             LOG.error("2FA verify failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "VERIFY_FAILED", "could not verify code", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "VERIFY_FAILED", "could not verify code");
             return;
         }
         if (!ok) {
@@ -222,14 +222,14 @@ public final class TwoFactorApi {
         Principal p = op.get();
         String email = p.email();
         if (email == null || email.isBlank()) {
-            HttpError.write(ctx, 400, "NO_EMAIL", "account has no email", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL", "account has no email");
             return;
         }
         try {
             s.mfa().sendLoginEmailPin(p.id(), email);
         } catch (RuntimeException e) {
             LOG.error("send login email pin failed principal={}", p.id(), e);
-            HttpError.write(ctx, 502, "EMAIL_SEND_FAILED", "could not send code", Map.of());
+            HttpError.writeLoginSurface(ctx, 502, "EMAIL_SEND_FAILED", "could not send code");
             return;
         }
         ctx.json(Map.of("message", "A verification code has been sent to your email."));
@@ -254,7 +254,7 @@ public final class TwoFactorApi {
         }
         Principal p = op.get();
         if (!s.policy().evaluate(p.email()).permits(MfaMethod.TOTP)) {
-            HttpError.write(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.TOTP), Map.of());
+            HttpError.writeLoginSurface(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.TOTP));
             return;
         }
         Mfa.TotpEnrollment enr;
@@ -282,7 +282,7 @@ public final class TwoFactorApi {
             return;
         }
         if (!ok) {
-            HttpError.write(ctx, 400, "INVALID_CODE", "that code didn't match — try again", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_CODE", "that code didn't match — try again");
             return;
         }
         s.notifier().twoFactorEnrolled(p.email(), MfaMethod.TOTP);
@@ -298,12 +298,12 @@ public final class TwoFactorApi {
         }
         Principal p = op.get();
         if (!s.policy().evaluate(p.email()).permits(MfaMethod.EMAIL_PIN)) {
-            HttpError.write(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.EMAIL_PIN), Map.of());
+            HttpError.writeLoginSurface(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.EMAIL_PIN));
             return;
         }
         String email = p.email();
         if (email == null || email.isBlank()) {
-            HttpError.write(ctx, 400, "NO_EMAIL", "account has no email", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL", "account has no email");
             return;
         }
         try {
@@ -330,7 +330,7 @@ public final class TwoFactorApi {
             return;
         }
         if (!ok) {
-            HttpError.write(ctx, 400, "INVALID_CODE", "that code didn't match — try again", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_CODE", "that code didn't match — try again");
             return;
         }
         s.notifier().twoFactorEnrolled(p.email(), MfaMethod.EMAIL_PIN);
@@ -345,14 +345,14 @@ public final class TwoFactorApi {
     private static void writeEnrollErr(Context ctx, RuntimeException e) {
         switch (e) {
             case Mfa.AlreadyEnrolled ignored ->
-                    HttpError.write(ctx, 409, "ALREADY_ENROLLED", "that method is already set up", Map.of());
+                    HttpError.writeLoginSurface(ctx, 409, "ALREADY_ENROLLED", "that method is already set up");
             case Mfa.EncryptionUnavailable ignored ->
-                    HttpError.write(ctx, 503, "TOTP_UNAVAILABLE", "authenticator-app 2FA is not available", Map.of());
+                    HttpError.writeLoginSurface(ctx, 503, "TOTP_UNAVAILABLE", "authenticator-app 2FA is not available");
             case Mfa.NoPendingEnrollment ignored ->
-                    HttpError.write(ctx, 400, "NO_PENDING_ENROLLMENT", "start enrollment first", Map.of());
+                    HttpError.writeLoginSurface(ctx, 400, "NO_PENDING_ENROLLMENT", "start enrollment first");
             default -> {
                 LOG.error("2FA enrolment error", e);
-                HttpError.write(ctx, 500, "ENROLL_FAILED", "could not complete enrollment", Map.of());
+                HttpError.writeLoginSurface(ctx, 500, "ENROLL_FAILED", "could not complete enrollment");
             }
         }
     }
@@ -393,7 +393,7 @@ public final class TwoFactorApi {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
             LOG.error("2FA status load failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "STATUS_FAILED", "could not load 2FA status", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "STATUS_FAILED", "could not load 2FA status");
             return;
         }
         DomainPolicy dp = s.policy().evaluate(p.email());
@@ -422,7 +422,7 @@ public final class TwoFactorApi {
         }
         Principal p = op.get();
         if (!s.policy().evaluate(p.email()).permits(MfaMethod.TOTP)) {
-            HttpError.write(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.TOTP), Map.of());
+            HttpError.writeLoginSurface(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.TOTP));
             return;
         }
         Mfa.TotpEnrollment enr;
@@ -450,7 +450,7 @@ public final class TwoFactorApi {
             return;
         }
         if (!ok) {
-            HttpError.write(ctx, 400, "INVALID_CODE", "that code didn't match — try again", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_CODE", "that code didn't match — try again");
             return;
         }
         s.notifier().twoFactorEnrolled(p.email(), MfaMethod.TOTP);
@@ -465,12 +465,12 @@ public final class TwoFactorApi {
         }
         Principal p = op.get();
         if (!s.policy().evaluate(p.email()).permits(MfaMethod.EMAIL_PIN)) {
-            HttpError.write(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.EMAIL_PIN), Map.of());
+            HttpError.writeLoginSurface(ctx, 403, "METHOD_NOT_ALLOWED", methodNotAllowedMessage(MfaMethod.EMAIL_PIN));
             return;
         }
         String email = p.email();
         if (email == null || email.isBlank()) {
-            HttpError.write(ctx, 400, "NO_EMAIL", "account has no email", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL", "account has no email");
             return;
         }
         try {
@@ -497,7 +497,7 @@ public final class TwoFactorApi {
             return;
         }
         if (!ok) {
-            HttpError.write(ctx, 400, "INVALID_CODE", "that code didn't match — try again", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_CODE", "that code didn't match — try again");
             return;
         }
         s.notifier().twoFactorEnrolled(p.email(), MfaMethod.EMAIL_PIN);
@@ -516,7 +516,7 @@ public final class TwoFactorApi {
             String raw = ctx.pathParam("method");
             method = MfaMethod.valueOf(raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            HttpError.write(ctx, 400, "INVALID_METHOD", "unknown 2FA method", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "INVALID_METHOD", "unknown 2FA method");
             return;
         }
         List<MfaMethod> confirmed;
@@ -524,7 +524,7 @@ public final class TwoFactorApi {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
             LOG.error("2FA remove-method load failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "REMOVE_FAILED", "could not load methods", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "REMOVE_FAILED", "could not load methods");
             return;
         }
         // Policy guard: a 2FA-required user can't drop their last confirmed
@@ -532,8 +532,8 @@ public final class TwoFactorApi {
         // delete so a required domain never observes a momentary zero-factor
         // state (mutant 4: dropping this check must fail its own test).
         if (s.policy().evaluate(p.email()).requires2fa() && lastConfirmedFactor(confirmed, method)) {
-            HttpError.write(ctx, 409, "LAST_FACTOR",
-                    "your organisation requires 2FA — add another method before removing this one", Map.of());
+            HttpError.writeLoginSurface(ctx, 409, "LAST_FACTOR",
+                    "your organisation requires 2FA — add another method before removing this one");
             return;
         }
         boolean removed;
@@ -541,7 +541,7 @@ public final class TwoFactorApi {
             removed = s.mfa().removeMethod(p.id(), method);
         } catch (RuntimeException e) {
             LOG.error("2FA remove-method failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "REMOVE_FAILED", "could not remove method", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "REMOVE_FAILED", "could not remove method");
             return;
         }
         if (!removed) {
@@ -571,11 +571,11 @@ public final class TwoFactorApi {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
             LOG.error("2FA recovery-code regen: load methods failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "REGEN_FAILED", "could not load methods", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "REGEN_FAILED", "could not load methods");
             return;
         }
         if (!confirmed.contains(MfaMethod.TOTP)) {
-            HttpError.write(ctx, 400, "NO_TOTP", "recovery codes apply to authenticator-app 2FA", Map.of());
+            HttpError.writeLoginSurface(ctx, 400, "NO_TOTP", "recovery codes apply to authenticator-app 2FA");
             return;
         }
         List<String> codes;
@@ -583,7 +583,7 @@ public final class TwoFactorApi {
             codes = s.mfa().generateRecoveryCodes(p.id());
         } catch (RuntimeException e) {
             LOG.error("2FA recovery-code regen failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "REGEN_FAILED", "could not generate recovery codes", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "REGEN_FAILED", "could not generate recovery codes");
             return;
         }
         s.notifier().recoveryCodesRegenerated(p.email());
@@ -611,7 +611,7 @@ public final class TwoFactorApi {
             devices = s.mfa().listTrustedDevices(p.id());
         } catch (RuntimeException e) {
             LOG.error("2FA trusted-device list failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "LIST_FAILED", "could not list devices", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "LIST_FAILED", "could not list devices");
             return;
         }
         ctx.json(Map.of("devices", devices.stream().map(TrustedDeviceView::of).toList()));
@@ -629,7 +629,7 @@ public final class TwoFactorApi {
             revoked = s.mfa().revokeTrustedDevice(p.id(), id);
         } catch (RuntimeException e) {
             LOG.error("2FA trusted-device revoke failed principal={}", p.id(), e);
-            HttpError.write(ctx, 500, "REVOKE_FAILED", "could not revoke device", Map.of());
+            HttpError.writeLoginSurface(ctx, 500, "REVOKE_FAILED", "could not revoke device");
             return;
         }
         if (!revoked) {
@@ -675,7 +675,7 @@ public final class TwoFactorApi {
 
     private static void unauthorized(Context ctx, String message) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
-        HttpError.write(ctx, 401, "UNAUTHENTICATED", message, Map.of());
+        HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 
     private static void recordAttempt(State s, AttemptOutcome outcome, String identifier, String principalId, String ip, String reason) {
@@ -703,7 +703,7 @@ public final class TwoFactorApi {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (JacksonException e) {
-            throw HttpError.invalidJson(e.getOriginalMessage() == null ? "malformed request body" : e.getOriginalMessage());
+            throw HttpError.loginSurfaceInvalidJson(e.getOriginalMessage() == null ? "malformed request body" : e.getOriginalMessage());
         }
     }
 }

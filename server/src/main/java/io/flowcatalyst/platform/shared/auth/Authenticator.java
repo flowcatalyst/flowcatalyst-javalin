@@ -192,7 +192,9 @@ public final class Authenticator implements Handler {
                 Scope.parse(claims.tier()),
                 claims.email(),
                 claims.name(),
-                clients.ids(),
+                // Go keeps the anchor wildcard verbatim in AuthContext.Clients and
+                // /api/me echoes it (parity S2); visibility is by tier, so it is inert.
+                clients.wildcard() ? List.of(ScopeClaim.WILDCARD) : clients.ids(),
                 claims.roles(),
                 applications.ids(),
                 // The wildcard is the claim's own way of saying "every

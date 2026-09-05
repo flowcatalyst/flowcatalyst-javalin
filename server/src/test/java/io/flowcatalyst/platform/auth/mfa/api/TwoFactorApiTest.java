@@ -254,7 +254,7 @@ class TwoFactorApiTest {
                 Json.writeLine(Map.of("mfaToken", mfaToken, "method", "EMAIL_PIN", "code", "000000")),
                 "Content-Type", "application/json");
         assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
-        assertThat(json(r).get("error").asString()).isEqualTo("METHOD_NOT_ALLOWED");
+        assertThat(json(r).get("code").asString()).isEqualTo("METHOD_NOT_ALLOWED");
     }
 
     @Test
@@ -280,7 +280,7 @@ class TwoFactorApiTest {
         String pid = principal(email);
         var r = http.delete("/auth/2fa/methods/EMAIL_PIN", "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(404);
-        assertThat(json(r).get("error").asString()).isEqualTo("TwoFactorMethod_NOT_FOUND");
+        assertThat(json(r).get("error").asString()).isEqualTo("TwoFactorMethod_NOT_FOUND"); // platform envelope: a Java-only 404
     }
 
     @Test
@@ -289,7 +289,7 @@ class TwoFactorApiTest {
         String pid = principal(email);
         var r = http.delete("/auth/2fa/trusted-devices/does-not-exist", "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(404);
-        assertThat(json(r).get("error").asString()).isEqualTo("TrustedDevice_NOT_FOUND");
+        assertThat(json(r).get("error").asString()).isEqualTo("TrustedDevice_NOT_FOUND"); // platform envelope: a Java-only 404 (Go answered 200)
     }
 
     // ── mutant 3: no cookie when the domain disallows remembering (I-Q11) ──
@@ -318,7 +318,7 @@ class TwoFactorApiTest {
         enrolTotpDirect(pid);
         var r = http.delete("/auth/2fa/methods/TOTP", "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
-        assertThat(json(r).get("error").asString()).isEqualTo("LAST_FACTOR");
+        assertThat(json(r).get("code").asString()).isEqualTo("LAST_FACTOR");
         assertThat(MFA.confirmed(pid)).as("the factor survives the rejected removal").containsExactly(MfaMethod.TOTP);
     }
 
@@ -342,7 +342,7 @@ class TwoFactorApiTest {
         String pid = principal(email);
         var r = http.delete("/auth/2fa/methods/TOTP", "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(404);
-        assertThat(json(r).get("error").asString()).isNotEqualTo("LAST_FACTOR");
+        assertThat(json(r).get("error").asString()).isNotEqualTo("LAST_FACTOR"); // platform envelope: a Java-only 404
     }
 
     // ── review: a backoff-store failure at verify refuses and is counted (C-Q23) ──
@@ -366,7 +366,7 @@ class TwoFactorApiTest {
                     Json.writeLine(Map.of("mfaToken", mfaToken, "method", "TOTP", "code", "000000")),
                     "Content-Type", "application/json");
             assertThat(r.statusCode()).as("ruling C-Q23: the lock is never switched off by a store error").isEqualTo(503);
-            assertThat(json(r).get("error").asString()).isEqualTo("BACKOFF_UNAVAILABLE");
+            assertThat(json(r).get("code").asString()).isEqualTo("BACKOFF_UNAVAILABLE");
             assertThat(io.flowcatalyst.platform.auth.login.AuthAlarms.backoffStoreErrors()).isEqualTo(before + 1);
         }
     }
@@ -412,7 +412,7 @@ class TwoFactorApiTest {
                 Json.writeLine(Map.of("mfaToken", mfaToken, "method", "PASSKEY", "code", "000000")),
                 "Content-Type", "application/json");
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("INVALID_METHOD");
+        assertThat(json(r).get("code").asString()).isEqualTo("INVALID_METHOD");
     }
 
     @Test
@@ -421,7 +421,7 @@ class TwoFactorApiTest {
                 Json.writeLine(Map.of("mfaToken", "not-a-token", "method", "TOTP", "code", "000000")),
                 "Content-Type", "application/json");
         assertThat(r.statusCode()).isEqualTo(401);
-        assertThat(json(r).get("error").asString()).isEqualTo("UNAUTHENTICATED");
+        assertThat(json(r).get("code").asString()).isEqualTo("UNAUTHENTICATED");
         assertThat(json(r).get("message").asString()).isEqualTo("Invalid or expired session");
         assertThat(r.headers().firstValue("WWW-Authenticate")).contains("Cookie realm=\"fc_session\"");
     }
@@ -462,7 +462,7 @@ class TwoFactorApiTest {
         String pid = principal(email);
         var r = http.post("/auth/2fa/recovery-codes/regenerate", null, "Cookie", sessionCookieFor(pid, email));
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("NO_TOTP");
+        assertThat(json(r).get("code").asString()).isEqualTo("NO_TOTP");
 
         enrolTotpDirect(pid);
         var ok = http.post("/auth/2fa/recovery-codes/regenerate", null, "Cookie", sessionCookieFor(pid, email));
@@ -509,7 +509,7 @@ class TwoFactorApiTest {
     void malformedJsonIs400InvalidJson() {
         var r = http.post("/auth/2fa/verify", "{not json", "Content-Type", "application/json");
         assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(json(r).get("error").asString()).isEqualTo("INVALID_JSON");
+        assertThat(json(r).get("code").asString()).isEqualTo("INVALID_JSON");
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────
