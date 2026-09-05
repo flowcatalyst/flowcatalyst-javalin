@@ -551,10 +551,14 @@ harness smells rather than treated as regressions:
   under load is the likely cause. Worth catching the real exception in the
   fixture so the report names it instead of the follow-on class-init error.
 - `ServiceAccountApiTest`: all 15 requests answered **404** in 0.08 s, and
-  the one test expecting 404 passed. `TestHttp.awaitReady` discards the
-  probe's status, so a probe cannot tell "my server" from "a server"; if
-  this recurs, make the ready route answer a per-instance nonce and assert
-  it, which would turn a port mix-up into a named failure.
+  the one test expecting 404 passed. **Root cause found later the same
+  day:** a third run had `ProcessApiTest` read `This is a SOCKS Proxy,
+  Not An HTTP Proxy` — the JDK client's `localhost` resolved to an address
+  family on which a local proxy, not Jetty, held the ephemeral port.
+  `TestHttp` now binds and connects on `127.0.0.1` and its readiness probe
+  must answer a per-instance nonce, rebinding on a foreign answer
+  (`TestHttp.ForeignServer`). The outbox fixture one-off is still
+  unexplained and still worth catching the real exception for.
 
 ## Deferred out of the port
 

@@ -25,16 +25,51 @@ public final class TestHttp implements AutoCloseable {
     /// unmistakable and to collide with nothing a test would mount.
     private static final String READY_PATH = "/__testhttp_ready";
 
+    /// The loopback address, used for both the bind and every request. A
+    /// bare `localhost` can resolve differently for the two sides (IPv4 vs
+    /// IPv6), and a port that is free on one family can be another
+    /// process's on the other — on 2026-09-05 a whole test class talked to
+    /// a local SOCKS proxy that way and read its HTML as 404s.
+    static final String HOST = "127.0.0.1";
+
+    /// Each instance answers its readiness probe with its own nonce, so the
+    /// probe proves it reached THIS server and not whatever else holds the
+    /// port; a foreign answer rebinds on a fresh port.
+    private final String nonce = java.util.UUID.randomUUID().toString();
+
     public TestHttp(Consumer<JavalinConfig> configure) {
-        this.app = Javalin.create(cfg -> {
-            cfg.startup.showJavalinBanner = false;
-            cfg.jsonMapper(new JavalinJsonMapper());
-            // Registered BEFORE the caller's routes so a catch-all of theirs
-            // still wins for every other path.
-            cfg.routes.get(READY_PATH, ctx -> ctx.result("ready"));
-            configure.accept(cfg);
-        }).start(0);
-        awaitReady(READY_PATH);
+        Javalin started = null;
+        AssertionError last = null;
+        for (int attempt = 0; attempt < 3 && started == null; attempt++) {
+            Javalin candidate = Javalin.create(cfg -> {
+                cfg.startup.showJavalinBanner = false;
+                cfg.jsonMapper(new JavalinJsonMapper());
+                // Registered BEFORE the caller's routes so a catch-all of theirs
+                // still wins for every other path.
+                cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));
+                configure.accept(cfg);
+            }).start(HOST, 0);
+            try {
+                awaitReady(candidate.port(), READY_PATH);
+                started = candidate;
+            } catch (ForeignServer e) {
+                last = e;
+                candidate.stop();
+            }
+        }
+        if (started == null) {
+            throw last;
+        }
+        this.app = started;
+    }
+
+    /// The readiness probe answered, but not with this instance's nonce:
+    /// another process owns the port on the address the client used.
+    static final class ForeignServer extends AssertionError {
+        ForeignServer(int port, String body) {
+            super("port " + port + " answered the readiness probe with a foreign body: "
+                    + (body.length() > 80 ? body.substring(0, 80) + "…" : body));
+        }
     }
 
     public int port() {
@@ -74,12 +109,19 @@ public final class TestHttp implements AutoCloseable {
     /// Several bounded probes inside a generous budget is what makes the
     /// retry loop actually retry.
     public void awaitReady(String probePath) {
+        awaitReady(port(), probePath);
+    }
+
+    private void awaitReady(int port, String probePath) {
         long deadline = System.nanoTime() + READY_BUDGET.toNanos();
         RuntimeException last = null;
         while (System.nanoTime() < deadline) {
             try {
-                client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port() + probePath))
-                        .GET().timeout(READY_PROBE_TIMEOUT).build(), HttpResponse.BodyHandlers.discarding());
+                var r = client.send(HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port + probePath))
+                        .GET().timeout(READY_PROBE_TIMEOUT).build(), HttpResponse.BodyHandlers.ofString());
+                if (probePath.equals(READY_PATH) && !nonce.equals(r.body())) {
+                    throw new ForeignServer(port, r.body());
+                }
                 return;
             } catch (IOException e) {
                 last = new UncheckedIOException(e);
@@ -97,7 +139,7 @@ public final class TestHttp implements AutoCloseable {
     private static final Duration READY_BUDGET = Duration.ofSeconds(20);
 
     public HttpResponse<String> get(String path, String... headers) {
-        return send(HttpRequest.newBuilder(URI.create("http://localhost:" + port() + path)).GET(), headers);
+        return send(HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path)).GET(), headers);
     }
 
     public HttpResponse<String> post(String path, String body, String... headers) {
@@ -115,7 +157,7 @@ public final class TestHttp implements AutoCloseable {
     /// Any method; a non-null body is sent as `application/json` unless a
     /// `Content-Type` header is given explicitly.
     public HttpResponse<String> send(String method, String path, String body, String... headers) {
-        var b = HttpRequest.newBuilder(URI.create("http://localhost:" + port() + path));
+        var b = HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path));
         if (body == null) {
             b.method(method, HttpRequest.BodyPublishers.noBody());
         } else {
