@@ -37,7 +37,10 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **fcdev `mcp`, `outbox` + `create-table`, `upgrade`** (Phase 4) | spec `fcdev-commands.md` §2–§4 by orchestrator; Sonnet (five mutants; found that worktree agents' `mvn install` into the shared `~/.m2` clobber each other — now in `CLAUDE.md`); orchestrator added two tests + mutants |
 | `(merge)` | **fcdev `init`** (Phase 4, last stub) | spec `fcdev-commands.md` §1; Sonnet (four mutants; two judgement calls reported, both sound); orchestrator resolved the stub-file conflict, wrote the §4 docs, killed the skipped-admin mutant |
 | `a9e583f` | **Phase 3 A1 — token issuance core + `DbClaimsResolver`** | orchestrator; six mutants |
-| `(next)` | **Phase 3 A2 — session surface** (`/auth/check-domain` ×2, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/login-history`; backoff as a real lock, fail-closed store) | orchestrator; five mutants; Go lock-anchor deviation recorded |
+| `181630a` | **Phase 3 A2 — session surface** (`/auth/check-domain` ×2, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/login-history`; backoff as a real lock, fail-closed store) | orchestrator; five mutants; Go lock-anchor deviation recorded |
+| `6b26f29` | **Phase 3 A3 — OAuth-client aggregate + admin API** (12 routes; `acceptsSecret` both-compares; empty grant list ⇒ none, C-Q20) | Sonnet in a worktree, strong; six mutants (five agent, one orchestrator on the null-vs-empty junction split); coverage 229/245 |
+| `4643de0` | **Phase 3 A4a — grant store, refresh rotation, rate-limit store + governor** | orchestrator; mutants; JSONB/precision test pitfalls documented in the tests |
+| `(next)` | **Phase 3 A4b — the OAuth / OIDC provider** (`/oauth/authorize`, `/oauth/token` ×3 grants + developer branch, `/oauth/introspect`, `/oauth/revoke`, `/oauth/userinfo`, discovery, JWKS, `/auth/refresh`; per-IP and per-client throttles; A-22 previous-secret signal) | orchestrator; 42 HTTP tests over embedded Postgres, six mutants killed (state ≤116, code↔client binding, previous-secret stamp, apiAccess ceiling narrowing, refresh client binding, introspection `client_id` = azp); wired in `Platform` |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events
@@ -47,10 +50,17 @@ the optional native fcdev build.
 
 **Phase 3 (auth) started 2026-09-05 after every ruling was given.** Landed:
 A1 token issuance + store-backed claims resolver (`a9e583f`), A2 the
-session surface with the enforced backoff lock (see the row below). **In
-flight:** A3 OAuth-client aggregate (Sonnet, own worktree). Found while
-porting A2: Go anchors the enforced lock to the oldest failure of the
-ceiling set, not the last failure the spec names — `docs/backlog.md`.
+session surface with the enforced backoff lock (`181630a`), A3 the
+OAuth-client aggregate (`6b26f29`, Sonnet), A4a the grant store, refresh
+rotation and rate limiting (`4643de0`), A4b the whole OAuth / OIDC provider
+(row below). Found while porting A2: Go anchors the enforced lock to the
+oldest failure of the ceiling set, not the last failure the spec names —
+`docs/backlog.md`. **Next:** A5 MFA (orchestrator core + Sonnet routes),
+then the purger sweeps for `iam_rate_limit_events` + the four auth tables,
+the login-attempt partition readiness check (C-Q23), then Batch B (OIDC
+bridge, portal) and Batch C (WebAuthn, password reset, approvals, mail).
+Until the portal unit lands, `/oauth/token` refuses a `ptu_` code with
+`invalid_grant "Portal subjects are not supported"`.
 
 Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was

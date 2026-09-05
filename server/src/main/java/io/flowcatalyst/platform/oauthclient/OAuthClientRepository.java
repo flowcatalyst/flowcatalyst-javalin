@@ -218,6 +218,23 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
         txDsl.deleteFrom(T).where(T.ID.eq(c.id())).execute();
     }
 
+    /// The rotation signal (`docs/spec/auth-core.md` §5, ruling A-22): a
+    /// client that authenticated with its superseded secret is stamped so
+    /// an operator can see who has not redeployed. Coalesced: the write is
+    /// skipped while the stored stamp is later than `unlessAfter`, so a
+    /// busy client does not turn every token request into an UPDATE.
+    /// Runs in its own autocommit statement — the auth flow's outcome must
+    /// not depend on it.
+    ///
+    /// @return whether a row was stamped
+    public boolean touchPreviousSecretUsed(String id, Instant at, Instant unlessAfter) {
+        return dsl.update(T)
+                .set(T.PREVIOUS_SECRET_LAST_USED_AT, utcOrNull(at))
+                .where(T.ID.eq(id))
+                .and(T.PREVIOUS_SECRET_LAST_USED_AT.isNull().or(T.PREVIOUS_SECRET_LAST_USED_AT.lt(utcOrNull(unlessAfter))))
+                .execute() == 1;
+    }
+
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static OAuthClient toEntity(OauthClientsRecord row, List<String> redirectUris, List<String> postLogoutUris,

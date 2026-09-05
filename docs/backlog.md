@@ -527,6 +527,25 @@ archival is separate), or purge on a retention of days — well above
 `GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
 limiter? See `docs/spec/auth-retention.md` §5.
 
+## Full-suite one-offs under machine load (2026-09-05)
+
+Two consecutive `mvn -pl server clean test` runs on main each failed in
+one unrelated class while the host load average sat at 8–10 (the owner's
+IDEs), and the third run was green (3245 tests). Neither reproduced alone,
+and they were different classes each time, so they are recorded here as
+harness smells rather than treated as regressions:
+
+- `OutboxFixture.<clinit>` failed (every outbox test then reported
+  `NoClassDefFoundError`); the fixture's static block runs
+  `initSchema()` against the shared embedded Postgres, and a slow start
+  under load is the likely cause. Worth catching the real exception in the
+  fixture so the report names it instead of the follow-on class-init error.
+- `ServiceAccountApiTest`: all 15 requests answered **404** in 0.08 s, and
+  the one test expecting 404 passed. `TestHttp.awaitReady` discards the
+  probe's status, so a probe cannot tell "my server" from "a server"; if
+  this recurs, make the ready route answer a per-instance nonce and assert
+  it, which would turn a port mix-up into a named failure.
+
 ## Deferred out of the port
 
 - **Outbox Mongo backend** (`FC_OUTBOX_BACKEND=mongo`, Go

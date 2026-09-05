@@ -12,6 +12,21 @@ import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.login.MfaChallenge;
 import io.flowcatalyst.platform.auth.login.LoginApi;
+import io.flowcatalyst.platform.auth.grant.GrantStore;
+import io.flowcatalyst.platform.auth.grant.RefreshRotation;
+import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
+import io.flowcatalyst.platform.auth.oauth.AuthRefreshApi;
+import io.flowcatalyst.platform.auth.oauth.OAuthAuthorizeApi;
+import io.flowcatalyst.platform.auth.oauth.OAuthDiscoveryApi;
+import io.flowcatalyst.platform.auth.oauth.OAuthIntrospectionApi;
+import io.flowcatalyst.platform.auth.oauth.OAuthIpLimits;
+import io.flowcatalyst.platform.auth.oauth.OAuthState;
+import io.flowcatalyst.platform.auth.oauth.OAuthTokenApi;
+import io.flowcatalyst.platform.auth.oauth.OAuthUserinfoApi;
+import io.flowcatalyst.platform.auth.ratelimit.Governor;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimitStores;
+import io.flowcatalyst.platform.auth.token.ClaimLabels;
 import io.flowcatalyst.platform.auth.login.BackoffPolicy;
 import io.flowcatalyst.platform.auth.login.BackoffCheck;
 import io.flowcatalyst.platform.bff.DashboardRepository;
@@ -177,15 +192,15 @@ public final class Platform {
                 new IdentityProviderRepository(pool), loginAttemptRepo, backoff, tokenIssuer,
                 new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), MfaChallenge.none(),
                 new SessionCookie(!env.authAllowTestHeaders()), pool, Clock.systemUTC()));
-        // TODO(port): password reset (/auth/password-reset/*), /oauth/authorize.
+        // TODO(port): password reset (/auth/password-reset/*). /oauth/authorize and
+        //   /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
         // TODO(port): the registrations from wire_routes.go still missing are all Phase 3
         //   (docs/port-plan.md, gated on docs/auth-rulings.md):
-        //   oauth token/introspect/revoke/userinfo/discovery, OIDC bridge + portal auth,
-        //   portalusers, resetapproval, webauthn, clientselection; plus the CORS filter
-        //   (Phase 4). Everything else below is registered in Go's order.
+        //   OIDC bridge + portal auth, portalusers, resetapproval, webauthn,
+        //   clientselection. Everything else below is registered in Go's order.
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
@@ -288,6 +303,27 @@ public final class Platform {
         OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
 
+        // The OAuth / OIDC provider (auth-core §6.2, §6.2a, §6.2b). /oauth/authorize
+        // and /auth/refresh are public (isPublicPath); the token, introspection,
+        // revocation, userinfo and discovery routes run INSIDE the authenticator, which
+        // lets a request with no credentials through and 401s an explicit bad bearer
+        // (ruling I-Q4). Per-IP throttles sit in front as `before` filters.
+        var envReader = EnvReader.system();
+        var grantStore = new GrantStore(pool);
+        var oauthState = new OAuthState(oauthClientRepo, loginPrincipalRepo, serviceAccountRepo, grantStore,
+                new RefreshRotation(grantStore, Clock.systemUTC()), tokenIssuer, new AccessTokenReader(buildVerifier()),
+                new DbClaimsResolver(loginPrincipalRepo, roleRepo), ClaimLabels.of(clientRepo, applicationRepo),
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), loginAttemptRepo,
+                RateLimitStores.build(envReader, pool), RateLimit.Policies.fromEnv(envReader),
+                new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC());
+        OAuthIpLimits.register(routes, oauthState, new Governor(Governor.Config.oauthTokenIp(envReader)));
+        OAuthAuthorizeApi.register(routes, oauthState);
+        OAuthTokenApi.register(routes, oauthState);
+        OAuthIntrospectionApi.register(routes, oauthState);
+        OAuthUserinfoApi.register(routes, oauthState);
+        OAuthDiscoveryApi.register(routes, oauthState);
+        AuthRefreshApi.register(routes, oauthState);
+
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
         // The SDK self-registration surface (docs/spec/sdksync.md). Registered
@@ -332,13 +368,19 @@ public final class Platform {
         return dispatchJobReaper;
     }
 
-    /// The bearer/cookie authenticator built from the signing keys: RS256,
-    /// current + previous public key, issuer == audience == `FC_JWT_ISSUER`.
-    private Authenticator buildAuthenticator() {
+    /// RS256 over the current + previous public key, issuer == audience ==
+    /// `FC_JWT_ISSUER`; shared by the authenticator and the provider's
+    /// token reader so the two can never disagree about a token.
+    private JwtVerifier buildVerifier() {
         var verificationKeys = signingKeys.rotation().verificationKeys().stream()
                 .map(SigningKeys.PublicKeyEntry::publicKey)
                 .toList();
-        var verifier = new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(), JwtVerifier.RsaKeys.of(verificationKeys)));
+        return new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(), JwtVerifier.RsaKeys.of(verificationKeys)));
+    }
+
+    /// The bearer/cookie authenticator over [#buildVerifier()].
+    private Authenticator buildAuthenticator() {
+        var verifier = buildVerifier();
         // The store-backed resolver: a cookie session is re-resolved from the
         // principal and role stores on every request, and a bearer that
         // carries roles but no scope has its permissions flattened from them
@@ -381,6 +423,7 @@ public final class Platform {
     static boolean isPublicPath(Context ctx) {
         String p = ctx.path();
         return p.equals("/auth/login") || p.equals("/auth/logout") || p.equals("/auth/check-domain")
+                || p.equals("/auth/refresh")
                 || p.startsWith("/auth/password-reset/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")

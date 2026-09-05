@@ -148,8 +148,10 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 **Progress (2026-09-05, gate cleared the same day):**
 - ~~A1 token issuance core + store-backed `ClaimsResolver`~~ **Done** (`a9e583f`, orchestrator).
 - ~~A2 session surface: check-domain, login with the enforced backoff lock, logout, me, login-history~~ **Done** (orchestrator; `/auth/refresh` and change-password ride with the grant store and MFA units).
-- A3 OAuth-client aggregate — Sonnet, in flight.
-- Next: A4 OAuth provider (`/oauth/*`, grant store + rotation, rate limiting) — orchestrator; A5 MFA — orchestrator core + Sonnet routes.
+- ~~A3 OAuth-client aggregate~~ **Done** (`6b26f29`, Sonnet; coverage 229/245).
+- ~~A4a grant store, refresh rotation, rate-limit store + governor~~ **Done** (`4643de0`, orchestrator).
+- ~~A4b OAuth / OIDC provider: authorize, token (authorization_code / refresh_token / client_credentials + developer), introspect, revoke, userinfo, discovery, JWKS, `/auth/refresh`, per-IP + per-client throttles~~ **Done** (orchestrator; 42 HTTP tests, six mutants). Portal (`ptu_`) subjects are refused at the token endpoint until the portal unit lands.
+- Next: A5 MFA — orchestrator core + Sonnet routes; then purger sweeps (`iam_rate_limit_events`, four auth tables), the login-attempt partition readiness check (C-Q23), Batch B (OIDC bridge, portal), Batch C (WebAuthn, password reset, approvals, mail).
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP
