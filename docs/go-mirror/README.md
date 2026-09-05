@@ -49,3 +49,10 @@ Tests the Go side should add beyond the one included: backoff-store error →
 503 at login; verify with a disallowed method → 403; trusted-device list
 shape; `check-domain` without `authorizationUrl`; introspection `client_id`
 from `azp`.
+
+## 2026-09-06-go-fix-list.md
+
+Not a patch: the list of Go-side defects the parity corpus and the frontend
+e2e found, with file:line, the Java answer to converge on, and which
+allow-list entry each fix retires. Start with A1 (the seeder literal) — it
+unblocks the Go column of the e2e.
