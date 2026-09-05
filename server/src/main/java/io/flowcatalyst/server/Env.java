@@ -210,6 +210,14 @@ public record Env(
         // `FC_AUTH_ALLOW_TEST_HEADERS`, default false: enables the `X-FC-Test-Principal` dev fallback.
         boolean authAllowTestHeaders,
 
+        // ── CORS filter (spec docs/spec/cors.md §9) ────────────────────────
+        // `FC_CORS_CACHE_TTL_MS`, default 30000: how long the CORS filter's
+        // in-process allowlist cache is trusted before it re-reads
+        // `CorsOriginRepository.allowedOrigins()` — the fallback refresh for
+        // the multi-node case, alongside the same-node `onChange` invalidation
+        // fired by an add/delete.
+        long corsCacheTtlMs,
+
         // ── field encryption ───────────────────────────────────────────────
         // `FLOWCATALYST_APP_KEY`, no default: the AES-256-GCM key (`docs/spec/encryption.md` §1);
         // `""` = field encryption disabled (plaintext secrets are refused, never stored raw).
@@ -349,6 +357,8 @@ public record Env(
                 e.get("FC_JWT_SIGNING_KEY_PATH"),
                 normalizedPreviousPublicKey(e),
                 e.bool("FC_AUTH_ALLOW_TEST_HEADERS", false),
+
+                e.longValue("FC_CORS_CACHE_TTL_MS", 30_000L),
 
                 e.get(Encryption.ENV_APP_KEY),
                 e.get(Encryption.ENV_APP_KEY_PREVIOUS),

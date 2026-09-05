@@ -92,6 +92,7 @@ class EnvTest {
         assertThat(env.jwtSigningKeyPath()).isEmpty();
         assertThat(env.jwtPreviousPublicKey()).isEmpty();
         assertThat(env.authAllowTestHeaders()).isFalse();
+        assertThat(env.corsCacheTtlMs()).isEqualTo(30_000L);
 
         assertThat(env.mcpPlatformUrl()).isEmpty();
         assertThat(env.mcpClientId()).isEmpty();
@@ -293,7 +294,8 @@ class EnvTest {
                 "FC_STANDBY_LOCK_KEY", "k", "FLOWCATALYST_DEV_MODE", "1", "FLOWCATALYST_CONFIG_URL", "http://cfg",
                 "FC_NOTIFY_WEBHOOK_URL", "http://hook", "FC_ALB_ENABLED", "true", "FC_ALB_TARGET_GROUP_ARN", "arn:x",
                 "FC_ALB_TARGET_PORT", "81", "FC_ALB_REGION", "eu-west-1", "FC_ALB_DEREGISTRATION_DELAY_SECONDS", "5",
-                "FLOWCATALYST_CLIENT_ID", "cid", "FLOWCATALYST_CLIENT_SECRET", "sec", "FC_WEBAUTHN_RP_ID", "example.com");
+                "FLOWCATALYST_CLIENT_ID", "cid", "FLOWCATALYST_CLIENT_SECRET", "sec", "FC_WEBAUTHN_RP_ID", "example.com",
+                "FC_CORS_CACHE_TTL_MS", "5000");
         assertThat(env.streamEnabled()).isTrue();
         assertThat(env.streamEventsEnabled()).isFalse();
         assertThat(env.streamDispatchJobsEnabled()).isTrue();
@@ -328,6 +330,7 @@ class EnvTest {
         assertThat(env.mcpClientId()).isEqualTo("cid");
         assertThat(env.mcpClientSecret()).isEqualTo("sec");
         assertThat(env.webauthnRpId()).isEqualTo("example.com");
+        assertThat(env.corsCacheTtlMs()).isEqualTo(5000L);
     }
 
     /// The field-encryption keys are read verbatim with no default, so an

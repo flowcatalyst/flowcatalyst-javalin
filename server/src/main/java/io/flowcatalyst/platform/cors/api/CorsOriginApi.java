@@ -38,11 +38,15 @@ public final class CorsOriginApi {
     private CorsOriginApi() {
     }
 
-    /// The handlers' dependencies.
-    public record State(CorsOriginRepository repo, UnitOfWork uow) {
+    /// The handlers' dependencies. `onChange` runs after every successful
+    /// add/delete (spec §9: the filter's [io.flowcatalyst.platform.cors.filter.CorsAllowlist]
+    /// invalidates its cache on the signal) — a no-op `Runnable` in tests
+    /// that do not care.
+    public record State(CorsOriginRepository repo, UnitOfWork uow, Runnable onChange) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(onChange, "onChange");
         }
     }
 
@@ -80,12 +84,14 @@ public final class CorsOriginApi {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(AddOriginRequest.class).toCommand();
         var event = AddOrigin.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        s.onChange().run();
         ctx.status(201).json(new CreatedResponse(event.originId()));
     }
 
     private static void delete(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteOrigin.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        s.onChange().run();
         ctx.status(204);
     }
 

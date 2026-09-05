@@ -74,6 +74,12 @@ public record EnvReader(Map<String, String> env) {
         return parseInt(get(alias)).orElse(def);
     }
 
+    /// `envInt`'s `long` counterpart: parse as a base-10 integer (optional
+    /// sign), `def` when unset or unparseable.
+    public long longValue(String key, long def) {
+        return parseLong(get(key)).orElse(def);
+    }
+
     /// `envBool`: `1/true/yes/on` → `true`, `0/false/no/off` → `false`
     /// (case-insensitive, surrounding whitespace ignored); anything else,
     /// including unset, → `def`.
@@ -123,6 +129,16 @@ public record EnvReader(Map<String, String> env) {
         if (v.isEmpty()) return Optional.empty();
         try {
             return Optional.of(Integer.parseInt(v));
+        } catch (NumberFormatException _) {
+            return Optional.empty();
+        }
+    }
+
+    /// [#parseInt], widened to `long`.
+    static Optional<Long> parseLong(String v) {
+        if (v.isEmpty()) return Optional.empty();
+        try {
+            return Optional.of(Long.parseLong(v));
         } catch (NumberFormatException _) {
             return Optional.empty();
         }

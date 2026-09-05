@@ -44,7 +44,7 @@ class CorsOriginApiTest {
             Authenticator.TEST_PERMISSIONS, "*"};
 
     private static final CorsOriginApi.State state = new CorsOriginApi.State(new CorsOriginRepository(TestPg.dataSource()),
-            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)), () -> { });
     private static TestHttp http;
 
     private static final String TS = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z";

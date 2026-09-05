@@ -21,6 +21,8 @@ import io.flowcatalyst.platform.ingest.api.IngestApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
+import io.flowcatalyst.platform.cors.filter.CorsAllowlist;
+import io.flowcatalyst.platform.cors.filter.CorsFilter;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
@@ -96,6 +98,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
@@ -143,6 +147,12 @@ public final class Platform {
         // ── cross-cutting ────────────────────────────────────────────────
         CorrelationId.install(routes);
         HttpError.install(routes);
+        // Built here, ahead of the authenticator, because the CORS filter (spec §9) must
+        // answer a preflight before the bearer check ever runs; CorsOriginApi.register
+        // below reuses the SAME repository instance and wires `onChange` to invalidate it.
+        var corsOriginRepo = new CorsOriginRepository(pool);
+        var corsAllowlist = new CorsAllowlist(corsOriginRepo::allowedOrigins, Duration.ofMillis(env.corsCacheTtlMs()), Clock.systemUTC());
+        routes.before(cors(new CorsFilter(corsAllowlist)));
         routes.before(authenticated(buildAuthenticator()));
 
         // ── public routes (outside the bearer middleware) ────────────────
@@ -174,8 +184,7 @@ public final class Platform {
         PlatformConfigApi.register(routes, new PlatformConfigApi.State(platformConfigRepo, new ConfigAccessRepository(pool), uow));
         var processRepo = new ProcessRepository(pool);
         ProcessApi.register(routes, new ProcessApi.State(processRepo, uow));
-        var corsOriginRepo = new CorsOriginRepository(pool);
-        CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow));
+        CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow, corsAllowlist::invalidate));
         AuditLogApi.register(routes, new AuditLogApi.State(new AuditLogRepository(pool)));
 
         var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
@@ -314,6 +323,17 @@ public final class Platform {
         return ctx -> {
             if (isPlatformPath(ctx) && !isPublicPath(ctx)) {
                 authenticator.handle(ctx);
+            }
+        };
+    }
+
+    /// Scopes the CORS filter (spec §9) to the platform surface, the same
+    /// way [#authenticated] scopes the authenticator — the SPA's own static
+    /// assets are same-origin and need no CORS headers.
+    static Handler cors(CorsFilter filter) {
+        return ctx -> {
+            if (isPlatformPath(ctx)) {
+                filter.handle(ctx);
             }
         };
     }
