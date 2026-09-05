@@ -490,27 +490,6 @@
     "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
   },
   {
-    "scenario": "bff*",
-    "step": "confinement-scheduled-job-list-scoped-to-own-client",
-    "pointer": "/total",
-    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
-    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "bff*",
-    "step": "confinement-scheduled-job-list-scoped-to-own-client",
-    "pointer": "/totalPages",
-    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
-    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "bff*",
-    "step": "confinement-scheduled-job-list-scoped-to-own-client",
-    "pointer": "/items/**",
-    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
-    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
-  },
-  {
     "scenario": "me-public-config*",
     "step": "public-platform",
     "pointer": "/platformName",
