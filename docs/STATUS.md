@@ -36,12 +36,21 @@ in its worktree; main's full suite is re-run after each merge.
 | `(merge)` | **JFR events** for the five Phase 2 loops (Phase 4) | spec `jfr-events.md` by orchestrator; Sonnet (seven mutants, a strong report — it found the spec in the main checkout when its worktree lacked it); orchestrator added the outbox `persisted=false` case and its mutant |
 | `(merge)` | **fcdev `mcp`, `outbox` + `create-table`, `upgrade`** (Phase 4) | spec `fcdev-commands.md` §2–§4 by orchestrator; Sonnet (five mutants; found that worktree agents' `mvn install` into the shared `~/.m2` clobber each other — now in `CLAUDE.md`); orchestrator added two tests + mutants |
 | `(merge)` | **fcdev `init`** (Phase 4, last stub) | spec `fcdev-commands.md` §1; Sonnet (four mutants; two judgement calls reported, both sound); orchestrator resolved the stub-file conflict, wrote the §4 docs, killed the skipped-admin mutant |
+| `a9e583f` | **Phase 3 A1 — token issuance core + `DbClaimsResolver`** | orchestrator; six mutants |
+| `(next)` | **Phase 3 A2 — session surface** (`/auth/check-domain` ×2, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/login-history`; backoff as a real lock, fail-closed store) | orchestrator; five mutants; Go lock-anchor deviation recorded |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events
 for the Phase 2 loops, and all four fcdev stubs landed** — rows above.
 Left in Phase 4: the pagination envelope (owner decision, wire change) and
-the optional native fcdev build. **In flight:** nothing; no worktrees.
+the optional native fcdev build.
+
+**Phase 3 (auth) started 2026-09-05 after every ruling was given.** Landed:
+A1 token issuance + store-backed claims resolver (`a9e583f`), A2 the
+session surface with the enforced backoff lock (see the row below). **In
+flight:** A3 OAuth-client aggregate (Sonnet, own worktree). Found while
+porting A2: Go anchors the enforced lock to the oldest failure of the
+ceiling set, not the last failure the spec names — `docs/backlog.md`.
 
 Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was

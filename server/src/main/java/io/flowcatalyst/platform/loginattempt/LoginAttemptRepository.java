@@ -178,6 +178,31 @@ public final class LoginAttemptRepository {
         return dsl.fetchCount(T, failuresOf(identifier, since));
     }
 
+    /// The most recent FAILURE for `identifier` (any IP) at or after `since` —
+    /// what the enforced lock is anchored to (`docs/spec/login-backoff-lock.md` §3).
+    public Optional<Instant> lastFailureAt(String identifier, Instant since) {
+        OffsetDateTime at = dsl.select(DSL.max(T.ATTEMPTED_AT)).from(T)
+                .where(failuresOf(identifier, since))
+                .fetchOne(0, OffsetDateTime.class);
+        return Optional.ofNullable(at).map(OffsetDateTime::toInstant);
+    }
+
+    /// The `ceiling`-th most recent FAILURE for `identifier` at or after
+    /// `since` — the failure whose arrival pushed the in-window count up to
+    /// the ceiling — or empty when fewer than `ceiling` failures exist in that
+    /// range (never tripped). Both the enforced lock and the window's own
+    /// expiry are anchored to this one timestamp (`docs/spec/login-backoff-lock.md`
+    /// §3, §5; Go `GlobalCeilingTrippedAt`).
+    public Optional<Instant> globalCeilingTrippedAt(String identifier, Instant since, int ceiling) {
+        if (ceiling < 1) throw new IllegalArgumentException("ceiling < 1: " + ceiling);
+        OffsetDateTime at = dsl.select(T.ATTEMPTED_AT).from(T)
+                .where(failuresOf(identifier, since))
+                .orderBy(T.ATTEMPTED_AT.desc())
+                .limit(1).offset(ceiling - 1)
+                .fetchOne(T.ATTEMPTED_AT);
+        return Optional.ofNullable(at).map(OffsetDateTime::toInstant);
+    }
+
     private static Condition failuresOf(String identifier, Instant since) {
         Objects.requireNonNull(identifier, "identifier");
         Objects.requireNonNull(since, "since");

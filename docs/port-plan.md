@@ -145,6 +145,12 @@ mutation-checked). **Sonnet** — `oauth-clients` (10 ops), `portal-users`
 (5), `reset-approvals` (3), `webauthn` route/DTO layer, `passwordreset`
 flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 
+**Progress (2026-09-05, gate cleared the same day):**
+- ~~A1 token issuance core + store-backed `ClaimsResolver`~~ **Done** (`a9e583f`, orchestrator).
+- ~~A2 session surface: check-domain, login with the enforced backoff lock, logout, me, login-history~~ **Done** (orchestrator; `/auth/refresh` and change-password ride with the grant store and MFA units).
+- A3 OAuth-client aggregate — Sonnet, in flight.
+- Next: A4 OAuth provider (`/oauth/*`, grant store + rotation, rate limiting) — orchestrator; A5 MFA — orchestrator core + Sonnet routes.
+
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP
 (RFC 6238, ±1 step, replay guard), e-mail PIN, recovery codes, trusted

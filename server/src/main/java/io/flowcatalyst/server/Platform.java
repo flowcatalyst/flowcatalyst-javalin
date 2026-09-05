@@ -8,6 +8,12 @@ import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.api.AuditLogApi;
 import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
+import io.flowcatalyst.platform.auth.token.TokenIssuer;
+import io.flowcatalyst.platform.auth.login.SessionCookie;
+import io.flowcatalyst.platform.auth.login.MfaChallenge;
+import io.flowcatalyst.platform.auth.login.LoginApi;
+import io.flowcatalyst.platform.auth.login.BackoffPolicy;
+import io.flowcatalyst.platform.auth.login.BackoffCheck;
 import io.flowcatalyst.platform.bff.DashboardRepository;
 import io.flowcatalyst.platform.bff.api.DashboardBff;
 import io.flowcatalyst.platform.bff.api.DeveloperBff;
@@ -157,7 +163,19 @@ public final class Platform {
         routes.before(authenticated(buildAuthenticator()));
 
         // ── public routes (outside the bearer middleware) ────────────────
-        // TODO(port): login endpoint public routes (/auth/login, /auth/logout), password reset (/auth/password-reset/*), /oauth/authorize.
+        // The session surface (auth-core §6.1): check-domain, login and logout
+        // are public; /auth/me and /auth/login-history run inside the
+        // authenticator (isPublicPath decides). /auth/refresh, change-password
+        // and the 2FA routes land with the grant store and the MFA unit.
+        var loginPrincipalRepo = new PrincipalRepository(pool);
+        var loginAttemptRepo = new LoginAttemptRepository(pool);
+        var tokenIssuer = new TokenIssuer(signingKeys, TokenIssuer.Config.of(env.jwtIssuer()));
+        var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(EnvReader.system()));
+        LoginApi.register(routes, new LoginApi.State(loginPrincipalRepo, new EmailDomainMappingRepository(pool),
+                new IdentityProviderRepository(pool), loginAttemptRepo, backoff, tokenIssuer,
+                new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), MfaChallenge.none(),
+                new SessionCookie(!env.authAllowTestHeaders()), pool, Clock.systemUTC()));
+        // TODO(port): password reset (/auth/password-reset/*), /oauth/authorize.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
@@ -351,7 +369,7 @@ public final class Platform {
     /// `registerPublicRoutes` + `registerSpecRoutes` in Go.
     static boolean isPublicPath(Context ctx) {
         String p = ctx.path();
-        return p.equals("/auth/login") || p.equals("/auth/logout")
+        return p.equals("/auth/login") || p.equals("/auth/logout") || p.equals("/auth/check-domain")
                 || p.startsWith("/auth/password-reset/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")
