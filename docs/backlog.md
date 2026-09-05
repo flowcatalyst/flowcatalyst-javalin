@@ -253,6 +253,15 @@ item names its origin; items marked **owner** need Andrew's call.
   table to the partition maintainer (Java: Phase 2 stream work) or accept the
   default-partition tail. Ruling wanted.
 
+- **Dispatch-job ingest is unusable by non-anchors.**
+  `internal/platform/shared/sdk/{dispatch_jobs_batch,dispatch_job_create}.go`
+  gate on `CanWritePermission(ac, "WRITE_DISPATCH_JOBS")` — a permission
+  string no seeded role grants (the catalogue has
+  `platform:messaging:batch:dispatch-jobs-write`) and `requirePermission`
+  has no aliases, so every non-anchor SDK service account gets 403
+  `PERMISSION_REQUIRED`. Java (`docs/spec/sdk-ingest.md` §5 D1) checks the
+  seeded permission — deliberate deviation. One-line Go fix.
+
 ## Owner questions collected from specs
 
 Each spec's "load-bearing or accident?" list, summarised; the full wording is
