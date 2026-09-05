@@ -716,3 +716,27 @@ Jackson 3 `ApiClient` + date handling (Jackson 3 databind reads RFC 3339
 from `sdk/pom.xml`. The `server` module keeps its Jackson 2 databind only
 for yubico's WebAuthn library, a separate matter. Small unit; do it before
 the SDK is published.
+
+## Owner questions raised 2026-09-06 (contract source, WebAuthn library)
+
+- **TypeBox as the source of the wire schemas.** Today the contract is the
+  OpenAPI lockfile Go's huma emits; the SPA generates TS types from it
+  (`openapi-ts`), the Java SDK generates models from it, the Java server's
+  request-schema-validation filter validates against it at runtime, and the
+  parity harness treats Go as the oracle. TypeBox could become the *source*
+  that produces that same OpenAPI document (TypeBox → JSON Schema → OpenAPI),
+  which keeps every consumer unchanged and gives TS runtime validators for
+  free. What it does not remove: the Java server's hand-written DTO records
+  (not generated today) and the Java SDK's generated models. Decision, not
+  code: which repo owns the contract, and it belongs after cutover while Go
+  is the oracle.
+- **A WebAuthn library without Jackson 2.** yubico `webauthn-server-core`
+  needs Jackson 2 databind at runtime (1.3 MB, runtime scope only; the
+  server's own JSON is Jackson 3). `webauthn4j` is the maintained
+  alternative and also depends on Jackson 2 (databind + CBOR). The only
+  Jackson-2-free path is our own verifier over what is already here
+  (`com.upokecenter:cbor`, Nimbus for COSE keys): clientDataJSON checks,
+  authenticator-data flags/counter, `none`/`packed` attestation, ES256/RS256/
+  EdDSA signatures — a few hundred lines plus FIDO test vectors, and the one
+  place a hand-rolled implementation earns a security review. Recommendation:
+  keep yubico until cutover; revisit with a dedicated review.
