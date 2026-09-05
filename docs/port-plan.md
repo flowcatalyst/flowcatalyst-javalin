@@ -151,12 +151,12 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 - ~~A3 OAuth-client aggregate~~ **Done** (`6b26f29`, Sonnet; coverage 229/245).
 - ~~A4a grant store, refresh rotation, rate-limit store + governor~~ **Done** (`4643de0`, orchestrator).
 - ~~A4b OAuth / OIDC provider: authorize, token (authorization_code / refresh_token / client_credentials + developer), introspect, revoke, userinfo, discovery, JWKS, `/auth/refresh`, per-IP + per-client throttles~~ **Done** (orchestrator; 42 HTTP tests, six mutants). Portal (`ptu_`) subjects are refused at the token endpoint until the portal unit lands.
-- ~~A5 MFA core~~ **Done** (`fa3a8a9`, orchestrator; 50 tests, seven mutants). A5 routes (14 `/auth/2fa/*` + change-password) — Sonnet, in flight on the brief `docs/process/briefs/2026-09-05-a5-mfa-routes.md`.
+- ~~A5 MFA core~~ **Done** (`fa3a8a9`, orchestrator; 50 tests, seven mutants). ~~A5 routes (14 `/auth/2fa/*` + change-password)~~ **Done** (`25c5a1f`, Sonnet + review).
 - ~~Purger sweeps (ten steps), the C-Q23 partition readiness check on `/health`, the backoff-store alarm counter~~ **Done** (orchestrator; five mutants).
 - ~~B1 OIDC bridge (§4)~~ **Done** (orchestrator; fake-IdP end-to-end test, seven mutants; wiring after the A5-routes merge).
 - ~~C1 mail transport (§9) + notification catalogue (§10)~~ **Done** (orchestrator; four mutants; wiring with the A5-routes merge).
 - ~~C2 password reset core (§8.1–§8.5)~~ **Done** (orchestrator; five mutants). Left for a Sonnet unit: the reset-approvals aggregate + `/api/reset-approvals` (§8.6, idle per I-Q19) and wiring the principal admin routes to `ResetLinks`.
-- Next: merge A5 routes; B2 portal plane (§5: `/portal/authorize`, `/portal/auth/*`, portal identities + `/api/portal-users`, the bridge's portal SSO start/sink, the `/oauth/token` `ptu_` branch) — Sonnet on a brief for the aggregate + admin API, orchestrator for the code issuance and the sink; Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
+- Next: wire the deferred orchestrator units in Platform; merge B2 portal plane (§5: `/portal/authorize`, `/portal/auth/*`, portal identities + `/api/portal-users`, the bridge's portal SSO start/sink, the `/oauth/token` `ptu_` branch) — Sonnet on a brief for the aggregate + admin API, orchestrator for the code issuance and the sink; Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP

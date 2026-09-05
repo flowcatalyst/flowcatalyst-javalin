@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.notify;
 
 import io.flowcatalyst.platform.mail.Mail;
 import io.flowcatalyst.platform.mail.MailService;
+import io.flowcatalyst.platform.auth.mfa.TwoFactorNotifier;
+import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
 import io.flowcatalyst.platform.principal.Notifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +15,7 @@ import java.util.function.Supplier;
 /// every send is best-effort — a blank recipient is a no-op, a transport
 /// failure is a warning, never an error to the caller. The brand name is
 /// the live platform name, falling back to `FlowCatalyst` (ruling I-Q16).
-public final class Notifications implements Notifier {
+public final class Notifications implements Notifier, TwoFactorNotifier {
 
     private static final Logger LOG = LoggerFactory.getLogger(Notifications.class);
 
@@ -58,12 +60,23 @@ public final class Notifications implements Notifier {
                         + "you'll be guided through setting it up.</p>");
     }
 
+    @Override
     public void passwordChanged(String to) {
         send(to, "Your password was changed", "<p>Your " + brand() + " password was just changed.</p>" + FOOTER);
     }
 
     public void portalPasswordChanged(String to) {
         send(to, "Your portal password was changed", "<p>Your portal password was just changed.</p>" + FOOTER);
+    }
+
+    @Override
+    public void twoFactorEnrolled(String to, MfaMethod method) {
+        twoFactorEnrolled(to, method == null ? "" : method.name());
+    }
+
+    @Override
+    public void twoFactorMethodRemoved(String to, MfaMethod method) {
+        twoFactorMethodRemoved(to, method == null ? "" : method.name());
     }
 
     public void twoFactorEnrolled(String to, String method) {
@@ -82,11 +95,13 @@ public final class Notifications implements Notifier {
                 "<p>Your two-factor authentication has been reset. You'll be asked to set it up again the next time you sign in.</p>" + FOOTER);
     }
 
+    @Override
     public void recoveryCodesRegenerated(String to) {
         send(to, "New recovery codes generated",
                 "<p>A new set of two-factor recovery codes was generated for your account. Your previous codes no longer work.</p>" + FOOTER);
     }
 
+    @Override
     public void recoveryCodeUsed(String to) {
         send(to, "A recovery code was used to sign in",
                 "<p>One of your two-factor recovery codes was just used to sign in.</p>" + FOOTER);
@@ -97,6 +112,7 @@ public final class Notifications implements Notifier {
                 "<p>A new passkey (security key / device) was registered to your account.</p>" + FOOTER);
     }
 
+    @Override
     public void newTrustedDevice(String to, String label) {
         String body = "<p>A device was just remembered so it can skip two-factor prompts.</p>";
         if (label != null && !label.isEmpty()) {
