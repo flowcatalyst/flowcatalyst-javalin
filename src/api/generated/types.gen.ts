@@ -839,6 +839,10 @@ export type CreateEventTypeRequest = {
      */
     clientId?: string;
     /**
+     * Events of this type are per-client
+     */
+    clientScoped?: boolean;
+    /**
      * Event type code in application:subdomain:aggregate:event format
      */
     code: string;
@@ -879,7 +883,7 @@ export type CreateIdentityProviderRequest = {
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
-    oidcMultiTenant: boolean;
+    oidcMultiTenant?: boolean;
     /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
@@ -2725,6 +2729,10 @@ export type UpdateEventTypeRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     */
+    clientScoped?: boolean;
     description?: string;
     name: string;
     [key: string]: unknown;
@@ -3398,6 +3406,10 @@ export type CreateEventTypeRequestWritable = {
      */
     clientId?: string;
     /**
+     * Events of this type are per-client
+     */
+    clientScoped?: boolean;
+    /**
      * Event type code in application:subdomain:aggregate:event format
      */
     code: string;
@@ -3434,7 +3446,7 @@ export type CreateIdentityProviderRequestWritable = {
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
-    oidcMultiTenant: boolean;
+    oidcMultiTenant?: boolean;
     /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
@@ -4452,6 +4464,10 @@ export type UpdateDispatchPoolRequestWritable = {
 };
 
 export type UpdateEventTypeRequestWritable = {
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     */
+    clientScoped?: boolean;
     description?: string;
     name: string;
     [key: string]: unknown;
@@ -6901,6 +6917,60 @@ export type ListDispatchJobAttemptsResponses = {
 };
 
 export type ListDispatchJobAttemptsResponse = ListDispatchJobAttemptsResponses[keyof ListDispatchJobAttemptsResponses];
+
+export type CancelDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/cancel';
+};
+
+export type CancelDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CancelDispatchJobError = CancelDispatchJobErrors[keyof CancelDispatchJobErrors];
+
+export type CancelDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DispatchJobResponse;
+};
+
+export type CancelDispatchJobResponse = CancelDispatchJobResponses[keyof CancelDispatchJobResponses];
+
+export type CompleteDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/complete';
+};
+
+export type CompleteDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CompleteDispatchJobError = CompleteDispatchJobErrors[keyof CompleteDispatchJobErrors];
+
+export type CompleteDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DispatchJobResponse;
+};
+
+export type CompleteDispatchJobResponse = CompleteDispatchJobResponses[keyof CompleteDispatchJobResponses];
 
 export type GetDispatchJobRawData = {
     body?: never;
