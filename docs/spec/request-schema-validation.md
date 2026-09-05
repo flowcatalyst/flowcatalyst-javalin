@@ -29,10 +29,13 @@ Status **400**. Body:
 
 - `error` is always `VALIDATION`, `message` always `validation failed`.
 - `details.errors` lists **every** failure found (huma does not stop at the
-  first), in schema order: for an object, `required` first (one entry per
-  missing property, in the schema's `required` order), then each present
-  property in the schema's `properties` order, recursing into objects and
-  arrays.
+  first), in schema order: for an object, **one alphabetical pass over the
+  property names** (`schema.go` sorts them once), emitting a required-miss or
+  recursing at each name in turn — *not* "required first, then properties"
+  as the first draft of this spec said (corrected 2026-09-06 against
+  `huma/v2@v2.38.0`). The committed lockfile is written by Go's
+  `encoding/json`, which sorts object keys, so walking it in document order
+  reproduces this.
 - `location` is the JSON path of the *validated value*: `body` for the
   whole body, `body.name` for a property, `body.items[2].code` for an array
   element's property; query parameters are `query.<name>`, path parameters
@@ -46,7 +49,8 @@ Messages, exactly (huma `validation/messages.go`, `schema.go`):
 
 | Check | Message |
 |---|---|
-| missing required property | `expected required property <name> to be present` |
+| missing required property (body) | `expected required property <name> to be present` |
+| missing required **query** parameter | `required query parameter is missing` at `query.<name>`, value `""` — parameter binding is a different code path (`huma.go`) from body validation |
 | unknown property (schema `additionalProperties: false`) | `unexpected property` (location = that property) |
 | type | `expected string` / `expected integer` / `expected number` / `expected boolean` / `expected array` / `expected object` |
 | `enum` | `expected value to be one of "a, b, c"` (values joined by `, `) |
@@ -93,10 +97,13 @@ a type error (`expected string`). Match that.
 ignored by huma (`write only property is non-zero` is the only
 read/write check, and only for `writeOnly` — none in this lockfile).
 
-`additionalProperties`: the lockfile sets `false` on every model, and huma
-rejects an unknown property with `unexpected property`. **Match it** — this
-is the one behaviour the SPA's generated types rely on being symmetric
-(a typo'd field is a 400, not a silent drop). Case: huma matches property
+`additionalProperties`: **read the keyword as the lockfile has it.** The
+first draft of this spec assumed `false` everywhere; the real lockfile sets
+`true` on every top-level create/update request (`httpcompat.RelaxRequestBodies`
+— Go relaxed them on purpose, its doc comment calls unknown-field rejection
+"the #1 recurring parity bug class") and `false` only on the nested sync
+item schemas. So an unknown top-level field is *accepted* on both sides and
+`unexpected property` fires only where the lockfile says so. Case: huma matches property
 names case-insensitively when `ValidateStrictCasing` is false (the default)
 — a body with `Name` satisfies `name`. Match that too, and read the value
 under the lockfile's spelling.
