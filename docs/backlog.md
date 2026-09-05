@@ -698,3 +698,21 @@ later decision.
   `pnpm e2e:both` reports the Go side as failed to start and `pnpm e2e:java`
   is the usable command. Owner: the Go fix is one literal in
   `internal/platform/seed/event_types.go`.
+
+## SDK on Jackson 3 (owner note, 2026-09-06)
+
+The `sdk` module's own code is already Jackson 3 (`tools.jackson.*`); the
+only Jackson 2 in it is what `openapi-generator-maven-plugin` 7.14's `java`
+/ `native` templates emit — not the models (their 2,548 imports are all
+`com.fasterxml.jackson.annotation`, which Jackson 3 databind still uses) but
+the seven supporting files we ask it to generate: `ApiClient`,
+`RFC3339DateFormat`, `RFC3339InstantDeserializer`, `RFC3339JavaTimeModule`
+(+ `ApiException`, `ApiResponse`, `Pair`, which import nothing Jackson). The
+generator has no Jackson 3 template yet. To drop Jackson 2 from the SDK:
+set `generateSupportingFiles=false`, keep the models, and write our own
+Jackson 3 `ApiClient` + date handling (Jackson 3 databind reads RFC 3339
+`Instant`s natively — no jsr310 module), then remove
+`com.fasterxml.jackson.core:jackson-databind` and `jackson-datatype-jsr310`
+from `sdk/pom.xml`. The `server` module keeps its Jackson 2 databind only
+for yubico's WebAuthn library, a separate matter. Small unit; do it before
+the SDK is published.
