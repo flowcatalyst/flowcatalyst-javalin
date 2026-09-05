@@ -51,6 +51,9 @@ in its worktree; main's full suite is re-run after each merge.
 | `fa3bd57` | **Phase 3 B2 — the portal plane** (portal identities + `/api/portal-users`, `/portal/authorize`, `/portal/auth/{check-domain,login,password-reset}`) | Sonnet in a worktree, strong (34 tests, six mutants; a random 32-byte flow id kept over a TSID; caught its own event-shadowing bug); orchestrator review: shared grant store, the SSO reset guard's mutant survived until the test gave the SSO address an identity; coverage 234/245; full suite 3404 green in the worktree |
 | `6c3a004` | **Phase 3 C3 — passkeys** (`platform.passkey`: Go-shaped `passkey_data`, legacy rows skipped, ceremonies in `oauth_oidc_payloads`, the relying party over yubico `webauthn-server-core` 2.9.0, the six lockfile routes: session-gated registration and list/revoke, public authentication with the decoy challenge, the shared backoff budget in the platform 429 envelope (I-Q24), the sign counter persisted and a non-increasing one refused (I-Q13), events under `platform:iam` (I-Q25)) | orchestrator; `PasskeyApiTest` drives real ceremonies with a software authenticator (ES256 + CBOR); five mutants + one equivalent (the library refuses the counter first); `GrantStore.deleteExpired` now sweeps every expired payload row |
 | `77790e0` | **Portal SSO + the last portal seams** — `GET /portal/auth/oidc/login` (flow consumed at start, Q10) and the bridge's portal sink (JIT identity as `system`, `access_denied` for a suspended one, the `ptu_` code, never an `fc_session`); `/oauth/token` redeems `ptu_` codes (identity token, roleless id_token, no refresh) via a `PortalSubjects` seam; the reset confirm's `PortalPasswords` seam over the identity repository | orchestrator; `PortalSsoTest` drives the whole chain through a fake IdP; three mutants (suspended identity signed in, token branch ignoring status, flow left live) |
+| `a674149` | **Branding fallback `FlowCatalyst`** (I-Q16 applied to `Branding.DEFAULT_PLATFORM_NAME` too — owner to confirm the public endpoint's spelling, `docs/backlog.md`) | orchestrator |
+| `1fd26e7` | **Admin 2FA reset audit row** (`MfaService.resetAllByAdmin`; the last `TODO(port)` in `PrincipalApi`) | orchestrator; pinned in `MfaServiceTest` |
+| `(next)` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
 | `69dbf9e`, `3b924ea` | Specs written: `auth-admin-config.md`, `sdk-ingest.md` | orchestrator. `sdk-ingest.md` §5 D1: Go's dispatch-job ingest checks a permission no role grants |
 
 **Phase 4 (2026-09-05, on the owner's go-ahead): CORS filter, JFR events
@@ -78,12 +81,21 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 
-**Where to resume:** Phase 3 needs Batch A of `docs/auth-rulings.md`
-ruled. Until then the unblocked work is Phase 4's CORS filter and JFR
-events (Sonnet, small) and the fcdev stubs `mcp` / `outbox` / `upgrade`,
-which Phase 2 now gives something to drive. The `TODO(port)` markers left
-in `Server`/`Platform` are the router's `/metrics` alias and the Phase 3
-auth registrations (incl. the DB-backed `ClaimsResolver`); `Main` has none.
+**Where to resume (2026-09-05, end of day):** Phase 3 is complete except
+the C4 reset-approvals unit (Sonnet, in flight on
+`docs/process/briefs/2026-09-05-c4-reset-approvals.md`; merge it with the
+usual discipline — read, own mutant, worktree suite green). Every Go
+route group is in Java, including client selection; lockfile coverage
+is 240/245 and reaches 245 with C4. The only `TODO(port)` left is the
+router's `/metrics` alias in `Server`. Open owner items sit in
+`docs/backlog.md`: the `FlowCatalyst` spelling on the public platform
+endpoint, the pagination envelope (Phase 4), the access-token denylist
+(C-Q28), a Redis rate-limit store. **Next phase is 5** — the platform
+half of `docs/spec/dropin-verification.md` still needs its design: a
+recorded-request replay of the 245 lockfile operations plus the auth
+surface against Go and Java on a Go-created database, response bodies
+normalised (ids, times, tokens) and diffed; then the frontend end to end
+through every BFF/auth route, then the cutover rehearsal.
 
 **Sonnet, honestly, across eleven ports:** reliable when the brief names
 the template class, the exact routes and the mutants to run; two agents

@@ -431,6 +431,18 @@ these is 401'd by the middleware **before** the handler (MW:79-92) — **Q4**.
 Note O3/O4 responses are plain `application/json` **without** no-store
 (IR:129-136); O5 likewise.
 
+### 6.5 Client selection `/auth/client/*` [C]
+
+Go `internal/platform/auth/clientselection/clientselection.go`, three
+routes inside the authenticator (`UNAUTHENTICATED` 403 without a
+session; principal missing → 404). `clientInfo = {id, name, identifier}`.
+
+| Route | Behaviour | Response |
+|---|---|---|
+| `GET /auth/client/accessible` | accessible ids: ANCHOR → every ACTIVE client; CLIENT → the home client + every access grant; PARTNER → assigned clients + grants (deduplicated, in that order); each resolved and kept only while ACTIVE; sorted by name | `{clients:[clientInfo…], currentClientId?: principal.clientId, globalAccess: scope == ANCHOR}` |
+| `POST /auth/client/switch` `{clientId}` | `INVALID_JSON` 400; non-anchor and id not accessible → 403 `Access denied to client: <id>`; unknown → 404 `Client_NOT_FOUND`; not ACTIVE → 403 `Client is not active: <name>`; then a **full-authority API access token** for the principal (the same mint as `/auth/refresh` — nothing stored changes) | `{token, client: clientInfo, roles: [role names], permissions: [flattened, deduplicated in role order]}` |
+| `GET /auth/client/current` | the principal's `clientId` resolved | `{client: clientInfo\|null, noClientContext: client == null}` |
+
 **6.2a `/oauth/token` ordered checks and errors** (TK:161-229):
 
 1. Form parse fail → 400 `invalid_request` "Malformed form body".

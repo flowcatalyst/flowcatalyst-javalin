@@ -20,6 +20,7 @@ import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.mfa.TrustedDeviceCookie;
 import io.flowcatalyst.platform.auth.mfa.api.ChangePasswordApi;
 import io.flowcatalyst.platform.auth.mfa.api.TwoFactorApi;
+import io.flowcatalyst.platform.auth.clientselection.ClientSelectionApi;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
 import io.flowcatalyst.platform.auth.oidc.LoginStateRepository;
@@ -280,8 +281,7 @@ public final class Platform {
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
         // ── authenticated platform API ───────────────────────────────────
-        // Registered in Go's wire_routes.go order. Still missing from Go's list:
-        // clientselection (/auth/client/*) — see docs/port-plan.md.
+        // Registered in Go's wire_routes.go order.
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
@@ -425,6 +425,11 @@ public final class Platform {
         OAuthUserinfoApi.register(routes, oauthState);
         OAuthDiscoveryApi.register(routes, oauthState);
         AuthRefreshApi.register(routes, oauthState);
+        // Client selection (auth-core §6.5): the tenants a user may work in and a
+        // switch that mints the same full-authority token /auth/refresh would.
+        ClientSelectionApi.register(routes, new ClientSelectionApi.State(loginPrincipalRepo, clientRepo,
+                new ClientAccessGrantRepository(pool), tokenIssuer, new DbClaimsResolver(loginPrincipalRepo, roleRepo),
+                ClaimLabels.of(clientRepo, applicationRepo)));
 
         // The OIDC bridge, employee plane (auth-identity §4): start, callback, session
         // end, behind the §4.11 per-IP bucket that /portal/* shares. The portal sink
