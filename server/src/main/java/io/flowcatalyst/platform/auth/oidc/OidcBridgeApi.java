@@ -542,7 +542,7 @@ public final class OidcBridgeApi {
 
     /// §4.5: the external base URL trimmed of `/` + the callback path;
     /// when unset, derived from the forwarding headers (development only).
-    static String callbackUrl(Context ctx, State s) {
+    public static String callbackUrl(Context ctx, State s) {
         String base = s.externalBaseUrl();
         if (base.isEmpty()) {
             String proto = header(ctx, "X-Forwarded-Proto");

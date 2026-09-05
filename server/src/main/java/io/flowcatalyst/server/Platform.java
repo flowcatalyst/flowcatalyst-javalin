@@ -28,6 +28,10 @@ import io.flowcatalyst.platform.auth.oidc.OidcClients;
 import io.flowcatalyst.platform.auth.oidc.OidcIpLimit;
 import io.flowcatalyst.platform.mail.MailService;
 import io.flowcatalyst.platform.notify.Notifications;
+import io.flowcatalyst.platform.passkey.CeremonyRepository;
+import io.flowcatalyst.platform.passkey.PasskeyRepository;
+import io.flowcatalyst.platform.passkey.PasskeyService;
+import io.flowcatalyst.platform.passkey.api.PasskeyApi;
 import io.flowcatalyst.platform.passwordreset.ApprovalQueue;
 import io.flowcatalyst.platform.passwordreset.PasswordResetApi;
 import io.flowcatalyst.platform.passwordreset.PortalPasswords;
@@ -91,6 +95,8 @@ import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.api.OAuthClientApi;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlowRepository;
+import io.flowcatalyst.platform.portalauth.PortalSso;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityAccess;
 import io.flowcatalyst.platform.portalauth.api.PortalAuthApi;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalInviteEmailer;
@@ -243,10 +249,32 @@ public final class Platform {
         // Password reset (auth-identity §8): the link minter/mailer serves the public
         // /auth/password-reset/* flow here and the principal admin routes below. The
         // portal confirm and the approval queue are seams until their units land.
+        // Passkeys (auth-identity §7): the relying party from FC_WEBAUTHN_RP_ID / _ORIGINS
+        // with the platform name read once at startup; registration and the credential
+        // list are session-gated, authentication is public (isPublicPath) and shares the
+        // login backoff budget.
+        var passkeyRepo = new PasskeyRepository(pool);
+        var passkeyService = new PasskeyService(PasskeyService.Config.fromEnv(EnvReader.system(), mfaBranding.platformName()), passkeyRepo);
+        PasskeyApi.register(routes, new PasskeyApi.State(passkeyService, passkeyRepo, new CeremonyRepository(pool), loginPrincipalRepo,
+                uow, tokenIssuer, new SessionCookie(cookiesSecure), notices, loginAttemptRepo, backoff, Clock.systemUTC()));
+        // The portal identities are built later (after the OAuth-client store); the reset
+        // confirm reaches them through this late-bound seam.
+        var portalPasswordsHolder = new java.util.concurrent.atomic.AtomicReference<PortalPasswords>(PortalPasswords.notWired());
+        PortalPasswords portalPasswords = new PortalPasswords() {
+            @Override
+            public java.util.Optional<Identity> find(String id) {
+                return portalPasswordsHolder.get().find(id);
+            }
+
+            @Override
+            public boolean setPasswordHash(String id, String hash) {
+                return portalPasswordsHolder.get().setPasswordHash(id, hash);
+            }
+        };
         var resetTokenRepo = new ResetTokenRepository(pool);
         var resetLinks = new ResetLinks(resetTokenRepo, mail, mfaBranding::emailTheme, env.jwtIssuer(), Clock.systemUTC());
         PasswordResetApi.register(routes, new PasswordResetApi.State(resetLinks, resetTokenRepo, loginPrincipalRepo, uow, mfa,
-                mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, PortalPasswords.notWired(),
+                mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, portalPasswords,
                 ApprovalQueue.none(), false, Clock.systemUTC()));
         // /oauth/authorize and /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
@@ -369,6 +397,8 @@ public final class Platform {
         // are wired against these same repository instances by a later unit.
         var portalEnvReader = EnvReader.system();
         var portalIdentityRepo = new PortalIdentityRepository(pool);
+        var portalAccess = new PortalIdentityAccess(portalIdentityRepo, uow);
+        portalPasswordsHolder.set(portalAccess);
         PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
                 identityProviderRepo, uow, PortalInviteEmailer.logging()));
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
@@ -388,7 +418,8 @@ public final class Platform {
                 new DbClaimsResolver(loginPrincipalRepo, roleRepo), ClaimLabels.of(clientRepo, applicationRepo),
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), loginAttemptRepo,
                 RateLimitStores.build(envReader, pool), RateLimit.Policies.fromEnv(envReader),
-                new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC());
+                new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC(),
+                portalAccess);
         OAuthIpLimits.register(routes, oauthState, new Governor(Governor.Config.oauthTokenIp(envReader)));
         OAuthAuthorizeApi.register(routes, oauthState);
         OAuthTokenApi.register(routes, oauthState);
@@ -401,10 +432,20 @@ public final class Platform {
         // end, behind the §4.11 per-IP bucket that /portal/* shares. The portal sink
         // (§5.6) is a seam until the portal unit lands.
         OidcIpLimit.register(routes, new Governor(Governor.Config.oidcBridge(envReader)));
-        OidcBridgeApi.register(routes, new OidcBridgeApi.State(oidcClients, new LoginStateRepository(pool), loginPrincipalRepo,
+        var loginStateRepo = new LoginStateRepository(pool);
+        // The portal SSO sink (§5.6) sits behind the bridge's callback; the bridge
+        // state is built with the sink, and the sink's own state points back at it
+        // for the callback URL. A holder breaks the construction cycle.
+        var sinkHolder = new java.util.concurrent.atomic.AtomicReference<PortalSso>();
+        var bridgeState = new OidcBridgeApi.State(oidcClients, loginStateRepo, loginPrincipalRepo,
                 loginMappingRepo, identityProviderRepo, idpRoleMappingRepo, roleRepo, oauthClientRepo, uow,
-                tokenIssuer, new SessionCookie(cookiesSecure), OidcBridgeApi.PortalSink.disabled(), env.jwtIssuer(),
-                Clock.systemUTC()));
+                tokenIssuer, new SessionCookie(cookiesSecure),
+                (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), env.jwtIssuer(), Clock.systemUTC());
+        OidcBridgeApi.register(routes, bridgeState);
+        var portalSso = new PortalSso(new PortalSso.State(portalLoginFlowRepo, portalIdentityRepo, clientRepo, uow, grantStore,
+                oidcClients, loginStateRepo, bridgeState, Clock.systemUTC()));
+        sinkHolder.set(portalSso);
+        portalSso.register(routes);
 
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
@@ -514,6 +555,7 @@ public final class Platform {
                 || p.equals("/auth/2fa/enroll/totp/begin") || p.equals("/auth/2fa/enroll/totp/confirm")
                 || p.equals("/auth/2fa/enroll/email/begin") || p.equals("/auth/2fa/enroll/email/confirm")
                 || p.startsWith("/auth/password-reset/")
+                || p.equals("/auth/webauthn/authenticate/begin") || p.equals("/auth/webauthn/authenticate/complete")
                 || p.startsWith("/portal/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")

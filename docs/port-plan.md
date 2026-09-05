@@ -156,7 +156,8 @@ flows around the hashing I provide, `branding`/`notify`/`appdocs`/`docsapi`.
 - ~~B1 OIDC bridge (§4)~~ **Done** (orchestrator; fake-IdP end-to-end test, seven mutants; wiring after the A5-routes merge).
 - ~~C1 mail transport (§9) + notification catalogue (§10)~~ **Done** (orchestrator; four mutants; wiring with the A5-routes merge).
 - ~~C2 password reset core (§8.1–§8.5)~~ **Done** (orchestrator; five mutants). Left for a Sonnet unit: the reset-approvals aggregate + `/api/reset-approvals` (§8.6, idle per I-Q19) and wiring the principal admin routes to `ResetLinks`.
-- Next: wire the deferred orchestrator units in Platform; merge B2 portal plane (§5: `/portal/authorize`, `/portal/auth/*`, portal identities + `/api/portal-users`, the bridge's portal SSO start/sink, the `/oauth/token` `ptu_` branch) — Sonnet on a brief for the aggregate + admin API, orchestrator for the code issuance and the sink; Batch C (WebAuthn, password reset, approvals, mail, branding incl. the I-Q16 default spelling).
+- ~~Platform wiring of the deferred units~~ **Done** (`3175698`). ~~B2 portal plane~~ **Done** (`fa3bd57`, Sonnet + review).
+- ~~The portal SSO start/sink, the `PortalPasswords` seam, the `/oauth/token` `ptu_` branch~~ **Done** (orchestrator). ~~C3 passkeys~~ **Done** (orchestrator; real ceremonies in the test); then a Sonnet unit for reset-approvals (§8.6) and the branding I-Q16 spelling; Phase 5.
 
 **MFA is in the first cut** (owner ruling 2026-09-05: feature parity, it is
 in use). It is specified in `auth-identity.md` §6 and §11.4–11.7 — TOTP

@@ -88,6 +88,17 @@ public record Principal(
                 null, Objects.requireNonNull(serviceAccountId, "serviceAccountId"), List.of(), List.of(), List.of(), true, null, now, now);
     }
 
+    /// The token endpoint's view of a **portal identity** (`ptu_` subject,
+    /// auth-identity §5.8): never persisted — a USER shape carrying the
+    /// identity's id, e-mail and name so the identity token and id token
+    /// mint the same way as for a principal, with nothing else attached.
+    public static Principal portalSubject(String identityId, String email, String name) {
+        Instant now = Instant.now();
+        return new Principal(Objects.requireNonNull(identityId, "identityId"), PrincipalType.USER, UserScope.CLIENT, null, null,
+                name == null ? "" : name, true, email == null ? null : UserIdentity.of(email), null, List.of(), List.of(), List.of(),
+                false, null, now, now);
+    }
+
     /// A portal identity: a USER the platform can authenticate but that is
     /// inert everywhere else — `CLIENT` scope with **no** client, no password,
     /// `allApplications = false`. What it may do is the portal app's business.

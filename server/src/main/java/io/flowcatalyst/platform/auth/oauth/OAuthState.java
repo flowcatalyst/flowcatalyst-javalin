@@ -47,6 +47,7 @@ import java.util.function.Function;
 /// @param clientGovernor  the per-process per-client_id limiter on `/oauth/token`; nullable
 /// @param signingKeys     for JWKS
 /// @param baseUrl         the external issuer the discovery document advertises from (`FC_JWT_ISSUER`)
+/// @param portalSubjects  the portal plane's identities for `ptu_` codes; nullable ⇒ portal codes refused
 public record OAuthState(
         OAuthClientRepository oauthClients,
         PrincipalRepository principals,
@@ -64,7 +65,8 @@ public record OAuthState(
         Governor clientGovernor,
         SigningKeys signingKeys,
         String baseUrl,
-        Clock clock) {
+        Clock clock,
+        PortalSubjects portalSubjects) {
 
     private static final Logger LOG = LoggerFactory.getLogger(OAuthState.class);
 

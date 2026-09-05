@@ -272,9 +272,7 @@ public final class OAuthTokenApi {
             }
         }
         if (code.principalId().startsWith(EntityType.PORTAL_USER.prefix() + "_")) {
-            // The portal plane lands in Batch B; until then a portal code is
-            // refused exactly as Go does without a portal repository.
-            OAuthError.invalidGrant("Portal subjects are not supported").write(ctx);
+            redeemPortalCode(ctx, s, code, client);
             return;
         }
         Optional<Principal> found = s.principals().findById(code.principalId());
@@ -299,6 +297,38 @@ public final class OAuthTokenApi {
             refreshRaw = issued.raw();
         }
         writeToken(ctx, s, accessToken, refreshRaw, idToken, code.scope());
+    }
+
+    /// §5.8: the identity must exist and be ACTIVE; the access token is
+    /// identity-only, the id_token (iff openid) carries empty roles, and
+    /// there is never a refresh token.
+    private static void redeemPortalCode(Context ctx, OAuthState s, AuthorizationCode code, OAuthClient client) {
+        if (s.portalSubjects() == null) {
+            OAuthError.invalidGrant("Portal subjects are not supported").write(ctx);
+            return;
+        }
+        Optional<PortalSubjects.Subject> found;
+        try {
+            found = s.portalSubjects().findSubject(code.principalId());
+        } catch (RuntimeException e) {
+            LOG.error("portal identity lookup failed id={}", code.principalId(), e);
+            OAuthError.serverError("").write(ctx);
+            return;
+        }
+        if (found.isEmpty() || !found.get().active()) {
+            OAuthError.invalidGrant("Portal identity not found or suspended").write(ctx);
+            return;
+        }
+        PortalSubjects.Subject subject = found.get();
+        Principal synth = Principal.portalSubject(subject.id(), subject.email(), subject.name());
+        String accessToken = s.issuer().identityAccessToken(synth, client.clientId());
+        String scope = code.scope() == null ? "" : code.scope();
+        String idToken = null;
+        if (scopeHas(scope, "openid")) {
+            idToken = s.issuer().idToken(synth, new TokenIssuer.IdTokenInput(code.clientId(), code.nonce(), code.authTime(),
+                    List.of(), List.of(), false, List.of()));
+        }
+        writeToken(ctx, s, accessToken, null, idToken, code.scope());
     }
 
     // ── refresh_token ──────────────────────────────────────────────────────

@@ -189,7 +189,7 @@ class OAuthProviderTest {
                 new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
                 RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.of(ENC),
                 ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
-                governor, KEYS, ISSUER, Clock.systemUTC());
+                governor, KEYS, ISSUER, Clock.systemUTC(), null);
     }
 
     @AfterAll
@@ -500,8 +500,8 @@ class OAuthProviderTest {
     }
 
     @Test
-    void aPortalSubjectCannotBeExchangedHereYet() {
-        // Batch B lands the portal plane; a ptu_ code is refused, not misminted.
+    void aPortalSubjectIsRefusedWhileThePortalPlaneIsNotWired() {
+        // This state has no PortalSubjects: a ptu_ code is refused, not misminted.
         var code = io.flowcatalyst.platform.auth.grant.AuthorizationCode.issue(web.clientId(), "ptu_" + RUN, REDIRECT, Instant.now())
                 .withPkce(CHALLENGE_PKCE, "S256");
         GRANTS.insert(code);
@@ -660,7 +660,7 @@ class OAuthProviderTest {
             HttpError.install(cfg.routes);
             OAuthState s = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
                     ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER), RESOLVER, ClaimLabels.none(), Optional.of(ENC), null,
-                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC());
+                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null);
             OAuthTokenApi.register(cfg.routes, s);
         })) {
             String form = "grant_type=client_credentials";
