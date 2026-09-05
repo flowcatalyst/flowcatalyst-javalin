@@ -54,6 +54,7 @@ in its worktree; main's full suite is re-run after each merge.
 | `a674149` | **Branding fallback `FlowCatalyst`** (I-Q16 applied to `Branding.DEFAULT_PLATFORM_NAME` too — owner to confirm the public endpoint's spelling, `docs/backlog.md`) | orchestrator |
 | `1fd26e7` | **Admin 2FA reset audit row** (`MfaService.resetAllByAdmin`; the last `TODO(port)` in `PrincipalApi`) | orchestrator; pinned in `MfaServiceTest` |
 | `c4b4a14` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
+| `ec55164` | **Application provisioning — the last two lockfile operations** (`ProvisionServiceAccount` TxOperation over four aggregates; `provision-login-client` over `CreateOAuthClient`; `hasLoginClient` computed) — **lockfile coverage 245/245, threshold 1.0** | Sonnet (strong; four mutants; widened two helpers to public and said so); orchestrator mutant on the client→principal link killed; worktree suite 3460 green |
 | `fe83fc5` | **Phase 3 C4 — reset approvals** (`platform.resetapproval`: the guarded-UPDATE decision, the real `ApprovalQueue` behind `/auth/password-reset` notifying `platform:client-admin` holders, `GET /api/reset-approvals` + approve/deny with the reviewer's note, 400 `ALREADY_DECIDED`) | Sonnet (strong: five mutants, the decision-outside-the-Plan trade-off argued and recorded); orchestrator mutant on the expiry guard killed; worktree suite 3453 green; coverage 243/245 — the two `provision-*` routes are the last gap (brief `2026-09-05-application-provisioning.md`, Sonnet) |
 | `f66f7b1` | **`FC_JWT_ACCESS_TOKEN_TTL_SECS` read; `MigrationsAreAdditiveTest`** — the one server knob the env-parity check found unread now reaches `TokenIssuer.Config` (exp + `expires_in`); the guard cutover.md §1 asks for rejects DROP/RENAME/retype in any non-mirrored migration after V1 (predicate unit-tested; scan vacuous today) | orchestrator; EnvTest/OAuthProviderTest/ServerTest green; Platform wiring line unpinned until parity S2 |
 | `4fdc802` | **Phase 5 — cutover + rollback rehearsal design** (`docs/spec/cutover.md`: why the shared database makes rollback "start Go again", seven gates, the nine timed steps incl. cross-side token continuity and a rollback drill every rehearsal, env parity re-derived — 152/160 Go variables read by Java, 7 SDK-only, 1 missing: the access-token TTL, backlogged) | orchestrator |
@@ -87,10 +88,9 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 2772 when the night started).
 
 **Where to resume (2026-09-05, night):** Phase 3 is complete — C4 merged
-(`fe83fc5`). Lockfile coverage 243/245; the two application `provision-*`
-routes are a Sonnet unit in flight (brief
-`docs/process/briefs/2026-09-05-application-provisioning.md`) that takes
-`REQUIRED_COVERAGE` to 1.0. **Phase 5 is designed and under way**: the
+(`fe83fc5`). **Lockfile coverage is 245/245 with the
+threshold at 1.0** (`ec55164`) — every Go route, lockfile and chi-mounted, is
+in Java. **Phase 5 is designed and under way**: the
 parity harness (`docs/spec/parity-harness.md`) is being built by a Sonnet
 agent from `2026-09-05-p5-parity-harness.md` with the S0 smoke scenario;
 the frontend e2e plan (`frontend-e2e.md`) and the cutover rehearsal
