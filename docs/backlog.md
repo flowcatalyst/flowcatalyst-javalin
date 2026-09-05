@@ -527,6 +527,15 @@ archival is separate), or purge on a retention of days — well above
 `GlobalWindowSecs` (3600) so audit value is not destroyed to serve the
 limiter? See `docs/spec/auth-retention.md` §5.
 
+## I-Q16 applied to the public platform name too (2026-09-05, **owner to confirm**)
+
+Ruling I-Q16 fixed the notification fallback brand as `FlowCatalyst`.
+`Branding.DEFAULT_PLATFORM_NAME` — what `/api/config/platform` answers
+when no platform name is configured, and the e-mail theme's fallback —
+was `Flowcatalyst`, so two fallbacks would have disagreed. The Java port
+uses `FlowCatalyst` for both. Only unconfigured installations see it;
+say if the public endpoint should keep the old spelling.
+
 ## Readiness and alarms beyond C-Q23 (2026-09-05)
 
 `/health` now carries readiness checks (a failing one is 503 `DOWN`) and

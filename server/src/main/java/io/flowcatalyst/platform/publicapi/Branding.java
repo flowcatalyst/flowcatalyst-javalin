@@ -22,7 +22,7 @@ public final class Branding {
     private static final Logger LOG = LoggerFactory.getLogger(Branding.class);
 
     /// The brand when nothing is configured (spec §4).
-    public static final String DEFAULT_PLATFORM_NAME = "Flowcatalyst";
+    public static final String DEFAULT_PLATFORM_NAME = "FlowCatalyst";
     /// Where the platform name lives (spec §4).
     public static final ConfigCoordinate PLATFORM_NAME = ConfigCoordinate.global("platform", "branding", "platform-name");
     /// Where the login theme lives — the row the admin settings page writes (spec §5).

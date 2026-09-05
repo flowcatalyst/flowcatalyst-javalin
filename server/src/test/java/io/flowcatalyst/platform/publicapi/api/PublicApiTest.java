@@ -72,7 +72,7 @@ class PublicApiTest {
         assertThat(r.headers().firstValue("Content-Type")).hasValueSatisfying(ct -> assertThat(ct).startsWith("application/json"));
         var body = json(r);
         assertThat(body.path("features").path("messagingEnabled").asBoolean()).isTrue();
-        assertThat(body.path("platformName").asText()).isEqualTo("Flowcatalyst");
+        assertThat(body.path("platformName").asText()).isEqualTo("FlowCatalyst");
         assertThat(body.propertyNames()).containsExactly("features", "platformName");
     }
 

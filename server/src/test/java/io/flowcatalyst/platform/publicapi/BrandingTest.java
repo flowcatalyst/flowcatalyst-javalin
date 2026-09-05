@@ -48,7 +48,7 @@ class BrandingTest {
     @Test
     void platformNameDefaultsWhenTheStoredValueIsBlank() {
         BrandingFixture.set(Branding.PLATFORM_NAME, "   ");
-        assertThat(BRANDING.platformName()).isEqualTo("Flowcatalyst");
+        assertThat(BRANDING.platformName()).isEqualTo("FlowCatalyst");
     }
 
     @Test
@@ -100,7 +100,7 @@ class BrandingTest {
 
     @Test
     void emailThemeIsAllDefaultsWithoutAnyRows() {
-        assertThat(BRANDING.emailTheme()).isEqualTo(EmailTheme.defaults("Flowcatalyst"));
+        assertThat(BRANDING.emailTheme()).isEqualTo(EmailTheme.defaults("FlowCatalyst"));
     }
 
     // ── Unavailable store (spec §1, §4 last row, open question 3) ──────────

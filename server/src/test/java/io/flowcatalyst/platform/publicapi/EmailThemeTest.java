@@ -28,9 +28,9 @@ class EmailThemeTest {
 
     @Test
     void emptyThemeIsAllDefaultsWithThePlatformName() {
-        var t = EmailTheme.of("Flowcatalyst", LoginTheme.EMPTY);
+        var t = EmailTheme.of("FlowCatalyst", LoginTheme.EMPTY);
 
-        assertThat(t).isEqualTo(EmailTheme.defaults("Flowcatalyst"));
+        assertThat(t).isEqualTo(EmailTheme.defaults("FlowCatalyst"));
         assertThat(t.logoUrl()).isNull();
         assertThat(t.logoSvg()).isNull();
         assertThat(t.footerText()).isNull();
@@ -38,7 +38,7 @@ class EmailThemeTest {
 
     @Test
     void storedFieldsOverrideTheDefaultsTrimmed() {
-        var t = EmailTheme.of("Flowcatalyst", stored("""
+        var t = EmailTheme.of("FlowCatalyst", stored("""
                 {"brandName":" Acme ","primaryColor":" #111111 ","accentColor":"#222222",
                  "logoUrl":" https://cdn.example.com/logo.png ","logoSvg":" <svg/> ","footerText":" Acme Inc "}
                 """));
@@ -53,9 +53,9 @@ class EmailThemeTest {
 
     @Test
     void blankStoredStringsReadAsAbsent() {
-        var t = EmailTheme.of("Flowcatalyst", stored("{\"brandName\":\"  \",\"logoUrl\":\"\",\"logoSvg\":\" \",\"footerText\":\"\"}"));
+        var t = EmailTheme.of("FlowCatalyst", stored("{\"brandName\":\"  \",\"logoUrl\":\"\",\"logoSvg\":\" \",\"footerText\":\"\"}"));
 
-        assertThat(t.brandName()).as("blank brand falls back to the platform name").isEqualTo("Flowcatalyst");
+        assertThat(t.brandName()).as("blank brand falls back to the platform name").isEqualTo("FlowCatalyst");
         assertThat(t.logoUrl()).isNull();
         assertThat(t.logoSvg()).isNull();
         assertThat(t.footerText()).isNull();
@@ -63,7 +63,7 @@ class EmailThemeTest {
 
     @Test
     void anUnsafeColourFallsBackPerFieldWhileOtherOverridesApply() {
-        var t = EmailTheme.of("Flowcatalyst", stored("{\"primaryColor\":\"red\",\"accentColor\":\"#abc;\\\"></td><script>\",\"brandName\":\"Acme\"}"));
+        var t = EmailTheme.of("FlowCatalyst", stored("{\"primaryColor\":\"red\",\"accentColor\":\"#abc;\\\"></td><script>\",\"brandName\":\"Acme\"}"));
 
         assertThat(t.primaryColor()).as("keyword rejected").isEqualTo(DEFAULT_PRIMARY_COLOR);
         assertThat(t.accentColor()).as("attribute break-out rejected").isEqualTo(DEFAULT_ACCENT_COLOR);
