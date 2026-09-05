@@ -67,7 +67,7 @@ implementation `../flowcatalyst-go` is read-only and still moving — check its
    `Corrupt…Exception(rowId)` pattern everywhere; one test per module that
    inserts an impossible value and expects the typed read error. Sonnet
    sweep; security assertions reviewed here.
-6. **`e6a33ba` drift (PR-3/PR-4, X-02, X-08):** principal by-id and
+6. ~~`e6a33ba` drift (PR-3/PR-4, X-02, X-08)~~ **Done 2026-09-05.** Was: principal by-id and
    mutations answer **404, byte-identical to not-found**, never 403, for an
    out-of-scope id (`PrincipalApi.java:228` still throws forbidden);
    scheduled-job sync `archiveUnlisted` and role sync `removeUnlisted`
