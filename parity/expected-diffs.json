@@ -411,5 +411,145 @@
     "pointer": "/options/publicKey/userVerification",
     "reason": "yubico emits userVerification: preferred on assertion options; go-webauthn omits it",
     "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "list-trusted-devices-before-revoke",
+    "pointer": "/devices/0/principalId",
+    "reason": "a trusted-device list item carries no principalId in Java; Go echoes the owner's id to its owner",
+    "ruling": "I-Q21 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "revoke-trusted-device-again",
+    "pointer": "/status",
+    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "revoke-trusted-device-again",
+    "pointer": "/error",
+    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "revoke-trusted-device-again",
+    "pointer": "/message",
+    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "change-password-send-email-code-no-mfa",
+    "pointer": "/code",
+    "reason": "a principal with no factor at all: Java answers NO_MFA before NO_EMAIL_2FA; Go never distinguishes",
+    "ruling": "ChangePasswordApi (auth-identity.md section 11.7) \u2014 Go accident, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "change-password-send-email-code-no-mfa",
+    "pointer": "/message",
+    "reason": "a principal with no factor at all: Java answers NO_MFA before NO_EMAIL_2FA; Go never distinguishes",
+    "ruling": "ChangePasswordApi (auth-identity.md section 11.7) \u2014 Go accident, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "*",
+    "step": "developer-get-platform-current-spec",
+    "pointer": "/**",
+    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+  },
+  {
+    "scenario": "*",
+    "step": "developer-get-platform-version",
+    "pointer": "/**",
+    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+  },
+  {
+    "scenario": "*",
+    "step": "openapi-json",
+    "pointer": "/**",
+    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+  },
+  {
+    "scenario": "*",
+    "step": "q-openapi-alias",
+    "pointer": "/**",
+    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+  },
+  {
+    "scenario": "*",
+    "step": "openapi-yaml",
+    "pointer": "/**",
+    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-scheduled-job-list-scoped-to-own-client",
+    "pointer": "/total",
+    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
+    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-scheduled-job-list-scoped-to-own-client",
+    "pointer": "/totalPages",
+    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
+    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-scheduled-job-list-scoped-to-own-client",
+    "pointer": "/items/**",
+    "reason": "the BFF scheduled-job list without a client filter shows another client's job on Go; Java confines to the caller's clients (bff.md section 7)",
+    "ruling": "bff.md section 7 \u2014 Go defect (data leak), recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "public-platform",
+    "pointer": "/platformName",
+    "reason": "the platform brand: Go Flowcatalyst, Java FlowCatalyst",
+    "ruling": "I-Q16 (auth-identity.md section 0.5)"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "config-platform-legacy-alias",
+    "pointer": "/platformName",
+    "reason": "same as public-platform",
+    "ruling": "I-Q16"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-me",
+    "pointer": "/name",
+    "reason": "Go's /api/me answers the email as name; Java the principal's stored name",
+    "ruling": "bff.md \u2014 Go accident, recorded in docs/backlog.md"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-me-client-of-anchor-forbidden",
+    "pointer": "/status",
+    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+    "ruling": "PR-3 class (bff.md section 8)"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-me-client-of-anchor-forbidden",
+    "pointer": "/error",
+    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+    "ruling": "PR-3 class (bff.md section 8)"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-me-client-of-anchor-forbidden",
+    "pointer": "/message",
+    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+    "ruling": "PR-3 class (bff.md section 8)"
   }
 ]

@@ -55,6 +55,23 @@ public record OAuthError(int status, String code, String description) {
         new OAuthError(429, "rate_limit_exceeded", description).write(ctx);
     }
 
+    /// The envelope without the token endpoint's cache headers: Go sets
+    /// `Cache-Control: no-store` / `Pragma: no-cache` only in `token.go`
+    /// (auth-core §5); the bridge's session-end and the portal authorize
+    /// write the plain body (parity S3).
+    public void writePlain(Context ctx) {
+        ctx.status(status).contentType("application/json").result(Json.writeLine(body()));
+    }
+
+    private Map<String, Object> body() {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", code);
+        if (description != null && !description.isEmpty()) {
+            body.put("error_description", description);
+        }
+        return body;
+    }
+
     public void write(Context ctx) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("error", code);

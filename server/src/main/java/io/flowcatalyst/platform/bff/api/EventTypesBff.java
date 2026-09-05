@@ -276,7 +276,7 @@ public final class EventTypesBff {
 
         public static SpecVersionResponse from(SpecVersion sv) {
             return new SpecVersionResponse(sv.id(), sv.version(), sv.status().name(), sv.schemaType().name(),
-                    sv.mimeType(), sv.schemaContent() == null ? null : Json.write(sv.schemaContent()),
+                    sv.mimeType(), sv.schemaContent() == null ? null : io.flowcatalyst.platform.shared.json.PgJsonb.render(sv.schemaContent()), // jsonb's own text, as Go echoes it
                     sv.createdAt(), sv.updatedAt());
         }
     }

@@ -171,8 +171,8 @@ class MeApiTest {
                 Authenticator.TEST_APPLICATIONS, accessible.id()};
 
         var body = json(http.get("/api/me/applications", scoped));
-        assertThat(body.has("clientId")).as("omitted for the principal-scoped variant").isFalse();
-        assertThat(body.propertyNames()).containsExactlyInAnyOrder("applications", "total");
+        assertThat(body.get("clientId").asString()).as("Go's zero value for the principal-scoped variant (parity S3)").isEmpty();
+        assertThat(body.propertyNames()).containsExactlyInAnyOrder("applications", "total", "clientId");
         var ids = body.get("applications").findValuesAsString("id");
         assertThat(ids).contains(accessible.id());
         assertThat(ids).doesNotContain(inaccessible.id());

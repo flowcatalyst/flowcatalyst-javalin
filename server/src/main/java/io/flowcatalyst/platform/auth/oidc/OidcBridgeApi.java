@@ -482,7 +482,7 @@ public final class OidcBridgeApi {
         }
         String clientId = audienceOf(q(ctx, "id_token_hint")).orElse(q(ctx, "client_id"));
         if (clientId.isEmpty()) {
-            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: id_token_hint or client_id is required to verify post_logout_redirect_uri").write(ctx);
+            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: id_token_hint or client_id is required to verify post_logout_redirect_uri").writePlain(ctx);
             return;
         }
         Optional<OAuthClient> client;
@@ -490,15 +490,15 @@ public final class OidcBridgeApi {
             client = s.oauthClients().findByClientId(clientId);
         } catch (RuntimeException e) {
             LOG.error("oauth client lookup failed client_id={}", clientId, e);
-            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: internal error verifying client").write(ctx);
+            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: internal error verifying client").writePlain(ctx);
             return;
         }
         if (client.isEmpty()) {
-            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: id_token_hint audience does not match any registered client").write(ctx);
+            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: id_token_hint audience does not match any registered client").writePlain(ctx);
             return;
         }
         if (!RedirectUriMatcher.matches(postLogout, client.get().postLogoutRedirectUris())) {
-            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: not in the client's registered post_logout_redirect_uris").write(ctx);
+            OAuthError.invalidRequest("Invalid post_logout_redirect_uri: not in the client's registered post_logout_redirect_uris").writePlain(ctx);
             return;
         }
         String state = q(ctx, "state");

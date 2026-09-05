@@ -78,7 +78,7 @@ public final class PortalAuthApi {
     private static void authorize(Context ctx, State s) {
         String state = ctx.queryParam("state");
         if (state == null || state.isBlank()) {
-            OAuthError.invalidRequest("`state` parameter is required for CSRF protection").write(ctx);
+            OAuthError.invalidRequest("`state` parameter is required for CSRF protection").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
             return;
         }
         String clientId = ctx.queryParam("client_id");
@@ -87,20 +87,20 @@ public final class PortalAuthApi {
             client = clientId == null ? null : s.oauthClients().findByClientId(clientId).orElse(null);
         } catch (RuntimeException e) {
             LOG.error("client lookup failed for /portal/authorize", e);
-            OAuthError.serverError("Internal error").write(ctx);
+            OAuthError.serverError("Internal error").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
             return;
         }
         if (client == null || !client.active()) {
-            OAuthError.unauthorizedClient(400, "Unknown or inactive client").write(ctx);
+            OAuthError.unauthorizedClient(400, "Unknown or inactive client").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
             return;
         }
         if (!client.isPortal()) {
-            OAuthError.unauthorizedClient(400, "Client is not a portal client").write(ctx);
+            OAuthError.unauthorizedClient(400, "Client is not a portal client").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
             return;
         }
         String redirectUri = ctx.queryParam("redirect_uri");
         if (redirectUri == null || !RedirectUriMatcher.matches(redirectUri, client.redirectUris())) {
-            OAuthError.invalidRequest("Invalid redirect_uri").write(ctx);
+            OAuthError.invalidRequest("Invalid redirect_uri").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
             return;
         }
 

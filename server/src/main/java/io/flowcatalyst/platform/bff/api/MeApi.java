@@ -76,7 +76,7 @@ public final class MeApi {
     private static void myApplications(Context ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         var apps = accessibleApplications(s, ac.allApplications(), Set.copyOf(ac.applications()));
-        ctx.json(new ApplicationsResponse(apps, apps.size(), null));
+        ctx.json(new ApplicationsResponse(apps, apps.size(), "")); // Go writes its zero value, "" (parity S3)
     }
 
     private static void myClients(Context ctx, State s) {
@@ -152,7 +152,7 @@ public final class MeApi {
         }
     }
 
-    /// `clientId` is `null` (omitted) for the principal-scoped variant, set
+    /// `clientId` is `""` for the principal-scoped variant (Go's zero value), set
     /// for the per-client variant — the two calls share this envelope.
     public record ApplicationsResponse(List<ApplicationSummary> applications, int total, String clientId) {
         public ApplicationsResponse {

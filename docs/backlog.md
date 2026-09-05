@@ -672,3 +672,16 @@ later decision.
   PS* or Ed448 algorithms. Browsers accept both shapes; the timeout is now
   300 s on both sides. Owner: any client outside a browser reading these?
   Allow-listed meanwhile.
+- **OpenAPI documents (parity S3).** `/api/openapi.json`, `.yaml`, `/q/openapi`
+  and the developer BFF's platform spec differ structurally: Go serves huma's
+  generated document, Java its own generator's. Recommended: Java serves the
+  vendored lockfile verbatim (it *is* Go's document) plus the A-22 route.
+  Owner: does any client parse these at runtime (frontend codegen is build-time)?
+- **BFF scheduled-job list leaks across clients on Go (parity S3).** Without a
+  `clientIds` filter Go's `/bff/scheduled-jobs` shows another client's job to
+  a client-scoped caller; Java confines (bff.md §7). Go defect; allow-listed.
+- **`/api/me` `name` is the email on Go (parity S3)** for a principal created
+  with a name; Java answers the stored name. Go accident; allow-listed.
+- **Send-email-code with no factor (parity S3).** Go answers `NO_EMAIL_2FA`
+  for a principal with no factor at all; Java `NO_MFA` first. Go accident;
+  allow-listed; Go-mirror candidate.
