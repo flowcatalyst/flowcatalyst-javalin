@@ -136,6 +136,15 @@ absent → now. `principalId` absent → the caller's principal. Rows go into
   second row. Report the truth on the wire?
 - **D5** A malformed `performedAt` is silently replaced by now.
   Reject with 400 instead?
+- **D6 [D] Event deduplication never fires across requests.** The unique
+  index behind `ON CONFLICT DO NOTHING` is `(deduplication_id, created_at)`
+  (it must include the partition key), and `created_at` is stamped at
+  insert, so a replayed item with the same `deduplicationId` and a fresh
+  `created_at` inserts a second row. The "idempotent via deduplication_id"
+  promise in Go's repository comment holds only within one `created_at`
+  microsecond. Java matches Go (the test pins one row only when the two
+  inserts share a `created_at`). Real fix: dedupe on `(deduplication_id)`
+  within a bounded window, or carry the original `created_at` on replay.
 - **Q1** `dispatchJobCount` is always 0 on the singular create. Remove
   from the lockfile, or compute?
 

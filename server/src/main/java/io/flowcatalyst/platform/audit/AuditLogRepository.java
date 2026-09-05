@@ -4,6 +4,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.IamPrincipals;
+import io.flowcatalyst.db.generated.tables.records.AudLogsRecord;
 import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.jooq.Condition;
@@ -78,6 +79,36 @@ public final class AuditLogRepository {
         Facet(Field<String> column) {
             this.column = column;
         }
+    }
+
+    // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§4.3) ────
+
+    /// One batch insert for `POST /api/audit-logs/batch` (spec §4.3): a
+    /// plain `INSERT` (no `ON CONFLICT` — ids are freshly minted TSIDs, so a
+    /// collision is a genuine fault, not a retried duplicate) wrapped in a
+    /// transaction so a mid-batch failure rolls the whole batch back rather
+    /// than leaving a partial prefix committed. One JDBC batch, one round
+    /// trip; empty input is a no-op.
+    public void insertBatch(List<AuditLog> logs) {
+        if (logs.isEmpty()) return;
+        dsl.transaction(cfg -> {
+            var txDsl = DSL.using(cfg);
+            var queries = logs.stream().map(l -> insertQuery(txDsl, l)).toList();
+            txDsl.batch(queries).execute();
+        });
+    }
+
+    private static org.jooq.Insert<AudLogsRecord> insertQuery(DSLContext txDsl, AuditLog l) {
+        return txDsl.insertInto(T)
+                .set(T.ID, l.id())
+                .set(T.ENTITY_TYPE, l.entityType())
+                .set(T.ENTITY_ID, l.entityId())
+                .set(T.OPERATION, l.operation())
+                .set(T.OPERATION_JSON, l.operationJson() == null ? null : JSONB.jsonb(l.operationJson().toString()))
+                .set(T.PRINCIPAL_ID, l.principalId())
+                .set(T.APPLICATION_ID, l.applicationId())
+                .set(T.CLIENT_ID, l.clientId())
+                .set(T.PERFORMED_AT, l.performedAt().atOffset(ZoneOffset.UTC));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

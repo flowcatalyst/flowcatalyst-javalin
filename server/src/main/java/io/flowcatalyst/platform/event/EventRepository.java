@@ -160,6 +160,38 @@ public final class EventRepository {
         return limit <= 0 || limit > max ? fallback : limit;
     }
 
+    // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§3) ──────
+
+    /// One batch insert for `POST /api/events`(`/batch`): bare
+    /// `ON CONFLICT DO NOTHING` (spec §3.1) — the conflict target is the
+    /// unique index on `(deduplication_id, created_at)`, so a repeated
+    /// `deduplicationId` silently drops that row without aborting the rest.
+    /// One JDBC batch, one round trip; empty input is a no-op.
+    public void insertBatch(List<Event> events) {
+        if (events.isEmpty()) return;
+        var queries = events.stream().map(this::insertQuery).toList();
+        dsl.batch(queries).execute();
+    }
+
+    private org.jooq.Insert<MsgEventsRecord> insertQuery(Event e) {
+        return dsl.insertInto(W)
+                .set(W.ID, e.id())
+                .set(W.SPEC_VERSION, e.specVersion())
+                .set(W.TYPE, e.type())
+                .set(W.SOURCE, e.source())
+                .set(W.SUBJECT, e.subject())
+                .set(W.TIME, e.time().atOffset(ZoneOffset.UTC))
+                .set(W.DATA, JSONB.jsonb(Json.write(e.data())))
+                .set(W.CORRELATION_ID, e.correlationId())
+                .set(W.CAUSATION_ID, e.causationId())
+                .set(W.DEDUPLICATION_ID, e.deduplicationId())
+                .set(W.MESSAGE_GROUP, e.messageGroup())
+                .set(W.CLIENT_ID, e.clientId())
+                .set(W.CONTEXT_DATA, JSONB.jsonb(Json.write(e.context())))
+                .set(W.CREATED_AT, e.createdAt().atOffset(ZoneOffset.UTC))
+                .onConflictDoNothing();
+    }
+
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static Event toEntity(MsgEventsReadRecord row) {

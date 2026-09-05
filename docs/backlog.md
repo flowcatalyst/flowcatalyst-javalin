@@ -253,6 +253,10 @@ item names its origin; items marked **owner** need Andrew's call.
   table to the partition maintainer (Java: Phase 2 stream work) or accept the
   default-partition tail. Ruling wanted.
 
+- **Event deduplication never fires across requests.** `msg_events`'
+  unique index is `(deduplication_id, created_at)` (partition key) and
+  `created_at` is stamped per insert, so an SDK replay with the same
+  `deduplicationId` lands a second event. `docs/spec/sdk-ingest.md` §5 D6.
 - **Dispatch-job ingest is unusable by non-anchors.**
   `internal/platform/shared/sdk/{dispatch_jobs_batch,dispatch_job_create}.go`
   gate on `CanWritePermission(ac, "WRITE_DISPATCH_JOBS")` — a permission

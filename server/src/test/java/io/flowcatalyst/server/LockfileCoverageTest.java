@@ -34,6 +34,13 @@ class LockfileCoverageTest {
             "/api/public/", "/api/config/platform", "/api/dispatch/", "/api/dispatch-jobs/batch", "/api/audit-logs/batch",
             "/api/openapi.json", "/api/openapi.yaml", "/q/openapi", "/swagger-ui", "/mcp", "/router/");
 
+    /// Full `METHOD PATH` routes outside the lockfile that a path-prefix
+    /// entry above can't name precisely without over-matching a sibling
+    /// route that IS lockfiled (`GET /api/dispatch-jobs` and
+    /// `POST /api/dispatch-jobs/requeue` share the `/api/dispatch-jobs`
+    /// prefix with this singular SDK-ingest create, sdk-ingest spec §1).
+    private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of("POST /api/dispatch-jobs");
+
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
         Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
@@ -55,6 +62,7 @@ class LockfileCoverageTest {
         var drift = registered.stream()
                 .filter(r -> r.contains(" /api/"))
                 .filter(r -> OUTSIDE_LOCKFILE_PREFIXES.stream().noneMatch(p -> r.substring(r.indexOf(' ') + 1).startsWith(p)))
+                .filter(r -> !OUTSIDE_LOCKFILE_EXACT_ROUTES.contains(r))
                 .filter(r -> !contract.contains(r))
                 .toList();
         assertThat(drift).as("routes registered but absent from openapi.lock.json").isEmpty();

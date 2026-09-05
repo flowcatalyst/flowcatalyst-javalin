@@ -270,6 +270,61 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .execute();
     }
 
+    // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§4) ──────
+
+    /// One batch insert for `POST /api/dispatch-jobs`(`/batch`):
+    /// `ON CONFLICT (id, created_at) DO NOTHING` (spec §4.1) — the table is
+    /// partitioned on `created_at`, so the conflict target names both halves
+    /// of the primary key. A repeated SDK-supplied id silently drops that
+    /// row without aborting the rest. One JDBC batch, one round trip; empty
+    /// input is a no-op.
+    public void insertBatch(List<DispatchJob> jobs) {
+        if (jobs.isEmpty()) return;
+        var queries = jobs.stream().map(this::insertQuery).toList();
+        dsl.batch(queries).execute();
+    }
+
+    private org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DispatchJob j) {
+        return dsl.insertInto(T)
+                .set(T.ID, j.id())
+                .set(T.EXTERNAL_ID, j.externalId())
+                .set(T.SOURCE, j.source())
+                .set(T.KIND, j.kind().name())
+                .set(T.CODE, j.code())
+                .set(T.SUBJECT, j.subject())
+                .set(T.EVENT_ID, j.eventId())
+                .set(T.CORRELATION_ID, j.correlationId())
+                .set(T.METADATA, toJsonb(j.metadata()))
+                .set(T.TARGET_URL, j.targetUrl())
+                .set(T.PROTOCOL, j.protocol().name())
+                .set(T.PAYLOAD, j.payload())
+                .set(T.PAYLOAD_CONTENT_TYPE, j.payloadContentType())
+                .set(T.DATA_ONLY, j.dataOnly())
+                .set(T.SERVICE_ACCOUNT_ID, j.serviceAccountId())
+                .set(T.CLIENT_ID, j.clientId())
+                .set(T.SUBSCRIPTION_ID, j.subscriptionId())
+                .set(T.MODE, j.mode().name())
+                .set(T.DISPATCH_POOL_ID, j.dispatchPoolId())
+                .set(T.MESSAGE_GROUP, j.messageGroup())
+                .set(T.SEQUENCE, j.sequence())
+                .set(T.TIMEOUT_SECONDS, j.timeoutSeconds())
+                .set(T.SCHEMA_ID, j.schemaId())
+                .set(T.STATUS, j.status().name())
+                .set(T.MAX_RETRIES, j.maxRetries())
+                .set(T.RETRY_STRATEGY, j.retryStrategy().wire())
+                .set(T.SCHEDULED_FOR, utc(j.scheduledFor()))
+                .set(T.EXPIRES_AT, utc(j.expiresAt()))
+                .set(T.ATTEMPT_COUNT, j.attemptCount())
+                .set(T.LAST_ATTEMPT_AT, utc(j.lastAttemptAt()))
+                .set(T.COMPLETED_AT, utc(j.completedAt()))
+                .set(T.DURATION_MILLIS, j.durationMillis())
+                .set(T.LAST_ERROR, j.lastError())
+                .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
+                .set(T.CREATED_AT, utc(j.createdAt()))
+                .set(T.UPDATED_AT, utc(j.updatedAt()))
+                .onConflict(T.ID, T.CREATED_AT).doNothing();
+    }
+
     // ── Infra writes (direct SQL, outside the use-case envelope) ───────────
     //
     // The scheduler / processing-endpoint / settled-endpoint / reaper writes

@@ -9,6 +9,7 @@ import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.api.AuditLogApi;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.api.EventApi;
+import io.flowcatalyst.platform.ingest.api.IngestApi;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.cors.CorsOriginRepository;
 import io.flowcatalyst.platform.cors.api.CorsOriginApi;
@@ -209,6 +210,10 @@ public final class Platform {
         var appDocRepo = new AppDocRepository(pool);
         DocsApi.register(routes, new DocsApi.State(appDocRepo, applicationRepo, PublishedDocs.load()));
         EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
+        // SDK ingest (docs/spec/sdk-ingest.md): infra batch inserts, no unit of work — the POSTs
+        // alongside the GET-only EventApi/DispatchJobApi/AuditLogApi read surfaces above.
+        IngestApi.register(routes, IngestApi.State.of(new EventRepository(pool), dispatchJobRepo,
+                new AuditLogRepository(pool), clientRepo, applicationRepo));
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
         // the developer client-secret is encrypted under the app key from `env`, like the IdP secrets above.
