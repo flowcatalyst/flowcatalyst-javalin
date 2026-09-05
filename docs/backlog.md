@@ -738,5 +738,7 @@ the SDK is published.
   (`com.upokecenter:cbor`, Nimbus for COSE keys): clientDataJSON checks,
   authenticator-data flags/counter, `none`/`packed` attestation, ES256/RS256/
   EdDSA signatures — a few hundred lines plus FIDO test vectors, and the one
-  place a hand-rolled implementation earns a security review. Recommendation:
-  keep yubico until cutover; revisit with a dedicated review.
+  place a hand-rolled implementation earns a security review. **Ruled (owner,
+  2026-09-06): keep yubico; a hand-rolled verifier is not worth it in so
+  sensitive an area. The one runtime-scope Jackson 2 databind jar in the
+  server artifact stays for that reason and no other.**
