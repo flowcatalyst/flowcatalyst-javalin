@@ -1,0 +1,310 @@
+package io.flowcatalyst.platform.authadmin.api;
+
+import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.authadmin.AnchorDomainRepository;
+import io.flowcatalyst.platform.authadmin.ClientAuthConfigRepository;
+import io.flowcatalyst.platform.authadmin.IdpRoleMappingRepository;
+import io.flowcatalyst.platform.shared.TestHttp;
+import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
+import io.flowcatalyst.platform.shared.auth.JwtVerifier;
+import io.flowcatalyst.platform.shared.auth.SigningKeys;
+import io.flowcatalyst.platform.shared.httperror.HttpError;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
+import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import io.flowcatalyst.testpg.TestPg;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import java.net.http.HttpResponse;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// The eleven `/api/anchor-domains*`, `/api/auth-configs*` and
+/// `/api/idp-role-mappings*` routes end to end through Javalin: the
+/// authenticator's test headers, the anchor-only gate on every single route
+/// including the lists, the lockfile status codes and body shapes, and the
+/// error envelope.
+@SuppressWarnings("deprecation")
+class AuthAdminConfigApiTest {
+
+    private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
+
+    private static final String[] ANCHOR = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR"};
+    /// A CLIENT-scoped principal holding every relevant permission, which must not help (spec §1, §7).
+    private static final String[] CLIENT_SCOPED = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "CLIENT",
+            Authenticator.TEST_CLIENTS, "clt_x",
+            Authenticator.TEST_PERMISSIONS, "platform:iam:anchor-domain:view,platform:iam:anchor-domain:manage,"
+                    + "platform:iam:auth-config:view,platform:iam:auth-config:manage,"
+                    + "platform:iam:idp-role-mapping:view,platform:iam:idp-role-mapping:manage"};
+
+    private static final AuthAdminConfigApi.State state = new AuthAdminConfigApi.State(
+            new AnchorDomainRepository(TestPg.dataSource()), new ClientAuthConfigRepository(TestPg.dataSource()),
+            new IdpRoleMappingRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+    private static TestHttp http;
+
+    @BeforeAll
+    static void start() {
+        var keys = SigningKeys.generateEphemeral();
+        var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
+        var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
+        http = new TestHttp(cfg -> {
+            HttpError.install(cfg.routes);
+            cfg.routes.before("/api/*", auth);
+            AuthAdminConfigApi.register(cfg.routes, state);
+        });
+    }
+
+    @AfterAll
+    static void stop() {
+        http.close();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static JsonNode json(HttpResponse<String> r) {
+        try {
+            return Json.MAPPER.readTree(r.body());
+        } catch (Exception e) {
+            throw new IllegalStateException("not JSON: " + r.body(), e);
+        }
+    }
+
+    private static String domain(String tag) {
+        return tag + "-" + RUN + ".example.com";
+    }
+
+    private static String tok(String tag) {
+        return tag + "-" + RUN;
+    }
+
+    private static final String TS = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z";
+
+    private static String createAnchorDomain(String domain) {
+        var r = http.post("/api/anchor-domains", "{\"domain\":\"" + domain + "\"}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("id").asText();
+        assertThat(id).startsWith("anc_");
+        return id;
+    }
+
+    private static String createAuthConfig(String emailDomain) {
+        var r = http.post("/api/auth-configs", "{\"emailDomain\":\"" + emailDomain + "\",\"configType\":\"ANCHOR\","
+                + "\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("id").asText();
+        assertThat(id).startsWith("cac_");
+        return id;
+    }
+
+    private static String createIdpRoleMapping(String idpRoleName) {
+        var r = http.post("/api/idp-role-mappings", "{\"idpType\":\"keycloak\",\"idpRoleName\":\"" + idpRoleName + "\",\"platformRoleName\":\"app:role\"}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("id").asText();
+        assertThat(id).startsWith("irm_");
+        return id;
+    }
+
+    // ── Anchor domains ───────────────────────────────────────────────────────
+
+    @Test
+    void anchorDomainsCreateListUpdateAndDelete() {
+        String id = createAnchorDomain(domain("Api-Anc").toUpperCase(Locale.ROOT));
+
+        var list = http.get("/api/anchor-domains", ANCHOR);
+        assertThat(list.statusCode()).isEqualTo(200);
+        var body = json(list);
+        assertThat(body.propertyNames()).containsExactly("items");
+        var item = body.get("items");
+        assertThat(item).anySatisfy(n -> {
+            assertThat(n.get("id").asText()).isEqualTo(id);
+            assertThat(n.get("domain").asText()).isEqualTo(domain("api-anc"));
+            assertThat(n.get("createdAt").asText()).matches(TS);
+            assertThat(n.get("updatedAt").asText()).matches(TS);
+            assertThat(n.propertyNames()).containsExactlyInAnyOrder("id", "domain", "createdAt", "updatedAt");
+        });
+
+        var put = http.put("/api/anchor-domains/" + id, "{\"domain\":\"" + domain("api-anc-2") + "\"}", ANCHOR);
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(204);
+        assertThat(put.body()).isEmpty();
+        assertThat(json(http.get("/api/anchor-domains", ANCHOR)).get("items"))
+                .anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(id))
+                .extracting(n -> n.get("domain").asText()).contains(domain("api-anc-2"));
+
+        var badPut = http.put("/api/anchor-domains/" + id, "{\"domain\":\"nodot\"}", ANCHOR);
+        assertThat(badPut.statusCode()).isEqualTo(400);
+        assertThat(json(badPut).get("error").asText()).isEqualTo("INVALID_DOMAIN");
+
+        var del = http.delete("/api/anchor-domains/" + id, ANCHOR);
+        assertThat(del.statusCode()).isEqualTo(204);
+        assertThat(json(http.get("/api/anchor-domains", ANCHOR)).get("items")).noneSatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(id));
+
+        var againDel = http.delete("/api/anchor-domains/" + id, ANCHOR);
+        assertThat(againDel.statusCode()).isEqualTo(404);
+        var againPut = http.put("/api/anchor-domains/" + id, "{\"domain\":\"" + domain("api-anc-3") + "\"}", ANCHOR);
+        assertThat(againPut.statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void anchorDomainCreateValidationAndConflictEnvelopes() {
+        var noDomain = http.post("/api/anchor-domains", "{}", ANCHOR);
+        assertThat(noDomain.statusCode()).isEqualTo(400);
+        assertThat(json(noDomain).get("error").asText()).isEqualTo("DOMAIN_REQUIRED");
+
+        var badDomain = http.post("/api/anchor-domains", "{\"domain\":\"nodot\"}", ANCHOR);
+        assertThat(json(badDomain).get("error").asText()).isEqualTo("INVALID_DOMAIN");
+
+        createAnchorDomain(domain("api-anc-dup"));
+        var dup = http.post("/api/anchor-domains", "{\"domain\":\"" + domain("API-ANC-DUP") + "\"}", ANCHOR);
+        assertThat(dup.statusCode()).isEqualTo(409);
+        assertThat(json(dup).get("error").asText()).isEqualTo("DOMAIN_EXISTS");
+    }
+
+    // ── Auth configs ─────────────────────────────────────────────────────────
+
+    @Test
+    void authConfigsCreateListUpdateAndDelete() {
+        String id = createAuthConfig(domain("Api-Cfg").toUpperCase(Locale.ROOT));
+
+        var list = http.get("/api/auth-configs", ANCHOR);
+        assertThat(list.statusCode()).isEqualTo(200);
+        var item = json(list).get("items");
+        assertThat(item).anySatisfy(n -> {
+            assertThat(n.get("id").asText()).isEqualTo(id);
+            assertThat(n.get("emailDomain").asText()).isEqualTo(domain("api-cfg"));
+            assertThat(n.get("configType").asText()).isEqualTo("ANCHOR");
+            assertThat(n.get("authProvider").asText()).isEqualTo("INTERNAL");
+            assertThat(n.get("oidcMultiTenant").asBoolean()).isFalse();
+            assertThat(n.get("additionalClientIds").isArray()).isTrue();
+            assertThat(n.get("grantedClientIds").isArray()).isTrue();
+            assertThat(n.has("primaryClientId")).as("omitted when null").isFalse();
+            assertThat(n.has("oidcIssuerUrl")).as("omitted when null").isFalse();
+            assertThat(n.get("createdAt").asText()).matches(TS);
+        });
+
+        var put = http.put("/api/auth-configs/" + id, "{\"primaryClientId\":\"clt_p\",\"authProvider\":\"OIDC\","
+                + "\"oidcIssuerUrl\":\"https://issuer\",\"oidcClientId\":\"client-1\",\"additionalClientIds\":[\"clt_a\"]}", ANCHOR);
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(204);
+        var updated = json(http.get("/api/auth-configs", ANCHOR)).get("items");
+        assertThat(updated).filteredOn(n -> n.get("id").asText().equals(id)).first().satisfies(n -> {
+            assertThat(n.get("primaryClientId").asText()).isEqualTo("clt_p");
+            assertThat(n.get("authProvider").asText()).isEqualTo("OIDC");
+            assertThat(n.get("oidcIssuerUrl").asText()).isEqualTo("https://issuer");
+            assertThat(n.get("additionalClientIds")).extracting(JsonNode::asText).containsExactly("clt_a");
+            assertThat(n.get("emailDomain").asText()).as("not updatable").isEqualTo(domain("api-cfg"));
+            assertThat(n.get("configType").asText()).as("not updatable").isEqualTo("ANCHOR");
+        });
+
+        var badProvider = http.put("/api/auth-configs/" + id, "{\"authProvider\":\"SAML\"}", ANCHOR);
+        assertThat(badProvider.statusCode()).isEqualTo(400);
+        assertThat(json(badProvider).get("error").asText()).isEqualTo("INVALID_AUTH_PROVIDER");
+
+        var del = http.delete("/api/auth-configs/" + id, ANCHOR);
+        assertThat(del.statusCode()).isEqualTo(204);
+        assertThat(json(http.get("/api/auth-configs", ANCHOR)).get("items")).noneSatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(id));
+        assertThat(http.delete("/api/auth-configs/" + id, ANCHOR).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void authConfigCreateValidationOrderAndConflictEnvelope() {
+        var noDomain = http.post("/api/auth-configs", "{\"configType\":\"ANCHOR\",\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        assertThat(json(noDomain).get("error").asText()).isEqualTo("INVALID_EMAIL_DOMAIN");
+
+        var badType = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-cfg-bad1") + "\",\"configType\":\"GLOBAL\","
+                + "\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        assertThat(json(badType).get("error").asText()).isEqualTo("INVALID_CONFIG_TYPE");
+
+        var badProvider = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-cfg-bad2") + "\",\"configType\":\"ANCHOR\","
+                + "\"authProvider\":\"SAML\",\"oidcMultiTenant\":false}", ANCHOR);
+        assertThat(json(badProvider).get("error").asText()).isEqualTo("INVALID_AUTH_PROVIDER");
+
+        var noIssuer = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-cfg-bad3") + "\",\"configType\":\"ANCHOR\","
+                + "\"authProvider\":\"OIDC\",\"oidcMultiTenant\":false,\"oidcClientId\":\"c\"}", ANCHOR);
+        assertThat(json(noIssuer).get("error").asText()).isEqualTo("OIDC_ISSUER_REQUIRED");
+
+        createAuthConfig(domain("api-cfg-dup"));
+        var dup = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("API-CFG-DUP") + "\",\"configType\":\"ANCHOR\","
+                + "\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        assertThat(dup.statusCode()).isEqualTo(409);
+        assertThat(json(dup).get("error").asText()).isEqualTo("DOMAIN_ALREADY_CONFIGURED");
+    }
+
+    // ── IdP role mappings ────────────────────────────────────────────────────
+
+    @Test
+    void idpRoleMappingsCreateListAndDelete() {
+        String id = createIdpRoleMapping(tok("api-role"));
+
+        var list = http.get("/api/idp-role-mappings", ANCHOR);
+        assertThat(list.statusCode()).isEqualTo(200);
+        assertThat(json(list).get("items")).anySatisfy(n -> {
+            assertThat(n.get("id").asText()).isEqualTo(id);
+            assertThat(n.get("idpType").asText()).isEqualTo("keycloak");
+            assertThat(n.get("idpRoleName").asText()).isEqualTo(tok("api-role"));
+            assertThat(n.get("platformRoleName").asText()).isEqualTo("app:role");
+            assertThat(n.propertyNames()).containsExactlyInAnyOrder("id", "idpType", "idpRoleName", "platformRoleName", "createdAt", "updatedAt");
+        });
+
+        var del = http.delete("/api/idp-role-mappings/" + id, ANCHOR);
+        assertThat(del.statusCode()).isEqualTo(204);
+        assertThat(json(http.get("/api/idp-role-mappings", ANCHOR)).get("items")).noneSatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(id));
+        assertThat(http.delete("/api/idp-role-mappings/" + id, ANCHOR).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void idpRoleMappingCreateValidationAndConflictEnvelopes() {
+        var missing = http.post("/api/idp-role-mappings", "{\"idpRoleName\":\"x\",\"platformRoleName\":\"app:role\"}", ANCHOR);
+        assertThat(missing.statusCode()).isEqualTo(400);
+        assertThat(json(missing).get("error").asText()).isEqualTo("FIELD_REQUIRED");
+        assertThat(json(missing).get("message").asText()).isEqualTo("idpType is required");
+
+        createIdpRoleMapping(tok("api-role-dup"));
+        var dup = http.post("/api/idp-role-mappings", "{\"idpType\":\"entra\",\"idpRoleName\":\"" + tok("api-role-dup") + "\",\"platformRoleName\":\"app:other\"}", ANCHOR);
+        assertThat(dup.statusCode()).isEqualTo(409);
+        assertThat(json(dup).get("error").asText()).isEqualTo("MAPPING_EXISTS");
+    }
+
+    // ── Gates ──────────────────────────────────────────────────────────────
+
+    @Test
+    void everyRouteIsAnchorOnlyIncludingTheLists() {
+        String anchorDomainId = createAnchorDomain(domain("api-gate-anc"));
+        String authConfigId = createAuthConfig(domain("api-gate-cfg"));
+        String mappingId = createIdpRoleMapping(tok("api-gate-role"));
+
+        for (var r : List.of(
+                http.get("/api/anchor-domains", CLIENT_SCOPED),
+                http.post("/api/anchor-domains", "{\"domain\":\"" + domain("api-gate-anc2") + "\"}", CLIENT_SCOPED),
+                http.put("/api/anchor-domains/" + anchorDomainId, "{\"domain\":\"" + domain("api-gate-anc3") + "\"}", CLIENT_SCOPED),
+                http.delete("/api/anchor-domains/" + anchorDomainId, CLIENT_SCOPED),
+                http.get("/api/auth-configs", CLIENT_SCOPED),
+                http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-gate-cfg2") + "\",\"configType\":\"ANCHOR\",\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", CLIENT_SCOPED),
+                http.put("/api/auth-configs/" + authConfigId, "{}", CLIENT_SCOPED),
+                http.delete("/api/auth-configs/" + authConfigId, CLIENT_SCOPED),
+                http.get("/api/idp-role-mappings", CLIENT_SCOPED),
+                http.post("/api/idp-role-mappings", "{\"idpType\":\"keycloak\",\"idpRoleName\":\"" + tok("api-gate-role2") + "\",\"platformRoleName\":\"app:role\"}", CLIENT_SCOPED),
+                http.delete("/api/idp-role-mappings/" + mappingId, CLIENT_SCOPED))) {
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+            assertThat(r.body()).isEqualTo("{\"error\":\"ANCHOR_REQUIRED\",\"message\":\"anchor scope required\"}\n");
+        }
+
+        var anonymous = http.get("/api/anchor-domains");
+        assertThat(anonymous.statusCode()).isEqualTo(403);
+        assertThat(json(anonymous).get("error").asText()).isEqualTo("UNAUTHENTICATED");
+
+        // Nothing the CLIENT_SCOPED principal attempted actually took effect.
+        assertThat(json(http.get("/api/anchor-domains", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(anchorDomainId));
+        assertThat(json(http.get("/api/auth-configs", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(authConfigId));
+        assertThat(json(http.get("/api/idp-role-mappings", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(mappingId));
+    }
+}

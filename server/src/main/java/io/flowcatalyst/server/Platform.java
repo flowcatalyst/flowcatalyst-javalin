@@ -29,6 +29,10 @@ import io.flowcatalyst.platform.docs.api.DocsApi;
 import io.flowcatalyst.platform.eventtype.api.EventTypeApi;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.emaildomainmapping.api.EmailDomainMappingApi;
+import io.flowcatalyst.platform.authadmin.AnchorDomainRepository;
+import io.flowcatalyst.platform.authadmin.ClientAuthConfigRepository;
+import io.flowcatalyst.platform.authadmin.IdpRoleMappingRepository;
+import io.flowcatalyst.platform.authadmin.api.AuthAdminConfigApi;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption;
 import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
@@ -162,6 +166,10 @@ public final class Platform {
 
         var emailDomainMappingRepo = new EmailDomainMappingRepository(pool);
         EmailDomainMappingApi.register(routes, new EmailDomainMappingApi.State(emailDomainMappingRepo, uow));
+        var anchorDomainRepo = new AnchorDomainRepository(pool);
+        var authConfigRepo = new ClientAuthConfigRepository(pool);
+        var idpRoleMappingRepo = new IdpRoleMappingRepository(pool);
+        AuthAdminConfigApi.register(routes, new AuthAdminConfigApi.State(anchorDomainRepo, authConfigRepo, idpRoleMappingRepo, uow));
         var identityProviderRepo = new IdentityProviderRepository(pool);
         // Built from `env`, not the process environment: fcdev loads its environment (and the app key it
         // generates) from a map, so reading System.getenv() here would silently disable encryption there.
