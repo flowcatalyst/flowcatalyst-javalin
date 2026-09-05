@@ -65,7 +65,8 @@
          starts it exactly like fcdev's EmbeddedPg does, so it is a main-scope dependency here
          too, not test-only. The platform-binary additions below mirror server/pom.xml's
          (Apple-silicon macOS + arm64 Linux dev/CI hosts; the default zonky bundle only ships
-         amd64 for those OSes) — SPEC? the brief says "the same platform-binary profile block
+         amd64 for those OSes; the linux-amd64 binary stays because GitHub's `ubuntu-latest`
+         runners are amd64 — `.github/workflows/ci.yml` runs the corpus there) — SPEC? the brief says "the same platform-binary profile block
          fcdev has", but fcdev has no such block (it downloads the matching binary from Maven
          Central at first run via MavenCentralPgBinaryResolver instead); server/pom.xml is the
          one with explicit platform-binary dependencies, so those are what's mirrored here. -->
@@ -80,10 +81,6 @@
         <exclusion>
           <groupId>io.zonky.test.postgres</groupId>
           <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>io.zonky.test.postgres</groupId>
-          <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
         </exclusion>
         <exclusion>
           <groupId>io.zonky.test.postgres</groupId>

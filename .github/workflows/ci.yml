@@ -1,0 +1,231 @@
+name: ci
+
+# The Java port's CI (docs/port-plan.md, "CI" item; docs/spec/cutover.md gates):
+#
+#   test      the whole Maven reactor on Temurin 25 (embedded Postgres via zonky), plus
+#             the jOOQ drift check — the authority for correctness
+#   image     the Dockerfile's jlink image, started router-only and probed on /health —
+#             the default deployable (cutover.md: "the jlink image for the platform tier")
+#   native    GraalVM native-image on Linux amd64 + arm64 and macOS arm64 (the one
+#             platform proven by hand, docs/STATUS.md "GraalVM native-image trial"),
+#             each binary started router-only and probed — the router-tier artefact
+#   parity    the Go/Java parity corpus (parity/, docs/spec/parity-harness.md) against a
+#             checkout of the public Go repo; the report is uploaded as an artifact
+#   e2e       the Playwright suite against the Java fcdev (e2e/, docs/spec/frontend-e2e.md);
+#             the Go column joins once Go's fresh-database seeder defect is fixed
+#             (docs/backlog.md) — flip E2E_GO_SIDE below to "1" then
+#
+# Never `mvn install` (CLAUDE.md): every job resolves sibling modules through the reactor.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  MAVEN_OPTS: -Dmaven.repo.local=${{ github.workspace }}/.m2/repository
+  # The Go repo the parity corpus and the e2e Go column build from. Override the ref with a
+  # repository variable when pinning against a Go release rather than its main branch.
+  GO_REPO: flowcatalyst/flowcatalyst
+  GO_REF: ${{ vars.PARITY_GO_REF || 'main' }}
+  E2E_GO_SIDE: "0"
+
+jobs:
+  test:
+    name: Maven reactor (Temurin 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      # The parity module's own unit tests run here too; ParityRunTest skips itself unless
+      # PARITY_GO_SRC is set (the `parity` job below runs it for real).
+      - name: Test
+        run: mvn -B -q test
+      - name: Committed jOOQ code matches the migrations
+        run: tools/jooq-verify.sh
+      - name: Surefire reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: "**/target/surefire-reports/*.xml"
+
+  image:
+    name: jlink image (Dockerfile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t flowcatalyst-java:ci .
+      # Router-only needs no database (Main skips connect/migrate/seed when no
+      # database-backed subsystem is on) — enough to prove the runtime image boots and
+      # its HEALTHCHECK passes.
+      - name: Start router-only and wait for healthy
+        run: |
+          docker run -d --name fc -e FC_PLATFORM_ENABLED=false -p 18080:8080 flowcatalyst-java:ci
+          for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' fc)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs fc
+          [ "$status" = healthy ] || { echo "image never became healthy (status=$status)"; exit 1; }
+          curl -fsS http://127.0.0.1:18080/health
+      - name: Stop
+        if: always()
+        run: docker rm -f fc || true
+
+  native:
+    name: native-image (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest = amd64; ubuntu-24.04-arm = arm64 (free for public repositories);
+        # macos-latest = Apple silicon, the platform proven by hand.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "25"
+          distribution: graalvm
+          cache: maven
+      - name: Build fc-server native binary
+        run: mvn -B -q -DskipTests -pl server -am -Pnative package
+      - name: Size
+        run: ls -la server/target/fc-server
+      # Same probe as the image job: router-only, no database. The binary must answer
+      # /health with the stamped version (STATUS: -Dfc.version + build-time Version init).
+      - name: Start router-only and probe /health
+        run: |
+          FC_PLATFORM_ENABLED=false FC_API_PORT=18081 FC_METRICS_PORT=19091 server/target/fc-server > native.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18081/health && ok=1 && break
+            sleep 1
+          done
+          kill $pid || true
+          cat native.log
+          [ "${ok:-}" = 1 ] || { echo "native binary never answered /health"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fc-server-native-${{ matrix.os }}
+          path: server/target/fc-server
+
+  parity:
+    name: Go/Java parity corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the Go reference (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GO_REPO }}
+          ref: ${{ env.GO_REF }}
+          path: flowcatalyst-go
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: flowcatalyst-go/go.mod
+          cache-dependency-path: flowcatalyst-go/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      # docs/spec/parity-harness.md §10: Go is built out of tree by the harness itself
+      # (`go build -o <scratch>/…`); the corpus is ~12 min on an M-series laptop.
+      - name: Run the corpus
+        env:
+          PARITY_GO_SRC: ${{ github.workspace }}/flowcatalyst-go
+        run: mvn -B -q -pl parity -am test -Dtest=ParityRunTest -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-report
+          path: parity/target/parity-report/
+      # The harness asserts only that no step ERRORed; a DIFF outside expected-diffs.json is
+      # the drop-in claim failing, so the job fails on it here (spec §9: no normalisation to
+      # make a run green — fix Java, or allow-list with a ruling id).
+      - name: No unaccepted diffs
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open("parity/target/parity-report/report.json"))
+          bad = [(s["scenarioName"], st["stepId"], st["status"]) for s in r["scenarios"] for st in s["steps"] if st["status"] in ("DIFF", "ERROR")]
+          for b in bad: print("%s / %s: %s" % b)
+          print("steps with unaccepted diffs or errors:", len(bad))
+          sys.exit(1 if bad else 0)
+          PY
+
+  e2e:
+    name: Frontend e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the Go reference (read-only)
+        if: env.E2E_GO_SIDE == '1'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GO_REPO }}
+          ref: ${{ env.GO_REF }}
+          path: flowcatalyst-go
+      - uses: actions/setup-go@v5
+        if: env.E2E_GO_SIDE == '1'
+        with:
+          go-version-file: flowcatalyst-go/go.mod
+          cache-dependency-path: flowcatalyst-go/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: e2e/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: e2e/pnpm-lock.yaml
+      - name: Install
+        working-directory: e2e
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Runner unit tests
+        working-directory: e2e
+        run: pnpm test:unit
+      # The runner builds the Java fcdev itself (mvn -pl fcdev -am package -DskipTests) and
+      # starts it on a fresh embedded Postgres; the embedded SPA is the committed copy
+      # (server/src/main/resources/frontend, refreshed with tools/sync-frontend.sh).
+      - name: Suite against Java
+        if: env.E2E_GO_SIDE != '1'
+        working-directory: e2e
+        run: pnpm e2e:java
+      - name: Suite against Go and Java, with the SPA gate
+        if: env.E2E_GO_SIDE == '1'
+        working-directory: e2e
+        env:
+          E2E_GO_REPO: ${{ github.workspace }}/flowcatalyst-go
+        run: pnpm e2e:both
+      - name: Playwright results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/

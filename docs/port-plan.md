@@ -201,8 +201,15 @@ in it), so the frontend is their acceptance test.
   2026-09-05** (`docs/spec/cutover.md`: gates, nine timed steps, rollback
   drill each rehearsal, env-parity script). Build order now: parity
   harness → S1/S2/S3 → e2e runner + flows → rehearsal ×3 on staging.
-- CI: Linux native build in a matrix (only macOS arm64 is proven), the jlink
-  image as the default deployable, the native binary for the router tier.
+- ~~CI: Linux native build in a matrix (only macOS arm64 is proven), the jlink
+  image as the default deployable, the native binary for the router tier.~~
+  **Written 2026-09-06** (`.github/workflows/ci.yml`: reactor tests + jOOQ
+  drift on Temurin 25; the Dockerfile's jlink image started router-only and
+  health-probed; native-image on Linux amd64/arm64 + macOS arm64, each
+  binary probed; the parity corpus against the public Go repo with the
+  report as an artifact and a fail on any unaccepted diff; the Playwright
+  suite on Java, the Go column behind one switch). Unproven until the repo
+  has a GitHub remote — the first push is the owner's.
 
 ## Rules that stay in force
 

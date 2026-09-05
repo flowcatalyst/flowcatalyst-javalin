@@ -14,7 +14,7 @@ threads, no DI container, no annotation magic.
 
 ## Build
 
-Java 25 is required (`JAVA_HOME=$(mise where graalvm)` locally).
+Java 25 is required (`JAVA_HOME=$(mise where java)` locally — `mise.toml` pins Temurin 25).
 
 ```sh
 mvn -q test                         # everything (embedded Postgres downloads on first run)

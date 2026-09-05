@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "e2e": "tsx scripts/run-one.ts",
     "e2e:go": "E2E_SIDE=go tsx scripts/run-one.ts",
