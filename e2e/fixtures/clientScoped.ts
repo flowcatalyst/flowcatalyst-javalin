@@ -7,6 +7,7 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD } from "./admin.js";
 /// `docs/spec/frontend-e2e.md` §3's tenancy group; scaffolded here so this
 /// unit's file layout matches the brief, not exercised by the auth spec).
 export interface ClientScopedPrincipal {
+    id: string;
     clientId: string;
     clientIdentifier: string;
     email: string;
@@ -16,7 +17,7 @@ export interface ClientScopedPrincipal {
 /// A short, run-unique suffix so repeated runs against the same fresh
 /// database (there's exactly one per run, but a retried test reuses it)
 /// never collide on `identifier`/`email` uniqueness constraints.
-function unique(prefix: string): string {
+export function unique(prefix: string): string {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -30,7 +31,10 @@ export async function createClientScopedPrincipal(request: APIRequestContext): P
     if (!clientRes.ok()) {
         throw new Error(`createClientScopedPrincipal: POST /api/clients -> ${clientRes.status()} ${await clientRes.text()}`);
     }
-    const client = (await clientRes.json()) as { id: string; identifier: string };
+    // POST /api/clients answers with only `{id}` (matches Go's minimal
+    // `createdResponse` shape) — `identifier` was never on the wire here, so
+    // it's the value already chosen above, not a field read off the response.
+    const client = { ...(await clientRes.json()) as { id: string }, identifier };
 
     const email = `${unique("e2e-user")}@example.com`;
     const password = "Kolkata-Ferry-4471!";
@@ -40,8 +44,9 @@ export async function createClientScopedPrincipal(request: APIRequestContext): P
     if (!userRes.ok()) {
         throw new Error(`createClientScopedPrincipal: POST /api/principals/users -> ${userRes.status()} ${await userRes.text()}`);
     }
+    const user = (await userRes.json()) as { id: string };
 
-    return { clientId: client.id, clientIdentifier: client.identifier, email, password };
+    return { id: user.id, clientId: client.id, clientIdentifier: client.identifier, email, password };
 }
 
 /// Extends the admin fixture with `clientScoped`: the admin session used to

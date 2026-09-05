@@ -45,7 +45,16 @@ export async function loginAndLand(page: Page, email: string, password: string):
 /// path to `/auth/logout` (`SidebarProfile.vue`'s `handleLogout`).
 export async function signOutViaUi(page: Page): Promise<void> {
     await page.locator(".profile-trigger").click();
-    await page.getByRole("button", { name: "Sign Out" }).click();
+    const signOut = page.getByRole("button", { name: "Sign Out" });
+    // PrimeVue's Popover slides/fades in (SidebarProfile.vue's `.15s`
+    // transition); Playwright's own actionability wait sometimes never sees
+    // two stable frames in a row while it's animating, and retries past its
+    // own click timeout. Wait for the transition to actually settle first —
+    // a flow that signs out and back in repeatedly (2FA, passkeys) opens
+    // this popover often enough to make that reliably reproducible.
+    await signOut.waitFor({ state: "visible" });
+    await page.waitForTimeout(250);
+    await signOut.click();
     await expect(page).toHaveURL(/\/auth\/login/);
 }
 
