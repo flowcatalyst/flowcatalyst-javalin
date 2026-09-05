@@ -46,6 +46,32 @@ MFA is in this batch's cut by ruling (`auth-identity.md` §6). Its own
 questions are I-Q11, I-Q12 and the defects 7, 9, 10 — listed under Batch C
 but I will take them in Batch A's order if you answer them here.
 
+
+## Rulings — Batch A (owner, 2026-09-05, asked one by one)
+
+Already ruled before this session and therefore not re-asked: C-Q5 (A-14), C-Q6 (A-13), C-Q21 (X-06 — reject unknown `clientType`).
+
+- **C-Q1** — RULED 2026-09-05: real login time (the cookie's issue time), following Go's later fix.
+- **C-Q2** — RULED: keep, always `true`.
+- **C-Q3** — RULED: keep writing it (storage compat).
+- **C-Q16** — RULED: dead — fixed 7 d / 24 h.
+- **C-Q17** — RULED: keep both sets as Go.
+- **C-Q18** — RULED: keep the names; **backlog**: wire policies and callers so introspect, revoke and check-domain are actually rate-limited.
+- **C-Q19** — RULED: require ≥ 32 bytes; startup fails with a clear message.
+- **C-Q20** — RULED: **empty grant list ⇒ no grant allowed** (fail closed). Cutover: existing rows with an empty list stop minting until their grants are set — data migration / seeder + `fcdev init` set grants explicitly; Go's behaviour recorded as a defect in `docs/backlog.md`.
+- **C-Q22** — RULED: reject a `state` > 116 chars up front with `invalid_request`; the cap stays.
+- **C-Q23** — RULED: rate-limit store fails open; backoff store fails **closed** (deny the login, 503).
+- **C-Q24** — RULED: populate `status` with the principal's real status (the field already exists, so no reader breaks); verify the SPA/SDK types treat it as optional.
+- **C-Q25** — RULED: keep both orders as Go.
+- **C-Q26** — RULED: **RFC 7662** — `client_id` is the OAuth client that minted the token. Verified 2026-09-05: no caller of introspection in InhanceMono (`apps`, `packages_root/packages`) or any SDK; the Go SDK's `IntrospectToken` has no callers; the tenant pair stays in the token's `clients` claim.
+- **C-Q27** — RULED: RFC 6749 error shape for the 429 on **both** `/oauth/authorize` and `/oauth/token`; **backlog**: update the SDKs/SPA error parsing.
+- **C-Q28** — RULED: keep refresh-token-only revocation for now. **Backlog (designed option)**: an access-token denylist, cache-first with the table as the fallback store; the one-hour access TTL bounds its value.
+- **I-Q5** — RULED: envelope 500 as Q10 (fixed message, cause logged).
+- **I-Q21** — RULED: align to the platform `Time` shape; drop `principalId`.
+- **I-Q23** — RULED: keep — no portal-plane MFA in this cut (product decision, recorded).
+- **I-Q11** — RULED: **trusted-device "remember" exists only for internally managed identities (password/passcode), never for external-IdP domains (structural, not a default); off by default; on only by explicit domain policy; the policy change, each enrolment and each revocation are audit-logged.** Check Go's stored `RememberEnabled` default before cutover so existing rows keep their value and only new mappings start off.
+- **I-Q12** — RULED: enforce the domain's allowed-method list at verify too.
+
 ## Batch B — OIDC bridge and the portal plane (`/auth/oidc/*`, `/portal/*`, check-domain, JIT + role sync)
 
 | # | Question | Recommend | Why | Unanswered ⇒ |
