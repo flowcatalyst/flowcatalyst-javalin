@@ -61,6 +61,17 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
             }
         }
 
+        /// The BFF's CSV multi-select (bff spec §7): zero or more explicit
+        /// client ids, plus whether the literal `platform` was among the
+        /// values — `client_id IN (clientIds)` OR'd with `client_id IS NULL`
+        /// when [#includesPlatform] is set. Never constructed with both empty
+        /// and `includesPlatform` false — that is [Any], not this.
+        record OfMany(List<String> clientIds, boolean includesPlatform) implements ClientFilter {
+            public OfMany {
+                clientIds = List.copyOf(clientIds);
+            }
+        }
+
         /// `null` = platform scope, else that client — the command-side spelling (sync, by-code).
         static ClientFilter scope(String clientId) {
             return clientId == null ? new PlatformOnly() : new Of(clientId);
@@ -74,10 +85,21 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
     ///
     /// @param status raw stored value (`ACTIVE` …); an unknown value matches nothing
     /// @param search case-insensitive substring of `code` or `name`
-    public record ListFilter(ClientFilter client, String status, String search, Visibility visibility) {
+    /// @param statuses the BFF's CSV multi-select (bff spec §7); empty = no filter,
+    ///                  applied in addition to (not instead of) {@code status}
+    /// @param applicationIds the BFF's CSV multi-select (bff spec §7); empty = no filter
+    public record ListFilter(ClientFilter client, String status, String search, Visibility visibility,
+                             List<String> statuses, List<String> applicationIds) {
         public ListFilter {
             Objects.requireNonNull(client, "client");
             Objects.requireNonNull(visibility, "visibility");
+            statuses = statuses == null ? List.of() : List.copyOf(statuses);
+            applicationIds = applicationIds == null ? List.of() : List.copyOf(applicationIds);
+        }
+
+        /// The single-status, single-client-scope form every non-BFF caller uses.
+        public ListFilter(ClientFilter client, String status, String search, Visibility visibility) {
+            this(client, status, search, visibility, List.of(), List.of());
         }
     }
 
@@ -116,6 +138,8 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
     private Condition condition(ListFilter f) {
         Condition where = clientCondition(f.client());
         if (f.status() != null) where = where.and(T.STATUS.eq(f.status()));
+        if (!f.statuses().isEmpty()) where = where.and(T.STATUS.in(f.statuses()));
+        if (!f.applicationIds().isEmpty()) where = where.and(T.APPLICATION_ID.in(f.applicationIds()));
         if (f.search() != null) {
             String pattern = "%" + f.search() + "%";
             where = where.and(T.CODE.likeIgnoreCase(pattern).or(T.NAME.likeIgnoreCase(pattern)));
@@ -128,6 +152,14 @@ public final class ScheduledJobRepository implements Persist<ScheduledJob> {
             case ClientFilter.Any _ -> DSL.noCondition();
             case ClientFilter.PlatformOnly _ -> T.CLIENT_ID.isNull();
             case ClientFilter.Of of -> T.CLIENT_ID.eq(of.clientId());
+            case ClientFilter.OfMany many -> {
+                Condition c1 = many.clientIds().isEmpty() ? null : T.CLIENT_ID.in(many.clientIds());
+                Condition c2 = many.includesPlatform() ? T.CLIENT_ID.isNull() : null;
+                if (c1 != null && c2 != null) yield c1.or(c2);
+                if (c1 != null) yield c1;
+                if (c2 != null) yield c2;
+                yield DSL.falseCondition(); // an empty multi-select matches nothing
+            }
         };
     }
 

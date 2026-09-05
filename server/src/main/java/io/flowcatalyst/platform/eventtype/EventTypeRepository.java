@@ -76,6 +76,27 @@ public final class EventTypeRepository implements Persist<EventType> {
         return findMany(where);
     }
 
+    /// The distinct first code segments across every event type, sorted
+    /// (bff spec §3: `/bff/event-types/filters/applications`).
+    public List<String> distinctApplications() {
+        return dsl.selectDistinct(T.APPLICATION).from(T).orderBy(T.APPLICATION.asc()).fetch(T.APPLICATION);
+    }
+
+    /// The distinct second code segments of one application's event types,
+    /// sorted (bff spec §5: `/bff/event-types/filters/subdomains`).
+    public List<String> distinctSubdomains(String application) {
+        return dsl.selectDistinct(T.SUBDOMAIN).from(T).where(T.APPLICATION.eq(application))
+                .orderBy(T.SUBDOMAIN.asc()).fetch(T.SUBDOMAIN);
+    }
+
+    /// The distinct third code segments of one application+subdomain's event
+    /// types, sorted (bff spec §5: `/bff/event-types/filters/aggregates`).
+    public List<String> distinctAggregates(String application, String subdomain) {
+        return dsl.selectDistinct(T.AGGREGATE).from(T)
+                .where(T.APPLICATION.eq(application)).and(T.SUBDOMAIN.eq(subdomain))
+                .orderBy(T.AGGREGATE.asc()).fetch(T.AGGREGATE);
+    }
+
     private Optional<EventType> findOne(Condition where) {
         return dsl.selectFrom(T).where(where).fetchOptional()
                 .map(row -> toEntity(row, specVersionsFor(List.of(row.getId())).getOrDefault(row.getId(), List.of())));

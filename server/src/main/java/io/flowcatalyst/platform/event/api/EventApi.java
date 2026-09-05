@@ -13,7 +13,6 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.javalin.http.Context;
-import io.javalin.http.Handler;
 import io.javalin.router.JavalinDefaultRoutingApi;
 
 import java.time.Instant;
@@ -40,6 +39,11 @@ import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_VIEW_RAW;
 /// | GET | `/api/events/raw` | `event:view-raw` | 200 bare array of [EventRead] (SDK alias) |
 /// | GET | `/api/events/filter-options` | `event:view` | 200 [EventFilterOptionsResponse] |
 /// | GET | `/api/events/{id}` | `event:view` + client scope | 200 [EventResponse] |
+///
+/// [#registerAt] dual-mounts `list` / `list-raw` / `filter-options` / `{id}`
+/// under `/bff/events` (bff spec §8, Go `registerBFF`) — `Platform` adds
+/// `POST /bff/events/batch` alongside it, delegating to
+/// [io.flowcatalyst.platform.ingest.api.IngestApi].
 public final class EventApi {
 
     /// The window of each facet of `/filter-options` (spec §4).
@@ -58,12 +62,21 @@ public final class EventApi {
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     /// The literal segments are registered before `{id}` so they win.
     public static void register(JavalinDefaultRoutingApi routes, State s) {
-        Handler raw = Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW_RAW));
-        routes.get("/api/events", Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW)));
-        routes.get("/api/events/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
-        routes.get("/api/events/list-raw", raw);
-        routes.get("/api/events/raw", raw); // SDK alias of /list-raw, same handler
-        routes.get("/api/events/{id}", Auth.scoped(ctx -> getById(ctx, s)));
+        // Registered BEFORE registerAt so this literal segment wins over registerAt's `{id}`.
+        routes.get("/api/events/raw", Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW_RAW))); // SDK alias of /list-raw, same handler
+        registerAt(routes, "/api/events", s);
+    }
+
+    /// Mounts `list` / `list-raw` / `filter-options` / `{id}` under `prefix`
+    /// (`/api/events` for the SDK surface, `/bff/events` for the SPA — spec
+    /// §8, Go `registerBFF`). The `/raw` SDK alias and the batch-ingest mount
+    /// are the callers' business: [#register] adds the former, `Platform`
+    /// wires the latter onto [io.flowcatalyst.platform.ingest.api.IngestApi].
+    public static void registerAt(JavalinDefaultRoutingApi routes, String prefix, State s) {
+        routes.get(prefix, Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW)));
+        routes.get(prefix + "/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
+        routes.get(prefix + "/list-raw", Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW_RAW)));
+        routes.get(prefix + "/{id}", Auth.scoped(ctx -> getById(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

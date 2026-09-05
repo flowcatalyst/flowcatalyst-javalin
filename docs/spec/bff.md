@@ -38,15 +38,19 @@ implementation detail, `[D]` defect / question.
 Exact: `COUNT(*) FROM tnt_clients`; `iam_principals WHERE type='USER' AND active`;
 `iam_roles`. Approximate (`GREATEST(reltuples,0)::bigint` from `pg_class`,
 summed over a partitioned parent's children): `msg_events`,
-`msg_dispatch_jobs`, `aud_logs`, `iam_login_attempts`. Any authenticated
-principal (§9 D1).
+`msg_dispatch_jobs`, `aud_logs`, `iam_login_attempts`. **Admin only**
+(Go `auth.IsAdmin`: anchor scope or the super-admin wildcard; a
+client-scoped user gets 403 `ADMIN_REQUIRED`).
 
 ## 3. Filter options [C]
 
-- `GET /bff/filter-options/clients` → `[{value: clientId, label: name}]`,
+- `GET /bff/filter-options/clients` → `{clients: [{value: clientId, label: name}]}`,
   every client the caller can access (anchor: all), sorted by label.
-- `GET /bff/event-types/filters/applications` → `[application]` distinct
-  first segments of all event-type codes, sorted.
+- `GET /bff/event-types/filters/applications` → `{options: [application]}`
+  distinct first segments of all event-type codes, sorted.
+  (Wrapped objects, as Go's `writeJSON(map{"clients"/"options": …})` and the
+  SPA's `filter-options.ts` types; the first draft of this spec wrote bare
+  arrays.)
 
 ## 4. Developer — anchor-only, every route [C]
 
@@ -67,7 +71,7 @@ principal (§9 D1).
 | Route | Backing (`docs/spec/eventtype.md`) | Notes |
 |---|---|---|
 | `GET /bff/event-types?status&application&subdomain&aggregate` | `findWithFilters` | `{items, total}` |
-| `GET /bff/event-types/filters/subdomains?application` / `…/filters/aggregates?application&subdomain` | distinct segments | `[string]` sorted |
+| `GET /bff/event-types/filters/subdomains?application` / `…/filters/aggregates?application&subdomain` | distinct segments | `{options: [string]}` sorted |
 | `GET /bff/event-types/{id}` | `findById` | 404 |
 | `POST /bff/event-types` `{code, name, description?, schema?, clientId?}` | `CreateEventType` (+ `AddSchema` when `schema` given) | 201, the full response |
 | `PUT /bff/event-types/{id}` `{name, description?}` | `UpdateEventType` | 204 |
@@ -143,8 +147,10 @@ pages `{data, page, size, total, totalPages}` with `page` **0-based**,
 
 ## 9. Defects and questions for the owner
 
-- **D1** Dashboard stats are readable by any authenticated principal,
-  including a client-scoped user, and count the whole platform. Intended?
+- **D1** *Withdrawn 2026-09-05*: the first draft of this spec said any
+  authenticated principal could read the dashboard; Go's handler calls
+  `auth.IsAdmin`. The Java port is admin-gated. (The Sonnet port followed
+  the draft text and flagged the discrepancy; the orchestrator fixed it.)
 - **D2** `eventsApprox` etc. come from `pg_class.reltuples`, which is
   zero until the first `ANALYZE` — a fresh install shows 0 until autovacuum
   runs. Cosmetic; noted.

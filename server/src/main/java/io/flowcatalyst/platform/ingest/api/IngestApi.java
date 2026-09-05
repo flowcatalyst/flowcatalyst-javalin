@@ -94,6 +94,13 @@ public final class IngestApi {
         routes.post("/api/audit-logs/batch", Auth.scoped(ctx -> batchIngestAuditLogs(ctx, s)));
     }
 
+    /// Mounts the SPA's own fan-out ingest at `path` (bff spec §8: `POST
+    /// /bff/events/batch`), the same handler and body/behaviour as
+    /// `POST /api/events/batch` — no duplicated handler body.
+    public static void registerEventsBatchAt(JavalinDefaultRoutingApi routes, String path, State s) {
+        routes.post(path, Auth.scoped(ctx -> batchIngestEvents(ctx, s)));
+    }
+
     // ── Events ───────────────────────────────────────────────────────────
 
     private static void createEvent(Context ctx, State s) {

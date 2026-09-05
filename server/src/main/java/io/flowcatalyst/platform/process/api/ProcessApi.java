@@ -56,15 +56,23 @@ public final class ProcessApi {
         }
     }
 
-    /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
+    /// Mounts the endpoints under `/api/processes`; paths, methods and status
+    /// codes are the lockfile's.
     public static void register(JavalinDefaultRoutingApi routes, State s) {
-        routes.get("/api/processes", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/processes", Auth.scoped(ctx -> create(ctx, s)));
-        routes.get("/api/processes/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
-        routes.get("/api/processes/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/processes/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/processes/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
-        routes.delete("/api/processes/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        registerAt(routes, "/api/processes", s);
+    }
+
+    /// Mounts every process route under `prefix` — `/api/processes` for the
+    /// SDK surface, `/bff/processes` for the SPA (bff spec §8, Go
+    /// `registerAt`): the two prefixes serve the same handlers.
+    public static void registerAt(JavalinDefaultRoutingApi routes, String prefix, State s) {
+        routes.get(prefix, Auth.scoped(ctx -> list(ctx, s)));
+        routes.post(prefix, Auth.scoped(ctx -> create(ctx, s)));
+        routes.get(prefix + "/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
+        routes.get(prefix + "/{id}", Auth.scoped(ctx -> getById(ctx, s)));
+        routes.put(prefix + "/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        routes.post(prefix + "/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
+        routes.delete(prefix + "/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

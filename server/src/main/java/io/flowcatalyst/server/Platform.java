@@ -7,6 +7,14 @@ import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.api.ApplicationApi;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.api.AuditLogApi;
+import io.flowcatalyst.platform.bff.DashboardRepository;
+import io.flowcatalyst.platform.bff.api.DashboardBff;
+import io.flowcatalyst.platform.bff.api.DeveloperBff;
+import io.flowcatalyst.platform.bff.api.EventTypesBff;
+import io.flowcatalyst.platform.bff.api.FilterOptionsBff;
+import io.flowcatalyst.platform.bff.api.MeApi;
+import io.flowcatalyst.platform.bff.api.RolesBff;
+import io.flowcatalyst.platform.bff.api.ScheduledJobsBff;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.api.EventApi;
 import io.flowcatalyst.platform.ingest.api.IngestApi;
@@ -156,7 +164,8 @@ public final class Platform {
         var dispatchPoolRepo = new DispatchPoolRepository(pool);
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
         var roleRepo = new RoleRepository(pool);
-        RoleApi.register(routes, new RoleApi.State(roleRepo, new PermissionRepository(pool), uow));
+        var permissionRepo = new PermissionRepository(pool);
+        RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));
         var applicationRepo = new ApplicationRepository(pool);
         ApplicationApi.register(routes, new ApplicationApi.State(applicationRepo, new ClientConfigRepository(pool), roleRepo, uow));
         var clientRepo = new ClientRepository(pool);
@@ -209,11 +218,13 @@ public final class Platform {
         }
         var appDocRepo = new AppDocRepository(pool);
         DocsApi.register(routes, new DocsApi.State(appDocRepo, applicationRepo, PublishedDocs.load()));
-        EventApi.register(routes, new EventApi.State(new EventRepository(pool)));
+        var eventRepo = new EventRepository(pool);
+        var eventApiState = new EventApi.State(eventRepo);
+        EventApi.register(routes, eventApiState);
         // SDK ingest (docs/spec/sdk-ingest.md): infra batch inserts, no unit of work — the POSTs
         // alongside the GET-only EventApi/DispatchJobApi/AuditLogApi read surfaces above.
-        IngestApi.register(routes, IngestApi.State.of(new EventRepository(pool), dispatchJobRepo,
-                new AuditLogRepository(pool), clientRepo, applicationRepo));
+        var ingestState = IngestApi.State.of(eventRepo, dispatchJobRepo, new AuditLogRepository(pool), clientRepo, applicationRepo);
+        IngestApi.register(routes, ingestState);
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
         // the developer client-secret is encrypted under the app key from `env`, like the IdP secrets above.
@@ -248,15 +259,37 @@ public final class Platform {
         // connection's view of rows the aggregate had just written.
         // This is also where `openapispecs` reaches the router: the unit was
         // complete but unregistered, and `/openapi/sync` is its only route.
+        var openApiSpecRepo = new OpenApiSpecRepository(pool);
         SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
-                connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, new OpenApiSpecRepository(pool),
+                connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
-        new SpecRoutes(Lockfile.load(Json.MAPPER)).register(routes);
+        var lockfile = Lockfile.load(Json.MAPPER);
+        new SpecRoutes(lockfile).register(routes);
+
+        // ── SPA's own BFF routes + /api/me (docs/spec/bff.md) ─────────────
+        // Cookie- or bearer-authenticated, same Authenticator as /api (both
+        // match `Platform.isPlatformPath`); `LockfileCoverageTest` excludes
+        // `/bff/*` and `/api/me*` by design (bff spec §1). The aggregate
+        // mounts reuse the SAME handlers/state as their `/api` registrations
+        // above under a second base path (Go `registerBFF`/`registerAt`).
+        DashboardBff.register(routes, new DashboardBff.State(new DashboardRepository(pool)));
+        FilterOptionsBff.register(routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
+        DeveloperBff.register(routes, new DeveloperBff.State(applicationRepo, openApiSpecRepo, eventTypeRepo, uow,
+                lockfile::json));
+        EventTypesBff.register(routes, new EventTypesBff.State(eventTypeRepo, uow));
+        RolesBff.register(routes, new RolesBff.State(roleRepo, permissionRepo, applicationRepo, uow));
+        ScheduledJobsBff.register(routes, new ScheduledJobsBff.State(scheduledJobRepo,
+                new ScheduledJobInstanceRepository(pool), clientRepo, applicationRepo));
+        MeApi.register(routes, new MeApi.State(principalRepo, applicationRepo, clientRepo, new ClientConfigRepository(pool)));
+        EventApi.registerAt(routes, "/bff/events", eventApiState);
+        IngestApi.registerEventsBatchAt(routes, "/bff/events/batch", ingestState);
+        DispatchJobApi.registerAt(routes, "/bff/dispatch-jobs", new DispatchJobApi.State(dispatchJobRepo, uow));
+        ProcessApi.registerAt(routes, "/bff/processes", new ProcessApi.State(processRepo, uow));
 
         LOG.info("platform API wired");
         return dispatchJobReaper;
