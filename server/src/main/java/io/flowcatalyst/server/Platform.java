@@ -90,6 +90,11 @@ import io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption;
 import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.api.OAuthClientApi;
+import io.flowcatalyst.platform.portalauth.PortalLoginFlowRepository;
+import io.flowcatalyst.platform.portalauth.api.PortalAuthApi;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
+import io.flowcatalyst.platform.portalidentity.PortalInviteEmailer;
+import io.flowcatalyst.platform.portalidentity.api.PortalUserApi;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.loginattempt.api.LoginAttemptApi;
 import io.flowcatalyst.platform.role.PermissionRepository;
@@ -357,6 +362,20 @@ public final class Platform {
         OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
 
+        // portal identity + portal auth (auth-identity spec §3.2, §3.3, §5.1-§5.5, §5.7,
+        // §11.2, §11.8): the admin API (`/api/portal-users*`, inside the authenticator)
+        // and the portal plane's own public auth surface (`/portal/*`, isPublicPath below).
+        // The portal SSO start/callback (§5.6) and the `/oauth/token` `ptu_` branch (§5.8)
+        // are wired against these same repository instances by a later unit.
+        var portalEnvReader = EnvReader.system();
+        var portalIdentityRepo = new PortalIdentityRepository(pool);
+        PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
+                identityProviderRepo, uow, PortalInviteEmailer.logging()));
+        var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
+        PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,
+                identityProviderRepo, grantStore, RateLimitStores.build(portalEnvReader, pool),
+                RateLimit.Policies.fromEnv(portalEnvReader), PortalInviteEmailer.logging()));
+
         // The OAuth / OIDC provider (auth-core §6.2, §6.2a, §6.2b). /oauth/authorize
         // and /auth/refresh are public (isPublicPath); the token, introspection,
         // revocation, userinfo and discovery routes run INSIDE the authenticator, which
@@ -495,6 +514,7 @@ public final class Platform {
                 || p.equals("/auth/2fa/enroll/totp/begin") || p.equals("/auth/2fa/enroll/totp/confirm")
                 || p.equals("/auth/2fa/enroll/email/begin") || p.equals("/auth/2fa/enroll/email/confirm")
                 || p.startsWith("/auth/password-reset/")
+                || p.startsWith("/portal/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")
                 || p.equals("/oauth/authorize")
                 || p.equals("/api/dispatch/process")
