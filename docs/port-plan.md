@@ -198,7 +198,10 @@ in it), so the frontend is their acceptance test.
   design~~ **Designed 2026-09-05** (`docs/spec/frontend-e2e.md`: Playwright
   against both sides, ~40 flows in nine groups, three Sonnet briefs after
   the parity harness lands); `tools/sync-frontend.sh` keeps the embedded
-  SPA current. Cutover + rollback rehearsal.
+  SPA current. ~~Cutover + rollback rehearsal design~~ **Designed
+  2026-09-05** (`docs/spec/cutover.md`: gates, nine timed steps, rollback
+  drill each rehearsal, env-parity script). Build order now: parity
+  harness → S1/S2/S3 → e2e runner + flows → rehearsal ×3 on staging.
 - CI: Linux native build in a matrix (only macOS arm64 is proven), the jlink
   image as the default deployable, the native binary for the router tier.
 
