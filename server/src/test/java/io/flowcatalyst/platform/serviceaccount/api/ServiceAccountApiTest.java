@@ -1,5 +1,18 @@
 package io.flowcatalyst.platform.serviceaccount.api;
 
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
+import io.flowcatalyst.platform.auth.grant.GrantStore;
+import io.flowcatalyst.platform.auth.grant.RefreshRotation;
+import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
+import io.flowcatalyst.platform.auth.oauth.OAuthState;
+import io.flowcatalyst.platform.auth.oauth.OAuthTokenApi;
+import io.flowcatalyst.platform.auth.ratelimit.Governor;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
+import io.flowcatalyst.platform.auth.token.ClaimLabels;
+import io.flowcatalyst.platform.auth.token.TokenIssuer;
+import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
@@ -16,6 +29,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.testpg.TestPg;
 import tools.jackson.databind.JsonNode;
 import org.junit.jupiter.api.AfterAll;
@@ -23,8 +37,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -44,13 +63,26 @@ class ServiceAccountApiTest {
     /// The role every mint-token test grants, and the permission it flattens to.
     private static final String GRANTED_PERMISSION = "platform:events:create";
 
-    private static final ServiceAccountRepository SA_REPO =
-            new ServiceAccountRepository(TestPg.dataSource(), Optional.of(Encryption.withKey(Encryption.generateKey())));
+    /// Shared by the service account's webhook-secret encryption AND the
+    /// minted OAuth client's secret ref, so the `/oauth/token` wiring below
+    /// (a separate `OAuthState`) can decrypt what `create` just encrypted.
+    private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
+    private static final String OAUTH_ISSUER = "https://fc.test/oauth";
+    private static final SigningKeys OAUTH_KEYS = SigningKeys.generateEphemeral();
+
+    private static final ServiceAccountRepository SA_REPO = new ServiceAccountRepository(TestPg.dataSource(), ENCRYPTION);
     private static final PrincipalRepository PRINCIPALS = new PrincipalRepository(TestPg.dataSource());
     private static final RoleRepository ROLES = new RoleRepository(TestPg.dataSource());
+    private static final OAuthClientRepository OAUTH_CLIENTS =
+            new OAuthClientRepository(TestPg.dataSource(), new ApplicationRepository(TestPg.dataSource()));
     private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     private static TestHttp http;
+    /// A second, independent server exercising only `POST /oauth/token`
+    /// against the SAME `OAUTH_CLIENTS` repository the service-account API
+    /// writes to — proves the minted pair is a real, usable credential
+    /// (spec §8), not merely a row that exists.
+    private static TestHttp oauthHttp;
     private static Role grantedRole;
 
     private static String[] anchor() {
@@ -82,7 +114,7 @@ class ServiceAccountApiTest {
         });
 
         var minter = new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER);
-        var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, UOW, minter,
+        var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, UOW, OAUTH_CLIENTS, ENCRYPTION, minter,
                 roleNames -> roleNames.stream().flatMap(n -> ROLES.findByName(n).stream()).flatMap(r -> r.permissions().stream()).distinct().toList());
 
         var keys = KEYS;
@@ -93,11 +125,40 @@ class ServiceAccountApiTest {
             cfg.routes.before("/api/*", auth);
             ServiceAccountApi.register(cfg.routes, state);
         });
+
+        var grants = new GrantStore(TestPg.dataSource());
+        var issuer = new TokenIssuer(OAUTH_KEYS, TokenIssuer.Config.of(OAUTH_ISSUER));
+        var oauthVerifier = new JwtVerifier(new JwtVerifier.Config(OAUTH_ISSUER, new JwtVerifier.RsaKeys(OAUTH_KEYS.publicKey())));
+        var oauthState = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, SA_REPO, grants, new RefreshRotation(grants, Clock.systemUTC()),
+                issuer, new AccessTokenReader(oauthVerifier), new DbClaimsResolver(PRINCIPALS, ROLES),
+                ClaimLabels.of(new ClientRepository(TestPg.dataSource()), new ApplicationRepository(TestPg.dataSource())),
+                ENCRYPTION, null, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new EnvReader(Map.of())),
+                new Governor(new Governor.Config(1000, 1_000_000)), OAUTH_KEYS, OAUTH_ISSUER, Clock.systemUTC(), null);
+        oauthHttp = new TestHttp(cfg -> {
+            HttpError.install(cfg.routes);
+            OAuthTokenApi.register(cfg.routes, oauthState);
+        });
     }
 
     @AfterAll
     static void stop() {
         http.close();
+        oauthHttp.close();
+    }
+
+    private static HttpResponse<String> tokenRequest(Map<String, String> form, String... headers) {
+        var b = new StringBuilder();
+        form.forEach((k, v) -> b.append(b.isEmpty() ? "" : "&").append(k).append('=').append(URLEncoder.encode(v, StandardCharsets.UTF_8)));
+        String[] all = new String[headers.length + 2];
+        all[0] = "Content-Type";
+        all[1] = "application/x-www-form-urlencoded";
+        System.arraycopy(headers, 0, all, 2, headers.length);
+        return oauthHttp.post("/oauth/token", b.toString(), all);
+    }
+
+    private static String[] basicAuth(String clientId, String secret) {
+        String raw = clientId + ":" + secret;
+        return new String[] {"Authorization", "Basic " + Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8))};
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -130,12 +191,46 @@ class ServiceAccountApiTest {
         assertThat(body.get("serviceAccount").get("id").asText()).startsWith("sac_");
         assertThat(body.get("serviceAccount").get("code").asText()).isEqualTo(code("create"));
         assertThat(body.get("serviceAccount").get("authType").asText()).isEqualTo("BEARER_TOKEN");
-        assertThat(body.get("principalId").asText()).startsWith("prn_");
-        // No auth aggregate yet: the OAuth pair is an explicit unavailable marker, never a fake credential.
-        assertThat(body.get("oauth").get("clientId").asText()).isEqualTo(ServiceAccountApi.OAUTH_UNAVAILABLE);
-        assertThat(body.get("oauth").get("clientSecret").asText()).isEqualTo(ServiceAccountApi.OAUTH_UNAVAILABLE);
+        assertThat(body.get("serviceAccount").has("principalId"))
+                .as("principalId is omitted on the nested shape, matching Go (spec §9.1, §10 Q5)").isFalse();
+        assertThat(body.get("principalId").asText()).as("but present on the top-level, required field").startsWith("prn_");
+        // A real, persisted CONFIDENTIAL OAuth client — see clientCredentialsAgainstTheMintedPairIssuesATokenForThePrincipal.
+        assertThat(body.get("oauth").get("clientId").asText()).startsWith("oac_");
+        assertThat(body.get("oauth").get("clientSecret").asText()).isNotBlank();
         assertThat(body.get("webhook").get("authToken").asText()).isNotBlank();
         assertThat(body.get("webhook").get("signingSecret").asText()).isNotBlank();
+    }
+
+    /// Proves the minted pair (spec §4.1, §8) is a REAL, usable credential —
+    /// not merely a row that exists. Drives `/oauth/token` through a second,
+    /// independent server (`oauthHttp`) wired against the same
+    /// `OAUTH_CLIENTS` repository the create handler just wrote to, exactly
+    /// as `OAuthProviderTest` wires the provider. Kills "return the secret
+    /// ref instead of the plaintext" (a leaked ref would never authenticate
+    /// here — `acceptClientSecret` decrypts the stored ref and compares) and
+    /// "drop withPrincipalId on the client" (a client with no principal 500s
+    /// `serverError`, never mints).
+    @Test
+    void clientCredentialsAgainstTheMintedPairIssuesATokenForThePrincipal() {
+        var created = create(code("oauthlive"), "OAuth Live");
+        String clientId = created.get("oauth").get("clientId").asText();
+        String clientSecret = created.get("oauth").get("clientSecret").asText();
+        String principalId = created.get("principalId").asText();
+
+        var r = tokenRequest(Map.of("grant_type", "client_credentials"), basicAuth(clientId, clientSecret));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("token_type").asText()).isEqualTo("Bearer");
+
+        var verifier = new JwtVerifier(new JwtVerifier.Config(OAUTH_ISSUER, new JwtVerifier.RsaKeys(OAUTH_KEYS.publicKey())));
+        var verified = verifier.verify(body.get("access_token").asText());
+        assertThat(verified).as("a real signature this key verifies").isInstanceOf(JwtVerifier.Verified.class);
+        assertThat(((JwtVerifier.Verified) verified).claims().subject())
+                .as("the token's subject is the account's linked SERVICE principal").isEqualTo(principalId);
+
+        // The wrong secret is rejected outright — the stored ref really gates access.
+        var wrong = tokenRequest(Map.of("grant_type", "client_credentials"), basicAuth(clientId, "not-the-secret"));
+        assertThat(wrong.statusCode()).isEqualTo(401);
     }
 
     @Test
@@ -186,6 +281,7 @@ class ServiceAccountApiTest {
 
         var byCode = json(http.get("/api/service-accounts/code/" + code("read"), VIEWER));
         assertThat(byCode.get("id").asText()).isEqualTo(id);
+        assertThat(byCode.has("principalId")).as("by-code omits principalId too, matching Go").isFalse();
 
         var list = json(http.get("/api/service-accounts", VIEWER));
         var match = list.get("serviceAccounts").valueStream().filter(n -> n.get("id").asText().equals(id)).findFirst().orElseThrow();

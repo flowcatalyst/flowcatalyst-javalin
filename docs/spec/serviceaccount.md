@@ -109,11 +109,22 @@ already exists".
 Creation also mints an OAuth client secret (`generateOAuthClientSecret`
 returns plaintext + a stored reference) and the initial webhook credentials.
 **The plaintext is returned once and never stored in the clear** — see §5.
+**Java (2026-09-05):** this is now a real, persisted `CONFIDENTIAL` OAuth
+client — `clientId` a fresh id, `principalId` the linked `SERVICE`
+principal, grant types `client_credentials` + `refresh_token`, scope
+`openid` — committed in the same transaction as the account and its
+principal (§11 records the one deliberate deviation from Go's shape).
 
 ### 4.2 Update / 4.3 Deactivate / 4.4 Delete
 
 `id` non-blank → `ID_REQUIRED`; unknown → 404 `ServiceAccount_NOT_FOUND`.
 Deactivate sets `active=false`; delete removes the row. Both answer 204.
+**Neither cascades to the linked principal or the OAuth client** — verified
+against Go's `delete.go` / `deactivate.go`, which touch only the service
+account row. A deleted account therefore leaves an orphaned `SERVICE`
+principal and OAuth client behind; Go's behaviour, kept as-is (not improvised
+around) — worth an owner ruling as a candidate cleanup, not a bug this port
+introduced.
 
 ### 4.5 Assign roles (`AssignRolesToServiceAccount`)
 
@@ -301,22 +312,8 @@ are folded into the Java port as drift, per the task that implemented it:
   `ServiceAccountOperationsTest#findAllFailsTheWholeListOnOneCorruptRow`, and
   `ServiceAccountApiTest#createRejectsAnUnknownWebhookAuthType`.
 
-Two further deviations the port could not avoid, recorded rather than
-improvised around:
+Further deviations, recorded rather than improvised around:
 
-- **The OAuth client secret (§4.1) is not backed by a real OAuth client.**
-  "Creation also mints an OAuth client secret (`generateOAuthClientSecret`
-  returns plaintext + a stored reference)" cannot be implemented as written:
-  there is no Java `auth`/`OAuthClient` aggregate in this codebase yet (the
-  auth port is blocked on owner rulings — `docs/spec/auth-core.md`,
-  `docs/spec/auth-identity.md`). `CreateServiceAccountWithCredentials` creates
-  the service account and its linked `SERVICE` principal only.
-  `ServiceAccountApi#create` returns the `unavailable:auth-not-ported`
-  marker in both `oauth` fields so `CreateServiceAccountResponse.oauth`
-  (required by the lockfile) has a well-formed shape without pretending to
-  be a credential. Once the `auth` aggregate lands, this
-  operation should gain a real OAuth-client write and the stub should be
-  deleted.
 - **The token mint's "best-effort audit row" (§8 step 8) is not written.**
   `AuditLogRepository` is read-only by design ("the rows are written by the
   unit-of-work sink, never here"), and the mint emits no domain event (§6 has
@@ -338,8 +335,15 @@ improvised around:
   lands. A first cut signed HS256 under the *encryption* app key; rejected
   in review — key reuse across purposes, and unverifiable by the RS256
   authenticator.
-- **The OAuth pair on create is an explicit marker, not a fake credential:**
-  both `oauth.clientId` and `oauth.clientSecret` are the literal
-  `unavailable:auth-not-ported` until the `auth` aggregate exists (a random
-  value that looked like a credential would be stored by an integrator and
-  fail silently later). Queued in `backlog.md` "Port work queued".
+- **The minted client's `applicationIds` scopes to the account's application;
+  Go's does not.** `create_credentials.go`'s `oc` carries no `ApplicationIDs`
+  at all — only the linked principal is confined when `applicationId` is
+  given. This port scopes the client the same way, mirroring
+  `application.operations.ProvisionServiceAccount`'s template (which does set
+  it) and the principal's own confinement two lines above: an app-scoped
+  account's `client_credentials` token should not carry a wider application
+  claim than the account it was minted for. Correctness over conformance
+  (CONVENTIONS §8) — not a Go behaviour to reproduce byte-for-byte, since §11
+  marks `[I]` mechanics as restructurable while the stated *behaviour* holds,
+  and an unconfined client on a confined account is the more surprising of
+  the two shapes.

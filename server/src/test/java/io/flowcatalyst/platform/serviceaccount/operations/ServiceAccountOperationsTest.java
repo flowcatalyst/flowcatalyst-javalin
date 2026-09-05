@@ -1,5 +1,10 @@
 package io.flowcatalyst.platform.serviceaccount.operations;
 
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.oauthclient.ClientType;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.CorruptServiceAccountException;
@@ -14,6 +19,7 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
+import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -45,6 +51,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
+import static io.flowcatalyst.db.generated.Tables.OAUTH_CLIENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -65,6 +73,7 @@ class ServiceAccountOperationsTest {
     private static final Encryption ENCRYPTION = Encryption.withKey(Encryption.generateKey());
     private static final ServiceAccountRepository repo = new ServiceAccountRepository(DS, Optional.of(ENCRYPTION));
     private static final PrincipalRepository principals = new PrincipalRepository(DS);
+    private static final OAuthClientRepository oauthClients = new OAuthClientRepository(DS, new ApplicationRepository(DS));
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -88,7 +97,7 @@ class ServiceAccountOperationsTest {
     }
 
     private static CreateServiceAccountWithCredentials.Result createWithCredentials(String code, String name, String applicationId) {
-        return runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals),
+        return runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.of(ENCRYPTION)),
                 new CreateCommand(code, name, null, null, null, applicationId, null));
     }
 
@@ -114,6 +123,15 @@ class ServiceAccountOperationsTest {
     private static Result<Record> auditsFor(String serviceAccountId, String operation) {
         return DB.fetch("SELECT entity_type, entity_id, operation, operation_json::text AS operation_json, principal_id FROM aud_logs WHERE entity_id = ? AND operation = ?",
                 serviceAccountId, operation);
+    }
+
+    private static Result<Record> eventsForSubject(String subject, String type) {
+        return DB.fetch("SELECT type, subject, source, data::text AS data, deduplication_id FROM msg_events WHERE subject = ? AND type = ?",
+                subject, type);
+    }
+
+    private static Optional<String> decrypt(String ref) {
+        return ENCRYPTION.decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
     }
 
     // ── Create ─────────────────────────────────────────────────────────────
@@ -174,7 +192,7 @@ class ServiceAccountOperationsTest {
     @ParameterizedTest(name = "{0} -> {2}")
     @MethodSource("malformedCreateCommands")
     void createRejectsAMalformedCommand(String label, CreateCommand cmd, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals), cmd),
+        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.of(ENCRYPTION)), cmd),
                 UseCaseError.Validation.class, expectedCode);
     }
 
@@ -190,6 +208,63 @@ class ServiceAccountOperationsTest {
         String c = ("  SACreateCase-" + RUN + "  ");
         var res = createWithCredentials(c, "Case", null);
         assertThat(res.serviceAccount().code()).isEqualTo(("sacreatecase-" + RUN).toLowerCase(Locale.ROOT));
+    }
+
+    // ── OAuth client (spec §4.1, §8; retires the auth-not-ported stub) ──────
+
+    /// The client the account uses for `client_credentials` (spec §8): a
+    /// real, persisted row scoped to the SERVICE principal, committed
+    /// through the same envelope as the service account and principal above
+    /// (an `OAuthClientCreated` event + its own audit row, not just "a row
+    /// exists somewhere"). Mutant killers named per the port brief:
+    ///   - `principalId` assertion kills "drop withPrincipalId on the client";
+    ///   - the decrypt-round-trip assertion kills "return the secret ref
+    ///     instead of the plaintext" (a leaked ref would fail to decrypt back
+    ///     to itself, or would equal the disclosed value only by coincidence —
+    ///     the explicit "stored ref != disclosed plaintext" assertion below
+    ///     closes that loophole);
+    ///   - the `msg_events` assertion kills "commit the client outside the
+    ///     transaction" (bypassing `scoped.commit` for a bare `persist` call
+    ///     writes the row but skips the event the envelope is responsible for).
+    @Test
+    void createMintsAConfidentialOAuthClientCommittedThroughTheSameEnvelopeAsTheAccount() {
+        var res = createWithCredentials(code("saoauth"), "OAuth Me", null);
+
+        OAuthClient oc = oauthClients.findById(res.oauthClientId()).orElseThrow();
+        assertThat(oc.clientId()).isEqualTo(res.oauthClientClientId());
+        assertThat(oc.clientName()).isEqualTo("OAuth Me Client");
+        assertThat(oc.clientType()).isEqualTo(ClientType.CONFIDENTIAL);
+        assertThat(oc.principalId()).as("scoped to the linked SERVICE principal, not the account")
+                .isEqualTo(res.principalId());
+        assertThat(oc.grantTypes()).containsExactlyInAnyOrder("client_credentials", "refresh_token");
+        assertThat(oc.defaultScopes()).containsExactly("openid");
+
+        String storedRef = DB.fetchOne(OAUTH_CLIENTS, OAUTH_CLIENTS.ID.eq(oc.id())).get(OAUTH_CLIENTS.CLIENT_SECRET_REF);
+        assertThat(storedRef).as("the column holds ciphertext, not the disclosed secret")
+                .startsWith("encrypted:").isNotEqualTo(res.oauthClientSecret());
+        assertThat(decrypt(storedRef)).as("the disclosed plaintext round-trips through the stored ciphertext")
+                .contains(res.oauthClientSecret());
+
+        var events = eventsForSubject(OAuthClientEvents.subjectFor(oc.id()), OAuthClientEvents.CREATED);
+        assertThat(events).as("the client's own creation event was committed in the same transaction").hasSize(1);
+        assertThat(auditsFor(oc.id(), "CreateCommand")).as("and its own audit row").hasSize(1);
+    }
+
+    /// Atomicity (spec §4.1): a missing app key rolls back everything the
+    /// operation touched, including the two aggregates written before the
+    /// failing client-secret encryption — not just the client itself.
+    @Test
+    void createFailsAtomicallyWhenNoAppKeyIsConfigured() {
+        String c = code("sanokey");
+        String name = "NoKeyAtomicity-" + RUN;
+
+        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.empty()),
+                        new CreateCommand(c, name, null, null, null, null, null)),
+                UseCaseError.Internal.class, "SECRET");
+
+        assertThat(repo.findByCode(c)).as("no service account row survives the rollback").isEmpty();
+        assertThat(DB.fetchCount(IAM_PRINCIPALS, IAM_PRINCIPALS.NAME.eq(name))).as("no principal row survives the rollback").isZero();
+        assertThat(DB.fetchCount(OAUTH_CLIENTS, OAUTH_CLIENTS.CLIENT_NAME.eq(name + " Client"))).as("no oauth client row survives the rollback").isZero();
     }
 
     // ── Update ─────────────────────────────────────────────────────────────

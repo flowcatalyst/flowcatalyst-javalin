@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.serviceaccount.api;
 
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
@@ -24,6 +25,7 @@ import io.flowcatalyst.platform.serviceaccount.operations.UpdateCommand;
 import io.flowcatalyst.platform.serviceaccount.operations.UpdateServiceAccount;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
@@ -34,6 +36,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -64,16 +67,9 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 /// | POST | `/api/service-accounts/{id}/regenerate-secret` (+`regenerate-signing-secret` alias) | 200 [RegenerateSigningSecretResponse] |
 /// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor-only) |
 ///
-/// **Two gaps versus the spec, not improvised around (report these, do not
-/// silently patch them):**
+/// **One remaining gap versus the spec, not improvised around (report it,
+/// do not silently patch it):**
 ///
-///   - `POST /api/service-accounts`'s `oauth` field (spec §4.1: "creation
-///     also mints an OAuth client secret … and a stored reference") cannot be
-///     backed by a real OAuth client — there is no `auth`/`OAuthClient`
-///     aggregate in this codebase yet (blocked on owner rulings). The pair
-///     returned here is minted for wire-shape completeness only
-///     ([#stubOAuthSecret]) and is **not persisted anywhere** — it cannot
-///     authenticate a `client_credentials` exchange today.
 ///   - `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
 ///     obtained a credential for which account" (spec §8 step 8) is not
 ///     written: `AuditLogRepository` is read-only by design ("the rows are
@@ -82,6 +78,10 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 ///     envelope to carry an audit row alongside. Adding a write path to
 ///     `AuditLogRepository` is another aggregate's file, out of this unit's
 ///     scope.
+///
+/// `POST /api/service-accounts`'s `oauth` field (spec §4.1, §8) is now a real,
+/// persisted `CONFIDENTIAL` OAuth client — see
+/// [io.flowcatalyst.platform.serviceaccount.operations.CreateServiceAccountWithCredentials].
 public final class ServiceAccountApi {
 
     private ServiceAccountApi() {
@@ -89,14 +89,19 @@ public final class ServiceAccountApi {
 
     /// The handlers' dependencies.
     ///
+    /// @param oauthClients       where `create` mints the account's `CONFIDENTIAL` OAuth client (spec §4.1, §8)
+    /// @param encryption         encrypts that client's secret at rest; empty ⇒ `create` fails internal `SECRET`
     /// @param minter             mints the `POST /{id}/token` bearer; `null` disables that endpoint (fail closed, spec §8 step 2)
     /// @param flattenPermissions role names → permission ceiling for the token mint; `null` mints with no scope claim
     public record State(ServiceAccountRepository repo, PrincipalRepository principals, UnitOfWork uow,
+                        OAuthClientRepository oauthClients, Optional<Encryption> encryption,
                         ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(principals, "principals");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(oauthClients, "oauthClients");
+            Objects.requireNonNull(encryption, "encryption");
         }
     }
 
@@ -136,7 +141,8 @@ public final class ServiceAccountApi {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String code = ctx.pathParam("code");
         ServiceAccount sa = s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("ServiceAccount", code));
-        ctx.json(ServiceAccountResponse.from(sa, principalIdOf(s, sa.id())));
+        // principalId omitted here, matching Go (spec §9.1, §10 Q5) — only the single-id read below populates it.
+        ctx.json(ServiceAccountResponse.from(sa, null));
     }
 
     private static void getById(Context ctx, State s) {
@@ -149,11 +155,14 @@ public final class ServiceAccountApi {
     private static void create(Context ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
-        var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals()).run(s.uow(), cmd, Auth.executionContext());
+        var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.encryption())
+                .run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreateServiceAccountResponse(
-                ServiceAccountResponse.from(result.serviceAccount(), result.principalId()),
+                // principalId omitted on the nested serviceAccount, matching Go (spec §9.1, §10 Q5) —
+                // the top-level principalId field below is the one Go always populates here.
+                ServiceAccountResponse.from(result.serviceAccount(), null),
                 result.principalId(),
-                stubOAuthSecret(),
+                new ServiceAccountOAuthSecrets(result.oauthClientClientId(), result.oauthClientSecret()),
                 new ServiceAccountWebhookSecrets(result.authToken(), result.signingSecret())));
     }
 
@@ -244,17 +253,6 @@ public final class ServiceAccountApi {
         return s.repo().findById(serviceAccountId)
                 .map(ServiceAccount::roles)
                 .orElse(List.of());
-    }
-
-    /// **Not a real OAuth client** — see the class doc's gap list. Until the
-    /// `auth` aggregate is ported there is no OAuth client to mint a secret for,
-    /// and a random value that *looks* like a credential would be stored by an
-    /// integrator and fail silently later. Both fields carry this marker instead:
-    /// obviously not a credential, byte-identical every time, grep-able.
-    public static final String OAUTH_UNAVAILABLE = "unavailable:auth-not-ported";
-
-    private static ServiceAccountOAuthSecrets stubOAuthSecret() {
-        return new ServiceAccountOAuthSecrets(OAUTH_UNAVAILABLE, OAUTH_UNAVAILABLE);
     }
 
     // ── Wire DTOs (lockfile components) ─────────────────────────────────────
@@ -351,7 +349,8 @@ public final class ServiceAccountApi {
     }
 
     /// The one-time OAuth client credentials on `POST /api/service-accounts`
-    /// (spec §5) — see the class doc: not a real, persisted OAuth client yet.
+    /// (spec §5, §8) — `clientId` is the newly minted `CONFIDENTIAL` client's
+    /// OAuth2 `client_id`, `clientSecret` its plaintext, returned once.
     public record ServiceAccountOAuthSecrets(String clientId, String clientSecret) {
         @Override
         public String toString() {
