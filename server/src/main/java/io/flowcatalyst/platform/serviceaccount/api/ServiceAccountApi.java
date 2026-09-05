@@ -1,0 +1,384 @@
+package io.flowcatalyst.platform.serviceaccount.api;
+
+import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.serviceaccount.WebhookAuthType;
+import io.flowcatalyst.platform.serviceaccount.WebhookCredentials;
+import io.flowcatalyst.platform.serviceaccount.operations.AssignRolesCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.AssignRolesToServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.operations.CreateCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.CreateServiceAccountWithCredentials;
+import io.flowcatalyst.platform.serviceaccount.operations.DeactivateCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.DeactivateServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.operations.DeleteCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.DeleteServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.operations.MintServiceAccountToken;
+import io.flowcatalyst.platform.serviceaccount.operations.RegenerateAuthToken;
+import io.flowcatalyst.platform.serviceaccount.operations.RegenerateAuthTokenCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.RegenerateSigningSecret;
+import io.flowcatalyst.platform.serviceaccount.operations.RegenerateSigningSecretCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountTokenMinter;
+import io.flowcatalyst.platform.serviceaccount.operations.UpdateCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.UpdateServiceAccount;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.httperror.HttpError;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
+import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import io.javalin.http.Context;
+import io.javalin.http.Handler;
+import io.javalin.router.JavalinDefaultRoutingApi;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+
+import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VIEW;
+
+/// The `/api/service-accounts` surface (spec §3). A write handler does
+/// exactly: coarse permission → command from DTO → `Operation.run` →
+/// response; role-assignment and token-mint are gated **anchor-only** rather
+/// than by permission (spec §3: "both hand out authority rather than editing
+/// a record"). Every handler runs inside [Auth#scoped] so operations can read
+/// [Auth#current()].
+///
+/// | Method | Path | Status |
+/// |---|---|---|
+/// | GET | `/api/service-accounts` | 200 [ServiceAccountListResponse] |
+/// | POST | `/api/service-accounts` | 201 [CreateServiceAccountResponse] |
+/// | GET | `/api/service-accounts/code/{code}` | 200 [ServiceAccountResponse]; 404 |
+/// | GET | `/api/service-accounts/{id}` | 200; 404 |
+/// | PUT | `/api/service-accounts/{id}` | 204 |
+/// | POST | `/api/service-accounts/{id}/deactivate` | 204 |
+/// | DELETE | `/api/service-accounts/{id}` | 204 |
+/// | GET | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRoleListResponse] |
+/// | PUT | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRolesAssignedResponse] (anchor-only) |
+/// | POST | `/api/service-accounts/{id}/regenerate-token` (+`regenerate-auth-token` alias) | 200 [RegenerateAuthTokenResponse] |
+/// | POST | `/api/service-accounts/{id}/regenerate-secret` (+`regenerate-signing-secret` alias) | 200 [RegenerateSigningSecretResponse] |
+/// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor-only) |
+///
+/// **Two gaps versus the spec, not improvised around (report these, do not
+/// silently patch them):**
+///
+///   - `POST /api/service-accounts`'s `oauth` field (spec §4.1: "creation
+///     also mints an OAuth client secret … and a stored reference") cannot be
+///     backed by a real OAuth client — there is no `auth`/`OAuthClient`
+///     aggregate in this codebase yet (blocked on owner rulings). The pair
+///     returned here is minted for wire-shape completeness only
+///     ([#stubOAuthSecret]) and is **not persisted anywhere** — it cannot
+///     authenticate a `client_credentials` exchange today.
+///   - `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
+///     obtained a credential for which account" (spec §8 step 8) is not
+///     written: `AuditLogRepository` is read-only by design ("the rows are
+///     written by the unit-of-work sink, never here"), and this endpoint
+///     mints no domain event (spec §6 has no "token minted" entry) for the
+///     envelope to carry an audit row alongside. Adding a write path to
+///     `AuditLogRepository` is another aggregate's file, out of this unit's
+///     scope.
+public final class ServiceAccountApi {
+
+    private ServiceAccountApi() {
+    }
+
+    /// The handlers' dependencies.
+    ///
+    /// @param minter             mints the `POST /{id}/token` bearer; `null` disables that endpoint (fail closed, spec §8 step 2)
+    /// @param flattenPermissions role names → permission ceiling for the token mint; `null` mints with no scope claim
+    public record State(ServiceAccountRepository repo, PrincipalRepository principals, UnitOfWork uow,
+                        ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions) {
+        public State {
+            Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(principals, "principals");
+            Objects.requireNonNull(uow, "uow");
+        }
+    }
+
+    /// Mounts the endpoints; paths, methods and status codes are the
+    /// lockfile's. The two alias pairs (spec §3) share one handler each.
+    public static void register(JavalinDefaultRoutingApi routes, State s) {
+        routes.get("/api/service-accounts", Auth.scoped(ctx -> list(ctx, s)));
+        routes.post("/api/service-accounts", Auth.scoped(ctx -> create(ctx, s)));
+        routes.get("/api/service-accounts/code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
+        routes.get("/api/service-accounts/{id}", Auth.scoped(ctx -> getById(ctx, s)));
+        routes.put("/api/service-accounts/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        routes.post("/api/service-accounts/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        routes.delete("/api/service-accounts/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        routes.get("/api/service-accounts/{id}/roles", Auth.scoped(ctx -> listRoles(ctx, s)));
+        routes.put("/api/service-accounts/{id}/roles", Auth.scoped(ctx -> assignRoles(ctx, s)));
+
+        Handler regenerateAuthToken = Auth.scoped(ctx -> regenerateAuthToken(ctx, s));
+        routes.post("/api/service-accounts/{id}/regenerate-token", regenerateAuthToken);
+        routes.post("/api/service-accounts/{id}/regenerate-auth-token", regenerateAuthToken);
+
+        Handler regenerateSigningSecret = Auth.scoped(ctx -> regenerateSigningSecret(ctx, s));
+        routes.post("/api/service-accounts/{id}/regenerate-secret", regenerateSigningSecret);
+        routes.post("/api/service-accounts/{id}/regenerate-signing-secret", regenerateSigningSecret);
+
+        routes.post("/api/service-accounts/{id}/token", Auth.scoped(ctx -> mintToken(ctx, s)));
+    }
+
+    // ── Handlers ───────────────────────────────────────────────────────────
+
+    private static void list(Context ctx, State s) {
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
+        List<ServiceAccountResponse> items = s.repo().findAll().stream().map(sa -> ServiceAccountResponse.from(sa, null)).toList();
+        ctx.json(new ServiceAccountListResponse(items, items.size()));
+    }
+
+    private static void getByCode(Context ctx, State s) {
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
+        String code = ctx.pathParam("code");
+        ServiceAccount sa = s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("ServiceAccount", code));
+        ctx.json(ServiceAccountResponse.from(sa, principalIdOf(s, sa.id())));
+    }
+
+    private static void getById(Context ctx, State s) {
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
+        String id = ctx.pathParam("id");
+        ServiceAccount sa = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ServiceAccount", id));
+        ctx.json(ServiceAccountResponse.from(sa, principalIdOf(s, sa.id())));
+    }
+
+    private static void create(Context ctx, State s) {
+        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
+        var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals()).run(s.uow(), cmd, Auth.executionContext());
+        ctx.status(201).json(new CreateServiceAccountResponse(
+                ServiceAccountResponse.from(result.serviceAccount(), result.principalId()),
+                result.principalId(),
+                stubOAuthSecret(),
+                new ServiceAccountWebhookSecrets(result.authToken(), result.signingSecret())));
+    }
+
+    private static void update(Context ctx, State s) {
+        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        var cmd = ctx.bodyAsClass(UpdateServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
+        UpdateServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        ctx.status(204);
+    }
+
+    private static void deactivate(Context ctx, State s) {
+        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        DeactivateServiceAccount.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
+        ctx.status(204);
+    }
+
+    private static void delete(Context ctx, State s) {
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_DELETE);
+        DeleteServiceAccount.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        ctx.status(204);
+    }
+
+    private static void listRoles(Context ctx, State s) {
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
+        String id = ctx.pathParam("id");
+        s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ServiceAccount", id));
+        ctx.json(new ServiceAccountRoleListResponse(rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList()));
+    }
+
+    /// Anchor-only (spec §3): role assignment grants authority in the
+    /// `principal` aggregate, so the gate is the tier, not a permission.
+    private static void assignRoles(Context ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        String id = ctx.pathParam("id");
+        var body = ctx.bodyAsClass(AssignRolesRequest.class);
+        var event = AssignRolesToServiceAccount.of(s.repo(), s.principals())
+                .run(s.uow(), new AssignRolesCommand(id, body.roles()), Auth.executionContext());
+        var roles = rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList();
+        ctx.json(new ServiceAccountRolesAssignedResponse(roles, event.rolesAdded(), event.rolesRemoved()));
+    }
+
+    /// Permission-gated, NOT anchor-only (spec §3 explicitly names only
+    /// role-assignment and token-mint as the anchor-only pair) — this diverges
+    /// from Go, which anchor-gates rotation too; the spec wins (CONVENTIONS §8).
+    private static void regenerateAuthToken(Context ctx, State s) {
+        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        String id = ctx.pathParam("id");
+        // The sink is a local: the plaintext cannot outlive this request, and is
+        // only read below, on the success path — a failed commit discloses nothing.
+        var token = new AtomicReference<String>();
+        RegenerateAuthToken.of(s.repo(), token::set).run(s.uow(), new RegenerateAuthTokenCommand(id), Auth.executionContext());
+        ctx.json(new RegenerateAuthTokenResponse(id, token.get()));
+    }
+
+    private static void regenerateSigningSecret(Context ctx, State s) {
+        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        String id = ctx.pathParam("id");
+        var secret = new AtomicReference<String>();
+        RegenerateSigningSecret.of(s.repo(), secret::set).run(s.uow(), new RegenerateSigningSecretCommand(id), Auth.executionContext());
+        ctx.json(new RegenerateSigningSecretResponse(id, secret.get()));
+    }
+
+    /// Anchor-only and best-effort-audited (spec §3, §8) — see the class doc
+    /// for why the audit row is not written here.
+    private static void mintToken(Context ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        String id = ctx.pathParam("id");
+        var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(), id);
+        // A bearer was handed out for this account — a use of its credentials
+        // (spec §9.2). Best-effort: a failed stamp must never fail the mint.
+        s.repo().touchLastUsed(id);
+        String scope = result.permissions().isEmpty() ? null : String.join(" ", result.permissions());
+        ctx.json(new ServiceAccountTokenResponse(result.accessToken(), "Bearer", result.expiresInSeconds(), scope));
+    }
+
+    // ── Read-side helpers ────────────────────────────────────────────────────
+
+    /// The linked `SERVICE` principal's id, or `null` when there is none —
+    /// surfaced so the UI can manage this account's application access via
+    /// `/api/principals/{id}/application-access` (spec §7 lets `getById`
+    /// resolve it, matching Go).
+    private static String principalIdOf(State s, String serviceAccountId) {
+        return s.principals().findByServiceAccount(serviceAccountId).map(p -> p.id()).orElse(null);
+    }
+
+    /// The linked principal's roles, or `[]` when there is no linked principal.
+    private static List<RoleAssignment> rolesOf(State s, String serviceAccountId) {
+        return s.repo().findById(serviceAccountId)
+                .map(ServiceAccount::roles)
+                .orElse(List.of());
+    }
+
+    /// **Not a real OAuth client** — see the class doc's gap list. Until the
+    /// `auth` aggregate is ported there is no OAuth client to mint a secret for,
+    /// and a random value that *looks* like a credential would be stored by an
+    /// integrator and fail silently later. Both fields carry this marker instead:
+    /// obviously not a credential, byte-identical every time, grep-able.
+    public static final String OAUTH_UNAVAILABLE = "unavailable:auth-not-ported";
+
+    private static ServiceAccountOAuthSecrets stubOAuthSecret() {
+        return new ServiceAccountOAuthSecrets(OAUTH_UNAVAILABLE, OAUTH_UNAVAILABLE);
+    }
+
+    // ── Wire DTOs (lockfile components) ─────────────────────────────────────
+
+    /// Body of `POST /api/service-accounts`. `webhookCredentials` is accepted
+    /// and validated (an unknown `authType` still rejects, see
+    /// [WebhookCredentialsDto#toEntity]) but never used — see [CreateCommand].
+    public record CreateServiceAccountRequest(String code, String name, String description, String scope,
+                                               List<String> clientIds, String applicationId,
+                                               WebhookCredentialsDto webhookCredentials) {
+        public CreateCommand toCommand() {
+            return new CreateCommand(code, name, description, scope, clientIds, applicationId,
+                    webhookCredentials == null ? null : webhookCredentials.toEntity());
+        }
+    }
+
+    /// Body of `PUT /api/service-accounts/{id}`.
+    public record UpdateServiceAccountRequest(String name, String description, String scope, List<String> clientIds,
+                                               WebhookCredentialsDto webhookCredentials) {
+        public UpdateCommand toCommand(String id) {
+            return new UpdateCommand(id, name, description, scope, clientIds,
+                    webhookCredentials == null ? null : webhookCredentials.toEntity());
+        }
+    }
+
+    /// Body of `PUT /api/service-accounts/{id}/roles`.
+    public record AssignRolesRequest(List<String> roles) {
+        public AssignRolesRequest {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+        }
+    }
+
+    /// Mirrors [WebhookCredentials] on the wire (spec §2.1). `authType` is
+    /// read strictly — an unrecognised value 400s `INVALID_AUTH_TYPE` rather
+    /// than silently becoming `NONE` (spec §11, X-06).
+    public record WebhookCredentialsDto(String authType, String token, String username, String password,
+                                        String headerName, String signingSecret, String signingAlgorithm,
+                                        String signatureHeader) {
+        /// @throws UseCaseException validation `INVALID_AUTH_TYPE`
+        public WebhookCredentials toEntity() {
+            WebhookAuthType type;
+            try {
+                type = WebhookAuthType.parse(authType);
+            } catch (WebhookAuthType.UnrecognisedAuthTypeException e) {
+                throw UseCaseException.validation("INVALID_AUTH_TYPE", "unknown webhook auth type '" + authType + "'");
+            }
+            return new WebhookCredentials(type, token, username, password, headerName, signingSecret, signingAlgorithm, signatureHeader);
+        }
+    }
+
+    /// One role assignment on the wire (spec §2.2).
+    public record RoleAssignmentResponse(String roleName, String clientId, String assignmentSource, Instant assignedAt, String assignedBy) {
+        public static RoleAssignmentResponse from(RoleAssignment ra) {
+            return new RoleAssignmentResponse(ra.roleName(), ra.clientId(), ra.assignmentSource(), ra.assignedAt(), ra.assignedBy());
+        }
+    }
+
+    /// The wire shape of one service account (spec §3): flat, `authType`
+    /// hoisted out of the webhook credentials, `roles` as a plain name list.
+    /// Webhook secrets are never exposed here — only once, at create/rotate
+    /// time. `principalId` is populated on the single-account reads only
+    /// (spec §9.1, matches the `roles` hydration decision).
+    public record ServiceAccountResponse(String id, String code, String name, String description, boolean active,
+                                         List<String> clientIds, String scope, String applicationId, String authType,
+                                         List<String> roles, String principalId, Instant lastUsedAt, Instant createdAt,
+                                         Instant updatedAt) {
+        public static ServiceAccountResponse from(ServiceAccount sa, String principalId) {
+            return new ServiceAccountResponse(sa.id(), sa.code(), sa.name(), sa.description(), sa.active(),
+                    sa.clientIds(), sa.scope(), sa.applicationId(), sa.webhookCredentials().authType().name(),
+                    sa.roles().stream().map(RoleAssignment::roleName).toList(), principalId,
+                    sa.lastUsedAt(), sa.createdAt(), sa.updatedAt());
+        }
+    }
+
+    /// `{"serviceAccounts": [...], "total": n}`.
+    public record ServiceAccountListResponse(List<ServiceAccountResponse> serviceAccounts, long total) {
+        public ServiceAccountListResponse {
+            serviceAccounts = serviceAccounts == null ? List.of() : List.copyOf(serviceAccounts);
+        }
+    }
+
+    public record ServiceAccountRoleListResponse(List<RoleAssignmentResponse> roles) {
+        public ServiceAccountRoleListResponse {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+        }
+    }
+
+    public record ServiceAccountRolesAssignedResponse(List<RoleAssignmentResponse> roles, List<String> addedRoles, List<String> removedRoles) {
+        public ServiceAccountRolesAssignedResponse {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+            addedRoles = addedRoles == null ? List.of() : List.copyOf(addedRoles);
+            removedRoles = removedRoles == null ? List.of() : List.copyOf(removedRoles);
+        }
+    }
+
+    /// The one-time OAuth client credentials on `POST /api/service-accounts`
+    /// (spec §5) — see the class doc: not a real, persisted OAuth client yet.
+    public record ServiceAccountOAuthSecrets(String clientId, String clientSecret) {
+        @Override
+        public String toString() {
+            return "ServiceAccountOAuthSecrets[clientId=" + clientId + ", clientSecret=***]";
+        }
+    }
+
+    /// The one-time webhook credentials on `POST /api/service-accounts` (spec §5).
+    public record ServiceAccountWebhookSecrets(String authToken, String signingSecret) {
+        @Override
+        public String toString() {
+            return "ServiceAccountWebhookSecrets[authToken=***, signingSecret=***]";
+        }
+    }
+
+    public record CreateServiceAccountResponse(ServiceAccountResponse serviceAccount, String principalId,
+                                               ServiceAccountOAuthSecrets oauth, ServiceAccountWebhookSecrets webhook) {
+    }
+
+    /// `authToken` is present only on a successful rotation (spec §4.6).
+    public record RegenerateAuthTokenResponse(String id, String authToken) {
+    }
+
+    public record RegenerateSigningSecretResponse(String id, String signingSecret) {
+    }
+
+    /// `scope` is omitted when the mint carried no permissions (spec §8).
+    public record ServiceAccountTokenResponse(String accessToken, String tokenType, long expiresIn, String scope) {
+    }
+}

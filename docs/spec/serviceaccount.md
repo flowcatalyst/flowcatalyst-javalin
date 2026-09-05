@@ -258,15 +258,88 @@ fail a mint or a delivery. Go fix: `serviceaccount-fixes.md` Fix 2.
 
 ## 10. Open questions for the owner
 
-1. **Q3** — `ParseAuthType` unknown → `NONE`: a misspelled auth type silently
-   sends an **unauthenticated** webhook. Exactly the shape of the dispatch-mode
-   default the owner already ruled on ("expensive to discover you never had
-   it"). Keep the lenient read, or reject unknown values?
-2. **Q4** — the stash TTL (2 minutes) is a constant, not configuration. Keep?
+1. ~~**Q3**~~ — **settled by drift `6cbe708` (X-06), folded in during the Java
+   port (2026-09-05):** unknown values reject loudly (`INVALID_AUTH_TYPE` on
+   the wire, `CorruptServiceAccountException` on a corrupt stored row); blank
+   still means `NONE`. See §11.
+2. **Q4** — the stash TTL (2 minutes) is moot: the Java port never had a
+   stash (§5) — no TTL, no sweep, no global. No ruling needed.
 3. **Q5** — `principalId` is populated on the single read and omitted from
    list responses "to avoid a per-row lookup". The list already does one
-   hydration pass; is the omission still worth the asymmetry?
+   hydration pass; is the omission still worth the asymmetry? **Still open** —
+   the Java port kept Go's answer (omit).
 
 ## 11. Deliberate deviations
 
-*(none yet — recorded here as the port makes them)*
+Two Go commits landed after this spec's extraction commit (`426ac85`); both
+are folded into the Java port as drift, per the task that implemented it:
+
+- **Drift `fdcd2c1` (2026-09-05, upgrade legacy plaintext on read).** A
+  Go-created database may still hold plaintext in `wh_auth_token_ref` /
+  `wh_signing_secret_ref`. `ServiceAccountRepository`'s single-row reads
+  (`findById`, `findByCode`) now upgrade a plaintext value to `encrypted:…`
+  **compare-and-set** — `UPDATE … WHERE id = ? AND col = <plaintext seen>` —
+  so a racing rotation's new secret is never clobbered by a re-encryption of
+  the stale value the read saw. Pinned by
+  `ServiceAccountRepositoryTest#upgradeLegacySecretsDoesNotClobberARotationThatWonTheRace`
+  (constructs the race directly: a rotation lands between the "as seen"
+  snapshot and the upgrade call) and
+  `#findByIdUpgradesLegacyPlaintextToEncryptedInPlace`. Not called from
+  `findAll` — matches the existing "no per-row lookup on the list" decision.
+
+- **Drift `6cbe708` (2026-09-05, X-06, settles Q3).** `WebhookAuthType.parse`
+  no longer coerces an unrecognised value to `NONE`: blank still means `NONE`,
+  but anything else throws `WebhookAuthType.UnrecognisedAuthTypeException`.
+  The wire boundary (`ServiceAccountApi.WebhookCredentialsDto#toEntity`)
+  catches it and re-throws validation `INVALID_AUTH_TYPE`; the stored
+  boundary (`ServiceAccountRepository`) catches it and wraps it in
+  `CorruptServiceAccountException`, exactly mirroring
+  `platform.dispatchjob.DispatchJobStatus` / `CorruptDispatchJobException`.
+  A corrupt row fails the whole `findAll` list, not just that row. Pinned by
+  `ServiceAccountTest#authTypeRejectsUnrecognisedValuesLoudly`,
+  `ServiceAccountRepositoryTest#findByIdFailsLoudlyOnACorruptWebhookAuthType`,
+  `ServiceAccountOperationsTest#findAllFailsTheWholeListOnOneCorruptRow`, and
+  `ServiceAccountApiTest#createRejectsAnUnknownWebhookAuthType`.
+
+Two further deviations the port could not avoid, recorded rather than
+improvised around:
+
+- **The OAuth client secret (§4.1) is not backed by a real OAuth client.**
+  "Creation also mints an OAuth client secret (`generateOAuthClientSecret`
+  returns plaintext + a stored reference)" cannot be implemented as written:
+  there is no Java `auth`/`OAuthClient` aggregate in this codebase yet (the
+  auth port is blocked on owner rulings — `docs/spec/auth-core.md`,
+  `docs/spec/auth-identity.md`). `CreateServiceAccountWithCredentials` creates
+  the service account and its linked `SERVICE` principal only.
+  `ServiceAccountApi#create` returns the `unavailable:auth-not-ported`
+  marker in both `oauth` fields so `CreateServiceAccountResponse.oauth`
+  (required by the lockfile) has a well-formed shape without pretending to
+  be a credential. Once the `auth` aggregate lands, this
+  operation should gain a real OAuth-client write and the stub should be
+  deleted.
+- **The token mint's "best-effort audit row" (§8 step 8) is not written.**
+  `AuditLogRepository` is read-only by design ("the rows are written by the
+  unit-of-work sink, never here"), and the mint emits no domain event (§6 has
+  no "token minted" entry) for the envelope to carry an audit row alongside.
+  Adding a write path to `AuditLogRepository` is outside this unit's scope
+  (`io.flowcatalyst.platform.serviceaccount.**`). `MintServiceAccountToken`
+  and `ServiceAccountApi#mintToken` implement every other step of §8 exactly,
+  including the account/principal inactive checks with their two distinct
+  messages and the `last_used_at` stamp.
+- **The token mint signs RS256 under the platform signing key**
+  (`RsaServiceAccountTokenMinter`, orchestrator 2026-09-05), with `kid` in
+  the header and the full access-token claim set (`type`, `tier`, `email`,
+  `name`, `clients`, `roles`, `applications`, `all_applications`, `scope`,
+  `token_use=api`, `jti`), so a minted bearer is accepted by this server's
+  own `JwtVerifier` — pinned by `RsaServiceAccountTokenMinterTest` (verifies
+  under the platform key; a token under another key is rejected) and by the
+  API test through the real authenticator. `ServiceAccountTokenMinter` stays
+  the seam the platform token service will take over when the auth port
+  lands. A first cut signed HS256 under the *encryption* app key; rejected
+  in review — key reuse across purposes, and unverifiable by the RS256
+  authenticator.
+- **The OAuth pair on create is an explicit marker, not a fake credential:**
+  both `oauth.clientId` and `oauth.clientSecret` are the literal
+  `unavailable:auth-not-ported` until the `auth` aggregate exists (a random
+  value that looked like a credential would be stored by an integrator and
+  fail silently later). Queued in `backlog.md` "Port work queued".

@@ -269,6 +269,16 @@ item names its origin; items marked **owner** need Andrew's call.
   specs record those as open questions. Go's `6cbe708` rejects unknown wire
   values with 400 in the same places. Reject at the wire too?
 
+- **serviceaccount, when the `auth` aggregate lands (2 items):** (1)
+  `CreateServiceAccountWithCredentials` must mint a real OAuth client for
+  the account and return its secret once; until then the response carries
+  `oauth.clientId = oauth.clientSecret = "unavailable:auth-not-ported"`
+  (`ServiceAccountApi.OAUTH_UNAVAILABLE`). (2) The token mint writes **no
+  audit row** ("who obtained a credential for which account", spec §8 step
+  8): `AuditLogRepository` is write-only through the unit of work and the
+  mint emits no domain event. Either give the mint an event (spec §6 has
+  none) or an audit-only plan. Security-relevant gap; owner to rule.
+
 ## Owner questions collected from specs
 
 Each spec's "load-bearing or accident?" list, summarised; the full wording is

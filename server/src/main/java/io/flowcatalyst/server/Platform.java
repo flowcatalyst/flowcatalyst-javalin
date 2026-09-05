@@ -60,6 +60,10 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.sdksync.api.SdkSyncApi;
 import io.flowcatalyst.platform.scheduledjob.api.ScheduledJobApi;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.serviceaccount.api.ServiceAccountApi;
+import io.flowcatalyst.platform.serviceaccount.operations.RsaServiceAccountTokenMinter;
+import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountTokenMinter;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
 import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
@@ -83,7 +87,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 
 /// `WirePlatform`: instantiates every subdomain's repository + operations +
 /// HTTP routes against the pool and registers them. The resulting routes are
@@ -212,6 +218,23 @@ public final class Platform {
                 MfaService.notConfigured(),
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()).map(DeveloperSecrets::withEncryption).orElseGet(DeveloperSecrets::unconfigured),
                 uow));
+
+        // serviceaccount (docs/spec/serviceaccount.md): webhook credentials are encrypted at rest
+        // under the same app key as the developer secrets above. The token mint signs RS256 under
+        // the platform signing key, exactly as the platform's own token service will, so a minted
+        // bearer is accepted by this server's authenticator (issuer == audience, as buildAuthenticator).
+        var serviceAccountRepo = new ServiceAccountRepository(pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
+        ServiceAccountTokenMinter serviceAccountTokenMinter =
+                new RsaServiceAccountTokenMinter(signingKeys, env.jwtIssuer(), env.jwtIssuer());
+        Function<List<String>, List<String>> flattenServiceAccountPermissions = roleNames -> roleNames.stream()
+                .flatMap(name -> roleRepo.findByName(name).stream())
+                .flatMap(role -> role.permissions().stream())
+                .distinct()
+                .sorted()
+                .toList();
+        ServiceAccountApi.register(routes, new ServiceAccountApi.State(serviceAccountRepo, principalRepo, uow,
+                serviceAccountTokenMinter, flattenServiceAccountPermissions));
+
         var scheduledJobRepo = new ScheduledJobRepository(pool);
         ScheduledJobApi.register(routes, new ScheduledJobApi.State(scheduledJobRepo, new ScheduledJobInstanceRepository(pool), uow));
         // The SDK self-registration surface (docs/spec/sdksync.md). Registered
