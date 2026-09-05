@@ -768,3 +768,28 @@ the SDK is published.
   mismatch that predates the port: either the drawer always sends
   `oidcMultiTenant: false`, or Go's DTO makes it optional and the lockfile
   is re-dumped. The e2e flow pins it as an expected failure meanwhile.
+
+## HTTP/2 and HTTP/3 on the server listeners (owner requirement, 2026-09-06)
+
+The owner: "we need to enable HTTP/2/3". Today the Java server speaks
+HTTP/1.1 only (Javalin 7.2.3 on Jetty 12, default connector); Go's inbound
+server gets HTTP/2 for free from `net/http` over TLS and has no HTTP/3; the
+only HTTP/2 either side has on purpose is the router's *outbound* mediator
+client (`router.md` §HTTP/2 via ALPN). Java work, Phase 5b:
+
+- **HTTP/2**: `h2` over TLS via ALPN when the server terminates TLS itself
+  (`jetty-alpn-server` + `jetty-http2-server`, a `FC_TLS_*` key/cert pair),
+  and **`h2c`** (cleartext HTTP/2 with prior knowledge / upgrade) on the API
+  listener for the load-balancer-terminates-TLS deployment — ALB speaks
+  HTTP/2 to targets only as h2c. Both connectors keep HTTP/1.1 alongside.
+- **HTTP/3**: Jetty's `jetty-http3-server` over QUIC (`jetty-quic-server`,
+  the `quiche` native library bundled per platform) on a UDP port, with the
+  `Alt-Svc: h3=":<port>"` header advertised from the TCP listeners. Only
+  meaningful where the server terminates TLS (a QUIC endpoint needs the
+  certificate); no load balancer here forwards HTTP/3 to targets. The native
+  library needs a GraalVM native-image entry (`native-config/`).
+- Tests: a JDK `HttpClient` with `Version.HTTP_2` against the TLS listener
+  and a prior-knowledge h2c client against the plain one; an HTTP/3 probe
+  needs a client that speaks it (Jetty's `jetty-http3-client` in test scope).
+- Spec first (`docs/spec/http-transport.md`: connectors, env knobs, the
+  `Alt-Svc` rule, metrics listener stays HTTP/1.1), then a Sonnet unit.

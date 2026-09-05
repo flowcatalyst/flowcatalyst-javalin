@@ -186,6 +186,22 @@ in it), so the frontend is their acceptance test.
   fc-server has the `-Pnative` profile (88.8 MB on disk, 32.7 MB gzipped).
   Expect fcdev to land near the same size; the Go release binary is 59 MB.*
 
+## Phase 5b — after the 2026-09-06 rulings (`docs/rulings-2026-09-06.md`)
+
+Java work the rulings created, plus one owner requirement, in build order:
+1. Rulings #7 (event-type `clientScoped`), #11 (400 `unauthorized_client`),
+   #16 (`app:` namespace), #19 (wire enums) — small, orchestrator.
+2. #6 scheduled-job visibility hides platform-scoped rows from client users.
+3. #10a/#10b sdk-ingest: partial success with per-item results, the outbox
+   dispatcher reading them; audit-log `principalId` required.
+4. #13 principal mutations gate before load (the sub-route scoping is
+   already done — `PrincipalApiTest.rolesSubRouteIsNowClientScoped`).
+5. #15 audit row on the service-account token mint.
+6. #20 native fcdev (`-Pnative` profile, picocli reflection config).
+7. **HTTP/2 + HTTP/3 on the listeners** (owner, 2026-09-06; `docs/backlog.md`
+   "HTTP/2 and HTTP/3"): spec `http-transport.md`, then a Sonnet unit.
+8. Re-vendor the lockfile when Go re-dumps it (#8, #10b).
+
 ## Phase 5 — drop-in verification and release
 
 - ~~Side-by-side replay harness design~~ **Designed 2026-09-05**
