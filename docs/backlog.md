@@ -751,3 +751,12 @@ the SDK is published.
   2026-09-06): keep yubico; a hand-rolled verifier is not worth it in so
   sensitive an area. The one runtime-scope Jackson 2 databind jar in the
   server artifact stays for that reason and no other.**
+- **Event-type `clientScoped` is dropped on create, both sides (frontend
+  e2e, 2026-09-06).** The SPA's create drawer sends `clientScoped: true`;
+  Go's `eventtype/entity.go:208` hard-codes `false` at construction and the
+  Java port mirrors it, so the detail page reads "Client Scoped: No". A
+  product defect pre-dating the port; `catalogue.spec.ts` carries a
+  `test.fail` that flips to an unexpected pass when either side honours the
+  field. Owner: honour it (Java first, then a Go mirror) or remove the toggle.
+- **Dispatch-pool "Delete" confirm copy (SPA).** The dialog says the pool
+  will be archived; both servers delete the row. Frontend repo fix.
