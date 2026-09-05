@@ -263,7 +263,8 @@ class OAuthClientApiTest {
 
     @Test
     void validationConflictAndMalformedJsonAre4xxEnvelopes() {
-        var missingName = http.post("/api/oauth-clients", "{\"clientType\":\"PUBLIC\"}", ANCHOR);
+        // clientName is schema-required too — sent as "" so the request reaches the domain check.
+        var missingName = http.post("/api/oauth-clients", "{\"clientName\":\"\",\"clientType\":\"PUBLIC\"}", ANCHOR);
         assertThat(missingName.statusCode()).isEqualTo(400);
         assertThat(json(missingName).get("error").asText()).isEqualTo("CLIENT_NAME_REQUIRED");
 

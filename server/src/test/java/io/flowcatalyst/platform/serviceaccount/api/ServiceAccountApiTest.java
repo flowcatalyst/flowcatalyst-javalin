@@ -235,11 +235,13 @@ class ServiceAccountApiTest {
 
     @Test
     void createRejectsMissingCodeOrName() {
-        var noCode = http.post("/api/service-accounts", "{\"name\":\"X\"}", anchor());
+        // code and name are both schema-required — sent as "" so the request reaches
+        // CreateServiceAccount's own blank checks instead of 400 VALIDATION.
+        var noCode = http.post("/api/service-accounts", "{\"code\":\"\",\"name\":\"X\"}", anchor());
         assertThat(noCode.statusCode()).isEqualTo(400);
         assertThat(json(noCode).get("error").asText()).isEqualTo("CODE_REQUIRED");
 
-        var noName = http.post("/api/service-accounts", "{\"code\":\"" + code("noname") + "\"}", anchor());
+        var noName = http.post("/api/service-accounts", "{\"code\":\"" + code("noname") + "\",\"name\":\"\"}", anchor());
         assertThat(noName.statusCode()).isEqualTo(400);
         assertThat(json(noName).get("error").asText()).isEqualTo("NAME_REQUIRED");
     }

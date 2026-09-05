@@ -177,7 +177,9 @@ class AuthAdminConfigApiTest {
 
     @Test
     void anchorDomainCreateValidationAndConflictEnvelopes() {
-        var noDomain = http.post("/api/anchor-domains", "{}", ANCHOR);
+        // domain is schema-required (request-schema-validation.md) — sent as "" rather than
+        // omitted so the request reaches CreateAnchorDomain's own blank check.
+        var noDomain = http.post("/api/anchor-domains", "{\"domain\":\"\"}", ANCHOR);
         assertThat(noDomain.statusCode()).isEqualTo(400);
         assertThat(json(noDomain).get("error").asText()).isEqualTo("DOMAIN_REQUIRED");
 
@@ -237,7 +239,10 @@ class AuthAdminConfigApiTest {
 
     @Test
     void authConfigCreateValidationOrderAndConflictEnvelope() {
-        var noDomain = http.post("/api/auth-configs", "{\"configType\":\"ANCHOR\",\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        // emailDomain is schema-required too — sent as "" so the request reaches
+        // CreateAuthConfig's own validate phase instead of 400 VALIDATION.
+        var noDomain = http.post("/api/auth-configs",
+                "{\"emailDomain\":\"\",\"configType\":\"ANCHOR\",\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
         assertThat(json(noDomain).get("error").asText()).isEqualTo("INVALID_EMAIL_DOMAIN");
 
         var badType = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-cfg-bad1") + "\",\"configType\":\"GLOBAL\","
@@ -283,7 +288,8 @@ class AuthAdminConfigApiTest {
 
     @Test
     void idpRoleMappingCreateValidationAndConflictEnvelopes() {
-        var missing = http.post("/api/idp-role-mappings", "{\"idpRoleName\":\"x\",\"platformRoleName\":\"app:role\"}", ANCHOR);
+        // idpType is schema-required too — sent as "" so the request reaches the domain check.
+        var missing = http.post("/api/idp-role-mappings", "{\"idpType\":\"\",\"idpRoleName\":\"x\",\"platformRoleName\":\"app:role\"}", ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asText()).isEqualTo("FIELD_REQUIRED");
         assertThat(json(missing).get("message").asText()).isEqualTo("idpType is required");

@@ -395,14 +395,22 @@ class IngestApiTest {
 
     @Test
     void eventsRoutesRequireTheEventsWritePermission() {
+        // Schema-valid bodies (CreateEventRequest requires eventType/source/data; BatchRequest
+        // requires items): schema validation runs before the handler's own coarse permission
+        // check (spec §3), so an empty {} would 400 VALIDATION before ever reaching
+        // PERMISSION_REQUIRED / UNAUTHENTICATED — not what this test means to exercise.
+        var bodies = Map.of(
+                "/api/events", "{\"eventType\":\"x\",\"source\":\"x\",\"data\":{}}",
+                "/api/events/batch", "{\"items\":[]}");
         for (String path : List.of("/api/events", "/api/events/batch")) {
-            var denied = http.post(path, "{}", NO_PERMISSION);
+            var body = bodies.get(path);
+            var denied = http.post(path, body, NO_PERMISSION);
             assertThat(denied.statusCode()).as(path).isEqualTo(403);
             assertThat(json(denied).get("error").asText()).as(path).isEqualTo("PERMISSION_REQUIRED");
             assertThat(json(denied).get("message").asText()).as(path)
                     .isEqualTo("permission required: platform:messaging:batch:events-write");
 
-            var anon = http.post(path, "{}");
+            var anon = http.post(path, body);
             assertThat(anon.statusCode()).as(path).isEqualTo(403);
             assertThat(json(anon).get("error").asText()).as(path).isEqualTo("UNAUTHENTICATED");
         }

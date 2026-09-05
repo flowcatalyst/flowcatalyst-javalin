@@ -246,7 +246,9 @@ class EmailDomainMappingApiTest {
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(unknown.body()).isEqualTo("{\"error\":\"IdentityProvider_NOT_FOUND\",\"message\":\"IdentityProvider not found: idp_doesnotexist1\"}\n");
 
-        var noTarget = http.post("/api/email-domain-mappings/" + id + "/move-provider", "{}", ANCHOR);
+        // identityProviderId is schema-required on MoveProviderRequest — sent as "" so the
+        // request reaches the domain check instead of 400 VALIDATION.
+        var noTarget = http.post("/api/email-domain-mappings/" + id + "/move-provider", "{\"identityProviderId\":\"\"}", ANCHOR);
         assertThat(noTarget.statusCode()).isEqualTo(400);
         assertThat(json(noTarget).get("error").asText()).isEqualTo("IDP_REQUIRED");
     }
@@ -276,7 +278,8 @@ class EmailDomainMappingApiTest {
 
     @Test
     void createValidationAndConflictEnvelopes() {
-        var noDomain = http.post("/api/email-domain-mappings", "{\"identityProviderId\":\"idp_x\",\"scopeType\":\"ANCHOR\"}", ANCHOR);
+        // emailDomain is schema-required too — sent as "" so the request reaches the domain check.
+        var noDomain = http.post("/api/email-domain-mappings", "{\"emailDomain\":\"\",\"identityProviderId\":\"idp_x\",\"scopeType\":\"ANCHOR\"}", ANCHOR);
         assertThat(noDomain.statusCode()).isEqualTo(400);
         assertThat(noDomain.body()).isEqualTo("{\"error\":\"EMAIL_DOMAIN_REQUIRED\",\"message\":\"Email domain is required\"}\n");
 

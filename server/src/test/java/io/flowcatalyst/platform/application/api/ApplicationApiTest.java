@@ -448,8 +448,13 @@ class ApplicationApiTest {
     @Test
     void anchorOnlyRoutesRefuseAClientScopedWriter() {
         String id = create(code("anchor"), "Anchor only", "");
+        // /service-account's AttachServiceAccountRequest is schema-required on both fields
+        // (request-schema-validation.md); {} would 400 VALIDATION before ever reaching the
+        // handler's anchor gate this test means to exercise, so it needs a schema-valid body.
+        // The enable/disable routes take no request body at all.
         for (String path : new String[]{"/service-account", "/clients/clt_x/enable", "/clients/clt_x/disable"}) {
-            var r = http.post("/api/applications/" + id + path, "{}", WRITER);
+            String body = path.equals("/service-account") ? "{\"serviceAccountId\":\"x\",\"serviceAccountCode\":\"x\"}" : "{}";
+            var r = http.post("/api/applications/" + id + path, body, WRITER);
             assertThat(r.statusCode()).as(path).isEqualTo(403);
             assertThat(json(r).get("error").asText()).as(path).isEqualTo("ANCHOR_REQUIRED");
         }
@@ -465,7 +470,9 @@ class ApplicationApiTest {
         assertThat(json(bad).get("message").asText())
                 .isEqualTo("code must start with a lowercase letter and contain only lowercase alphanumerics, hyphens, and underscores");
 
-        var noName = http.post("/api/applications", "{\"code\":\"" + code("noname") + "\"}", ANCHOR);
+        // name is schema-required too (request-schema-validation.md) — sent as "" rather than
+        // omitted so the request clears schema validation and reaches the domain check.
+        var noName = http.post("/api/applications", "{\"code\":\"" + code("noname") + "\",\"name\":\"\"}", ANCHOR);
         assertThat(noName.statusCode()).isEqualTo(400);
         assertThat(json(noName).get("error").asText()).isEqualTo("NAME_REQUIRED");
 

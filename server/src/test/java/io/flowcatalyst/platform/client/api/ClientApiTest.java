@@ -169,8 +169,13 @@ class ClientApiTest {
         assertThat(noQuery.statusCode()).as("search must win over /{id}").isEqualTo(200);
         assertThat(json(noQuery).get("clients").size()).isLessThanOrEqualTo(ClientRepository.SEARCH_LIMIT);
 
+        // term is schema-required on SearchClientRequest (request-schema-validation.md) — Go's
+        // own lockfile requires it too, so an absent term now 400s before ever reaching the
+        // domain's tolerant "no term = list all" behaviour; the GET surface above (whose `q`
+        // query parameter is NOT schema-required) still proves that tolerance is real.
         var emptyBody = http.post("/api/clients/search", "{}", ANCHOR);
-        assertThat(emptyBody.statusCode()).as("absent term tolerated").isEqualTo(200);
+        assertThat(emptyBody.statusCode()).as("term is schema-required").isEqualTo(400);
+        assertThat(json(emptyBody).get("error").asText()).isEqualTo("VALIDATION");
     }
 
     @Test
@@ -204,7 +209,9 @@ class ClientApiTest {
         assertThat(suspended.propertyNames()).containsExactly("id", "name", "identifier", "status",
                 "statusReason", "statusChangedAt", "notes", "createdAt", "updatedAt");
 
-        var noReason = http.post("/api/clients/" + id + "/suspend", "{}", ANCHOR);
+        // reason is schema-required (request-schema-validation.md) — sent as "" so the request
+        // reaches the domain's own blank check instead of 400 VALIDATION.
+        var noReason = http.post("/api/clients/" + id + "/suspend", "{\"reason\":\"\"}", ANCHOR);
         assertThat(noReason.statusCode()).isEqualTo(400);
         assertThat(json(noReason).get("error").asText()).isEqualTo("REASON_REQUIRED");
 
@@ -227,7 +234,9 @@ class ClientApiTest {
         assertThat(notes.get(0).get("addedAt").asText()).matches(TS);
         assertThat(notes.get(0).propertyNames()).containsExactly("category", "text", "addedBy", "addedAt");
 
-        var badNote = http.post("/api/clients/" + id + "/notes", "{\"category\":\"billing\"}", ANCHOR);
+        // text is schema-required on AddNoteRequest too — sent as "" so the request reaches
+        // the domain check instead of 400 VALIDATION.
+        var badNote = http.post("/api/clients/" + id + "/notes", "{\"category\":\"billing\",\"text\":\"\"}", ANCHOR);
         assertThat(badNote.statusCode()).isEqualTo(400);
         assertThat(json(badNote).get("error").asText()).isEqualTo("TEXT_REQUIRED");
     }
@@ -384,7 +393,8 @@ class ClientApiTest {
         assertThat(json(bad).get("error").asText()).isEqualTo("INVALID_IDENTIFIER");
         assertThat(json(bad).get("message").asText()).isEqualTo("identifier must be lowercase alphanumeric with optional hyphens (URL-safe)");
 
-        var noName = http.post("/api/clients", "{\"identifier\":\"" + ident("noname") + "\"}", ANCHOR);
+        // name is schema-required too — sent as "" so the request reaches the domain check.
+        var noName = http.post("/api/clients", "{\"name\":\"\",\"identifier\":\"" + ident("noname") + "\"}", ANCHOR);
         assertThat(noName.statusCode()).isEqualTo(400);
         assertThat(json(noName).get("error").asText()).isEqualTo("NAME_REQUIRED");
 

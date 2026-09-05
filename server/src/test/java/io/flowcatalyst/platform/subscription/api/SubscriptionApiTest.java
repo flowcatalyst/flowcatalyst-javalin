@@ -268,16 +268,27 @@ class SubscriptionApiTest {
         assertThat(json(again).get("error").asText()).isEqualTo("Subscription_NOT_FOUND");
     }
 
-    /// Absent binding / config fields are stored as empty strings, as the
-    /// rows always looked (spec §4, open question 10) — never a 500.
+    /// SPEC? (request-schema-validation.md, spec §4 open question 10
+    /// revisited 2026-09-05): `EventTypeBindingDTO.eventTypeCode` and
+    /// `ConfigEntryDTO.value` are BOTH schema-required in the real lockfile
+    /// (`additionalProperties:false` on both item shapes too) — Go's own
+    /// huma validation would 400 this exact request, so the domain-level
+    /// "absent → stored as empty string" leniency this test used to pin is
+    /// no longer reachable through the HTTP surface; schema validation
+    /// answers 400 `VALIDATION` before `CreateSubscription` ever runs. Kept
+    /// as a negative test of the new, correct wire behaviour rather than
+    /// deleted, since it is exactly the class of gap request-schema-validation
+    /// closes; open question 10 itself should be closed by this finding
+    /// rather than re-opened by a workaround here.
     @Test
-    void absentBindingAndConfigFieldsAreStoredEmpty() {
+    void absentBindingAndConfigFieldsAre400ValidationNotStoredEmpty() {
         var r = http.post("/api/subscriptions", "{\"code\":\"" + code("blank") + "\",\"name\":\"X\",\"endpoint\":\"https://x.example.test\","
                 + "\"eventTypes\":[{\"specVersion\":\"1.0\"}],\"customConfig\":[{\"key\":\"k\"}]}", ANCHOR);
-        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
-        var s = json(http.get("/api/subscriptions/" + json(r).get("id").asText(), ANCHOR));
-        assertThat(s.get("eventTypes").get(0).get("eventTypeCode").asText()).isEmpty();
-        assertThat(s.get("customConfig").get(0).get("value").asText()).isEmpty();
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
+        var body = json(r);
+        assertThat(body.get("error").asText()).isEqualTo("VALIDATION");
+        assertThat(body.get("details").get("errors")).extracting(n -> n.get("location").asText())
+                .contains("body.eventTypes[0]", "body.customConfig[0]");
     }
 
     // ── Negative paths ─────────────────────────────────────────────────────

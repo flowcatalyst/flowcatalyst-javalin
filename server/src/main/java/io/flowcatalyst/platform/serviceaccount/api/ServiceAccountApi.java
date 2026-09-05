@@ -297,7 +297,7 @@ public final class ServiceAccountApi {
             try {
                 type = WebhookAuthType.parse(authType);
             } catch (WebhookAuthType.UnrecognisedAuthTypeException e) {
-                throw UseCaseException.validation("INVALID_AUTH_TYPE", "unknown webhook auth type '" + authType + "'");
+                throw UseCaseException.validation("INVALID_AUTH_TYPE", "unknown webhook auth type \"" + authType + "\"");
             }
             return new WebhookCredentials(type, token, username, password, headerName, signingSecret, signingAlgorithm, signatureHeader);
         }

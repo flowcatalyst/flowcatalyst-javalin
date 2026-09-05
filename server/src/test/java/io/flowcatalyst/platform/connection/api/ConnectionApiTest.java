@@ -263,7 +263,8 @@ class ConnectionApiTest {
         assertThat(json(bad).get("error").asText()).isEqualTo("INVALID_CODE_FORMAT");
         assertThat(json(bad).get("message").asText()).isEqualTo("Code must start with lowercase letter, contain only lowercase alphanumeric and hyphens");
 
-        var noSa = http.post("/api/connections", "{\"code\":\"" + code("connapi-nosa") + "\",\"name\":\"X\"}", ANCHOR);
+        // serviceAccountId is schema-required too — sent as "" so the request reaches the domain check.
+        var noSa = http.post("/api/connections", "{\"code\":\"" + code("connapi-nosa") + "\",\"name\":\"X\",\"serviceAccountId\":\"\"}", ANCHOR);
         assertThat(noSa.statusCode()).isEqualTo(400);
         assertThat(json(noSa).get("error").asText()).isEqualTo("SERVICE_ACCOUNT_REQUIRED");
 

@@ -14,7 +14,7 @@ import java.util.Objects;
 /// @param value the normalised domain
 public record ClientAuthConfigEmailDomain(String value) {
 
-    public static final String FORMAT_MESSAGE = "emailDomain must be non-blank and contain a '.'";
+    public static final String FORMAT_MESSAGE = "emailDomain must be a valid DNS name";
 
     public ClientAuthConfigEmailDomain {
         Objects.requireNonNull(value, "value");

@@ -155,6 +155,17 @@ public record HttpError(
         writeRaw(ctx, statusFor(code), new HttpError(code, message));
     }
 
+    /// The huma-shaped schema-validation envelope (request-schema-validation
+    /// spec §1): 400 `VALIDATION`, message always `validation failed`,
+    /// `details.errors` verbatim — one `{location, message, value?}` map per
+    /// failure, in the order [SchemaValidation] found them. Shared by the
+    /// schema-validation filter and [io.flowcatalyst.platform.shared.apicommon.QueryParams],
+    /// which builds the identical shape by hand for its own accumulating
+    /// query-parameter checks.
+    public static void writeValidation(Context ctx, java.util.List<Map<String, Object>> errors) {
+        writeRaw(ctx, 400, new HttpError("VALIDATION", "validation failed", Map.of("errors", java.util.List.copyOf(errors))));
+    }
+
     /// The RFC 6750-flavoured 401 the authenticator emits for a bad bearer
     /// (Go `middleware.writeInvalidTokenError`): body
     /// `{"error":"invalid_token","error_description":"…"}` and header

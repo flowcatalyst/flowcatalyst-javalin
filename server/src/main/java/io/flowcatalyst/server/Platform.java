@@ -141,6 +141,7 @@ import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
+import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
 import io.flowcatalyst.platform.shared.openapi.SpecRoutes;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
@@ -207,6 +208,11 @@ public final class Platform {
         var corsAllowlist = new CorsAllowlist(corsOriginRepo::allowedOrigins, Duration.ofMillis(env.corsCacheTtlMs()), Clock.systemUTC());
         routes.before(cors(new CorsFilter(corsAllowlist)));
         routes.before(authenticated(buildAuthenticator()));
+        // Request-schema validation (docs/spec/request-schema-validation.md §3): after the
+        // authenticator (an unauthenticated caller is refused before its body is inspected)
+        // and before every handler (a missing/malformed field never reaches a domain check).
+        var lockfile = Lockfile.load(Json.MAPPER);
+        routes.before(SchemaValidation.build(lockfile));
 
         // ── public routes (outside the bearer middleware) ────────────────
         // The session surface (auth-core §6.1): check-domain, login and logout
@@ -489,7 +495,8 @@ public final class Platform {
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
 
         // ── spec + docs (unauthenticated) ────────────────────────────────
-        var lockfile = Lockfile.load(Json.MAPPER);
+        // `lockfile` was already loaded above, ahead of the routes.before wiring,
+        // so SchemaValidation and SpecRoutes serve the exact same parsed document.
         new SpecRoutes(lockfile).register(routes);
 
         // ── SPA's own BFF routes + /api/me (docs/spec/bff.md) ─────────────

@@ -351,8 +351,9 @@ class ScheduledJobApiTest {
         var badPage = http.get("/api/scheduled-jobs?page=x", ANCHOR);
         assertThat(badPage.statusCode()).isEqualTo(400);
         assertThat(json(badPage).get("error").asText()).isEqualTo("VALIDATION");
+        // level is schema-required too — sent as "" so the request reaches the domain check.
         var noLevel = http.post("/api/scheduled-jobs/instances/" + json(http.post("/api/scheduled-jobs/" + id + "/fire", null, ANCHOR)).get("instanceId").asText() + "/log",
-                "{\"message\":\"m\"}", ANCHOR);
+                "{\"level\":\"\",\"message\":\"m\"}", ANCHOR);
         assertThat(noLevel.statusCode()).isEqualTo(400);
         assertThat(json(noLevel).get("error").asText()).isEqualTo("LEVEL_REQUIRED");
     }

@@ -1,6 +1,9 @@
 package io.flowcatalyst.platform.shared;
 
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.openapi.Lockfile;
+import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 
@@ -37,6 +40,12 @@ public final class TestHttp implements AutoCloseable {
     /// port; a foreign answer rebinds on a fresh port.
     private final String nonce = java.util.UUID.randomUUID().toString();
 
+    /// Built once per JVM (the startup keyword-walk over all 245 lockfile
+    /// operations is otherwise repeated for every `TestHttp` instance a test
+    /// class creates) and shared — [SchemaValidation] holds nothing but the
+    /// resolved schema table, so one instance safely serves every test.
+    private static final SchemaValidation SCHEMA_VALIDATION = SchemaValidation.build(Lockfile.load(Json.MAPPER));
+
     public TestHttp(Consumer<JavalinConfig> configure) {
         Javalin started = null;
         AssertionError last = null;
@@ -45,6 +54,7 @@ public final class TestHttp implements AutoCloseable {
                 cfg.startup.showJavalinBanner = false;
                 cfg.jsonMapper(new JavalinJsonMapper());
                 io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);
+                cfg.routes.before(SCHEMA_VALIDATION);
                 // Registered BEFORE the caller's routes so a catch-all of theirs
                 // still wins for every other path.
                 cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));

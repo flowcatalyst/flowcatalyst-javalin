@@ -221,7 +221,12 @@ class EventTypeApiTest {
         assertThat(dup.statusCode()).isEqualTo(409);
         assertThat(json(dup).get("error").asText()).isEqualTo("VERSION_EXISTS");
 
-        var missing = send("POST", "/api/event-types/" + id + "/versions", "{\"version\":\"3.0\"}", ANCHOR);
+        // schema is schema-required on AddSchemaRequest, but it carries no `type` of its own
+        // (an arbitrary JSON Schema document) — an explicit JSON null clears the presence check
+        // (spec §2: null on an untyped/nullable member is not a type error) while still reading
+        // as null to AddSchema's own SCHEMA_REQUIRED check, so it is the one value that reaches
+        // the domain code instead of 400 VALIDATION.
+        var missing = send("POST", "/api/event-types/" + id + "/versions", "{\"version\":\"3.0\",\"schema\":null}", ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asText()).isEqualTo("SCHEMA_REQUIRED");
     }

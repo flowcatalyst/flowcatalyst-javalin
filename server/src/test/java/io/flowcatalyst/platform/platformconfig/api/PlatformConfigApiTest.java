@@ -268,12 +268,17 @@ class PlatformConfigApiTest {
 
     @Test
     void validationAndMalformedJsonAre400Envelopes() {
+        // value is schema-required AND schema-typed as a non-nullable string, so there is no
+        // longer an HTTP-reachable value that is both schema-valid and Java-null: an absent
+        // value now 400s VALIDATION before ever reaching SetProperty's own `cmd.value() == null`
+        // check (that check is still pinned directly against the operation in
+        // PlatformConfigOperationsTest — "missing value"). roleCode is schema-required too, but
+        // is a plain non-null-checked blank rule, so "" still reaches its domain code.
         var noValue = http.put(property("smtp", "port"), "{\"description\":\"no value\"}", ANCHOR);
         assertThat(noValue.statusCode()).isEqualTo(400);
-        assertThat(json(noValue).get("error").asText()).isEqualTo("FIELD_REQUIRED");
-        assertThat(json(noValue).get("message").asText()).isEqualTo("value is required");
+        assertThat(json(noValue).get("error").asText()).isEqualTo("VALIDATION");
 
-        var noRole = http.post("/api/platform-config/" + APP + "/access", "{\"canWrite\":true}", ANCHOR);
+        var noRole = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"\",\"canWrite\":true}", ANCHOR);
         assertThat(noRole.statusCode()).isEqualTo(400);
         assertThat(json(noRole).get("error").asText()).isEqualTo("ROLE_REQUIRED");
 

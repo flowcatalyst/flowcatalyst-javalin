@@ -225,7 +225,9 @@ class IdentityProviderApiTest {
 
     @Test
     void validationAndConflictUseTheErrorEnvelope() {
-        var missingName = http.post("/api/identity-providers", "{\"code\":\"" + code("api-noname") + "\",\"type\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
+        // name is schema-required too — sent as "" so the request reaches the domain check.
+        var missingName = http.post("/api/identity-providers",
+                "{\"code\":\"" + code("api-noname") + "\",\"name\":\"\",\"type\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR);
         assertThat(missingName.statusCode()).isEqualTo(400);
         assertThat(json(missingName).get("error").asText()).isEqualTo("NAME_REQUIRED");
         assertThat(json(missingName).propertyNames()).containsExactly("error", "message");

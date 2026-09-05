@@ -22,12 +22,12 @@ public final class CreateAnchorDomain {
                     // covers the format rule, folding blank into INVALID_DOMAIN for callers
                     // (update) that don't pre-check.
                     UseCaseException.requireNonBlank(cmd.domain(), "DOMAIN_REQUIRED", "domain is required");
-                    AnchorDomainValue.parse(cmd.domain());
+                    AnchorDomainValue.parseForCreate(cmd.domain());
                 })
                 // Anchor domains are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
-                    AnchorDomainValue domain = AnchorDomainValue.parse(cmd.domain());
+                    AnchorDomainValue domain = AnchorDomainValue.parseForCreate(cmd.domain());
                     if (repo.findByDomain(domain.value()).isPresent()) {
                         throw UseCaseException.conflict("DOMAIN_EXISTS", "Anchor domain '" + domain.value() + "' already exists");
                     }

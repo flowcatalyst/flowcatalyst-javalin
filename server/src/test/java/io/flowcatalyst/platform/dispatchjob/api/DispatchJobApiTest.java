@@ -305,9 +305,14 @@ class DispatchJobApiTest {
     void requeueRequiresTheViewPermissionAndTheIdsField() {
         assertThat(http.post("/api/dispatch-jobs/requeue", "{\"ids\":[]}", NO_PERMISSION).statusCode()).isEqualTo(403);
         assertThat(json(http.post("/api/dispatch-jobs/requeue", "{\"ids\":[]}", VIEWER_A)).get("requeued").asInt()).isZero();
+        // ids is schema-required on RequeueRequest (request-schema-validation.md), so an absent
+        // ids now 400s VALIDATION before ever reaching RequeueDispatchJobs' own null check —
+        // that check (IDS_REQUIRED for a literal Java null, unreachable via HTTP now that the
+        // schema always supplies a non-null list or rejects the request) is still pinned directly
+        // against the operation in DispatchJobOperationsTest.
         var missing = http.post("/api/dispatch-jobs/requeue", "{}", ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(400);
-        assertThat(json(missing).get("error").asText()).isEqualTo("IDS_REQUIRED");
+        assertThat(json(missing).get("error").asText()).isEqualTo("VALIDATION");
     }
 
     // ── Cancel / Complete (spec §8) ──────────────────────────────────────────

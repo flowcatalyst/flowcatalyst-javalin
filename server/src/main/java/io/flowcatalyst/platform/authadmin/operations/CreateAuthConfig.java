@@ -28,8 +28,8 @@ public final class CreateAuthConfig {
                     ConfigType.parseStrict(cmd.configType());
                     AuthProvider provider = AuthProvider.parseStrict(cmd.authProvider());
                     if (provider == AuthProvider.OIDC) {
-                        UseCaseException.requireNonBlank(cmd.oidcIssuerUrl(), "OIDC_ISSUER_REQUIRED", "oidcIssuerUrl is required for OIDC");
-                        UseCaseException.requireNonBlank(cmd.oidcClientId(), "OIDC_CLIENT_ID_REQUIRED", "oidcClientId is required for OIDC");
+                        UseCaseException.requireNonBlank(cmd.oidcIssuerUrl(), "OIDC_ISSUER_REQUIRED", "OIDC provider requires oidcIssuerUrl");
+                        UseCaseException.requireNonBlank(cmd.oidcClientId(), "OIDC_CLIENT_ID_REQUIRED", "OIDC provider requires oidcClientId");
                     }
                 })
                 // Auth configs are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
@@ -38,7 +38,7 @@ public final class CreateAuthConfig {
                     ClientAuthConfigEmailDomain domain = ClientAuthConfigEmailDomain.parse(cmd.emailDomain());
                     if (repo.findByEmailDomain(domain.value()).isPresent()) {
                         throw UseCaseException.conflict("DOMAIN_ALREADY_CONFIGURED",
-                                "Auth config for domain '" + domain.value() + "' already exists");
+                                "Auth config for '" + domain.value() + "' already exists");
                     }
                     ClientAuthConfig c = ClientAuthConfig.create(domain, ConfigType.parseStrict(cmd.configType()), AuthProvider.parseStrict(cmd.authProvider()))
                             .withPrimaryClientId(cmd.primaryClientId())

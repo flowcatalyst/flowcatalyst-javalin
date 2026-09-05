@@ -98,8 +98,12 @@ class RoleApiTest {
     }
 
     private static String create(String roleName, String displayName, String extraJson) {
+        // clientManaged is schema-required (request-schema-validation.md); default false here,
+        // overridable by extraJson (a duplicate JSON key resolves to the LAST occurrence, same
+        // as the handler's own parse, so a caller's own "clientManaged" in extraJson still wins).
         var r = http.post("/api/roles",
-                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"" + roleName + "\",\"displayName\":\"" + displayName + "\"" + extraJson + "}", ANCHOR);
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"" + roleName + "\",\"displayName\":\"" + displayName
+                        + "\",\"clientManaged\":false" + extraJson + "}", ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
         var id = json(r).get("id").asText();
         assertThat(id).startsWith("rol_");
@@ -130,7 +134,8 @@ class RoleApiTest {
         String id = create("editor", "Editor", ",\"description\":\"desc\",\"permissions\":[\"" + APP + ":doc:b:*\",\"" + APP + ":doc:a:*\"],\"clientManaged\":true");
 
         // POST body is exactly the CreatedResponse envelope.
-        var created = http.post("/api/roles", "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"viewer\",\"displayName\":\"Viewer\"}", ANCHOR);
+        var created = http.post("/api/roles",
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"viewer\",\"displayName\":\"Viewer\",\"clientManaged\":false}", ANCHOR);
         assertThat(created.statusCode()).isEqualTo(201);
         assertThat(created.body()).matches("\\{\"id\":\"rol_[0-9A-Z]{13}\"}\n");
         assertThat(created.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
@@ -277,7 +282,9 @@ class RoleApiTest {
         var unknown = http.post("/api/roles/" + APP + ":ghost/permissions/a:b:c:d", null, ANCHOR);
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(json(unknown).get("error").asText()).isEqualTo("Role_NOT_FOUND");
-        var missing = http.post("/api/roles/" + name + "/permissions", "{}", ANCHOR);
+        // "permission" is schema-required on GrantPermissionRequest — sent as "" so the request
+        // reaches GrantPermission's own blank check instead of 400 VALIDATION.
+        var missing = http.post("/api/roles/" + name + "/permissions", "{\"permission\":\"\"}", ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
     }
@@ -315,14 +322,21 @@ class RoleApiTest {
 
     @Test
     void missingPermissionOrPrincipalIs403Envelope() {
-        var r = http.post("/api/roles", "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"denied\",\"displayName\":\"X\"}", VIEWER);
+        // Schema-valid bodies throughout (clientManaged is schema-required): schema validation
+        // runs before the handler's own coarse permission check (spec §3; Go's own huma handler
+        // does the identical thing — CanWriteRoles reads in.Body, which huma has already bound
+        // and validated by the time the handler runs), so an incomplete body would 400 VALIDATION
+        // before ever reaching PERMISSION_REQUIRED — not what this test means to exercise.
+        var r = http.post("/api/roles",
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"denied\",\"displayName\":\"X\",\"clientManaged\":false}", VIEWER);
         assertThat(r.statusCode()).isEqualTo(403);
         var env = json(r);
         assertThat(env.get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
         assertThat(env.get("message").asText()).contains("platform:iam:role:create");
 
         // Any write permission passes the create gate (spec §3, open question 8)…
-        var writer = http.post("/api/roles", "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"writer\",\"displayName\":\"X\"}", WRITER);
+        var writer = http.post("/api/roles",
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"writer\",\"displayName\":\"X\",\"clientManaged\":false}", WRITER);
         assertThat(writer.statusCode()).as(writer.body()).isEqualTo(201);
         // …but delete needs the delete permission specifically.
         var del = http.delete("/api/roles/" + json(writer).get("id").asText(), WRITER);
@@ -338,13 +352,21 @@ class RoleApiTest {
 
     @Test
     void validationConflictAndMalformedJsonAreEnvelopes() {
-        var bad = http.post("/api/roles", "{\"roleName\":\"x\",\"displayName\":\"X\"}", ANCHOR);
+        // applicationCode is schema-required too — sent as "" rather than omitted, so the
+        // request clears schema validation and reaches CreateRole's own blank check (spec §3
+        // ordering: schema first, but domain codes stay reachable for values the schema lets
+        // through). clientManaged is also schema-required, so it must be present here as well.
+        var bad = http.post("/api/roles", "{\"applicationCode\":\"\",\"roleName\":\"x\",\"displayName\":\"X\",\"clientManaged\":false}", ANCHOR);
         assertThat(bad.statusCode()).isEqualTo(400);
         assertThat(json(bad).get("error").asText()).isEqualTo("APPLICATION_REQUIRED");
         assertThat(json(bad).get("message").asText()).isEqualTo("applicationCode is required");
 
         create("twice", "X", "");
-        var dup = http.post("/api/roles", "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"twice\",\"displayName\":\"X\"}", ANCHOR);
+        // clientManaged is schema-required too (this POST bypasses the create() helper's
+        // own default) — without it the duplicate never reaches CreateRole's ROLE_EXISTS
+        // check at all, since schema validation 400s first.
+        var dup = http.post("/api/roles",
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"twice\",\"displayName\":\"X\",\"clientManaged\":false}", ANCHOR);
         assertThat(dup.statusCode()).isEqualTo(409);
         assertThat(json(dup).get("error").asText()).isEqualTo("ROLE_EXISTS");
 

@@ -242,7 +242,8 @@ class ProcessApiTest {
         assertThat(json(bad).get("error").asText()).isEqualTo("INVALID_CODE_FORMAT");
         assertThat(json(bad).get("message").asText()).isEqualTo("Process code must follow format: application:subdomain:process-name");
 
-        var noName = http.post("/api/processes", "{\"code\":\"" + APP + ":val:noname\"}", ANCHOR);
+        // name is schema-required too — sent as "" so the request reaches the domain check.
+        var noName = http.post("/api/processes", "{\"code\":\"" + APP + ":val:noname\",\"name\":\"\"}", ANCHOR);
         assertThat(noName.statusCode()).isEqualTo(400);
         assertThat(json(noName).get("error").asText()).isEqualTo("NAME_REQUIRED");
 

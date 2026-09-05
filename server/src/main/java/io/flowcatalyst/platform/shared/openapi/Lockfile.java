@@ -88,4 +88,32 @@ public final class Lockfile {
     public int pathCount() {
         return root.path("paths").size();
     }
+
+    /// The raw operation object for `method path` (`paths.<path>.<method>`),
+    /// or a missing node if the lockfile has no such operation. Used by
+    /// [SchemaValidation] to reach `requestBody` / `parameters` without a
+    /// second document walk.
+    public JsonNode operationNode(String method, String path) {
+        return root.path("paths").path(path).path(method.toLowerCase(Locale.ROOT));
+    }
+
+    /// Follows a `$ref` chain (`#/components/schemas/Name`) to the schema it
+    /// names, looping in case a component itself is a bare `$ref` (none are,
+    /// today, but a lockfile bump should not have to touch this). A node with
+    /// no `$ref` is returned unchanged, so callers can pass any schema node
+    /// through unconditionally.
+    public JsonNode resolveRef(JsonNode schema) {
+        var node = schema;
+        while (node.has("$ref")) {
+            var ref = node.path("$ref").stringValue();
+            if (!ref.startsWith("#/")) {
+                throw new IllegalStateException("unsupported $ref (not a local component pointer): " + ref);
+            }
+            node = root.at(ref.substring(1));
+            if (node.isMissingNode()) {
+                throw new IllegalStateException("$ref target not found: " + ref);
+            }
+        }
+        return node;
+    }
 }

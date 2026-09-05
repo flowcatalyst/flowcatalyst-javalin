@@ -182,7 +182,8 @@ class CorsOriginApiTest {
 
     @Test
     void validationConflictAndMalformedJsonAreErrorEnvelopes() {
-        var missing = http.post("/api/platform/cors", "{\"description\":\"no origin\"}", ANCHOR);
+        // origin is schema-required — sent as "" so the request reaches the domain check.
+        var missing = http.post("/api/platform/cors", "{\"origin\":\"\",\"description\":\"no origin\"}", ANCHOR);
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asText()).isEqualTo("ORIGIN_REQUIRED");
 
