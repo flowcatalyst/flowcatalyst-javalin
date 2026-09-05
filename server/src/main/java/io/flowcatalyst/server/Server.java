@@ -533,6 +533,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
 
             cfg.routes.get("/health", health(mode)::handle);
+            io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);
 
             switch (mode) {
                 case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(cfg.routes);

@@ -1,0 +1,312 @@
+package io.flowcatalyst.parity;
+
+import io.flowcatalyst.parity.model.Request;
+import io.flowcatalyst.parity.model.Scenario;
+import io.flowcatalyst.parity.model.Step;
+import io.flowcatalyst.platform.shared.json.Json;
+import tools.jackson.databind.JsonNode;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/// Runs one [Scenario] against one side (parity-harness spec §3, §4): its
+/// own `HttpClient`, its own cookie jar, `Redirect.NEVER`, 10 s per request.
+/// Every exception raised while building or capturing a step (an undefined
+/// `${…}`, a missing capture pointer, an `expect.status` mismatch) is caught
+/// and turned into a [StepOutcome.Failed] for that step alone — the runner
+/// keeps going, so a later step's own failure (or success) is reported on
+/// its own merits rather than being swallowed by an early abort.
+///
+/// SPEC? §3 says the cookie jar is "automatic (JDK `CookieManager`)"; this
+/// uses a small hand-rolled jar instead. `fc_session` is `Secure`
+/// ([io.flowcatalyst.platform.auth.login.SessionCookie], correctly, since
+/// spec §2 leaves `FC_AUTH_ALLOW_TEST_HEADERS` unset) and both sides serve
+/// plain `http://127.0.0.1`, never `https`; `java.net.CookieManager.get`
+/// filters a `Secure` cookie out of every non-`https` request by design
+/// (RFC 6265), so with the JDK's own jar every request after login loses
+/// the session — identically on both sides, since it is standard client
+/// behaviour, not an implementation difference. A manual jar that carries
+/// whatever `Set-Cookie` sends, ignoring the scheme, is the harness
+/// simulating a trusted local client over its own loopback transport, which
+/// is what running two real dev servers side by side actually is.
+public final class Runner {
+
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+
+    private final HttpClient client;
+    private final String baseUrl;
+    /// This side's cookie jar for the scenario (see the class doc's SPEC?
+    /// note): cookie name → value, last `Set-Cookie` wins; an empty value
+    /// (how [io.flowcatalyst.platform.auth.login.SessionCookie#clear] logs
+    /// out) removes the entry.
+    private final Map<String, String> cookieJar = new LinkedHashMap<>();
+
+    public Runner(String baseUrl) {
+        this.baseUrl = baseUrl;
+        this.client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+
+    /// One step's fate on this side, in scenario order.
+    public sealed interface StepOutcome permits StepOutcome.Ran, StepOutcome.Failed {
+        String stepId();
+
+        record Ran(String stepId, StepRecord record, String method, String path) implements StepOutcome {
+        }
+
+        /// `record` is the raw response when one was received but failed
+        /// `expect.status`; `null` when the request could not even be built
+        /// or sent (bad substitution, transport failure).
+        record Failed(String stepId, String message, StepRecord record) implements StepOutcome {
+        }
+    }
+
+    /// A full scenario run on this side: every step's outcome and the
+    /// concrete `(method, path)` of every request actually sent — the raw
+    /// material for the coverage check (spec §7) and the `covers` claim
+    /// (spec §3).
+    public record RunResult(List<StepOutcome> steps, List<RequestedRoute> requested) {
+    }
+
+    public record RequestedRoute(String method, String path) {
+    }
+
+    public RunResult run(Scenario scenario, Vars vars) {
+        List<StepOutcome> outcomes = new ArrayList<>();
+        List<RequestedRoute> requested = new ArrayList<>();
+        SoftAuthenticator authenticator = null;
+        JsonNode lastBody = null;
+
+        for (Step step : scenario.steps()) {
+            try {
+                JsonNode requestBody = step.authenticator() != null ? null : Substitution.resolve(step.request().body(), vars);
+                if (step.authenticator() != null) {
+                    if (authenticator == null) authenticator = new SoftAuthenticator();
+                    requestBody = runAuthenticator(step, authenticator, lastBody, vars);
+                }
+                Sent sent = send(step.request(), requestBody, vars);
+                requested.add(new RequestedRoute(step.request().method(), sent.path()));
+                StepRecord record = toRecord(sent.status(), sent.headers(), sent.bodyBytes());
+
+                Step.Expect expect = step.expect();
+                if (expect != null && expect.status() != null && expect.status() != sent.status()) {
+                    outcomes.add(new StepOutcome.Failed(step.id(),
+                            "expected status " + expect.status() + " but got " + sent.status(), record));
+                    lastBody = sent.jsonBodyOrNull();
+                    continue;
+                }
+
+                capture(step, sent, vars);
+                outcomes.add(new StepOutcome.Ran(step.id(), record, step.request().method(), sent.path()));
+                lastBody = sent.jsonBodyOrNull();
+            } catch (RuntimeException e) {
+                outcomes.add(new StepOutcome.Failed(step.id(), e.getMessage(), null));
+            }
+        }
+        return new RunResult(List.copyOf(outcomes), List.copyOf(requested));
+    }
+
+    /// `"register"` mints a fresh credential over the previous step's
+    /// options; `"assert"` signs an assertion over them. SPEC?
+    /// parity-harness.md §3 does not say how the assertion's `userHandle`
+    /// principal id is chosen for a step written in scenario JSON — this
+    /// resolves `${admin.id}`, the only principal identity every scenario
+    /// already carries; a scenario asserting as a non-admin principal (S2)
+    /// will need a named capture instead.
+    private JsonNode runAuthenticator(Step step, SoftAuthenticator authenticator, JsonNode options, Vars vars) {
+        if (options == null) {
+            throw new IllegalStateException("authenticator step '" + step.id() + "' has no prior response to act on");
+        }
+        try {
+            return switch (step.authenticator()) {
+                case "register" -> authenticator.register(options, baseUrl);
+                case "assert" -> authenticator.assertion(options, baseUrl, vars.resolve("admin.id"));
+                default -> throw new IllegalArgumentException("unknown authenticator step: " + step.authenticator());
+            };
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("authenticator step '" + step.id() + "' failed: " + e.getMessage(), e);
+        }
+    }
+
+    private record Sent(int status, HttpHeaders headers, byte[] bodyBytes, String path) {
+        JsonNode jsonBodyOrNull() {
+            String ct = headers.firstValue("Content-Type").orElse("");
+            if (!ct.toLowerCase(Locale.ROOT).contains("json") || bodyBytes.length == 0) return null;
+            try {
+                return Json.MAPPER.readTree(bodyBytes);
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+    }
+
+    private Sent send(Request request, JsonNode overrideBody, Vars vars) {
+        String path = Substitution.resolve(request.path(), vars);
+        String query = buildQuery(Substitution.resolve(request.query(), vars));
+        URI uri = URI.create(baseUrl + path + (query.isEmpty() ? "" : "?" + query));
+
+        HttpRequest.BodyPublisher publisher;
+        String impliedContentType = null;
+        if (!request.form().isEmpty()) {
+            publisher = HttpRequest.BodyPublishers.ofString(buildForm(Substitution.resolve(request.form(), vars)));
+            impliedContentType = "application/x-www-form-urlencoded";
+        } else if (overrideBody != null) {
+            publisher = HttpRequest.BodyPublishers.ofString(Json.write(overrideBody));
+            impliedContentType = "application/json";
+        } else {
+            publisher = HttpRequest.BodyPublishers.noBody();
+        }
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                .method(request.method(), publisher)
+                .timeout(REQUEST_TIMEOUT);
+        if (impliedContentType != null) builder.header("Content-Type", impliedContentType);
+        if (!cookieJar.isEmpty()) builder.header("Cookie", cookieHeader());
+        Substitution.resolve(request.headers(), vars).forEach(builder::header);
+        if (request.auth() != null) builder.header("Authorization", "Bearer " + Substitution.resolve(request.auth(), vars));
+
+        try {
+            HttpResponse<byte[]> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            updateCookieJar(response.headers());
+            return new Sent(response.statusCode(), response.headers(), response.body(), path);
+        } catch (IOException e) {
+            throw new IllegalStateException(request.method() + " " + path + ": " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(request.method() + " " + path + " interrupted", e);
+        }
+    }
+
+    private String cookieHeader() {
+        StringBuilder sb = new StringBuilder();
+        cookieJar.forEach((name, value) -> {
+            if (!sb.isEmpty()) sb.append("; ");
+            sb.append(name).append('=').append(value);
+        });
+        return sb.toString();
+    }
+
+    /// Every `Set-Cookie` on the response updates the jar: an empty value
+    /// (how [io.flowcatalyst.platform.auth.login.SessionCookie#clear] logs
+    /// out) removes the cookie, anything else (over)writes it — attributes
+    /// (`Path`, `Secure`, `SameSite`, …) are not tracked, since this jar
+    /// exists only to keep the session usable over the harness's own
+    /// loopback HTTP transport (class doc SPEC? note), not to model a
+    /// browser's full cookie-jar semantics.
+    private void updateCookieJar(HttpHeaders headers) {
+        for (String setCookie : headers.allValues("Set-Cookie")) {
+            String pair = setCookie.split(";", 2)[0];
+            int eq = pair.indexOf('=');
+            if (eq <= 0) continue;
+            String name = pair.substring(0, eq).trim();
+            String value = pair.substring(eq + 1).trim();
+            if (value.isEmpty()) {
+                cookieJar.remove(name);
+            } else {
+                cookieJar.put(name, value);
+            }
+        }
+    }
+
+    private static String buildQuery(Map<String, String> query) {
+        if (query.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        query.forEach((k, v) -> {
+            if (!sb.isEmpty()) sb.append('&');
+            sb.append(URLEncoder.encode(k, StandardCharsets.UTF_8)).append('=')
+                    .append(URLEncoder.encode(v, StandardCharsets.UTF_8));
+        });
+        return sb.toString();
+    }
+
+    private static String buildForm(Map<String, String> form) {
+        return buildQuery(form);
+    }
+
+    /// The step's [StepRecord]: status, the [ComparedHeaders] subset, and the
+    /// body classified per spec §4 — JSON when the content type says so,
+    /// SHA-256 for a known binary body (the QR PNG, the OpenAPI document),
+    /// raw text otherwise.
+    static StepRecord toRecord(int status, HttpHeaders headers, byte[] bodyBytes) {
+        Map<String, String> compared = new LinkedHashMap<>();
+        for (String name : ComparedHeaders.NAMES) {
+            headers.firstValue(name).ifPresent(v -> compared.put(name, v));
+        }
+        String contentType = headers.firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
+        if (contentType.contains("json")) {
+            JsonNode body = bodyBytes.length == 0 ? Json.MAPPER.getNodeFactory().nullNode() : Json.MAPPER.readTree(bodyBytes);
+            return StepRecord.json(status, compared, body);
+        }
+        if (contentType.startsWith("image/png") || contentType.contains("application/openapi")) {
+            return StepRecord.hashed(status, compared, sha256Hex(bodyBytes));
+        }
+        return StepRecord.text(status, compared, new String(bodyBytes, StandardCharsets.UTF_8));
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    /// Applies `step.capture()` against the raw (unnormalised) response.
+    ///
+    /// @throws IllegalStateException a named header/cookie is absent, or a
+    ///                                JSON Pointer resolves to nothing (a
+    ///                                scenario error, spec §3)
+    private static void capture(Step step, Sent sent, Vars vars) {
+        step.capture().forEach((name, spec) -> {
+            String value;
+            if (spec.startsWith("header:")) {
+                String header = spec.substring("header:".length());
+                value = sent.headers().firstValue(header)
+                        .orElseThrow(() -> new IllegalStateException("capture '" + name + "': header " + header + " not present"));
+            } else if (spec.startsWith("cookie:")) {
+                String cookie = spec.substring("cookie:".length());
+                value = cookieValue(sent.headers(), cookie)
+                        .orElseThrow(() -> new IllegalStateException("capture '" + name + "': cookie " + cookie + " not present"));
+            } else {
+                JsonNode body = sent.jsonBodyOrNull();
+                JsonNode at = body == null ? null : body.at(spec);
+                if (at == null || at.isMissingNode()) {
+                    throw new IllegalStateException("capture '" + name + "': pointer " + spec + " not present in the response body");
+                }
+                value = at.isString() ? at.asString() : Json.write(at);
+            }
+            vars.capture(name, value);
+        });
+    }
+
+    /// The value of one cookie out of every `Set-Cookie` response header.
+    private static java.util.Optional<String> cookieValue(HttpHeaders headers, String cookieName) {
+        for (String setCookie : headers.allValues("Set-Cookie")) {
+            String pair = setCookie.split(";", 2)[0];
+            int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).trim().equals(cookieName)) {
+                return java.util.Optional.of(pair.substring(eq + 1).trim());
+            }
+        }
+        return java.util.Optional.empty();
+    }
+}

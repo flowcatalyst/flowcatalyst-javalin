@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flowcatalyst-parity</artifactId>
+  <packaging>jar</packaging>
+
+  <name>FlowCatalyst platform parity harness</name>
+  <description>
+    Runs the same scenario against Go's fc-server and the in-process Java Server on cloned,
+    byte-identical seed databases, normalises both sides' responses and diffs them
+    (docs/spec/parity-harness.md). Not a test of either implementation in isolation — an oracle
+    over the wire contract between them.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-server</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>info.picocli</groupId>
+      <artifactId>picocli</artifactId>
+    </dependency>
+
+    <!-- SoftAuthenticator (the "authenticator" scenario-step type) needs CBOR for WebAuthn
+         attestation/assertion objects. SPEC? the brief says this "arrives transitively through
+         server" alongside Jackson 3 and Nimbus, but `server`'s own dependency on it (via
+         com.yubico:webauthn-server-core) is `runtime`-scoped, not `compile` — fine for server's
+         OWN test sources (a module's test-compile classpath includes its own runtime-scope
+         deps) but NOT for a downstream module's main sources, which only inherit compile+runtime
+         transitively as `runtime` (unusable at javac time). Declared here at compile scope with
+         the exact version `server`'s own dependency:tree resolves
+         (com.yubico:webauthn-server-core:2.9.0 -> com.upokecenter:cbor:5.0.0-alpha2), so there is
+         no second version on the runtime classpath — this is the one root-pom-adjacent version
+         number this module could not avoid; CONVENTIONS.md's root-pom-diff-of-one still holds,
+         only this leaf pom carries the number. -->
+    <dependency>
+      <groupId>com.upokecenter</groupId>
+      <artifactId>cbor</artifactId>
+      <version>5.0.0-alpha2</version>
+    </dependency>
+
+    <!-- Logging: configured programmatically (ParitySide file appenders), no logback.xml. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+    </dependency>
+
+    <!-- Embedded PostgreSQL (zonky): the harness's own composition root (ParityMain / Seed)
+         starts it exactly like fcdev's EmbeddedPg does, so it is a main-scope dependency here
+         too, not test-only. The platform-binary additions below mirror server/pom.xml's
+         (Apple-silicon macOS + arm64 Linux dev/CI hosts; the default zonky bundle only ships
+         amd64 for those OSes) — SPEC? the brief says "the same platform-binary profile block
+         fcdev has", but fcdev has no such block (it downloads the matching binary from Maven
+         Central at first run via MavenCentralPgBinaryResolver instead); server/pom.xml is the
+         one with explicit platform-binary dependencies, so those are what's mirrored here. -->
+    <dependency>
+      <groupId>io.zonky.test</groupId>
+      <artifactId>embedded-postgres</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.zonky.test.postgres</groupId>
+          <artifactId>embedded-postgres-binaries-linux-amd64-alpine</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <!-- native Apple-silicon PG binaries (the default bundle only ships amd64 for macOS) -->
+      <groupId>io.zonky.test.postgres</groupId>
+      <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.zonky.test.postgres</groupId>
+      <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
+    </dependency>
+
+    <!-- Test -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

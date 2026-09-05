@@ -1,0 +1,5 @@
+[
+  "GET /health",
+  "POST /auth/login",
+  "GET /api/me"
+]

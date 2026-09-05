@@ -1,0 +1,16 @@
+[
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "**/$schema",
+    "reason": "huma schema-link member; Java never emits it",
+    "ruling": "owner? parity-harness.md \u00a710"
+  },
+  {
+    "scenario": "*",
+    "step": "health",
+    "pointer": "/checks",
+    "reason": "Java's /health carries per-check readiness (the login-attempt partition check, 503 DOWN when missing); Go has no checks member",
+    "ruling": "C-Q23 (auth-core.md \u00a70.5, \u00a77.2)"
+  }
+]

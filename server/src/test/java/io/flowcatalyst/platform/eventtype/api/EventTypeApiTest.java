@@ -231,6 +231,9 @@ class EventTypeApiTest {
         String id = create(APP + ":del:thing:gone", "Doomed", "");
         var del = send("DELETE", "/api/event-types/" + id, null, ANCHOR);
         assertThat(del.statusCode()).isEqualTo(204);
+        // No body, no Content-Type — Go sends none on a 204 and the parity harness
+        // (S0) flagged Javalin's default text/plain; Server strips it.
+        assertThat(del.headers().firstValue("Content-Type")).isEmpty();
 
         var get = send("GET", "/api/event-types/" + id, null, ANCHOR);
         assertThat(get.statusCode()).isEqualTo(404);

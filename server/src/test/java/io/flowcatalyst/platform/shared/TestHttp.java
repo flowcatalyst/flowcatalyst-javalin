@@ -44,6 +44,7 @@ public final class TestHttp implements AutoCloseable {
             Javalin candidate = Javalin.create(cfg -> {
                 cfg.startup.showJavalinBanner = false;
                 cfg.jsonMapper(new JavalinJsonMapper());
+                io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);
                 // Registered BEFORE the caller's routes so a catch-all of theirs
                 // still wins for every other path.
                 cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));

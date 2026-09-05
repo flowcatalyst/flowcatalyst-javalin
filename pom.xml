@@ -17,6 +17,7 @@
     <module>sdk</module>
     <module>server</module>
     <module>fcdev</module>
+    <module>parity</module>
   </modules>
 
   <properties>
