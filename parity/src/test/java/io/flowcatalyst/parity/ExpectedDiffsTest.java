@@ -116,4 +116,18 @@ class ExpectedDiffsTest {
         assertThat(diffs.accepts("s0", "health", "/version")).isFalse();
         assertThat(diffs.stale()).isEmpty();
     }
+
+    /// `/prefix/**` matches the prefix itself and everything below it — for a
+    /// diff that is one row count (a list with a different number of entries
+    /// walks element by element).
+    @Test
+    void aPrefixWildcardMatchesEverythingBelowThePointer() throws Exception {
+        java.nio.file.Path f = java.nio.file.Files.createTempFile("expected", ".json");
+        java.nio.file.Files.writeString(f, "[{\"scenario\":\"*\",\"step\":\"s\",\"pointer\":\"/entries/**\",\"reason\":\"r\",\"ruling\":\"x\"}]");
+        ExpectedDiffs e = ExpectedDiffs.load(f);
+        assertThat(e.accepts("any", "s", "/entries")).isTrue();
+        assertThat(e.accepts("any", "s", "/entries/3/id")).isTrue();
+        assertThat(e.accepts("any", "s", "/entriesX")).isFalse();
+        assertThat(e.stale()).isEmpty();
+    }
 }

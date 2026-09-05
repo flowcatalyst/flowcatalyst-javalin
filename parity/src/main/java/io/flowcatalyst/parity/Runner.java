@@ -114,6 +114,7 @@ public final class Runner {
                 }
 
                 capture(step, sent, vars);
+                autoCaptureId(step, sent, vars);
                 outcomes.add(new StepOutcome.Ran(step.id(), record, step.request().method(), sent.path()));
                 lastBody = sent.jsonBodyOrNull();
             } catch (RuntimeException e) {
@@ -267,6 +268,21 @@ public final class Runner {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    /// A 2xx body whose root carries a string `id` is a created (or fetched)
+    /// row; its id is captured as `<step>.id` even when the scenario did not
+    /// ask, so a later unfiltered list on either side masks it (rule 1) instead
+    /// of showing two different TSIDs for the same row. An explicit capture of
+    /// the same value keeps its own name (rule 1 prefers the scenario's names).
+    static void autoCaptureId(Step step, Sent sent, Vars vars) {
+        if (sent.status() < 200 || sent.status() >= 300) return;
+        JsonNode body = sent.jsonBodyOrNull();
+        if (body == null || !body.isObject()) return;
+        JsonNode id = body.get("id");
+        if (id != null && id.isString() && !id.asString().isEmpty()) {
+            vars.captureQuietly(step.id() + ".id", id.asString());
         }
     }
 

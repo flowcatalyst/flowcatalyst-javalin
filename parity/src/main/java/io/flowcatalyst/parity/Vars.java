@@ -64,6 +64,15 @@ public final class Vars {
         runLabels.put(value, name);
     }
 
+    /// An automatic capture (`<step>.id`): recorded for masking only, and never
+    /// over an explicit capture of the same value.
+    public void captureQuietly(String name, String value) {
+        Objects.requireNonNull(value, "value");
+        if (captures.containsValue(value) || runLabels.containsKey(value)) return;
+        captures.put(name, value);
+        runLabels.put(value, name);
+    }
+
     /// value → capture name, for normalisation rule 1: this scenario's own
     /// captures win, then anything captured earlier in the run on this side.
     public Map<String, String> labels() {
