@@ -54,6 +54,36 @@ next full corpus run says so — delete the entry then.
   vendored lockfile verbatim — any client parsing these at runtime?
 - Platform-scoped scheduled jobs for client-scoped callers (C1's second half).
 
+## Rulings of 2026-09-06 (`docs/rulings-2026-09-06.md`) — what they add for Go
+
+The owner ruled every open question the same day. The Go hand-off is now
+the list below; items A1–C7 above stand unless amended here.
+
+| Ruling | Go change | Amends |
+|---|---|---|
+| #3 | Apply `2026-09-05-auth-rulings.patch` (introspection `client_id` = `azp`, and the rest of the batch) | D3 |
+| #6 | `shared/bff/scheduled_jobs.go`: keep hiding platform-scoped jobs from client-scoped callers **and** stop listing other clients' jobs to them | C1 |
+| #7 | `eventtype/entity.go:208`: carry the request's `clientScoped` | B2 |
+| #8 | `identityprovider/operations/create.go:28`: `OIDCMultiTenant *bool` with `omitempty`; re-dump the lockfile and hand it over (Java re-vendors it) | B1 |
+| #9 | `shared/sdk/dispatch_job_create.go:63`, `dispatch_jobs_batch.go:144`: check `platform:messaging:batch:dispatch-jobs-write` | A2 |
+| #10a | `event/api/api.go` batch: **partial success with honest per-item results** — persist the valid items, report the invalid item's failure in its `results[]` slot (never `SUCCESS`) | C2 (was: reject the whole batch) |
+| #10b | `shared/sdk/audit_batch.go:34`: `PrincipalID` required (non-pointer, in the DTO's `required`), refuse an item without it; re-dump the lockfile | C3 (was: default to the caller) |
+| #11 | `oauthapi/token.go:476,485`: 400 `unauthorized_client` | C5 |
+| #13 | Principal `/{id}/…` sub-routes apply the by-id tenancy check; role / application-access / developer-credential mutations check the coarse permission **before** loading (no 404-vs-403 oracle) | new |
+| #14 | Scheduled-job sync `archiveUnlisted` archives only the calling application's unlisted jobs (Java already narrows: `SyncScheduledJobs`, X-02(a)) | new |
+| #15 | `POST /api/service-accounts/{id}/token` writes an audit row: actor, account, never the token; a failed audit does not fail the mint | new |
+| #16 | Service-account codes: `app:<code>` is a reserved namespace — provisioning writes it, the create API refuses a user code starting with `app:` | new |
+| #18 | `/api/config/platform` fallback brand `FlowCatalyst` (notify already via the patch) | — |
+| #1, #4, #5, #12, #17, #19, #20 | nothing for Go | — |
+
+Still Go's, unchanged: A1 (seeder literal — first), B3 (`hasLoginClient`),
+B4 (dispatch-pool copy, frontend), C4 (dedup index), C6 (`/api/me` name),
+C7 (`NO_MFA` before `NO_EMAIL_2FA`), D1 (trusted-device cookie on password
+change), D2 (`rememberDeviceAllowed`).
+
+Two lockfile re-dumps come out of this (#8, #10b); do them together and
+hand the file over once.
+
 ## After fixing
 
 Run the corpus (`PARITY_GO_SRC=… mvn -q -pl parity -am test -Dtest=ParityRunTest -Dsurefire.failIfNoSpecifiedTests=false`);
