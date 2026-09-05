@@ -457,6 +457,17 @@ port. Re-check for further drift at every data-plane unit.
 
 **router** (`docs/spec/router.md` §13): 50 questions; **Q1 ruled** (NEXT_ON_ERROR continues past a failed head; BLOCK_ON_ERROR ACKs the queued siblings and leaves the group pending platform-side until the error clears — deliberate deviation from Go). Q1 sub-question resolved by the human-review flow (ignore/completed/resend re-queues the group). **Q2 ruled**: no terminal give-up — messages live until the queue expires them; backoff + circuit breaker are the protection. **Q3 ruled**: collapse the in-call retries and pool backoff into ONE named retry policy, behaviour-preserving, pinned by a conformance test. Remaining 47 pending.
 
+## `ServiceAccountCode` vs the `app:<code>` convention (2026-09-05, **owner**)
+
+`ServiceAccountCode.parse` rejects `:` (it validates user-chosen codes), yet
+the platform's own convention for an application's service account is
+`app:<applicationCode>` — Go's `fcdev init` writes it, and the Java
+`AttachServiceAccount` test fixture uses the same literal. The Java
+`fcdev init` constructs the value object directly to store it, bypassing
+the parser. Question: should the value object admit a reserved `app:`
+namespace (and reject it from the API's create path), or should the
+convention change? Until ruled, the direct construction stays, commented.
+
 ## `iam_login_attempts` has no retention (2026-08-24)
 
 Surfaced while fixing Q12. No `DELETE` exists for `iam_login_attempts`

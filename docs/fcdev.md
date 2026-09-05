@@ -260,6 +260,65 @@ no `pg_upgrade`, so: the old cluster is moved to
 bundled major is initialised, migrations + seed re-run. No-op when there is no
 cluster or it is already on the bundled major.
 
+### `fcdev init`
+
+Bootstraps a local environment against a **running** database (it does not
+start the embedded Postgres itself — run `fcdev start` first, or point
+`--database-url` elsewhere). Spec: `docs/spec/fcdev-commands.md` §1.
+
+| flag | env | default |
+|---|---|---|
+| `--database-url` | `FC_DATABASE_URL` | `postgresql://postgres:postgres@localhost:15432/flowcatalyst` |
+| `--yes` | — | interactive prompts; with `--yes` a missing required value is an error |
+| `--root` | — | `.` (where `.env` is written) |
+| `--admin-email` / `--admin-password` | `FC_BOOTSTRAP_ADMIN_EMAIL` / `_PASSWORD` | prompted; skipped when an anchor admin exists |
+| `--code` / `--name` / `--app-type` / `--description` / `--default-base-url` | — | the application; `APPLICATION` or `INTEGRATION` |
+| `--client-identifier` / `--client-name` | — | `default` / `Default Client` (reused when present) |
+| `--api-base-url` | — | `http://localhost:8080` → `FLOWCATALYST_BASE_URL` |
+
+Steps: migrate + seed; anchor admin (the Seeder's own bootstrap path);
+default client; application (an existing code is an error); service
+account + SERVICE principal attached to the application; `.env` merged in
+place (`FLOWCATALYST_BASE_URL`, `FLOWCATALYST_APP_CODE`,
+`FLOWCATALYST_APP_KEY`, mode `0600`). **The OAuth client for the service
+account, and so `FLOWCATALYST_CLIENT_ID`/`_SECRET`, wait for Phase 3** —
+`init` prints a deferral notice instead of a placeholder.
+
+### `fcdev mcp`
+
+The MCP server out of process: stdio transport by default (JSON-RPC on
+stdout, logs on stderr), or `--http <host:port>`. `--platform-url`,
+`--client-id`, `--client-secret` override `FLOWCATALYST_URL` /
+`FLOWCATALYST_CLIENT_ID` / `FLOWCATALYST_CLIENT_SECRET` and the
+`mcp-credentials.json` file. Without credentials it warns once and runs
+(a static bearer via `FC_MCP_PLATFORM_AUTH_TOKEN` / `FLOWCATALYST_AUTH_TOKEN`
+is the interim until `/oauth/token` exists in Java).
+
+### `fcdev outbox` / `fcdev outbox create-table`
+
+The standalone outbox poller (the server's own processor pointed at an
+external application database and platform). `--env-file` (default `.env`)
+is loaded first and never overrides a set variable; then flag > env >
+default for `--source-db-url` (`FC_OUTBOX_SOURCE_DB_URL`, required),
+`--target-url` (`FC_OUTBOX_PLATFORM_URL`), `--auth-token`, `--client-id` /
+`--client-secret` (`FC_OUTBOX_CLIENT_*`, then `FLOWCATALYST_CLIENT_*`),
+`--token-url`, `--scope`, `--batch-size`, `--max-in-flight`,
+`--poll-interval-ms`. Client credentials win over the static token.
+
+`create-table --db-type postgres|mysql --db-url …` provisions
+`outbox_messages` (idempotent); `--db-type mongodb` exits 2 — the Mongo
+outbox backend is on the backlog by ruling.
+
+### `fcdev upgrade`
+
+Self-update from GitHub Releases (`FC_DEV_UPGRADE_REPO`, tags `fcdev/vX.Y.Z`),
+`--check` / `--force`. The Java binary ships two ways and the command
+detects which it is running as: a native binary
+(`fcdev-v<ver>-<os>-<arch>.tar.gz`, `.zip` on Windows) or an executable jar
+(`fcdev-v<ver>.jar`); any other launch (JBang, `mvn exec`, an IDE) refuses
+with a message. The `.sha256` sidecar is verified when published; the
+replace is atomic.
+
 ### `fcdev version` / `fcdev --version`
 
 `fcdev 0.8.23` — the version comes from `fcdev/src/main/resources/VERSION`
@@ -294,21 +353,17 @@ PostgreSQL cannot start in the environment.
   cache dir, different layout; both are safe to delete.
 - `--embedded-db-port 0` picks a free port (handy for tests); Go has no
   equivalent.
-- Not-yet-ported subcommands exit **2** with `fcdev <name>: not yet ported`;
-  their flags are accepted (so scripts fail loudly rather than mysteriously).
+- Every Go subcommand exists; the only exit-2 "not supported" path left is
+  `outbox create-table --db-type mongodb` (Mongo outbox on the backlog).
 
 ## 7. Not yet ported
 
-| subcommand | status |
+| what | status |
 |---|---|
-| `fcdev init` | stub — flags accepted, exits 2 |
+| `fcdev init` step 5 — the service account's OAuth client (`FLOWCATALYST_CLIENT_ID`/`_SECRET` in `.env`) | waits for the auth aggregate (Phase 3, `docs/auth-rulings.md`); `init` prints a deferral notice |
 | `fcdev outbox create-table --db-type mongodb` | not supported in the Java fcdev (Mongo outbox backend is on the backlog) — exits 2 |
-| MCP credential bootstrap (step 7) | `DevBootstrap.bootstrapMcpCredentials` logs and skips |
-
-`fcdev mcp`, `fcdev outbox` (+ `create-table` for postgres/mysql) and
-`fcdev upgrade` are real implementations now (`docs/spec/fcdev-commands.md`
-§2–§4).
+| MCP credential bootstrap (step 7) | `DevBootstrap.bootstrapMcpCredentials` logs and skips (needs the OAuth client, Phase 3) |
 
 Everything else — the server-side subsystems the toggles enable (router,
 stream, schedulers, outbox, MCP) — is whatever `flowcatalyst-server` has
-ported; `Server.start()` logs `… not yet ported; toggle ignored` for the rest.
+ported.

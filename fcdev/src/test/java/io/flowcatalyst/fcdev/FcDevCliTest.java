@@ -84,10 +84,10 @@ class FcDevCliTest {
     }
 
     @Test
-    void initRemainsStubbedAndExitsTwo() {
-        var r = run(Map.of(), "init", "--yes", "--admin-email", "a@b.c", "--code", "orders", "--name", "Orders");
-        assertThat(r.exit()).isEqualTo(2);
-        assertThat(r.err()).contains("not yet ported");
+    void initIsARealCommandNotAStub() {
+        // `--yes` with no `--code`: the spec's exact error, exit 1 — never the old stub's 2.
+        var r = run(Map.of(), "init", "--yes", "--database-url", "postgresql://x@127.0.0.1:1/y");
+        assertThat(r.exit()).isEqualTo(1);
     }
 
     /// `mcp`, `outbox` (+ `create-table`) and `upgrade` are real commands

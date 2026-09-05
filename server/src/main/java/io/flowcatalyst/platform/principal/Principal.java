@@ -334,6 +334,14 @@ public record Principal(
                 roles, assignedClients, accessibleApplicationIds, allApplications, externalIdentity, createdAt, updatedAt);
     }
 
+    /// Records the owning application of a service principal (spec:
+    /// `docs/spec/fcdev-commands.md` §1 step 5 — a service account's
+    /// principal is scoped to the application it was provisioned for).
+    public Principal withApplicationId(String newApplicationId) {
+        return new Principal(id, type, scope, clientId, newApplicationId, name, active, userIdentity, serviceAccountId,
+                roles, assignedClients, accessibleApplicationIds, allApplications, externalIdentity, createdAt, updatedAt);
+    }
+
     /// Replaces the display name; `null` or blank keeps the current one.
     public Principal withName(String newName) {
         if (newName == null || newName.isBlank()) return this;

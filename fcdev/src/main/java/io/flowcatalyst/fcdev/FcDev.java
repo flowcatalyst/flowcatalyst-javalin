@@ -23,8 +23,8 @@ import java.util.concurrent.Callable;
 /// fcdev mcp          run the FlowCatalyst MCP server (stdio by default; --http to listen)
 /// fcdev outbox       standalone outbox poller against an external app DB (+ create-table)
 /// fcdev upgrade      update fcdev to the latest GitHub release
+/// fcdev init         bootstrap a local environment (admin, default client, application, .env)
 /// fcdev version      print the version
-/// fcdev init         not yet ported (flags accepted, exit 2)
 /// ```
 ///
 /// The root command carries the `start` flag set so `fcdev --api-port 9000`
@@ -41,7 +41,7 @@ import java.util.concurrent.Callable;
         subcommands = {
                 StartCommand.Sub.class,
                 StopCommand.class,
-                NotPorted.Init.class,
+                InitCommand.class,
                 FreshCommand.class,
                 McpCommand.class,
                 OutboxCommand.class,
