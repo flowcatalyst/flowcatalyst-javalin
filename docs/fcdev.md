@@ -367,3 +367,72 @@ PostgreSQL cannot start in the environment.
 Everything else — the server-side subsystems the toggles enable (router,
 stream, schedulers, outbox, MCP) — is whatever `flowcatalyst-server` has
 ported.
+
+## 8. Native binary (GraalVM)
+
+`fcdev/pom.xml`'s `native` profile builds a real static binary — the same
+template as `server/pom.xml`'s (`docs/STATUS.md` "GraalVM native-image
+trial"), plus what only the dev monolith needs: picocli's own reflection
+generated at compile time, and zonky's embedded-postgres reachability
+metadata captured with the tracing agent (`fcdev/native-config/`, alongside
+`server/native-config/` — fcdev embeds the whole server, so both directories
+are loaded via `-H:ConfigurationFileDirectories`).
+
+```sh
+mise install java@oracle-graalvm-25.0.4.1     # once; the default JDK stays Temurin
+JAVA_HOME=$(mise where java@oracle-graalvm-25.0.4.1) mvn -q -DskipTests -pl fcdev -am -Pnative package
+fcdev/target/fcdev init --yes --admin-email … --admin-password … --code dev --name Dev \
+  --database-url postgresql://postgres:postgres@localhost:<port>/flowcatalyst
+```
+
+**Build (Apple silicon, this repo's trial, 2026-09-06):** ~1m30–2m for the
+native-image step (plus the ordinary reactor compile); `fcdev/target/fcdev`
+is a **~116 MB** (121,892,760 bytes) Mach-O arm64 executable, **~41 MB**
+gzipped — versus the shaded jar's ~63 MB. Verified with the binary (not the
+jar): a fresh `fcdev init` and `fcdev start` against a scratch
+`--embedded-db-path`, `GET /health` (200, stamped version), `GET
+/index.html` (the embedded SPA), `POST /auth/login` against the seeded dev
+admin (`admin@flowcatalyst.local` / `DevPassword123!`, 200, session cookie),
+`POST /api/event-types` with that session (201), and a graceful `fcdev
+stop`. Start-to-`/health` was ~2–3s (embedded Postgres binary already
+cached from a prior run).
+
+**picocli's own reflection** is generated at compile time, not
+hand-written: `info.picocli:picocli-codegen` runs as an annotation
+processor (`native` profile only, `default-compile` execution only — it has
+nothing to say about test sources, and applying it there turned "option not
+recognized by any processor" into a build failure under this repo's
+`-Werror`-equivalent `failOnWarning`) with `-Aproject=fcdev`, writing
+`META-INF/native-image/picocli-generated/fcdev/{reflect,resource,proxy}-config.json`
+into `fcdev/target/classes` — picked up by native-image automatically, the
+same mechanism third-party libraries use for their own reachability
+metadata.
+
+**Our own classes** (records, enums, Jackson-annotated DTOs, jOOQ record
+types) are registered by `io.flowcatalyst.tools.NativeReflectConfig`
+exactly as the server profile does, scanning `fcdev/target/classes`,
+`server/target/classes` and `usecase/target/classes` — the fcdev binary
+contains the whole server. `// SPEC?` the brief for this unit additionally
+named the `flowcatalyst-sdk` client module in that scan; fcdev has no
+dependency on it (confirmed with `mvn dependency:tree`) — it is not scanned
+here.
+
+**`fcdev/native-config/`** (see its own README) covers what's specific to
+the dev monolith in production: `com.mysql.cj.jdbc.*` (the outbox
+`create-table` JDBC driver), zonky's own resource lookups
+(`postgres-darwin-*.txz`, `org/postgresql/driverconfig.properties`), and
+route/DTO surface the server module's own capture run never exercised
+(login, event-types). Not captured: a genuinely first-time
+`MavenCentralPgBinaryResolver` download-and-extract — this machine's
+embedded-Postgres cache was already warm, and `DevPaths` does not let
+`--embedded-db-path` (or any env var) override the cache directory on
+macOS, only the data directory. If a real first install ever throws a
+"not registered for reflection" error during that download/verify/extract
+step, re-run the agent (its README has the exact command) after clearing
+`~/Library/Caches/flowcatalyst/embedded-pg`, merge, rebuild.
+
+No native tests run in Surefire — `mvn -q -pl fcdev -am test` (no profile)
+is the authority and stays green; CI's `native` job
+(`.github/workflows/ci.yml`) builds `-pl fcdev -am -Pnative` on every matrix
+OS and probes `fcdev/target/fcdev --version`, alongside the existing
+`fc-server` native build and `/health` probe.

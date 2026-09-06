@@ -180,4 +180,150 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      GraalVM native image for the developer binary — same template as
+      server/pom.xml's `native` profile (read that one first). fcdev embeds
+      the whole server, so it needs everything that profile needs PLUS its
+      own reflection (picocli's @Command classes) and reachability metadata
+      (zonky's embedded-postgres, which the server module never ships to
+      production — see the dependency comment above):
+
+        mise install java@oracle-graalvm-25.0.4.1
+        JAVA_HOME=$(mise where java@oracle-graalvm-25.0.4.1) mvn -q -DskipTests -pl fcdev -am -Pnative package
+        fcdev/target/fcdev
+    -->
+    <profile>
+      <id>native</id>
+      <dependencies>
+        <!-- Annotation processor only (provided scope, never shipped): generates
+             picocli's own reflect-config.json / native-image.properties for every
+             @Command class at compile time (-Aproject=fcdev below). Do not hand-write
+             picocli's reflection entries. -->
+        <dependency>
+          <groupId>info.picocli</groupId>
+          <artifactId>picocli-codegen</artifactId>
+          <version>${picocli.version}</version>
+          <scope>provided</scope>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <executions>
+              <!-- Scoped to main sources only (the implicit "default-compile" execution):
+                   test sources have no @Command classes, and picocli-codegen does not
+                   claim -Aproject, so javac's "option not recognized by any processor"
+                   warning becomes a hard error under this repo's failOnWarning — applying
+                   the processor to default-testCompile too failed the build on exactly
+                   that warning. -->
+              <execution>
+                <id>default-compile</id>
+                <configuration>
+                  <compilerArgs>
+                    <arg>-Xlint:all,-processing,-serial,-preview,-this-escape</arg>
+                    <arg>-parameters</arg>
+                    <arg>--enable-preview</arg>
+                    <arg>-Aproject=fcdev</arg>
+                  </compilerArgs>
+                  <!-- Explicit path rather than relying on the provided-scope dependency
+                       landing on javac's implicit processor path: some compiler-plugin
+                       versions only run annotation processing for paths named here. -->
+                  <annotationProcessorPaths>
+                    <path>
+                      <groupId>info.picocli</groupId>
+                      <artifactId>picocli-codegen</artifactId>
+                      <version>${picocli.version}</version>
+                    </path>
+                  </annotationProcessorPaths>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <!-- Reflection config for our own classes: records, enums, Jackson-annotated
+               DTOs and jOOQ record types only (io.flowcatalyst.tools.NativeReflectConfig,
+               server test scope — additionalClasspathElements puts it on the classpath
+               here since fcdev has no dependency on server's test-jar). Scans fcdev's own
+               classes plus the sibling modules the fcdev binary actually embeds
+               (server, usecase — fcdev has no dependency on the flowcatalyst-sdk client
+               module, so unlike the brief's literal list that one is not scanned; see
+               docs/fcdev.md "native binary" // SPEC?). -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>native-reflect-config</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>java</goal>
+                </goals>
+                <configuration>
+                  <mainClass>io.flowcatalyst.tools.NativeReflectConfig</mainClass>
+                  <classpathScope>test</classpathScope>
+                  <additionalClasspathElements>
+                    <additionalClasspathElement>${project.basedir}/../server/target/test-classes</additionalClasspathElement>
+                  </additionalClasspathElements>
+                  <arguments>
+                    <argument>${project.build.directory}/native-reflect-config.json</argument>
+                    <argument>${project.build.outputDirectory}</argument>
+                    <argument>${project.basedir}/../server/target/classes</argument>
+                    <argument>${project.basedir}/../usecase/target/classes</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <version>1.1.12</version>
+            <extensions>true</extensions>
+            <executions>
+              <execution>
+                <id>build-native</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>compile-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <imageName>fcdev</imageName>
+              <mainClass>io.flowcatalyst.fcdev.FcDev</mainClass>
+              <metadataRepository>
+                <enabled>true</enabled>
+              </metadataRepository>
+              <buildArgs>
+                <buildArg>--no-fallback</buildArg>
+                <buildArg>--enable-preview</buildArg>
+                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
+                <!-- Same discipline as server/pom.xml: name exactly our runtime resources,
+                     not a blanket `io/.*` that would sweep every .class file on the
+                     classpath into the image heap as bytes. fcdev adds its own two
+                     classpath-root resources (VERSION, fcdev-build.properties) to the
+                     server's list; everything else here is the embedded server. -->
+                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties</buildArg>
+                <buildArg>-Os</buildArg>
+                <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
+                <!-- Both directories: server/native-config covers the third-party reachability
+                     every server binary needs (jOOQ, Jackson, the Postgres driver, Jetty);
+                     fcdev/native-config adds what only the dev monolith uses in production
+                     (zonky's embedded-postgres — server never ships that to production, see
+                     the dependency comment above; mysql-connector-j for `fcdev outbox`). -->
+                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/../server/native-config,${project.basedir}/native-config</buildArg>
+                <!-- No jar manifest in a native image; Version reads this property instead. -->
+                <buildArg>-Dfc.version=${project.version}</buildArg>
+                <buildArg>--initialize-at-build-time=io.flowcatalyst.server.Version</buildArg>
+                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+              </buildArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

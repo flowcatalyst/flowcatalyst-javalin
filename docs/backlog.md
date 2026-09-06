@@ -804,3 +804,12 @@ application-chosen ids through. Fix together: validate the length per item
 (the column is a TSID-width string, so probably the column is the real bug —
 an audit entity id is whatever the application calls its entity) or widen
 the column in a migration on both sides. Owner: which.
+
+## Native fcdev: published docs are not served from the image (2026-09-06)
+
+The native `fcdev` logs `published docs under docs/published are unreadable;
+serving none` at start (`PublishedDocs` walks the resource directory as a
+filesystem path, which a native image's `resource:` URL is not) — every
+other surface verified. Same code path as the native fc-server; fix by
+listing the published docs through an index file at build time, as
+`IndexedMigrations` does for Flyway. Small; not blocking.

@@ -121,6 +121,19 @@ jobs:
         with:
           name: fc-server-native-${{ matrix.os }}
           path: server/target/fc-server
+      # fcdev embeds the whole server plus picocli and embedded-postgres (docs/fcdev.md
+      # "native binary"); a full start/init would need the embedded Postgres binary
+      # downloaded first, so --version is the CI-cheap proof the image links and runs.
+      - name: Build fcdev native binary
+        run: mvn -B -q -DskipTests -pl fcdev -am -Pnative package
+      - name: Size
+        run: ls -la fcdev/target/fcdev
+      - name: Probe fcdev --version
+        run: fcdev/target/fcdev --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fcdev-native-${{ matrix.os }}
+          path: fcdev/target/fcdev
 
   parity:
     name: Go/Java parity corpus
