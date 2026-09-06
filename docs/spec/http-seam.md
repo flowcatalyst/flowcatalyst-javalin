@@ -19,6 +19,7 @@ Package `io.flowcatalyst.http` (module `server`), no dependency on any web frame
 | `Group` | `enum { LOGIN, OIDC, DISPATCH, INGEST }` — the four tier-2 bulkhead groups (`docs/spec/admission.md`). A registration made through `Routes.in(Group)` carries the group; the adapter applies the budget. In Phase 1 the Javalin adapter records the group and applies nothing. |
 | `HttpException` | `RuntimeException` with `int status()` and a message; replaces `io.javalin.http.HttpResponseException`. Mapped by the adapter as §4 row 4. |
 | `HttpCookie` | `record HttpCookie(String name, String value, String path, int maxAge, boolean httpOnly, boolean secure, SameSite sameSite)` with `enum SameSite { STRICT, LAX, NONE }`; replaces `io.javalin.http.Cookie` + `SameSite`. `maxAge` −1 = session cookie, 0 = delete. |
+| `ExceptionMappers` | Registration + resolution of `exception` mappers shared by every adapter: `register(Class, ExceptionHandler)`, `Optional<ExceptionHandler> resolve(Throwable)` returning the mapper for the **most specific** registered supertype (exact class, then superclasses in order). Adapters route every throwable through it; specificity is therefore the seam's logic and §4 row 3's mutant lives here. |
 | `RouteRegistry` | Read side: `List<Registration> registrations()` where `record Registration(String method, String path, Group group)`; `before`/`after`/`exception` are not registrations. `LockfileCoverageTest` walks this instead of Javalin's `HandlerType`. Every `Routes` implementation is also a `RouteRegistry`. |
 
 ### `Exchange` — the 25 methods and their exact contracts
@@ -98,14 +99,18 @@ Javalin, **except** the four bootstrap sites (`server/Server.java`, `server/Metr
 | `ctx.method() == HandlerType.X` | `"X".equals(ctx.method())` |
 | `ctx.res().setContentType(null)` (`ResponseDefaults`) | delete the class; §2 rule 5 |
 | `cfg.routes.after(...)` in `ResponseDefaults.register(JavalinConfig)` | gone |
-| `new TestHttp(cfg -> X.register(cfg.routes, s))` | `new TestHttp(routes -> X.register(routes, s))` |
+| `new TestHttp(cfg -> X.register(cfg.routes, s))` | `TestHttp.routes(routes -> X.register(routes, s))` — a static factory, because a second lambda-taking constructor would be ambiguous; the old constructor is deleted in unit (e) |
 | `LockfileCoverageTest` walking `HandlerType` | walks `RouteRegistry.registrations()` |
 
 The Javalin adapter (`io.flowcatalyst.http.javalin`): `JavalinRoutes implements Routes,
 RouteRegistry` over a `JavalinDefaultRoutingApi`; `JavalinExchange implements Exchange`
 over a `Context`; the 404/405 envelope and the bodiless rule installed by the adapter's
 `install(JavalinConfig)`, which the four bootstrap sites call. Handlers are wrapped so
-an `HttpException` thrown anywhere reaches the mapper.
+an `HttpException` thrown anywhere reaches the mapper. The adapter registers **one**
+Javalin mapper for `Exception.class` that resolves through `ExceptionMappers`; Javalin's
+own `HttpResponseException` (its 404/405 for unmatched routes) is translated to
+`HttpException(status, message)` before resolution, so the platform's `HttpException`
+mapper produces the envelope and no handler code ever sees a Javalin type.
 
 ## 4. Behaviours that must not move (pinned by tests, break-it-on-purpose each)
 
