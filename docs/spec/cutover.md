@@ -148,6 +148,19 @@ print(sorted(n for n in names if n not in java))
 EOF
 ```
 
+## 4b. Sizing and the pool (owner rulings 2026-09-06, `docs/spec/admission.md`)
+
+- **Pods:** 1 CPU for small, low-throughput deployments; 2 CPUs for serious work,
+  then scale horizontally. With the pool gate the Java stack is at Go's throughput at
+  every size measured; 2 CPUs buys the tail, 4 buys nothing further.
+- **The pool is 32 connections per pod, fixed**, not derived from cores, and it is the
+  design's only number. It is Postgres's budget: `pods × 32 ≤ max_connections −
+  superuser_reserved_connections` (Postgres defaults 100 and 3). Past about three pods,
+  raise `max_connections` (each idle backend costs a few MB) or front Postgres with
+  PgBouncer in transaction mode (then `prepareThreshold=0` for pgjdbc).
+- **`FC_HTTP`**: `javalin` (today's default) or `vertx`; the rehearsal runs the corpus
+  under both until Phase 3 removes the flag.
+
 ## 5. Production, after the third rehearsal
 
 The same nine steps, the same checklist, the same timings expected. One
