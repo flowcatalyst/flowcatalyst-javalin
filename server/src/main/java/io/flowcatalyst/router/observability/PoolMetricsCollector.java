@@ -2,6 +2,7 @@ package io.flowcatalyst.router.observability;
 
 import io.flowcatalyst.router.pool.PoolMetrics;
 
+import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -121,6 +122,13 @@ public final class PoolMetricsCollector implements PoolMetrics {
     private final AtomicLong totalRateLimited = new AtomicLong();
     private final AtomicLong totalSuppressed = new AtomicLong();
 
+    /// `fc_router_mediation_http_version_total{version=...}`
+    /// (`docs/spec/router-h2.md` §3) — kept as two counters rather than a
+    /// map since [HttpClient.Version] only ever negotiates one of these two
+    /// over HTTP (never HTTP/3 for outbound mediation).
+    private final AtomicLong totalHttpVersion2 = new AtomicLong();
+    private final AtomicLong totalHttpVersion1_1 = new AtomicLong();
+
     /// Cumulative histogram counters — reporting-only, never read for a
     /// decision, so plain atomics rather than the lock below.
     private final AtomicLong durationCount = new AtomicLong();
@@ -176,6 +184,25 @@ public final class PoolMetricsCollector implements PoolMetrics {
     public void recordSuppressed() {
         totalSuppressed.incrementAndGet();
         recordEvent(suppressedEvents);
+    }
+
+    @Override
+    public void recordHttpVersion(HttpClient.Version version) {
+        if (version == HttpClient.Version.HTTP_2) {
+            totalHttpVersion2.incrementAndGet();
+        } else {
+            totalHttpVersion1_1.incrementAndGet();
+        }
+    }
+
+    /// The cumulative count for one label of
+    /// `fc_router_mediation_http_version_total` — a plain getter (like the
+    /// other totals, exposed through [#snapshot] for the dashboard-shaped
+    /// view) rather than folded into [Snapshot], since that record is
+    /// specifically the per-pool delivery-outcome shape and this counter is
+    /// router-wide, not per-pool (`docs/spec/router-h2.md` §3).
+    public long httpVersionCount(HttpClient.Version version) {
+        return version == HttpClient.Version.HTTP_2 ? totalHttpVersion2.get() : totalHttpVersion1_1.get();
     }
 
     private void recordEvent(Deque<Instant> events) {

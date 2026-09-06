@@ -49,9 +49,15 @@ public final class SubscriberDelivery {
 
     /// Redirects are NEVER followed (spec §5: `CheckRedirect` /
     /// `http.ErrUseLastResponse`) — a 3xx is classified as a permanent
-    /// failure by [#classify], never chased.
+    /// failure by [#classify], never chased. The 30s connect timeout is the
+    /// missing bound found in the 2026-09-06 review
+    /// (`docs/spec/router-h2.md` §3) — without it a target that accepts a
+    /// TCP connection but never completes the handshake could hang past
+    /// this client's per-attempt request timeout, which only bounds time
+    /// after a connection exists.
     public static HttpClient defaultClient() {
         return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
     }

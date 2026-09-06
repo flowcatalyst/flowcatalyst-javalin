@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.pool;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 
 /// What a pool records about its own deliveries.
@@ -30,6 +31,13 @@ public interface PoolMetrics {
     /// blind spot is the reason the question exists.
     void recordSuppressed();
 
+    /// The HTTP version a target actually negotiated for a delivered
+    /// request (`docs/spec/router-h2.md` §3) — feeds the
+    /// `fc_router_mediation_http_version_total{version="HTTP_2"|"HTTP_1_1"}`
+    /// counter, the only way a target still stuck on 1.1 is visible once h2
+    /// is preferred by default.
+    void recordHttpVersion(HttpClient.Version version);
+
     PoolMetrics NO_OP = new PoolMetrics() {
         @Override
         public void recordSuccess(Duration took) {
@@ -49,6 +57,10 @@ public interface PoolMetrics {
 
         @Override
         public void recordSuppressed() {
+        }
+
+        @Override
+        public void recordHttpVersion(HttpClient.Version version) {
         }
     };
 }

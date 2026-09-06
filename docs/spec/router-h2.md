@@ -39,3 +39,24 @@ negotiated version** so a target still on 1.1 is visible.
 | 2 | Deployed mode negotiates HTTP/2 against the same server, and 1.1 against a 1.1-only server (plain Jetty without h2c) | assert `HTTP_2` then `HTTP_1_1` | force `HTTP_1_1` → first fails |
 | 3 | The version counter increments once per delivered request with the right label | assert the counter value | never record → 0 |
 | 4 | `SubscriberDelivery`'s client has a connect timeout | `client.connectTimeout()` is present and 30 s | remove → empty |
+
+## 5. Landed 2026-09-06 and one finding for the owner (Q7)
+
+Implemented as §3 (`HttpMediator.defaultClient(boolean devMode)`, `PoolMetrics.recordHttpVersion`,
+router-wide `PoolMetricsCollector` for the mediator, `SubscriberDelivery` connect timeout; tests
+`HttpMediatorVersionTest`, four mutants killed). **Finding, verified with two standalone probes
+while writing the tests:** the JDK `java.net.http.HttpClient` never attempts the `Upgrade: h2c`
+dance for a request that carries a body, and it does not do h2c by prior knowledge at all. Every
+real mediation call is a POST with a body, so against a **cleartext** target the deployed client
+stays on HTTP/1.1 whatever `.version(HTTP_2)` says; only `https://` targets (ALPN during the
+handshake) actually get h2. The recorded version counter shows this honestly, but the
+"unbounded HTTP/1.1 connections" problem the ruling exists to solve is fixed only for TLS targets.
+
+**Q7 — how should cleartext router → platform mediation reach HTTP/2?** Options:
+(a) TLS between router and platform inside the cluster (ALPN, the JDK client as is);
+(b) a client that speaks h2c by prior knowledge for the router's mediation only — Jetty's
+`HttpClient` with `HttpClientTransportOverHTTP2` (`jetty-http2-client-transport` is already a
+server dependency) or OkHttp's `H2_PRIOR_KNOWLEDGE`; the Vert.x client is excluded by the plan;
+(c) accept 1.1 for cleartext and bound the connection count another way (the router's per-pool
+concurrency already bounds in-flight requests, and idle 1.1 connections are pooled by the JDK
+client with a default keep-alive of 20 min — measure how many a busy router actually holds).

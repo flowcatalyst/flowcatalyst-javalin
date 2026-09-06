@@ -48,22 +48,42 @@ public final class HttpMediator implements Mediator {
     private final BreakerRegistry breakers;
     private final Clock clock;
     private final Warnings warnings;
+    private final PoolMetrics metrics;
 
     public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers, Clock clock) {
-        this(client, requestTimeout, breakers, clock, Warnings.NO_OP);
+        this(client, requestTimeout, breakers, clock, Warnings.NO_OP, PoolMetrics.NO_OP);
     }
 
     public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers,
                         Clock clock, Warnings warnings) {
+        this(client, requestTimeout, breakers, clock, warnings, PoolMetrics.NO_OP);
+    }
+
+    /// `metrics` is where the negotiated HTTP version of every successful
+    /// send is recorded (`docs/spec/router-h2.md` §3) — router-wide, not
+    /// per-pool: this mediator is one shared instance built once in
+    /// `Router.start` and handed to every pool's factory closure before any
+    /// per-pool [PoolMetrics] exists, so there is no single pool's metrics
+    /// object to reuse here.
+    public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers,
+                        Clock clock, Warnings warnings, PoolMetrics metrics) {
         this.client = client;
         this.requestTimeout = requestTimeout;
         this.breakers = breakers;
         this.clock = clock;
         this.warnings = warnings;
+        this.metrics = metrics;
     }
 
-    public static HttpClient defaultClient() {
+    /// `devMode`: dev pins HTTP/1.1 so a hung/misbehaving local target is
+    /// obvious immediately; deployed prefers HTTP/2 so the router's
+    /// concurrency does not need an unbounded number of HTTP/1.1 connections
+    /// (`docs/spec/router-h2.md` §1/§3). Falls back to 1.1 when a deployed
+    /// target cannot negotiate h2 — the JDK client's own behaviour, not
+    /// something this method arranges.
+    public static HttpClient defaultClient(boolean devMode) {
         return HttpClient.newBuilder()
+                .version(devMode ? HttpClient.Version.HTTP_1_1 : HttpClient.Version.HTTP_2)
                 .connectTimeout(CONNECT_TIMEOUT)
                 // Redirects are NOT followed: 301/302/303 downgrade POST to
                 // GET and drop the body, which would deliver nothing and
@@ -111,6 +131,11 @@ public final class HttpMediator implements Mediator {
         }
         try {
             var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            // Recorded for every successful send regardless of status code —
+            // this is about which HTTP version the target actually spoke,
+            // not whether the delivery succeeded (`docs/spec/router-h2.md`
+            // §3).
+            metrics.recordHttpVersion(response.version());
             return classify(message, response);
         } catch (HttpTimeoutException e) {
             return new MediationOutcome.ErrorConnection(SERVER_ERROR_DELAY_SECONDS, "request timeout");

@@ -1096,5 +1096,9 @@ class PoolTest {
         public void recordSuppressed() {
             suppressed.incrementAndGet();
         }
+
+        @Override
+        public void recordHttpVersion(java.net.http.HttpClient.Version version) {
+        }
     }
 }

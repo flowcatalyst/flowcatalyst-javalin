@@ -59,6 +59,7 @@ public final class Router implements AutoCloseable {
     private final RouterManager manager;
     private final InFlightTracker tracker;
     private final BreakerRegistry breakers;
+    private final PoolMetricsCollector mediationMetrics;
     private final WarningStore warnings;
     private final Traffic traffic;
 
@@ -88,8 +89,10 @@ public final class Router implements AutoCloseable {
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
-                   Warnings notifier, LifecycleLoops housekeeping, BrokerStatsCache brokerStats) {
+                   Warnings notifier, LifecycleLoops housekeeping, BrokerStatsCache brokerStats,
+                   PoolMetricsCollector mediationMetrics) {
         this.server = server;
+        this.mediationMetrics = mediationMetrics;
         this.manager = manager;
         this.tracker = tracker;
         this.breakers = breakers;
@@ -128,6 +131,23 @@ public final class Router implements AutoCloseable {
         return brokerStats;
     }
 
+    /// The router-wide metrics of the outbound mediator: the negotiated HTTP
+    /// version per delivered request (`docs/spec/router-h2.md` §3), exposed as
+    /// `fc_router_mediation_http_version_total{version}`.
+    public io.prometheus.metrics.model.registry.MultiCollector mediationHttpVersionCollector() {
+        return () -> {
+            var b = io.prometheus.metrics.model.snapshots.CounterSnapshot.builder()
+                    .name("fc_router_mediation_http_version")
+                    .help("Outbound mediation requests by the HTTP version the target actually spoke.");
+            for (var v : new java.net.http.HttpClient.Version[] {java.net.http.HttpClient.Version.HTTP_2, java.net.http.HttpClient.Version.HTTP_1_1}) {
+                b.dataPoint(io.prometheus.metrics.model.snapshots.CounterSnapshot.CounterDataPointSnapshot.builder()
+                        .labels(io.prometheus.metrics.model.snapshots.Labels.of("version", v.name()))
+                        .value(mediationMetrics.httpVersionCount(v)).build());
+            }
+            return io.prometheus.metrics.model.snapshots.MetricSnapshots.builder().metricSnapshot(b.build()).build();
+        };
+    }
+
     public Map<String, PoolMetricsCollector> poolMetrics() {
         return Map.copyOf(poolMetrics);
     }
@@ -163,9 +183,14 @@ public final class Router implements AutoCloseable {
         var warningSink = Warnings.tee(warnings, notifier);
         var tracker = new InFlightTracker(clock);
         var breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, clock);
-        var mediator = new HttpMediator(HttpMediator.defaultClient(),
+        // Router-wide, not per-pool: the mediator is one shared instance
+        // built here before any pool (and its own [PoolMetricsCollector])
+        // exists, so the HTTP-version counter it feeds lives on its own
+        // collector rather than any individual pool's.
+        var mediationMetrics = new PoolMetricsCollector(clock);
+        var mediator = new HttpMediator(HttpMediator.defaultClient(env.routerDevMode()),
                 env.routerDevMode() ? HttpMediator.DEV_TIMEOUT : HttpMediator.PRODUCTION_TIMEOUT,
-                breakers, clock, warningSink);
+                breakers, clock, warningSink, mediationMetrics);
 
         // A-01 gate (`docs/spec/router-completion.md` §2 ruling 3): a
         // platform URL is the only thing that turns this on, everywhere —
@@ -244,7 +269,7 @@ public final class Router implements AutoCloseable {
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
-                redisClient, metrics, notifier, housekeeping, brokerStats);
+                redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics);
     }
 
     /// The A-01 gate: [BlockedSiblings.Settle] iff a platform base URL is

@@ -73,7 +73,7 @@ class MediationConformanceTest {
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
         breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, FIXED);
-        mediator = new HttpMediator(HttpMediator.defaultClient(), Duration.ofSeconds(5), breakers, FIXED,
+        mediator = new HttpMediator(HttpMediator.defaultClient(true), Duration.ofSeconds(5), breakers, FIXED,
                 (severity, category, text) -> raised.add(severity + "/" + category));
     }
 
