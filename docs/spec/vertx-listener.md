@@ -100,3 +100,25 @@ runtime comparison of plan §8 run and recorded.
   reaches the process there anyway); (b) measure the Netty QUIC native the way Jetty's
   quiche binding was measured and decide on evidence. Until ruled, `FC_HTTP=javalin`
   keeps today's HTTP/3.
+
+## 4. Landed 2026-09-06 (branch `vertx-listener`)
+
+`io.flowcatalyst.http.vertx` (`VertxExchange`, `VertxRoutes`, `VertxListener` with
+`prepare()`/`listen()`), `FC_HTTP` in `Env`, `Server.ApiListener`, `TestHttp.Adapter`,
+`SeamContract` abstract with `JavalinSeamContractTest` and `VertxSeamContractTest` (18 rows
+each), `VertxListenerTest` (rows 2–6; mutants killed: interrupt-only deadline, no interrupt
+fallback, h2c off, `close()` for `shutdown()`, body limit raised), `NoFrameworkLeakTest` for
+`io.vertx`. Full server suite green under `FC_HTTP=vertx` (3594/0) and `javalin`.
+
+Four differences the first full Vert.x run exposed and the adapter now matches: JSON bodies are
+newline-terminated like `JavalinJsonMapper` (and Go); `Set-Cookie` is hand-encoded because
+Netty's encoder writes `HTTPOnly`; the 1 MB body cap is enforced lazily on read so a handler's
+own `Content-Length` check answers its 400 first (`SettledApi`); a method miss falls through to
+later routes so the SPA's GET catch-all still wins.
+
+Deadline mechanism as measured: `cancelQuery()` first, then `interrupt()` only if the chain is
+still running 250 ms later — an immediate interrupt races the cancel and closes the socket.
+
+**Not in this unit:** the TLS listener on Vert.x (§1; `FC_HTTP=javalin` keeps it), HTTP/3
+(Q6), Metrics and OutboxAdmin listeners (still Javalin), the native image on Vert.x, and the
+plan §8 runtime comparison against Go.

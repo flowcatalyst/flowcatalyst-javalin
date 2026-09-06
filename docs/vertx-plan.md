@@ -263,7 +263,7 @@ same phase (`docs/spec/admission.md` §8).
 3. Orchestrator audit: no `io.javalin` import outside `io.flowcatalyst.http.javalin`
    and the four bootstrap sites (enforce with an ArchUnit-style test).
 
-### Phase 2 — the Vert.x listener (orchestrator spec + reference unit; Sonnet the rest)
+### Phase 2 — the Vert.x listener (orchestrator spec + reference unit; Sonnet the rest) — **reference unit landed 2026-09-06** (`docs/spec/vertx-listener.md` §4; suite green under both `FC_HTTP` values; TLS/HTTP-3/native/runtime comparison outstanding)
 
 1. Spec `docs/spec/vertx-listener.md`: `Vertx` instance, **one event-loop verticle**
    (§3), `HttpServer` options (h2c on, ALPN off unless TLS in-process, idle/keep-alive

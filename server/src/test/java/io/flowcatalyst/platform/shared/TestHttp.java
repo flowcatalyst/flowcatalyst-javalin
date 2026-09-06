@@ -5,6 +5,7 @@ import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.javalin.JavalinAdapter;
 import io.flowcatalyst.http.javalin.JavalinJsonMapper;
+import io.flowcatalyst.http.vertx.VertxListener;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
@@ -23,7 +24,21 @@ import java.util.function.Consumer;
 /// mapper, plus a tiny JDK `HttpClient` wrapper.
 public final class TestHttp implements AutoCloseable {
 
+    /// Which seam adapter the harness stands up. The default comes from the
+    /// `fc.http` system property, else the `FC_HTTP` environment variable,
+    /// else Javalin — so the whole suite runs against either listener
+    /// (`docs/spec/vertx-listener.md` §1 "Selection").
+    public enum Adapter {
+        JAVALIN, VERTX;
+
+        public static Adapter fromEnvironment() {
+            String v = System.getProperty("fc.http", System.getenv("FC_HTTP"));
+            return v != null && v.trim().equalsIgnoreCase("vertx") ? VERTX : JAVALIN;
+        }
+    }
+
     private final Javalin app;
+    private final VertxListener vertx;
     private final HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
     /// The registry every instance is built through (see [#routes(Consumer)]).
@@ -61,13 +76,27 @@ public final class TestHttp implements AutoCloseable {
     /// — the name that mattered when a second, now-deleted constructor
     /// needed disambiguating.
     public static TestHttp routes(Consumer<Routes> configure) {
-        return new TestHttp(Budgets.derived(), configure);
+        return routes(Adapter.fromEnvironment(), Budgets.derived(), configure);
+    }
+
+    /// Forces one adapter, whatever the environment says.
+    public static TestHttp routes(Adapter adapter, Budgets budgets, Consumer<Routes> configure) {
+        return adapter == Adapter.VERTX ? new TestHttp(budgets, configure, adapter) : new TestHttp(budgets, configure);
+    }
+
+    private TestHttp(Budgets budgets, Consumer<Routes> configure, Adapter vertxMarker) {
+        this.app = null;
+        this.vertx = VertxListener.start(VertxListener.Options.local(0, budgets), routes -> {
+            routes.before(SCHEMA_VALIDATION);
+            configure.accept(routes);
+        });
+        this.registry = vertx.registry();
     }
 
     /// Same, with explicit tier-2 budgets (`docs/spec/admission.md` §2) so a
     /// test can pin the bulkhead with a budget of one.
     public static TestHttp routes(Budgets budgets, Consumer<Routes> configure) {
-        return new TestHttp(budgets, configure);
+        return routes(Adapter.fromEnvironment(), budgets, configure);
     }
 
     private TestHttp(Budgets budgets, Consumer<Routes> configure) {
@@ -101,6 +130,7 @@ public final class TestHttp implements AutoCloseable {
             throw last;
         }
         this.app = started;
+        this.vertx = null;
         this.registry = registryHolder[0];
     }
 
@@ -119,7 +149,7 @@ public final class TestHttp implements AutoCloseable {
     }
 
     public int port() {
-        return app.port();
+        return vertx != null ? vertx.port() : app.port();
     }
 
     /// Blocks until a request to `probePath` actually comes back, then returns.
@@ -246,7 +276,8 @@ public final class TestHttp implements AutoCloseable {
     /// in this class.
     @Override
     public void close() {
-        app.stop();
+        if (vertx != null) vertx.close();
+        else app.stop();
         client.close();
     }
 }

@@ -88,7 +88,6 @@ public final class JavalinJsonMapper implements JsonMapper {
     }
 
     private static UseCaseException invalidJson(JacksonException e) {
-        var msg = e.getOriginalMessage();
-        return UseCaseException.validation("INVALID_JSON", msg == null || msg.isBlank() ? "malformed request body" : msg);
+        return Json.invalidJson(e);
     }
 }

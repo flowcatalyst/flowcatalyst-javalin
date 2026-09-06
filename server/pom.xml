@@ -27,6 +27,25 @@
       <groupId>io.javalin</groupId>
       <artifactId>javalin</artifactId>
     </dependency>
+    <!-- The Vert.x listener (docs/spec/vertx-listener.md): core + web only, ever. -->
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-codegen-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-codegen-json</artifactId>
+      <scope>provided</scope>
+    </dependency>
 
     <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN) and
          HTTP/3 (QUIC) on the server listeners: docs/spec/http-transport.md.

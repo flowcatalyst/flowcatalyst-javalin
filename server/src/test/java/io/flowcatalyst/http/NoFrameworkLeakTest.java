@@ -80,4 +80,32 @@ class NoFrameworkLeakTest {
         }
         return false;
     }
+
+    private static final Pattern VERTX_IMPORT = Pattern.compile("^import io\\.vertx\\.", Pattern.MULTILINE);
+
+    /// `docs/spec/vertx-listener.md` §1: only the Vert.x adapter package
+    /// imports Vert.x. The bootstrap sites go through `VertxListener`, the
+    /// harness through the same class — neither sees an `io.vertx` type.
+    @Test
+    void noFileOutsideTheVertxAdapterImportsVertx() throws IOException {
+        List<String> offenders = new ArrayList<>();
+        for (Path root : List.of(Path.of("src/main/java"), Path.of("src/test/java"))) {
+            if (!Files.isDirectory(root)) continue;
+            try (Stream<Path> files = Files.walk(root)) {
+                files.filter(p -> p.toString().endsWith(".java")).forEach(p -> {
+                    String rel = root.relativize(p).toString().replace('\\', '/');
+                    if (rel.startsWith("io/flowcatalyst/http/vertx/")) return;
+                    if (rel.equals("io/flowcatalyst/http/NoFrameworkLeakTest.java")) return;
+                    String content;
+                    try {
+                        content = Files.readString(p);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                    if (VERTX_IMPORT.matcher(content).find()) offenders.add(root + "/" + rel);
+                });
+            }
+        }
+        org.assertj.core.api.Assertions.assertThat(offenders).as("files importing io.vertx outside io.flowcatalyst.http.vertx").isEmpty();
+    }
 }

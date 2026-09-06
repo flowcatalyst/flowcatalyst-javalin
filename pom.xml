@@ -29,6 +29,7 @@
          com.fasterxml.jackson.core coordinate, which Jackson 3 never renamed. -->
     <jackson.version>3.1.5</jackson.version>
     <javalin.version>7.2.3</javalin.version>
+    <vertx.version>5.1.7</vertx.version>
     <!-- The exact Jetty version Javalin 7.2.3 brings (javalin-parent-7.2.3.pom
          line ~105); pinned here too so the HTTP/2 and HTTP/3 artifacts below
          cannot drift from what Javalin's own jetty-server is. -->
@@ -136,6 +137,28 @@
         <groupId>io.javalin</groupId>
         <artifactId>javalin</artifactId>
         <version>${javalin.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-core</artifactId>
+        <version>${vertx.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-web</artifactId>
+        <version>${vertx.version}</version>
+      </dependency>
+      <dependency>
+        <!-- annotations only (@GenIgnore etc.) referenced by vertx-core class files;
+             provided scope so javac finds them under -Werror and nothing ships -->
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-codegen-api</artifactId>
+        <version>${vertx.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-codegen-json</artifactId>
+        <version>${vertx.version}</version>
       </dependency>
 
       <!-- Database -->

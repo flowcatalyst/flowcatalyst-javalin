@@ -2,8 +2,6 @@ package io.flowcatalyst.http;
 
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -22,9 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `TestHttp.routes(...)`, the JDK `HttpClient`, no shortcuts through the
 /// adapter's internals. The same class pins the Vert.x adapter in Phase 2
 /// unchanged.
-class SeamContractTest {
+abstract class SeamContract {
 
-    private static TestHttp app;
+    protected static TestHttp app;
 
     /// Records the byte payload streamed by `/seam/stream` and whether it
     /// closed, for row 7.
@@ -35,9 +33,8 @@ class SeamContractTest {
     /// handler and the after filter on `/seam/thread`, for row 8.
     private static final List<Thread> THREADS = new CopyOnWriteArrayList<>();
 
-    @BeforeAll
-    static void start() {
-        app = TestHttp.routes(routes -> {
+    static void start(TestHttp.Adapter adapter) {
+        app = TestHttp.routes(adapter, Budgets.derived(), routes -> {
             // The three exception mappers a real bootstrap site would
             // install through `HttpError` — reproduced here as a fixture so
             // this test does not depend on that (out-of-scope, unedited)
@@ -102,7 +99,6 @@ class SeamContractTest {
         });
     }
 
-    @AfterAll
     static void stop() {
         app.close();
     }

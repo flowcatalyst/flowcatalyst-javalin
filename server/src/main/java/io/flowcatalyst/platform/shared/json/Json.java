@@ -85,4 +85,12 @@ public final class Json {
     public static <T> T read(String json, Class<T> type) throws JacksonException {
         return MAPPER.readValue(json, type);
     }
+
+    /// The 400 a malformed request body maps to, shared by every listener
+    /// adapter so the envelope is identical (`docs/spec/http-seam.md` §1).
+    public static io.flowcatalyst.sdk.usecase.UseCaseException invalidJson(tools.jackson.core.JacksonException e) {
+        var msg = e.getOriginalMessage();
+        return io.flowcatalyst.sdk.usecase.UseCaseException.validation("INVALID_JSON",
+                msg == null || msg.isBlank() ? "malformed request body" : msg);
+    }
 }

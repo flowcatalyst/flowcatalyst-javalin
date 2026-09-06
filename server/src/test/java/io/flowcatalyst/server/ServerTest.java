@@ -27,6 +27,7 @@ class ServerTest {
     static void start() {
         Env env = Env.load(Map.of(
                 "FC_API_PORT", "0",
+                "FC_HTTP", System.getProperty("fc.http", System.getenv().getOrDefault("FC_HTTP", "javalin")),
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
@@ -101,6 +102,7 @@ class ServerTest {
     void stopClosesTheDispatchJobReaper() {
         Env env = Env.load(Map.of(
                 "FC_API_PORT", "0",
+                "FC_HTTP", System.getProperty("fc.http", System.getenv().getOrDefault("FC_HTTP", "javalin")),
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true"));

@@ -6,8 +6,14 @@ import io.flowcatalyst.platform.scheduler.NoopPublisher;
 import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
 import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
+import io.flowcatalyst.platform.mail.MailSender;
+import io.flowcatalyst.platform.mail.MailService;
 import io.flowcatalyst.platform.purger.Purger;
+import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
+import io.flowcatalyst.http.Routes;
+import io.flowcatalyst.http.vertx.VertxListener;
+import java.util.function.Consumer;
 import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
@@ -130,12 +136,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
     /// A started server: both listeners bound, subsystems running.
     public static final class Running {
-        private final Javalin api;
+        private final ApiListener api;
         private final Metrics.Running metrics;
         private final Router router;
         private final DispatchScheduler scheduler;
         private final AutoCloseable schedulerLeaderResource;
         private final DispatchJobReaper dispatchJobReaper;
+        private final MailSender mailSender;
         private final OutboxProcessor outboxProcessor;
         private final Javalin outboxAdminApi;
         private final AutoCloseable outboxLeaderResource;
@@ -147,8 +154,8 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final McpServer.Running mcp;
         private final CountDownLatch stopped = new CountDownLatch(1);
 
-        private Running(Javalin api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
-                         DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
+        private Running(ApiListener api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
+                         MailSender mailSender, DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
                          OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
                          StreamProcessor streamProcessor, AutoCloseable streamLeaderResource,
                          ScheduledJobScheduler scheduledJobScheduler, AutoCloseable scheduledJobLeaderResource,
@@ -157,6 +164,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             this.metrics = metrics;
             this.router = router;
             this.dispatchJobReaper = dispatchJobReaper;
+            this.mailSender = mailSender;
             this.scheduler = scheduler;
             this.schedulerLeaderResource = schedulerLeaderResource;
             this.outboxProcessor = outboxProcessor;
@@ -198,6 +206,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
                 if (dispatchJobReaper != null) {
                     dispatchJobReaper.close();
+                }
+                // The mail sender stops once the API stops accepting; an enqueued row
+                // waits for the next start (mail-outbox spec §2).
+                if (mailSender != null) {
+                    mailSender.close();
                 }
                 if (scheduler != null) {
                     scheduler.close();
@@ -289,7 +302,6 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
 
         var built = buildApiAndReaper(router);
-        Javalin api = built.app();
 
         // ── background subsystems ───────────────────────────────────────────
         McpServer.Running mcp = null;
@@ -386,7 +398,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         // pool exists at all — the statements are idempotent/`IF EXISTS`, so a
         // duplicate pass from a second instance is harmless.
         Purger purger = dbPool != null ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system())) : null;
+        // Mail (mail-outbox spec §2): Platform.register wired Notifications/Mfa/ResetLinks
+        // to the OutboxMailService; this is the other half, the background sender that
+        // delivers through the SMTP-or-logging transport. Platform mode only.
+        MailSender mailSender = null;
+        if (mode instanceof Mode.Platform(var pool)) {
+            mailSender = MailSender.start(pool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
+                    MailSender.DEFAULT_INTERVAL);
+            registry.register(mailSender.collector());
+        }
         registry.register(AuthAlarms.collector());
+        if (router != null) registry.register(router.mediationHttpVersionCollector());
         switch (mode) {
             case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
             case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
@@ -396,9 +418,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
-        api.start(env.apiPort());
-        LOG.info("api server listening addr=:{}", env.apiPort());
-        return new Running(api, metrics, router, built.dispatchJobReaper(), scheduler, schedulerLeaderResource,
+        ApiListener api = built.starter().start(env.apiPort());
+        LOG.info("api server listening addr=:{} listener={}", env.apiPort(), env.httpListener());
+        return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
     }
@@ -529,29 +551,24 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// [RouteRegistry] [io.flowcatalyst.http.javalin.JavalinAdapter#install]
     /// hands back, so [io.flowcatalyst.server.LockfileCoverageTest] can
     /// enumerate registrations without walking Javalin internals.
-    record ApiAndReaper(Javalin app, RouteRegistry registry, DispatchJobReaper dispatchJobReaper) {
+    /// The bound API listener, whichever implementation `FC_HTTP` chose
+    /// (`docs/spec/vertx-listener.md` §1 "Selection").
+    interface ApiListener {
+        int port();
+
+        void stop();
+    }
+
+    interface ApiStarter {
+        ApiListener start(int port);
+    }
+
+    record ApiAndReaper(ApiStarter starter, RouteRegistry registry, DispatchJobReaper dispatchJobReaper) {
     }
 
     ApiAndReaper buildApiAndReaper(Router router) {
         DispatchJobReaper[] reaperHolder = new DispatchJobReaper[1];
-        RouteRegistry[] registryHolder = new RouteRegistry[1];
-        Javalin api = Javalin.create(cfg -> {
-            cfg.startup.showJavalinBanner = false;
-            cfg.concurrency.useVirtualThreads = true;
-            cfg.jsonMapper(new JavalinJsonMapper());
-            cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
-            // h2c on the plain API port, plus TLS+ALPN (h2) and HTTP/3 when
-            // configured (docs/spec/http-transport.md §1). Adding a connector
-            // here is what makes Javalin skip the default one it would
-            // otherwise build from cfg.jetty.host/port (Listeners' javadoc).
-            io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
-
-            // Installs the seam adapter: the 404/405 envelope (formerly
-            // cfg.http.prefer405over404 = false, set here directly) and the
-            // bodiless-response rule (formerly ResponseDefaults, now deleted)
-            // both live in the adapter (docs/spec/http-seam.md §2).
-            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
-            registryHolder[0] = routes;
+        Consumer<Routes> configure = routes -> {
 
             routes.get("/health", health(mode)::handle);
 
@@ -587,8 +604,56 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                     // unknown paths get the 404 envelope
                 }
             }
-        });
-        return new ApiAndReaper(api, registryHolder[0], reaperHolder[0]);
+        };
+        return switch (env.httpListener()) {
+            case VERTX -> {
+                var prepared = VertxListener.prepare(new VertxListener.Options("0.0.0.0", env.apiPort(), true, Budgets.derived(),
+                        java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE), configure);
+                ApiStarter starter = port -> {
+                    var listener = prepared.listen();
+                    return new ApiListener() {
+                        @Override
+                        public int port() {
+                            return listener.port();
+                        }
+
+                        @Override
+                        public void stop() {
+                            listener.close();
+                        }
+                    };
+                };
+                yield new ApiAndReaper(starter, prepared.registry(), reaperHolder[0]);
+            }
+            case JAVALIN -> {
+                RouteRegistry[] registryHolder = new RouteRegistry[1];
+                Javalin api = Javalin.create(cfg -> {
+                    cfg.startup.showJavalinBanner = false;
+                    cfg.concurrency.useVirtualThreads = true;
+                    cfg.jsonMapper(new JavalinJsonMapper());
+                    cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
+                    io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
+                    var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
+                    registryHolder[0] = routes;
+                    configure.accept(routes);
+                });
+                ApiStarter starter = port -> {
+                    api.start(port);
+                    return new ApiListener() {
+                        @Override
+                        public int port() {
+                            return api.port();
+                        }
+
+                        @Override
+                        public void stop() {
+                            api.stop();
+                        }
+                    };
+                };
+                yield new ApiAndReaper(starter, registryHolder[0], reaperHolder[0]);
+            }
+        };
     }
 
     private SigningKeys loadSigningKeys() {
