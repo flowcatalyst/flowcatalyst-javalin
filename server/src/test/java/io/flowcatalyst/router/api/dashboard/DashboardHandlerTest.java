@@ -21,7 +21,7 @@ class DashboardHandlerTest {
 
     @BeforeAll
     static void start() {
-        prefixed = new TestHttp(cfg -> DashboardHandler.register(cfg.routes, "/router"));
+        prefixed = TestHttp.routes(routes -> DashboardHandler.register(routes, "/router"));
     }
 
     @AfterAll
@@ -50,7 +50,7 @@ class DashboardHandlerTest {
     @Test
     @DisplayName("a root mount substitutes an empty API base")
     void rootMountSubstitutesEmptyPrefix() {
-        try (var root = new TestHttp(cfg -> DashboardHandler.register(cfg.routes, null))) {
+        try (var root = TestHttp.routes(routes -> DashboardHandler.register(routes, null))) {
             var r = root.get("/monitoring/dashboard");
             assertThat(r.statusCode()).isEqualTo(200);
             assertThat(r.body()).contains("window.__API_BASE__ = \"\";");

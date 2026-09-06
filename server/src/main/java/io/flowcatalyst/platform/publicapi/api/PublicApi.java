@@ -2,8 +2,8 @@ package io.flowcatalyst.platform.publicapi.api;
 
 import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.LoginTheme;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Objects;
 
@@ -36,7 +36,7 @@ public final class PublicApi {
 
     /// Mounts the routes. Callers register them on the same router as the
     /// platform API; the authenticator skips them by path, not by handler.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/public/platform", ctx -> platform(ctx, s));
         // Same document on the legacy path the SPA's platformConfig store fetches pre-login (spec §9 Q1).
         routes.get("/api/config/platform", ctx -> platform(ctx, s));
@@ -45,12 +45,12 @@ public final class PublicApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void platform(Context ctx, State s) {
+    private static void platform(Exchange ctx, State s) {
         ctx.json(PlatformResponse.of(s.branding().platformName()));
     }
 
     /// `clientId` is accepted and ignored — the theme is global (spec §5, open question 2).
-    private static void loginTheme(Context ctx, State s) {
+    private static void loginTheme(Exchange ctx, State s) {
         ctx.json(LoginThemeResponse.from(s.branding().loginTheme()));
     }
 

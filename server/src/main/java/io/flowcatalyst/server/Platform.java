@@ -145,9 +145,9 @@ import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
 import io.flowcatalyst.platform.shared.openapi.SpecRoutes;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -197,7 +197,7 @@ public final class Platform {
     /// dispatch-job reaper (dispatch-seam spec §7) so the caller can stop it —
     /// `register` is the only place one gets constructed, so it is the only
     /// place that can hand the handle back.
-    public DispatchJobReaper register(JavalinDefaultRoutingApi routes) {
+    public DispatchJobReaper register(Routes routes) {
         // ── cross-cutting ────────────────────────────────────────────────
         CorrelationId.install(routes);
         HttpError.install(routes);
@@ -568,14 +568,14 @@ public final class Platform {
         };
     }
 
-    static boolean isPlatformPath(Context ctx) {
+    static boolean isPlatformPath(Exchange ctx) {
         String p = ctx.path();
         return p.startsWith("/api/") || p.startsWith("/auth/") || p.startsWith("/oauth/")
                 || p.startsWith("/bff/") || p.startsWith("/portal/") || p.startsWith("/.well-known/");
     }
 
     /// `registerPublicRoutes` + `registerSpecRoutes` in Go.
-    static boolean isPublicPath(Context ctx) {
+    static boolean isPublicPath(Exchange ctx) {
         String p = ctx.path();
         return p.equals("/auth/login") || p.equals("/auth/logout") || p.equals("/auth/check-domain")
                 || p.equals("/auth/refresh")

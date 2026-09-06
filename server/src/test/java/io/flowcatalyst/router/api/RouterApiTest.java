@@ -129,10 +129,10 @@ class RouterApiTest {
 
         var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
                 "test-version", "/router", null, Map.of("POOL-A", poolAMetrics), traffic, brokerStats);
-        http = new TestHttp(cfg -> RouterApi.register(cfg.routes, state));
+        http = TestHttp.routes(routes -> RouterApi.register(routes, state));
 
         var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null, null, null);
-        bare = new TestHttp(cfg -> RouterApi.register(cfg.routes, bareState));
+        bare = TestHttp.routes(routes -> RouterApi.register(routes, bareState));
     }
 
     @AfterAll
@@ -191,7 +191,7 @@ class RouterApiTest {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             assertThat(isolatedHttp.get("/router/health/ready").statusCode())
                     .as("healthy with no warnings").isEqualTo(200);
             assertThat(json(isolatedHttp.get("/router/health/ready")).get("status").asText()).isEqualTo("READY");
@@ -223,7 +223,7 @@ class RouterApiTest {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             for (int i = 0; i < 6; i++) {
                 isolated.raise(Warnings.Severity.WARNING, "ROUTING", "w" + i + "-" + tag());
             }
@@ -257,7 +257,7 @@ class RouterApiTest {
 
             var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
                     election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
-            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
                 var r = isolatedHttp.get("/router/health/ready");
                 assertThat(r.statusCode()).isEqualTo(503);
                 assertThat(json(r).get("status").asText()).contains("q://stall").contains("not polling");
@@ -287,7 +287,7 @@ class RouterApiTest {
 
             var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
                     election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
-            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
                 var r = isolatedHttp.get("/router/health/ready");
                 assertThat(r.statusCode()).isEqualTo(200);
                 assertThat(json(r).get("status").asText()).isEqualTo("READY");
@@ -322,7 +322,7 @@ class RouterApiTest {
 
             var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
                     election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
-            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
                 var r = isolatedHttp.get("/router/health/ready");
                 assertThat(r.statusCode()).isEqualTo(200);
                 assertThat(json(r).get("status").asText()).isEqualTo("READY");
@@ -376,7 +376,7 @@ class RouterApiTest {
         try {
             var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null,
                     election, electionConfig, "v", "/router", null, null, null, null, routerServer);
-            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
                 var r = isolatedHttp.post("/router/config/reload", null);
                 assertThat(r.statusCode()).isEqualTo(409);
                 assertThat(json(r).get("error").asText()).isEqualTo("not leader");
@@ -402,7 +402,7 @@ class RouterApiTest {
         try {
             var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null,
                     election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
-            try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
                 var r = isolatedHttp.post("/router/config/reload", null);
                 assertThat(r.statusCode()).isEqualTo(200);
                 var body = json(r);
@@ -462,7 +462,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, isolatedWarnings, null, null, null,
                 "v", "/router", null, Map.of("M-POOL", metricsCollector), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var body = json(isolatedHttp.get("/router/monitoring"));
             assertThat(body.has("pool_stats")).as("snake outer key").isTrue();
             assertThat(body.has("poolStats")).as("must not be camelCase").isFalse();
@@ -509,7 +509,7 @@ class RouterApiTest {
         isolatedManager.registerPool("HELD-POOL", held);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             // Staggered on purpose. Submitted together they enter their
             // workers in the same millisecond, their elapsed times tie, and
             // the ordering assertion below passes whether or not anything
@@ -661,7 +661,7 @@ class RouterApiTest {
         isolatedManager.registerPool("UNLIMITED-POOL", unlimitedPool);
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var message = new Message("rl-" + tag(), "RL-POOL", null, null, null, "https://example.invalid/hook",
                     "", false, null);
             limitedPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
@@ -708,7 +708,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(clock), null, null, null,
                 "v", "/router", null, Map.of("W-POOL", metrics), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var fiveMin = json(isolatedHttp.get("/router/monitoring/pool-stats?time_window=5min")).get("W-POOL");
             assertThat(fiveMin.get("totalProcessed").asLong()).as("only the sample inside the 5min window")
                     .isEqualTo(1);
@@ -748,7 +748,7 @@ class RouterApiTest {
         isolatedManager.registerPool("BUSY-POOL", busyPool);
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var message = new Message("busy-" + tag(), "BUSY-POOL", null, null, null,
                     "https://example.invalid/hook", "", false, null);
             busyPool.submit(QueuedMessage.of(message, "", "rh", "queue-1"));
@@ -850,7 +850,7 @@ class RouterApiTest {
         var isolated = new WarningStore(CLOCK);
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "a");
             isolated.raise(Warnings.Severity.INFO, "RESOURCE", "b");
 
@@ -868,7 +868,7 @@ class RouterApiTest {
         var isolated = new WarningStore(clock);
         var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
                 "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-one");
             clock.advance(Duration.ofMinutes(31));
             isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-one");
@@ -961,7 +961,7 @@ class RouterApiTest {
         isolatedBreakers.get("https://b.example").recordFailure();
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), isolatedBreakers,
                 null, null, "v", "/router", null, null, null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var r = isolatedHttp.post("/router/monitoring/circuit-breakers/reset-all", null);
             assertThat(r.statusCode()).isEqualTo(200);
             assertThat(json(r).get("reset").asInt()).isEqualTo(2);
@@ -1081,7 +1081,7 @@ class RouterApiTest {
         isolatedManager.registerPool("BLOCKED-POOL", pool);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             // "alpha": head + 3 siblings; "beta": head + 1 sibling.
             pool.submit(ordered("alpha", "a-head"));
             pool.submit(ordered("alpha", "a1"));
@@ -1148,7 +1148,7 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
         Pool drainPool = null;
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             isolatedManager.reconfigure(
                     new io.flowcatalyst.router.config.RouterConfig(
                             java.util.List.of(new io.flowcatalyst.router.config.PoolSpec("DRAIN-POOL", 2, 0)),
@@ -1465,7 +1465,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             held.submit(message("in-worker", "https://wedged.test/x"));
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("the message reached a worker").isTrue();
 
@@ -1509,7 +1509,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, Map.of(), null, null);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             held.submit(message("wedged", "https://wedged.test/y"));
             assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -1540,7 +1540,7 @@ class RouterApiTest {
         isolated.refresh(Map.of("q-snake", () -> Optional.of(new QueueMetrics(7, 3, 0, 0, 0))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var row = json(isolatedHttp.get("/router/monitoring/queues")).get(0);
 
             assertThat(row.get("queue_identifier").asText()).isEqualTo("q-snake");
@@ -1565,7 +1565,7 @@ class RouterApiTest {
                 "mike", () -> Optional.of(new QueueMetrics(3, 0, 0, 0, 0))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var ids = new java.util.ArrayList<String>();
             json(isolatedHttp.get("/router/monitoring/queues"))
                     .forEach(row -> ids.add(row.get("queue_identifier").asText()));
@@ -1583,7 +1583,7 @@ class RouterApiTest {
         isolated.refresh(Map.of("q-derive", () -> Optional.of(new QueueMetrics(11, 4, 120, 90, 10))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var body = json(isolatedHttp.get("/router/monitoring/queue-stats"));
             assertThat(body.isObject()).as("a map keyed by queue, not a list").isTrue();
             var row = body.get("q-derive");
@@ -1632,7 +1632,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
                 "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var allTime = json(isolatedHttp.get("/router/monitoring/queue-stats")).get("q-win");
             assertThat(allTime.get("totalConsumed").asLong()).as("lifetime").isEqualTo(125);
 
@@ -1652,7 +1652,7 @@ class RouterApiTest {
         var isolated = new BrokerStatsCache(CLOCK);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             consumer.queueMetrics = new QueueMetrics(42, 0, 0, 0, 0);
 
             assertThat(json(isolatedHttp.get("/router/monitoring/queue-stats")).isEmpty())
@@ -1674,7 +1674,7 @@ class RouterApiTest {
         var isolated = new BrokerStatsCache(CLOCK);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             var r = isolatedHttp.post("/router/monitoring/broker-stats/refresh", null);
 
             assertThat(r.statusCode()).isEqualTo(200);
@@ -1700,7 +1700,7 @@ class RouterApiTest {
         var isolated = new BrokerStatsCache(clock);
         var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
                 "v", "/router", null, null, null, isolated);
-        try (var isolatedHttp = new TestHttp(cfg -> RouterApi.register(cfg.routes, state))) {
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
             isolated.refresh(Map.of());
             clock.advance(Duration.ofSeconds(-30));
 

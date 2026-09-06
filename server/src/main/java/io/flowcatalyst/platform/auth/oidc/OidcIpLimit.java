@@ -3,7 +3,7 @@ package io.flowcatalyst.platform.auth.oidc;
 import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.ratelimit.Governor;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Map;
 import java.util.Objects;
@@ -17,7 +17,7 @@ public final class OidcIpLimit {
     private OidcIpLimit() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, Governor governor) {
+    public static void register(Routes routes, Governor governor) {
         Objects.requireNonNull(governor, "governor");
         for (String prefix : new String[] {"/auth/oidc/*", "/portal/*"}) {
             routes.before(prefix, ctx -> {

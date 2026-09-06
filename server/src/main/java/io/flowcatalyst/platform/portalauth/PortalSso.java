@@ -17,9 +17,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.HttpStatus;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,13 +63,13 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         this.s = Objects.requireNonNull(s, "state");
     }
 
-    public void register(JavalinDefaultRoutingApi routes) {
+    public void register(Routes routes) {
         routes.get("/portal/auth/oidc/login", this::start);
     }
 
     // ── start ──────────────────────────────────────────────────────────────
 
-    void start(Context ctx) {
+    void start(Exchange ctx) {
         String flowId = q(ctx, "flow");
         String providerId = q(ctx, "provider_id");
         if (flowId.isEmpty() || providerId.isEmpty()) {
@@ -108,13 +107,13 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             HttpError.write(ctx, 500, "OIDC_STATE", "persist state failed", Map.of());
             return;
         }
-        ctx.redirect(r.provider().orElseThrow().authorizeUrl(OidcBridgeApi.callbackUrl(ctx, s.bridge()), state), HttpStatus.FOUND);
+        ctx.redirect(r.provider().orElseThrow().authorizeUrl(OidcBridgeApi.callbackUrl(ctx, s.bridge()), state), 302);
     }
 
     // ── sink ───────────────────────────────────────────────────────────────
 
     @Override
-    public void complete(Context ctx, LoginState state, IdTokenClaims claims) {
+    public void complete(Exchange ctx, LoginState state, IdTokenClaims claims) {
         LoginState.OAuthChain o = state.oauth();
         if (o == null || !o.present() || o.redirectUri() == null || o.redirectUri().isEmpty() || o.state() == null || o.state().isEmpty()) {
             HttpError.write(ctx, 400, "PORTAL_STATE_INVALID", "portal login state is missing its OAuth chain", Map.of());
@@ -151,7 +150,7 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             // SSO never self-reactivates a suspended account.
             ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?")
                     + "error=access_denied&error_description=" + enc("This account is suspended for this portal")
-                    + "&state=" + enc(o.state()), HttpStatus.FOUND);
+                    + "&state=" + enc(o.state()), 302);
             return;
         }
         AuthorizationCode code = AuthorizationCode.issue(o.clientId(), identity.id(), o.redirectUri(), s.clock().instant())
@@ -170,14 +169,14 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             LOG.warn("touchLastLogin failed for portal identity {}", identity.id(), e);
         }
         ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?") + "code=" + enc(code.code())
-                + "&state=" + enc(o.state()), HttpStatus.FOUND);
+                + "&state=" + enc(o.state()), 302);
     }
 
     private static String enc(String v) {
         return URLEncoder.encode(v, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
-    private static String q(Context ctx, String name) {
+    private static String q(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null ? "" : v.trim();
     }

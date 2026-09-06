@@ -7,12 +7,13 @@ import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
 import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.purger.Purger;
+import io.flowcatalyst.http.RouteRegistry;
 import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.login.AuthAlarms;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.http.javalin.JavalinJsonMapper;
 import io.flowcatalyst.mcp.McpConfig;
 import io.flowcatalyst.mcp.McpServer;
 import io.flowcatalyst.mcp.PlatformClient;
@@ -508,28 +509,30 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         }
     }
 
-    /// The fully wired (not yet started) API app — exposed so the contract
-    /// tests can enumerate the registered routes without binding a port.
-    Javalin buildApi() {
-        return buildApiAndReaper(null).app();
+    /// The fully wired (not yet started) API app plus the seam [RouteRegistry]
+    /// it was built through — exposed so the contract tests can enumerate the
+    /// registered routes without binding a port.
+    ApiAndReaper buildApi() {
+        return buildApiAndReaper(null);
     }
 
     /// The dispatch-job reaper [Platform#register] starts is a background
     /// resource, not a route — it has to escape the `Javalin.create` lambda
     /// below by some path other than the `Javalin` it returns, hence this
-    /// pair rather than a bare `Javalin`.
-    private record ApiAndReaper(Javalin app, DispatchJobReaper dispatchJobReaper) {
+    /// pair rather than a bare `Javalin`. `registry` is the seam
+    /// [RouteRegistry] [io.flowcatalyst.http.javalin.JavalinAdapter#install]
+    /// hands back, so [io.flowcatalyst.server.LockfileCoverageTest] can
+    /// enumerate registrations without walking Javalin internals.
+    record ApiAndReaper(Javalin app, RouteRegistry registry, DispatchJobReaper dispatchJobReaper) {
     }
 
     ApiAndReaper buildApiAndReaper(Router router) {
         DispatchJobReaper[] reaperHolder = new DispatchJobReaper[1];
+        RouteRegistry[] registryHolder = new RouteRegistry[1];
         Javalin api = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.concurrency.useVirtualThreads = true;
             cfg.jsonMapper(new JavalinJsonMapper());
-            // Unknown non-GET paths answer with the 404 envelope (Go's chi hands every unmatched
-            // method to the SPA NotFound handler — index.html for a POST — which nobody relies on).
-            cfg.http.prefer405over404 = false;
             cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
             // h2c on the plain API port, plus TLS+ALPN (h2) and HTTP/3 when
             // configured (docs/spec/http-transport.md §1). Adding a connector
@@ -537,43 +540,49 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             // otherwise build from cfg.jetty.host/port (Listeners' javadoc).
             io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
 
-            cfg.routes.get("/health", health(mode)::handle);
-            io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);
+            // Installs the seam adapter: the 404/405 envelope (formerly
+            // cfg.http.prefer405over404 = false, set here directly) and the
+            // bodiless-response rule (formerly ResponseDefaults, now deleted)
+            // both live in the adapter (docs/spec/http-seam.md §2).
+            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
+            registryHolder[0] = routes;
+
+            routes.get("/health", health(mode)::handle);
 
             switch (mode) {
-                case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(cfg.routes);
+                case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(routes);
                 case Mode.Worker _, Mode.RouterOnly _ -> {
                     // no platform API on this instance
                 }
             }
             if (router != null) {
-                // Guard first, then routes, then the dashboard — Javalin
+                // Guard first, then routes, then the dashboard — the adapter
                 // resolves `before` filters by path match regardless of
                 // registration order, but reading top-to-bottom as
                 // "guard, routes, page" is worth the ordering.
                 //
                 // TODO(port): the /metrics alias under the router prefix.
-                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(cfg.routes,
+                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(routes,
                         new io.flowcatalyst.router.api.auth.BasicAuthFilter(
                                 env.routerAuthMode(), env.routerAuthUser(), env.routerAuthPass(),
                                 env.routerHttpPrefix()));
-                io.flowcatalyst.router.api.RouterApi.register(cfg.routes,
+                io.flowcatalyst.router.api.RouterApi.register(routes,
                         new io.flowcatalyst.router.api.RouterApi.State(
                                 router.manager(), router.tracker(), router.warnings(), router.breakers(),
                                 router.election(), router.electionConfig(), Version.current(),
                                 env.routerHttpPrefix(), null, router.poolMetrics(),
                                 router.traffic(), router.brokerStats(), router.server()));
                 io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
-                        cfg.routes, env.routerHttpPrefix());
+                        routes, env.routerHttpPrefix());
             }
             switch (spa) {
-                case Spa.Embedded(var frontend) -> frontend.register(cfg.routes);
+                case Spa.Embedded(var frontend) -> frontend.register(routes);
                 case Spa.None _ -> {
                     // unknown paths get the 404 envelope
                 }
             }
         });
-        return new ApiAndReaper(api, reaperHolder[0]);
+        return new ApiAndReaper(api, registryHolder[0], reaperHolder[0]);
     }
 
     private SigningKeys loadSigningKeys() {

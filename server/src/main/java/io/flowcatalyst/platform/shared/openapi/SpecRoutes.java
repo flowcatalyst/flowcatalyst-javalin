@@ -4,7 +4,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.dataformat.yaml.YAMLFactory;
 import tools.jackson.dataformat.yaml.YAMLWriteFeature;
 import tools.jackson.databind.ObjectMapper;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Routes;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -45,7 +45,7 @@ public final class SpecRoutes {
         this.yaml = toYaml(lockfile);
     }
 
-    public void register(JavalinDefaultRoutingApi routes) {
+    public void register(Routes routes) {
         routes.get("/api/openapi.json", ctx -> ctx.contentType("application/json").result(json));
         routes.get("/api/openapi.yaml", ctx -> ctx.contentType("application/yaml").result(yaml));
         routes.get("/q/openapi", ctx -> ctx.contentType("application/json").result(json));

@@ -100,10 +100,10 @@ class PortalUserApiTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            PortalUserApi.register(cfg.routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
                     identityProviderRepo, uow, EMAILER));
         });
     }

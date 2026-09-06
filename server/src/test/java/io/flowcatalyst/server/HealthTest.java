@@ -16,7 +16,7 @@ class HealthTest {
 
     @Test
     void withoutChecksTheBodyIsTheBareStatusAndVersion() {
-        try (var h = new TestHttp(cfg -> cfg.routes.get("/health", Health.noChecks()::handle))) {
+        try (var h = TestHttp.routes(routes -> routes.get("/health", Health.noChecks()::handle))) {
             var r = h.get("/health");
             assertThat(r.statusCode()).isEqualTo(200);
             assertThat(r.body()).isEqualTo("{\"status\":\"UP\",\"version\":\"dev\"}\n");
@@ -29,7 +29,7 @@ class HealthTest {
         var health = new Health(List.of(
                 new Health.Check("loginAttemptPartitions", problem::get),
                 new Health.Check("alwaysFine", () -> "")));
-        try (var h = new TestHttp(cfg -> cfg.routes.get("/health", health::handle))) {
+        try (var h = TestHttp.routes(routes -> routes.get("/health", health::handle))) {
             var down = h.get("/health");
             assertThat(down.statusCode()).isEqualTo(503);
             var j = Json.MAPPER.readTree(down.body());
@@ -47,7 +47,7 @@ class HealthTest {
     @Test
     void aCheckThatThrowsIsAFailureNotA500() {
         var health = new Health(List.of(new Health.Check("db", () -> { throw new IllegalStateException("pool closed"); })));
-        try (var h = new TestHttp(cfg -> cfg.routes.get("/health", health::handle))) {
+        try (var h = TestHttp.routes(routes -> routes.get("/health", health::handle))) {
             var r = h.get("/health");
             assertThat(r.statusCode()).isEqualTo(503);
             assertThat(Json.MAPPER.readTree(r.body()).get("checks").get("db").asString()).isEqualTo("IllegalStateException: pool closed");

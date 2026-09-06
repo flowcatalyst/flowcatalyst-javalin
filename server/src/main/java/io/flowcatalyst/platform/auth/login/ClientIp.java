@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.auth.login;
 
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 /// The caller's address for backoff and login-attempt rows (Go
 /// `ratelimit.ClientIP`): the **rightmost** `X-Forwarded-For` hop — the one
@@ -11,7 +11,7 @@ public final class ClientIp {
     private ClientIp() {
     }
 
-    public static String of(Context ctx) {
+    public static String of(Exchange ctx) {
         String rightmost = rightmostForwardedFor(ctx.header("X-Forwarded-For"));
         if (!rightmost.isEmpty()) {
             return rightmost;

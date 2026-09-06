@@ -21,8 +21,8 @@ import io.flowcatalyst.platform.subscription.operations.ResumeSubscription;
 import io.flowcatalyst.platform.subscription.operations.UpdateCommand;
 import io.flowcatalyst.platform.subscription.operations.UpdateSubscription;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -59,7 +59,7 @@ public final class SubscriptionApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/subscriptions", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/subscriptions", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/subscriptions/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -71,46 +71,46 @@ public final class SubscriptionApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SUBSCRIPTION_VIEW);
         List<Subscription> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), Subscription::clientId);
         ctx.json(SubscriptionListResponse.from(visible));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SUBSCRIPTION_VIEW);
         ctx.json(SubscriptionResponse.from(visible(ac, load(s, ctx.pathParam("id")))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         var cmd = ctx.bodyAsClass(CreateSubscriptionRequest.class).toCommand();
         var event = CreateSubscription.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.subscriptionId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         var cmd = ctx.bodyAsClass(UpdateSubscriptionRequest.class).toCommand(ctx.pathParam("id"));
         UpdateSubscription.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), SUBSCRIPTION_DELETE);
         DeleteSubscription.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void pause(Context ctx, State s) {
+    private static void pause(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         PauseSubscription.of(s.repo()).run(s.uow(), new PauseCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void resume(Context ctx, State s) {
+    private static void resume(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         ResumeSubscription.of(s.repo()).run(s.uow(), new ResumeCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -119,12 +119,12 @@ public final class SubscriptionApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     /// Query params → filter; both are plain equality filters, no defaults.
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         return new ListFilter(queryParam(ctx, "status"), queryParam(ctx, "clientId"));
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

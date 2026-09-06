@@ -37,9 +37,9 @@ class SettledApiTest {
     static void start() {
         repo = new DispatchJobRepository(DS);
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            SettledApi.register(cfg.routes, new SettledApi.State(repo, verifier));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            SettledApi.register(routes, new SettledApi.State(repo, verifier));
         });
     }
 

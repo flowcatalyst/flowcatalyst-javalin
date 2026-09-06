@@ -13,9 +13,9 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -61,7 +61,7 @@ public final class AuditLogApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     /// The literal segments are registered before `{id}` so they win.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         Handler list = Auth.scoped(ctx -> list(ctx, s));
         routes.get("/api/audit-logs", list);
         routes.get("/api/audit-logs/recent", list); // historical alias, the SPA's "recent activity" panel still uses it
@@ -76,33 +76,33 @@ public final class AuditLogApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), AUDIT_LOG_VIEW);
         int size = pageSize(ctx);
         List<AuditLog> rows = s.repo().findWithCursor(cursorFilter(ctx), after(ctx), size + 1);
         ctx.json(AuditLogListResponse.page(rows, size));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), AUDIT_LOG_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(AuditLogResponse.from(s.repo().findById(id).orElseThrow(() -> HttpError.notFound("AuditLog", id))));
     }
 
-    private static void byEntity(Context ctx, State s) {
+    private static void byEntity(Exchange ctx, State s) {
         Checks.require(Auth.current(), AUDIT_LOG_VIEW);
         var filter = new ListFilter(ctx.pathParam("entityType"), ctx.pathParam("entityId"), null, null, null, null);
         ctx.json(AuditLogListResponse.unpaged(s.repo().findWithFilters(filter, FILTERED_LIST_LIMIT, 0)));
     }
 
-    private static void byPrincipal(Context ctx, State s) {
+    private static void byPrincipal(Exchange ctx, State s) {
         Checks.require(Auth.current(), AUDIT_LOG_VIEW);
         var filter = new ListFilter(null, null, ctx.pathParam("principalId"), null, null, null);
         ctx.json(AuditLogListResponse.unpaged(s.repo().findWithFilters(filter, FILTERED_LIST_LIMIT, 0)));
     }
 
     /// One handler for the four facet routes; `wrap` builds the route's own envelope.
-    private static void facet(Context ctx, State s, Facet facet, Function<List<String>, Object> wrap) {
+    private static void facet(Exchange ctx, State s, Facet facet, Function<List<String>, Object> wrap) {
         Checks.require(Auth.current(), AUDIT_LOG_VIEW);
         ctx.json(wrap.apply(s.repo().distinctValues(facet, FACET_LIMIT)));
     }
@@ -111,7 +111,7 @@ public final class AuditLogApi {
 
     /// Query params → keyset filter (spec §3). Absent/empty → no filter; the
     /// id lists are CSV, trimmed, blanks dropped.
-    private static CursorFilter cursorFilter(Context ctx) {
+    private static CursorFilter cursorFilter(Exchange ctx) {
         return new CursorFilter(
                 queryParam(ctx, "entityType"),
                 queryParam(ctx, "entityId"),
@@ -123,7 +123,7 @@ public final class AuditLogApi {
 
     /// `after` → cursor, or `null` for the first page. This route's policy
     /// for a malformed token (spec §3, §4): 400 `CURSOR` `invalid cursor`.
-    private static KeysetCursor after(Context ctx) {
+    private static KeysetCursor after(Exchange ctx) {
         String token = queryParam(ctx, "after");
         return token == null ? null
                 : KeysetCursor.parse(token).orElseThrow(() -> UseCaseException.validation("CURSOR", "invalid cursor"));
@@ -131,13 +131,13 @@ public final class AuditLogApi {
 
     /// `pageSize`: absent → default; out of range → default (not clamped —
     /// spec §3, open question 1); non-integer → 400 `VALIDATION` ([QueryParams]).
-    private static int pageSize(Context ctx) {
+    private static int pageSize(Exchange ctx) {
         int size = QueryParams.intParam(ctx, "pageSize").orElse(DEFAULT_PAGE_SIZE);
         return size < 1 || size > MAX_PAGE_SIZE ? DEFAULT_PAGE_SIZE : size;
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

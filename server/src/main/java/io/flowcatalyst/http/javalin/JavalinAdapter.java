@@ -34,10 +34,8 @@ import io.javalin.http.HttpResponseException;
 ///    than delegating to Javalin's own method of the same name.
 /// 4. The bodiless-response rule (spec §2 rule 5) is installed as a Javalin
 ///    `after`: status 204, or a response whose handler wrote no body,
-///    carries no `Content-Type`. This is `ResponseDefaults`'s logic, moved
-///    here; `ResponseDefaults` itself is deleted in a later unit, and until
-///    then both hooks may run — setting `null` twice is idempotent, so they
-///    do not conflict.
+///    carries no `Content-Type`. This absorbed `ResponseDefaults`'s logic;
+///    that class is deleted (unit b–d).
 public final class JavalinAdapter {
 
     private JavalinAdapter() {

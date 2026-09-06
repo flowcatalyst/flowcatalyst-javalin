@@ -1,15 +1,10 @@
 package io.flowcatalyst.server;
 
-import io.javalin.Javalin;
-import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.platform.shared.TestHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,44 +13,31 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Drives the real embedded `frontend/` resources through Javalin to pin the
-/// Go `frontend.Handler` semantics — and to verify the assumption that a
-/// fallback route registered last never shadows an API route.
+/// Drives the real embedded `frontend/` resources through the seam
+/// (`docs/spec/http-seam.md`) to pin the Go `frontend.Handler` semantics —
+/// and to verify the assumption that a fallback route registered last never
+/// shadows an API route.
 class FrontendTest {
 
-    private static Javalin app;
-    private static HttpClient http;
-    private static String base;
+    private static TestHttp http;
 
     @BeforeAll
     static void start() {
-        app = Javalin.create(cfg -> {
-            cfg.startup.showJavalinBanner = false;
-            cfg.concurrency.useVirtualThreads = true;
-            // Matches the real Server.buildApi(): Javalin's own lazy default
-            // jsonMapper is JavalinJackson (Jackson 2), which this project no
-            // longer ships a real jackson-databind for.
-            cfg.jsonMapper(new JavalinJsonMapper());
-            cfg.routes.get("/api/things", ctx -> ctx.json(Map.of("ok", true)));
-            cfg.routes.post("/auth/login", ctx -> ctx.result("posted"));
-            Frontend.embedded().orElseThrow().register(cfg.routes);
+        http = TestHttp.routes(routes -> {
+            routes.get("/api/things", ctx -> ctx.json(Map.of("ok", true)));
+            routes.post("/auth/login", ctx -> ctx.result("posted"));
+            Frontend.embedded().orElseThrow().register(routes);
         });
-        app.start(0);
-        base = "http://localhost:" + app.port();
-        http = HttpClient.newHttpClient();
     }
 
     @AfterAll
     static void stop() {
-        app.stop();
+        http.close();
     }
 
-    private static HttpResponse<String> get(String path, String... headers) throws IOException, InterruptedException {
-        var b = HttpRequest.newBuilder(URI.create(base + path)).GET();
-        if (headers.length > 0) b.headers(headers);
-        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    private static HttpResponse<String> get(String path, String... headers) {
+        return http.get(path, headers);
     }
-
 
     /// Jetty canonicalises well-known types (`text/html; charset=utf-8` → `text/html;charset=utf-8`);
     /// the header is semantically identical, so compare without whitespace.
@@ -64,7 +46,7 @@ class FrontendTest {
     }
 
     @Test
-    void rootServesTheShellWithNoStore() throws Exception {
+    void rootServesTheShellWithNoStore() {
         var r = get("/");
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(contentType(r)).isEqualTo("text/html;charset=utf-8");
@@ -73,7 +55,7 @@ class FrontendTest {
     }
 
     @Test
-    void unknownPathsAndTraversalFallBackToTheShellRegardlessOfAccept() throws Exception {
+    void unknownPathsAndTraversalFallBackToTheShellRegardlessOfAccept() {
         var r = get("/some/vue/route", "Accept", "application/json");
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(contentType(r)).isEqualTo("text/html;charset=utf-8");
@@ -101,7 +83,7 @@ class FrontendTest {
     }
 
     @Test
-    void apiRoutesWinOverTheFallbackAndGetMethodMismatchRendersTheShell() throws Exception {
+    void apiRoutesWinOverTheFallbackAndGetMethodMismatchRendersTheShell() {
         var api = get("/api/things");
         assertThat(api.statusCode()).isEqualTo(200);
         assertThat(api.body()).isEqualTo("{\"ok\":true}\n");

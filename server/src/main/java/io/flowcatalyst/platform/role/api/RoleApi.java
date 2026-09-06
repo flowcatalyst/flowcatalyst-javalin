@@ -21,8 +21,8 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -71,7 +71,7 @@ public final class RoleApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. Literal segments are registered before the `{id}` /
     /// `{roleName}` routes so they take precedence (spec §3).
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/roles", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/roles", Auth.scoped(ctx -> create(ctx, s)));
         // Permission catalogue.
@@ -96,38 +96,38 @@ public final class RoleApi {
 
     // ── Role handlers ──────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleListResponse.from(s.roles().findAll()));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(CreateRoleRequest.class).toCommand();
         var event = CreateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.roleId()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(resolveRole(s, ctx.pathParam("id"))));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateRoleRequest.class).toCommand(resolveRole(s, ctx.pathParam("id")).id());
         UpdateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_DELETE);
         var cmd = new DeleteCommand(resolveRole(s, ctx.pathParam("id")).id());
         DeleteRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(roleNamed(s, ctx.pathParam("code"))));
     }
@@ -135,7 +135,7 @@ public final class RoleApi {
     /// Bare JSON array; an unknown source segment is 400 `INVALID_SOURCE` — Go's
     /// rule (`api.go` bySource), adopted 2026-09-05 when the parity harness
     /// showed Java's earlier leniency (spec §3, open question 5, now ruled).
-    private static void listBySource(Context ctx, State s) {
+    private static void listBySource(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         RoleSource source;
         try {
@@ -147,24 +147,24 @@ public final class RoleApi {
     }
 
     /// Bare JSON array.
-    private static void listByApplication(Context ctx, State s) {
+    private static void listByApplication(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(s.roles().findByApplicationId(ctx.pathParam("applicationId"))));
     }
 
-    private static void applicationFilters(Context ctx, State s) {
+    private static void applicationFilters(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(new ApplicationFilterListResponse(s.roles().applicationCodes()));
     }
 
     // ── Permission grants on a role (addressed by name) ────────────────────
 
-    private static void listRolePermissions(Context ctx, State s) {
+    private static void listRolePermissions(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(new RolePermissionListResponse(roleNamed(s, ctx.pathParam("roleName")).permissions()));
     }
 
-    private static void grant(Context ctx, State s) {
+    private static void grant(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new GrantPermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
@@ -172,14 +172,14 @@ public final class RoleApi {
     }
 
     /// The SDK shape: `{permission}` in the body — the same grant operation.
-    private static void grantFromBody(Context ctx, State s) {
+    private static void grantFromBody(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(GrantPermissionRequest.class).toCommand(ctx.pathParam("roleName"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
     }
 
-    private static void revoke(Context ctx, State s) {
+    private static void revoke(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = new RevokePermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         RevokePermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
@@ -188,12 +188,12 @@ public final class RoleApi {
 
     // ── Permission catalogue ───────────────────────────────────────────────
 
-    private static void listPermissions(Context ctx, State s) {
+    private static void listPermissions(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(PermissionListResponse.from(s.permissions().findAll()));
     }
 
-    private static void getPermission(Context ctx, State s) {
+    private static void getPermission(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         String code = ctx.pathParam("permission");
         ctx.json(PermissionResponse.from(s.permissions().findByCode(code).orElseThrow(() -> HttpError.notFound("Permission", code))));
@@ -202,7 +202,7 @@ public final class RoleApi {
     /// A direct, idempotent catalogue delete — no domain event, no audit row
     /// (spec §3, open question 4); committed through the unit of work so the
     /// write still goes through one transaction.
-    private static void deletePermission(Context ctx, State s) {
+    private static void deletePermission(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_DELETE);
         String code = ctx.pathParam("permission");
         s.uow().inTransaction(tx -> {

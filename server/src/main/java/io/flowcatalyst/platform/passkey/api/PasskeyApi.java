@@ -26,8 +26,8 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -72,7 +72,7 @@ public final class PasskeyApi {
     private PasskeyApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/auth/webauthn/register/begin", Auth.scoped(ctx -> registerBegin(ctx, s)));
         routes.post("/auth/webauthn/register/complete", Auth.scoped(ctx -> registerComplete(ctx, s)));
         routes.post("/auth/webauthn/authenticate/begin", ctx -> authenticateBegin(ctx, s));
@@ -89,7 +89,7 @@ public final class PasskeyApi {
     record StateAndOptions(String stateId, JsonNode options) {
     }
 
-    static void registerBegin(Context ctx, State s) {
+    static void registerBegin(Exchange ctx, State s) {
         AuthContext ac = requireSession();
         Principal p = s.principals().findById(ac.principalId())
                 .orElseThrow(() -> UseCaseException.resourceNotFound("Principal", ac.principalId()));
@@ -116,7 +116,7 @@ public final class PasskeyApi {
     record RegisterCompleteRequest(String stateId, String name, JsonNode credential) {
     }
 
-    static void registerComplete(Context ctx, State s) {
+    static void registerComplete(Exchange ctx, State s) {
         AuthContext ac = requireSession();
         RegisterCompleteRequest req = decode(ctx, RegisterCompleteRequest.class);
         String name = req.name() == null ? "" : req.name().trim();
@@ -162,7 +162,7 @@ public final class PasskeyApi {
     record AuthenticateBeginRequest(String email) {
     }
 
-    static void authenticateBegin(Context ctx, State s) {
+    static void authenticateBegin(Exchange ctx, State s) {
         AuthenticateBeginRequest req = decode(ctx, AuthenticateBeginRequest.class);
         String email = req.email() == null ? "" : req.email().trim();
         if (email.isEmpty()) {
@@ -226,7 +226,7 @@ public final class PasskeyApi {
     record AuthenticatedResponse(String principalId, String email, String name, List<String> roles) {
     }
 
-    static void authenticateComplete(Context ctx, State s) {
+    static void authenticateComplete(Exchange ctx, State s) {
         AuthenticateCompleteRequest req = decode(ctx, AuthenticateCompleteRequest.class);
         Optional<CeremonyRepository.Authentication> consumed;
         try {
@@ -288,14 +288,14 @@ public final class PasskeyApi {
     record CredentialSummary(String id, String name, Instant createdAt, Instant lastUsedAt) {
     }
 
-    static void listCredentials(Context ctx, State s) {
+    static void listCredentials(Exchange ctx, State s) {
         AuthContext ac = requireSession();
         List<CredentialSummary> out = s.credentials().findByPrincipal(ac.principalId()).stream()
                 .map(p -> new CredentialSummary(p.id(), p.name(), p.createdAt(), p.lastUsedAt())).toList();
         ctx.json(out);
     }
 
-    static void deleteCredential(Context ctx, State s) {
+    static void deleteCredential(Exchange ctx, State s) {
         AuthContext ac = requireSession();
         String id = ctx.pathParam("id");
         boolean owned = s.credentials().findByPrincipal(ac.principalId()).stream().anyMatch(p -> p.id().equals(id));
@@ -317,7 +317,7 @@ public final class PasskeyApi {
         return ac.get();
     }
 
-    private static void invalidCredentials(Context ctx) {
+    private static void invalidCredentials(Exchange ctx) {
         HttpError.write(ctx, 403, "INVALID_CREDENTIALS", "Invalid credentials.", Map.of());
     }
 
@@ -341,7 +341,7 @@ public final class PasskeyApi {
         return Json.write(credential);
     }
 
-    private static <T> T decode(Context ctx, Class<T> type) {
+    private static <T> T decode(Exchange ctx, Class<T> type) {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (RuntimeException e) {

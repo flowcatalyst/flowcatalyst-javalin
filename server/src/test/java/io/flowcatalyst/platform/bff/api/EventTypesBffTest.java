@@ -53,10 +53,10 @@ class EventTypesBffTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/bff/*", auth);
-            EventTypesBff.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/bff/*", auth);
+            EventTypesBff.register(routes, state);
         });
     }
 

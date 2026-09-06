@@ -24,10 +24,10 @@ class PlatformCorsScopeTest {
     @BeforeAll
     static void start() {
         var allowlist = new CorsAllowlist(() -> List.of(ORIGIN), Duration.ofHours(1), Clock.systemUTC());
-        http = new TestHttp(cfg -> {
-            cfg.routes.before(Platform.cors(new CorsFilter(allowlist)));
-            cfg.routes.get("/api/scope-probe", ctx -> ctx.result("ok"));
-            cfg.routes.get("/router/scope-probe", ctx -> ctx.result("ok"));
+        http = TestHttp.routes(routes -> {
+            routes.before(Platform.cors(new CorsFilter(allowlist)));
+            routes.get("/api/scope-probe", ctx -> ctx.result("ok"));
+            routes.get("/router/scope-probe", ctx -> ctx.result("ok"));
         });
     }
 

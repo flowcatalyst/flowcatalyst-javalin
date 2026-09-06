@@ -14,8 +14,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -48,7 +48,7 @@ public final class ClientSelectionApi {
     private ClientSelectionApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/auth/client/accessible", Auth.scoped(ctx -> accessible(ctx, s)));
         routes.post("/auth/client/switch", Auth.scoped(ctx -> switchClient(ctx, s)));
         routes.get("/auth/client/current", Auth.scoped(ctx -> current(ctx, s)));
@@ -73,7 +73,7 @@ public final class ClientSelectionApi {
                            boolean noClientContext) {
     }
 
-    static void accessible(Context ctx, State s) {
+    static void accessible(Exchange ctx, State s) {
         Principal p = load(s);
         var out = new ArrayList<ClientInfo>();
         for (String id : accessibleClientIds(s, p)) {
@@ -83,7 +83,7 @@ public final class ClientSelectionApi {
         ctx.json(new AccessibleResponse(out, p.clientId(), p.scope() == io.flowcatalyst.platform.principal.UserScope.ANCHOR));
     }
 
-    static void switchClient(Context ctx, State s) {
+    static void switchClient(Exchange ctx, State s) {
         SwitchRequest req;
         try {
             req = Json.MAPPER.readValue(ctx.body(), SwitchRequest.class);
@@ -106,7 +106,7 @@ public final class ClientSelectionApi {
         ctx.json(new SwitchResponse(token, ClientInfo.of(c), p.roleNames(), s.resolver().flattenPermissions(p.roleNames())));
     }
 
-    static void current(Context ctx, State s) {
+    static void current(Exchange ctx, State s) {
         Principal p = load(s);
         Optional<Client> c = p.clientId() == null ? Optional.empty() : s.clients().findById(p.clientId());
         ctx.json(new CurrentResponse(c.map(ClientInfo::of).orElse(null), c.isEmpty()));

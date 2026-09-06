@@ -37,9 +37,9 @@ class PublicApiTest {
     static void start() {
         BrandingFixture.clearAll();
         var branding = new Branding(BrandingFixture.REPO);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            PublicApi.register(cfg.routes, new PublicApi.State(branding));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PublicApi.register(routes, new PublicApi.State(branding));
         });
     }
 

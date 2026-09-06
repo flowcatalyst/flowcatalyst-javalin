@@ -2,9 +2,8 @@ package io.flowcatalyst.platform.auth.login;
 
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
-import io.javalin.http.Context;
-import io.javalin.http.Cookie;
-import io.javalin.http.SameSite;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.HttpCookie;
 
 /// The `fc_session` cookie's attributes (`docs/spec/auth-core.md` §6.1,
 /// "Cookie attributes"): `Path=/`, `HttpOnly`, `SameSite=Lax`, `Max-Age`
@@ -25,14 +24,14 @@ public final class SessionCookie {
         return secure;
     }
 
-    public void set(Context ctx, String token) {
-        ctx.cookie(new Cookie(NAME, token, "/", MAX_AGE_SECONDS, secure, true, null, SameSite.LAX));
+    public void set(Exchange ctx, String token) {
+        ctx.cookie(new HttpCookie(NAME, token, "/", MAX_AGE_SECONDS, true, secure, HttpCookie.SameSite.LAX));
     }
 
     /// An expired cookie with the same attributes — Go writes `MaxAge: -1`,
     /// which `net/http` renders as `Max-Age=0`; Javalin treats a negative
     /// max-age as "unset", so the zero is written explicitly.
-    public void clear(Context ctx) {
+    public void clear(Exchange ctx) {
         // Written by hand: Jetty renders a zero max-age as an `Expires=` in the past;
         // Go's net/http writes `Max-Age=0`, and the wire should read the same (parity S2).
         ctx.header("Set-Cookie", NAME + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" + (secure ? "; Secure" : ""));

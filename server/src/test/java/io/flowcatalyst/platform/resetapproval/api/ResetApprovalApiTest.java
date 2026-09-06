@@ -66,10 +66,10 @@ class ResetApprovalApiTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new ResetApprovalApi.State(repo, principals, resetLinks, uow);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            ResetApprovalApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            ResetApprovalApi.register(routes, state);
         });
     }
 

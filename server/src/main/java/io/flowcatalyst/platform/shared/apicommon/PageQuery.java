@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.shared.apicommon;
 
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,7 +35,7 @@ public record PageQuery(int page, int size, int limitAlias, int pageSizeAlias, i
     /// Parses the query string. A non-integer value is the [QueryParams]
     /// 400 `VALIDATION` envelope, one `details.errors` entry per bad
     /// parameter in `page, size, limit, pageSize, page_size` order.
-    public static PageQuery from(Context ctx) {
+    public static PageQuery from(Exchange ctx) {
         var errors = new ArrayList<Map<String, Object>>();
         var page = intParam(ctx, "page", errors);
         var size = intParam(ctx, "size", errors);
@@ -47,7 +47,7 @@ public record PageQuery(int page, int size, int limitAlias, int pageSizeAlias, i
     }
 
     /// Absent (or bad, recorded in `errors`) reads as 0 — the record's "not sent".
-    private static int intParam(Context ctx, String name, List<Map<String, Object>> errors) {
+    private static int intParam(Exchange ctx, String name, List<Map<String, Object>> errors) {
         return QueryParams.intParam(ctx, name, errors).orElse(0);
     }
 

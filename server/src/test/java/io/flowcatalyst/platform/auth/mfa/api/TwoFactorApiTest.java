@@ -161,11 +161,11 @@ class TwoFactorApiTest {
         var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, backoff, TOKEN_ISSUER, RESOLVER, mfaGate,
                 new SessionCookie(false), DS, Clock.systemUTC());
 
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before(authenticator());
-            LoginApi.register(cfg.routes, loginState);
-            TwoFactorApi.register(cfg.routes, new TwoFactorApi.State(loginState, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before(authenticator());
+            LoginApi.register(routes, loginState);
+            TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
         });
     }
 
@@ -357,9 +357,9 @@ class TwoFactorApiTest {
         var brokenLogin = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, brokenAttempts,
                 new BackoffCheck(brokenAttempts, BackoffPolicy.DEFAULT), TOKEN_ISSUER, RESOLVER,
                 new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE), new SessionCookie(false), DS, Clock.systemUTC());
-        try (var closed = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            TwoFactorApi.register(cfg.routes, new TwoFactorApi.State(brokenLogin, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+        try (var closed = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            TwoFactorApi.register(routes, new TwoFactorApi.State(brokenLogin, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
         })) {
             long before = io.flowcatalyst.platform.auth.login.AuthAlarms.backoffStoreErrors();
             var r = closed.post("/auth/2fa/verify",

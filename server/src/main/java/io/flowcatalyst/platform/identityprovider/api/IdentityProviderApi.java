@@ -13,8 +13,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -65,7 +65,7 @@ public final class IdentityProviderApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/identity-providers", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/identity-providers", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/identity-providers/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -75,12 +75,12 @@ public final class IdentityProviderApi {
 
     // ── Reads ──────────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(IdentityProviderListResponse.from(s.repo().findAll()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(IdentityProviderResponse.from(load(s, ctx.pathParam("id"))));
     }
@@ -88,7 +88,7 @@ public final class IdentityProviderApi {
     // ── Writes ─────────────────────────────────────────────────────────────
 
     /// 201 with the full provider (re-read after commit): the SPA's create toast reads `name` (spec §3).
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateIdentityProviderRequest.class).toCommand(s.secrets());
         var result = CreateIdentityProvider.of(s.repo(), s.mappings()).run(s.uow(), cmd, Auth.executionContext());
@@ -96,7 +96,7 @@ public final class IdentityProviderApi {
     }
 
     /// 200 with the full provider (not 204): the SPA's detail page replaces its model with the body (spec §3).
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateIdentityProviderRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateIdentityProvider.of(s.repo(), s.mappings()).run(s.uow(), cmd, Auth.executionContext());
@@ -104,7 +104,7 @@ public final class IdentityProviderApi {
         ctx.json(IdentityProviderResponse.from(load(s, cmd.id())));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteIdentityProvider.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         s.onChange().accept(ctx.pathParam("id"));

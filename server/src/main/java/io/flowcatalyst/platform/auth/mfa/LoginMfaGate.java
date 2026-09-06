@@ -3,7 +3,7 @@ package io.flowcatalyst.platform.auth.mfa;
 import io.flowcatalyst.platform.auth.login.MfaChallenge;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
 import io.flowcatalyst.platform.principal.Principal;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,7 +41,7 @@ public final class LoginMfaGate implements MfaChallenge {
     }
 
     @Override
-    public Optional<Challenge> evaluate(Principal p, Context ctx) {
+    public Optional<Challenge> evaluate(Principal p, Exchange ctx) {
         if (p.isFederated()) {
             return Optional.empty();
         }

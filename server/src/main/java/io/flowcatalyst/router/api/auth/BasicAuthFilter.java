@@ -1,8 +1,8 @@
 package io.flowcatalyst.router.api.auth;
 
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -65,7 +65,7 @@ public final class BasicAuthFilter implements Handler {
     }
 
     @Override
-    public void handle(Context ctx) {
+    public void handle(Exchange ctx) {
         if (!enabled) {
             return;
         }
@@ -93,7 +93,7 @@ public final class BasicAuthFilter implements Handler {
     /// Mounts this filter under `prefix + "/*"` (or `"/*"` for a root mount)
     /// — a no-op registration when the filter is [#enabled()] `false`, so
     /// callers can wire it unconditionally.
-    public static void register(JavalinDefaultRoutingApi routes, BasicAuthFilter filter) {
+    public static void register(Routes routes, BasicAuthFilter filter) {
         if (!filter.enabled()) {
             return;
         }

@@ -15,8 +15,8 @@ import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -56,7 +56,7 @@ public final class ChangePasswordApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/auth/change-password", Auth.scoped(ctx -> changePassword(ctx, s)));
         routes.post("/auth/change-password/send-email-code", Auth.scoped(ctx -> sendEmailCode(ctx, s)));
     }
@@ -73,7 +73,7 @@ public final class ChangePasswordApi {
     record MfaRequiredBody(String code, String message, List<String> methods) {
     }
 
-    private static void changePassword(Context ctx, State s) {
+    private static void changePassword(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -205,7 +205,7 @@ public final class ChangePasswordApi {
 
     // ── /auth/change-password/send-email-code ────────────────────────────
 
-    private static void sendEmailCode(Context ctx, State s) {
+    private static void sendEmailCode(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -244,7 +244,7 @@ public final class ChangePasswordApi {
 
     // ── shared helpers ───────────────────────────────────────────────────
 
-    private static Optional<Principal> principalFromSession(Context ctx, State s) {
+    private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
             unauthorized(ctx);
@@ -258,12 +258,12 @@ public final class ChangePasswordApi {
         return p;
     }
 
-    private static void unauthorized(Context ctx) {
+    private static void unauthorized(Exchange ctx) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", "Not authenticated");
     }
 
-    private static <T> T decode(Context ctx, Class<T> type) {
+    private static <T> T decode(Exchange ctx, Class<T> type) {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (JacksonException e) {

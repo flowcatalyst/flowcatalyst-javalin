@@ -22,9 +22,9 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -81,7 +81,7 @@ public final class OAuthClientApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/oauth-clients", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/oauth-clients", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/oauth-clients/by-client-id/{clientId}", Auth.scoped(ctx -> getByClientId(ctx, s)));
@@ -100,27 +100,27 @@ public final class OAuthClientApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         List<OAuthClientResponse> items = s.repo().findAll().stream().map(c -> response(s, c)).toList();
         ctx.json(new OAuthClientListResponse(items));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         OAuthClient c = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("OAuthClient", id));
         ctx.json(response(s, c));
     }
 
-    private static void getByClientId(Context ctx, State s) {
+    private static void getByClientId(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String clientId = ctx.pathParam("clientId");
         OAuthClient c = s.repo().findByClientId(clientId).orElseThrow(() -> HttpError.notFound("OAuthClient", clientId));
         ctx.json(response(s, c));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateOAuthClientRequest.class).toCommand();
         // Local sink: the plaintext cannot outlive this request, and is only
@@ -132,26 +132,26 @@ public final class OAuthClientApi {
         ctx.status(201).json(new CreateOAuthClientResponse(response(s, created), secret.get()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateOAuthClientRequest.class).toCommand(ctx.pathParam("id"));
         UpdateOAuthClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ActivateOAuthClient.of(s.repo()).run(s.uow(), new ActivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client activated"));
     }
 
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeactivateOAuthClient.of(s.repo()).run(s.uow(), new DeactivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client deactivated"));
     }
 
-    private static void rotateSecret(Context ctx, State s) {
+    private static void rotateSecret(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         Long graceSeconds = ctx.body().isBlank() ? null : ctx.bodyAsClass(RotateOAuthClientSecretRequest.class).graceSeconds();
@@ -162,14 +162,14 @@ public final class OAuthClientApi {
         ctx.json(new RotateOAuthClientSecretResponse(c.clientId(), secret.get(), event.previousSecretExpiresAt()));
     }
 
-    private static void revokePreviousSecret(Context ctx, State s) {
+    private static void revokePreviousSecret(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         RevokeOAuthClientPreviousSecret.of(s.repo())
                 .run(s.uow(), new RevokeOAuthClientPreviousSecretCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "Previous client secret revoked"));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteOAuthClient.of(s.repo()).run(s.uow(), new DeleteOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);

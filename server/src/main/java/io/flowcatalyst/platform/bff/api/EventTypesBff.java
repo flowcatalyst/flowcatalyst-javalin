@@ -29,9 +29,9 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -75,7 +75,7 @@ public final class EventTypesBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/event-types", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/bff/event-types", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/bff/event-types/filters/subdomains", Auth.scoped(ctx -> filterSubdomains(ctx, s)));
@@ -94,47 +94,47 @@ public final class EventTypesBff {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, EVENT_TYPE_VIEW);
         List<EventType> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), EventType::clientId);
         ctx.json(new EventTypeListResponse(visible.stream().map(EventTypeResponse::from).toList()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, EVENT_TYPE_VIEW);
         ctx.json(EventTypeResponse.from(visible(ac, eventType(s, ctx.pathParam("id")))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
         var event = CreateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(EventTypeResponse.from(eventType(s, event.eventTypeId())));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateEventTypeRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), EVENT_TYPE_DELETE);
         DeleteEventType.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void archive(Context ctx, State s) {
+    private static void archive(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         ArchiveEventType.of(s.repo()).run(s.uow(), new ArchiveCommand(id), Auth.executionContext());
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
-    private static void addSchema(Context ctx, State s) {
+    private static void addSchema(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         var cmd = ctx.bodyAsClass(AddSchemaRequest.class).toCommand(id);
@@ -142,7 +142,7 @@ public final class EventTypesBff {
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
-    private static void finalise(Context ctx, State s) {
+    private static void finalise(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         var cmd = new FinaliseSchemaCommand(id, ctx.pathParam("version"));
@@ -150,7 +150,7 @@ public final class EventTypesBff {
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
-    private static void deprecate(Context ctx, State s) {
+    private static void deprecate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         var cmd = new DeprecateSchemaCommand(id, ctx.pathParam("version"));
@@ -158,12 +158,12 @@ public final class EventTypesBff {
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
-    private static void filterSubdomains(Context ctx, State s) {
+    private static void filterSubdomains(Exchange ctx, State s) {
         String application = queryParam(ctx, "application");
         ctx.json(new OptionsResponse(application == null ? List.of() : s.repo().distinctSubdomains(application)));
     }
 
-    private static void filterAggregates(Context ctx, State s) {
+    private static void filterAggregates(Exchange ctx, State s) {
         String application = queryParam(ctx, "application");
         String subdomain = queryParam(ctx, "subdomain");
         ctx.json(new OptionsResponse(application == null || subdomain == null
@@ -175,7 +175,7 @@ public final class EventTypesBff {
     /// `"platform"` when the body is absent/blank. The schema tally is
     /// wire-compatible but not instrumented on this path — `SyncEventTypes`
     /// applies name/description only, never a schema (Go parity, event_types.go).
-    private static void syncPlatform(Context ctx, State s) {
+    private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String applicationCode = "platform";
         if (!ctx.body().isBlank()) {
@@ -192,7 +192,7 @@ public final class EventTypesBff {
 
     // ── Read-side helpers ──────────────────────────────────────────────────
 
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         String application = queryParam(ctx, "application");
         String status = queryParam(ctx, "status");
         String subdomain = queryParam(ctx, "subdomain");
@@ -200,7 +200,7 @@ public final class EventTypesBff {
         return new ListFilter(application, status, subdomain, aggregate);
     }
 
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

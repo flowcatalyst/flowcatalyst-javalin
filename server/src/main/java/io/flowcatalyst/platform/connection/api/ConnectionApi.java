@@ -18,8 +18,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -56,7 +56,7 @@ public final class ConnectionApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/connections", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/connections", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/connections/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -68,14 +68,14 @@ public final class ConnectionApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, CONNECTION_VIEW);
         List<Connection> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), Connection::clientId);
         ctx.json(ConnectionListResponse.from(visible));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, CONNECTION_VIEW);
         ctx.json(ConnectionResponse.from(visible(ac, load(s, ctx.pathParam("id")))));
@@ -83,34 +83,34 @@ public final class ConnectionApi {
 
     /// Answers with the full connection (re-read after the write), as the
     /// lockfile says — the SPA pushes it straight into a select (spec §3).
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_CREATE);
         var cmd = ctx.bodyAsClass(CreateConnectionRequest.class).toCommand();
         var event = CreateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(ConnectionResponse.from(load(s, event.connectionId())));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateConnectionRequest.class).toCommand(ctx.pathParam("id"));
         UpdateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_DELETE);
         DeleteConnection.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void pause(Context ctx, State s) {
+    private static void pause(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_UPDATE);
         String id = ctx.pathParam("id");
         PauseConnection.of(s.repo()).run(s.uow(), new PauseCommand(id), Auth.executionContext());
         ctx.json(ConnectionResponse.from(load(s, id)));
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_UPDATE);
         String id = ctx.pathParam("id");
         ActivateConnection.of(s.repo()).run(s.uow(), new ActivateCommand(id), Auth.executionContext());
@@ -120,12 +120,12 @@ public final class ConnectionApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     /// Query params → filter; both are plain equality filters, no defaults.
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         return new ListFilter(queryParam(ctx, "status"), queryParam(ctx, "clientId"));
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

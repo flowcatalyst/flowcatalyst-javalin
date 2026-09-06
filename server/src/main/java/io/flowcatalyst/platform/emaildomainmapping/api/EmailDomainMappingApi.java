@@ -17,8 +17,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -60,7 +60,7 @@ public final class EmailDomainMappingApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. Literal segments are registered before the `{id}` routes
     /// so they take precedence (spec §3).
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/email-domain-mappings", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/email-domain-mappings", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/email-domain-mappings/lookup", Auth.scoped(ctx -> lookup(ctx, s)));
@@ -73,14 +73,14 @@ public final class EmailDomainMappingApi {
 
     // ── Reads ──────────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         List<EmailDomainMapping> mappings = s.repo().findAll();
         ctx.json(MappingListResponse.from(mappings, idpNames(s, mappings)));
     }
 
     /// No gate (spec §3): answers `{"found": false}` instead of 404 when unmapped.
-    private static void lookup(Context ctx, State s) {
+    private static void lookup(Exchange ctx, State s) {
         String domain = requireDomain(ctx.queryParam("domain"), "domain query param is required");
         Optional<EmailDomainMapping> m = s.repo().findByEmailDomain(domain);
         if (m.isEmpty()) {
@@ -90,13 +90,13 @@ public final class EmailDomainMappingApi {
         ctx.json(MappingResponse.from(m.get(), idpName(s, m.get())));
     }
 
-    private static void getByDomain(Context ctx, State s) {
+    private static void getByDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         EmailDomainMapping m = byDomain(s, ctx.pathParam("domain"));
         ctx.json(MappingResponse.from(m, idpName(s, m)));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         EmailDomainMapping m = byId(s, ctx.pathParam("id"));
         ctx.json(MappingResponse.from(m, idpName(s, m)));
@@ -104,28 +104,28 @@ public final class EmailDomainMappingApi {
 
     // ── Writes ─────────────────────────────────────────────────────────────
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateMappingRequest.class).toCommand();
         var event = CreateEmailDomainMapping.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.mappingId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateMappingRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEmailDomainMapping.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void moveProvider(Context ctx, State s) {
+    private static void moveProvider(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(MoveProviderRequest.class).toCommand(ctx.pathParam("id"));
         var result = MoveEmailDomainMappingProvider.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(MoveProviderResponse.from(result));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteEmailDomainMapping.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);

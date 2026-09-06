@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.auth.oauth;
 
 import io.flowcatalyst.platform.shared.json.Json;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -50,7 +50,7 @@ public record OAuthError(int status, String code, String description) {
     }
 
     /// `429 rate_limit_exceeded` with `Retry-After`.
-    public static void writeRateLimited(Context ctx, long retryAfterSecs, String description) {
+    public static void writeRateLimited(Exchange ctx, long retryAfterSecs, String description) {
         ctx.header("Retry-After", Long.toString(Math.max(1, retryAfterSecs)));
         new OAuthError(429, "rate_limit_exceeded", description).write(ctx);
     }
@@ -59,7 +59,7 @@ public record OAuthError(int status, String code, String description) {
     /// `Cache-Control: no-store` / `Pragma: no-cache` only in `token.go`
     /// (auth-core §5); the bridge's session-end and the portal authorize
     /// write the plain body (parity S3).
-    public void writePlain(Context ctx) {
+    public void writePlain(Exchange ctx) {
         ctx.status(status).contentType("application/json").result(Json.writeLine(body()));
     }
 
@@ -72,7 +72,7 @@ public record OAuthError(int status, String code, String description) {
         return body;
     }
 
-    public void write(Context ctx) {
+    public void write(Exchange ctx) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("error", code);
         if (description != null && !description.isEmpty()) {

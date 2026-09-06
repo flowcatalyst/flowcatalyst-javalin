@@ -22,11 +22,11 @@ class QueryParamsTest {
 
     @BeforeAll
     static void start() {
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.get("/one", ctx -> ctx.result(QueryParams.intParam(ctx, "n").isPresent()
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.get("/one", ctx -> ctx.result(QueryParams.intParam(ctx, "n").isPresent()
                     ? Integer.toString(QueryParams.intParam(ctx, "n").getAsInt()) : "absent"));
-            cfg.routes.get("/many", ctx -> {
+            routes.get("/many", ctx -> {
                 var errors = new ArrayList<Map<String, Object>>();
                 int a = QueryParams.intParam(ctx, "a", errors).orElse(-1);
                 int b = QueryParams.intParam(ctx, "b", errors).orElse(-1);

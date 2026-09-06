@@ -17,8 +17,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -63,7 +63,7 @@ public final class DeveloperBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/developer/applications", Auth.scoped(ctx -> listApplications(ctx, s)));
         routes.post("/bff/developer/sync-platform-openapi", Auth.scoped(ctx -> syncPlatformOpenApi(ctx, s)));
         routes.get("/bff/developer/applications/{appId}", Auth.scoped(ctx -> getApplication(ctx, s)));
@@ -75,33 +75,33 @@ public final class DeveloperBff {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void listApplications(Context ctx, State s) {
+    private static void listApplications(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var apps = s.applications().findWithFilters(new ApplicationRepository.ListFilter(null, true));
         var out = apps.stream().map(a -> toSummary(a, s.specs().findCurrentByApplication(a.id()).orElse(null))).toList();
         ctx.json(new ApplicationsResponse(out));
     }
 
-    private static void getApplication(Context ctx, State s) {
+    private static void getApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Application app = application(s, ctx.pathParam("appId"));
         ctx.json(toSummary(app, s.specs().findCurrentByApplication(app.id()).orElse(null)));
     }
 
-    private static void getCurrentSpec(Context ctx, State s) {
+    private static void getCurrentSpec(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String appId = ctx.pathParam("appId");
         OpenApiSpec spec = s.specs().findCurrentByApplication(appId).orElseThrow(() -> HttpError.notFound("OpenApiSpec", appId));
         ctx.json(SpecResponse.from(spec));
     }
 
-    private static void listVersions(Context ctx, State s) {
+    private static void listVersions(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var specs = s.specs().findAllByApplication(ctx.pathParam("appId"));
         ctx.json(new VersionsResponse(specs.stream().map(VersionSummary::from).toList()));
     }
 
-    private static void getVersion(Context ctx, State s) {
+    private static void getVersion(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String appId = ctx.pathParam("appId");
         String specId = ctx.pathParam("specId");
@@ -110,7 +110,7 @@ public final class DeveloperBff {
         ctx.json(SpecResponse.from(spec));
     }
 
-    private static void listEventTypes(Context ctx, State s) {
+    private static void listEventTypes(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Application app = application(s, ctx.pathParam("appId"));
         var out = s.eventTypes().findByApplication(app.code()).stream().map(EventTypeSummary::from).toList();
@@ -119,7 +119,7 @@ public final class DeveloperBff {
 
     /// Captures the live generated platform OpenAPI document and runs the
     /// sync use case against the seeded `platform` application row.
-    private static void syncPlatformOpenApi(Context ctx, State s) {
+    private static void syncPlatformOpenApi(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Application app = s.applications().findByCode(PLATFORM_APPLICATION_CODE)
                 .orElseThrow(() -> UseCaseException.internal("SEED", "platform application missing - run seed", null));

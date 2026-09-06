@@ -21,8 +21,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -60,7 +60,7 @@ public final class DispatchPoolApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/dispatch-pools", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/dispatch-pools", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/dispatch-pools/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -73,53 +73,53 @@ public final class DispatchPoolApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, DISPATCH_POOL_VIEW);
         List<DispatchPool> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), DispatchPool::clientId);
         ctx.json(DispatchPoolListResponse.from(visible));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, DISPATCH_POOL_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(DispatchPoolResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("DispatchPool", id)))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         var cmd = ctx.bodyAsClass(CreateDispatchPoolRequest.class).toCommand();
         var event = CreateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.poolId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         var cmd = ctx.bodyAsClass(UpdateDispatchPoolRequest.class).toCommand(ctx.pathParam("id"));
         UpdateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void archive(Context ctx, State s) {
+    private static void archive(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         ArchiveDispatchPool.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void suspend(Context ctx, State s) {
+    private static void suspend(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         SuspendDispatchPool.of(s.repo()).run(s.uow(), new SuspendCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
         ActivateDispatchPool.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_POOL_DELETE);
         DeleteDispatchPool.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -129,12 +129,12 @@ public final class DispatchPoolApi {
 
     /// Query params → filter; an absent or empty value is no filter. There is
     /// no default status: archived pools are listed unless `status` says otherwise.
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         return new ListFilter(queryParam(ctx, "status"), queryParam(ctx, "clientId"));
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

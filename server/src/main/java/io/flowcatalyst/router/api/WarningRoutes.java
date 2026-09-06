@@ -3,8 +3,8 @@ package io.flowcatalyst.router.api;
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.observability.Warnings;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -25,7 +25,7 @@ import java.util.UUID;
 final class WarningRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/warnings", ctx -> monitoringWarnings(ctx, s));
         routes.get(p + "/monitoring/warnings/unacknowledged", ctx -> unacknowledgedWarnings(ctx, s));
@@ -41,17 +41,17 @@ final class WarningRoutes {
         routes.get(p + "/warnings/severity/{severity}", ctx -> warningsBySeverity(ctx, s));
     }
 
-    private static void monitoringWarnings(Context ctx, State s) {
+    private static void monitoringWarnings(Exchange ctx, State s) {
         var list = new ArrayList<>(s.warnings().active(Duration.ofMinutes(30)));
         list.sort(Comparator.comparing(WarningStore.Notice::createdAt).reversed());
         ctx.json(list.stream().map(WarningRoutes::wire).toList());
     }
 
-    private static void unacknowledgedWarnings(Context ctx, State s) {
+    private static void unacknowledgedWarnings(Exchange ctx, State s) {
         ctx.json(s.warnings().unacknowledged().stream().map(WarningRoutes::wire).toList());
     }
 
-    private static void warningsBySeverity(Context ctx, State s) {
+    private static void warningsBySeverity(Exchange ctx, State s) {
         String want = ctx.pathParam("severity");
         ctx.json(s.warnings().snapshot().warnings().stream()
                 .filter(w -> matchesSeverity(w.severity(), want))
@@ -59,7 +59,7 @@ final class WarningRoutes {
                 .toList());
     }
 
-    private static void criticalWarnings(Context ctx, State s) {
+    private static void criticalWarnings(Exchange ctx, State s) {
         // Every CRITICAL warning, acknowledged or not (spec: "acked or not") —
         // deliberately NOT WarningStore#critical(), which is unacked-only.
         ctx.json(s.warnings().snapshot().warnings().stream()
@@ -68,7 +68,7 @@ final class WarningRoutes {
                 .toList());
     }
 
-    private static void listWarnings(Context ctx, State s) {
+    private static void listWarnings(Exchange ctx, State s) {
         List<WarningStore.Notice> base = "false".equals(ctx.queryParam("acknowledged"))
                 ? s.warnings().unacknowledged()
                 : s.warnings().snapshot().warnings();
@@ -85,7 +85,7 @@ final class WarningRoutes {
         ctx.json(filtered.stream().map(WarningRoutes::wire).toList());
     }
 
-    private static void acknowledgeWarning(Context ctx, State s) {
+    private static void acknowledgeWarning(Exchange ctx, State s) {
         String idText = ctx.pathParam("id");
         UUID id;
         try {
@@ -101,7 +101,7 @@ final class WarningRoutes {
         }
     }
 
-    private static void acknowledgeAllWarnings(Context ctx, State s) {
+    private static void acknowledgeAllWarnings(Exchange ctx, State s) {
         long n = 0;
         for (var w : s.warnings().unacknowledged()) {
             if (s.warnings().acknowledge(w.id())) {

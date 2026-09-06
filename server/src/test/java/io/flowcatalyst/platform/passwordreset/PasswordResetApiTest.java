@@ -121,9 +121,9 @@ class PasswordResetApiTest {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
                 }, ApprovalQueue.none(), false, MOVABLE);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            PasswordResetApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, state);
         });
     }
 

@@ -11,8 +11,8 @@ import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -45,7 +45,7 @@ public final class MeApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/me", Auth.scoped(ctx -> whoami(ctx, s)));
         routes.get("/api/me/applications", Auth.scoped(ctx -> myApplications(ctx, s)));
         routes.get("/api/me/clients", Auth.scoped(ctx -> myClients(ctx, s)));
@@ -62,7 +62,7 @@ public final class MeApi {
     /// full platform-wide access instead). `name`, `email` and `active` are
     /// the identity fields only the principal row carries; a caller whose
     /// principal no longer exists gets 404 (bff spec §8).
-    private static void whoami(Context ctx, State s) {
+    private static void whoami(Exchange ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         Principal p = s.principals().findById(ac.principalId())
                 .orElseThrow(() -> HttpError.notFound("Principal", ac.principalId()));
@@ -73,13 +73,13 @@ public final class MeApi {
 
     /// Every application (active and inactive), filtered to the caller's
     /// accessible set unless [AuthContext#allApplications()].
-    private static void myApplications(Context ctx, State s) {
+    private static void myApplications(Exchange ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         var apps = accessibleApplications(s, ac.allApplications(), Set.copyOf(ac.applications()));
         ctx.json(new ApplicationsResponse(apps, apps.size(), "")); // Go writes its zero value, "" (parity S3)
     }
 
-    private static void myClients(Context ctx, State s) {
+    private static void myClients(Exchange ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         var out = s.clients().findAll().stream()
                 .filter(c -> ac.isAnchor() || ac.canAccessClient(c.id()))
@@ -88,14 +88,14 @@ public final class MeApi {
         ctx.json(new ClientsResponse(out, out.size()));
     }
 
-    private static void myClient(Context ctx, State s) {
+    private static void myClient(Exchange ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         Client c = accessibleClient(s, ac, ctx.pathParam("clientId"));
         ctx.json(MyClientResponse.from(c));
     }
 
     /// The client's enabled application configs, joined to applications.
-    private static void myClientApplications(Context ctx, State s) {
+    private static void myClientApplications(Exchange ctx, State s) {
         AuthContext ac = requireAuthenticated(ctx);
         Client c = accessibleClient(s, ac, ctx.pathParam("clientId"));
         Set<String> enabled = s.clientConfigs().findByClient(c.id()).stream()
@@ -109,7 +109,7 @@ public final class MeApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     /// `null` (unbound / test-header-less) reads as `UNAUTHENTICATED`, same as [Checks].
-    private static AuthContext requireAuthenticated(Context ctx) {
+    private static AuthContext requireAuthenticated(Exchange ctx) {
         AuthContext ac = Auth.current();
         if (ac == null) throw HttpError.unauthenticated();
         return ac;

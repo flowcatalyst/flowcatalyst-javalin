@@ -67,9 +67,9 @@ class ProcessingApiTest {
     static void start() throws IOException {
         repo = new DispatchJobRepository(DS);
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            ProcessingApi.register(cfg.routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         });
         subscriber = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         subscriber.start();
@@ -396,9 +396,9 @@ class ProcessingApiTest {
     void signedDeliveryCarriesAVerifiableHmacSignature() throws IOException {
         String secret = "signing-secret-do-not-use-in-prod";
         DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved("bearer-token-value", secret);
-        try (TestHttp signedHttp = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            ProcessingApi.register(cfg.routes, new ProcessingApi.State(repo, verifier,
+        try (TestHttp signedHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient()), creds, Clock.systemUTC()));
         })) {
             String id = seedJob(Seed.of(code("proc-signed")));
@@ -538,9 +538,9 @@ class ProcessingApiTest {
     }
 
     private TestHttp httpOver(FailingRepo failing) {
-        return new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            ProcessingApi.register(cfg.routes,
+        return TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes,
                     new ProcessingApi.State(failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         });
     }

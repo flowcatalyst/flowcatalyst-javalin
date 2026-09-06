@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.auth.oauth;
 
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,7 +46,7 @@ public final class ClientAuthentication {
         }
     }
 
-    public static Optional<BasicCredentials> basicCredentials(Context ctx) {
+    public static Optional<BasicCredentials> basicCredentials(Exchange ctx) {
         String h = ctx.header("Authorization");
         if (h == null) {
             return Optional.empty();
@@ -69,7 +69,7 @@ public final class ClientAuthentication {
     }
 
     /// Resolves and verifies the client from Basic auth, else the body pair.
-    public static Result authenticateClient(OAuthState s, Context ctx, String bodyClientId, String bodyClientSecret) {
+    public static Result authenticateClient(OAuthState s, Exchange ctx, String bodyClientId, String bodyClientSecret) {
         String clientId;
         String clientSecret;
         Optional<BasicCredentials> basic = basicCredentials(ctx);

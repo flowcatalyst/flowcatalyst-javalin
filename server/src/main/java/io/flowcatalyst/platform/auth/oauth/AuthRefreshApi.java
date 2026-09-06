@@ -6,8 +6,8 @@ import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import tools.jackson.databind.JsonNode;
 
 import java.util.LinkedHashMap;
@@ -27,11 +27,11 @@ public final class AuthRefreshApi {
     private AuthRefreshApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.post("/auth/refresh", ctx -> refresh(ctx, s));
     }
 
-    static void refresh(Context ctx, OAuthState s) {
+    static void refresh(Exchange ctx, OAuthState s) {
         String raw;
         try {
             JsonNode body = Json.MAPPER.readTree(ctx.body());
@@ -74,7 +74,7 @@ public final class AuthRefreshApi {
     /// Go's `writeUnauthorized` on this handler: the login surface's own 401
     /// envelope (`{"code":"UNAUTHENTICATED"}`, auth-core §5 row 2) with the
     /// cookie realm — not the platform `error` key. Parity S2.
-    private static void unauthenticated(Context ctx, String message) {
+    private static void unauthenticated(Exchange ctx, String message) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"fc_session\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }

@@ -5,8 +5,8 @@ import io.flowcatalyst.platform.dispatchjob.jfr.DispatchProcessedEvent;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -83,11 +83,11 @@ public final class ProcessingApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/api/dispatch/process", ctx -> serve(ctx, s));
     }
 
-    private static void serve(Context ctx, State s) {
+    private static void serve(Exchange ctx, State s) {
         // Reject on the declared Content-Length BEFORE buffering the body — same reasoning as
         // SettledApi's cap (audit finding); `contentLength()` is -1 for a chunked body with no
         // declared length, so the post-read check below still catches that case.
@@ -201,7 +201,7 @@ public final class ProcessingApi {
         return new GroupHoldOutcome.Blocked();
     }
 
-    private static void deliver(Context ctx, State s, DispatchJob job) {
+    private static void deliver(Exchange ctx, State s, DispatchJob job) {
         try {
             s.repo().markInProgress(job.id(), job.createdAt());
         } catch (RuntimeException e) {
@@ -320,7 +320,7 @@ public final class ProcessingApi {
 
     /// `TrimPrefix(Authorization, "Bearer ")`: `null` when the header is
     /// absent or the (trimmed) token is empty — Go's `token == ""` check.
-    private static String bearerToken(Context ctx) {
+    private static String bearerToken(Exchange ctx) {
         String header = ctx.header("Authorization");
         if (header == null) {
             return null;
@@ -330,7 +330,7 @@ public final class ProcessingApi {
         return token.isEmpty() ? null : token;
     }
 
-    private static void ack(Context ctx, int status, boolean ackValue, String message) {
+    private static void ack(Exchange ctx, int status, boolean ackValue, String message) {
         ctx.status(status).json(new ProcessResponse(ackValue, message));
     }
 

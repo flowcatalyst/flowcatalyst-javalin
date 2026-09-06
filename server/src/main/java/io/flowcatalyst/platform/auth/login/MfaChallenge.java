@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.auth.login;
 
 import io.flowcatalyst.platform.principal.Principal;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.Map;
 import java.util.Optional;
@@ -23,7 +23,7 @@ public interface MfaChallenge {
     }
 
     /// Empty when the login may complete now.
-    Optional<Challenge> evaluate(Principal principal, Context ctx);
+    Optional<Challenge> evaluate(Principal principal, Exchange ctx);
 
     static MfaChallenge none() {
         return (_, _) -> Optional.empty();

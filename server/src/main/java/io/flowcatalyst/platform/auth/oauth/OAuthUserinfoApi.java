@@ -4,8 +4,8 @@ import io.flowcatalyst.platform.auth.token.ClaimShapes;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,12 +24,12 @@ public final class OAuthUserinfoApi {
     private OAuthUserinfoApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.get("/oauth/userinfo", ctx -> userinfo(ctx, s));
         routes.post("/oauth/userinfo", ctx -> userinfo(ctx, s));
     }
 
-    static void userinfo(Context ctx, OAuthState s) {
+    static void userinfo(Exchange ctx, OAuthState s) {
         String header = ctx.header("Authorization");
         if (header == null || header.isEmpty()) {
             OAuthError.of(401, "invalid_request", "Missing Authorization header").write(ctx);

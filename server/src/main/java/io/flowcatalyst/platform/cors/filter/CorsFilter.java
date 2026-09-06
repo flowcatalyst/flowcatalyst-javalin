@@ -1,9 +1,8 @@
 package io.flowcatalyst.platform.cors.filter;
 
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.http.HandlerType;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
 
 import java.util.Map;
 import java.util.Objects;
@@ -64,7 +63,7 @@ public final class CorsFilter implements Handler {
     }
 
     @Override
-    public void handle(Context ctx) {
+    public void handle(Exchange ctx) {
         var origin = ctx.header(ORIGIN);
         if (origin == null) {
             return;
@@ -96,7 +95,7 @@ public final class CorsFilter implements Handler {
         ctx.skipRemainingHandlers();
     }
 
-    private static boolean isPreflight(Context ctx) {
-        return ctx.method() == HandlerType.OPTIONS && ctx.header(ACCESS_CONTROL_REQUEST_METHOD) != null;
+    private static boolean isPreflight(Exchange ctx) {
+        return "OPTIONS".equals(ctx.method()) && ctx.header(ACCESS_CONTROL_REQUEST_METHOD) != null;
     }
 }

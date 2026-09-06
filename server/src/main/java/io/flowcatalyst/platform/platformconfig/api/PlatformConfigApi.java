@@ -18,8 +18,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -58,7 +58,7 @@ public final class PlatformConfigApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/platform-config/{app}", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> get(ctx, s)));
         routes.put("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> set(ctx, s)));
@@ -70,7 +70,7 @@ public final class PlatformConfigApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String app = ctx.pathParam("app");
         Access.requireRead(s.grants(), ac, app);
@@ -78,7 +78,7 @@ public final class PlatformConfigApi {
                 .map(c -> ConfigResponse.from(visible(ac, c))).toList()));
     }
 
-    private static void get(Context ctx, State s) {
+    private static void get(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         var coordinate = coordinate(ctx);
         Access.requireRead(s.grants(), ac, coordinate.applicationCode());
@@ -89,7 +89,7 @@ public final class PlatformConfigApi {
     /// application is a command field) and runs in [SetProperty]'s authorize
     /// phase (spec §6). Answers with the value as re-read after the write, at
     /// the coordinate the command addressed (unmasked — spec §4, open question 5).
-    private static void set(Context ctx, State s) {
+    private static void set(Exchange ctx, State s) {
         var cmd = ctx.bodyAsClass(SetPropertyRequest.class).toCommand(coordinate(ctx));
         SetProperty.of(s.configs(), s.grants()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(ConfigResponse.from(configAt(s, cmd.coordinate())));
@@ -98,7 +98,7 @@ public final class PlatformConfigApi {
     /// Idempotent direct delete — no domain event, no audit row (spec §9,
     /// open question 3); committed through the unit of work so the write
     /// still goes through one transaction.
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         var coordinate = coordinate(ctx);
         Access.requireWrite(s.grants(), Auth.current(), coordinate.applicationCode());
         s.configs().findByCoordinate(coordinate).ifPresent(c -> s.uow().inTransaction(tx -> {
@@ -108,20 +108,20 @@ public final class PlatformConfigApi {
         ctx.status(204);
     }
 
-    private static void listAccess(Context ctx, State s) {
+    private static void listAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(new AccessListResponse(s.grants().findByApplication(ctx.pathParam("app")).stream()
                 .map(AccessResponse::from).toList()));
     }
 
-    private static void grant(Context ctx, State s) {
+    private static void grant(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(GrantAccessRequest.class).toCommand(ctx.pathParam("app"));
         var event = GrantAccess.of(s.grants()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.accessId()));
     }
 
-    private static void revoke(Context ctx, State s) {
+    private static void revoke(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         RevokeAccess.of(s.grants()).run(s.uow(), new RevokeAccessCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -132,7 +132,7 @@ public final class PlatformConfigApi {
     /// The coordinate a single-property route addresses: the three path
     /// segments plus the optional `clientId` query parameter (absent or
     /// empty ⇒ `GLOBAL`).
-    private static ConfigCoordinate coordinate(Context ctx) {
+    private static ConfigCoordinate coordinate(Exchange ctx) {
         return ConfigCoordinate.of(ctx.pathParam("app"), ctx.pathParam("section"), ctx.pathParam("property"),
                 blankToNull(ctx.queryParam("clientId")));
     }

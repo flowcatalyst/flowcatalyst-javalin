@@ -22,8 +22,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// [SchemaValidation] wired through [TestHttp] exactly as production wires it
-/// (`TestHttp` registers it unconditionally, next to `ResponseDefaults`) —
-/// the end-to-end proof that a real lockfile operation gets the §1 envelope,
+/// (`TestHttp` registers it unconditionally) — the end-to-end proof that a
+/// real lockfile operation gets the §1 envelope,
 /// that it runs BEFORE the handler's own domain checks without replacing
 /// them (spec §3), and that a non-lockfile route is untouched.
 /// [SchemaValidationTest] proves the message catalogue and the recursive
@@ -44,15 +44,15 @@ class SchemaValidationRouteTest {
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var eventTypeState = new EventTypeApi.State(new EventTypeRepository(TestPg.dataSource()),
                 new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            EventTypeApi.register(cfg.routes, eventTypeState);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            EventTypeApi.register(routes, eventTypeState);
             // A minimal stand-in for LoginApi's own EMAIL_REQUIRED check (auth-core.md) —
             // /auth/login is outside the lockfile, so this proves SchemaValidation left
             // the request alone without dragging in the whole login dependency graph,
             // which has its own dedicated tests.
-            cfg.routes.post("/auth/login", ctx -> {
+            routes.post("/auth/login", ctx -> {
                 var body = Json.MAPPER.readTree(ctx.body());
                 var email = body.path("email");
                 if (!email.isString() || email.stringValue().isBlank()) {

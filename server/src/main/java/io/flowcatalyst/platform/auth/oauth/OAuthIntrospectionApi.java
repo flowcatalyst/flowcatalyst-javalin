@@ -2,8 +2,8 @@ package io.flowcatalyst.platform.auth.oauth;
 
 import io.flowcatalyst.platform.auth.grant.RefreshToken;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -21,12 +21,12 @@ public final class OAuthIntrospectionApi {
     private OAuthIntrospectionApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.post("/oauth/introspect", ctx -> introspect(ctx, s));
         routes.post("/oauth/revoke", ctx -> revoke(ctx, s));
     }
 
-    static void introspect(Context ctx, OAuthState s) {
+    static void introspect(Exchange ctx, OAuthState s) {
         OAuthError auth = authenticateClientOrBearer(s, ctx);
         if (auth != null) {
             auth.write(ctx);
@@ -61,7 +61,7 @@ public final class OAuthIntrospectionApi {
         ctx.status(200).json(body);
     }
 
-    static void revoke(Context ctx, OAuthState s) {
+    static void revoke(Exchange ctx, OAuthState s) {
         OAuthError auth = authenticateClientOrBearer(s, ctx);
         if (auth != null) {
             auth.write(ctx);
@@ -80,7 +80,7 @@ public final class OAuthIntrospectionApi {
 
     /// A Bearer header, when present, must verify; otherwise the body's
     /// client credentials (or Basic) must authenticate.
-    static OAuthError authenticateClientOrBearer(OAuthState s, Context ctx) {
+    static OAuthError authenticateClientOrBearer(OAuthState s, Exchange ctx) {
         String bearer = AccessTokenReader.bearer(ctx.header("Authorization"));
         if (bearer != null) {
             return s.tokens().read(bearer).isPresent() ? null : OAuthError.invalidToken("Token is invalid or expired");

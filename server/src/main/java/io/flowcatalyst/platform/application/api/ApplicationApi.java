@@ -39,8 +39,8 @@ import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -99,7 +99,7 @@ public final class ApplicationApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. Literal sub-paths are registered before the `{id}` ones.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/applications", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/applications", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/applications/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
@@ -120,33 +120,33 @@ public final class ApplicationApi {
 
     // ── Handlers: applications ─────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         List<ApplicationResponse> items = s.repo().findWithFilters(listFilter(ctx)).stream()
                 .map(a -> ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id()))).toList();
         ctx.json(new ApplicationListResponse(items, items.size()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         Application a = applicationById(s, ctx.pathParam("id"));
         ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         Application a = applicationByCode(s, ctx.pathParam("code"));
         ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         var cmd = ctx.bodyAsClass(CreateApplicationRequest.class).toCommand();
         var event = CreateApplication.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.applicationId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         var cmd = ctx.bodyAsClass(UpdateApplicationRequest.class).toCommand(ctx.pathParam("id"));
         UpdateApplication.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -154,7 +154,7 @@ public final class ApplicationApi {
     }
 
     /// Answers with the re-read application, as the lockfile says.
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         String id = ctx.pathParam("id");
         ActivateApplication.of(s.repo()).run(s.uow(), new ActivateCommand(id), Auth.executionContext());
@@ -163,7 +163,7 @@ public final class ApplicationApi {
     }
 
     /// Answers with the re-read application, as the lockfile says.
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
         String id = ctx.pathParam("id");
         DeactivateApplication.of(s.repo()).run(s.uow(), new DeactivateCommand(id), Auth.executionContext());
@@ -171,13 +171,13 @@ public final class ApplicationApi {
         ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_DELETE);
         DeleteApplication.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void attachServiceAccount(Context ctx, State s) {
+    private static void attachServiceAccount(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(AttachServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         AttachServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -187,7 +187,7 @@ public final class ApplicationApi {
     /// Anchor-only (spec §10): creates + attaches a dedicated service account,
     /// its `SERVICE` principal and a `CONFIDENTIAL` OAuth client atomically.
     /// The response secret is the plaintext client secret, shown exactly once.
-    private static void provisionServiceAccount(Context ctx, State s) {
+    private static void provisionServiceAccount(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var result = ProvisionServiceAccount.of(s.repo(), s.serviceAccounts(), s.principals(), s.oauthClients(), s.encryption())
                 .run(s.uow(), new ProvisionServiceAccountCommand(ctx.pathParam("id")), Auth.executionContext());
@@ -199,7 +199,7 @@ public final class ApplicationApi {
     /// Anchor-only (spec §10): a thin handler over `CreateOAuthClient`, not a
     /// new operation. `PUBLIC` (default) has no secret and PKCE required;
     /// `CONFIDENTIAL` returns a plaintext secret once.
-    private static void provisionLoginClient(Context ctx, State s) {
+    private static void provisionLoginClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var body = ctx.bodyAsClass(ProvisionLoginClientRequest.class);
         if (body.redirectUris() == null || body.redirectUris().isEmpty()) {
@@ -222,25 +222,25 @@ public final class ApplicationApi {
 
     // ── Handlers: client configs + roles ───────────────────────────────────
 
-    private static void listClientConfigs(Context ctx, State s) {
+    private static void listClientConfigs(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         ctx.json(new ClientConfigListResponse(s.configs().findByApplication(ctx.pathParam("id")).stream()
                 .map(ClientConfigResponse::from).toList()));
     }
 
-    private static void getClientConfig(Context ctx, State s) {
+    private static void getClientConfig(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         ctx.json(ClientConfigResponse.from(clientConfig(s, ctx.pathParam("id"), ctx.pathParam("clientId"))));
     }
 
-    private static void enableForClient(Context ctx, State s) {
+    private static void enableForClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = new EnableForClientCommand(ctx.pathParam("id"), ctx.pathParam("clientId"));
         EnableApplicationForClient.of(s.repo(), s.configs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void disableForClient(Context ctx, State s) {
+    private static void disableForClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = new DisableForClientCommand(ctx.pathParam("id"), ctx.pathParam("clientId"));
         DisableApplicationForClient.of(s.configs()).run(s.uow(), cmd, Auth.executionContext());
@@ -248,7 +248,7 @@ public final class ApplicationApi {
     }
 
     /// Role names registered against the application (spec §3); `[]` for an unknown id.
-    private static void listRoles(Context ctx, State s) {
+    private static void listRoles(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_VIEW);
         ctx.json(new ApplicationRolesResponse(s.roles().findByApplicationId(ctx.pathParam("id")).stream().map(Role::name).toList()));
     }
@@ -258,14 +258,14 @@ public final class ApplicationApi {
     /// Query params → filter: `type` is parsed leniently; `active` is
     /// `"true"` → active only, any other value → inactive only, absent → all
     /// (spec §3, open question 4).
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         String type = queryParam(ctx, "type");
         String active = queryParam(ctx, "active");
         return new ListFilter(type == null ? null : ApplicationType.parse(type), active == null ? null : "true".equals(active));
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

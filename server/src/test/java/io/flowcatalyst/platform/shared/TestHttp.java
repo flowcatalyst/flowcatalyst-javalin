@@ -3,12 +3,11 @@ package io.flowcatalyst.platform.shared;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.javalin.JavalinAdapter;
-import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.http.javalin.JavalinJsonMapper;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
 import io.javalin.Javalin;
-import io.javalin.config.JavalinConfig;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -26,8 +25,7 @@ public final class TestHttp implements AutoCloseable {
     private final Javalin app;
     private final HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
-    /// Set only on an instance built by [#routes(Consumer)]; `null` on one
-    /// built through the constructor below.
+    /// The registry every instance is built through (see [#routes(Consumer)]).
     private final RouteRegistry registry;
 
     /// A route the harness registers for itself, to prove the connector is
@@ -53,57 +51,19 @@ public final class TestHttp implements AutoCloseable {
     /// resolved schema table, so one instance safely serves every test.
     private static final SchemaValidation SCHEMA_VALIDATION = SchemaValidation.build(Lockfile.load(Json.MAPPER));
 
-    public TestHttp(Consumer<JavalinConfig> configure) {
-        Javalin started = null;
-        AssertionError last = null;
-        for (int attempt = 0; attempt < 3 && started == null; attempt++) {
-            Javalin candidate = Javalin.create(cfg -> {
-                cfg.startup.showJavalinBanner = false;
-                cfg.jsonMapper(new JavalinJsonMapper());
-                io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);
-                cfg.routes.before(SCHEMA_VALIDATION);
-                // Registered BEFORE the caller's routes so a catch-all of theirs
-                // still wins for every other path.
-                cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));
-                configure.accept(cfg);
-            }).start(HOST, 0);
-            try {
-                awaitReady(candidate.port(), READY_PATH);
-                started = candidate;
-            } catch (ForeignServer e) {
-                last = e;
-                candidate.stop();
-            }
-        }
-        if (started == null) {
-            throw last;
-        }
-        this.app = started;
-        this.registry = null;
-    }
-
     /// Builds a harness wired through the `io.flowcatalyst.http` seam
-    /// (`docs/spec/http-seam.md`): the same app bring-up as the constructor
-    /// above — JSON mapper, schema validation, readiness probe — but
-    /// `JavalinAdapter.install` in place of `ResponseDefaults`, handing the
-    /// resulting `Routes` to `configure`. A second lambda-taking
-    /// *constructor* would be ambiguous with the one above at call sites
-    /// (`cfg -> …` could target either `Consumer<JavalinConfig>` or
-    /// `Consumer<Routes>`), hence a static factory instead.
+    /// (`docs/spec/http-seam.md`): `JavalinAdapter.install` sets up the
+    /// platform JSON mapper's app, the 404/405 envelope and the
+    /// bodiless-response rule, then hands the resulting `Routes` to
+    /// `configure`. Kept as a static factory (rather than a public
+    /// constructor of the same shape) so the call-site name stays `routes(...)`
+    /// — the name that mattered when a second, now-deleted constructor
+    /// needed disambiguating.
     public static TestHttp routes(Consumer<Routes> configure) {
-        return new TestHttp(configure, SEAM_MARKER);
+        return new TestHttp(configure);
     }
 
-    /// Disambiguates this constructor's erasure from the one above: both
-    /// `Consumer<JavalinConfig>` and `Consumer<Routes>` erase to
-    /// `Consumer`, so a second single-argument constructor would collide.
-    /// Passed only from [#routes(Consumer)]; not otherwise meaningful.
-    private static final class SeamMarker {
-    }
-
-    private static final SeamMarker SEAM_MARKER = new SeamMarker();
-
-    private TestHttp(Consumer<Routes> configure, SeamMarker marker) {
+    private TestHttp(Consumer<Routes> configure) {
         Javalin started = null;
         AssertionError last = null;
         RouteRegistry[] registryHolder = new RouteRegistry[1];
@@ -113,9 +73,12 @@ public final class TestHttp implements AutoCloseable {
                 cfg.jsonMapper(new JavalinJsonMapper());
                 var routes = JavalinAdapter.install(cfg);
                 registryHolder[0] = routes;
-                cfg.routes.before(SCHEMA_VALIDATION);
+                routes.before(SCHEMA_VALIDATION);
                 // Registered BEFORE the caller's routes so a catch-all of theirs
-                // still wins for every other path.
+                // still wins for every other path. Deliberately on `cfg.routes`
+                // (raw Javalin), not the seam `routes`: this is harness
+                // plumbing, not a route a test registered, so it must not
+                // show up in `registry().registrations()`.
                 cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));
                 configure.accept(routes);
             }).start(HOST, 0);
@@ -134,12 +97,8 @@ public final class TestHttp implements AutoCloseable {
         this.registry = registryHolder[0];
     }
 
-    /// The registry built by [#routes(Consumer)]; only available on an
-    /// instance built that way.
+    /// The registry this instance was built through.
     public RouteRegistry registry() {
-        if (registry == null) {
-            throw new IllegalStateException("registry() is only available on a TestHttp built via TestHttp.routes(...)");
-        }
         return registry;
     }
 

@@ -9,8 +9,8 @@ import io.flowcatalyst.platform.shared.apicommon.KeysetCursor;
 import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -42,13 +42,13 @@ public final class LoginAttemptApi {
     }
 
     /// Mounts the endpoint; path, method and status code are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/login-attempts", Auth.scoped(ctx -> list(ctx, s)));
     }
 
     // ── Handler ────────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         int size = pageSize(ctx);
         List<LoginAttempt> rows = s.repo().findPage(listFilter(ctx), after(ctx), size + 1);
@@ -59,7 +59,7 @@ public final class LoginAttemptApi {
 
     /// Query params → filter (spec §3). Absent/empty → no filter; an
     /// unparseable date bound is no bound (open question 4).
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         return new ListFilter(
                 queryParam(ctx, "attemptType"),
                 queryParam(ctx, "outcome"),
@@ -72,7 +72,7 @@ public final class LoginAttemptApi {
     /// `after` → cursor, or `null` for the first page — also for a malformed
     /// token: this route's policy is "ignore", the audit list's is 400
     /// `CURSOR` (spec §3, open question 4).
-    private static KeysetCursor after(Context ctx) {
+    private static KeysetCursor after(Exchange ctx) {
         String token = queryParam(ctx, "after");
         return token == null ? null : KeysetCursor.parse(token).orElse(null);
     }
@@ -89,7 +89,7 @@ public final class LoginAttemptApi {
 
     /// `pageSize`: absent → default; out of range → default (not clamped —
     /// spec §3, open question 3); non-integer → 400 `VALIDATION` ([QueryParams]).
-    private static int pageSize(Context ctx) {
+    private static int pageSize(Exchange ctx) {
         int size = QueryParams.intParam(ctx, "pageSize").orElse(DEFAULT_PAGE_SIZE);
         return size < 1 || size > MAX_PAGE_SIZE ? DEFAULT_PAGE_SIZE : size;
     }
@@ -105,7 +105,7 @@ public final class LoginAttemptApi {
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

@@ -44,15 +44,15 @@ class AuthenticatorTest {
     }
 
     private static TestHttp server(Authenticator auth) {
-        return new TestHttp(cfg -> {
-            cfg.routes.before("/api/*", auth);
-            cfg.routes.get("/api/whoami", ctx -> {
+        return TestHttp.routes(routes -> {
+            routes.before("/api/*", auth);
+            routes.get("/api/whoami", ctx -> {
                 var ac = Auth.from(ctx);
                 ctx.result(ac == null ? "anon" : ac.principalId() + (ac.isAnchor() ? ":anchor" : ""));
             });
             // Reports the SCOPE DECISION, not the raw claim, so the assertion
             // is about what the platform will actually allow.
-            cfg.routes.get("/api/scope-check", ctx -> {
+            routes.get("/api/scope-check", ctx -> {
                 var ac = Auth.from(ctx);
                 ctx.result(ac == null ? "anon"
                         : "client=" + ac.canAccessClient(ctx.queryParam("clientId"))

@@ -23,8 +23,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -75,7 +75,7 @@ public final class TwoFactorApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         // ── public: gated by a pending / enrol MfaToken, not a session ──────
         routes.post("/auth/2fa/verify", ctx -> verify(ctx, s));
         routes.post("/auth/2fa/challenge/email", ctx -> challengeEmail(ctx, s));
@@ -101,7 +101,7 @@ public final class TwoFactorApi {
     record VerifyRequest(String mfaToken, String method, String code, boolean rememberDevice) {
     }
 
-    private static void verify(Context ctx, State s) {
+    private static void verify(Exchange ctx, State s) {
         var req = decode(ctx, VerifyRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.mfaToken(), MfaToken.Purpose.PENDING);
         if (op.isEmpty()) {
@@ -178,7 +178,7 @@ public final class TwoFactorApi {
     /// Only when the domain allows it (ruling I-Q11): mint, set the cookie,
     /// notify. A store failure is logged and the login still completes —
     /// remembering the device is a convenience, not a login precondition.
-    private static void rememberDevice(Context ctx, State s, Principal p) {
+    private static void rememberDevice(Exchange ctx, State s, Principal p) {
         DomainPolicy dp = s.policy().evaluate(p.email());
         if (!dp.rememberEnabled()) {
             return;
@@ -196,7 +196,7 @@ public final class TwoFactorApi {
         s.notifier().newTrustedDevice(p.email(), label);
     }
 
-    private static String userAgentLabel(Context ctx) {
+    private static String userAgentLabel(Exchange ctx) {
         String ua = ctx.header("User-Agent");
         if (ua == null) {
             return null;
@@ -213,7 +213,7 @@ public final class TwoFactorApi {
     record ChallengeEmailRequest(String mfaToken) {
     }
 
-    private static void challengeEmail(Context ctx, State s) {
+    private static void challengeEmail(Exchange ctx, State s) {
         var req = decode(ctx, ChallengeEmailRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.mfaToken(), MfaToken.Purpose.PENDING);
         if (op.isEmpty()) {
@@ -246,7 +246,7 @@ public final class TwoFactorApi {
     record TotpEnrollResponse(String secret, String uri, String qr) {
     }
 
-    private static void enrollTotpBegin(Context ctx, State s) {
+    private static void enrollTotpBegin(Exchange ctx, State s) {
         var req = decode(ctx, EnrollBeginRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.enrollToken(), MfaToken.Purpose.ENROLL);
         if (op.isEmpty()) {
@@ -267,7 +267,7 @@ public final class TwoFactorApi {
         ctx.json(new TotpEnrollResponse(enr.secret(), enr.uri(), enr.qr().orElse(null)));
     }
 
-    private static void enrollTotpConfirm(Context ctx, State s) {
+    private static void enrollTotpConfirm(Exchange ctx, State s) {
         var req = decode(ctx, EnrollConfirmRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.enrollToken(), MfaToken.Purpose.ENROLL);
         if (op.isEmpty()) {
@@ -290,7 +290,7 @@ public final class TwoFactorApi {
         LoginApi.completeLogin(ctx, s.login(), p, ClientIp.of(ctx), ensureRecoveryCodes(s, p));
     }
 
-    private static void enrollEmailBegin(Context ctx, State s) {
+    private static void enrollEmailBegin(Exchange ctx, State s) {
         var req = decode(ctx, EnrollBeginRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.enrollToken(), MfaToken.Purpose.ENROLL);
         if (op.isEmpty()) {
@@ -315,7 +315,7 @@ public final class TwoFactorApi {
         ctx.json(Map.of("message", "A verification code has been sent to your email."));
     }
 
-    private static void enrollEmailConfirm(Context ctx, State s) {
+    private static void enrollEmailConfirm(Exchange ctx, State s) {
         var req = decode(ctx, EnrollConfirmRequest.class);
         Optional<Principal> op = principalFromToken(ctx, s, req.enrollToken(), MfaToken.Purpose.ENROLL);
         if (op.isEmpty()) {
@@ -342,7 +342,7 @@ public final class TwoFactorApi {
 
     /// Go's sentinel-error mapping (`writeEnrollErr`), so both the
     /// token-gated and self-service enrolment routes answer the same way.
-    private static void writeEnrollErr(Context ctx, RuntimeException e) {
+    private static void writeEnrollErr(Exchange ctx, RuntimeException e) {
         switch (e) {
             case Mfa.AlreadyEnrolled ignored ->
                     HttpError.writeLoginSurface(ctx, 409, "ALREADY_ENROLLED", "that method is already set up");
@@ -382,7 +382,7 @@ public final class TwoFactorApi {
                           boolean rememberDeviceEnabled, int trustedDeviceCount) {
     }
 
-    private static void status(Context ctx, State s) {
+    private static void status(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -415,7 +415,7 @@ public final class TwoFactorApi {
     record CodeRequest(String code) {
     }
 
-    private static void selfTotpBegin(Context ctx, State s) {
+    private static void selfTotpBegin(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -435,7 +435,7 @@ public final class TwoFactorApi {
         ctx.json(new TotpEnrollResponse(enr.secret(), enr.uri(), enr.qr().orElse(null)));
     }
 
-    private static void selfTotpConfirm(Context ctx, State s) {
+    private static void selfTotpConfirm(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -458,7 +458,7 @@ public final class TwoFactorApi {
         ctx.json(Map.of("recoveryCodes", ensureRecoveryCodes(s, p)));
     }
 
-    private static void selfEmailBegin(Context ctx, State s) {
+    private static void selfEmailBegin(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -482,7 +482,7 @@ public final class TwoFactorApi {
         ctx.json(Map.of("message", "A verification code has been sent to your email."));
     }
 
-    private static void selfEmailConfirm(Context ctx, State s) {
+    private static void selfEmailConfirm(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -505,7 +505,7 @@ public final class TwoFactorApi {
         ctx.json(Map.of("recoveryCodes", ensureRecoveryCodes(s, p)));
     }
 
-    private static void removeMethod(Context ctx, State s) {
+    private static void removeMethod(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -560,7 +560,7 @@ public final class TwoFactorApi {
         return confirmed.size() == 1 && confirmed.getFirst() == method;
     }
 
-    private static void regenerateRecoveryCodes(Context ctx, State s) {
+    private static void regenerateRecoveryCodes(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -600,7 +600,7 @@ public final class TwoFactorApi {
         }
     }
 
-    private static void listTrustedDevices(Context ctx, State s) {
+    private static void listTrustedDevices(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -617,7 +617,7 @@ public final class TwoFactorApi {
         ctx.json(Map.of("devices", devices.stream().map(TrustedDeviceView::of).toList()));
     }
 
-    private static void revokeTrustedDevice(Context ctx, State s) {
+    private static void revokeTrustedDevice(Exchange ctx, State s) {
         Optional<Principal> op = principalFromSession(ctx, s);
         if (op.isEmpty()) {
             return;
@@ -643,7 +643,7 @@ public final class TwoFactorApi {
 
     /// Parses `token` for `want`, loads the active principal; any failure
     /// writes the 401 (§6.3) and returns empty.
-    private static Optional<Principal> principalFromToken(Context ctx, State s, String token, MfaToken.Purpose want) {
+    private static Optional<Principal> principalFromToken(Exchange ctx, State s, String token, MfaToken.Purpose want) {
         Optional<MfaToken.Claims> claims = s.tokens().parse(token, want);
         if (claims.isEmpty()) {
             unauthorized(ctx, "Invalid or expired session");
@@ -659,7 +659,7 @@ public final class TwoFactorApi {
 
     /// Loads the session's active principal; any failure writes 401 and
     /// returns empty — like `LoginApi#me`.
-    private static Optional<Principal> principalFromSession(Context ctx, State s) {
+    private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
             unauthorized(ctx, "Not authenticated");
@@ -673,7 +673,7 @@ public final class TwoFactorApi {
         return p;
     }
 
-    private static void unauthorized(Context ctx, String message) {
+    private static void unauthorized(Exchange ctx, String message) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
@@ -699,7 +699,7 @@ public final class TwoFactorApi {
         }
     }
 
-    private static <T> T decode(Context ctx, Class<T> type) {
+    private static <T> T decode(Exchange ctx, Class<T> type) {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (JacksonException e) {

@@ -2,8 +2,8 @@ package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.policy.CircuitBreaker;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,7 +15,7 @@ import java.util.Map;
 final class BreakerRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/circuit-breakers", ctx -> circuitBreakers(ctx, s));
         routes.get(p + "/monitoring/circuit-breakers/{name}/state", ctx -> circuitBreakerState(ctx, s));
@@ -23,7 +23,7 @@ final class BreakerRoutes {
         routes.post(p + "/monitoring/circuit-breakers/reset-all", ctx -> resetAllBreakers(ctx, s));
     }
 
-    private static void circuitBreakers(Context ctx, State s) {
+    private static void circuitBreakers(Exchange ctx, State s) {
         if (s.breakers() == null) {
             ctx.json(Map.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -43,7 +43,7 @@ final class BreakerRoutes {
                 st.recentFailures(), 0);
     }
 
-    private static void circuitBreakerState(Context ctx, State s) {
+    private static void circuitBreakerState(Exchange ctx, State s) {
         if (s.breakers() == null) {
             Http.serviceUnavailable(ctx, "breakers not configured");
             return;
@@ -58,7 +58,7 @@ final class BreakerRoutes {
                 stats.recentFailures()));
     }
 
-    private static void resetBreaker(Context ctx, State s) {
+    private static void resetBreaker(Exchange ctx, State s) {
         if (s.breakers() == null) {
             Http.serviceUnavailable(ctx, "breakers not configured");
             return;
@@ -71,7 +71,7 @@ final class BreakerRoutes {
         ctx.json(new Wire.BreakerResetResponse(true, name));
     }
 
-    private static void resetAllBreakers(Context ctx, State s) {
+    private static void resetAllBreakers(Exchange ctx, State s) {
         if (s.breakers() == null) {
             Http.serviceUnavailable(ctx, "breakers not configured");
             return;

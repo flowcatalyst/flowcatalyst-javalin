@@ -20,8 +20,8 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -59,7 +59,7 @@ public final class PortalUserApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/portal-users", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/portal-users", Auth.scoped(ctx -> ensure(ctx, s)));
         routes.post("/api/portal-users/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
@@ -69,7 +69,7 @@ public final class PortalUserApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         String clientId = ctx.queryParam("clientId");
         if (clientId == null || clientId.isBlank()) {
             throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId query param is required");
@@ -79,7 +79,7 @@ public final class PortalUserApi {
         ctx.json(new PortalUserListResponse(items));
     }
 
-    private static void ensure(Context ctx, State s) {
+    private static void ensure(Exchange ctx, State s) {
         var req = ctx.bodyAsClass(PortalUserRequest.class);
         if (req.clientId() == null || req.clientId().isBlank()) {
             throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId is required");
@@ -141,15 +141,15 @@ public final class PortalUserApi {
         ctx.json(new PortalUserResponse(identity.id(), event.created(), invited, inviteUrl, null, identity.canSignInWithPassword()));
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         setStatus(ctx, s, "ACTIVE", "Portal user activated");
     }
 
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         setStatus(ctx, s, "DISABLED", "Portal user deactivated");
     }
 
-    private static void setStatus(Context ctx, State s, String status, String message) {
+    private static void setStatus(Exchange ctx, State s, String status, String message) {
         var body = ctx.bodyAsClass(PortalUserClientBody.class);
         if (body.clientId() == null || body.clientId().isBlank()) {
             throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId is required");
@@ -161,7 +161,7 @@ public final class PortalUserApi {
         ctx.json(new StatusChangeResponse(message));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         String clientId = ctx.queryParam("clientId");
         // No CLIENT_ID_REQUIRED here (spec §5.7: `Delete` only validates `ID_REQUIRED`) —

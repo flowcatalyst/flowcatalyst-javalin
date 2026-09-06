@@ -32,8 +32,8 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -84,7 +84,7 @@ public final class ScheduledJobApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. The literal segments (`by-code`, `instances`) are
     /// registered before `{id}` so they win.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/scheduled-jobs", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/scheduled-jobs", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/scheduled-jobs/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
@@ -104,7 +104,7 @@ public final class ScheduledJobApi {
 
     // ── Job handlers ───────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         PageQuery page = PageQuery.from(ctx);
@@ -113,59 +113,59 @@ public final class ScheduledJobApi {
         ctx.json(OffsetPage.of(rows.stream().map(j -> response(s, j)).toList(), page, s.repo().countWithFilters(filter)));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ctx.json(response(s, visible(ac, job(s, ctx.pathParam("id")))));
     }
 
     /// `?clientId` selects the scope; absent = the platform-scoped job of that code.
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ctx.json(response(s, visible(ac, jobByCode(s, ctx.pathParam("code"), queryParam(ctx, "clientId")))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         requireWrite(Auth.current());
         var cmd = ctx.bodyAsClass(CreateScheduledJobRequest.class).toCommand();
         var event = CreateScheduledJob.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.scheduledJobId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         requireWrite(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateScheduledJobRequest.class).toCommand(ctx.pathParam("id"));
         UpdateScheduledJob.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), SCHEDULED_JOB_DELETE);
         DeleteScheduledJob.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void pause(Context ctx, State s) {
+    private static void pause(Exchange ctx, State s) {
         requireWrite(Auth.current());
         PauseScheduledJob.of(s.repo()).run(s.uow(), new PauseCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void resume(Context ctx, State s) {
+    private static void resume(Exchange ctx, State s) {
         requireWrite(Auth.current());
         ResumeScheduledJob.of(s.repo()).run(s.uow(), new ResumeCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void archive(Context ctx, State s) {
+    private static void archive(Exchange ctx, State s) {
         requireWrite(Auth.current());
         ArchiveScheduledJob.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     /// The body is optional: a bodiless fire carries no correlation id.
-    private static void fireNow(Context ctx, State s) {
+    private static void fireNow(Exchange ctx, State s) {
         Checks.require(Auth.current(), SCHEDULED_JOB_FIRE);
         var cmd = new FireNowCommand(ctx.pathParam("id"),
                 ctx.body().isBlank() ? null : ctx.bodyAsClass(FireNowRequest.class).correlationId());
@@ -175,7 +175,7 @@ public final class ScheduledJobApi {
 
     // ── Instance handlers ──────────────────────────────────────────────────
 
-    private static void listInstances(Context ctx, State s) {
+    private static void listInstances(Exchange ctx, State s) {
         Checks.require(Auth.current(), SCHEDULED_JOB_VIEW);
         PageQuery page = PageQuery.from(ctx);
         String status = queryParam(ctx, "status");
@@ -185,20 +185,20 @@ public final class ScheduledJobApi {
         ctx.json(OffsetPage.of(rows.stream().map(ScheduledJobInstanceResponse::from).toList(), page, s.instances().count(filter)));
     }
 
-    private static void getInstance(Context ctx, State s) {
+    private static void getInstance(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ctx.json(ScheduledJobInstanceResponse.from(visible(ac, instance(s, ctx.pathParam("instanceId")))));
     }
 
     /// A bare JSON array, oldest first, capped at [ScheduledJobInstanceRepository#MAX_LOGS].
-    private static void listInstanceLogs(Context ctx, State s) {
+    private static void listInstanceLogs(Exchange ctx, State s) {
         Checks.require(Auth.current(), SCHEDULED_JOB_VIEW);
         ctx.json(s.instances().listLogs(ctx.pathParam("instanceId"), ScheduledJobInstanceRepository.MAX_LOGS).stream()
                 .map(ScheduledJobInstanceLogResponse::from).toList());
     }
 
-    private static void writeInstanceLog(Context ctx, State s) {
+    private static void writeInstanceLog(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         requireWrite(ac);
         ScheduledJobInstance inst = instance(s, ctx.pathParam("instanceId"));
@@ -207,7 +207,7 @@ public final class ScheduledJobApi {
         ctx.status(204);
     }
 
-    private static void completeInstance(Context ctx, State s) {
+    private static void completeInstance(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         requireWrite(ac);
         ScheduledJobInstance inst = instance(s, ctx.pathParam("instanceId"));
@@ -227,7 +227,7 @@ public final class ScheduledJobApi {
     /// Query params → filter (spec §4): `clientId=platform` selects
     /// platform-scoped rows; the caller's visibility is part of the filter so
     /// `total` and the page agree.
-    private static ListFilter listFilter(Context ctx, AuthContext ac) {
+    private static ListFilter listFilter(Exchange ctx, AuthContext ac) {
         String clientId = queryParam(ctx, "clientId");
         ClientFilter client = clientId == null ? new ClientFilter.Any()
                 : clientId.equals("platform") ? new ClientFilter.PlatformOnly() : new ClientFilter.Of(clientId);
@@ -235,7 +235,7 @@ public final class ScheduledJobApi {
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

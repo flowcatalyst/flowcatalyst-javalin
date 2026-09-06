@@ -14,8 +14,8 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,13 +44,13 @@ public final class OAuthTokenApi {
     private OAuthTokenApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.post("/oauth/token", ctx -> token(ctx, s));
     }
 
     record TokenRequest(String grantType, String code, String redirectUri, String clientId, String clientSecret,
                         String codeVerifier, String refreshToken, String scope) {
-        static TokenRequest of(Context ctx) {
+        static TokenRequest of(Exchange ctx) {
             return new TokenRequest(form(ctx, "grant_type"), form(ctx, "code"), form(ctx, "redirect_uri"),
                     form(ctx, "client_id"), form(ctx, "client_secret"), form(ctx, "code_verifier"),
                     form(ctx, "refresh_token"), form(ctx, "scope"));
@@ -61,7 +61,7 @@ public final class OAuthTokenApi {
         }
     }
 
-    static void token(Context ctx, OAuthState s) {
+    static void token(Exchange ctx, OAuthState s) {
         TokenRequest req;
         try {
             req = TokenRequest.of(ctx);
@@ -122,7 +122,7 @@ public final class OAuthTokenApi {
 
     // ── client_credentials ─────────────────────────────────────────────────
 
-    private static void clientCredentials(Context ctx, OAuthState s, TokenRequest req) {
+    private static void clientCredentials(Exchange ctx, OAuthState s, TokenRequest req) {
         if (req.clientId().isEmpty()) {
             OAuthError.invalidRequest("Missing client_id").write(ctx);
             return;
@@ -201,7 +201,7 @@ public final class OAuthTokenApi {
     /// dedicated developer secret; the developer role is re-checked live so
     /// revoking it cuts off new tokens immediately. Every failure is the same
     /// 401; only a wrong secret records a DEVELOPER_TOKEN failure.
-    private static void developerCredential(Context ctx, OAuthState s, TokenRequest req) {
+    private static void developerCredential(Exchange ctx, OAuthState s, TokenRequest req) {
         Optional<Principal> found = s.principals().findById(req.clientId());
         if (found.isEmpty() || !found.get().active() || found.get().type() != PrincipalType.USER) {
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
@@ -225,7 +225,7 @@ public final class OAuthTokenApi {
         mintClientCredentials(ctx, s, p, req, AttemptType.DEVELOPER_TOKEN, "your granted permissions");
     }
 
-    private static void mintClientCredentials(Context ctx, OAuthState s, Principal p, TokenRequest req,
+    private static void mintClientCredentials(Exchange ctx, OAuthState s, Principal p, TokenRequest req,
                                               AttemptType attemptType, String deniedScopeSubject) {
         var granted = ScopeNarrowing.grant(s.resolver().ceiling(p), req.scope());
         if (granted.explicit() && granted.permissions().isEmpty()) {
@@ -247,7 +247,7 @@ public final class OAuthTokenApi {
 
     // ── authorization_code ─────────────────────────────────────────────────
 
-    private static void authorizationCode(Context ctx, OAuthState s, TokenRequest req, OAuthClient client) {
+    private static void authorizationCode(Exchange ctx, OAuthState s, TokenRequest req, OAuthClient client) {
         if (req.code().isEmpty()) {
             OAuthError.invalidRequest("Missing 'code' parameter").write(ctx);
             return;
@@ -310,7 +310,7 @@ public final class OAuthTokenApi {
     /// §5.8: the identity must exist and be ACTIVE; the access token is
     /// identity-only, the id_token (iff openid) carries empty roles, and
     /// there is never a refresh token.
-    private static void redeemPortalCode(Context ctx, OAuthState s, AuthorizationCode code, OAuthClient client) {
+    private static void redeemPortalCode(Exchange ctx, OAuthState s, AuthorizationCode code, OAuthClient client) {
         if (s.portalSubjects() == null) {
             OAuthError.invalidGrant("Portal subjects are not supported").write(ctx);
             return;
@@ -341,7 +341,7 @@ public final class OAuthTokenApi {
 
     // ── refresh_token ──────────────────────────────────────────────────────
 
-    private static void refreshToken(Context ctx, OAuthState s, TokenRequest req, OAuthClient authenticated) {
+    private static void refreshToken(Exchange ctx, OAuthState s, TokenRequest req, OAuthClient authenticated) {
         if (req.refreshToken().isEmpty()) {
             OAuthError.invalidRequest("Missing refresh_token parameter").write(ctx);
             return;
@@ -398,7 +398,7 @@ public final class OAuthTokenApi {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    static void writeToken(Context ctx, OAuthState s, String accessToken, String refreshToken, String idToken, String scope) {
+    static void writeToken(Exchange ctx, OAuthState s, String accessToken, String refreshToken, String idToken, String scope) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("access_token", accessToken);
         body.put("token_type", "Bearer");
@@ -427,7 +427,7 @@ public final class OAuthTokenApi {
         return scope == null || scope.isBlank() ? List.of() : Arrays.asList(scope.trim().split("\\s+"));
     }
 
-    static String form(Context ctx, String name) {
+    static String form(Exchange ctx, String name) {
         String v = ctx.formParam(name);
         return v == null ? "" : v;
     }

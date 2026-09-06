@@ -120,10 +120,10 @@ class ChangePasswordApiTest {
                 io.flowcatalyst.platform.auth.login.MfaChallenge.none(), new SessionCookie(false), DS, Clock.systemUTC());
         var state = new ChangePasswordApi.State(loginState, MFA, DEVICE_COOKIE, GRANTS, NOTIFIER);
 
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before(authenticator());
-            ChangePasswordApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before(authenticator());
+            ChangePasswordApi.register(routes, state);
         });
     }
 

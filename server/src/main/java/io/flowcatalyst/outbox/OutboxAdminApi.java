@@ -1,8 +1,8 @@
 package io.flowcatalyst.outbox;
 
-import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
+import io.flowcatalyst.http.Routes;
+import io.flowcatalyst.http.javalin.JavalinJsonMapper;
 import io.javalin.Javalin;
-import io.javalin.router.JavalinDefaultRoutingApi;
 
 /// The loopback-only outbox admin surface (spec §7): `GET /outbox/groups`,
 /// `GET /outbox/groups/blocked`, `POST
@@ -20,7 +20,8 @@ public final class OutboxAdminApi {
         Javalin app = Javalin.create(cfg -> {
             cfg.startup.showJavalinBanner = false;
             cfg.jsonMapper(new JavalinJsonMapper());
-            register(cfg.routes, processor);
+            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
+            register(routes, processor);
         });
         app.start("127.0.0.1", port);
         return app;
@@ -30,7 +31,7 @@ public final class OutboxAdminApi {
     /// CONVENTIONS §1 uses everywhere else, so a test can register against
     /// [io.flowcatalyst.platform.shared.TestHttp] instead of binding a real
     /// loopback listener.
-    public static void register(JavalinDefaultRoutingApi routes, OutboxProcessor processor) {
+    public static void register(Routes routes, OutboxProcessor processor) {
         routes.get("/outbox/groups", ctx -> ctx.json(processor.groupStates()));
         routes.get("/outbox/groups/blocked", ctx -> ctx.json(processor.blockedGroups()));
         routes.post("/outbox/groups/{group}/pause", ctx -> {

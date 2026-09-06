@@ -176,15 +176,15 @@ class OAuthProviderTest {
         }
 
         governor = new Governor(new Governor.Config(60, 1000));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
             OAuthState s = state();
-            OAuthAuthorizeApi.register(cfg.routes, s);
-            OAuthTokenApi.register(cfg.routes, s);
-            OAuthIntrospectionApi.register(cfg.routes, s);
-            OAuthUserinfoApi.register(cfg.routes, s);
-            OAuthDiscoveryApi.register(cfg.routes, s);
-            AuthRefreshApi.register(cfg.routes, s);
+            OAuthAuthorizeApi.register(routes, s);
+            OAuthTokenApi.register(routes, s);
+            OAuthIntrospectionApi.register(routes, s);
+            OAuthUserinfoApi.register(routes, s);
+            OAuthDiscoveryApi.register(routes, s);
+            AuthRefreshApi.register(routes, s);
         });
     }
 
@@ -677,12 +677,12 @@ class OAuthProviderTest {
     @Test
     void aFloodFromOneClientIdIsAnRfc6749RateLimitAnswer() {
         Governor tight = new Governor(new Governor.Config(1, 1));
-        try (var h = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
             OAuthState s = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
                     ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER), RESOLVER, ClaimLabels.none(), Optional.of(ENC), null,
                     null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null);
-            OAuthTokenApi.register(cfg.routes, s);
+            OAuthTokenApi.register(routes, s);
         })) {
             String form = "grant_type=client_credentials";
             var first = h.post("/oauth/token", form, "Content-Type", "application/x-www-form-urlencoded", basic(svc.clientId(), SECRET)[0], basic(svc.clientId(), SECRET)[1]);

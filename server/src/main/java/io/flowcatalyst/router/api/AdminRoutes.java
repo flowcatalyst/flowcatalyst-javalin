@@ -1,8 +1,8 @@
 package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 /// Standby status, stream health and the config snapshot (§9.1).
 ///
@@ -12,7 +12,7 @@ import io.javalin.router.JavalinDefaultRoutingApi;
 final class AdminRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/standby-status", ctx -> standbyStatus(ctx, s));
         routes.get(p + "/monitoring/stream-health", ctx -> streamHealth(ctx, s));
@@ -22,7 +22,7 @@ final class AdminRoutes {
         routes.post(p + "/config/reload", ctx -> configReload(ctx, s));
     }
 
-    private static void standbyStatus(Context ctx, State s) {
+    private static void standbyStatus(Exchange ctx, State s) {
         if (s.election() == null) {
             ctx.json(new Wire.StandbyStatusResponse(false, true, "default"));
             return;
@@ -38,15 +38,15 @@ final class AdminRoutes {
     /// No stream processor provider is wired anywhere in this build, so this
     /// is always the documented no-provider fallback (spec §9.1 note; Go
     /// `handlers_misc.go: streamHealth`, nil-provider branch).
-    private static void streamHealth(Context ctx, State s) {
+    private static void streamHealth(Exchange ctx, State s) {
         ctx.json(new Wire.StreamHealthResponse(false, "NOT_CONFIGURED", "no stream processor configured in this build"));
     }
 
-    private static void streamProbe(Context ctx) {
+    private static void streamProbe(Exchange ctx) {
         ctx.json(new Wire.StreamProbeResponse("NOT_CONFIGURED"));
     }
 
-    private static void localConfig(Context ctx, State s) {
+    private static void localConfig(Exchange ctx, State s) {
         ctx.json(new Wire.LocalConfigResponse(s.version(), s.warnings().count(), s.warnings().critical().size()));
     }
 
@@ -58,7 +58,7 @@ final class AdminRoutes {
     /// before this route existed, or one with no router), this degrades to
     /// the old no-op-200 shape rather than erroring: a dashboard reload
     /// button on such an instance still gets a 200, just `reloaded: false`.
-    private static void configReload(Context ctx, State s) {
+    private static void configReload(Exchange ctx, State s) {
         var server = s.server();
         if (server == null) {
             ctx.json(Wire.ConfigReloadResponse.UNAVAILABLE);

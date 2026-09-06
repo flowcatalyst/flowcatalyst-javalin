@@ -23,15 +23,15 @@ class HttpErrorTest {
 
     @BeforeAll
     static void start() {
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.get("/validation", _ -> { throw UseCaseException.validation("CODE_REQUIRED", "Event type code is required"); });
-            cfg.routes.get("/authz", _ -> { throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required"); });
-            cfg.routes.get("/notfound", _ -> { throw HttpError.notFound("EventType", "evt_123"); });
-            cfg.routes.get("/conflict", _ -> { throw UseCaseException.conflict("CODE_EXISTS", "Event type with code 'x' already exists"); });
-            cfg.routes.get("/rule", _ -> { throw UseCaseException.businessRule("ALREADY_ACTIVE", "already active"); });
-            cfg.routes.get("/internal", _ -> { throw UseCaseException.internal("PERSIST", "persist failed", new RuntimeException("boom")); });
-            cfg.routes.get("/details", _ -> {
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.get("/validation", _ -> { throw UseCaseException.validation("CODE_REQUIRED", "Event type code is required"); });
+            routes.get("/authz", _ -> { throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required"); });
+            routes.get("/notfound", _ -> { throw HttpError.notFound("EventType", "evt_123"); });
+            routes.get("/conflict", _ -> { throw UseCaseException.conflict("CODE_EXISTS", "Event type with code 'x' already exists"); });
+            routes.get("/rule", _ -> { throw UseCaseException.businessRule("ALREADY_ACTIVE", "already active"); });
+            routes.get("/internal", _ -> { throw UseCaseException.internal("PERSIST", "persist failed", new RuntimeException("boom")); });
+            routes.get("/details", _ -> {
                 // Insertion-ordered: the assertion pins the wire bytes, and Map.of() iterates in no fixed order.
                 var detail = new LinkedHashMap<String, Object>();
                 detail.put("message", "invalid integer");
@@ -40,15 +40,15 @@ class HttpErrorTest {
                 throw new UseCaseException(UseCaseError.validation("VALIDATION", "validation failed")
                         .withDetails(Map.of("errors", List.of(detail))));
             });
-            cfg.routes.get("/boom", _ -> { throw new IllegalStateException("unexpected"); });
-            cfg.routes.get("/corrupt-row", _ -> {
+            routes.get("/boom", _ -> { throw new IllegalStateException("unexpected"); });
+            routes.get("/corrupt-row", _ -> {
                 throw new CorruptRowException("widget", "wid_123", new IllegalStateException("unrecognised status: BOGUS"));
             });
-            cfg.routes.get("/npe", _ -> { throw new NullPointerException(); });
-            cfg.routes.post("/echo", ctx -> ctx.json(ctx.bodyAsClass(Body.class)));
-            cfg.routes.get("/bare", ctx -> HttpError.write(ctx, "INVALID_JSON", "bad body"));
-            cfg.routes.get("/unauthorized", ctx -> HttpError.unauthorized(ctx, "no session"));
-            cfg.routes.get("/invalid-token", ctx -> HttpError.writeInvalidToken(ctx, ""));
+            routes.get("/npe", _ -> { throw new NullPointerException(); });
+            routes.post("/echo", ctx -> ctx.json(ctx.bodyAsClass(Body.class)));
+            routes.get("/bare", ctx -> HttpError.write(ctx, "INVALID_JSON", "bad body"));
+            routes.get("/unauthorized", ctx -> HttpError.unauthorized(ctx, "no session"));
+            routes.get("/invalid-token", ctx -> HttpError.writeInvalidToken(ctx, ""));
         });
     }
 

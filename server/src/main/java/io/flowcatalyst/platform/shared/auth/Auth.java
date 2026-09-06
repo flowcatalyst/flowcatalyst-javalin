@@ -1,8 +1,8 @@
 package io.flowcatalyst.platform.shared.auth;
 
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
 
 import java.util.Optional;
 
@@ -39,12 +39,12 @@ public final class Auth {
 
     /// Attaches the context to the request (the authenticator calls this;
     /// tests may too to bypass the HTTP layer — Go `middleware.WithAuth`).
-    public static void bind(Context ctx, AuthContext ac) {
+    public static void bind(Exchange ctx, AuthContext ac) {
         ctx.attribute(ATTR, ac);
     }
 
     /// The request's context, or `null` when unauthenticated (Go `FromContext`).
-    public static AuthContext from(Context ctx) {
+    public static AuthContext from(Exchange ctx) {
         return ctx.attribute(ATTR);
     }
 
@@ -95,7 +95,7 @@ public final class Auth {
     }
 
     /// [#executionContext()] from the request rather than the scoped value.
-    public static ExecutionContext executionContext(Context ctx) {
+    public static ExecutionContext executionContext(Exchange ctx) {
         return executionContext(from(ctx));
     }
 

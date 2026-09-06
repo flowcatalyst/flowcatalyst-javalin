@@ -19,8 +19,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -66,7 +66,7 @@ public final class RolesBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/roles", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/bff/roles", Auth.scoped(ctx -> create(ctx, s)));
         routes.post("/bff/roles/sync-platform", Auth.scoped(ctx -> syncPlatform(ctx, s)));
@@ -85,7 +85,7 @@ public final class RolesBff {
     /// §6 D3: Java may filter in SQL — kept in-memory here, matching the
     /// aggregate's own read side, since the row counts are the same ones
     /// `/api/roles` already reads unfiltered).
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         String application = queryParam(ctx, "application");
         String source = queryParam(ctx, "source");
@@ -96,26 +96,26 @@ public final class RolesBff {
         ctx.json(RoleListResponse.from(rows));
     }
 
-    private static void getByName(Context ctx, State s) {
+    private static void getByName(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         ctx.json(RoleResponse.from(roleNamed(s, ctx.pathParam("roleName"))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateRoleRequest.class).toCommand();
         var event = CreateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.roleId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateRoleRequest.class).toCommand(roleNamed(s, ctx.pathParam("roleName")).id());
         UpdateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = new DeleteCommand(roleNamed(s, ctx.pathParam("roleName")).id());
         DeleteRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
@@ -125,7 +125,7 @@ public final class RolesBff {
     /// Every **active** application, not the roles' codes — Go's
     /// `shared/bff/roles.go filterApplications` (the roles' codes are the
     /// `/api/roles/filters/applications` route). Found by the parity harness (S3).
-    private static void filterApplications(Context ctx, State s) {
+    private static void filterApplications(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         List<ApplicationOption> options = s.applications()
                 .findWithFilters(new ApplicationRepository.ListFilter(null, true)).stream()
@@ -135,7 +135,7 @@ public final class RolesBff {
     }
 
     /// Anchor-only: upserts the built-in role catalogue (`seed.PlatformRoles`).
-    private static void syncPlatform(Context ctx, State s) {
+    private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var event = SyncPlatformRoles.of(s.roles(), PlatformRoles.all()).run(s.uow(), new SyncPlatformRolesCommand(), Auth.executionContext());
         ctx.json(new SyncPlatformResponse(event.created(), event.updated(), event.removed(), event.total()));
@@ -147,13 +147,13 @@ public final class RolesBff {
     /// application and deduplicated by code (bff spec §6): seeded entries win
     /// a code collision (a catalogue row never overrides a builtin's
     /// description with a blank one).
-    private static void listPermissions(Context ctx, State s) {
+    private static void listPermissions(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         String application = queryParam(ctx, "application");
         ctx.json(PermissionListResponse.from(catalogue(s, application)));
     }
 
-    private static void createPermission(Context ctx, State s) {
+    private static void createPermission(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var req = ctx.bodyAsClass(CreatePermissionRequest.class);
         String code = req.application() + ":" + req.context() + ":" + req.aggregate() + ":" + req.action();
@@ -165,7 +165,7 @@ public final class RolesBff {
         ctx.status(201).json(PermissionResponse.from(p));
     }
 
-    private static void getPermission(Context ctx, State s) {
+    private static void getPermission(Exchange ctx, State s) {
         Checks.require(Auth.current(), ROLE_VIEW);
         String code = ctx.pathParam("permission");
         Permission p = catalogue(s, null).stream().filter(e -> e.code().equals(code)).findFirst()
@@ -179,7 +179,7 @@ public final class RolesBff {
         return s.roles().findByName(name).orElseThrow(() -> HttpError.notFound("Role", name));
     }
 
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

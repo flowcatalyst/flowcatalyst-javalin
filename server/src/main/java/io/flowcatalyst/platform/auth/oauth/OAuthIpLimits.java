@@ -3,8 +3,8 @@ package io.flowcatalyst.platform.auth.oauth;
 import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.ratelimit.Governor;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 /// The per-IP layer in front of the provider (`docs/spec/auth-core.md`
 /// §6.2 mounting; Go `GovernorMiddleware(oauthTokenIPGov)` →
@@ -18,7 +18,7 @@ public final class OAuthIpLimits {
     private OAuthIpLimits() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s, Governor tokenIpGovernor) {
+    public static void register(Routes routes, OAuthState s, Governor tokenIpGovernor) {
         routes.before("/oauth/token", ctx -> {
             String ip = ClientIp.of(ctx);
             if (tokenIpGovernor != null) {
@@ -41,7 +41,7 @@ public final class OAuthIpLimits {
         });
     }
 
-    private static void halt(Context ctx, long retryAfterSecs) {
+    private static void halt(Exchange ctx, long retryAfterSecs) {
         OAuthError.writeRateLimited(ctx, retryAfterSecs, "rate limit exceeded");
         ctx.skipRemainingHandlers();
     }

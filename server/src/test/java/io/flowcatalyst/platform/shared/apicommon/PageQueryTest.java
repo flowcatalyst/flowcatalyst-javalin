@@ -14,9 +14,9 @@ class PageQueryTest {
 
     @BeforeAll
     static void start() {
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.get("/q", ctx -> {
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.get("/q", ctx -> {
                 var q = PageQuery.from(ctx);
                 ctx.result(q.pageIndex() + "/" + q.pageSize() + "/" + q.offset() + "/" + q.limit());
             });

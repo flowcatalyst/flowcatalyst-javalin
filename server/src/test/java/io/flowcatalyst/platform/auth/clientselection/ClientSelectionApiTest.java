@@ -86,10 +86,10 @@ class ClientSelectionApiTest {
         var resolver = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
         var state = new ClientSelectionApi.State(PRINCIPALS, new ClientRepository(DS), new ClientAccessGrantRepository(DS), TOKEN_ISSUER,
                 resolver, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/auth/client/*", new Authenticator(VERIFIER, resolver, Authenticator.Config.of(false)));
-            ClientSelectionApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/auth/client/*", new Authenticator(VERIFIER, resolver, Authenticator.Config.of(false)));
+            ClientSelectionApi.register(routes, state);
         });
     }
 

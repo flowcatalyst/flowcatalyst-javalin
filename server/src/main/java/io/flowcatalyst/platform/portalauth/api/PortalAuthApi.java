@@ -19,8 +19,8 @@ import io.flowcatalyst.platform.portalidentity.PortalInviteEmailer;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,7 +66,7 @@ public final class PortalAuthApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/portal/authorize", ctx -> authorize(ctx, s));
         routes.post("/portal/auth/check-domain", ctx -> checkDomain(ctx, s));
         routes.post("/portal/auth/login", ctx -> login(ctx, s));
@@ -75,7 +75,7 @@ public final class PortalAuthApi {
 
     // ── GET /portal/authorize (spec §5.1) ───────────────────────────────────
 
-    private static void authorize(Context ctx, State s) {
+    private static void authorize(Exchange ctx, State s) {
         String state = ctx.queryParam("state");
         if (state == null || state.isBlank()) {
             OAuthError.invalidRequest("`state` parameter is required for CSRF protection").writePlain(ctx); // Go writes the plain envelope here, no cache headers (parity S3)
@@ -137,7 +137,7 @@ public final class PortalAuthApi {
 
     // ── POST /portal/auth/check-domain (spec §5.2) ──────────────────────────
 
-    private static void checkDomain(Context ctx, State s) {
+    private static void checkDomain(Exchange ctx, State s) {
         CheckDomainRequest req = readBody(ctx, CheckDomainRequest.class);
         PortalLoginFlow flow = liveFlow(s, req.flowId());
         String domain = domainOf(req.email());
@@ -155,7 +155,7 @@ public final class PortalAuthApi {
 
     // ── POST /portal/auth/login (spec §5.3) ─────────────────────────────────
 
-    private static void login(Context ctx, State s) {
+    private static void login(Exchange ctx, State s) {
         LoginRequest req = readBody(ctx, LoginRequest.class);
         PortalLoginFlow flow = liveFlow(s, req.flowId());
         String email = req.email() == null ? "" : req.email().trim().toLowerCase(Locale.ROOT);
@@ -220,7 +220,7 @@ public final class PortalAuthApi {
 
     // ── POST /portal/auth/password-reset (spec §5.4) ────────────────────────
 
-    private static void passwordReset(Context ctx, State s) {
+    private static void passwordReset(Exchange ctx, State s) {
         PasswordResetRequest req = readBody(ctx, PasswordResetRequest.class);
         PortalLoginFlow flow = liveFlow(s, req.flowId());
         String email = req.email() == null ? "" : req.email().trim().toLowerCase(Locale.ROOT);
@@ -251,7 +251,7 @@ public final class PortalAuthApi {
 
     // ── Shared helpers ─────────────────────────────────────────────────────
 
-    private static <T> T readBody(Context ctx, Class<T> type) {
+    private static <T> T readBody(Exchange ctx, Class<T> type) {
         try {
             return ctx.bodyAsClass(type);
         } catch (RuntimeException e) {
@@ -328,7 +328,7 @@ public final class PortalAuthApi {
 
     /// 307-redirects to `redirectUri` with `error`, `error_description`,
     /// `state` appended (spec §5.1: post-validation failures).
-    private static void errRedirect(Context ctx, String redirectUri, String error, String description, String state) {
+    private static void errRedirect(Exchange ctx, String redirectUri, String error, String description, String state) {
         String sep = redirectUri.contains("?") ? "&" : "?";
         String url = redirectUri + sep + "error=" + urlEncode(error)
                 + "&error_description=" + urlEncode(description)

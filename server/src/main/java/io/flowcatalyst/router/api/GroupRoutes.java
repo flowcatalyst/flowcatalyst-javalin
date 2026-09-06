@@ -2,8 +2,8 @@ package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.pool.Pool;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Comparator;
 import java.util.List;
@@ -22,12 +22,12 @@ import java.util.Map;
 final class GroupRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/blocked-groups", ctx -> blockedGroups(ctx, s));
     }
 
-    private static void blockedGroups(Context ctx, State s) {
+    private static void blockedGroups(Exchange ctx, State s) {
         if (s.manager() == null) {
             ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
             return;

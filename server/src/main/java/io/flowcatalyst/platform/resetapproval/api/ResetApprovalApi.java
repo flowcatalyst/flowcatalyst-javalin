@@ -13,8 +13,8 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,7 +52,7 @@ public final class ResetApprovalApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/reset-approvals", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/reset-approvals/{id}/approve", Auth.scoped(ctx -> approve(ctx, s)));
         routes.post("/api/reset-approvals/{id}/deny", Auth.scoped(ctx -> deny(ctx, s)));
@@ -60,7 +60,7 @@ public final class ResetApprovalApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
         List<ResetApprovalResponse> items = s.repo().findPending(Auth.current().visibility()).stream()
                 .map(r -> response(s, r)).toList();
@@ -70,7 +70,7 @@ public final class ResetApprovalApi {
     /// §8.6: decide APPROVED, then — only on success — best-effort mail a
     /// reset link; a principal that no longer exists is a 404 even though
     /// the decision already landed.
-    private static void approve(Context ctx, State s) {
+    private static void approve(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         ResetApprovalRequest request = load(s, id);
         Checks.requireUserAdmin(Auth.current(), request.clientId());
@@ -86,7 +86,7 @@ public final class ResetApprovalApi {
         ctx.json(Map.of("message", "Reset approved — the user has been emailed a link"));
     }
 
-    private static void deny(Context ctx, State s) {
+    private static void deny(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         ResetApprovalRequest request = load(s, id);
         Checks.requireUserAdmin(Auth.current(), request.clientId());
@@ -101,7 +101,7 @@ public final class ResetApprovalApi {
         return s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ResetApprovalRequest", id));
     }
 
-    private static String noteFrom(Context ctx) {
+    private static String noteFrom(Exchange ctx) {
         String body = ctx.body();
         return body == null || body.isBlank() ? null : ctx.bodyAsClass(DecideRequest.class).note();
     }

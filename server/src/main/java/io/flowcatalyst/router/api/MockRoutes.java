@@ -1,8 +1,8 @@
 package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -15,7 +15,7 @@ import java.util.concurrent.ThreadLocalRandom;
 final class MockRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.post(p + "/api/test/fast", ctx -> testFast(ctx, s));
         routes.post(p + "/api/test/success", ctx -> testSuccess(ctx, s));
@@ -35,17 +35,17 @@ final class MockRoutes {
         routes.post(p + "/api/benchmark/reset", ctx -> testStatsReset(ctx, s));
     }
 
-    private static void testFast(Context ctx, State s) {
+    private static void testFast(Exchange ctx, State s) {
         s.mocks().fast.incrementAndGet();
         ctx.json(new Wire.MockOkResponse(true, "fast"));
     }
 
-    private static void testSuccess(Context ctx, State s) {
+    private static void testSuccess(Exchange ctx, State s) {
         s.mocks().success.incrementAndGet();
         ctx.json(new Wire.MockOkResponse(true, "success"));
     }
 
-    private static void testSlow(Context ctx, State s) {
+    private static void testSlow(Exchange ctx, State s) {
         s.mocks().slow.incrementAndGet();
         long delayMs = Http.queryInt(ctx, "delay_ms", 0);
         if (delayMs <= 0 || delayMs > 30_000) {
@@ -55,7 +55,7 @@ final class MockRoutes {
         ctx.json(new Wire.MockOkResponse(true, "slow"));
     }
 
-    private static void testFaulty(Context ctx, State s) {
+    private static void testFaulty(Exchange ctx, State s) {
         s.mocks().faulty.incrementAndGet();
         if (ThreadLocalRandom.current().nextInt(2) == 0) {
             s.mocks().faultyFail.incrementAndGet();
@@ -66,35 +66,35 @@ final class MockRoutes {
         ctx.json(new Wire.MockOkResponse(true, "faulty"));
     }
 
-    private static void testFail(Context ctx, State s) {
+    private static void testFail(Exchange ctx, State s) {
         s.mocks().fail.incrementAndGet();
         ctx.status(500).json(new Http.ErrorBody("test/fail"));
     }
 
-    private static void testServerError(Context ctx, State s) {
+    private static void testServerError(Exchange ctx, State s) {
         s.mocks().serverError.incrementAndGet();
         ctx.status(500).json(new Http.ErrorBody("test/server-error"));
     }
 
-    private static void testClientError(Context ctx, State s) {
+    private static void testClientError(Exchange ctx, State s) {
         s.mocks().clientError.incrementAndGet();
         ctx.status(400).json(new Http.ErrorBody("test/client-error"));
     }
 
-    private static void testPending(Context ctx, State s) {
+    private static void testPending(Exchange ctx, State s) {
         s.mocks().pending.incrementAndGet();
         sleep(30_000);
         ctx.json(new Wire.MockOkResponse(true, "pending"));
     }
 
-    private static void testStats(Context ctx, State s) {
+    private static void testStats(Exchange ctx, State s) {
         var m = s.mocks();
         ctx.json(new Wire.MockStatsResponse(m.fast.get(), m.slow.get(), m.faulty.get(), m.faultySuccess.get(),
                 m.faultyFail.get(), m.fail.get(), m.success.get(), m.pending.get(), m.clientError.get(),
                 m.serverError.get()));
     }
 
-    private static void testStatsReset(Context ctx, State s) {
+    private static void testStatsReset(Exchange ctx, State s) {
         s.mocks().reset();
         ctx.json(new Wire.ResetResponse(true));
     }

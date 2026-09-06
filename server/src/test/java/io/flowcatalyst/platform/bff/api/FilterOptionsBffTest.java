@@ -47,10 +47,10 @@ class FilterOptionsBffTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/bff/*", auth);
-            FilterOptionsBff.register(cfg.routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/bff/*", auth);
+            FilterOptionsBff.register(routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
         });
     }
 

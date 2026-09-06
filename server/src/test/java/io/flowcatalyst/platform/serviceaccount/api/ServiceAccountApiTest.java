@@ -120,10 +120,10 @@ class ServiceAccountApiTest {
         var keys = KEYS;
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            ServiceAccountApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            ServiceAccountApi.register(routes, state);
         });
 
         var grants = new GrantStore(TestPg.dataSource());
@@ -134,9 +134,9 @@ class ServiceAccountApiTest {
                 ClaimLabels.of(new ClientRepository(TestPg.dataSource()), new ApplicationRepository(TestPg.dataSource())),
                 ENCRYPTION, null, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new EnvReader(Map.of())),
                 new Governor(new Governor.Config(1000, 1_000_000)), OAUTH_KEYS, OAUTH_ISSUER, Clock.systemUTC(), null);
-        oauthHttp = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            OAuthTokenApi.register(cfg.routes, oauthState);
+        oauthHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            OAuthTokenApi.register(routes, oauthState);
         });
     }
 
@@ -469,10 +469,10 @@ class ServiceAccountApiTest {
                 OAUTH_CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of());
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(KEYS.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        try (var h = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            ServiceAccountApi.register(cfg.routes, state);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            ServiceAccountApi.register(routes, state);
         })) {
             var r = h.post("/api/service-accounts/" + id + "/token", null, anchor());
             assertThat(r.statusCode()).as(r.body()).isEqualTo(200);

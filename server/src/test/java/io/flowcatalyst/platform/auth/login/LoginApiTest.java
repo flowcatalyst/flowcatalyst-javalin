@@ -95,11 +95,11 @@ class LoginApiTest {
             IDPS.persist(idp, tx);
             MAPPINGS.persist(mapping, tx);
         });
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/auth/me", authenticator());
-            cfg.routes.before("/auth/login-history", authenticator());
-            LoginApi.register(cfg.routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), MfaChallenge.none()));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/auth/me", authenticator());
+            routes.before("/auth/login-history", authenticator());
+            LoginApi.register(routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), MfaChallenge.none()));
         });
     }
 
@@ -202,9 +202,9 @@ class LoginApiTest {
         var policy = new BackoffPolicy(1, 300, 300, 3600, 100, 900);
         String email = "backoff-" + RUN + "@example.com";
         String id = principal(email, PasswordHash.hash(PASSWORD));
-        try (var tight = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            LoginApi.register(cfg.routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, policy), MfaChallenge.none()));
+        try (var tight = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            LoginApi.register(routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, policy), MfaChallenge.none()));
         })) {
             assertThat(tight.post("/auth/login", body(email, "wrong"), "Content-Type", "application/json").statusCode()).isEqualTo(401);
             assertThat(tight.post("/auth/login", body(email, "wrong"), "Content-Type", "application/json").statusCode()).isEqualTo(401);
@@ -224,9 +224,9 @@ class LoginApiTest {
     void aBackoffStoreErrorFailsClosedWith503() {
         DataSource broken = brokenDataSource();
         var brokenAttempts = new LoginAttemptRepository(broken);
-        try (var closed = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            LoginApi.register(cfg.routes, state(brokenAttempts, new BackoffCheck(brokenAttempts, BackoffPolicy.DEFAULT), MfaChallenge.none()));
+        try (var closed = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            LoginApi.register(routes, state(brokenAttempts, new BackoffCheck(brokenAttempts, BackoffPolicy.DEFAULT), MfaChallenge.none()));
         })) {
             long alarmsBefore = AuthAlarms.backoffStoreErrors();
             var r = closed.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
@@ -240,9 +240,9 @@ class LoginApiTest {
     @Test
     void anMfaChallengeStandsInForTheSessionAndAnEvaluationErrorFailsClosed() {
         MfaChallenge challenging = (_, _) -> Optional.of(new MfaChallenge.Challenge(Map.of("status", "mfa_required", "mfaToken", "t")));
-        try (var t = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            LoginApi.register(cfg.routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), challenging));
+        try (var t = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            LoginApi.register(routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), challenging));
         })) {
             var r = t.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
             assertThat(r.statusCode()).isEqualTo(200);
@@ -250,9 +250,9 @@ class LoginApiTest {
             assertThat(r.headers().firstValue("set-cookie")).as("no session until the second factor").isEmpty();
         }
         MfaChallenge failing = (_, _) -> { throw new IllegalStateException("store down"); };
-        try (var t = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            LoginApi.register(cfg.routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), failing));
+        try (var t = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            LoginApi.register(routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), failing));
         })) {
             var r = t.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
             assertThat(r.statusCode()).isEqualTo(500);

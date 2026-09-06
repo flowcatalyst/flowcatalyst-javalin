@@ -16,10 +16,10 @@ class CorrelationIdTest {
 
     @BeforeAll
     static void start() {
-        http = new TestHttp(cfg -> {
-            CorrelationId.install(cfg.routes);
-            cfg.routes.get("/plain", ctx -> ctx.result(CorrelationId.from(ctx) + "|" + MDC.get("correlation_id")));
-            cfg.routes.get("/scoped", Auth.scoped(ctx -> ctx.result(CorrelationId.current() + "|" + CorrelationId.CURRENT.get())));
+        http = TestHttp.routes(routes -> {
+            CorrelationId.install(routes);
+            routes.get("/plain", ctx -> ctx.result(CorrelationId.from(ctx) + "|" + MDC.get("correlation_id")));
+            routes.get("/scoped", Auth.scoped(ctx -> ctx.result(CorrelationId.current() + "|" + CorrelationId.CURRENT.get())));
         });
     }
 

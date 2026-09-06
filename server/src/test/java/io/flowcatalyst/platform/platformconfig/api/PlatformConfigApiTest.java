@@ -64,10 +64,10 @@ class PlatformConfigApiTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            PlatformConfigApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            PlatformConfigApi.register(routes, state);
         });
         // The grants every test relies on; (app, role) pairs are unique to this run.
         grant(READER_ROLE, false);

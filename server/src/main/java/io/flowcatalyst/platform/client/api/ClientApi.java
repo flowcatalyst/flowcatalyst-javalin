@@ -33,8 +33,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -92,7 +92,7 @@ public final class ClientApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. Literal segments are registered before the `{id}` routes
     /// so they take precedence (spec §3).
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/clients", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/clients", Auth.scoped(ctx -> create(ctx, s)));
         routes.post("/api/clients/search", Auth.scoped(ctx -> search(ctx, s)));
@@ -113,36 +113,36 @@ public final class ClientApi {
 
     // ── Reads ──────────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(ClientListResponse.from(s.repo().findAll()));
     }
 
-    private static void search(Context ctx, State s) {
+    private static void search(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(ClientListResponse.from(s.repo().search(ctx.bodyAsClass(SearchClientRequest.class).term())));
     }
 
     /// `?q=` absent → no term → the first 50 clients.
-    private static void searchByQuery(Context ctx, State s) {
+    private static void searchByQuery(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(ClientListResponse.from(s.repo().search(ctx.queryParam("q"))));
     }
 
-    private static void getByIdentifier(Context ctx, State s) {
+    private static void getByIdentifier(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String identifier = ctx.pathParam("identifier");
         ctx.json(ClientResponse.from(s.repo().findByIdentifier(identifier).orElseThrow(() -> HttpError.notFound("Client", identifier))));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(ClientResponse.from(load(s, ctx.pathParam("id"))));
     }
 
     /// The only non-anchor route: a principal with access to this client may
     /// see which applications are enabled for it (spec §3).
-    private static void applications(Context ctx, State s) {
+    private static void applications(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         requireAnchorOrClientAccess(Auth.current(), id);
         load(s, id);
@@ -151,40 +151,40 @@ public final class ClientApi {
 
     // ── Writes ─────────────────────────────────────────────────────────────
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateClientRequest.class).toCommand();
         var event = CreateClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.clientId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateClientRequest.class).toCommand(ctx.pathParam("id"));
         UpdateClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ActivateClient.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client activated"));
     }
 
-    private static void suspend(Context ctx, State s) {
+    private static void suspend(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(SuspendClientRequest.class).toCommand(ctx.pathParam("id"));
         SuspendClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client suspended"));
     }
 
-    private static void addNote(Context ctx, State s) {
+    private static void addNote(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(AddNoteRequest.class).toCommand(ctx.pathParam("id"));
         AddNote.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -193,7 +193,7 @@ public final class ClientApi {
 
     /// Alias of delete: a hard delete; the body's `reason` is read for shape
     /// and discarded (spec §3, open question 2).
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.bodyAsClass(StatusChangeRequest.class);
         DeleteClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
@@ -202,21 +202,21 @@ public final class ClientApi {
 
     // ── Client → application linking (application aggregate's operations) ──
 
-    private static void updateApplications(Context ctx, State s) {
+    private static void updateApplications(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateClientApplicationsRequest.class).toCommand(ctx.pathParam("id"));
         UpdateClientApplications.of(s.applications(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void enableApplication(Context ctx, State s) {
+    private static void enableApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = new EnableForClientCommand(ctx.pathParam("applicationId"), ctx.pathParam("id"));
         EnableApplicationForClient.of(s.applications(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void disableApplication(Context ctx, State s) {
+    private static void disableApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = new DisableForClientCommand(ctx.pathParam("applicationId"), ctx.pathParam("id"));
         DisableApplicationForClient.of(s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());

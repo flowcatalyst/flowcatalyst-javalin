@@ -1,7 +1,8 @@
-package io.flowcatalyst.platform.shared.json;
+package io.flowcatalyst.http.javalin;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
+import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.javalin.json.JsonMapper;
 

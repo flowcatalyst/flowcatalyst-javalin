@@ -11,8 +11,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -53,7 +53,7 @@ public final class CorsOriginApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. The literal `/allowed` segment is registered before the
     /// `{id}` routes so it takes precedence (spec §3).
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/platform/cors/allowed", Auth.scoped(ctx -> publicAllowed(ctx, s)));
         routes.get("/api/platform/cors", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/platform/cors", Auth.scoped(ctx -> add(ctx, s)));
@@ -64,23 +64,23 @@ public final class CorsOriginApi {
     // ── Reads ──────────────────────────────────────────────────────────────
 
     /// Public by spec: no gate, the principal is never consulted.
-    private static void publicAllowed(Context ctx, State s) {
+    private static void publicAllowed(Exchange ctx, State s) {
         ctx.json(new PublicAllowedResponse(s.repo().allowedOrigins()));
     }
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(CorsOriginListResponse.from(s.repo().findAll()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(AllowedOriginResponse.from(load(s, ctx.pathParam("id"))));
     }
 
     // ── Writes ─────────────────────────────────────────────────────────────
 
-    private static void add(Context ctx, State s) {
+    private static void add(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(AddOriginRequest.class).toCommand();
         var event = AddOrigin.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -88,7 +88,7 @@ public final class CorsOriginApi {
         ctx.status(201).json(new CreatedResponse(event.originId()));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteOrigin.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         s.onChange().run();

@@ -94,9 +94,9 @@ class PortalAuthApiTest {
         var envReader = io.flowcatalyst.server.EnvReader.system();
         var state = new PortalAuthApi.State(flowRepo, oauthClientRepo, identityRepo, identityProviderRepo, grantStore,
                 new PostgresRateLimitStore(TestPg.dataSource()), RateLimit.Policies.fromEnv(envReader), EMAILER);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            PortalAuthApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PortalAuthApi.register(routes, state);
         });
     }
 

@@ -71,10 +71,10 @@ class IdentityProviderApiTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new IdentityProviderApi.State(repo, mappings, uow, secrets, CHANGED::add);
-        return new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            IdentityProviderApi.register(cfg.routes, state);
+        return TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            IdentityProviderApi.register(routes, state);
         });
     }
 

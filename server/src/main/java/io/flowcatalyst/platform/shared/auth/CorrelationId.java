@@ -1,8 +1,8 @@
 package io.flowcatalyst.platform.shared.auth;
 
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.MDC;
 
 import java.util.UUID;
@@ -53,13 +53,13 @@ public final class CorrelationId {
     }
 
     /// Registers [#before] and [#after] on `cfg.routes`.
-    public static void install(JavalinDefaultRoutingApi routes) {
+    public static void install(Routes routes) {
         routes.before(before());
         routes.after(after());
     }
 
     /// The request's correlation id, or `null` if the middleware did not run.
-    public static String from(Context ctx) {
+    public static String from(Exchange ctx) {
         return ctx.attribute(ATTR);
     }
 

@@ -1,8 +1,7 @@
 package io.flowcatalyst.platform.auth.mfa;
 
-import io.javalin.http.Context;
-import io.javalin.http.Cookie;
-import io.javalin.http.SameSite;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.HttpCookie;
 
 import java.time.Duration;
 
@@ -24,16 +23,16 @@ public final class TrustedDeviceCookie {
         return secure ? SECURE_NAME : INSECURE_NAME;
     }
 
-    public String read(Context ctx) {
+    public String read(Exchange ctx) {
         String v = ctx.cookie(name());
         return v == null ? "" : v;
     }
 
-    public void set(Context ctx, String rawToken, Duration ttl) {
-        ctx.cookie(new Cookie(name(), rawToken, "/", (int) ttl.toSeconds(), secure, true, null, SameSite.STRICT));
+    public void set(Exchange ctx, String rawToken, Duration ttl) {
+        ctx.cookie(new HttpCookie(name(), rawToken, "/", (int) ttl.toSeconds(), true, secure, HttpCookie.SameSite.STRICT));
     }
 
-    public void clear(Context ctx) {
-        ctx.cookie(new Cookie(name(), "", "/", 0, secure, true, null, SameSite.STRICT));
+    public void clear(Exchange ctx) {
+        ctx.cookie(new HttpCookie(name(), "", "/", 0, true, secure, HttpCookie.SameSite.STRICT));
     }
 }

@@ -2,8 +2,8 @@ package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.policy.CircuitBreaker;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -21,7 +21,7 @@ final class HealthRoutes {
     private static final Instant STARTED_AT = Instant.now();
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/health", ctx -> health(ctx, s));
         routes.get(p + "/q/health", ctx -> health(ctx, s));
@@ -33,12 +33,12 @@ final class HealthRoutes {
         routes.get(p + "/monitoring/consumer-health", ctx -> consumerHealth(ctx, s));
     }
 
-    private static void health(Context ctx, State s) {
+    private static void health(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         ctx.json(new Wire.SimpleHealthResponse(h.status(), s.version(), h.active(), h.critical()));
     }
 
-    private static void readiness(Context ctx, State s) {
+    private static void readiness(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         if (h.degraded()) {
             ctx.status(503).json(new Wire.ProbeResponse(
@@ -48,7 +48,7 @@ final class HealthRoutes {
         }
     }
 
-    private static void monitoringHealth(Context ctx, State s) {
+    private static void monitoringHealth(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         int totalPools = s.manager() == null ? 0 : s.manager().pools().size();
         // Never-fed consumer model (spec §9.4: SetConsumerRunning/RecordConsumerPoll
@@ -68,7 +68,7 @@ final class HealthRoutes {
                 Duration.between(STARTED_AT, Instant.now()).toMillis(), details));
     }
 
-    private static void consumerHealth(Context ctx, State s) {
+    private static void consumerHealth(Exchange ctx, State s) {
         // Always {} — lists only STALLED consumers of the never-fed
         // HealthService (spec §9.1 row, §9.4). No consumer health tracker is
         // wired in Java at all, so this can never be non-empty.
@@ -84,7 +84,7 @@ final class HealthRoutes {
     /// (`s.warnings().unacknowledged()`), deliberately different from the
     /// ≤30-minute count inside `health_report` (§9.1 note; both are pinned
     /// by `RouterApiTest`).
-    private static void monitoring(Context ctx, State s) {
+    private static void monitoring(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         int poolsHealthy = s.manager() == null ? 0 : s.manager().pools().size();
         // Same Issues rule as #monitoringHealth: only ever "N critical warnings".

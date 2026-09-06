@@ -25,8 +25,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.operations.SyncSubscriptions;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Objects;
 
@@ -88,7 +88,7 @@ public final class SdkSyncApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/api/applications/{appCode}/event-types/sync", Auth.scoped(ctx -> syncEventTypes(ctx, s)));
         routes.post("/api/applications/{appCode}/roles/sync", Auth.scoped(ctx -> syncRoles(ctx, s)));
         routes.post("/api/applications/{appCode}/subscriptions/sync", Auth.scoped(ctx -> syncSubscriptions(ctx, s)));
@@ -103,7 +103,7 @@ public final class SdkSyncApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void syncEventTypes(Context ctx, State s) {
+    private static void syncEventTypes(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_SYNC, EVENT_TYPE_MANAGE,
                 APP_SVC_EVENT_TYPE_CREATE, APP_SVC_EVENT_TYPE_UPDATE, APP_SVC_EVENT_TYPE_DELETE);
         var app = application(ctx, s);
@@ -115,7 +115,7 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncEventTypes.of(s.eventTypes()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncRoles(Context ctx, State s) {
+    private static void syncRoles(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), ROLE_MANAGE, ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE,
                 APP_SVC_ROLE_CREATE, APP_SVC_ROLE_UPDATE, APP_SVC_ROLE_DELETE);
         var app = application(ctx, s);
@@ -123,7 +123,7 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncRoles.of(s.roles()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncSubscriptions(Context ctx, State s) {
+    private static void syncSubscriptions(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_SYNC, SUBSCRIPTION_MANAGE,
                 APP_SVC_SUBSCRIPTION_CREATE, APP_SVC_SUBSCRIPTION_UPDATE, APP_SVC_SUBSCRIPTION_DELETE);
         var app = application(ctx, s);
@@ -132,14 +132,14 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(op.run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncDispatchPools(Context ctx, State s) {
+    private static void syncDispatchPools(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_SYNC, DISPATCH_POOL_MANAGE);
         var app = application(ctx, s);
         var cmd = ctx.bodyAsClass(SyncDispatchPoolsRequest.class).toCommand(app.id(), app.code(), removeUnlisted(ctx));
         ctx.json(SyncResultResponse.from(SyncDispatchPools.of(s.dispatchPools()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncPrincipals(Context ctx, State s) {
+    private static void syncPrincipals(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_MANAGE, USER_CREATE, USER_UPDATE, USER_DELETE, USER_ASSIGN_ROLES);
         var app = application(ctx, s);
         // As for event-types: the command carries no applicationId.
@@ -148,7 +148,7 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncPrincipals.of(s.principals()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncDocs(Context ctx, State s) {
+    private static void syncDocs(Exchange ctx, State s) {
         Checks.require(Auth.current(), APP_SVC_DOCS_SYNC);
         var app = application(ctx, s);
         var cmd = ctx.bodyAsClass(SyncDocsRequest.class).toCommand(app.id(), app.code());
@@ -157,7 +157,7 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(app.code(), result));
     }
 
-    private static void syncProcesses(Context ctx, State s) {
+    private static void syncProcesses(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), PROCESS_SYNC, APP_SVC_PROCESS_SYNC);
         var app = application(ctx, s);
         var cmd = ctx.bodyAsClass(SyncProcessesRequest.class).toCommand(app.code(), app.id(), removeUnlisted(ctx));
@@ -165,7 +165,7 @@ public final class SdkSyncApi {
     }
 
     /// The Laravel-SDK alias: same handling, application code from the body.
-    private static void syncProcessesByBody(Context ctx, State s) {
+    private static void syncProcessesByBody(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), PROCESS_SYNC, APP_SVC_PROCESS_SYNC);
         var body = ctx.bodyAsClass(SyncProcessesByBodyRequest.class);
         var app = application(body.applicationCode(), s);
@@ -173,7 +173,7 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncProcesses.of(s.processes()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    private static void syncScheduledJobs(Context ctx, State s) {
+    private static void syncScheduledJobs(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APP_SVC_SCHEDULED_JOB_SYNC, SCHEDULED_JOB_SYNC, SCHEDULED_JOB_MANAGE);
         var app = application(ctx, s);
         // archiveUnlisted travels in the body here, not as the query flag.
@@ -182,7 +182,7 @@ public final class SdkSyncApi {
         ctx.json(SyncScheduledJobsResultResponse.from(event));
     }
 
-    private static void syncOpenapi(Context ctx, State s) {
+    private static void syncOpenapi(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APPLICATION_OPENAPI_SYNC, APPLICATION_OPENAPI_MANAGE);
         var app = application(ctx, s);
         var cmd = ctx.bodyAsClass(SyncOpenapiRequest.class).toCommand(app.id(), app.code());
@@ -191,7 +191,7 @@ public final class SdkSyncApi {
 
     // ── Shared steps ───────────────────────────────────────────────────────
 
-    private static Application application(Context ctx, State s) {
+    private static Application application(Exchange ctx, State s) {
         return application(ctx.pathParam("appCode"), s);
     }
 
@@ -208,7 +208,7 @@ public final class SdkSyncApi {
     /// Deliberately not lenient. This flag decides whether a sync **deletes**
     /// rows, so a typo like `?removeUnlisted=1` must read as "no" — the safe
     /// direction is the one that keeps data.
-    private static boolean removeUnlisted(Context ctx) {
+    private static boolean removeUnlisted(Exchange ctx) {
         return "true".equals(ctx.queryParam("removeUnlisted"));
     }
 }

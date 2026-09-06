@@ -1,6 +1,6 @@
 package io.flowcatalyst.router.api;
 
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.time.Duration;
 
@@ -12,12 +12,12 @@ import java.time.Duration;
 /// provider-absent rule names.
 final class Http {
 
-    static String queryParam(Context ctx, String name) {
+    static String queryParam(Exchange ctx, String name) {
         var v = ctx.queryParam(name);
         return v == null ? "" : v;
     }
 
-    static int queryInt(Context ctx, String name, int def) {
+    static int queryInt(Exchange ctx, String name, int def) {
         var v = ctx.queryParam(name);
         if (v == null || v.isBlank()) {
             return def;
@@ -33,18 +33,18 @@ final class Http {
     /// pinned by §9.1 beyond that, so a minimal envelope is used here rather
     /// than the platform's lockfile-driven [io.flowcatalyst.platform.shared.httperror.HttpError],
     /// which belongs to the `/api/**` lockfile surface, not this legacy router API.
-    static void notFound(Context ctx, String message) {
+    static void notFound(Exchange ctx, String message) {
         ctx.status(404).json(new ErrorBody(message));
     }
 
-    static void serviceUnavailable(Context ctx, String message) {
+    static void serviceUnavailable(Exchange ctx, String message) {
         ctx.status(503).json(new ErrorBody(message));
     }
 
     /// 409, for a request refused because of *who is asking*, not what the
     /// data looks like — currently only `POST /config/reload` on a follower
     /// (R-33: a follower must never start consumers).
-    static void conflict(Context ctx, String message) {
+    static void conflict(Exchange ctx, String message) {
         ctx.status(409).json(new ErrorBody(message));
     }
 

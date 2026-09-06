@@ -22,9 +22,9 @@ import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -83,7 +83,7 @@ public final class DispatchJobApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     /// The literal segments are registered before `{id}` so they win.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         // Registered BEFORE registerAt so this literal segment wins over registerAt's `{id}`.
         Handler listRaw = Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW_RAW));
         routes.get("/api/dispatch-jobs/raw", listRaw); // SDK alias of list-raw (Laravel client)
@@ -99,7 +99,7 @@ public final class DispatchJobApi {
     /// `/bff/dispatch-jobs` for the SPA — bff spec §8, Go `registerBFF`). The
     /// SDK-only aliases and `/{id}/complete` are not part of the BFF surface
     /// and stay in [#register].
-    public static void registerAt(JavalinDefaultRoutingApi routes, String prefix, State s) {
+    public static void registerAt(Routes routes, String prefix, State s) {
         routes.get(prefix, Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW)));
         routes.get(prefix + "/list-raw", Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW_RAW)));
         routes.get(prefix + "/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
@@ -114,7 +114,7 @@ public final class DispatchJobApi {
     // ── Handlers ───────────────────────────────────────────────────────────
 
     /// The three list routes share one handler; only the gate differs (spec §3).
-    private static void list(Context ctx, State s, Permission gate) {
+    private static void list(Exchange ctx, State s, Permission gate) {
         AuthContext ac = Auth.current();
         Checks.require(ac, gate);
         ctx.json(s.repo().findWithFilters(listFilter(ctx, ac)).stream().map(DispatchJobRead::from).toList());
@@ -125,20 +125,20 @@ public final class DispatchJobApi {
     /// byte-identical to not-found, via the same [Access#loadOwn] the
     /// cancel/complete operations use — never the 403 `SCOPE_FORBIDDEN` this
     /// route answered before.
-    private static void getById(Context ctx, State s, Permission gate) {
+    private static void getById(Exchange ctx, State s, Permission gate) {
         Checks.require(Auth.current(), gate);
         ctx.json(DispatchJobResponse.from(Access.loadOwn(s.repo(), ctx.pathParam("id"))));
     }
 
     /// PR-3, same as [#getById]: 404 byte-identical for missing vs. out-of-scope.
-    private static void attempts(Context ctx, State s) {
+    private static void attempts(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
         DispatchJob job = Access.loadOwn(s.repo(), ctx.pathParam("id")); // 404 + scope before exposing the history
         ctx.json(s.repo().attemptsByJob(job.id()).stream().map(AttemptDTO::from).toList());
     }
 
     /// Platform-scoped jobs (`null` client) are visible to anchors / super-admins only here.
-    private static void byEvent(Context ctx, State s) {
+    private static void byEvent(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, DISPATCH_JOB_VIEW);
         ctx.json(s.repo().findByEventId(ctx.pathParam("eventId")).stream()
@@ -146,12 +146,12 @@ public final class DispatchJobApi {
                 .map(DispatchJobRead::from).toList());
     }
 
-    private static void filterOptions(Context ctx, State s) {
+    private static void filterOptions(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
         ctx.json(DispatchJobFilterOptionsResponse.from(s.repo()));
     }
 
-    private static void requeue(Context ctx, State s) {
+    private static void requeue(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW); // a caller who can see a job may re-drive it (spec §3)
         var cmd = ctx.bodyAsClass(RequeueRequest.class).toCommand();
         var event = RequeueDispatchJobs.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -161,7 +161,7 @@ public final class DispatchJobApi {
     /// Same gate as requeue: a caller who can see a job may resolve it
     /// (seam spec §8); the resource-level scope and the `FAILED`
     /// precondition are the operation's ([CancelDispatchJob]).
-    private static void cancel(Context ctx, State s) {
+    private static void cancel(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
         String id = ctx.pathParam("id");
         CancelDispatchJob.of(s.repo()).run(s.uow(), new CancelCommand(id), Auth.executionContext());
@@ -169,7 +169,7 @@ public final class DispatchJobApi {
     }
 
     /// Same shape as [#cancel]; see [CompleteDispatchJob].
-    private static void complete(Context ctx, State s) {
+    private static void complete(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
         String id = ctx.pathParam("id");
         CompleteDispatchJob.of(s.repo()).run(s.uow(), new CompleteCommand(id), Auth.executionContext());
@@ -185,7 +185,7 @@ public final class DispatchJobApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     /// Query params → filter (spec §4), plus the caller's SQL-side scope.
-    private static ListFilter listFilter(Context ctx, AuthContext ac) {
+    private static ListFilter listFilter(Exchange ctx, AuthContext ac) {
         Page page = Page.from(ctx);
         return new ListFilter(
                 queryParam(ctx, "status"),
@@ -209,7 +209,7 @@ public final class DispatchJobApi {
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }
@@ -220,7 +220,7 @@ public final class DispatchJobApi {
     /// [QueryParams] 400 `VALIDATION` envelope listing every bad parameter,
     /// in `limit, offset, size` order.
     record Page(int limit, int offset, int size) {
-        static Page from(Context ctx) {
+        static Page from(Exchange ctx) {
             var errors = new ArrayList<Map<String, Object>>();
             int limit = QueryParams.intParam(ctx, "limit", errors).orElse(0);
             int offset = QueryParams.intParam(ctx, "offset", errors).orElse(0);

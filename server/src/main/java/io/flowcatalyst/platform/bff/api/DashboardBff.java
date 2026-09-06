@@ -3,8 +3,8 @@ package io.flowcatalyst.platform.bff.api;
 import io.flowcatalyst.platform.bff.DashboardRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Objects;
 
@@ -33,11 +33,11 @@ public final class DashboardBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/dashboard/stats", Auth.scoped(ctx -> stats(ctx, s)));
     }
 
-    private static void stats(Context ctx, State s) {
+    private static void stats(Exchange ctx, State s) {
         Checks.requireAdmin(Auth.current()); // 401 unauthenticated, 403 ADMIN_REQUIRED otherwise
         var exact = s.repo().exactCounts();
         var approx = s.repo().approximateCounts(APPROX_TABLES);

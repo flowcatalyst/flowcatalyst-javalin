@@ -5,8 +5,8 @@ import io.flowcatalyst.platform.client.ClientStatus;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Comparator;
 import java.util.List;
@@ -33,13 +33,13 @@ public final class FilterOptionsBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/filter-options/clients", Auth.scoped(ctx -> clientOptions(ctx, s)));
         routes.get("/bff/event-types/filters/applications", Auth.scoped(ctx -> eventTypeApplications(ctx, s)));
     }
 
     /// Every ACTIVE client the caller can access (anchor: all), sorted by label.
-    private static void clientOptions(Context ctx, State s) {
+    private static void clientOptions(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         List<FilterOption> options = s.clients().findAll().stream()
                 .filter(c -> c.status() == ClientStatus.ACTIVE)
@@ -51,7 +51,7 @@ public final class FilterOptionsBff {
     }
 
     /// The distinct first code segments of every event type, sorted.
-    private static void eventTypeApplications(Context ctx, State s) {
+    private static void eventTypeApplications(Exchange ctx, State s) {
         ctx.json(new OptionsResponse(s.eventTypes().distinctApplications()));
     }
 

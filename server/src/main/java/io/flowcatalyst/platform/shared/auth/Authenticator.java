@@ -1,8 +1,8 @@
 package io.flowcatalyst.platform.shared.auth;
 
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
 import org.slf4j.MDC;
 
 import java.util.Arrays;
@@ -107,7 +107,7 @@ public final class Authenticator implements Handler {
     }
 
     @Override
-    public void handle(Context ctx) {
+    public void handle(Exchange ctx) {
         var extracted = extractToken(ctx);
         if (extracted.isPresent()) {
             var token = extracted.get();
@@ -131,7 +131,7 @@ public final class Authenticator implements Handler {
         }
     }
 
-    private static void attach(Context ctx, AuthContext ac) {
+    private static void attach(Exchange ctx, AuthContext ac) {
         Auth.bind(ctx, ac);
         MDC.put(CorrelationId.MDC_PRINCIPAL_KEY, ac.principalId());
     }
@@ -139,7 +139,7 @@ public final class Authenticator implements Handler {
     /// The bearer (scheme case-insensitive, value trimmed) or the `fc_session`
     /// cookie. A non-Bearer `Authorization` header yields nothing and blocks
     /// the cookie fallback. An empty token counts as none.
-    static Optional<Extracted> extractToken(Context ctx) {
+    static Optional<Extracted> extractToken(Exchange ctx) {
         var h = ctx.header("Authorization");
         if (h != null && !h.isEmpty()) {
             var prefix = "Bearer ";
@@ -207,7 +207,7 @@ public final class Authenticator implements Handler {
 
     /// The dev-only context from the `X-FC-Test-*` headers — only reachable
     /// when `allowTestHeaders`.
-    static AuthContext buildTestAuthContext(Context ctx) {
+    static AuthContext buildTestAuthContext(Exchange ctx) {
         var scopeHeader = header(ctx, TEST_SCOPE);
         var scope = scopeHeader.isEmpty() ? Scope.CLIENT : Scope.parse(scopeHeader);
         var apps = splitCsv(header(ctx, TEST_APPLICATIONS));
@@ -224,7 +224,7 @@ public final class Authenticator implements Handler {
                 splitCsv(header(ctx, TEST_PERMISSIONS)));
     }
 
-    private static String header(Context ctx, String name) {
+    private static String header(Exchange ctx, String name) {
         var v = ctx.header(name);
         return v == null ? "" : v;
     }

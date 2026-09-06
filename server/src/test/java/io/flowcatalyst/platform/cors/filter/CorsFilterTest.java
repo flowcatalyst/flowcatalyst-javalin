@@ -58,12 +58,12 @@ class CorsFilterTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before(new CorsFilter(ALWAYS_FRESH_ALLOWLIST));
-            cfg.routes.before("/api/*", auth);
-            CorsOriginApi.register(cfg.routes, new CorsOriginApi.State(REPO, UOW, ALWAYS_FRESH_ALLOWLIST::invalidate));
-            cfg.routes.get("/probe", ctx -> {
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before(new CorsFilter(ALWAYS_FRESH_ALLOWLIST));
+            routes.before("/api/*", auth);
+            CorsOriginApi.register(routes, new CorsOriginApi.State(REPO, UOW, ALWAYS_FRESH_ALLOWLIST::invalidate));
+            routes.get("/probe", ctx -> {
                 ROUTE_HITS.incrementAndGet();
                 ctx.status(200).result("ok");
             });
@@ -214,11 +214,11 @@ class CorsFilterTest {
     /// before [CorsFilter] runs, pinning "appended, not replaced".
     @Test
     void varyOriginIsAppendedToAnExistingVaryHeaderRatherThanReplacingIt() {
-        try (var varyHttp = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/vary-probe", ctx -> ctx.header("Vary", "Accept-Encoding"));
-            cfg.routes.before(new CorsFilter(ALWAYS_FRESH_ALLOWLIST));
-            cfg.routes.get("/vary-probe", ctx -> ctx.result("ok"));
+        try (var varyHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/vary-probe", ctx -> ctx.header("Vary", "Accept-Encoding"));
+            routes.before(new CorsFilter(ALWAYS_FRESH_ALLOWLIST));
+            routes.get("/vary-probe", ctx -> ctx.result("ok"));
         })) {
             String o = origin("vary");
             addOrigin(o);
@@ -248,12 +248,12 @@ class CorsFilterTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
 
-        try (var invalidationHttp = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before(new CorsFilter(longTtlAllowlist));
-            cfg.routes.before("/api/*", auth);
-            CorsOriginApi.register(cfg.routes, new CorsOriginApi.State(repo, uow, longTtlAllowlist::invalidate));
-            cfg.routes.get("/probe", ctx -> ctx.result("ok"));
+        try (var invalidationHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before(new CorsFilter(longTtlAllowlist));
+            routes.before("/api/*", auth);
+            CorsOriginApi.register(routes, new CorsOriginApi.State(repo, uow, longTtlAllowlist::invalidate));
+            routes.get("/probe", ctx -> ctx.result("ok"));
         })) {
             String o = origin("invalidation");
 

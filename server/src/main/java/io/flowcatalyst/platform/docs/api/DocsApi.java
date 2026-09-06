@@ -8,8 +8,8 @@ import io.flowcatalyst.platform.docs.PublishedDocs;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Comparator;
 import java.util.List;
@@ -42,7 +42,7 @@ public final class DocsApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/docs", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/api/docs/platform/{slug}", Auth.scoped(ctx -> getPlatform(ctx, s)));
         routes.get("/api/docs/applications/{appCode}/{slug}", Auth.scoped(ctx -> getApplication(ctx, s)));
@@ -50,18 +50,18 @@ public final class DocsApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), DOCS_VIEW);
         ctx.json(new DocListResponse(platformSummaries(s), applicationGroups(s)));
     }
 
-    private static void getPlatform(Context ctx, State s) {
+    private static void getPlatform(Exchange ctx, State s) {
         Checks.require(Auth.current(), DOCS_VIEW);
         PublishedDocs.Page page = publishedPage(s, ctx.pathParam("slug"));
         ctx.json(new DocResponse(page.slug(), page.title(), s.published().content(page)));
     }
 
-    private static void getApplication(Context ctx, State s) {
+    private static void getApplication(Exchange ctx, State s) {
         Checks.require(Auth.current(), DOCS_VIEW);
         Application app = applicationByCode(s, ctx.pathParam("appCode"));
         ctx.json(DocResponse.from(appDoc(s, app.id(), ctx.pathParam("slug"))));

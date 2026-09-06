@@ -3,8 +3,8 @@ package io.flowcatalyst.router.api;
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.policy.GroupFlushRegistry;
 import io.flowcatalyst.router.pool.Pool;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Comparator;
 import java.util.List;
@@ -24,13 +24,13 @@ import java.util.Map;
 final class GroupFlushRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/group-flushes", ctx -> groupFlushes(ctx, s));
         routes.post(p + "/monitoring/group-flushes/{pool}/{group}/clear", ctx -> clearGroupFlush(ctx, s));
     }
 
-    private static void groupFlushes(Context ctx, State s) {
+    private static void groupFlushes(Exchange ctx, State s) {
         if (s.manager() == null) {
             ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -55,7 +55,7 @@ final class GroupFlushRoutes {
                 .toList();
     }
 
-    private static void clearGroupFlush(Context ctx, State s) {
+    private static void clearGroupFlush(Exchange ctx, State s) {
         if (s.manager() == null) {
             Http.serviceUnavailable(ctx, "pool updater not configured");
             return;

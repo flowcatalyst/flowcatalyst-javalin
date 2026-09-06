@@ -5,8 +5,8 @@ import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.wire.Message;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -37,7 +37,7 @@ final class InFlightRoutes {
             "broker did not confirm the removal; the message may still redeliver";
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/in-flight-messages", ctx -> inFlightList(ctx, s));
         routes.get(p + "/monitoring/in-flight-messages/check", ctx -> inFlightCheck(ctx, s));
@@ -46,7 +46,7 @@ final class InFlightRoutes {
         routes.post(p + "/monitoring/in-flight-messages/{messageId}/ack", ctx -> forceAck(ctx, s));
     }
 
-    private static void inFlightList(Context ctx, State s) {
+    private static void inFlightList(Exchange ctx, State s) {
         int limit = Http.queryInt(ctx, "limit", 100);
         if (limit <= 0) {
             limit = 100;
@@ -76,7 +76,7 @@ final class InFlightRoutes {
         ctx.json(all);
     }
 
-    private static void inFlightCheck(Context ctx, State s) {
+    private static void inFlightCheck(Exchange ctx, State s) {
         String messageId = Http.queryParam(ctx, "messageId");
         for (var im : s.tracker().snapshot()) {
             if (im.messageId().equals(messageId)) {
@@ -87,7 +87,7 @@ final class InFlightRoutes {
         ctx.json(new Wire.InFlightCheckResponse(messageId, false, null, null));
     }
 
-    private static void inFlightCheckBatch(Context ctx, State s) {
+    private static void inFlightCheckBatch(Exchange ctx, State s) {
         var body = ctx.bodyAsClass(Wire.InFlightCheckBatchRequest.class);
         Set<String> live = new HashSet<>();
         for (var im : s.tracker().snapshot()) {
@@ -117,7 +117,7 @@ final class InFlightRoutes {
     /// names exactly this force-ack case as the reason). `brokerAcked` is
     /// the real outcome; `brokerAckError` is set only when it is `false`, so
     /// an operator is never told a delete is confirmed when it is not.
-    private static void forceAck(Context ctx, State s) {
+    private static void forceAck(Exchange ctx, State s) {
         if (s.manager() == null) {
             Http.serviceUnavailable(ctx, "in-flight ack not configured");
             return;
@@ -161,7 +161,7 @@ final class InFlightRoutes {
     /// An unknown id is **not a 404**: `inPipeline:false` is the answer to
     /// "is it safe to resend this?", and the caller asking is usually asking
     /// precisely because it expects the answer to be no.
-    private static void inFlightDetail(Context ctx, State s) {
+    private static void inFlightDetail(Exchange ctx, State s) {
         String messageId = Http.queryParam(ctx, "messageId");
         InFlightMessage entry = null;
         for (var im : s.tracker().snapshot()) {

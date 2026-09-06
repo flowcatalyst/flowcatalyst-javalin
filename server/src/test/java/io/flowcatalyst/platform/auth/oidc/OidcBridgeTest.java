@@ -146,12 +146,12 @@ class OidcBridgeTest {
         idpKey = new RSAKey.Builder((RSAPublicKey) kp.getPublic()).privateKey((RSAPrivateKey) kp.getPrivate()).keyID("idp-" + RUN).build();
         var rogue = gen.generateKeyPair();
         rogueKey = new RSAKey.Builder((RSAPublicKey) rogue.getPublic()).privateKey((RSAPrivateKey) rogue.getPrivate()).keyID("rogue").build();
-        idp = new TestHttp(cfg -> {
-            cfg.routes.get("/.well-known/openid-configuration", ctx -> ctx.json(Map.of(
+        idp = TestHttp.routes(routes -> {
+            routes.get("/.well-known/openid-configuration", ctx -> ctx.json(Map.of(
                     "issuer", idpBase, "authorization_endpoint", idpBase + "/authorize",
                     "token_endpoint", idpBase + "/token", "jwks_uri", idpBase + "/jwks")));
-            cfg.routes.get("/jwks", ctx -> ctx.contentType("application/json").result(new JWKSet(idpKey.toPublicJWK()).toString()));
-            cfg.routes.post("/token", ctx -> {
+            routes.get("/jwks", ctx -> ctx.contentType("application/json").result(new JWKSet(idpKey.toPublicJWK()).toString()));
+            routes.post("/token", ctx -> {
                 var form = new LinkedHashMap<String, String>();
                 for (String pair : ctx.body().split("&")) {
                     int eq = pair.indexOf('=');
@@ -210,9 +210,9 @@ class OidcBridgeTest {
         var state = new OidcBridgeApi.State(clients, STATES, PRINCIPALS, MAPPINGS, IDPS, ROLE_MAPPINGS, ROLES, OAUTH_CLIENTS, UOW,
                 new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER)), new SessionCookie(false), OidcBridgeApi.PortalSink.disabled(),
                 ISSUER, Clock.systemUTC());
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            OidcBridgeApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            OidcBridgeApi.register(routes, state);
         });
     }
 
@@ -490,12 +490,12 @@ class OidcBridgeTest {
         assertThat(DB.fetchCount(OAUTH_OIDC_LOGIN_STATES, OAUTH_OIDC_LOGIN_STATES.STATE.eq("expired-" + RUN)))
                 .as("an expired row is left for the purger, not consumed").isEqualTo(1);
 
-        try (var throttled = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            OidcIpLimit.register(cfg.routes, new io.flowcatalyst.platform.auth.ratelimit.Governor(new io.flowcatalyst.platform.auth.ratelimit.Governor.Config(1, 1)));
-            cfg.routes.get("/auth/oidc/session/end", ctx -> ctx.json(Map.of("message", "Session ended")));
-            cfg.routes.get("/portal/authorize", ctx -> ctx.result("ok"));
-            cfg.routes.get("/auth/login", ctx -> ctx.result("untouched"));
+        try (var throttled = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            OidcIpLimit.register(routes, new io.flowcatalyst.platform.auth.ratelimit.Governor(new io.flowcatalyst.platform.auth.ratelimit.Governor.Config(1, 1)));
+            routes.get("/auth/oidc/session/end", ctx -> ctx.json(Map.of("message", "Session ended")));
+            routes.get("/portal/authorize", ctx -> ctx.result("ok"));
+            routes.get("/auth/login", ctx -> ctx.result("untouched"));
         })) {
             assertThat(throttled.get("/auth/oidc/session/end").statusCode()).isEqualTo(200);
             var second = throttled.get("/portal/authorize");

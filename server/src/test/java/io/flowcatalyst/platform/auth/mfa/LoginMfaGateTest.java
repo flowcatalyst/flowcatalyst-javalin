@@ -84,7 +84,7 @@ class LoginMfaGateTest {
         mapping(LOOSE, IdentityProviderType.INTERNAL, new TwoFactorPolicy(false, List.of(), true, 0));
         mapping(EXTERNAL, IdentityProviderType.OIDC, new TwoFactorPolicy(true, List.of(MfaMethod.TOTP, MfaMethod.EMAIL_PIN), true, 7));
         var gate = new LoginMfaGate(MFA, new DomainPolicy.Evaluator(MAPPINGS), TOKENS, new TrustedDeviceCookie(false));
-        http = new TestHttp(cfg -> cfg.routes.post("/gate/{id}", ctx -> {
+        http = TestHttp.routes(routes -> routes.post("/gate/{id}", ctx -> {
             var p = PRINCIPALS.findById(ctx.pathParam("id")).orElseThrow();
             var challenge = gate.evaluate(p, ctx);
             ctx.json(challenge.map(LoginMfaGate.Challenge::body).orElse(Map.of("status", "proceed")));

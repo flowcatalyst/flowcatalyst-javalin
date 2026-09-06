@@ -5,9 +5,8 @@ import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
-import io.javalin.http.Context;
-import io.javalin.http.HttpStatus;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,11 +39,11 @@ public final class OAuthAuthorizeApi {
     private OAuthAuthorizeApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.get("/oauth/authorize", ctx -> authorize(ctx, s));
     }
 
-    static void authorize(Context ctx, OAuthState s) {
+    static void authorize(Exchange ctx, OAuthState s) {
         String responseType = q(ctx, "response_type");
         String clientId = q(ctx, "client_id");
         String redirectUri = q(ctx, "redirect_uri");
@@ -163,7 +162,7 @@ public final class OAuthAuthorizeApi {
                 return;
             }
             ctx.redirect(redirectUri + querySep(redirectUri) + "code=" + pct(code.code()) + "&state=" + pct(state),
-                    HttpStatus.TEMPORARY_REDIRECT);
+                    307);
             return;
         }
 
@@ -178,7 +177,7 @@ public final class OAuthAuthorizeApi {
             if (!codeChallenge.isEmpty()) bridge.append("&oauth_code_challenge=").append(pct(codeChallenge));
             if (!codeChallengeMethod.isEmpty()) bridge.append("&oauth_code_challenge_method=").append(pct(codeChallengeMethod));
             if (!nonce.isEmpty()) bridge.append("&oauth_nonce=").append(pct(nonce));
-            ctx.redirect(bridge.toString(), HttpStatus.TEMPORARY_REDIRECT);
+            ctx.redirect(bridge.toString(), 307);
             return;
         }
 
@@ -200,7 +199,7 @@ public final class OAuthAuthorizeApi {
         if (!codeChallengeMethod.isEmpty()) login.append("&code_challenge_method=").append(pct(codeChallengeMethod));
         if (!nonce.isEmpty()) login.append("&nonce=").append(pct(nonce));
         if (!clientHint.isEmpty()) login.append("&client=").append(pct(clientHint));
-        ctx.redirect(login.toString(), HttpStatus.TEMPORARY_REDIRECT);
+        ctx.redirect(login.toString(), 307);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -239,12 +238,12 @@ public final class OAuthAuthorizeApi {
         return t.isEmpty() || t.length() > 64 || !CLIENT_HINT.matcher(t).matches() ? "" : t;
     }
 
-    static void errorRedirect(Context ctx, String redirectUri, String code, String description, String state) {
+    static void errorRedirect(Exchange ctx, String redirectUri, String code, String description, String state) {
         String url = redirectUri + querySep(redirectUri) + "error=" + pct(code) + "&error_description=" + pct(description);
         if (state != null && !state.isEmpty()) {
             url += "&state=" + pct(state);
         }
-        ctx.redirect(url, HttpStatus.TEMPORARY_REDIRECT);
+        ctx.redirect(url, 307);
     }
 
     static String querySep(String redirectUri) {
@@ -266,7 +265,7 @@ public final class OAuthAuthorizeApi {
         return b.toString();
     }
 
-    private static String q(Context ctx, String name) {
+    private static String q(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null ? "" : v;
     }

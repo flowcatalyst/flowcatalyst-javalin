@@ -1,16 +1,14 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.testpg.TestPg;
-import io.javalin.Javalin;
-import io.javalin.http.HandlerType;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -23,6 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// lockfile operation should eventually have a route. The second half is
 /// reported as a coverage figure until the port is complete, then flipped to
 /// a hard assertion (see `REQUIRED_COVERAGE`).
+///
+/// Walks [RouteRegistry#registrations()] (`docs/spec/http-seam.md` §1) rather
+/// than Javalin's `HandlerType` internals — `before`/`after`/`exception` are
+/// not registrations, so there is nothing left to skip the way the old
+/// `HandlerType.BEFORE`/`AFTER` filter did.
 class LockfileCoverageTest {
 
     /// The platform port is complete: every lockfile operation must be routed.
@@ -51,13 +54,11 @@ class LockfileCoverageTest {
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
         Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
         var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
-        Javalin api = server.buildApi();
+        RouteRegistry registry = server.buildApi().registry();
 
         Set<String> registered = new TreeSet<>();
-        for (var parsed : api.unsafe.internalRouter.allHttpHandlers()) {
-            var endpoint = parsed.endpoint;
-            if (endpoint.method == HandlerType.BEFORE || endpoint.method == HandlerType.AFTER) continue;
-            registered.add(endpoint.method.name().toUpperCase(Locale.ROOT) + " " + endpoint.path);
+        for (var reg : registry.registrations()) {
+            registered.add(reg.method() + " " + reg.path());
         }
 
         var lock = Lockfile.load(Json.MAPPER);

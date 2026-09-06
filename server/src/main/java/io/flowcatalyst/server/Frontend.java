@@ -1,7 +1,7 @@
 package io.flowcatalyst.server;
 
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -88,12 +88,12 @@ public final class Frontend {
     /// Mounts the fallback routes on `config.routes`. Call after every API
     /// route is registered (Javalin 7 registers routes inside
     /// `Javalin.create(config -> …)`).
-    public void register(JavalinDefaultRoutingApi routes) {
+    public void register(Routes routes) {
         routes.get("/", this::serve);
         routes.get("/<path>", this::serve);
     }
 
-    void serve(Context ctx) throws IOException {
+    void serve(Exchange ctx) throws IOException {
         String path = ctx.path();
         String rel = path.startsWith("/") ? path.substring(1) : path;
         if (rel.isEmpty() || rel.contains("..")) {
@@ -112,7 +112,7 @@ public final class Frontend {
         ctx.result(url.openStream());
     }
 
-    private void serveIndex(Context ctx) throws IOException {
+    private void serveIndex(Exchange ctx) throws IOException {
         InputStream in = loader.getResourceAsStream(ROOT + "index.html");
         if (in == null) {
             ctx.status(500).contentType("text/plain; charset=utf-8").result("index.html missing from embedded frontend");

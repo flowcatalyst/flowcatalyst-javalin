@@ -26,9 +26,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.HttpStatus;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,7 +70,7 @@ public final class OidcBridgeApi {
     /// The portal sink (§5.6), wired by the portal unit; until then a
     /// portal-flagged state answers `PORTAL_DISABLED`.
     public interface PortalSink {
-        void complete(Context ctx, LoginState state, IdTokenClaims claims);
+        void complete(Exchange ctx, LoginState state, IdTokenClaims claims);
 
         static PortalSink disabled() {
             return (ctx, _, _) -> HttpError.write(ctx, 500, "PORTAL_DISABLED", "portal login is not configured", Map.of());
@@ -105,7 +104,7 @@ public final class OidcBridgeApi {
     private OidcBridgeApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/auth/oidc/login", ctx -> login(ctx, s));
         routes.get(CALLBACK_PATH, ctx -> callback(ctx, s));
         routes.get("/auth/oidc/session/end", ctx -> sessionEnd(ctx, s));
@@ -113,7 +112,7 @@ public final class OidcBridgeApi {
 
     // ── /auth/oidc/login ───────────────────────────────────────────────────
 
-    static void login(Context ctx, State s) {
+    static void login(Exchange ctx, State s) {
         String providerId = q(ctx, "provider_id");
         String domain = q(ctx, "domain");
         if (domain.isEmpty()) {
@@ -168,12 +167,12 @@ public final class OidcBridgeApi {
             HttpError.write(ctx, 500, "OIDC_STATE", "persist state failed", Map.of());
             return;
         }
-        ctx.redirect(provider.authorizeUrl(callbackUrl(ctx, s), state), HttpStatus.FOUND);
+        ctx.redirect(provider.authorizeUrl(callbackUrl(ctx, s), state), 302);
     }
 
     // ── /auth/oidc/callback ────────────────────────────────────────────────
 
-    static void callback(Context ctx, State s) {
+    static void callback(Exchange ctx, State s) {
         String stateParam = q(ctx, "state");
         String code = q(ctx, "code");
         if (stateParam.isEmpty() || code.isEmpty()) {
@@ -329,7 +328,7 @@ public final class OidcBridgeApi {
             return;
         }
         s.cookie().set(ctx, token);
-        ctx.redirect(landing(state), HttpStatus.FOUND);
+        ctx.redirect(landing(state), 302);
     }
 
     /// The employee-plane JIT (§4.7): the mapping that drove the login is
@@ -473,7 +472,7 @@ public final class OidcBridgeApi {
 
     // ── /auth/oidc/session/end ─────────────────────────────────────────────
 
-    static void sessionEnd(Context ctx, State s) {
+    static void sessionEnd(Exchange ctx, State s) {
         s.cookie().clear(ctx);
         String postLogout = q(ctx, "post_logout_redirect_uri");
         if (postLogout.isEmpty()) {
@@ -506,7 +505,7 @@ public final class OidcBridgeApi {
         if (!state.isEmpty()) {
             target += (postLogout.contains("?") ? "&" : "?") + "state=" + enc(state);
         }
-        ctx.redirect(target, HttpStatus.SEE_OTHER);
+        ctx.redirect(target, 303);
     }
 
     /// The `aud` of an id_token hint, read from the payload **without** a
@@ -542,7 +541,7 @@ public final class OidcBridgeApi {
 
     /// §4.5: the external base URL trimmed of `/` + the callback path;
     /// when unset, derived from the forwarding headers (development only).
-    public static String callbackUrl(Context ctx, State s) {
+    public static String callbackUrl(Exchange ctx, State s) {
         String base = s.externalBaseUrl();
         if (base.isEmpty()) {
             String proto = header(ctx, "X-Forwarded-Proto");
@@ -561,7 +560,7 @@ public final class OidcBridgeApi {
         return base + CALLBACK_PATH;
     }
 
-    private static String header(Context ctx, String name) {
+    private static String header(Exchange ctx, String name) {
         String v = ctx.header(name);
         return v == null ? "" : v.trim();
     }
@@ -576,7 +575,7 @@ public final class OidcBridgeApi {
         return URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
 
-    private static String q(Context ctx, String name) {
+    private static String q(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null ? "" : v.trim();
     }

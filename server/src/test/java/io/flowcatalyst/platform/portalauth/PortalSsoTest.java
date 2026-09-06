@@ -135,11 +135,11 @@ class PortalSsoTest {
         gen.initialize(2048);
         var kp = gen.generateKeyPair();
         idpKey = new RSAKey.Builder((RSAPublicKey) kp.getPublic()).privateKey((RSAPrivateKey) kp.getPrivate()).keyID("idp-" + RUN).build();
-        idp = new TestHttp(cfg -> {
-            cfg.routes.get("/.well-known/openid-configuration", ctx -> ctx.json(Map.of("issuer", idpBase,
+        idp = TestHttp.routes(routes -> {
+            routes.get("/.well-known/openid-configuration", ctx -> ctx.json(Map.of("issuer", idpBase,
                     "authorization_endpoint", idpBase + "/authorize", "token_endpoint", idpBase + "/token", "jwks_uri", idpBase + "/jwks")));
-            cfg.routes.get("/jwks", ctx -> ctx.contentType("application/json").result(new JWKSet(idpKey.toPublicJWK()).toString()));
-            cfg.routes.post("/token", ctx -> {
+            routes.get("/jwks", ctx -> ctx.contentType("application/json").result(new JWKSet(idpKey.toPublicJWK()).toString()));
+            routes.post("/token", ctx -> {
                 var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(idpKey.getKeyID()).build(), NEXT_CLAIMS.get().build());
                 jwt.sign(new RSASSASigner(idpKey));
                 ctx.json(Map.of("access_token", "x", "token_type", "Bearer", "id_token", jwt.serialize()));
@@ -180,11 +180,11 @@ class PortalSsoTest {
                 TOKEN_ISSUER, new AccessTokenReader(VERIFIER), new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS)),
                 ClaimLabels.none(), Optional.of(ENC), null, null,
                 RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), null, KEYS, ISSUER, Clock.systemUTC(), access);
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            OidcBridgeApi.register(cfg.routes, bridge);
-            sso.register(cfg.routes);
-            OAuthTokenApi.register(cfg.routes, oauth);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            OidcBridgeApi.register(routes, bridge);
+            sso.register(routes);
+            OAuthTokenApi.register(routes, oauth);
         });
     }
 

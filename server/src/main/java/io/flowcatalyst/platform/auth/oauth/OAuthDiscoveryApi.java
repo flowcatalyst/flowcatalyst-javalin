@@ -1,8 +1,8 @@
 package io.flowcatalyst.platform.auth.oauth;
 
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.math.BigInteger;
 import java.security.interfaces.RSAPublicKey;
@@ -22,12 +22,12 @@ public final class OAuthDiscoveryApi {
     private OAuthDiscoveryApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, OAuthState s) {
+    public static void register(Routes routes, OAuthState s) {
         routes.get("/.well-known/openid-configuration", ctx -> configuration(ctx, s));
         routes.get("/.well-known/jwks.json", ctx -> jwks(ctx, s));
     }
 
-    static void configuration(Context ctx, OAuthState s) {
+    static void configuration(Exchange ctx, OAuthState s) {
         String base = s.baseUrl();
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("issuer", base);
@@ -52,7 +52,7 @@ public final class OAuthDiscoveryApi {
         ctx.status(200).json(d);
     }
 
-    static void jwks(Context ctx, OAuthState s) {
+    static void jwks(Exchange ctx, OAuthState s) {
         var keys = new ArrayList<Map<String, Object>>();
         for (SigningKeys.PublicKeyEntry entry : s.signingKeys().rotation().verificationKeys()) {
             keys.add(jwk(entry));

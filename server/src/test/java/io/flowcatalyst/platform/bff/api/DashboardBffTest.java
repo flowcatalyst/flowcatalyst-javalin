@@ -53,10 +53,10 @@ class DashboardBffTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/bff/*", auth);
-            DashboardBff.register(cfg.routes, new DashboardBff.State(new DashboardRepository(TestPg.dataSource())));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/bff/*", auth);
+            DashboardBff.register(routes, new DashboardBff.State(new DashboardRepository(TestPg.dataSource())));
         });
     }
 

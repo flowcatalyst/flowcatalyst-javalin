@@ -16,8 +16,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -58,14 +58,14 @@ public final class ProcessApi {
 
     /// Mounts the endpoints under `/api/processes`; paths, methods and status
     /// codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         registerAt(routes, "/api/processes", s);
     }
 
     /// Mounts every process route under `prefix` — `/api/processes` for the
     /// SDK surface, `/bff/processes` for the SPA (bff spec §8, Go
     /// `registerAt`): the two prefixes serve the same handlers.
-    public static void registerAt(JavalinDefaultRoutingApi routes, String prefix, State s) {
+    public static void registerAt(Routes routes, String prefix, State s) {
         routes.get(prefix, Auth.scoped(ctx -> list(ctx, s)));
         routes.post(prefix, Auth.scoped(ctx -> create(ctx, s)));
         routes.get(prefix + "/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
@@ -77,42 +77,42 @@ public final class ProcessApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), PROCESS_VIEW);
         ctx.json(ProcessListResponse.from(s.repo().findWithFilters(listFilter(ctx))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
         var cmd = ctx.bodyAsClass(CreateProcessRequest.class).toCommand();
         var event = CreateProcess.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.processId()));
     }
 
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         Checks.require(Auth.current(), PROCESS_VIEW);
         ctx.json(ProcessResponse.from(processByCode(s, ctx.pathParam("code"))));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), PROCESS_VIEW);
         ctx.json(ProcessResponse.from(process(s, ctx.pathParam("id"))));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
         var cmd = ctx.bodyAsClass(UpdateProcessRequest.class).toCommand(ctx.pathParam("id"));
         UpdateProcess.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void archive(Context ctx, State s) {
+    private static void archive(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
         ArchiveProcess.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), PROCESS_DELETE);
         DeleteProcess.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -121,12 +121,12 @@ public final class ProcessApi {
     // ── Read-side helpers ──────────────────────────────────────────────────
 
     /// Query params → filter; there is no implied default (spec §3).
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         return new ListFilter(queryParam(ctx, "application"), queryParam(ctx, "subdomain"), queryParam(ctx, "status"));
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

@@ -62,10 +62,10 @@ class AuditLogApiTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new AuditLogApi.State(new AuditLogRepository(AuditLogFixture.DS));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            AuditLogApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            AuditLogApi.register(routes, state);
         });
 
         principal = AuditLogFixture.principal("Grace Hopper " + AuditLogFixture.RUN);

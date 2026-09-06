@@ -75,10 +75,10 @@ class DispatchJobApiTest {
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new DispatchJobApi.State(new DispatchJobRepository(DispatchJobFixture.DS),
                 new UnitOfWork(DispatchJobFixture.DS, new PlatformSink(Json.MAPPER)));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            DispatchJobApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            DispatchJobApi.register(routes, state);
         });
 
         eventId = Tsid.generate();

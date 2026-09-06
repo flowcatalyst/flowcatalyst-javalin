@@ -5,8 +5,8 @@ import io.flowcatalyst.platform.shared.json.Json;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -87,8 +87,8 @@ public final class SchemaValidation implements Handler {
     }
 
     @Override
-    public void handle(Context ctx) {
-        var method = ctx.method().name();
+    public void handle(Exchange ctx) {
+        var method = ctx.method();
         var path = ctx.path();
         Route match = null;
         for (var route : table) {
@@ -177,7 +177,7 @@ public final class SchemaValidation implements Handler {
     private static final Set<String> TRUE_VALUES = Set.of("1", "t", "T", "TRUE", "true", "True");
     private static final Set<String> FALSE_VALUES = Set.of("0", "f", "F", "FALSE", "false", "False");
 
-    private void validateParam(Context ctx, String pathTemplate, Param param, List<Map<String, Object>> errors) {
+    private void validateParam(Exchange ctx, String pathTemplate, Param param, List<Map<String, Object>> errors) {
         // Deliberately NOT `ctx.pathParam(name)`: that call validates `name`
         // against the concrete Javalin route Jetty actually matched, which this
         // global `before` filter runs ahead of/independent from — it throws

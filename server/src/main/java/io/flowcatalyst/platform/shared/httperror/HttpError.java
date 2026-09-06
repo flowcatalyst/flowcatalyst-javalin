@@ -6,9 +6,9 @@ import io.flowcatalyst.platform.shared.CorruptRowException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
-import io.javalin.http.HttpResponseException;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.HttpException;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,7 +96,7 @@ public record HttpError(
 
     /// Renders a use-case error as the envelope + status (Go `httperror.Write`).
     /// A `null` error renders the 500 `INTERNAL` envelope. Any 5xx is logged.
-    public static void write(Context ctx, UseCaseError error) {
+    public static void write(Exchange ctx, UseCaseError error) {
         var env = error == null ? INTERNAL : of(error);
         var status = status(error);
         if (status >= 500) {
@@ -107,7 +107,7 @@ public record HttpError(
     }
 
     /// Renders an explicit envelope at an explicit status.
-    public static void write(Context ctx, int status, String code, String message, Map<String, Object> details) {
+    public static void write(Exchange ctx, int status, String code, String message, Map<String, Object> details) {
         writeRaw(ctx, status, new HttpError(code, message, details));
     }
 
@@ -117,7 +117,7 @@ public record HttpError(
     /// and change-password refusals (`auth-core.md` §5 rows 2–3) — while
     /// everything it routes through `httperror` keeps the platform key.
     /// Found by the parity harness (S2): the SPA reads `code` on these.
-    public static void writeLoginSurface(Context ctx, int status, String code, String message) {
+    public static void writeLoginSurface(Exchange ctx, int status, String code, String message) {
         ctx.status(status).json(java.util.Map.of("code", code, "message", message));
     }
 
@@ -151,7 +151,7 @@ public record HttpError(
 
     /// Renders a bare code/message at [#statusFor] (the huma `ErrorModel`
     /// fallback when no kind is known).
-    public static void write(Context ctx, String code, String message) {
+    public static void write(Exchange ctx, String code, String message) {
         writeRaw(ctx, statusFor(code), new HttpError(code, message));
     }
 
@@ -162,7 +162,7 @@ public record HttpError(
     /// schema-validation filter and [io.flowcatalyst.platform.shared.apicommon.QueryParams],
     /// which builds the identical shape by hand for its own accumulating
     /// query-parameter checks.
-    public static void writeValidation(Context ctx, java.util.List<Map<String, Object>> errors) {
+    public static void writeValidation(Exchange ctx, java.util.List<Map<String, Object>> errors) {
         writeRaw(ctx, 400, new HttpError("VALIDATION", "validation failed", Map.of("errors", java.util.List.copyOf(errors))));
     }
 
@@ -171,7 +171,7 @@ public record HttpError(
     /// `{"error":"invalid_token","error_description":"…"}` and header
     /// `WWW-Authenticate: Bearer error="invalid_token"`. A blank description
     /// defaults to `invalid bearer token`.
-    public static void writeInvalidToken(Context ctx, String description) {
+    public static void writeInvalidToken(Exchange ctx, String description) {
         var desc = description == null || description.isEmpty() ? "invalid bearer token" : description;
         ctx.header("WWW-Authenticate", "Bearer error=\"invalid_token\"");
         ctx.status(401)
@@ -183,7 +183,7 @@ public record HttpError(
     public record InvalidToken(String error, @JsonProperty("error_description") String errorDescription) {
     }
 
-    private static void writeRaw(Context ctx, int status, HttpError env) {
+    private static void writeRaw(Exchange ctx, int status, HttpError env) {
         ctx.status(status).contentType("application/json").result(env.toJson());
     }
 
@@ -229,7 +229,7 @@ public record HttpError(
     /// A 401 `UNAUTHORIZED` envelope. Go has no use-case kind for 401 — only
     /// the bare-code fallback in `statusFor` knows it — so this is written
     /// directly rather than thrown.
-    public static void unauthorized(Context ctx, String message) {
+    public static void unauthorized(Exchange ctx, String message) {
         writeRaw(ctx, 401, new HttpError("UNAUTHORIZED", message));
     }
 
@@ -242,33 +242,34 @@ public record HttpError(
         return UseCaseException.find(t).filter(e -> e instanceof UseCaseError.Validation).isPresent();
     }
 
-    // ── Javalin wiring ─────────────────────────────────────────────────────
+    // ── Seam wiring ──────────────────────────────────────────────────────
 
-    /// Registers the exception handlers on `cfg.routes`:
+    /// Registers the exception handlers on `routes`:
     ///
     ///   - [UseCaseException] → its envelope at the kind's status;
     ///   - [CorruptRowException] (any stored-enum row a strict `parse`
     ///     rejected, X-06) → logged with the row id, 500 `CORRUPT_ROW` —
     ///     distinct from bare `INTERNAL` so an operator can tell "a row is
     ///     bad" from "something else broke";
-    ///   - Javalin's own [HttpResponseException] (404 for an unmatched route
-    ///     with `ctx.result` unset, validator failures, …) → envelope with a
-    ///     status-derived code (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`,
-    ///     `NOT_FOUND`, `CONFLICT`, else `INTERNAL`) — Java-only shape, Go's
-    ///     chi answers those with plain text;
+    ///   - the seam's own [HttpException] (404 for an unmatched route with
+    ///     `ctx.result` unset, validator failures, … — translated by the
+    ///     adapter from whatever framework-native shape carries them) →
+    ///     envelope with a status-derived code (`BAD_REQUEST`, `UNAUTHORIZED`,
+    ///     `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, else `INTERNAL`) — Java-only
+    ///     shape, Go's chi answers those with plain text;
     ///   - any other [Exception] → logged, 500 `INTERNAL` envelope (what
     ///     `httperror.Write` emits for a non-usecase error; chi's Recoverer
     ///     answers a panic with an empty 500 — the envelope is the kinder
     ///     superset).
-    public static void install(JavalinDefaultRoutingApi routes) {
+    public static void install(Routes routes) {
         routes.exception(UseCaseException.class, (e, ctx) -> write(ctx, e.error()));
         routes.exception(LoginSurfaceException.class, (e, ctx) -> writeLoginSurface(ctx, e.status(), e.code(), e.getMessage()));
         routes.exception(CorruptRowException.class, (e, ctx) -> {
             LOG.error("corrupt row on {} {}: entity={} rowId={}", ctx.method(), ctx.path(), e.entity(), e.rowId(), e);
             writeRaw(ctx, 500, new HttpError("CORRUPT_ROW", e.getMessage()));
         });
-        routes.exception(HttpResponseException.class, (e, ctx) -> {
-            var status = e.getStatus();
+        routes.exception(HttpException.class, (e, ctx) -> {
+            var status = e.status();
             var code = switch (status) {
                 case 400 -> "BAD_REQUEST";
                 case 401 -> "UNAUTHORIZED";

@@ -54,10 +54,10 @@ class DocsApiTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new DocsApi.State(AppDocFixture.DOCS, AppDocFixture.APPS, PublishedDocs.load());
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            DocsApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            DocsApi.register(routes, state);
         });
 
         var app = AppDocFixture.application("api", "Docs API App " + AppDocFixture.RUN);

@@ -20,9 +20,9 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -60,7 +60,7 @@ public final class EventTypeApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/event-types", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/event-types", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/event-types/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -74,49 +74,49 @@ public final class EventTypeApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, EVENT_TYPE_VIEW);
         List<EventType> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), EventType::clientId);
         ctx.json(new EventTypeListResponse(visible.stream().map(EventTypeResponse::from).toList()));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, EVENT_TYPE_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(EventTypeResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)))));
     }
 
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, EVENT_TYPE_VIEW);
         String code = ctx.pathParam("code");
         ctx.json(EventTypeResponse.from(visible(ac, s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("EventType", code)))));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
         var event = CreateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.eventTypeId()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateEventTypeRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), EVENT_TYPE_DELETE);
         DeleteEventType.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     /// Answers with the updated event type (re-read after the write), as the lockfile says.
-    private static void addSchema(Context ctx, State s) {
+    private static void addSchema(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
         String id = ctx.pathParam("id");
         AddSchema.of(s.repo()).run(s.uow(), ctx.bodyAsClass(AddSchemaRequest.class).toCommand(id), Auth.executionContext());
@@ -129,7 +129,7 @@ public final class EventTypeApi {
     /// is implied. `clientId` is accepted for wire parity but is not a column:
     /// it filters nothing, yet its presence counts as "filtered" for the
     /// default (spec §3, open question 3).
-    private static ListFilter listFilter(Context ctx) {
+    private static ListFilter listFilter(Exchange ctx) {
         String application = queryParam(ctx, "application");
         String clientId = queryParam(ctx, "clientId");
         String status = queryParam(ctx, "status");
@@ -140,7 +140,7 @@ public final class EventTypeApi {
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

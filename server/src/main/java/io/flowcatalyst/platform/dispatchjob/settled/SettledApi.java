@@ -2,8 +2,8 @@ package io.flowcatalyst.platform.dispatchjob.settled;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.shared.json.Json;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -55,11 +55,11 @@ public final class SettledApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/api/dispatch/settled", ctx -> serve(ctx, s));
     }
 
-    private static void serve(Context ctx, State s) {
+    private static void serve(Exchange ctx, State s) {
         // Reject on the declared Content-Length BEFORE buffering the body (audit finding: a
         // caller that declares a multi-GB body must not make this handler read it all into
         // memory first only to discard it). `contentLength()` is -1 for a chunked body with no

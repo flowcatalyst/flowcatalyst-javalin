@@ -78,12 +78,12 @@ class ScheduledJobsBffTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            cfg.routes.before("/bff/*", auth);
-            ScheduledJobApi.register(cfg.routes, new ScheduledJobApi.State(repo, instanceRepo, uow));
-            ScheduledJobsBff.register(cfg.routes, new ScheduledJobsBff.State(repo, instanceRepo, clientRepo, applicationRepo));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            routes.before("/bff/*", auth);
+            ScheduledJobApi.register(routes, new ScheduledJobApi.State(repo, instanceRepo, uow));
+            ScheduledJobsBff.register(routes, new ScheduledJobsBff.State(repo, instanceRepo, clientRepo, applicationRepo));
         });
     }
 

@@ -80,10 +80,10 @@ class PasskeyApiTest {
                 new SessionCookie(false), new Notifications(SENT::add, () -> "Acme"), ATTEMPTS,
                 new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), Clock.systemUTC());
         var resolver = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/auth/webauthn/*", new Authenticator(VERIFIER, resolver, Authenticator.Config.of(false)));
-            PasskeyApi.register(cfg.routes, state);
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/auth/webauthn/*", new Authenticator(VERIFIER, resolver, Authenticator.Config.of(false)));
+            PasskeyApi.register(routes, state);
         });
     }
 

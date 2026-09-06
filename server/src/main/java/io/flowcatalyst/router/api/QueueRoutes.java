@@ -3,8 +3,8 @@ package io.flowcatalyst.router.api;
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.lifecycle.BrokerStatsCache;
 import io.flowcatalyst.router.traffic.Traffic;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +35,7 @@ final class QueueRoutes {
     private static final double THROUGHPUT_NOT_COMPUTED = 0.0;
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/queues", ctx -> queues(ctx, s));
         routes.get(p + "/monitoring/queue-stats", ctx -> queueStats(ctx, s));
@@ -52,7 +52,7 @@ final class QueueRoutes {
     /// Sorted by queue id. The cache hands back an unordered map, and a list
     /// whose rows move between two polls of the same unchanged data is a
     /// dashboard nobody can read.
-    private static void queues(Context ctx, State s) {
+    private static void queues(Exchange ctx, State s) {
         if (s.brokerStats() == null) {
             ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -74,7 +74,7 @@ final class QueueRoutes {
     /// been processed**, not 0.0. A queue that has done nothing has failed
     /// nothing, and zero would paint every freshly-created queue as a total
     /// outage on the dashboard.
-    private static void queueStats(Context ctx, State s) {
+    private static void queueStats(Exchange ctx, State s) {
         if (s.brokerStats() == null) {
             ctx.json(Map.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -107,7 +107,7 @@ final class QueueRoutes {
     /// `ageSeconds` is clamped at zero: [BrokerStatsCache#ageSeconds] answers
     /// [BrokerStatsCache#NEVER_REFRESHED] before the first sample, and a `-1`
     /// on the response to a refresh that just happened would be nonsense.
-    private static void brokerStatsRefresh(Context ctx, State s) {
+    private static void brokerStatsRefresh(Exchange ctx, State s) {
         if (s.brokerStats() == null) {
             Http.serviceUnavailable(ctx, "broker stats not configured");
             return;
@@ -130,7 +130,7 @@ final class QueueRoutes {
     /// router believing it is out of the balancer while the balancer is still
     /// sending it traffic — the two facts disagree, and an operator deciding
     /// whether it is safe to stop the process needs both.
-    private static void trafficStatus(Context ctx, State s) {
+    private static void trafficStatus(Exchange ctx, State s) {
         var status = s.traffic() == null ? Traffic.Status.disabled() : s.traffic().status();
         ctx.json(new Wire.TrafficStatusResponse(status.enabled(), status.mode(),
                 status.targetGroupArn().orElse(null), status.registered(),

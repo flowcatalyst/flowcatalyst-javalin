@@ -59,10 +59,10 @@ class LoginAttemptApiTest {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
-        http = new TestHttp(cfg -> {
-            HttpError.install(cfg.routes);
-            cfg.routes.before("/api/*", auth);
-            LoginAttemptApi.register(cfg.routes, new LoginAttemptApi.State(repo));
+        http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            LoginAttemptApi.register(routes, new LoginAttemptApi.State(repo));
         });
         var ids = new ArrayList<String>();
         ids.add(record(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, ADA, PRINCIPAL, "10.0.0.1", "Mozilla", null, BASE));

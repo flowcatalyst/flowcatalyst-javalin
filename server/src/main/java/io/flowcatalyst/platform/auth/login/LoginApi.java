@@ -19,8 +19,8 @@ import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -99,7 +99,7 @@ public final class LoginApi {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/auth/check-domain", ctx -> checkDomain(ctx, s));
         routes.get("/auth/check-domain", ctx -> checkDomainLegacy(ctx, s));
         routes.post("/auth/login", ctx -> login(ctx, s));
@@ -119,7 +119,7 @@ public final class LoginApi {
         static final CheckDomainResponse INTERNAL = new CheckDomainResponse("internal", null, null);
     }
 
-    private static void checkDomain(Context ctx, State s) {
+    private static void checkDomain(Exchange ctx, State s) {
         var req = decode(ctx, CheckDomainRequest.class);
         String email = req.email() == null ? "" : req.email().trim();
         if (email.isEmpty()) {
@@ -146,7 +146,7 @@ public final class LoginApi {
     record CheckDomainLegacyResponse(String domain, String authMethod, String providerId, String authorizationUrl) {
     }
 
-    private static void checkDomainLegacy(Context ctx, State s) {
+    private static void checkDomainLegacy(Exchange ctx, State s) {
         String email = ctx.queryParam("email");
         Optional<String> domain = domainOf(email == null ? "" : email.trim());
         String authMethod = "INTERNAL";
@@ -169,7 +169,7 @@ public final class LoginApi {
     record LoginRequest(String email, String password, Boolean rememberMe) {
     }
 
-    private static void login(Context ctx, State s) {
+    private static void login(Exchange ctx, State s) {
         var req = decode(ctx, LoginRequest.class);
         String email = req.email() == null ? "" : req.email().trim().toLowerCase(Locale.ROOT);
         String password = req.password() == null ? "" : req.password();
@@ -249,14 +249,14 @@ public final class LoginApi {
 
     /// Mint the cookie, record the success, answer the login response.
     /// Public so the 2FA and passkey flows complete a login the same way.
-    public static void completeLogin(Context ctx, State s, Principal p, String ip) {
+    public static void completeLogin(Exchange ctx, State s, Principal p, String ip) {
         completeLogin(ctx, s, p, ip, null);
     }
 
     /// [#completeLogin(Context, State, Principal, String)], with a first
     /// recovery-code set to show once (§6.6 enrol-and-complete) — `null` or
     /// empty when this login minted none.
-    public static void completeLogin(Context ctx, State s, Principal p, String ip, List<String> recoveryCodes) {
+    public static void completeLogin(Exchange ctx, State s, Principal p, String ip, List<String> recoveryCodes) {
         String token;
         try {
             token = s.issuer().sessionToken(p.id(), p.email());
@@ -274,14 +274,14 @@ public final class LoginApi {
 
     // ── /auth/logout ───────────────────────────────────────────────────────
 
-    private static void logout(Context ctx, State s) {
+    private static void logout(Exchange ctx, State s) {
         s.cookie().clear(ctx);
         ctx.status(204);
     }
 
     // ── /auth/me ───────────────────────────────────────────────────────────
 
-    private static void me(Context ctx, State s) {
+    private static void me(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
             unauthorized(ctx, "Not authenticated");
@@ -306,7 +306,7 @@ public final class LoginApi {
         }
     }
 
-    private static void loginHistory(Context ctx, State s) {
+    private static void loginHistory(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
             unauthorized(ctx, "Not authenticated");
@@ -385,7 +385,7 @@ public final class LoginApi {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static <T> T decode(Context ctx, Class<T> type) {
+    private static <T> T decode(Exchange ctx, Class<T> type) {
         try {
             return Json.MAPPER.readValue(ctx.body(), type);
         } catch (JacksonException e) {
@@ -449,17 +449,17 @@ public final class LoginApi {
         }
     }
 
-    private static void unauthorized(Context ctx, String message) {
+    private static void unauthorized(Exchange ctx, String message) {
         ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 
-    private static void tooManyRequests(Context ctx, long retryAfterSecs) {
+    private static void tooManyRequests(Exchange ctx, long retryAfterSecs) {
         ctx.header("Retry-After", Long.toString(retryAfterSecs));
         HttpError.writeLoginSurface(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later");
     }
 
-    private static void backoffUnavailable(Context ctx) {
+    private static void backoffUnavailable(Exchange ctx) {
         HttpError.writeLoginSurface(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly");
     }
 }

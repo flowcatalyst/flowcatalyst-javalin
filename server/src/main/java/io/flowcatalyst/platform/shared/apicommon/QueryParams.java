@@ -2,7 +2,7 @@ package io.flowcatalyst.platform.shared.apicommon;
 
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -31,7 +31,7 @@ public final class QueryParams {
     ///
     /// @throws UseCaseException 400 `VALIDATION` with one `invalid integer`
     ///                          error at `query.<name>` for a non-integer value
-    public static OptionalInt intParam(Context ctx, String name) {
+    public static OptionalInt intParam(Exchange ctx, String name) {
         var errors = new ArrayList<Map<String, Object>>(1);
         OptionalInt value = intParam(ctx, name, errors);
         if (!errors.isEmpty()) throw validation(errors);
@@ -42,7 +42,7 @@ public final class QueryParams {
     /// `{message: "invalid integer", location: "query.<name>", value}` entry
     /// to `errors` and reads as empty; the caller throws [#validation] once
     /// every parameter has been read.
-    public static OptionalInt intParam(Context ctx, String name, List<Map<String, Object>> errors) {
+    public static OptionalInt intParam(Exchange ctx, String name, List<Map<String, Object>> errors) {
         String raw = ctx.queryParam(name);
         if (raw == null || raw.isEmpty()) return OptionalInt.empty();
         try {

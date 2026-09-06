@@ -12,8 +12,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -61,7 +61,7 @@ public final class EventApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     /// The literal segments are registered before `{id}` so they win.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         // Registered BEFORE registerAt so this literal segment wins over registerAt's `{id}`.
         routes.get("/api/events/raw", Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW_RAW))); // SDK alias of /list-raw, same handler
         registerAt(routes, "/api/events", s);
@@ -72,7 +72,7 @@ public final class EventApi {
     /// §8, Go `registerBFF`). The `/raw` SDK alias and the batch-ingest mount
     /// are the callers' business: [#register] adds the former, `Platform`
     /// wires the latter onto [io.flowcatalyst.platform.ingest.api.IngestApi].
-    public static void registerAt(JavalinDefaultRoutingApi routes, String prefix, State s) {
+    public static void registerAt(Routes routes, String prefix, State s) {
         routes.get(prefix, Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW)));
         routes.get(prefix + "/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
         routes.get(prefix + "/list-raw", Auth.scoped(ctx -> list(ctx, s, EVENT_VIEW_RAW)));
@@ -82,21 +82,21 @@ public final class EventApi {
     // ── Handlers ───────────────────────────────────────────────────────────
 
     /// One handler for the three list routes; only the gate differs (spec §3, §8).
-    private static void list(Context ctx, State s, Permission gate) {
+    private static void list(Exchange ctx, State s, Permission gate) {
         var ac = Auth.current();
         Checks.require(ac, gate);
         var page = Page.from(ctx);
         ctx.json(s.repo().findWithFilters(listFilter(ctx, ac), page.effectiveLimit(), page.offset()).stream().map(EventRead::from).toList());
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         var ac = Auth.current();
         Checks.require(ac, EVENT_VIEW);
         String id = ctx.pathParam("id");
         ctx.json(EventResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("Event", id)))));
     }
 
-    private static void filterOptions(Context ctx, State s) {
+    private static void filterOptions(Exchange ctx, State s) {
         Checks.require(Auth.current(), EVENT_VIEW);
         ctx.json(new EventFilterOptionsResponse(
                 options(s.repo().distinctValues(Facet.APPLICATION, FACET_LIMIT)),
@@ -110,7 +110,7 @@ public final class EventApi {
     /// lists are trimmed, blanks dropped; `principalId` is accepted and
     /// ignored (no backing column); the caller's visibility is part of the
     /// filter so its own client filters can only narrow within it (spec §8).
-    private static ListFilter listFilter(Context ctx, AuthContext ac) {
+    private static ListFilter listFilter(Exchange ctx, AuthContext ac) {
         return new ListFilter(
                 queryParam(ctx, "type"),
                 queryParam(ctx, "source"),
@@ -140,7 +140,7 @@ public final class EventApi {
     /// the [QueryParams] 400 `VALIDATION` envelope listing every bad
     /// parameter, in `limit, offset, size` order.
     record Page(int limit, int offset, int size) {
-        static Page from(Context ctx) {
+        static Page from(Exchange ctx) {
             var errors = new ArrayList<Map<String, Object>>();
             int limit = QueryParams.intParam(ctx, "limit", errors).orElse(0);
             int offset = QueryParams.intParam(ctx, "offset", errors).orElse(0);
@@ -166,7 +166,7 @@ public final class EventApi {
     }
 
     /// Absent or empty query parameter → `null`.
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

@@ -53,11 +53,11 @@ class BasicAuthFilterTest {
     }
 
     private static TestHttp buildApp(BasicAuthFilter filter) {
-        return new TestHttp(cfg -> {
-            BasicAuthFilter.register(cfg.routes, filter);
-            cfg.routes.get(PREFIX + "/monitoring/health", ctx -> ctx.result("protected-ok"));
+        return TestHttp.routes(routes -> {
+            BasicAuthFilter.register(routes, filter);
+            routes.get(PREFIX + "/monitoring/health", ctx -> ctx.result("protected-ok"));
             for (String p : PUBLIC_PATHS) {
-                cfg.routes.get(PREFIX + p, ctx -> ctx.result("public-ok"));
+                routes.get(PREFIX + p, ctx -> ctx.result("public-ok"));
             }
         });
     }

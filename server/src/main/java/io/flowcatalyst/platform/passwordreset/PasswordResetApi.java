@@ -17,8 +17,8 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -69,7 +69,7 @@ public final class PasswordResetApi {
     private PasswordResetApi() {
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/auth/password-reset/request", ctx -> request(ctx, s));
         routes.get("/auth/password-reset/validate", ctx -> validate(ctx, s));
         routes.post("/auth/password-reset/confirm", ctx -> confirm(ctx, s));
@@ -77,7 +77,7 @@ public final class PasswordResetApi {
 
     // ── request ────────────────────────────────────────────────────────────
 
-    static void request(Context ctx, State s) {
+    static void request(Exchange ctx, State s) {
         JsonNode body = body(ctx);
         if (body == null) {
             HttpError.write(ctx, 400, "INVALID_BODY", "malformed request body", Map.of());
@@ -123,7 +123,7 @@ public final class PasswordResetApi {
 
     // ── validate ───────────────────────────────────────────────────────────
 
-    static void validate(Context ctx, State s) {
+    static void validate(Exchange ctx, State s) {
         String raw = ctx.queryParam("token");
         Map<String, Object> out = new LinkedHashMap<>();
         Optional<ResetToken> t;
@@ -154,7 +154,7 @@ public final class PasswordResetApi {
 
     // ── confirm ────────────────────────────────────────────────────────────
 
-    static void confirm(Context ctx, State s) {
+    static void confirm(Exchange ctx, State s) {
         JsonNode body = body(ctx);
         if (body == null) {
             HttpError.write(ctx, 400, "INVALID_BODY", "malformed request body", Map.of());
@@ -267,7 +267,7 @@ public final class PasswordResetApi {
 
     /// §8.5: the portal identity must exist and be active; the policy
     /// violation is a 400 with its own code; no 2FA gate, no revocation.
-    static void confirmPortal(Context ctx, State s, ResetToken token, String password) {
+    static void confirmPortal(Exchange ctx, State s, ResetToken token, String password) {
         Optional<PortalPasswords.Identity> found;
         try {
             found = s.portal().find(token.principalId());
@@ -318,7 +318,7 @@ public final class PasswordResetApi {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static JsonNode body(Context ctx) {
+    private static JsonNode body(Exchange ctx) {
         try {
             JsonNode n = Json.MAPPER.readTree(ctx.body());
             return n != null && n.isObject() ? n : null;

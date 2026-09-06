@@ -21,8 +21,8 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -86,7 +86,7 @@ public final class IngestApi {
     /// Mounts the five POST routes. The matching `GET` routes are already
     /// registered by `EventApi` / `DispatchJobApi` / `AuditLogApi` — Javalin
     /// allows the split by method.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.post("/api/events", Auth.scoped(ctx -> createEvent(ctx, s)));
         routes.post("/api/events/batch", Auth.scoped(ctx -> batchIngestEvents(ctx, s)));
         routes.post("/api/dispatch-jobs", Auth.scoped(ctx -> createDispatchJob(ctx, s)));
@@ -97,13 +97,13 @@ public final class IngestApi {
     /// Mounts the SPA's own fan-out ingest at `path` (bff spec §8: `POST
     /// /bff/events/batch`), the same handler and body/behaviour as
     /// `POST /api/events/batch` — no duplicated handler body.
-    public static void registerEventsBatchAt(JavalinDefaultRoutingApi routes, String path, State s) {
+    public static void registerEventsBatchAt(Routes routes, String path, State s) {
         routes.post(path, Auth.scoped(ctx -> batchIngestEvents(ctx, s)));
     }
 
     // ── Events ───────────────────────────────────────────────────────────
 
-    private static void createEvent(Context ctx, State s) {
+    private static void createEvent(Exchange ctx, State s) {
         var ac = Auth.current();
         Checks.require(ac, Permission.BATCH_EVENTS_WRITE);
         var req = ctx.bodyAsClass(CreateEventRequest.class);
@@ -121,7 +121,7 @@ public final class IngestApi {
         ctx.status(201).json(new CreateEventResponse(createdEvent(event), 0, false));
     }
 
-    private static void batchIngestEvents(Context ctx, State s) {
+    private static void batchIngestEvents(Exchange ctx, State s) {
         var ac = Auth.current();
         Checks.require(ac, Permission.BATCH_EVENTS_WRITE);
         var body = ctx.bodyAsClass(BatchRequest.class);
@@ -176,7 +176,7 @@ public final class IngestApi {
 
     // ── Dispatch jobs ────────────────────────────────────────────────────
 
-    private static void createDispatchJob(Context ctx, State s) {
+    private static void createDispatchJob(Exchange ctx, State s) {
         var ac = Auth.current();
         Checks.require(ac, Permission.BATCH_DISPATCH_JOBS_WRITE);
         var req = ctx.bodyAsClass(CreateDispatchJobRequest.class);
@@ -199,7 +199,7 @@ public final class IngestApi {
         ctx.status(201).json(new CreatedResponse(job.id()));
     }
 
-    private static void batchIngestDispatchJobs(Context ctx, State s) {
+    private static void batchIngestDispatchJobs(Exchange ctx, State s) {
         var ac = Auth.current();
         Checks.require(ac, Permission.BATCH_DISPATCH_JOBS_WRITE);
         var body = ctx.bodyAsClass(DispatchJobBatchRequest.class);
@@ -226,7 +226,7 @@ public final class IngestApi {
 
     // ── Audit logs ───────────────────────────────────────────────────────
 
-    private static void batchIngestAuditLogs(Context ctx, State s) {
+    private static void batchIngestAuditLogs(Exchange ctx, State s) {
         var ac = Auth.current();
         if (ac == null) {
             HttpError.unauthorized(ctx, "authentication required"); // spec §7: audit unauthenticated is 401, not the usual 403

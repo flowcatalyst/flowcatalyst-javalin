@@ -1,8 +1,8 @@
 package io.flowcatalyst.router.api.dashboard;
 
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,13 +38,13 @@ public final class DashboardHandler implements Handler {
     }
 
     @Override
-    public void handle(Context ctx) {
+    public void handle(Exchange ctx) {
         ctx.html(rendered);
     }
 
     /// Mounts at both `<prefix>/monitoring/dashboard` and `<prefix>/dashboard.html`
     /// — the same two paths Go's `dashboard.go` doc comment names.
-    public static void register(JavalinDefaultRoutingApi routes, String prefix) {
+    public static void register(Routes routes, String prefix) {
         var handler = new DashboardHandler(prefix);
         String p = prefix == null || prefix.isBlank() ? "" : prefix;
         routes.get(p + "/monitoring/dashboard", handler);

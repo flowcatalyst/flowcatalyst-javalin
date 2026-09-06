@@ -20,8 +20,8 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -63,7 +63,7 @@ public final class ScheduledJobsBff {
         }
     }
 
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/bff/scheduled-jobs", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/bff/scheduled-jobs/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
         routes.get("/bff/scheduled-jobs/instances/{instanceId}", Auth.scoped(ctx -> getInstance(ctx, s)));
@@ -74,7 +74,7 @@ public final class ScheduledJobsBff {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         PageQuery page = PageQuery.from(ctx);
@@ -92,7 +92,7 @@ public final class ScheduledJobsBff {
         ctx.json(Page.of(out, page, total));
     }
 
-    private static void getJob(Context ctx, State s) {
+    private static void getJob(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ScheduledJob job = visible(ac, job(s, ctx.pathParam("id")));
@@ -101,7 +101,7 @@ public final class ScheduledJobsBff {
         ctx.json(toJobResponse(s, job, clients, apps));
     }
 
-    private static void listInstances(Context ctx, State s) {
+    private static void listInstances(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         String jobId = ctx.pathParam("id");
@@ -118,13 +118,13 @@ public final class ScheduledJobsBff {
         ctx.json(Page.of(rows.stream().map(InstanceResponse::from).toList(), page, total));
     }
 
-    private static void getInstance(Context ctx, State s) {
+    private static void getInstance(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ctx.json(InstanceResponse.from(visibleInstance(ac, instance(s, ctx.pathParam("instanceId")))));
     }
 
-    private static void listInstanceLogs(Context ctx, State s) {
+    private static void listInstanceLogs(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         ScheduledJobInstance inst = visibleInstance(ac, instance(s, ctx.pathParam("instanceId")));
@@ -136,7 +136,7 @@ public final class ScheduledJobsBff {
     /// ACTIVE client the caller can access, sorted by label. `applications`:
     /// every active application, sorted by label. `statuses`: the fixed
     /// three-value catalogue (bff spec §7).
-    private static void filterOptions(Context ctx, State s) {
+    private static void filterOptions(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, SCHEDULED_JOB_VIEW);
 
@@ -177,7 +177,7 @@ public final class ScheduledJobsBff {
     /// so `total` and the pages agree with the visible rows). `null` means
     /// the caller can see nothing at all: the handler answers an empty page
     /// without a query.
-    private static ListFilter listFilter(Context ctx, AuthContext ac) {
+    private static ListFilter listFilter(Exchange ctx, AuthContext ac) {
         List<String> clientIds = csv(queryParam(ctx, "clientIds"));
         if (!ac.isAnchor()) {
             List<String> allowed = clientIds.isEmpty()
@@ -230,7 +230,7 @@ public final class ScheduledJobsBff {
         return rows.stream().collect(java.util.stream.Collectors.toMap(id, Function.identity(), (a, _) -> a));
     }
 
-    private static String queryParam(Context ctx, String name) {
+    private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
     }

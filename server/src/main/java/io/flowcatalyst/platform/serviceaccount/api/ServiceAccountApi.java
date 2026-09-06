@@ -34,9 +34,9 @@ import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -110,7 +110,7 @@ public final class ServiceAccountApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. The two alias pairs (spec §3) share one handler each.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/service-accounts", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/service-accounts", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/service-accounts/code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
@@ -134,13 +134,13 @@ public final class ServiceAccountApi {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         List<ServiceAccountResponse> items = s.repo().findAll().stream().map(sa -> ServiceAccountResponse.from(sa, null)).toList();
         ctx.json(new ServiceAccountListResponse(items, items.size()));
     }
 
-    private static void getByCode(Context ctx, State s) {
+    private static void getByCode(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String code = ctx.pathParam("code");
         ServiceAccount sa = s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("ServiceAccount", code));
@@ -148,14 +148,14 @@ public final class ServiceAccountApi {
         ctx.json(ServiceAccountResponse.from(sa, null));
     }
 
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String id = ctx.pathParam("id");
         ServiceAccount sa = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ServiceAccount", id));
         ctx.json(ServiceAccountResponse.from(sa, principalIdOf(s, sa.id())));
     }
 
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
         var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.encryption())
@@ -169,26 +169,26 @@ public final class ServiceAccountApi {
                 new ServiceAccountWebhookSecrets(result.authToken(), result.signingSecret())));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(UpdateServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         UpdateServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         DeactivateServiceAccount.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_DELETE);
         DeleteServiceAccount.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void listRoles(Context ctx, State s) {
+    private static void listRoles(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String id = ctx.pathParam("id");
         s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ServiceAccount", id));
@@ -197,7 +197,7 @@ public final class ServiceAccountApi {
 
     /// Anchor-only (spec §3): role assignment grants authority in the
     /// `principal` aggregate, so the gate is the tier, not a permission.
-    private static void assignRoles(Context ctx, State s) {
+    private static void assignRoles(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         var body = ctx.bodyAsClass(AssignRolesRequest.class);
@@ -210,7 +210,7 @@ public final class ServiceAccountApi {
     /// Permission-gated, NOT anchor-only (spec §3 explicitly names only
     /// role-assignment and token-mint as the anchor-only pair) — this diverges
     /// from Go, which anchor-gates rotation too; the spec wins (CONVENTIONS §8).
-    private static void regenerateAuthToken(Context ctx, State s) {
+    private static void regenerateAuthToken(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         String id = ctx.pathParam("id");
         // The sink is a local: the plaintext cannot outlive this request, and is
@@ -220,7 +220,7 @@ public final class ServiceAccountApi {
         ctx.json(new RegenerateAuthTokenResponse(id, token.get()));
     }
 
-    private static void regenerateSigningSecret(Context ctx, State s) {
+    private static void regenerateSigningSecret(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         String id = ctx.pathParam("id");
         var secret = new AtomicReference<String>();
@@ -229,7 +229,7 @@ public final class ServiceAccountApi {
     }
 
     /// Anchor-only and best-effort-audited (spec §3, §8; owner ruling 2026-09-06 #15).
-    private static void mintToken(Context ctx, State s) {
+    private static void mintToken(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(), id);

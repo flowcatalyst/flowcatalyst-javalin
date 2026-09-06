@@ -3,8 +3,8 @@ package io.flowcatalyst.router.api;
 import io.flowcatalyst.router.api.RouterApi.State;
 import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.pool.Pool;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -35,7 +35,7 @@ final class PoolRoutes {
                     PoolMetricsCollector.ProcessingTimeMetrics.EMPTY, ZERO_WINDOW, ZERO_WINDOW);
 
     /// Mounts this group. Called by [RouterApi#register].
-    static void register(JavalinDefaultRoutingApi routes, State s) {
+    static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.get(p + "/monitoring/pools", ctx -> monitoringPools(ctx, s));
         routes.get(p + "/monitoring/pool-stats", ctx -> poolStats(ctx, s));
@@ -49,7 +49,7 @@ final class PoolRoutes {
     /// stuck?" and the answer is always at the top. `limit` defaults to 200:
     /// a pool wedged against a dead target has every worker occupied, and an
     /// unbounded list of identical rows helps nobody.
-    private static void monitoringMediating(Context ctx, State s) {
+    private static void monitoringMediating(Exchange ctx, State s) {
         if (s.manager() == null) {
             ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -81,7 +81,7 @@ final class PoolRoutes {
                 .toList();
     }
 
-    private static void monitoringPools(Context ctx, State s) {
+    private static void monitoringPools(Exchange ctx, State s) {
         if (s.manager() == null) {
             ctx.json(List.of()); // empty payload for lists (spec §9.1 note)
             return;
@@ -101,7 +101,7 @@ final class PoolRoutes {
 
     /// `time_window=5min|5m|30min|30m` select a window; anything else
     /// (absent, `all`, unknown) is all-time (Go `parseTimeWindow`).
-    private static void poolStats(Context ctx, State s) {
+    private static void poolStats(Exchange ctx, State s) {
         if (s.manager() == null) {
             ctx.json(Map.of()); // empty payload for lists
             return;
@@ -144,7 +144,7 @@ final class PoolRoutes {
                 successRate, active, available, concurrency, pool.queueSize(), pool.config().queueCapacity(), avgMs);
     }
 
-    private static void updatePool(Context ctx, State s) {
+    private static void updatePool(Exchange ctx, State s) {
         if (s.manager() == null) {
             Http.serviceUnavailable(ctx, "pool updater not configured");
             return;

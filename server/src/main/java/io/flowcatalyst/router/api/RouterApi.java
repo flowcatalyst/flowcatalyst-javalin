@@ -9,7 +9,7 @@ import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.traffic.Traffic;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Routes;
 
 import java.util.Map;
 import java.util.Objects;
@@ -180,7 +180,7 @@ public final class RouterApi {
     /// Mounts every route this module can honestly serve, by asking each
     /// group to mount its own. See the class doc for what is deliberately
     /// absent.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         HealthRoutes.register(routes, s);
         PoolRoutes.register(routes, s);
         WarningRoutes.register(routes, s);

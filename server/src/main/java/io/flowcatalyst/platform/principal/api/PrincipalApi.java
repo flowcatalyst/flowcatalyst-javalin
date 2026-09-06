@@ -70,8 +70,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -168,7 +168,7 @@ public final class PrincipalApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/principals", Auth.scoped(ctx -> list(ctx, s)));
         routes.post("/api/principals", Auth.scoped(ctx -> create(ctx, s)));
         routes.post("/api/principals/users", Auth.scoped(ctx -> createUser(ctx, s)));
@@ -202,7 +202,7 @@ public final class PrincipalApi {
 
     // ── Reads ──────────────────────────────────────────────────────────────
 
-    private static void list(Context ctx, State s) {
+    private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, USER_VIEW);
         ListQuery q = ListQuery.from(ctx);
@@ -221,7 +221,7 @@ public final class PrincipalApi {
     /// an out-of-scope target answers the same not-found a missing id would,
     /// never 403 (ledger PR-4, ruled 2026-09-01): a 403 here would be an
     /// existence oracle over the principal table.
-    private static void getById(Context ctx, State s) {
+    private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         boolean self = isSelf(ac, id);
@@ -236,7 +236,7 @@ public final class PrincipalApi {
     /// revocation check. Self needs no permission; anyone else's needs
     /// `USER_VIEW` plus the same out-of-scope-is-not-found scope check as the
     /// by-id read (PR-4).
-    private static void getVersion(Context ctx, State s) {
+    private static void getVersion(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         if (!isSelf(ac, id)) {
@@ -247,21 +247,21 @@ public final class PrincipalApi {
         ctx.json(new PrincipalVersionResponse(at));
     }
 
-    private static void listDeveloperUsers(Context ctx, State s) {
+    private static void listDeveloperUsers(Exchange ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         List<PrincipalResponse> out = s.repo().findByRole(SetDeveloperCredential.DEVELOPER_ROLE).stream()
                 .map(PrincipalResponse::from).toList();
         ctx.json(new DeveloperUserListResponse(out, out.size()));
     }
 
-    private static void listRoles(Context ctx, State s) {
+    private static void listRoles(Exchange ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
         Access.requireReadable(p);
         ctx.json(new PrincipalRoleListResponse(PrincipalRoleAssignmentDTO.listFor(p)));
     }
 
-    private static void listApplicationAccess(Context ctx, State s) {
+    private static void listApplicationAccess(Exchange ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
         Access.requireReadable(p);
@@ -271,7 +271,7 @@ public final class PrincipalApi {
 
     /// Every active application; for a non-anchor administrator only those the
     /// target's home client is entitled to (spec §5.3).
-    private static void listAvailableApplications(Context ctx, State s) {
+    private static void listAvailableApplications(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.require(ac, USER_VIEW);
         Principal p = principal(s, ctx.pathParam("id"));
@@ -285,13 +285,13 @@ public final class PrincipalApi {
         ctx.json(new PrincipalAvailableApplicationsResponse(out));
     }
 
-    private static void listClientAccess(Context ctx, State s) {
+    private static void listClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(new ClientAccessGrantListResponse(s.grants().findByPrincipal(ctx.pathParam("id")).stream()
                 .map(ClientAccessGrantResponse::from).toList()));
     }
 
-    private static void checkEmailDomain(Context ctx, State s) {
+    private static void checkEmailDomain(Exchange ctx, State s) {
         Checks.require(Auth.current(), USER_VIEW);
         String email = EmailAddress.normalise(ctx.queryParam("email"));
         if (email.isEmpty()) throw HttpError.badRequest("EMAIL_REQUIRED", "email query param is required");
@@ -317,7 +317,7 @@ public final class PrincipalApi {
 
     /// Anchors create any scope/client; a non-anchor administrator only
     /// CLIENT-scope users in a client it can access.
-    private static void create(Context ctx, State s) {
+    private static void create(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         var req = ctx.bodyAsClass(CreatePrincipalRequest.class);
         requireClientScopeForNonAnchor(ac, req.scope());
@@ -330,7 +330,7 @@ public final class PrincipalApi {
     /// The SDK create-user endpoint (spec §7): scope derived from the request
     /// + the email domain's setup, client reference resolved, partner-merge,
     /// then the shared [CreateUser]. Answers the full principal.
-    private static void createUser(Context ctx, State s) {
+    private static void createUser(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         var req = ctx.bodyAsClass(CreateUserRequest.class);
         String email = EmailAddress.normalise(req.email());
@@ -372,7 +372,7 @@ public final class PrincipalApi {
 
     /// CSV onboarding under one client (spec §7): each row its own
     /// transactions, outcomes reported per row.
-    private static void bulkImport(Context ctx, State s) {
+    private static void bulkImport(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         var req = ctx.bodyAsClass(BulkImportRequest.class);
         String clientId = req.clientId() == null ? "" : req.clientId().trim();
@@ -437,27 +437,27 @@ public final class PrincipalApi {
     }
 
     /// Declarative, application-less user upsert keyed on email (spec §3).
-    private static void syncUsers(Context ctx, State s) {
+    private static void syncUsers(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_MANAGE, USER_CREATE, USER_UPDATE, USER_DELETE, USER_ASSIGN_ROLES);
         var cmd = ctx.bodyAsClass(SyncUsersRequest.class).toCommand();
         var ev = SyncPrincipals.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new SyncUsersResponse(ev.created(), ev.updated(), ev.deactivated(), ev.syncedEmails()));
     }
 
-    private static void update(Context ctx, State s) {
+    private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
         String id = ctx.pathParam("id");
         UpdateUser.of(s.repo()).run(s.uow(), ctx.bodyAsClass(UpdatePrincipalRequest.class).toCommand(id), Auth.executionContext());
         ctx.json(PrincipalResponse.from(principal(s, id)));
     }
 
-    private static void activate(Context ctx, State s) {
+    private static void activate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
         ActivateUser.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Principal activated"));
     }
 
-    private static void deactivate(Context ctx, State s) {
+    private static void deactivate(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
         DeactivateUser.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Principal deactivated"));
@@ -469,7 +469,7 @@ public final class PrincipalApi {
     /// never 403 (PR-4) — `principal(s, id)` above already answers
     /// `Principal_NOT_FOUND` for a missing id, so [Access#requireManageable]
     /// (not `requireUserAdmin`) matches that spelling for the scope check too.
-    private static void resetPassword(Context ctx, State s) {
+    private static void resetPassword(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.requireAny(ac, USER_CREATE, USER_UPDATE, USER_DELETE);
         String id = ctx.pathParam("id");
@@ -482,7 +482,7 @@ public final class PrincipalApi {
     /// Body optional: no body = plain reset email. An out-of-scope target
     /// answers the same not-found `principal(s, id)` already gives a missing
     /// id (PR-4) — [Access#requireUserAdmin] with the `Principal` spelling.
-    private static void sendPasswordReset(Context ctx, State s) {
+    private static void sendPasswordReset(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
         Access.requireUserAdmin(p, "Principal");
@@ -496,7 +496,7 @@ public final class PrincipalApi {
     /// as Go does. An out-of-scope target answers the same not-found
     /// `principal(s, id)` already gives a missing id (PR-4). The service writes
     /// the `2FA_RESET_BY_ADMIN` audit row with the administrator as the actor.
-    private static void resetTwoFactor(Context ctx, State s) {
+    private static void resetTwoFactor(Exchange ctx, State s) {
         if (!s.mfa().configured()) throw UseCaseException.internal("MFA_NOT_CONFIGURED", "Two-factor service not configured", null);
         Principal p = principal(s, ctx.pathParam("id"));
         Access.requireUserAdmin(p, "Principal");
@@ -507,7 +507,7 @@ public final class PrincipalApi {
         ctx.json(new StatusChangeResponse("Two-factor authentication reset"));
     }
 
-    private static void delete(Context ctx, State s) {
+    private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), USER_DELETE);
         DeleteUser.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -517,7 +517,7 @@ public final class PrincipalApi {
     /// application roles its client is entitled to, and the target's other
     /// roles are preserved (spec §5.3). `added`/`removed` are set differences
     /// of the effective set against the previous one.
-    private static void assignRoles(Context ctx, State s) {
+    private static void assignRoles(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
@@ -545,7 +545,7 @@ public final class PrincipalApi {
     /// caller could "add" a role the target already holds and read back
     /// another tenant's full [PrincipalResponse] for free — an out-of-scope
     /// target answers the same not-found `principal(s, id)` gives a missing id.
-    private static void addRole(Context ctx, State s) {
+    private static void addRole(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
@@ -565,7 +565,7 @@ public final class PrincipalApi {
     /// roles it could also assign, so it cannot strip platform / other-app
     /// roles. Same pre-idempotent-check gate as [#addRole] and for the same
     /// reason (PR-4).
-    private static void removeRole(Context ctx, State s) {
+    private static void removeRole(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
@@ -584,7 +584,7 @@ public final class PrincipalApi {
     /// bounded to its client's applications and the target's other grants
     /// are preserved; all-applications may only be granted by a caller that
     /// holds it (spec §5.3).
-    private static void assignApplicationAccess(Context ctx, State s) {
+    private static void assignApplicationAccess(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
@@ -614,7 +614,7 @@ public final class PrincipalApi {
         ctx.json(new SetApplicationAccessResponse(resolveApplications(s, desired), added, removed, effectiveAll));
     }
 
-    private static void grantClientAccess(Context ctx, State s) {
+    private static void grantClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         String clientId = ctx.bodyAsClass(GrantClientAccessRequest.class).clientId();
@@ -623,14 +623,14 @@ public final class PrincipalApi {
                 .orElseThrow(() -> UseCaseException.internal("REPO", "grant not found after create", null))));
     }
 
-    private static void revokeClientAccess(Context ctx, State s) {
+    private static void revokeClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         RevokeClientAccess.of(s.repo(), s.grants())
                 .run(s.uow(), new RevokeClientAccessCommand(ctx.pathParam("id"), ctx.pathParam("clientId")), Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void setClientAssociation(Context ctx, State s) {
+    private static void setClientAssociation(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
         SetClientAssociation.of(s.repo(), s.clients())
@@ -644,14 +644,14 @@ public final class PrincipalApi {
     /// process-wide stash: it reaches the response exactly once, cannot
     /// outlive this frame, and is only read after `run` returns — so a
     /// rolled-back commit discloses nothing. See [DeveloperSecrets].
-    private static void setDeveloperCredential(Context ctx, State s) {
+    private static void setDeveloperCredential(Exchange ctx, State s) {
         var plaintext = new java.util.concurrent.atomic.AtomicReference<String>();
         var ev = SetDeveloperCredential.of(s.repo(), s.developerSecrets(), plaintext::set)
                 .run(s.uow(), new SetDeveloperCredentialCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SetDeveloperCredentialResponse(ev.userId(), plaintext.get()));
     }
 
-    private static void revokeDeveloperCredential(Context ctx, State s) {
+    private static void revokeDeveloperCredential(Exchange ctx, State s) {
         RevokeDeveloperCredential.of(s.repo())
                 .run(s.uow(), new RevokeDeveloperCredentialCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -764,7 +764,7 @@ public final class PrincipalApi {
     private record ListQuery(String type, String clientId, String active, String q, List<String> roles, int page, int pageSize,
                              String sortField, boolean descending) {
 
-        static ListQuery from(Context ctx) {
+        static ListQuery from(Exchange ctx) {
             return new ListQuery(
                     upper(ctx.queryParam("type")),
                     trimmed(ctx.queryParam("clientId")),
@@ -822,7 +822,7 @@ public final class PrincipalApi {
         }
 
         /// Absent or unparsable → 0 (Go's integer query binding default).
-        private static int intParam(Context ctx, String name) {
+        private static int intParam(Exchange ctx, String name) {
             String v = ctx.queryParam(name);
             if (v == null || v.isBlank()) return 0;
             try {

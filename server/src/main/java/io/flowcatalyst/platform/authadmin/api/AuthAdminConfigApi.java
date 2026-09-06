@@ -26,8 +26,8 @@ import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
-import io.javalin.http.Context;
-import io.javalin.router.JavalinDefaultRoutingApi;
+import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
@@ -71,7 +71,7 @@ public final class AuthAdminConfigApi {
     }
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
-    public static void register(JavalinDefaultRoutingApi routes, State s) {
+    public static void register(Routes routes, State s) {
         routes.get("/api/anchor-domains", Auth.scoped(ctx -> listAnchorDomains(ctx, s)));
         routes.post("/api/anchor-domains", Auth.scoped(ctx -> createAnchorDomain(ctx, s)));
         routes.put("/api/anchor-domains/{id}", Auth.scoped(ctx -> updateAnchorDomain(ctx, s)));
@@ -89,26 +89,26 @@ public final class AuthAdminConfigApi {
 
     // ── Anchor domains ───────────────────────────────────────────────────────
 
-    private static void listAnchorDomains(Context ctx, State s) {
+    private static void listAnchorDomains(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(new AnchorDomainListResponse(s.anchorDomainRepo().findAll().stream().map(AnchorDomainResponse::from).toList()));
     }
 
-    private static void createAnchorDomain(Context ctx, State s) {
+    private static void createAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateAnchorDomainRequest.class).toCommand();
         var event = CreateAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.anchorDomainId()));
     }
 
-    private static void updateAnchorDomain(Context ctx, State s) {
+    private static void updateAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateAnchorDomainRequest.class).toCommand(ctx.pathParam("id"));
         UpdateAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void deleteAnchorDomain(Context ctx, State s) {
+    private static void deleteAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), new DeleteAnchorDomainCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -116,26 +116,26 @@ public final class AuthAdminConfigApi {
 
     // ── Auth configs ─────────────────────────────────────────────────────────
 
-    private static void listAuthConfigs(Context ctx, State s) {
+    private static void listAuthConfigs(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(new AuthConfigListResponse(s.authConfigRepo().findAll().stream().map(AuthConfigResponse::from).toList()));
     }
 
-    private static void createAuthConfig(Context ctx, State s) {
+    private static void createAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateAuthConfigRequest.class).toCommand(s.secrets());
         var event = CreateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.authConfigId()));
     }
 
-    private static void updateAuthConfig(Context ctx, State s) {
+    private static void updateAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(UpdateAuthConfigRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
-    private static void deleteAuthConfig(Context ctx, State s) {
+    private static void deleteAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteAuthConfig.of(s.authConfigRepo()).run(s.uow(), new DeleteAuthConfigCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
@@ -143,19 +143,19 @@ public final class AuthAdminConfigApi {
 
     // ── IdP role mappings ────────────────────────────────────────────────────
 
-    private static void listIdpRoleMappings(Context ctx, State s) {
+    private static void listIdpRoleMappings(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         ctx.json(new IdpRoleMappingListResponse(s.idpRoleMappingRepo().findAll().stream().map(IdpRoleMappingResponse::from).toList()));
     }
 
-    private static void createIdpRoleMapping(Context ctx, State s) {
+    private static void createIdpRoleMapping(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         var cmd = ctx.bodyAsClass(CreateIdpRoleMappingRequest.class).toCommand();
         var event = CreateIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.mappingId()));
     }
 
-    private static void deleteIdpRoleMapping(Context ctx, State s) {
+    private static void deleteIdpRoleMapping(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         DeleteIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), new DeleteIdpRoleMappingCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);

@@ -1,7 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.shared.json.Json;
-import io.javalin.http.Context;
+import io.flowcatalyst.http.Exchange;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,7 +34,7 @@ final class Health {
         return new Health(List.of());
     }
 
-    void handle(Context ctx) {
+    void handle(Exchange ctx) {
         var body = new LinkedHashMap<String, Object>();
         boolean up = true;
         Map<String, String> results = new LinkedHashMap<>();
