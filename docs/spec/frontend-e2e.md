@@ -39,12 +39,15 @@ Three things the wire comparison cannot see:
   `tools/sync-frontend.sh` (an out-of-tree Vite build of the Go repo's
   `frontend/src`, stamped with the source commit in
   `server/src/main/resources/frontend.source-commit`, outside the served tree). The runner fetches `/index.html` from both
-  sides, blanks Vite's per-build asset hashes (two builds of one source
-  differ only in `index-<hash>.js`), and refuses to run when the documents
-  still differ — a mismatched build is a
-  finding of its own, not a source of forty spurious ones. (The Go repo's
-  `frontend/dist` is a local build artefact, not committed; the owner
-  refreshes it with `make frontend` there.)
+  sides and compares the bytes — Vite's asset hashes are content hashes, so
+  one source gives one document — and refuses to run when they differ: a
+  mismatched build is a finding of its own, not a source of forty spurious
+  ones. **Corrected 2026-09-06:** the first version blanked the hashes and
+  let a two-week-old Go `frontend/dist` through. Because that directory is
+  a local build artefact in a read-only tree, the runner now builds Go's
+  `fcdev` in a scratch copy of the Go tree whose `frontend/dist` *is* the
+  Java side's embedded copy, so both binaries serve the identical SPA
+  (`E2E_GO_EMBED_TREE_SPA=1` restores the in-tree build).
 
 ## 2. Starting a side
 

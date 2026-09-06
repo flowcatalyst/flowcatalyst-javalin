@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 
 /// The SPA gate (spec §1): before any test runs, fetch `/index.html` from
-/// both sides and compare them with Vite's per-build asset hashes blanked. A mismatched build produces dozens of
+/// both sides and compare the bytes. Vite's asset hashes are content
+/// hashes, so two builds of one source produce the same document and any
+/// other build a different one — the earlier gate blanked the hashes and
+/// on 2026-09-06 passed a two-week-old Go build as "matching". A mismatched build produces dozens of
 /// spurious failures downstream (every screen the SPA can't render right),
 /// so the run refuses to start on a mismatch unless the caller opts in with
 /// `E2E_ALLOW_SPA_MISMATCH=1` — in which case it proceeds but the result is
@@ -21,16 +24,6 @@ function sha256(bytes: Buffer | string): string {
     return createHash("sha256").update(bytes).digest("hex").slice(0, 16);
 }
 
-/// Vite stamps every emitted asset with a content hash that is *not* stable
-/// across separate `vite build` invocations of the same source, so two
-/// builds of one commit differ only in `index-CigTA1gY.js` vs
-/// `index-vE2h-lD0.js`. The gate compares the document with those hashes
-/// blanked: same source, same document. (Found on the first run of the
-/// runner: identical source commit, different chunk names.)
-export function normaliseIndexHtml(html: Buffer | string): string {
-    return html.toString().replace(/-[A-Za-z0-9_-]{8}\.(js|css)\b/g, ".$1");
-}
-
 /// The pure decision (unit-testable without a network): given the two
 /// sides' `/index.html` bodies, the Java copy's stamped source commit, and
 /// whether a mismatch is allowed, decide whether the run may proceed.
@@ -40,8 +33,8 @@ export function decideSpaGate(
     javaSourceCommit: string,
     allowMismatch: boolean,
 ): SpaGateResult {
-    const goHash = sha256(normaliseIndexHtml(goIndexHtml));
-    const javaHash = sha256(normaliseIndexHtml(javaIndexHtml));
+    const goHash = sha256(goIndexHtml);
+    const javaHash = sha256(javaIndexHtml);
     const matched = goHash === javaHash;
     if (matched) {
         return { matched, proceed: true, goHash, javaHash, message: `SPA revisions match (${goHash}).` };

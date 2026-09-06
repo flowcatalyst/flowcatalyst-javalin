@@ -34,20 +34,12 @@ describe("decideSpaGate", () => {
     });
 });
 
-import { normaliseIndexHtml } from "../spaGate.js";
-
-describe("normaliseIndexHtml", () => {
-    it("blanks Vite's per-build asset hashes so two builds of one source match", () => {
+describe("asset hashes are part of the comparison", () => {
+    it("a document whose only difference is a chunk hash is a different build (2026-09-06: a stale Go dist)", () => {
         const a = '<script type="module" src="/assets/index-CigTA1gY.js"></script><link href="/assets/index-Bq2x_9Zk.css">';
-        const b = '<script type="module" src="/assets/index-vE2h-lD0.js"></script><link href="/assets/index-Zz00aaBB.css">';
-        expect(normaliseIndexHtml(a)).toBe(normaliseIndexHtml(b));
-        expect(decideSpaGate(a, b, "89b195e", false).matched).toBe(true);
-    });
-
-    it("still tells a different document apart", () => {
-        const a = '<script src="/assets/index-CigTA1gY.js"></script><title>A</title>';
-        const b = '<script src="/assets/index-vE2h-lD0.js"></script><title>B</title>';
-        expect(decideSpaGate(a, b, "x", false).matched).toBe(false);
+        const b = '<script type="module" src="/assets/index-vE2h-lD0.js"></script><link href="/assets/index-Bq2x_9Zk.css">';
+        expect(decideSpaGate(a, b, "89b195e", false).matched).toBe(false);
+        expect(decideSpaGate(a, a, "89b195e", false).matched).toBe(true);
     });
 });
 

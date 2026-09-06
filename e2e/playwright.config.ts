@@ -24,7 +24,11 @@ export default defineConfig({
     outputDir: "test-results/artifacts",
     fullyParallel: false,
     forbidOnly: !!process.env.CI,
-    retries: 1,
+    // Per-test budget and retries are tunable per run: a discovery run against
+    // a side that has never passed wants `E2E_RETRIES=0` and a short budget so a
+    // stalled flow costs a minute, not the default plus a retry.
+    timeout: Number(process.env.E2E_TEST_TIMEOUT_MS ?? 60_000),
+    retries: process.env.E2E_RETRIES != null ? Number(process.env.E2E_RETRIES) : 1,
     workers: 1,
     reporter: [
         ["list"],

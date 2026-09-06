@@ -16,9 +16,20 @@ export function goRepoRoot(): string {
     return process.env.E2E_GO_REPO ?? path.resolve(JAVA_REPO_ROOT, "..", "flowcatalyst-go");
 }
 
-/// `go build -o <scratchDir>/fcdev ./cmd/fcdev`, run from the Go repo with
-/// the binary written OUT of that tree. Cached per process — the caller
-/// only needs one `fcdev` binary no matter how many sides start.
+/// `go build -o <scratchDir>/fcdev ./cmd/fcdev`, with the binary written OUT
+/// of the Go tree. Cached per process — the caller only needs one `fcdev`
+/// binary no matter how many sides start.
+///
+/// Go embeds `frontend/dist` from the tree it is built in (`//go:embed
+/// all:dist`), and that directory is a local build artefact the owner
+/// refreshes by hand — on 2026-09-06 it was two weeks behind the source, so
+/// the first Go run exercised a stale SPA while the (hash-blanking) gate
+/// said the sides matched. The build therefore happens in a scratch **copy**
+/// of the Go tree whose `frontend/dist` is the Java side's embedded copy
+/// (`server/src/main/resources/frontend`, the out-of-tree Vite build of the
+/// same source that `tools/sync-frontend.sh` refreshes): both binaries then
+/// serve byte-identical SPAs, and the Go tree is never written to.
+/// `E2E_GO_EMBED_TREE_SPA=1` builds in place instead (the tree's own dist).
 let goBuildPromise: Promise<string> | null = null;
 
 export function buildGoFcdev(scratchDir: string): Promise<string> {
@@ -30,7 +41,22 @@ export function buildGoFcdev(scratchDir: string): Promise<string> {
         }
         const out = path.join(scratchDir, "fcdev-go-bin");
         const started = Date.now();
-        await execFileAsync("go", ["build", "-o", out, "./cmd/fcdev"], { cwd: repo, maxBuffer: 64 * 1024 * 1024 });
+        let buildDir = repo;
+        if (process.env.E2E_GO_EMBED_TREE_SPA !== "1") {
+            buildDir = path.join(scratchDir, "go-src");
+            // Source only: no VCS, no node_modules, no local binaries or build output.
+            await execFileAsync("rsync", ["-a", "--delete",
+                "--exclude", ".git", "--exclude", "node_modules", "--exclude", "/bin", "--exclude", "/fc-dev",
+                "--exclude", "/clients", "--exclude", "/dump-spec", "--exclude", "/parityharness", "--exclude", "/frontend/dist",
+                repo + "/", buildDir + "/"]);
+            const spa = path.join(JAVA_REPO_ROOT, "server", "src", "main", "resources", "frontend");
+            if (!existsSync(path.join(spa, "index.html"))) {
+                throw new Error(`buildGoFcdev: no embedded SPA at ${spa} — run tools/sync-frontend.sh first`);
+            }
+            await execFileAsync("rsync", ["-a", "--delete", spa + "/", path.join(buildDir, "frontend", "dist") + "/"]);
+            console.log(`>> go build: scratch copy of ${repo} with the Java-synced SPA as frontend/dist`);
+        }
+        await execFileAsync("go", ["build", "-o", out, "./cmd/fcdev"], { cwd: buildDir, maxBuffer: 64 * 1024 * 1024 });
         // eslint-disable-next-line no-console
         console.log(`>> go build ./cmd/fcdev done in ${Date.now() - started}ms -> ${out}`);
         return out;
