@@ -7,6 +7,7 @@ import io.flowcatalyst.http.Admission;
 import io.flowcatalyst.testpg.TestPg;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -109,18 +110,30 @@ class GatedDataSourceTest {
     }
 
     @Test
-    void aNestedCheckoutInsideARequestScopeThrowsBeforeWaiting() throws Exception {
+    void aNestedCheckoutInsideARequestScopeJoinsTheOuterTransactionAndReleasesNothing() throws Exception {
         var gate = gate();
         ScopedValue.where(Admission.CURRENT, new Admission("/api/x")).call(() -> {
-            try (Connection first = gate.getConnection()) {
-                assertThat(first.isValid(1)).isTrue();
-                assertThat(Admission.CURRENT.get().held()).isEqualTo(1);
-                assertThatThrownBy(gate::getConnection)
-                        .isInstanceOf(IllegalStateException.class)
-                        .hasMessageContaining("nested connection checkout")
-                        .hasMessageContaining("/api/x");
-                assertThat(gate.waiting()).as("the guard fires before the semaphore").isZero();
+            try (Connection outer = gate.getConnection()) {
+                outer.setAutoCommit(false);
+                try (Statement st = outer.createStatement()) {
+                    st.execute("create temporary table reentrant_probe(v int) on commit drop");
+                    st.execute("insert into reentrant_probe values (42)");
+                }
                 assertThat(gate.held()).isEqualTo(1);
+                // the nested checkout: no wait, no second permit, same transaction
+                try (Connection inner = gate.getConnection(); Statement st = inner.createStatement();
+                     var rs = st.executeQuery("select v from reentrant_probe")) {
+                    assertThat(rs.next()).as("the inner handle sees the outer transaction's uncommitted write").isTrue();
+                    assertThat(rs.getInt(1)).isEqualTo(42);
+                    assertThat(gate.held()).as("no second permit").isEqualTo(1);
+                    assertThat(gate.waiting()).isZero();
+                    assertThatThrownBy(inner::commit).isInstanceOf(SQLException.class).hasMessageContaining("nested");
+                    assertThatThrownBy(() -> inner.setAutoCommit(true)).isInstanceOf(SQLException.class);
+                }
+                assertThat(gate.held()).as("closing the inner handle releases nothing").isEqualTo(1);
+                assertThat(outer.isClosed()).isFalse();
+                outer.rollback();
+                outer.setAutoCommit(true);
             }
             assertThat(Admission.CURRENT.get().held()).isZero();
             return null;

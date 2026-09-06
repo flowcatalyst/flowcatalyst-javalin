@@ -31,11 +31,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class GatedConnection implements Connection {
     private final Connection delegate;
     private final Runnable onClose;
+    /// `false` for a re-entrant handle: the request's outer checkout owns the pooled
+    /// connection; this handle joins its transaction and its `close()` releases nothing.
+    private final boolean owner;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     GatedConnection(Connection delegate, Runnable onClose) {
+        this(delegate, onClose, true);
+    }
+
+    GatedConnection(Connection delegate, Runnable onClose, boolean owner) {
         this.delegate = delegate;
         this.onClose = onClose;
+        this.owner = owner;
     }
 
     /// The pooled connection underneath (what the pool returned).
@@ -47,10 +55,15 @@ final class GatedConnection implements Connection {
     public void close() throws SQLException {
         if (!closed.compareAndSet(false, true)) return;
         try {
-            delegate.close();
+            if (owner) delegate.close();
         } finally {
             onClose.run();
         }
+    }
+
+    private void ownerOnly(String what) throws SQLException {
+        if (!owner) throw new SQLException("a nested (re-entrant) checkout may not " + what
+                + ": the request's outer checkout owns the transaction", "25000");
     }
 
     @Override
@@ -80,6 +93,7 @@ final class GatedConnection implements Connection {
 
     @Override
     public void setAutoCommit(boolean autoCommit) throws SQLException {
+        ownerOnly("setAutoCommit");
         delegate.setAutoCommit(autoCommit);
     }
 
@@ -90,11 +104,13 @@ final class GatedConnection implements Connection {
 
     @Override
     public void commit() throws SQLException {
+        ownerOnly("commit");
         delegate.commit();
     }
 
     @Override
     public void rollback() throws SQLException {
+        ownerOnly("rollback");
         delegate.rollback();
     }
 
@@ -296,6 +312,7 @@ SQLException {
 
     @Override
     public void abort(Executor executor) throws SQLException {
+        ownerOnly("abort");
         delegate.abort(executor);
     }
 

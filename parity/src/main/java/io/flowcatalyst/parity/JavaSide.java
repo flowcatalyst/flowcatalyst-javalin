@@ -5,7 +5,7 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.FileAppender;
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.seed.Seeder;
 import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.database.Migrator;
@@ -41,9 +41,9 @@ public final class JavaSide implements Side {
 
     private final Server.Running running;
     private final String baseUrl;
-    private final HikariDataSource pool;
+    private final GatedDataSource pool;
 
-    private JavaSide(Server.Running running, String baseUrl, HikariDataSource pool) {
+    private JavaSide(Server.Running running, String baseUrl, GatedDataSource pool) {
         this.running = running;
         this.baseUrl = baseUrl;
         this.pool = pool;
@@ -59,6 +59,9 @@ public final class JavaSide implements Side {
         String baseUrl = "http://127.0.0.1:" + port;
         Map<String, String> env = new LinkedHashMap<>(baseEnv);
         env.put("FC_DATABASE_URL", databaseUrl);
+        // Which listener serves the Java side: FC_HTTP from the harness's own environment
+        // (docs/spec/vertx-listener.md §1 "Selection"), so the corpus runs under both.
+        env.put("FC_HTTP", System.getenv().getOrDefault("FC_HTTP", "javalin"));
         env.put("FC_API_PORT", String.valueOf(port));
         env.put("FC_METRICS_PORT", "0");
         env.put("FC_PLATFORM_ENABLED", "true");
@@ -66,7 +69,7 @@ public final class JavaSide implements Side {
         env.put("FC_EXTERNAL_BASE_URL", baseUrl);
         env.put("FC_WEBAUTHN_ORIGINS", baseUrl);
 
-        HikariDataSource pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
+        GatedDataSource pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
         Migrator.migrate(pool);
         new Seeder(pool).run();
 

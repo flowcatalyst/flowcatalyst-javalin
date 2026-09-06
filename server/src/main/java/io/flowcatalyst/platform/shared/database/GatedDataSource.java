@@ -110,8 +110,15 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
     private Connection checkout(Lane lane) throws SQLException {
         Admission admission = Admission.currentOrNull();
         if (admission != null && admission.held() > 0) {
-            throw new IllegalStateException("nested connection checkout inside a request: " + admission.path()
-                    + " already holds " + admission.held() + " connection(s); a second checkout deadlocks under a full gate");
+            // Re-entrant checkout: a request has one connection. A repository read inside a
+            // transaction-scoped operation joins the transaction the outer checkout holds
+            // (it sees the transaction's own writes, as it must) instead of taking a second
+            // connection — which under a full gate is a deadlock, the case the corpus hit at
+            // five sites on 2026-09-06. The handle's close() releases nothing and it may not
+            // commit, roll back or change auto-commit: the outer owns the transaction.
+            Connection outer = admission.heldConnections().get(0);
+            Connection pooled = outer instanceof GatedConnection g ? g.delegate() : outer;
+            return new GatedConnection(pooled, () -> { }, false);
         }
         lane.waiting.incrementAndGet();
         try {

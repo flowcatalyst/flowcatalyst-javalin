@@ -828,3 +828,14 @@ default and the ALB topology never enables it on the target. Fix: find the
 Graceful bean (a thread dump during the stall shows `Server.doStop:711`
 waiting), or set a short QUIC idle timeout if Jetty exposes one; possibly a
 Jetty issue.
+
+## Sync rollup audit rows sort after Go's (2026-09-06)
+
+`AuditLogRepository`'s by-principal list now orders `(performed_at desc, id desc)` like Go's
+(it ordered by `performed_at` alone and matched Go by luck). The rollup and the per-row audit
+rows of one sync share `performed_at`, and Java's sync operations build the rollup event *after*
+the per-row events (higher TSID) where Go builds it first, so at equal timestamps the pair
+appears swapped. Six allow-list entries in `parity/expected-diffs.json` (`by-principal`) carry
+it. To retire them: construct the rollup event before the per-row events in the nine `Sync*`
+operations (the `TxScopedUnitOfWork.commitSync` write order is pinned and is not the lever —
+ids come from the events).

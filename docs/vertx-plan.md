@@ -352,10 +352,14 @@ the real server at 1- and 2-CPU quotas — throughput within 10% of Go, p99 with
 **Nothing merges without the owner's explicit approval.** Meeting the line earns the
 request, not the merge.
 
-**Status 2026-09-06:** everything above is on the branch (`4d4082a` and earlier, `32c936f` the
-comparison). Parity and both suites are green under both listeners. **The runtime line is not
-met** — `bench/real/RESULTS.md`: on the real page-load endpoint Vert.x is at 69% (1 CPU) / 93%
-(2 CPUs, 2 GB) of Go's throughput with a 2.2× tail, or 77% with a 1.4× tail when the gate is
-fair; the listener choice itself is within 2%. The merge is **not** requested. Open for the
-owner: the fairness trade (Q5), one-checkout-per-request as a third shape, the native image
-on one CPU, Q6 (HTTP/3), Q7 (cleartext h2 for router mediation).
+**Status 2026-09-06, end of day:** everything above is on the branch. Parity corpus identical
+under both listeners (1,149 steps, 349 OK, 800 allow-listed, 0 DIFF, 0 ERROR) and both full
+suites green (3604 server + 87 fcdev, each listener). **Runtime** (`bench/real/RESULTS.md`, 12
+rounds): with the owner's request-level admission — per-group FIFO queue + N virtual-thread
+workers, `NO_DB` routes unbounded — the Vert.x server reaches **98% of Go's throughput at two
+CPUs** (2,496 vs 2,550 req/s) with Go's spread and a p99 of 556 vs 440 ms on a 400 ms queueing
+floor; pinned cores 99%. One CPU stays at 66% (JIT and collector on the same core; the native
+image is slower still). The listener choice itself is within 2%; the semaphore gate variants and
+a connection-level worker pool were measured and rejected. The merge is **not** requested until
+the owner says so. Open rulings: Q6 (HTTP/3 on Vert.x), Q7 (cleartext h2 for router mediation).
+Follow-ups in `docs/backlog.md`: sync rollup audit order; one-query session resolution.

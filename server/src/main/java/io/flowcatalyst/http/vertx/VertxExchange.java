@@ -233,7 +233,13 @@ final class VertxExchange implements Exchange {
     public Exchange cookie(HttpCookie cookie) {
         var sb = new StringBuilder().append(cookie.name()).append('=').append(cookie.value());
         if (cookie.path() != null) sb.append("; Path=").append(cookie.path());
-        if (cookie.maxAge() >= 0) sb.append("; Max-Age=").append(cookie.maxAge());
+        if (cookie.maxAge() >= 0) {
+            // Max-Age and Expires both, as Go's net/http and Jetty write them (the parity
+            // corpus compares the attribute set).
+            sb.append("; Max-Age=").append(cookie.maxAge());
+            sb.append("; Expires=").append(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(
+                    java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).plusSeconds(cookie.maxAge())));
+        }
         if (cookie.httpOnly()) sb.append("; HttpOnly");
         if (cookie.secure()) sb.append("; Secure");
         if (cookie.sameSite() != null) {
@@ -249,7 +255,7 @@ final class VertxExchange implements Exchange {
 
     @Override
     public Exchange removeCookie(String name, String path) {
-        setCookies.add(name + "=; Path=" + path + "; Max-Age=0");
+        setCookies.add(name + "=; Path=" + path + "; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
         return this;
     }
 

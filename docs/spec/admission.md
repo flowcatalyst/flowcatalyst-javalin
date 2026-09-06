@@ -170,3 +170,19 @@ deadlock — the in-process router→platform call in fcdev must not go through 
 queue depth is memory (a parked request holds its parsed body), and a bound on it is where
 tier 3's immediate `503` arrives. Gauges: `fc_request_workers_busy{pool}`,
 `fc_request_queue_depth{pool}`.
+
+## 10. The nested checkout, resolved: a request has one connection (2026-09-06)
+
+The nested-acquire guard (§1) fired 34 times across five sites in the parity corpus: every one a
+transaction-scoped operation (`execute((scoped, cmd, ec) -> …)`) whose body called a repository
+read (`findByCode`, `findById`, `findByApplication`) that opened its own connection while the
+transaction held one — a deadlock under a full gate, exactly the class the guard exists for. The
+template's Plan-returning `execute` reads *before* its transaction, which is why it never tripped.
+
+Resolution, in the gate rather than at each site: **a nested checkout inside a request that
+already holds a connection returns a re-entrant handle on that same pooled connection.** It joins
+the outer transaction (so it sees the transaction's own uncommitted writes, as a read inside the
+operation must), its `close()` releases nothing, and it refuses `commit`, `rollback`, `abort` and
+`setAutoCommit` (`SQLSTATE 25000`): the outer checkout owns the transaction. No second permit, no
+wait, no deadlock. Pinned by `GatedDataSourceTest` (an uncommitted write on the outer handle is
+visible through the inner one; the mutant that takes a fresh connection fails it).

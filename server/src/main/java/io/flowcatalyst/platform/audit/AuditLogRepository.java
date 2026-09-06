@@ -153,7 +153,7 @@ public final class AuditLogRepository {
         if (f.until() != null) where = where.and(T.PERFORMED_AT.le(f.until().atOffset(ZoneOffset.UTC)));
         return logsWithPrincipal()
                 .where(where)
-                .orderBy(T.PERFORMED_AT.desc())
+                .orderBy(T.PERFORMED_AT.desc(), T.ID.desc())
                 .limit(guard(limit, FILTER_MAX_LIMIT, FILTER_DEFAULT_LIMIT))
                 .offset(Math.max(offset, 0))
                 .fetch(AuditLogRepository::toEntity);

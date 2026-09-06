@@ -1,436 +1,443 @@
 [
-  {
-    "scenario": "*",
-    "step": "*",
-    "pointer": "**/$schema",
-    "reason": "huma schema-link member; Java never emits it",
-    "ruling": "owner? parity-harness.md §10"
-  },
-  {
-    "scenario": "*",
-    "step": "health",
-    "pointer": "/checks",
-    "reason": "Java's /health carries per-check readiness (the login-attempt partition check, 503 DOWN when missing); Go has no checks member",
-    "ruling": "C-Q23 (auth-core.md §0.5, §7.2)"
-  },
-  {
-    "scenario": "*",
-    "step": "change-password",
-    "pointer": "/headers/Set-Cookie",
-    "reason": "Java also expires the trusted-device cookie (__Host-fc_td) whose row the password change revoked; Go revokes the rows and leaves the dead cookie in the browser",
-    "ruling": "auth-identity.md §11 (trusted devices revoked on password change) — Java clears the cookie too; recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "*",
-    "step": "change-password-back",
-    "pointer": "/headers/Set-Cookie",
-    "reason": "same as change-password",
-    "ruling": "auth-identity.md §11 — Java clears the cookie too; recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "*",
-    "step": "introspect-active",
-    "pointer": "/client_id",
-    "reason": "introspection's client_id is the token's azp (RFC 7662: the client the token was issued to); Go emits the first tenant of `clients` and omits it for the anchor wildcard",
-    "ruling": "owner? docs/backlog.md (parity S2)"
-  },
-  {
-    "scenario": "*",
-    "step": "auth-me",
-    "pointer": "/status",
-    "reason": "/auth/me answers status ok in Java; Go leaves the login envelope's status empty on this route",
-    "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
-  },
-  {
-    "scenario": "*",
-    "step": "introspect-client-credentials-token",
-    "pointer": "/client_id",
-    "reason": "same as introspect-active: Java answers azp (absent on a client_credentials token minted without one), Go the first tenant of clients (the anchor wildcard)",
-    "ruling": "owner? docs/backlog.md (parity S2)"
-  },
-  {
-    "scenario": "*",
-    "step": "*",
-    "pointer": "/rememberDeviceAllowed",
-    "reason": "Java tells the SPA whether the domain policy allows remembering this device so the checkbox can be hidden; Go emits nothing and the SPA guesses",
-    "ruling": "I-Q11 (auth-identity.md section 0.5) — Java addition, recorded in docs/backlog.md as a Go-mirror candidate"
-  },
-  {
-    "scenario": "*",
-    "step": "auth-me-after-verify",
-    "pointer": "/status",
-    "reason": "/auth/me answers status ok in Java; Go leaves it empty",
-    "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
-  },
-  {
-    "scenario": "*",
-    "step": "trusted-devices",
-    "pointer": "/devices",
-    "reason": "an empty trusted-device list: Go serialises its nil slice as null, Java answers []",
-    "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) — Go accident"
-  },
-  {
-    "scenario": "*",
-    "step": "remove-totp-again",
-    "pointer": "/status",
-    "reason": "removing a 2FA method the user never had: Go answers 200 'removed', Java 404",
-    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
-  },
-  {
-    "scenario": "*",
-    "step": "remove-totp-again",
-    "pointer": "/error",
-    "reason": "same as /status on this step",
-    "ruling": "defect 10 (auth-identity.md section 0.5)"
-  },
-  {
-    "scenario": "*",
-    "step": "remove-totp-again",
-    "pointer": "/message",
-    "reason": "same as /status on this step",
-    "ruling": "defect 10 (auth-identity.md section 0.5)"
-  },
-  {
-    "scenario": "*",
-    "step": "*",
-    "pointer": "**/permissions",
-    "reason": "an empty permission list: Go serialises its nil slice as null, Java answers []; a content difference would surface at an element pointer, not here",
-    "ruling": "CONVENTIONS.md section 2 (lists are never null) — Go accident"
-  },
-  {
-    "scenario": "*",
-    "step": "update-into-existing-domain",
-    "pointer": "/status",
-    "reason": "renaming an anchor domain onto an existing one: Go 500 PERSIST (no pre-check), Java 409 DOMAIN_EXISTS",
-    "ruling": "auth-admin-config.md section 8 D2"
-  },
-  {
-    "scenario": "*",
-    "step": "update-into-existing-domain",
-    "pointer": "/error",
-    "reason": "same step",
-    "ruling": "auth-admin-config.md section 8 D2"
-  },
-  {
-    "scenario": "*",
-    "step": "update-into-existing-domain",
-    "pointer": "/message",
-    "reason": "same step",
-    "ruling": "auth-admin-config.md section 8 D2"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/status",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/error",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/message",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
-    "pointer": "/status",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
-    "pointer": "/error",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
-    "pointer": "/message",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
-    "pointer": "/status",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
-    "pointer": "/error",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
-    "pointer": "/message",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/status",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/error",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/message",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/status",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/error",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "dispatch-jobs*",
-    "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
-    "pointer": "/message",
-    "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
-    "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
-  },
-  {
-    "scenario": "scheduled-jobs*",
-    "step": "create-cron-invalid-shape",
-    "pointer": "/status",
-    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
-    "ruling": "scheduledjob.md section 3"
-  },
-  {
-    "scenario": "scheduled-jobs*",
-    "step": "create-cron-invalid-shape",
-    "pointer": "/error",
-    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
-    "ruling": "scheduledjob.md section 3"
-  },
-  {
-    "scenario": "scheduled-jobs*",
-    "step": "create-cron-invalid-shape",
-    "pointer": "/id",
-    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
-    "ruling": "scheduledjob.md section 3"
-  },
-  {
-    "scenario": "scheduled-jobs*",
-    "step": "create-cron-invalid-shape",
-    "pointer": "/message",
-    "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
-    "ruling": "scheduledjob.md section 3"
-  },
-  {
-    "scenario": "audit-logs*",
-    "step": "by-principal",
-    "pointer": "**/operationJson",
-    "reason": "rows other scenarios attributed to the admin (scheduled-job sync) carry each side's own command serialisation in operationJson (Go exported field names, Java record members) — the audit-row shape difference accepted elsewhere",
-    "ruling": "audit.md — command JSON is not a wire contract; recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "idp-role-mappings*",
-    "step": "create-duplicate-idp-role-name",
-    "pointer": "/status",
-    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
-    "ruling": "auth-admin-config.md section 8 D1"
-  },
-  {
-    "scenario": "idp-role-mappings*",
-    "step": "create-duplicate-idp-role-name",
-    "pointer": "/error",
-    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
-    "ruling": "auth-admin-config.md section 8 D1"
-  },
-  {
-    "scenario": "idp-role-mappings*",
-    "step": "create-duplicate-idp-role-name",
-    "pointer": "/message",
-    "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
-    "ruling": "auth-admin-config.md section 8 D1"
-  },
-  {
-    "scenario": "principals*",
-    "step": "confinement-write-out-of-scope-roles",
-    "pointer": "/error",
-    "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
-    "ruling": "principal.md section 11 Q7 — Go accident"
-  },
-  {
-    "scenario": "principals*",
-    "step": "confinement-write-out-of-scope-roles",
-    "pointer": "/message",
-    "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
-    "ruling": "principal.md section 11 Q7 — Go accident"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/attestation",
-    "reason": "yubico emits attestation: none; go-webauthn omits the member",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/authenticatorSelection/userVerification",
-    "reason": "yubico emits userVerification: preferred; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/excludeCredentials",
-    "reason": "yubico emits an empty list; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/extensions",
-    "reason": "yubico asks for credProps; go-webauthn sends no extensions",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/hints",
-    "reason": "yubico emits an empty hints list; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/pubKeyCredParams/**",
-    "reason": "the two libraries advertise different COSE algorithm sets in different orders (Go includes PS256/384/512 and Ed448; yubico cannot)",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/userVerification",
-    "reason": "yubico emits userVerification: preferred on assertion options; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md — WebAuthn library defaults"
-  },
-  {
-    "scenario": "auth-remainder*",
-    "step": "list-trusted-devices-before-revoke",
-    "pointer": "/devices/0/principalId",
-    "reason": "a trusted-device list item carries no principalId in Java; Go echoes the owner's id to its owner",
-    "ruling": "I-Q21 (auth-identity.md section 0.5)"
-  },
-  {
-    "scenario": "auth-remainder*",
-    "step": "revoke-trusted-device-again",
-    "pointer": "/status",
-    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
-    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
-  },
-  {
-    "scenario": "auth-remainder*",
-    "step": "revoke-trusted-device-again",
-    "pointer": "/error",
-    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
-    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
-  },
-  {
-    "scenario": "auth-remainder*",
-    "step": "revoke-trusted-device-again",
-    "pointer": "/message",
-    "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
-    "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
-  },
-  {
-    "scenario": "*",
-    "step": "developer-get-platform-current-spec",
-    "pointer": "/**",
-    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "*",
-    "step": "developer-get-platform-version",
-    "pointer": "/**",
-    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "*",
-    "step": "openapi-json",
-    "pointer": "/**",
-    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "*",
-    "step": "q-openapi-alias",
-    "pointer": "/**",
-    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "*",
-    "step": "openapi-yaml",
-    "pointer": "/**",
-    "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "confinement-me-client-of-anchor-forbidden",
-    "pointer": "/status",
-    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
-    "ruling": "PR-3 class (bff.md section 8)"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "confinement-me-client-of-anchor-forbidden",
-    "pointer": "/error",
-    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
-    "ruling": "PR-3 class (bff.md section 8)"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "confinement-me-client-of-anchor-forbidden",
-    "pointer": "/message",
-    "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
-    "ruling": "PR-3 class (bff.md section 8)"
-  },
-  {
-    "scenario": "*",
-    "step": "*",
-    "pointer": "**/clientScoped",
-    "reason": "Java's EventTypeResponse carries clientScoped (the SPA detail page reads it); Go's fromEntity still omits it although Go honours the field on create/update since 3c22690",
-    "ruling": "owner 2026-09-06 #7 (docs/rulings-2026-09-06.md) — Go gap recorded in docs/go-mirror/2026-09-06-go-fix-list.md"
-  }
+ {
+  "scenario": "*",
+  "step": "*",
+  "pointer": "**/$schema",
+  "reason": "huma schema-link member; Java never emits it",
+  "ruling": "owner? parity-harness.md §10"
+ },
+ {
+  "scenario": "*",
+  "step": "health",
+  "pointer": "/checks",
+  "reason": "Java's /health carries per-check readiness (the login-attempt partition check, 503 DOWN when missing); Go has no checks member",
+  "ruling": "C-Q23 (auth-core.md §0.5, §7.2)"
+ },
+ {
+  "scenario": "*",
+  "step": "change-password",
+  "pointer": "/headers/Set-Cookie",
+  "reason": "Java also expires the trusted-device cookie (__Host-fc_td) whose row the password change revoked; Go revokes the rows and leaves the dead cookie in the browser",
+  "ruling": "auth-identity.md §11 (trusted devices revoked on password change) — Java clears the cookie too; recorded in docs/backlog.md"
+ },
+ {
+  "scenario": "*",
+  "step": "change-password-back",
+  "pointer": "/headers/Set-Cookie",
+  "reason": "same as change-password",
+  "ruling": "auth-identity.md §11 — Java clears the cookie too; recorded in docs/backlog.md"
+ },
+ {
+  "scenario": "*",
+  "step": "introspect-active",
+  "pointer": "/client_id",
+  "reason": "introspection's client_id is the token's azp (RFC 7662: the client the token was issued to); Go emits the first tenant of `clients` and omits it for the anchor wildcard",
+  "ruling": "owner? docs/backlog.md (parity S2)"
+ },
+ {
+  "scenario": "*",
+  "step": "auth-me",
+  "pointer": "/status",
+  "reason": "/auth/me answers status ok in Java; Go leaves the login envelope's status empty on this route",
+  "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
+ },
+ {
+  "scenario": "*",
+  "step": "introspect-client-credentials-token",
+  "pointer": "/client_id",
+  "reason": "same as introspect-active: Java answers azp (absent on a client_credentials token minted without one), Go the first tenant of clients (the anchor wildcard)",
+  "ruling": "owner? docs/backlog.md (parity S2)"
+ },
+ {
+  "scenario": "*",
+  "step": "*",
+  "pointer": "/rememberDeviceAllowed",
+  "reason": "Java tells the SPA whether the domain policy allows remembering this device so the checkbox can be hidden; Go emits nothing and the SPA guesses",
+  "ruling": "I-Q11 (auth-identity.md section 0.5) — Java addition, recorded in docs/backlog.md as a Go-mirror candidate"
+ },
+ {
+  "scenario": "*",
+  "step": "auth-me-after-verify",
+  "pointer": "/status",
+  "reason": "/auth/me answers status ok in Java; Go leaves it empty",
+  "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
+ },
+ {
+  "scenario": "*",
+  "step": "trusted-devices",
+  "pointer": "/devices",
+  "reason": "an empty trusted-device list: Go serialises its nil slice as null, Java answers []",
+  "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) — Go accident"
+ },
+ {
+  "scenario": "*",
+  "step": "remove-totp-again",
+  "pointer": "/status",
+  "reason": "removing a 2FA method the user never had: Go answers 200 'removed', Java 404",
+  "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+ },
+ {
+  "scenario": "*",
+  "step": "remove-totp-again",
+  "pointer": "/error",
+  "reason": "same as /status on this step",
+  "ruling": "defect 10 (auth-identity.md section 0.5)"
+ },
+ {
+  "scenario": "*",
+  "step": "remove-totp-again",
+  "pointer": "/message",
+  "reason": "same as /status on this step",
+  "ruling": "defect 10 (auth-identity.md section 0.5)"
+ },
+ {
+  "scenario": "*",
+  "step": "*",
+  "pointer": "**/permissions",
+  "reason": "an empty permission list: Go serialises its nil slice as null, Java answers []; a content difference would surface at an element pointer, not here",
+  "ruling": "CONVENTIONS.md section 2 (lists are never null) — Go accident"
+ },
+ {
+  "scenario": "*",
+  "step": "update-into-existing-domain",
+  "pointer": "/status",
+  "reason": "renaming an anchor domain onto an existing one: Go 500 PERSIST (no pre-check), Java 409 DOMAIN_EXISTS",
+  "ruling": "auth-admin-config.md section 8 D2"
+ },
+ {
+  "scenario": "*",
+  "step": "update-into-existing-domain",
+  "pointer": "/error",
+  "reason": "same step",
+  "ruling": "auth-admin-config.md section 8 D2"
+ },
+ {
+  "scenario": "*",
+  "step": "update-into-existing-domain",
+  "pointer": "/message",
+  "reason": "same step",
+  "ruling": "auth-admin-config.md section 8 D2"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/status",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/error",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/message",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+  "pointer": "/status",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+  "pointer": "/error",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-raw-answers-404-not-403-pr3",
+  "pointer": "/message",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+  "pointer": "/status",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+  "pointer": "/error",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-get-client-a-job-attempts-answers-404-not-403-pr3",
+  "pointer": "/message",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/status",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/error",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-cancel-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/message",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/status",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/error",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "dispatch-jobs*",
+  "step": "b-cannot-complete-client-a-job-answers-404-not-403-pr3",
+  "pointer": "/message",
+  "reason": "an out-of-scope dispatch job is 404 byte-identical to missing (no existence oracle); Go still answers the pre-ruling 403 SCOPE_FORBIDDEN",
+  "ruling": "PR-3 (ledger 2026-09-01; dispatchjob.md)"
+ },
+ {
+  "scenario": "scheduled-jobs*",
+  "step": "create-cron-invalid-shape",
+  "pointer": "/status",
+  "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+  "ruling": "scheduledjob.md section 3"
+ },
+ {
+  "scenario": "scheduled-jobs*",
+  "step": "create-cron-invalid-shape",
+  "pointer": "/error",
+  "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+  "ruling": "scheduledjob.md section 3"
+ },
+ {
+  "scenario": "scheduled-jobs*",
+  "step": "create-cron-invalid-shape",
+  "pointer": "/id",
+  "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+  "ruling": "scheduledjob.md section 3"
+ },
+ {
+  "scenario": "scheduled-jobs*",
+  "step": "create-cron-invalid-shape",
+  "pointer": "/message",
+  "reason": "Go's shape gate accepts a 5-field cron expression and never fires the job; Java's 6-field grammar refuses it",
+  "ruling": "scheduledjob.md section 3"
+ },
+ {
+  "scenario": "audit-logs*",
+  "step": "by-principal",
+  "pointer": "**/operationJson",
+  "reason": "rows other scenarios attributed to the admin (scheduled-job sync) carry each side's own command serialisation in operationJson (Go exported field names, Java record members) — the audit-row shape difference accepted elsewhere",
+  "ruling": "audit.md — command JSON is not a wire contract; recorded in docs/backlog.md"
+ },
+ {
+  "scenario": "idp-role-mappings*",
+  "step": "create-duplicate-idp-role-name",
+  "pointer": "/status",
+  "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+  "ruling": "auth-admin-config.md section 8 D1"
+ },
+ {
+  "scenario": "idp-role-mappings*",
+  "step": "create-duplicate-idp-role-name",
+  "pointer": "/error",
+  "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+  "ruling": "auth-admin-config.md section 8 D1"
+ },
+ {
+  "scenario": "idp-role-mappings*",
+  "step": "create-duplicate-idp-role-name",
+  "pointer": "/message",
+  "reason": "a duplicate IdP role name: Go 500 PERSIST (no pre-check), Java 409 MAPPING_EXISTS",
+  "ruling": "auth-admin-config.md section 8 D1"
+ },
+ {
+  "scenario": "principals*",
+  "step": "confinement-write-out-of-scope-roles",
+  "pointer": "/error",
+  "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
+  "ruling": "principal.md section 11 Q7 — Go accident"
+ },
+ {
+  "scenario": "principals*",
+  "step": "confinement-write-out-of-scope-roles",
+  "pointer": "/message",
+  "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
+  "ruling": "principal.md section 11 Q7 — Go accident"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/attestation",
+  "reason": "yubico emits attestation: none; go-webauthn omits the member",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/authenticatorSelection/userVerification",
+  "reason": "yubico emits userVerification: preferred; go-webauthn omits it",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/excludeCredentials",
+  "reason": "yubico emits an empty list; go-webauthn omits it",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/extensions",
+  "reason": "yubico asks for credProps; go-webauthn sends no extensions",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/hints",
+  "reason": "yubico emits an empty hints list; go-webauthn omits it",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/pubKeyCredParams/**",
+  "reason": "the two libraries advertise different COSE algorithm sets in different orders (Go includes PS256/384/512 and Ed448; yubico cannot)",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
+ },
+ {
+  "scenario": "webauthn*",
+  "step": "*",
+  "pointer": "/options/publicKey/userVerification",
+  "reason": "yubico emits userVerification: preferred on assertion options; go-webauthn omits it",
+  "ruling": "owner? docs/backlog.md — WebAuthn library defaults"
+ },
+ {
+  "scenario": "auth-remainder*",
+  "step": "list-trusted-devices-before-revoke",
+  "pointer": "/devices/0/principalId",
+  "reason": "a trusted-device list item carries no principalId in Java; Go echoes the owner's id to its owner",
+  "ruling": "I-Q21 (auth-identity.md section 0.5)"
+ },
+ {
+  "scenario": "auth-remainder*",
+  "step": "revoke-trusted-device-again",
+  "pointer": "/status",
+  "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+  "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+ },
+ {
+  "scenario": "auth-remainder*",
+  "step": "revoke-trusted-device-again",
+  "pointer": "/error",
+  "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+  "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+ },
+ {
+  "scenario": "auth-remainder*",
+  "step": "revoke-trusted-device-again",
+  "pointer": "/message",
+  "reason": "revoking a trusted device that is gone: Go 200 'Device removed.', Java 404",
+  "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
+ },
+ {
+  "scenario": "*",
+  "step": "developer-get-platform-current-spec",
+  "pointer": "/**",
+  "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+  "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
+ },
+ {
+  "scenario": "*",
+  "step": "developer-get-platform-version",
+  "pointer": "/**",
+  "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+  "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
+ },
+ {
+  "scenario": "*",
+  "step": "openapi-json",
+  "pointer": "/**",
+  "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+  "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
+ },
+ {
+  "scenario": "*",
+  "step": "q-openapi-alias",
+  "pointer": "/**",
+  "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+  "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
+ },
+ {
+  "scenario": "*",
+  "step": "openapi-yaml",
+  "pointer": "/**",
+  "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
+  "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
+ },
+ {
+  "scenario": "me-public-config*",
+  "step": "confinement-me-client-of-anchor-forbidden",
+  "pointer": "/status",
+  "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+  "ruling": "PR-3 class (bff.md section 8)"
+ },
+ {
+  "scenario": "me-public-config*",
+  "step": "confinement-me-client-of-anchor-forbidden",
+  "pointer": "/error",
+  "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+  "ruling": "PR-3 class (bff.md section 8)"
+ },
+ {
+  "scenario": "me-public-config*",
+  "step": "confinement-me-client-of-anchor-forbidden",
+  "pointer": "/message",
+  "reason": "an inaccessible client is 404 byte-identical to missing on /api/me/clients/{id} (no existence oracle); Go answers 403",
+  "ruling": "PR-3 class (bff.md section 8)"
+ },
+ {
+  "scenario": "*",
+  "step": "*",
+  "pointer": "**/clientScoped",
+  "reason": "Java's EventTypeResponse carries clientScoped (the SPA detail page reads it); Go's fromEntity still omits it although Go honours the field on create/update since 3c22690",
+  "ruling": "owner 2026-09-06 #7 (docs/rulings-2026-09-06.md) — Go gap recorded in docs/go-mirror/2026-09-06-go-fix-list.md"
+ },
+ {
+  "scenario": "*",
+  "step": "by-principal",
+  "pointer": "/auditLogs/**",
+  "reason": "ordering tie inside one sync: the list orders (performed_at desc, id desc) on both sides (Java ordered by performed_at alone until 2026-09-06 and matched by luck); the rollup and per-row audit rows of a sync share performed_at, and Java builds the rollup event after its rows (higher id) where Go builds it first, so those rows rotate at equal timestamps. The row set is unchanged; only their order.",
+  "ruling": "orchestrator 2026-09-06; retire by building sync rollup events first (docs/backlog.md 'Sync rollup audit rows sort after Go's')"
+ }
 ]
