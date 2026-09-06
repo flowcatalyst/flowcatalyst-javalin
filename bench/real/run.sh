@@ -37,8 +37,15 @@ prepare() {
   echo "-- Go fcdev init (first pass)"; "${goinit[@]}" >"$out/seed-go1.log" 2>&1 || echo "   (failed as expected at Go's seeder defect; continuing)"
   echo "-- Java fcdev init (Flyway baseline + V2..V8 + seeder)"
   "$JAVA_HOME/bin/java" -jar "$root"/fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar init --yes --database-url "$url" \
-      --admin-email "$ADMIN" --admin-password "$PASS" --code bench --name Bench --root "$rootdir" >"$out/seed-java.log" 2>&1 || { tail -20 "$out/seed-java.log"; exit 1; }
-  echo "-- Go fcdev init (second pass)"; "${goinit[@]}" >"$out/seed-go2.log" 2>&1 || { tail -20 "$out/seed-go2.log"; exit 1; }
+      --admin-email "$ADMIN" --admin-password "$PASS" --code bench --name Bench --root "$rootdir" >"$out/seed-java.log" 2>&1 \
+      || grep -q 'already exists' "$out/seed-java.log" || { tail -20 "$out/seed-java.log"; exit 1; }
+  # Go init may already have completed on the first pass (Go HEAD b422466 does); the second
+  # pass is then a no-op or an "already exists", either way the seed is complete.
+  echo "-- Go fcdev init (second pass)"; "${goinit[@]}" >"$out/seed-go2.log" 2>&1 || grep -q -i 'already exist' "$out/seed-go2.log" || { tail -20 "$out/seed-go2.log"; exit 1; }
+  images
+}
+
+images() {
   echo "-- building images"
   cp "$root"/server/target/flowcatalyst-server-*-exec.jar "$here/flowcatalyst-server-exec.jar"
   cp /tmp/fc-server-linux "$here/fc-server-linux"
@@ -67,18 +74,21 @@ run() {
       -d "{\"email\":\"$ADMIN\",\"password\":\"$PASS\",\"rememberMe\":false}" "http://$ip:8080/auth/login" \
       | tr -d '\r' | awk -F': ' 'tolower($1)=="set-cookie" && $2 ~ /^fc_session=/ {split($2,a,";"); print a[1]}' | head -1)
   [ -n "$cookie" ] || { echo "login failed on $label"; docker logs "$name" 2>&1 | tail -20; return 1; }
-  local first; first=$($probe -o /dev/null -w '%{http_code}' -H "Cookie: $cookie" "http://$ip:8080/api/event-types")
+  local endpoint=${ENDPOINT:-/api/event-types}
+  local first; first=$($probe -o /dev/null -w '%{http_code}' -H "Cookie: $cookie" "http://$ip:8080$endpoint")
   mem() { docker stats --no-stream --format '{{.MemUsage}}' "$name" | awk '{print $1}'; }
   snap() { docker exec "$name" sh -c 'for t in /proc/1/task/*; do printf "%s\t%s\t%s\t%s\n" "$(basename $t)" "$(cat $t/comm)" "$(awk "/^voluntary/{print \$2}" $t/status)" "$(awk "/^nonvoluntary/{print \$2}" $t/status)"; done'; }
-  local WRK="docker run --rm --network $NET --cpuset-cpus=2-9 --ulimit nofile=65536:65536 bench-wrk wrk -H Cookie:$cookie"
-  local warm; warm=$($WRK -t8 -c1000 -d10s "http://$ip:8080/api/event-types" | grep -E 'Requests/sec' | awk '{print $2}')
+  # wrk sends -H verbatim; the servers want "Cookie: value" with the space, hence the array.
+  local WRK=(docker run --rm --network $NET --cpuset-cpus=2-9 --ulimit nofile=65536:65536 bench-wrk wrk -H "Cookie: $cookie")
+  # WARMUP seconds (default 10). A JVM on one CPU is still JIT-compiling after 10 s; use 60.
+  local warm; warm=$("${WRK[@]}" -t8 -c1000 -d${WARMUP:-10}s "http://$ip:8080$endpoint" | grep -E 'Requests/sec' | awk '{print $2}')
   sleep 1
   local before; before=$(snap)
-  local res; res=$($WRK -t8 -c1000 -d10s --latency "http://$ip:8080/api/event-types")
+  local res; res=$("${WRK[@]}" -t8 -c1000 -d10s --latency "http://$ip:8080$endpoint")
   local after; after=$(snap)
   local requests; requests=$(echo "$res" | grep -E '^ +[0-9]+ requests in' | awk '{print $1}')
   {
-    echo "== $label image=$image cpu='$cpuargs' env='$*' startup=${startup}s first=$first warmup=${warm} req/s mem_after=$(mem)"
+    echo "== $label image=$image cpu='$cpuargs' env='$*' endpoint=$endpoint startup=${startup}s first=$first warmup(${WARMUP:-10}s)=${warm} req/s mem_after=$(mem)"
     echo "$res" | grep -E 'requests in|Requests/sec|50%|90%|99%|Socket errors|Non-2xx|Latency +[0-9]'
     echo "-- per OS thread over the 10 s measured run: tid comm voluntary nonvoluntary total"
     python3 - "$requests" "$before" "$after" <<'PY'
@@ -104,6 +114,7 @@ PY
 
 case ${1:-} in
   prepare) prepare ;;
+  images) images ;;
   run) shift; run "$@" ;;
   *) echo "usage: $0 prepare | run <label> <image> <cpu-args> [ENV=value ...]"; exit 2 ;;
 esac
