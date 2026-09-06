@@ -68,7 +68,7 @@ Derivations — the number is the resource the group actually contends on:
 | `LOGIN` | `/auth/login`, `/auth/2fa/**`, `/auth/change-password*`, `/auth/password-reset/*`, passkey login, portal login | `Runtime.availableProcessors()` | password4j's Argon2 executor is `newFixedThreadPool(AVAILABLE_PROCESSORS)`; more logins in flight than that only queue on its pool. `equalizeTiming` (the dummy hash) counts too, so the budget covers failed logins. |
 | `OIDC` | `/auth/oidc/**`, portal SSO callback | `Runtime.availableProcessors()` (= `LOGIN`, owner ruling 2026-09-06) | A login path: one session created per callback, DB-bound, no hashing; the JDK `HttpClient` has no connection limit to derive from, so it shares `LOGIN`'s derivation. |
 | `DISPATCH` | `POST /api/dispatch/process` | **none on the platform side** (owner ruling 2026-09-06) | The dispatch bulkhead already exists and is already derived: the router's per-pool `Pool.Config.concurrency` bounds calls into this endpoint, and an attempt holds no DB connection while it waits on the customer (verified). A platform-side budget would protect nothing measurable. |
-| `INGEST` | `/api/ingest/**` (`IngestApi`) | **unlimited for now** (owner ruling 2026-09-06) | Group tag only; a budget follows a measurement of ingest against interactive traffic. |
+| `INGEST` | `/api/ingest/**` (`IngestApi`) | **none** (owner ruling 2026-09-06) | Uses the pool gate like every other request. Isolation, when ingest is busy, is a deployment of its own, not a budget. Group tag kept for the registry only. |
 
 `DISPATCH` and `INGEST` registrations carry their group (the seam records it) with no
 budget. The mechanism, the `LOGIN` and `OIDC` budgets, and the metrics
@@ -133,4 +133,5 @@ with PgBouncer in transaction mode (pgjdbc `prepareThreshold=0` then).
 1. `OIDC` = `LOGIN`'s derivation (`availableProcessors`).
 2. `DISPATCH`: the router's per-pool concurrency is the dispatch bulkhead; the platform
    endpoint carries none.
-3. `INGEST`: unlimited for now; group tag only.
+3. `INGEST`: no budget — the pool gate like other requests; a busy ingest gets its own
+   deployment.
