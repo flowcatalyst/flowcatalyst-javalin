@@ -157,9 +157,17 @@ throughput at every size (1–4 CPUs, pinned and CFS quota). Rules that follow:
    unwinds, the transaction rolls back, the permits are released, the client gets
    `503`. "Let the handler finish" was rejected: a pgjdbc read has no socket timeout,
    so a database host that drops packets would hold a pool permit for the TCP
-   keepalive interval (~2 h). Whether an interrupt wakes a pgjdbc read on a virtual
-   thread, or whether the timer must call `Statement.cancel`, is the Phase 0
-   experiment (item 4).
+   keepalive interval (~2 h). **Measured 2026-09-06** (Phase 0 item 4, pgjdbc 42.7.13,
+   HikariCP 7.1.0, JDK 25, `select pg_sleep(10)` on a virtual thread): `Thread.interrupt()`
+   wakes the read in ~10 ms but closes the socket (pgjdbc "I/O error", Hikari evicts
+   the connection); `Connection.abort` likewise. `PgConnection.cancelQuery()` via
+   `connection.unwrap(PgConnection.class)` — no statement handle needed — wakes it in
+   8–12 ms with SQLSTATE `57014`, the connection stays usable, and a following
+   `rollback()` succeeds. **So the deadline does both:** the loop timer first calls
+   `cancelQuery()` on every connection the request holds (the pool wrapper knows
+   them), then interrupts the virtual thread so parks in gates, bulkheads and
+   non-JDBC sockets unwind too. An untimed `Semaphore.acquire` wakes on interrupt in
+   ~6 ms.
 6. **Pool size: 32 per pod, fixed**, not derived from cores (owner: "definitely not 4
    — a couple of long-running queries would grind everything to a halt"). The
    existing env var overrides it. This is the design's **only number**, and it is
@@ -230,10 +238,8 @@ worktrees.
      returns with a Vert.x transport when MCP is revisited.
    - ~~Q5 bulkhead semantics~~ settled 2026-09-06: §3b (four derived groups, queue
      untimed, loop-owned deadline, cluster tier opt-in/noop).
-4. **Deadline experiment** (orchestrator, before any listener code): does
-   `Thread.interrupt()` wake a virtual thread parked in a pgjdbc socket read, and does
-   `Statement.cancel()` from the timer? Measure wake latency and the exception seen by
-   the handler, through HikariCP's proxies. The answer fixes §3b rule 5's mechanism.
+4. ~~Deadline experiment~~ **Done 2026-09-06** (§3b rule 5): `cancelQuery()` then
+   interrupt.
 
 ### Phase 1 — the seam (orchestrator spec; Sonnet mechanical rewrite; keeps Javalin live)
 
