@@ -102,13 +102,21 @@ Final whole-reactor `mvn clean test` on main at the end of the overnight run:
 **usecase 30 · sdk 44 · server 2983 · fcdev 47, zero failures** (server was
 2772 when the night started).
 
-**Where to resume (2026-09-06, night):** Go moved (`b3c75cd`) and the
-port re-synced with it the same night; the first Java units of the
-2026-09-06 rulings are in (#6, #7, #11, #16, #19); `port-plan.md` Phase
-5b lists the rest in order (sdk-ingest partial success + outbox per-item
-results, principal gate-before-load, the mint audit row, native fcdev,
-HTTP/2+3). The Go hand-off is `docs/go-mirror/2026-09-06-go-fix-list.md`
-§G. Earlier state of the same day follows.
+**Where to resume (2026-09-06, ~04:30):** every 2026-09-06 ruling with
+Java work is in (#6, #7, #10a, #10b, #11, #13 was already so, #15, #16,
+#19; #14 was already so). Two Sonnet units were cut from committed briefs
+and may be unmerged when you read this — check `git worktree list` and the
+branches `worktree-agent-*`: **native fcdev** (`docs/process/briefs/2026-09-06-native-fcdev.md`)
+and **HTTP/2 + HTTP/3 listeners** (`docs/spec/http-transport.md`,
+`docs/process/briefs/2026-09-06-http-transport.md`). Review each as the
+merge discipline says (read the code, own mutant, worktree suite green
+after merging main into it, then squash). The Go tree is edited
+concurrently by the owner's own agent: before any corpus run check
+`git -C ../flowcatalyst-go log`, re-vendor `api/openapi.lock.json` when it
+changed, and re-sync the SPA (`tools/sync-frontend.sh`) when
+`frontend/src` moved. The Go hand-off is
+`docs/go-mirror/2026-09-06-go-fix-list.md` §G. Earlier state of the same
+day follows.
 
 **Where to resume (2026-09-06, evening):** Phase 3 complete; lockfile
 245/245 at threshold 1.0. **Phase 5's verification is in place and clean.**
