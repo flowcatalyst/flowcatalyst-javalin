@@ -117,3 +117,12 @@ each fixed item turns its allow-list entry stale and the run names it —
 delete the entry. A1 also lets `e2e/runner/side.ts`'s Go start work, so
 `pnpm e2e:both` becomes the e2e command and the two `test.fail` pins in
 B1/B2 flip once the SPA/contract changes land.
+
+## G9 — mail is sent inline on the login/MFA/password-reset request (2026-09-06)
+
+`internal/platform/shared/email` `SMTPService.Send` runs `smtp.SendMail` synchronously
+inside the request that needs the mail (MFA code, reset link, notifications). A slow or
+unreachable mail server holds the login request for the SMTP timeout. The Java port moves
+mail to a `mail_outbox` table drained by a background sender with the dispatch-job backoff
+ladder (`docs/spec/mail-outbox.md`); the request answers once the row is written. Go
+should do the same: enqueue, answer, send in the background.
