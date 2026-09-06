@@ -66,13 +66,13 @@ Derivations — the number is the resource the group actually contends on:
 | Group | Routes | Budget | Derived from |
 |---|---|---|---|
 | `LOGIN` | `/auth/login`, `/auth/2fa/**`, `/auth/change-password*`, `/auth/password-reset/*`, passkey login, portal login | `Runtime.availableProcessors()` | password4j's Argon2 executor is `newFixedThreadPool(AVAILABLE_PROCESSORS)`; more logins in flight than that only queue on its pool. `equalizeTiming` (the dummy hash) counts too, so the budget covers failed logins. |
-| `OIDC` | `/auth/oidc/**`, portal SSO callback | **owner to confirm** (§7) | The JDK `HttpClient` has no connection limit to derive from — the option text in the ruling was wrong. Candidate: the `LOGIN` budget (it is a login path: one session created per request, no hashing). |
-| `DISPATCH` | `POST /api/dispatch/process` | **none on the platform side** (§7) | The dispatch bulkhead already exists and is already derived: the router's per-pool `Pool.Config.concurrency` bounds calls into this endpoint, and an attempt holds no DB connection while it waits on the customer (verified). A platform-side budget would protect nothing measurable. |
-| `INGEST` | `/api/ingest/**` (`IngestApi`) | **owner to confirm** (§7) | Candidate: the pool size — an ingest request is DB-bound end to end, and a budget equal to the pool means "ingest may not starve the rest by itself", which is only true if it is *below* the pool. |
+| `OIDC` | `/auth/oidc/**`, portal SSO callback | `Runtime.availableProcessors()` (= `LOGIN`, owner ruling 2026-09-06) | A login path: one session created per callback, DB-bound, no hashing; the JDK `HttpClient` has no connection limit to derive from, so it shares `LOGIN`'s derivation. |
+| `DISPATCH` | `POST /api/dispatch/process` | **none on the platform side** (owner ruling 2026-09-06) | The dispatch bulkhead already exists and is already derived: the router's per-pool `Pool.Config.concurrency` bounds calls into this endpoint, and an attempt holds no DB connection while it waits on the customer (verified). A platform-side budget would protect nothing measurable. |
+| `INGEST` | `/api/ingest/**` (`IngestApi`) | **unlimited for now** (owner ruling 2026-09-06) | Group tag only; a budget follows a measurement of ingest against interactive traffic. |
 
-Until §7 is ruled, `OIDC`, `DISPATCH` and `INGEST` registrations carry their group (the
-seam records it) and the budget is unlimited. The mechanism, the `LOGIN` budget, and the
-metrics `fc_bulkhead_waiting{group}` / `fc_bulkhead_held{group}` land now.
+`DISPATCH` and `INGEST` registrations carry their group (the seam records it) with no
+budget. The mechanism, the `LOGIN` and `OIDC` budgets, and the metrics
+`fc_bulkhead_waiting{group}` / `fc_bulkhead_held{group}` land now.
 
 ## 3. Tier 3 — cluster-wide group budget (`io.flowcatalyst.http.ClusterBudget`)
 
@@ -128,11 +128,9 @@ with PgBouncer in transaction mode (pgjdbc `prepareThreshold=0` then).
 | 8 | Deadline (Phase 2): a handler running `select pg_sleep(60)` answers `503` within 30 s + 1 s, its connection is back in the pool and reusable, its permits are released | `VertxDeadlineTest` against embedded Postgres | skip `cancelQuery` → the connection is evicted (pool total drops) |
 | 9 | `Main` and `StartCommand` build a gate of size 32 by default | assert `GatedDataSource.poolSize()` | leave `max(4, cores)` → 4 on the test host, or 14 |
 
-## 7. Owner questions (answer in `docs/backlog.md` or here)
+## 7. Owner rulings on the budgets (2026-09-06)
 
-1. `OIDC` budget: the option text ("the discovery/JWKS client's connection limit") named
-   a limit the JDK client does not have. Take the `LOGIN` budget, or leave `OIDC`
-   unlimited?
-2. `DISPATCH`: agree that the router's per-pool concurrency *is* the dispatch bulkhead
-   and the platform endpoint carries none?
-3. `INGEST` budget: pool size, or a fraction of it, or unlimited?
+1. `OIDC` = `LOGIN`'s derivation (`availableProcessors`).
+2. `DISPATCH`: the router's per-pool concurrency is the dispatch bulkhead; the platform
+   endpoint carries none.
+3. `INGEST`: unlimited for now; group tag only.
