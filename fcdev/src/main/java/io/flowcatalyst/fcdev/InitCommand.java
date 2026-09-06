@@ -1,6 +1,6 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
@@ -129,7 +129,7 @@ public final class InitCommand implements Callable<Integer> {
         String url = databaseUrl.isEmpty() ? DEFAULT_DATABASE_URL : databaseUrl;
         var stdin = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
 
-        try (HikariDataSource pool = Database.newPool(url, 4)) {
+        try (var pool = Database.newPool(url, 4)) {
             // ── 1. Migrate + seed (idempotent) ──────────────────────────
             DevBootstrap.migrate(pool);
             new Seeder(pool).run();
@@ -321,7 +321,7 @@ public final class InitCommand implements Callable<Integer> {
         void run(DbTx tx) throws SQLException;
     }
 
-    private static void infraPersist(HikariDataSource pool, TxBody body) throws SQLException {
+    private static void infraPersist(GatedDataSource pool, TxBody body) throws SQLException {
         try (Connection conn = pool.getConnection()) {
             conn.setAutoCommit(false);
             try {

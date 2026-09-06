@@ -1,6 +1,5 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
 import io.flowcatalyst.platform.shared.database.Database;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -142,7 +141,7 @@ public final class DbCommand implements Callable<Integer> {
         /// `initEmbeddedAndSeed`: the same first-run sequence `fcdev start` performs.
         private void initEmbeddedAndSeed(Path dataPath) throws IOException {
             try (EmbeddedPg pg = EmbeddedPg.start(dataPath, embeddedDbPort, paths.embeddedPgCacheDir());
-                 HikariDataSource pool = Database.newPool(pg.url(), 4)) {
+                 var pool = Database.newPool(pg.url(), 4)) {
                 DevBootstrap.migrate(pool);
                 var dev = env.mutable();
                 DevBootstrap.seedAdminDefaults(dev);

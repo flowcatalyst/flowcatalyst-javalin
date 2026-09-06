@@ -1,6 +1,5 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
 import io.flowcatalyst.platform.shared.database.Database;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -119,7 +118,7 @@ public final class FreshCommand implements Callable<Integer> {
         // A null resource is skipped by try-with-resources: no embedded Postgres
         // when the developer pointed us at an external database.
         try (EmbeddedPg pg = databaseUrl.isEmpty() ? startEmbedded() : null;
-             HikariDataSource pool = Database.newPool(pg != null ? pg.url() : databaseUrl, 4)) {
+             var pool = Database.newPool(pg != null ? pg.url() : databaseUrl, 4)) {
             // Migrate first — against an empty embedded data dir the tables don't exist yet
             // and TRUNCATE would 42P01.
             DevBootstrap.migrate(pool);

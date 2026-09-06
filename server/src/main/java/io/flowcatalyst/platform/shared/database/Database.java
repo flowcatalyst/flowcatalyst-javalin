@@ -15,8 +15,18 @@ import com.zaxxer.hikari.HikariDataSource;
 /// uses (`postgresql://user:pass@host:port/db?sslmode=disable`, libpq style)
 /// as well as a plain JDBC URL, and returns a HikariCP pool named `fc`.
 public final class Database {
+    /// The pool size, fixed at 32 per pod and not derived from cores
+    /// (`docs/spec/admission.md` §5, owner ruling 2026-09-06): the design's
+    /// one number, and Postgres's budget rather than the app's — pods × 32
+    /// must fit `max_connections`.
+    public static final int DEFAULT_POOL_SIZE = 32;
 
     private Database() {
+    }
+
+    /// Opens the gated pool at [#DEFAULT_POOL_SIZE].
+    public static GatedDataSource newPool(String url) {
+        return newPool(url, DEFAULT_POOL_SIZE);
     }
 
     /// Opens a pool for `url`.
@@ -24,7 +34,7 @@ public final class Database {
     /// @param url         `postgresql://…` / `postgres://…` (libpq form, as
     ///                    the Go service reads it) or `jdbc:postgresql://…`
     /// @param maxPoolSize maximum connections (Hikari `maximumPoolSize`)
-    public static HikariDataSource newPool(String url, int maxPoolSize) {
+    public static GatedDataSource newPool(String url, int maxPoolSize) {
         var config = new HikariConfig();
         config.setPoolName("fc");
         config.setMaximumPoolSize(maxPoolSize);
@@ -43,7 +53,7 @@ public final class Database {
             config.setPassword(jdbc.password());
         }
         jdbc.properties().forEach(config::addDataSourceProperty);
-        return new HikariDataSource(config);
+        return GatedDataSource.over(new HikariDataSource(config));
     }
 
     /// A JDBC URL plus the credentials and driver properties split out of a

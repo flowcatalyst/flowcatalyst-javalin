@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.shared;
 
+import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.javalin.JavalinAdapter;
@@ -60,10 +61,16 @@ public final class TestHttp implements AutoCloseable {
     /// — the name that mattered when a second, now-deleted constructor
     /// needed disambiguating.
     public static TestHttp routes(Consumer<Routes> configure) {
-        return new TestHttp(configure);
+        return new TestHttp(Budgets.derived(), configure);
     }
 
-    private TestHttp(Consumer<Routes> configure) {
+    /// Same, with explicit tier-2 budgets (`docs/spec/admission.md` §2) so a
+    /// test can pin the bulkhead with a budget of one.
+    public static TestHttp routes(Budgets budgets, Consumer<Routes> configure) {
+        return new TestHttp(budgets, configure);
+    }
+
+    private TestHttp(Budgets budgets, Consumer<Routes> configure) {
         Javalin started = null;
         AssertionError last = null;
         RouteRegistry[] registryHolder = new RouteRegistry[1];
@@ -71,7 +78,7 @@ public final class TestHttp implements AutoCloseable {
             Javalin candidate = Javalin.create(cfg -> {
                 cfg.startup.showJavalinBanner = false;
                 cfg.jsonMapper(new JavalinJsonMapper());
-                var routes = JavalinAdapter.install(cfg);
+                var routes = JavalinAdapter.install(cfg, budgets);
                 registryHolder[0] = routes;
                 routes.before(SCHEMA_VALIDATION);
                 // Registered BEFORE the caller's routes so a catch-all of theirs

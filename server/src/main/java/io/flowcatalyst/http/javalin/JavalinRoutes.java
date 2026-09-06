@@ -1,5 +1,7 @@
 package io.flowcatalyst.http.javalin;
 
+import io.flowcatalyst.http.Admission;
+import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.ExceptionHandler;
 import io.flowcatalyst.http.ExceptionMappers;
 import io.flowcatalyst.http.Group;
@@ -26,52 +28,77 @@ public final class JavalinRoutes implements Routes, RouteRegistry {
 
     private final JavalinDefaultRoutingApi api;
     private final ExceptionMappers mappers;
+    private final Budgets budgets;
     private final List<Registration> registrations;
     private final Group group;
 
-    JavalinRoutes(JavalinDefaultRoutingApi api, ExceptionMappers mappers) {
-        this(api, mappers, new ArrayList<>(), null);
+    JavalinRoutes(JavalinDefaultRoutingApi api, ExceptionMappers mappers, Budgets budgets) {
+        this(api, mappers, budgets, new ArrayList<>(), null);
     }
 
-    private JavalinRoutes(JavalinDefaultRoutingApi api, ExceptionMappers mappers,
+    private JavalinRoutes(JavalinDefaultRoutingApi api, ExceptionMappers mappers, Budgets budgets,
                            List<Registration> registrations, Group group) {
         this.api = api;
         this.mappers = mappers;
+        this.budgets = budgets;
         this.registrations = registrations;
         this.group = group;
     }
 
+    /// The tier-2 budgets this adapter enforces (`docs/spec/admission.md` §2).
+    public Budgets budgets() {
+        return budgets;
+    }
+
+    /// Wraps a route handler in the request's admission: the group permit
+    /// (untimed, only for a budgeted group) and the [Admission] scope that the
+    /// pool gate's nested-checkout guard reads. On this adapter the scope
+    /// covers the route handler; Javalin's `before`/`after` run outside it.
+    private io.javalin.http.Handler admitted(Handler h) {
+        return c -> {
+            Budgets.Permit permit = budgets.acquire(group);
+            try {
+                ScopedValue.where(Admission.CURRENT, new Admission(c.path())).call(() -> {
+                    h.handle(new JavalinExchange(c));
+                    return null;
+                });
+            } finally {
+                permit.close();
+            }
+        };
+    }
+
     @Override
     public Routes get(String path, Handler h) {
-        api.get(path, c -> h.handle(new JavalinExchange(c)));
+        api.get(path, admitted(h));
         registrations.add(new Registration("GET", path, group));
         return this;
     }
 
     @Override
     public Routes post(String path, Handler h) {
-        api.post(path, c -> h.handle(new JavalinExchange(c)));
+        api.post(path, admitted(h));
         registrations.add(new Registration("POST", path, group));
         return this;
     }
 
     @Override
     public Routes put(String path, Handler h) {
-        api.put(path, c -> h.handle(new JavalinExchange(c)));
+        api.put(path, admitted(h));
         registrations.add(new Registration("PUT", path, group));
         return this;
     }
 
     @Override
     public Routes patch(String path, Handler h) {
-        api.patch(path, c -> h.handle(new JavalinExchange(c)));
+        api.patch(path, admitted(h));
         registrations.add(new Registration("PATCH", path, group));
         return this;
     }
 
     @Override
     public Routes delete(String path, Handler h) {
-        api.delete(path, c -> h.handle(new JavalinExchange(c)));
+        api.delete(path, admitted(h));
         registrations.add(new Registration("DELETE", path, group));
         return this;
     }
@@ -102,7 +129,7 @@ public final class JavalinRoutes implements Routes, RouteRegistry {
 
     @Override
     public Routes in(Group group) {
-        return new JavalinRoutes(api, mappers, registrations, group);
+        return new JavalinRoutes(api, mappers, budgets, registrations, group);
     }
 
     @Override

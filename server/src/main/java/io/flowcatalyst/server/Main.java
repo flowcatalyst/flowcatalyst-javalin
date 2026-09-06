@@ -1,6 +1,6 @@
 package io.flowcatalyst.server;
 
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.seed.Seeder;
 import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.database.Migrator;
@@ -36,7 +36,7 @@ public final class Main {
         boolean needsDb = env.platformEnabled() || env.streamEnabled() || env.schedulerEnabled()
                 || env.scheduledJobEnabled() || env.outboxEnabled();
 
-        HikariDataSource pool = null;
+        GatedDataSource pool = null;
         DbSecretRefresher dbSecretRefresher = null;
         Mode mode;
         if (needsDb) {
@@ -62,12 +62,12 @@ public final class Main {
                 return;
             }
 
-            pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
+            pool = Database.newPool(databaseUrl);
             LOG.info("postgres connected");
 
             if (secretMode != null) {
                 try {
-                    dbSecretRefresher = DbSecretRefresher.start(pool, DbSecretFetcher.aws(secretMode.arn()),
+                    dbSecretRefresher = DbSecretRefresher.start(pool.hikari(), DbSecretFetcher.aws(secretMode.arn()),
                             secretMode.arn(), secretMode.refreshIntervalMs());
                 } catch (RuntimeException e) {
                     LOG.error("DB secret refresher init failed", e);
@@ -98,7 +98,7 @@ public final class Main {
 
         var running = new Server(env, mode, spa, PrometheusRegistry.defaultRegistry).start();
 
-        HikariDataSource poolToClose = pool;
+        GatedDataSource poolToClose = pool;
         DbSecretRefresher dbSecretRefresherToClose = dbSecretRefresher;
         Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("shutdown").unstarted(() -> {
             LOG.info("shutdown signal received");

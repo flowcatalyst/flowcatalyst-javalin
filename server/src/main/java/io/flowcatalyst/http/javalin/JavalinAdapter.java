@@ -1,5 +1,6 @@
 package io.flowcatalyst.http.javalin;
 
+import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.ExceptionMappers;
 import io.flowcatalyst.http.HttpException;
 import io.javalin.config.JavalinConfig;
@@ -41,7 +42,12 @@ public final class JavalinAdapter {
     private JavalinAdapter() {
     }
 
+    /// Installs with the production budgets ([Budgets#derived()]).
     public static JavalinRoutes install(JavalinConfig cfg) {
+        return install(cfg, Budgets.derived());
+    }
+
+    public static JavalinRoutes install(JavalinConfig cfg, Budgets budgets) {
         cfg.http.prefer405over404 = false;
 
         var mappers = new ExceptionMappers();
@@ -71,6 +77,6 @@ public final class JavalinAdapter {
             }
         });
 
-        return new JavalinRoutes(cfg.routes, mappers);
+        return new JavalinRoutes(cfg.routes, mappers, budgets);
     }
 }

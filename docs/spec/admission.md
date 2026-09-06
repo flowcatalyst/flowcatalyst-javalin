@@ -55,11 +55,14 @@ Hikari instance for credential rotation: the gate exposes `hikari()`.
 
 `Budgets` (in `io.flowcatalyst.http`) maps each `Group` to a `Semaphore` built once at
 bootstrap from a `Budgets.Derived` record the bootstrap fills in. The seam adapter
-acquires the group's permit **untimed** before the first `before` filter of a grouped
-registration and releases it after the last `after` filter (or on exception). Order
-inside a request is fixed: deadline armed (Phase 2) → group permit → pool permit per
-checkout; released in reverse. Because the seam adapter wraps the handler, tier 2 works
-on the Javalin adapter in Phase 1, not only on Vert.x.
+acquires the group's permit **untimed** before the route handler of a grouped
+registration and releases it after it (or on exception), binding the [Admission]
+scope for the same span. On the Javalin adapter (Phase 1) that span is the route
+handler — Javalin's `before`/`after` run outside it, which is why the authenticator's
+own checkout is not counted by the nested-acquire guard; on Vert.x (Phase 2) the
+adapter owns the whole chain and the span is before → handler → after. Order inside a
+request is fixed: deadline armed (Phase 2) → group permit → pool permit per checkout;
+released in reverse.
 
 Derivations — the number is the resource the group actually contends on:
 
@@ -124,7 +127,7 @@ with PgBouncer in transaction mode (pgjdbc `prepareThreshold=0` then).
 | 4 | Ordinary callers never take a reserved permit | hold `ordinary` permits, assert the next ordinary caller waits while a probe succeeds | single shared semaphore → probe waits |
 | 5 | Nested checkout inside a request scope throws before waiting | bind `Admission`, check out once, check out again → `IllegalStateException`; assert `waiting` gauge did not move | drop the guard → second checkout blocks/succeeds |
 | 6 | `close()` releases exactly once; double `close()` is a no-op | permits available after two closes == before | release on every close → permits exceed pool |
-| 7 | `LOGIN` budget = `availableProcessors()`; the `(n+1)`-th login handler waits until one completes; `after` ran for every request | `SeamContractTest` addition through `TestHttp.routes(...)` with `Routes.in(Group.LOGIN)` and a latch-blocked handler | release before `after` → `after` sees a free permit while the handler is still running |
+| 7 | A budget of one admits one login handler; the second request is parked on the bulkhead (waiting = 1, held = 1) and completes after the first releases | `BudgetsTest` through `TestHttp.routes(budgets, …)` with `Routes.in(Group.LOGIN)` and a latch-blocked handler | release the permit before the handler → waiting stays 0 while both handlers run |
 | 8 | Deadline (Phase 2): a handler running `select pg_sleep(60)` answers `503` within 30 s + 1 s, its connection is back in the pool and reusable, its permits are released | `VertxDeadlineTest` against embedded Postgres | skip `cancelQuery` → the connection is evicted (pool total drops) |
 | 9 | `Main` and `StartCommand` build a gate of size 32 by default | assert `GatedDataSource.poolSize()` | leave `max(4, cores)` → 4 on the test host, or 14 |
 
@@ -135,3 +138,14 @@ with PgBouncer in transaction mode (pgjdbc `prepareThreshold=0` then).
    endpoint carries none.
 3. `INGEST`: no budget — the pool gate like other requests; a busy ingest gets its own
    deployment.
+
+## 8. Landed 2026-09-06 (branch `vertx-listener`)
+
+Tier 1 (`GatedDataSource`, generated `GatedConnection`, reserved probe lane, nested
+guard, gauges), tier 2 (`Budgets`, `Group` permits in the Javalin adapter, gauges),
+tier 3 interface + `NOOP`, pool default 32 (`Database.newPool(url)`), probes on the
+reserved lane in `Server.health`. Mutants killed: gate off (rows 1+4), timed acquire
+(rows 1+4 via `TIMED_WAITING`), probes on the ordinary lane (row 3, by fork timeout),
+guard removed (row 5), release on every close (row 6), permit released before the
+handler (row 7). Row 8 (deadline) is Phase 2. Not yet done: the background-worker
+nested-checkout audit (§1), `docs/spec/cutover.md` deployment rule (§5).

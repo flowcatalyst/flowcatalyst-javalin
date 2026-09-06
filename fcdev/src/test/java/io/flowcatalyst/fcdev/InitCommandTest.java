@@ -1,6 +1,6 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
@@ -96,7 +96,7 @@ class InitCommandTest {
         assertThat(exit).isZero();
         assertThat(out.toString()).contains("OAuth client: deferred until the auth aggregate lands (docs/auth-rulings.md)");
 
-        try (HikariDataSource pool = Database.newPool(url, 2)) {
+        try (GatedDataSource pool = Database.newPool(url, 2)) {
             var principalRepo = new PrincipalRepository(pool);
             Principal admin = principalRepo.findByEmail("owner@example.com").orElseThrow();
             assertThat(admin.scope()).isEqualTo(UserScope.ANCHOR);

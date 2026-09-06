@@ -1,6 +1,6 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.server.Env;
 import io.flowcatalyst.server.Frontend;
@@ -106,7 +106,7 @@ public final class StartCommand implements Callable<Integer> {
         }
 
         EmbeddedPg pg = null;
-        HikariDataSource pool = null;
+        GatedDataSource pool = null;
         try {
             // ── embedded Postgres ─────────────────────────────────────────
             String databaseUrl = opts.databaseUrl();
@@ -127,7 +127,7 @@ public final class StartCommand implements Callable<Integer> {
             }
 
             // ── connect + migrate + seed ──────────────────────────────────
-            pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
+            pool = Database.newPool(databaseUrl);
             LOG.info("postgres connected");
             DevBootstrap.migrate(pool);
 
@@ -192,14 +192,14 @@ public final class StartCommand implements Callable<Integer> {
     /// fails. Idempotent: the shutdown hook and `call()` may both invoke it.
     public static final class Started implements AutoCloseable {
         private final Server.Running running;
-        private final HikariDataSource pool;
+        private final GatedDataSource pool;
         private final EmbeddedPg pg;
         private final Path pidFile;
         private final long pid;
         // Guards the once-only teardown; set by whichever of the hook / call() gets there first.
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        Started(Server.Running running, HikariDataSource pool, EmbeddedPg pg, Path pidFile, long pid) {
+        Started(Server.Running running, GatedDataSource pool, EmbeddedPg pg, Path pidFile, long pid) {
             this.running = running;
             this.pool = pool;
             this.pg = pg;

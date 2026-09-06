@@ -241,7 +241,12 @@ worktrees.
 4. ~~Deadline experiment~~ **Done 2026-09-06** (§3b rule 5): `cancelQuery()` then
    interrupt.
 
-### Phase 1 — the seam (orchestrator spec; Sonnet mechanical rewrite; keeps Javalin live)
+### Phase 1 — the seam (orchestrator spec; Sonnet mechanical rewrite; keeps Javalin live) — **landed 2026-09-06**
+
+Exit met on branch `vertx-listener`: server suite 3552/0, lockfile 246/246 zero drift,
+`NoFrameworkLeakTest` green, parity corpus 1,149 steps (349 OK, 800 allow-listed, 0 DIFF,
+0 ERROR) against Go `b422466`. Tiers 1–2 of §3b landed on the Javalin adapter in the
+same phase (`docs/spec/admission.md` §8).
 
 1. Spec `docs/spec/http-seam.md`: package `io.flowcatalyst.http` —
    `Routes` (get/post/put/patch/delete/before/after/exception, each registration

@@ -52,7 +52,7 @@ class DbSecretRefresherTest {
 
     private static HikariDataSource poolFor(String user, String password) {
         var dsn = "postgresql://" + user + ":" + password + "@localhost:" + PORT + "/" + DB_NAME;
-        return Database.newPool(dsn, 2);
+        return Database.newPool(dsn, 2).hikari();
     }
 
     /// A [SecretSource] stub the test rotates mid-run: either the JSON to

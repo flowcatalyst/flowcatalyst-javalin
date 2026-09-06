@@ -8,6 +8,7 @@ import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.purger.Purger;
 import io.flowcatalyst.http.RouteRegistry;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
@@ -386,6 +387,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         // duplicate pass from a second instance is harmless.
         Purger purger = dbPool != null ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system())) : null;
         registry.register(AuthAlarms.collector());
+        switch (mode) {
+            case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+            case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+            default -> { }
+        }
 
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
@@ -598,7 +604,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     private static Health health(Mode mode) {
         return switch (mode) {
             case Mode.Platform(var pool) -> {
-                var attempts = new LoginAttemptRepository(pool);
+                // Probes take from the gate's reserved lane so readiness stays truthful
+                // when the ordinary permits are all held (admission.md §1).
+                var attempts = new LoginAttemptRepository(pool instanceof GatedDataSource g ? g.forProbes() : pool);
                 yield new Health(List.of(new Health.Check("loginAttemptPartitions", () -> {
                     var missing = attempts.missingQuarterlyPartitions(Instant.now());
                     return missing.isEmpty() ? "" : "missing partitions: " + String.join(", ", missing);

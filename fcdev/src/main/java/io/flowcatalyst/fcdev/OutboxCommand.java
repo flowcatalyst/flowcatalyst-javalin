@@ -1,6 +1,6 @@
 package io.flowcatalyst.fcdev;
 
-import com.zaxxer.hikari.HikariDataSource;
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.mcp.TokenManager;
 import io.flowcatalyst.outbox.HttpDispatcher;
 import io.flowcatalyst.outbox.OutboxProcessor;
@@ -117,7 +117,7 @@ public final class OutboxCommand implements Callable<Integer> {
         int maxInFlightVal = resolveInt("--max-in-flight", maxInFlight, merged, "FC_OUTBOX_MAX_IN_FLIGHT");
         int pollMs = resolveInt("--poll-interval-ms", pollIntervalMs, merged, "FC_OUTBOX_POLL_INTERVAL_MS");
 
-        HikariDataSource pool = Database.newPool(sourceUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
+        var pool = Database.newPool(sourceUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
         try {
             var repository = new PostgresOutboxRepository(pool);
             repository.initSchema();
@@ -169,11 +169,11 @@ public final class OutboxCommand implements Callable<Integer> {
     /// then the source pool, mirroring Go's deferred `pool.Close()` +
     /// `processor.Run` returning.
     static final class Started implements AutoCloseable {
-        private final HikariDataSource pool;
+        private final GatedDataSource pool;
         private final PostgresOutboxRepository repository;
         private final OutboxProcessor processor;
 
-        Started(HikariDataSource pool, PostgresOutboxRepository repository, OutboxProcessor processor) {
+        Started(GatedDataSource pool, PostgresOutboxRepository repository, OutboxProcessor processor) {
             this.pool = pool;
             this.repository = repository;
             this.processor = processor;
@@ -364,7 +364,7 @@ public final class OutboxCommand implements Callable<Integer> {
         }
 
         private Integer createPostgres(PrintWriter out, String url) {
-            HikariDataSource pool = Database.newPool(url, 1);
+            var pool = Database.newPool(url, 1);
             try {
                 new PostgresOutboxRepository(pool).initSchema();
             } finally {
