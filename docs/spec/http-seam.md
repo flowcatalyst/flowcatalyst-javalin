@@ -112,6 +112,18 @@ own `HttpResponseException` (its 404/405 for unmatched routes) is translated to
 `HttpException(status, message)` before resolution, so the platform's `HttpException`
 mapper produces the envelope and no handler code ever sees a Javalin type.
 
+### Two things real Javalin 7.2.3 forced (found while building unit (a))
+
+- Javalin pre-registers its own mapper for `HttpResponseException`, and its most-specific
+  walk makes that a closer match than `Exception.class`, so the adapter registers the
+  translate-then-resolve handler under **both** keys; otherwise unmatched-route 404s
+  render Javalin's plain-text body and never reach the envelope.
+- Javalin's `Context.skipRemainingHandlers()` skips `after` filters too. The seam's
+  rule is that `after` still runs, so `JavalinExchange.skipRemainingHandlers()` throws
+  a stackless `SkipRemainingHandlersSignal` mapped to a no-op — a thrown `before` is
+  the one path on which Javalin does run `after`. Every caller writes its response
+  *before* calling skip (verified: all six), so the throw loses nothing.
+
 ## 4. Behaviours that must not move (pinned by tests, break-it-on-purpose each)
 
 | # | Behaviour | Test that pins it, and the mutant that must fail it |

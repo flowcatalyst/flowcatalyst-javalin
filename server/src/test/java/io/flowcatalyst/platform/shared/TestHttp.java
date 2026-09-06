@@ -1,5 +1,8 @@
 package io.flowcatalyst.platform.shared;
 
+import io.flowcatalyst.http.RouteRegistry;
+import io.flowcatalyst.http.Routes;
+import io.flowcatalyst.http.javalin.JavalinAdapter;
 import io.flowcatalyst.platform.shared.json.JavalinJsonMapper;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
@@ -22,6 +25,10 @@ public final class TestHttp implements AutoCloseable {
 
     private final Javalin app;
     private final HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+
+    /// Set only on an instance built by [#routes(Consumer)]; `null` on one
+    /// built through the constructor below.
+    private final RouteRegistry registry;
 
     /// A route the harness registers for itself, to prove the connector is
     /// serving before any test issues its first real request. Named to be
@@ -72,6 +79,68 @@ public final class TestHttp implements AutoCloseable {
             throw last;
         }
         this.app = started;
+        this.registry = null;
+    }
+
+    /// Builds a harness wired through the `io.flowcatalyst.http` seam
+    /// (`docs/spec/http-seam.md`): the same app bring-up as the constructor
+    /// above — JSON mapper, schema validation, readiness probe — but
+    /// `JavalinAdapter.install` in place of `ResponseDefaults`, handing the
+    /// resulting `Routes` to `configure`. A second lambda-taking
+    /// *constructor* would be ambiguous with the one above at call sites
+    /// (`cfg -> …` could target either `Consumer<JavalinConfig>` or
+    /// `Consumer<Routes>`), hence a static factory instead.
+    public static TestHttp routes(Consumer<Routes> configure) {
+        return new TestHttp(configure, SEAM_MARKER);
+    }
+
+    /// Disambiguates this constructor's erasure from the one above: both
+    /// `Consumer<JavalinConfig>` and `Consumer<Routes>` erase to
+    /// `Consumer`, so a second single-argument constructor would collide.
+    /// Passed only from [#routes(Consumer)]; not otherwise meaningful.
+    private static final class SeamMarker {
+    }
+
+    private static final SeamMarker SEAM_MARKER = new SeamMarker();
+
+    private TestHttp(Consumer<Routes> configure, SeamMarker marker) {
+        Javalin started = null;
+        AssertionError last = null;
+        RouteRegistry[] registryHolder = new RouteRegistry[1];
+        for (int attempt = 0; attempt < 3 && started == null; attempt++) {
+            Javalin candidate = Javalin.create(cfg -> {
+                cfg.startup.showJavalinBanner = false;
+                cfg.jsonMapper(new JavalinJsonMapper());
+                var routes = JavalinAdapter.install(cfg);
+                registryHolder[0] = routes;
+                cfg.routes.before(SCHEMA_VALIDATION);
+                // Registered BEFORE the caller's routes so a catch-all of theirs
+                // still wins for every other path.
+                cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));
+                configure.accept(routes);
+            }).start(HOST, 0);
+            try {
+                awaitReady(candidate.port(), READY_PATH);
+                started = candidate;
+            } catch (ForeignServer e) {
+                last = e;
+                candidate.stop();
+            }
+        }
+        if (started == null) {
+            throw last;
+        }
+        this.app = started;
+        this.registry = registryHolder[0];
+    }
+
+    /// The registry built by [#routes(Consumer)]; only available on an
+    /// instance built that way.
+    public RouteRegistry registry() {
+        if (registry == null) {
+            throw new IllegalStateException("registry() is only available on a TestHttp built via TestHttp.routes(...)");
+        }
+        return registry;
     }
 
     /// The readiness probe answered, but not with this instance's nonce:
