@@ -173,13 +173,21 @@ public final class OAuthTokenApi {
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
             return;
         }
+        // A confidential client with no (or a dangling) linked principal is the
+        // client's misconfiguration, not a server fault: 400 unauthorized_client
+        // (RFC 6749 §5.2; owner ruling 2026-09-06 #11, Go 491d961 the same), and
+        // the attempt is recorded like every other refusal on this grant.
         if (client.principalId() == null) {
-            OAuthError.serverError("Client not properly configured").write(ctx);
+            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+                    "Client not properly configured (no linked principal)");
+            OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
             return;
         }
         Optional<Principal> p = s.principals().findById(client.principalId());
         if (p.isEmpty()) {
-            OAuthError.serverError("Client not properly configured").write(ctx);
+            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+                    "Client not properly configured (linked principal not found)");
+            OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
             return;
         }
         if (!p.get().active()) {

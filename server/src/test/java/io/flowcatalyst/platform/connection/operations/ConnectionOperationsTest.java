@@ -248,15 +248,19 @@ class ConnectionOperationsTest {
         assertThat(got.description()).isNull();
         assertThat(got.externalId()).isNull();
 
-        // Lenient status read (spec §4, open question 4): anything but PAUSED activates.
-        runAsAnchor(UpdateConnection.of(repo), new UpdateCommand(seeded.connectionId(), "Again", null, null, "garbage"));
-        assertThat(reload(seeded.connectionId()).status()).isEqualTo(ConnectionStatus.ACTIVE);
+        // Owner ruling 2026-09-06 #19 (X-06 at the wire): an unknown status is refused, nothing changes.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                runAsAnchor(UpdateConnection.of(repo), new UpdateCommand(seeded.connectionId(), "Again", null, null, "garbage")))
+                .isInstanceOf(io.flowcatalyst.sdk.usecase.UseCaseException.class)
+                .extracting(t -> ((io.flowcatalyst.sdk.usecase.UseCaseException) t).error().code())
+                .isEqualTo("INVALID_STATUS");
+        assertThat(reload(seeded.connectionId()).status()).isEqualTo(ConnectionStatus.PAUSED);
 
         var events = eventsFor(seeded.connectionId(), ConnectionEvents.UPDATED);
-        assertThat(events).hasSize(3);
+        assertThat(events).hasSize(2);
         var data = json(events.getFirst().get("data", String.class));
         assertThat(data.propertyNames()).containsExactlyInAnyOrder("connectionId", "name");
-        assertThat(auditsFor(seeded.connectionId(), "UpdateCommand")).hasSize(3);
+        assertThat(auditsFor(seeded.connectionId(), "UpdateCommand")).hasSize(2);
     }
 
     static Stream<Arguments> malformedUpdateCommands() {

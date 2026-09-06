@@ -213,10 +213,15 @@ class PlatformConfigOperationsTest {
         assertThat(configs.findByApplication(app)).extracting(PlatformConfig::id).containsExactlyInAnyOrder(global.configId(), client.configId());
     }
 
+    /// Owner ruling 2026-09-06 #19 (X-06 at the wire): an unknown valueType is refused before anything is read or written.
     @Test
-    void unknownValueTypeIsStoredAsPlain() {
-        var ev = setAsAnchor(new SetPropertyCommand(app("pcbanana"), "s", "p", "v", "BANANA", null, null));
-        assertThat(reload(ev.configId()).valueType()).isEqualTo(ConfigValueType.PLAIN);
+    void unknownValueTypeIsRefused() {
+        String app = app("pcbanana");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> setAsAnchor(new SetPropertyCommand(app, "s", "p", "v", "BANANA", null, null)))
+                .isInstanceOf(io.flowcatalyst.sdk.usecase.UseCaseException.class)
+                .extracting(t -> ((io.flowcatalyst.sdk.usecase.UseCaseException) t).error().code())
+                .isEqualTo("INVALID_VALUE_TYPE");
+        assertThat(configs.findByCoordinate(ConfigCoordinate.global(app, "s", "p"))).isEmpty();
     }
 
     static Stream<Arguments> malformedSetCommands() {

@@ -30,6 +30,9 @@ public final class SetProperty {
                     if (cmd.value() == null) {
                         throw UseCaseException.validation("FIELD_REQUIRED", "value is required");
                     }
+                    if (cmd.valueType() != null) {
+                        ConfigValueType.parseWire(cmd.valueType()); // INVALID_VALUE_TYPE before any read (Go's order)
+                    }
                 })
                 .authorize(cmd -> Access.requireWrite(grants, Auth.current(), cmd.applicationCode()))
                 .execute((cmd, ec) -> {

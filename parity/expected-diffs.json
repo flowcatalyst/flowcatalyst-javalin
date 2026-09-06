@@ -4,28 +4,28 @@
     "step": "*",
     "pointer": "**/$schema",
     "reason": "huma schema-link member; Java never emits it",
-    "ruling": "owner? parity-harness.md \u00a710"
+    "ruling": "owner? parity-harness.md §10"
   },
   {
     "scenario": "*",
     "step": "health",
     "pointer": "/checks",
     "reason": "Java's /health carries per-check readiness (the login-attempt partition check, 503 DOWN when missing); Go has no checks member",
-    "ruling": "C-Q23 (auth-core.md \u00a70.5, \u00a77.2)"
+    "ruling": "C-Q23 (auth-core.md §0.5, §7.2)"
   },
   {
     "scenario": "*",
     "step": "change-password",
     "pointer": "/headers/Set-Cookie",
     "reason": "Java also expires the trusted-device cookie (__Host-fc_td) whose row the password change revoked; Go revokes the rows and leaves the dead cookie in the browser",
-    "ruling": "auth-identity.md \u00a711 (trusted devices revoked on password change) \u2014 Java clears the cookie too; recorded in docs/backlog.md"
+    "ruling": "auth-identity.md §11 (trusted devices revoked on password change) — Java clears the cookie too; recorded in docs/backlog.md"
   },
   {
     "scenario": "*",
     "step": "change-password-back",
     "pointer": "/headers/Set-Cookie",
     "reason": "same as change-password",
-    "ruling": "auth-identity.md \u00a711 \u2014 Java clears the cookie too; recorded in docs/backlog.md"
+    "ruling": "auth-identity.md §11 — Java clears the cookie too; recorded in docs/backlog.md"
   },
   {
     "scenario": "*",
@@ -50,24 +50,10 @@
   },
   {
     "scenario": "*",
-    "step": "api-me-with-client-credentials-token",
-    "pointer": "/name",
-    "reason": "Go answers an empty name for a service principal at /api/me; Java echoes the service account's name. The SPA never presents a service token here",
-    "ruling": "owner? docs/backlog.md (parity S2) \u2014 accident on the Go side, Java kept"
-  },
-  {
-    "scenario": "*",
-    "step": "*",
-    "pointer": "/uri",
-    "reason": "the otpauth issuer/label carry the platform brand: Go spells Flowcatalyst, Java FlowCatalyst",
-    "ruling": "I-Q16 (auth-identity.md section 0.5)"
-  },
-  {
-    "scenario": "*",
     "step": "*",
     "pointer": "/rememberDeviceAllowed",
     "reason": "Java tells the SPA whether the domain policy allows remembering this device so the checkbox can be hidden; Go emits nothing and the SPA guesses",
-    "ruling": "I-Q11 (auth-identity.md section 0.5) \u2014 Java addition, recorded in docs/backlog.md as a Go-mirror candidate"
+    "ruling": "I-Q11 (auth-identity.md section 0.5) — Java addition, recorded in docs/backlog.md as a Go-mirror candidate"
   },
   {
     "scenario": "*",
@@ -81,7 +67,7 @@
     "step": "trusted-devices",
     "pointer": "/devices",
     "reason": "an empty trusted-device list: Go serialises its nil slice as null, Java answers []",
-    "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) \u2014 Go accident"
+    "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) — Go accident"
   },
   {
     "scenario": "*",
@@ -107,16 +93,9 @@
   {
     "scenario": "*",
     "step": "*",
-    "pointer": "**/hasLoginClient",
-    "reason": "Go never computes hasLoginClient (always false); Java answers whether an authorization_code client is linked to the application",
-    "ruling": "application.md section 11 q3 \u2014 Go defect, Java kept"
-  },
-  {
-    "scenario": "*",
-    "step": "*",
     "pointer": "**/permissions",
     "reason": "an empty permission list: Go serialises its nil slice as null, Java answers []; a content difference would surface at an element pointer, not here",
-    "ruling": "CONVENTIONS.md section 2 (lists are never null) \u2014 Go accident"
+    "ruling": "CONVENTIONS.md section 2 (lists are never null) — Go accident"
   },
   {
     "scenario": "*",
@@ -273,53 +252,11 @@
     "ruling": "scheduledjob.md section 3"
   },
   {
-    "scenario": "events*",
-    "step": "batch-one-bad-item-rejects-the-whole-batch",
-    "pointer": "/status",
-    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
-    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "events*",
-    "step": "batch-one-bad-item-rejects-the-whole-batch",
-    "pointer": "/error",
-    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
-    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "events*",
-    "step": "batch-one-bad-item-rejects-the-whole-batch",
-    "pointer": "/message",
-    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
-    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "events*",
-    "step": "batch-one-bad-item-rejects-the-whole-batch",
-    "pointer": "/results",
-    "reason": "one invalid item rejects the whole batch in Java (IngestApiTest pins it); Go writes the valid items and reports SUCCESS for the invalid one",
-    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
-  },
-  {
     "scenario": "audit-logs*",
-    "step": "*",
-    "pointer": "**/principalId",
-    "reason": "Java's ingest defaults an absent principalId to the caller (IngestApiTest pins it); Go leaves the column NULL",
-    "ruling": "sdk-ingest.md \u2014 Go defect, recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "audit-logs*",
-    "step": "*",
-    "pointer": "**/principalName",
-    "reason": "same as principalId",
-    "ruling": "sdk-ingest.md \u2014 Go defect"
-  },
-  {
-    "scenario": "audit-logs*",
-    "step": "by-principal-defaulted-to-caller",
-    "pointer": "/auditLogs/**",
-    "reason": "the by-principal filter finds every row Java attributed to the caller; Go finds only the one seeded with an explicit principalId",
-    "ruling": "sdk-ingest.md \u2014 Go defect"
+    "step": "by-principal",
+    "pointer": "**/operationJson",
+    "reason": "rows other scenarios attributed to the admin (scheduled-job sync) carry each side's own command serialisation in operationJson (Go exported field names, Java record members) — the audit-row shape difference accepted elsewhere",
+    "ruling": "audit.md — command JSON is not a wire contract; recorded in docs/backlog.md"
   },
   {
     "scenario": "idp-role-mappings*",
@@ -347,70 +284,63 @@
     "step": "confinement-write-out-of-scope-roles",
     "pointer": "/error",
     "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
-    "ruling": "principal.md section 11 Q7 \u2014 Go accident"
+    "ruling": "principal.md section 11 Q7 — Go accident"
   },
   {
     "scenario": "principals*",
     "step": "confinement-write-out-of-scope-roles",
     "pointer": "/message",
     "reason": "Go names the principal aggregate User in this one not-found; Java says Principal everywhere",
-    "ruling": "principal.md section 11 Q7 \u2014 Go accident"
+    "ruling": "principal.md section 11 Q7 — Go accident"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/attestation",
     "reason": "yubico emits attestation: none; go-webauthn omits the member",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/authenticatorSelection/userVerification",
     "reason": "yubico emits userVerification: preferred; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/excludeCredentials",
     "reason": "yubico emits an empty list; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/extensions",
     "reason": "yubico asks for credProps; go-webauthn sends no extensions",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/hints",
     "reason": "yubico emits an empty hints list; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/pubKeyCredParams/**",
     "reason": "the two libraries advertise different COSE algorithm sets in different orders (Go includes PS256/384/512 and Ed448; yubico cannot)",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults; browsers accept both"
-  },
-  {
-    "scenario": "webauthn*",
-    "step": "*",
-    "pointer": "/options/publicKey/rp/name",
-    "reason": "the relying-party name carries the platform brand: Go Flowcatalyst, Java FlowCatalyst",
-    "ruling": "I-Q16 (auth-identity.md section 0.5)"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults; browsers accept both"
   },
   {
     "scenario": "webauthn*",
     "step": "*",
     "pointer": "/options/publicKey/userVerification",
     "reason": "yubico emits userVerification: preferred on assertion options; go-webauthn omits it",
-    "ruling": "owner? docs/backlog.md \u2014 WebAuthn library defaults"
+    "ruling": "owner? docs/backlog.md — WebAuthn library defaults"
   },
   {
     "scenario": "auth-remainder*",
@@ -441,74 +371,39 @@
     "ruling": "defect 10 (auth-identity.md section 0.5, section 6.4)"
   },
   {
-    "scenario": "auth-remainder*",
-    "step": "change-password-send-email-code-no-mfa",
-    "pointer": "/code",
-    "reason": "a principal with no factor at all: Java answers NO_MFA before NO_EMAIL_2FA; Go never distinguishes",
-    "ruling": "ChangePasswordApi (auth-identity.md section 11.7) \u2014 Go accident, recorded in docs/backlog.md"
-  },
-  {
-    "scenario": "auth-remainder*",
-    "step": "change-password-send-email-code-no-mfa",
-    "pointer": "/message",
-    "reason": "a principal with no factor at all: Java answers NO_MFA before NO_EMAIL_2FA; Go never distinguishes",
-    "ruling": "ChangePasswordApi (auth-identity.md section 11.7) \u2014 Go accident, recorded in docs/backlog.md"
-  },
-  {
     "scenario": "*",
     "step": "developer-get-platform-current-spec",
     "pointer": "/**",
     "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
   },
   {
     "scenario": "*",
     "step": "developer-get-platform-version",
     "pointer": "/**",
     "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
   },
   {
     "scenario": "*",
     "step": "openapi-json",
     "pointer": "/**",
     "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
   },
   {
     "scenario": "*",
     "step": "q-openapi-alias",
     "pointer": "/**",
     "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
+    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
   },
   {
     "scenario": "*",
     "step": "openapi-yaml",
     "pointer": "/**",
     "reason": "each side generates its own OpenAPI document (huma vs the Java generator): info, servers, extension paths differ",
-    "ruling": "owner? docs/backlog.md \u2014 serve the vendored lockfile verbatim is the recommended answer"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "public-platform",
-    "pointer": "/platformName",
-    "reason": "the platform brand: Go Flowcatalyst, Java FlowCatalyst",
-    "ruling": "I-Q16 (auth-identity.md section 0.5)"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "config-platform-legacy-alias",
-    "pointer": "/platformName",
-    "reason": "same as public-platform",
-    "ruling": "I-Q16"
-  },
-  {
-    "scenario": "me-public-config*",
-    "step": "confinement-me",
-    "pointer": "/name",
-    "reason": "Go's /api/me answers the email as name; Java the principal's stored name",
-    "ruling": "bff.md \u2014 Go accident, recorded in docs/backlog.md"
+    "ruling": "owner? docs/backlog.md — serve the vendored lockfile verbatim is the recommended answer"
   },
   {
     "scenario": "me-public-config*",
@@ -532,17 +427,10 @@
     "ruling": "PR-3 class (bff.md section 8)"
   },
   {
-    "scenario": "bff*",
-    "step": "confinement-scheduled-job-list-scoped-to-own-client",
-    "pointer": "/data/**",
-    "reason": "a platform-scoped job (client_id NULL) is listed to a client-scoped caller by Java's shared visibility rule (VisibilitySql: NULL rows fall through) and hidden by Go's BFF; every other aggregate's confinement matched Go",
-    "ruling": "owner? docs/backlog.md \u2014 which rule for platform-scoped scheduled jobs"
-  },
-  {
-    "scenario": "bff*",
-    "step": "confinement-scheduled-job-list-scoped-to-own-client",
-    "pointer": "/total",
-    "reason": "the count follows the platform-scoped rows Java lists and Go hides (see /data/**)",
-    "ruling": "owner? docs/backlog.md \u2014 which rule for platform-scoped scheduled jobs"
+    "scenario": "*",
+    "step": "*",
+    "pointer": "**/clientScoped",
+    "reason": "Java's EventTypeResponse carries clientScoped (the SPA detail page reads it); Go's fromEntity still omits it although Go honours the field on create/update since 3c22690",
+    "ruling": "owner 2026-09-06 #7 (docs/rulings-2026-09-06.md) — Go gap recorded in docs/go-mirror/2026-09-06-go-fix-list.md"
   }
 ]

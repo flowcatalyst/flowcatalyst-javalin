@@ -74,14 +74,14 @@ public final class CreateServiceAccountWithCredentials {
             OAuthClientRepository oauthClients, Optional<Encryption> encryption) {
         return TxOperation.<CreateCommand, Result>named("CreateServiceAccountWithCredentials")
                 .validate(cmd -> {
-                    ServiceAccountCode.parse(cmd.code());
+                    ServiceAccountCode.parseUserChosen(cmd.code());
                     UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name is required");
                 })
                 // Admin-managed create, no per-client resource check (spec §4.1); the coarse
                 // "may write service accounts" permission is enforced at the handler.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((scoped, cmd, ec) -> {
-                    ServiceAccountCode code = ServiceAccountCode.parse(cmd.code());
+                    ServiceAccountCode code = ServiceAccountCode.parseUserChosen(cmd.code());
                     if (saRepo.findByCode(code.value()).isPresent()) {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Service account with code '" + code.value() + "' already exists");

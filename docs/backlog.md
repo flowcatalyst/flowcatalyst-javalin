@@ -248,7 +248,7 @@ item names its origin; items marked **owner** need Andrew's call.
 
 ## Go HEAD defects found adopting migrations 046–052 (2026-09-05, **owner**)
 
-- **Go's seeder cannot seed a fresh database at HEAD.**
+- **Go's seeder cannot seed a fresh database at HEAD.** **Fixed in Go `ba45035`.**
   `internal/platform/seed/event_types.go:159` inserts `schema_type = 'JSON'`;
   migration 051's `chk_msg_event_type_spec_versions_schema_type` allows only
   `JSON_SCHEMA | XSD | XML_SCHEMA | PROTO | PROTOBUF`, so `fcdev start` on an
@@ -265,11 +265,11 @@ item names its origin; items marked **owner** need Andrew's call.
   deployment stops getting new quarters after the ones migration 049
   pre-created. No owner question after all.
 
-- **Event deduplication never fires across requests.** `msg_events`'
+- **Event deduplication never fires across requests.** **Fixed in Go `491d961` (ingest-time lookup; ON CONFLICT stays).** `msg_events`'
   unique index is `(deduplication_id, created_at)` (partition key) and
   `created_at` is stamped per insert, so an SDK replay with the same
   `deduplicationId` lands a second event. `docs/spec/sdk-ingest.md` §5 D6.
-- **Dispatch-job ingest is unusable by non-anchors.** **Ruled 2026-09-06 #9: Go adopts the seeded permission.**
+- **Dispatch-job ingest is unusable by non-anchors.** **Ruled 2026-09-06 #9: Go adopts the seeded permission.** **Fixed in Go `ba45035`.**
   `internal/platform/shared/sdk/{dispatch_jobs_batch,dispatch_job_create}.go`
   gate on `CanWritePermission(ac, "WRITE_DISPATCH_JOBS")` — a permission
   string no seeded role grants (the catalogue has
@@ -690,7 +690,7 @@ later decision.
   caller; Go's BFF scheduled-job list hides them from a client-scoped one
   (while, in the same list, showing another client's job — the leak above).
   Owner: are platform-scoped jobs visible to client users? Allow-listed.
-- **Go's fcdev cannot boot a fresh database (blocks the Go column of the
+- **Go's fcdev cannot boot a fresh database (blocks the Go column of the **Fixed in Go `ba45035` — the Go column of the e2e is unblocked.**
   frontend e2e).** `fcdev start` seeds `schema_type = 'JSON'` against its own
   migration 051 CHECK (the seeder defect already listed above). The parity
   harness works around it because it owns the database; the e2e runner goes
@@ -793,3 +793,14 @@ client (`router.md` §HTTP/2 via ALPN). Java work, Phase 5b:
   needs a client that speaks it (Jetty's `jetty-http3-client` in test scope).
 - Spec first (`docs/spec/http-transport.md`: connectors, env knobs, the
   `Alt-Svc` rule, metrics listener stays HTTP/1.1), then a Sonnet unit.
+
+## Audit-log batch: an over-long `entityId` is a 500 on both sides (2026-09-06)
+
+Found writing the 10b scenario: `aud_logs.entity_id` is `varchar(17)` and
+neither side checks the length, so an item with a longer `entityId` fails
+the batch insert — 500 `REPO` on Go, an unhandled `DataException` on Java —
+instead of a per-item `BAD_REQUEST`. Same defect both sides; the SDKs pass
+application-chosen ids through. Fix together: validate the length per item
+(the column is a TSID-width string, so probably the column is the real bug —
+an audit entity id is whatever the application calls its entity) or widen
+the column in a migration on both sides. Owner: which.

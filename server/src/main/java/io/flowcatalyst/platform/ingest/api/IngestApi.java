@@ -130,9 +130,21 @@ public final class IngestApi {
             throw HttpError.badRequest("BATCH_TOO_LARGE", "max 1000 items per batch");
         }
 
+        // Owner ruling 2026-09-06 #10a (Go ece54fe): partial success with honest per-item
+        // results — an item missing type/source/data reports BAD_REQUEST in its own slot,
+        // the valid items are still written (one insert, all of them or none). A tenant
+        // violation still refuses the whole batch before anything is written (spec §2).
         Map<String, Optional<String>> clientCodeCache = new HashMap<>();
         List<Event> events = new ArrayList<>(items.size());
-        for (var item : items) {
+        List<Integer> eventSlot = new ArrayList<>(items.size());
+        BatchResultItem[] results = new BatchResultItem[items.size()];
+        for (int i = 0; i < items.size(); i++) {
+            var item = items.get(i);
+            String invalid = invalidBatchEventItem(item);
+            if (invalid != null) {
+                results[i] = new BatchResultItem(item.id() == null ? "" : item.id(), "BAD_REQUEST", invalid);
+                continue;
+            }
             String clientId = item.clientId();
             if (clientId == null && item.clientCode() != null && !item.clientCode().isBlank()) {
                 // §5 D2: an unknown code leaves the row unscoped (clientId null), not rejected.
@@ -143,9 +155,23 @@ public final class IngestApi {
                     item.id(), item.specVersion(), item.type(), item.source(), item.subject(), item.data(),
                     item.deduplicationId(), item.correlationId(), item.causationId(), item.messageGroup(),
                     clientId, contextEntries(item.contextData()))));
+            eventSlot.add(i);
         }
-        s.eventRepo().insertBatch(events);
-        ctx.status(201).json(new BatchResponse(events.stream().map(e -> new BatchResultItem(e.id(), "SUCCESS", null)).toList()));
+        if (!events.isEmpty()) s.eventRepo().insertBatch(events);
+        for (int j = 0; j < events.size(); j++) {
+            results[eventSlot.get(j)] = new BatchResultItem(events.get(j).id(), "SUCCESS", null);
+        }
+        ctx.status(201).json(new BatchResponse(List.of(results)));
+    }
+
+    /// The singular create's required fields, checked per batch item (Go's
+    /// `validateBatchItem`): the message for the item's `BAD_REQUEST` slot, or
+    /// `null` when the item is acceptable.
+    private static String invalidBatchEventItem(BatchEventItem item) {
+        if (item.type() == null || item.type().isBlank()) return "type is required";
+        if (item.source() == null || item.source().isBlank()) return "source is required";
+        if (item.data() == null || item.data().isNull()) return "data is required";
+        return null;
     }
 
     // ── Dispatch jobs ────────────────────────────────────────────────────
@@ -240,9 +266,14 @@ public final class IngestApi {
                 results.add(SKIPPED);
                 continue;
             }
+            // Owner ruling 2026-09-06 #10b (Go ece54fe): an audit entry without an actor is
+            // refused in its own slot, never attributed to the caller; the rest still lands.
+            if (item.principalId() == null || item.principalId().isBlank()) {
+                results.add(new BatchResultItem("", "BAD_REQUEST", "principalId is required"));
+                continue;
+            }
             var log = AuditLogIngestMapper.toLog(item.entityType(), item.entityId(), item.operation(),
-                    item.operationData(), item.principalId(), item.performedAt(), applicationId, clientId,
-                    ac.principalId());
+                    item.operationData(), item.principalId().strip(), item.performedAt(), applicationId, clientId);
             logs.add(log);
             results.add(new BatchResultItem(log.id(), "SUCCESS", null));
         }

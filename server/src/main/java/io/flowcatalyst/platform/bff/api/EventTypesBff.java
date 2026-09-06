@@ -219,15 +219,18 @@ public final class EventTypesBff {
 
     // ── Wire DTOs (SPA shape, bff spec §5) ──────────────────────────────────
 
-    public record CreateEventTypeRequest(String code, String name, String description, JsonNode schema, String clientId) {
+    /// `clientScoped`: the SPA's create drawer sends it here (owner ruling
+    /// 2026-09-06 #7); Go's BFF create still drops it (`docs/go-mirror`).
+    public record CreateEventTypeRequest(String code, String name, String description, JsonNode schema, String clientId,
+            Boolean clientScoped) {
         public CreateCommand toCommand() {
-            return new CreateCommand(code, name, description, clientId, schema);
+            return new CreateCommand(code, name, description, clientId, schema, Boolean.TRUE.equals(clientScoped));
         }
     }
 
-    public record UpdateEventTypeRequest(String name, String description) {
+    public record UpdateEventTypeRequest(String name, String description, Boolean clientScoped) {
         public UpdateCommand toCommand(String id) {
-            return new UpdateCommand(id, name, description);
+            return new UpdateCommand(id, name, description, clientScoped);
         }
     }
 

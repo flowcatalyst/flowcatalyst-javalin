@@ -83,6 +83,23 @@ class EventTypesBffTest {
         return json(r).get("id").asText();
     }
 
+    /// Owner ruling 2026-09-06 #7 through the SPA's own route: the create
+    /// drawer posts `clientScoped` to `/bff/event-types` and the detail page
+    /// reads it back from `/bff/event-types/{id}`.
+    @Test
+    void clientScopedIsHonouredOnTheBffCreateAndUpdate() {
+        String c = code("bff-scoped");
+        var r = http.post("/bff/event-types", "{\"code\":\"" + c + "\",\"name\":\"N\",\"clientScoped\":true}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("id").asText();
+        assertThat(json(r).get("clientScoped").asBoolean()).isTrue();
+        assertThat(json(http.get("/bff/event-types/" + id, ANCHOR)).get("clientScoped").asBoolean()).isTrue();
+
+        var u = http.put("/bff/event-types/" + id, "{\"name\":\"N2\",\"clientScoped\":false}", ANCHOR);
+        assertThat(u.statusCode()).as(u.body()).isIn(200, 204);
+        assertThat(json(http.get("/bff/event-types/" + id, ANCHOR)).get("clientScoped").asBoolean()).isFalse();
+    }
+
     @Test
     void createReturnsTheFullResponseWithExpectedKeySet() {
         String c = code("create");

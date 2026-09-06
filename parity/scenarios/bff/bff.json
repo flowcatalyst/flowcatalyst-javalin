@@ -1,6 +1,6 @@
 {
   "name": "bff: dashboard admin gate, filter options, developer (anchor-only) reads, event-types SPA shape, roles/permission catalogue, scheduled-jobs paginated reads, client-scoped confinement",
-  "why": "bff.md: every /bff/* route is outside the lockfile, hand-rolled for the SPA on bffFetch, and reuses the aggregates' own operations under BFF-specific wire DTOs \u2014 a shape a wire diff on any of the seven groups here would break the frontend silently, since LockfileCoverageTest never looks at these paths. The dashboard's admin gate (D1: withdrawn permissive draft) and scheduled-jobs' D5 404-not-403 confinement are the two behaviours a careless port would get wrong.",
+  "why": "bff.md: every /bff/* route is outside the lockfile, hand-rolled for the SPA on bffFetch, and reuses the aggregates' own operations under BFF-specific wire DTOs — a shape a wire diff on any of the seven groups here would break the frontend silently, since LockfileCoverageTest never looks at these paths. The dashboard's admin gate (D1: withdrawn permissive draft) and scheduled-jobs' D5 404-not-403 confinement are the two behaviours a careless port would get wrong.",
   "covers": [
     "createApplication",
     "getApplicationByCode",
@@ -180,7 +180,7 @@
     },
     {
       "id": "developer-get-version-belongs-to-different-app",
-      "why": "spec \u00a74: the version route must confirm the spec belongs to the appId in the path \u2014 the platform's own spec fetched through our unrelated application's path is 404, not 403 or a cross-app leak.",
+      "why": "spec §4: the version route must confirm the spec belongs to the appId in the path — the platform's own spec fetched through our unrelated application's path is 404, not 403 or a cross-app leak.",
       "request": {
         "method": "GET",
         "path": "/bff/developer/applications/${appId}/openapi/versions/${platformSpecId}"
@@ -630,7 +630,22 @@
     },
     {
       "id": "confinement-assign-roles",
-      "why": "platform:messaging-admin + platform:viewer give EVENT_TYPE_VIEW, SCHEDULED_JOB_VIEW and ROLE_VIEW without anchor scope \u2014 every 403/404 below comes from the coarse anchor/client-scope gate, not a missing coarse permission.",
+      "why": "platform:messaging-admin + platform:viewer give EVENT_TYPE_VIEW, SCHEDULED_JOB_VIEW and ROLE_VIEW without anchor scope — every 403/404 below comes from the coarse anchor/client-scope gate, not a missing coarse permission. Assigned one role per step: Go's setDifference iterates a map, so a two-role assignment answers `added` in random order (docs/go-mirror G2).",
+      "request": {
+        "method": "PUT",
+        "path": "/api/principals/${confPrincipalId}/roles",
+        "body": {
+          "roles": [
+            "platform:messaging-admin"
+          ]
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "id": "confinement-assign-roles-viewer",
       "request": {
         "method": "PUT",
         "path": "/api/principals/${confPrincipalId}/roles",
@@ -661,7 +676,7 @@
     },
     {
       "id": "confinement-dashboard-forbidden",
-      "why": "bff.md D1: withdrawn permissive draft \u2014 Go's auth.IsAdmin gate is real, so a client-scoped viewer is refused, not merely shown zeros.",
+      "why": "bff.md D1: withdrawn permissive draft — Go's auth.IsAdmin gate is real, so a client-scoped viewer is refused, not merely shown zeros.",
       "request": {
         "method": "GET",
         "path": "/bff/dashboard/stats"
@@ -669,7 +684,7 @@
     },
     {
       "id": "confinement-developer-list-forbidden",
-      "why": "every /bff/developer/* route is anchor-only regardless of coarse permission (bff.md \u00a74).",
+      "why": "every /bff/developer/* route is anchor-only regardless of coarse permission (bff.md §4).",
       "request": {
         "method": "GET",
         "path": "/bff/developer/applications"
@@ -677,7 +692,7 @@
     },
     {
       "id": "confinement-roles-write-forbidden",
-      "why": "role/permission writes are anchor-only even with ROLE_VIEW (bff.md \u00a76) \u2014 read below still succeeds.",
+      "why": "role/permission writes are anchor-only even with ROLE_VIEW (bff.md §6) — read below still succeeds.",
       "request": {
         "method": "POST",
         "path": "/bff/roles",
@@ -702,7 +717,7 @@
     },
     {
       "id": "confinement-scheduled-job-out-of-scope-is-404-not-403",
-      "why": "bff.md D5: /bff/scheduled-jobs/{id} answers 404 for an inaccessible client's job, unlike /api/scheduled-jobs/{id}'s 403 \u2014 the two families genuinely differ on the wire for the identical row.",
+      "why": "bff.md D5: /bff/scheduled-jobs/{id} answers 404 for an inaccessible client's job, unlike /api/scheduled-jobs/{id}'s 403 — the two families genuinely differ on the wire for the identical row.",
       "request": {
         "method": "GET",
         "path": "/bff/scheduled-jobs/${jobId}"
@@ -717,7 +732,7 @@
     },
     {
       "id": "confinement-event-type-list-unfiltered-by-scope",
-      "why": "EventTypesBff#list has no client dimension in its own filter unless a row is clientScoped \u2014 a client-scoped viewer with EVENT_TYPE_VIEW sees the same platform catalogue as the anchor (eventtype.md's own confinement is per-row clientId, not blanket).",
+      "why": "EventTypesBff#list has no client dimension in its own filter unless a row is clientScoped — a client-scoped viewer with EVENT_TYPE_VIEW sees the same platform catalogue as the anchor (eventtype.md's own confinement is per-row clientId, not blanket).",
       "request": {
         "method": "GET",
         "path": "/bff/event-types"

@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.connection;
 
+import io.flowcatalyst.sdk.usecase.UseCaseException;
+
 /// The connection lifecycle state: `ACTIVE` ⇄ `PAUSED` (spec §2). The
 /// constant name is the stored and wire string.
 public enum ConnectionStatus {
@@ -30,9 +32,11 @@ public enum ConnectionStatus {
     /// for X-06): exactly `PAUSED` → `PAUSED`, anything else (including an
     /// unrecognised string) → `ACTIVE`. [UpdateConnection] is the one caller.
     public static ConnectionStatus parseCommandStatus(String s) {
-        return switch (s == null ? "" : s) {
+        return switch (s == null ? "" : s.strip()) {
             case "PAUSED" -> PAUSED;
-            default -> ACTIVE;
+            case "ACTIVE" -> ACTIVE;
+            // Owner ruling 2026-09-06 #19 (X-06 at the wire, Go's ParseStatus after TrimSpace).
+            default -> throw UseCaseException.validation("INVALID_STATUS", "status must be ACTIVE or PAUSED");
         };
     }
 

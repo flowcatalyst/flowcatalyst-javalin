@@ -79,6 +79,10 @@ public final class ScheduledJobsBff {
         Checks.require(ac, SCHEDULED_JOB_VIEW);
         PageQuery page = PageQuery.from(ctx);
         ListFilter filter = listFilter(ctx, ac);
+        if (filter == null) {
+            ctx.json(Page.of(List.of(), page, 0));
+            return;
+        }
         List<ScheduledJob> rows = s.repo().findWithFilters(filter, page.pageSize(), (int) page.offset());
         long total = s.repo().countWithFilters(filter);
 
@@ -166,8 +170,23 @@ public final class ScheduledJobsBff {
     /// is enforced in SQL alongside it, so `total` and the page always agree
     /// (Go filters accessibility in memory after paging — spec §1 "Java may
     /// filter in SQL").
+    /// The client filter of the list, folded with the caller's confinement.
+    /// A non-anchor caller sees only jobs of clients it can access —
+    /// platform-scoped jobs (`client_id IS NULL`) are anchor-only (owner
+    /// ruling 2026-09-06 #6; Go 491d961 puts the same rule in its SQL filter
+    /// so `total` and the pages agree with the visible rows). `null` means
+    /// the caller can see nothing at all: the handler answers an empty page
+    /// without a query.
     private static ListFilter listFilter(Context ctx, AuthContext ac) {
         List<String> clientIds = csv(queryParam(ctx, "clientIds"));
+        if (!ac.isAnchor()) {
+            List<String> allowed = clientIds.isEmpty()
+                    ? ac.clients()
+                    : clientIds.stream().filter(id -> !id.equals("platform") && ac.canAccessClient(id)).toList();
+            if (allowed.isEmpty()) return null;
+            return new ListFilter(new ClientFilter.OfMany(allowed, false), null, queryParam(ctx, "search"), ac.visibility(),
+                    csv(queryParam(ctx, "statuses")), csv(queryParam(ctx, "applicationIds")));
+        }
         ClientFilter client;
         if (clientIds.isEmpty()) {
             client = new ClientFilter.Any();

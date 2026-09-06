@@ -50,7 +50,8 @@ test.describe("platform / settings", () => {
         await page.getByRole("button", { name: "Reset to default", exact: true }).click();
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await page.reload();
-        await expect(page.getByLabel("Platform name", { exact: true })).toHaveValue("Flowcatalyst");
+        // I-Q16: the brand's fallback spelling is FlowCatalyst on both sides and in the SPA.
+        await expect(page.getByLabel("Platform name", { exact: true })).toHaveValue("FlowCatalyst");
     });
 
     test("the login theme's brand name persists after reload, then is reset to defaults", async ({ adminPage: page }) => {

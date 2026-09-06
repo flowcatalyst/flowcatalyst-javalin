@@ -295,7 +295,8 @@ class IngestApiTest {
     }
 
     @Test
-    void aValidationFailureOnOneItemRejectsTheWholeBatchWritingNoneOfTheN() {
+    void aValidationFailureOnOneItemReportsItInItsSlotAndTheOthersAreWritten() {
+        // Owner ruling 2026-09-06 #10a: partial success with honest per-item results.
         String t1 = uniqueType("wholea");
         String t2 = uniqueType("wholeb");
         String t3 = uniqueType("wholec");
@@ -304,10 +305,25 @@ class IngestApiTest {
                            {"type":"%s","source":"s","data":null},
                            {"type":"%s","source":"s","data":{}}]}
                 """.formatted(t1, t2, t3), EVENTS_WRITER);
-        assertThat(r.statusCode()).isEqualTo(400);
-        assertThat(countEventsByType(t1)).as("none of the 3 must be written").isEqualTo(0);
-        assertThat(countEventsByType(t2)).isEqualTo(0);
-        assertThat(countEventsByType(t3)).isEqualTo(0);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var results = json(r).get("results");
+        assertThat(results).hasSize(3);
+        assertThat(results.get(0).get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(results.get(1).get("status").asText()).isEqualTo("BAD_REQUEST");
+        assertThat(results.get(1).get("error").asText()).isEqualTo("data is required");
+        assertThat(results.get(1).get("id").asText()).as("no id was supplied").isEmpty();
+        assertThat(results.get(2).get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(countEventsByType(t1)).as("the valid items are written").isEqualTo(1);
+        assertThat(countEventsByType(t2)).as("the invalid one is not").isEqualTo(0);
+        assertThat(countEventsByType(t3)).isEqualTo(1);
+
+        var missing = http.post("/api/events/batch", """
+                {"items":[{"id":"evt_MINE","source":"s","data":{}},{"type":"%s","data":{}}]}
+                """.formatted(t1), EVENTS_WRITER);
+        assertThat(missing.statusCode()).isEqualTo(201);
+        assertThat(json(missing).get("results").get(0).get("error").asText()).isEqualTo("type is required");
+        assertThat(json(missing).get("results").get(0).get("id").asText()).as("the item's own id is echoed").isEqualTo("evt_MINE");
+        assertThat(json(missing).get("results").get(1).get("error").asText()).isEqualTo("source is required");
     }
 
     @Test
@@ -628,7 +644,7 @@ class IngestApiTest {
     void anyAuthenticatedPrincipalIsAllowedRegardlessOfPermissions() {
         String entityType = uniqueType("anyauth");
         var r = http.post("/api/audit-logs/batch", """
-                {"items":[{"entityType":"%s","entityId":"e1","operation":"CREATE"}]}
+                {"items":[{"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001"}]}
                 """.formatted(entityType), AUDIT_CALLER);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
         assertThat(json(r).get("results").get(0).get("status").asText()).isEqualTo("SUCCESS");
@@ -654,11 +670,11 @@ class IngestApiTest {
         String et = uniqueType("skipped");
         var r = http.post("/api/audit-logs/batch", """
                 {"items":[
-                   {"entityType":"%s","entityId":"e1","operation":"CREATE"},
-                   {"entityType":"%s","entityId":"e2","operation":"CREATE","applicationCode":"no-such-app-code"},
-                   {"entityType":"%s","entityId":"e3","operation":"CREATE","clientCode":"no-such-client-code"},
-                   {"entityType":"%s","entityId":"e4","operation":"CREATE","clientCode":"%s"},
-                   {"entityType":"%s","entityId":"e5","operation":"CREATE"}
+                   {"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001"},
+                   {"entityType":"%s","entityId":"e2","operation":"CREATE","principalId":"prn_TESTACTOR0000001","applicationCode":"no-such-app-code"},
+                   {"entityType":"%s","entityId":"e3","operation":"CREATE","principalId":"prn_TESTACTOR0000001","clientCode":"no-such-client-code"},
+                   {"entityType":"%s","entityId":"e4","operation":"CREATE","principalId":"prn_TESTACTOR0000001","clientCode":"%s"},
+                   {"entityType":"%s","entityId":"e5","operation":"CREATE","principalId":"prn_TESTACTOR0000001"}
                 ]}
                 """.formatted(et, et, et, et, CLIENT_B, et), AUDIT_CALLER);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -682,8 +698,8 @@ class IngestApiTest {
         String et = uniqueType("audmemo");
         var r = http.post("/api/audit-logs/batch", """
                 {"items":[
-                   {"entityType":"%s","entityId":"e1","operation":"CREATE","applicationCode":"%s","clientCode":"%s"},
-                   {"entityType":"%s","entityId":"e2","operation":"CREATE","applicationCode":"%s","clientCode":"%s"}
+                   {"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001","applicationCode":"%s","clientCode":"%s"},
+                   {"entityType":"%s","entityId":"e2","operation":"CREATE","principalId":"prn_TESTACTOR0000001","applicationCode":"%s","clientCode":"%s"}
                 ]}
                 """.formatted(et, APP_CODE, CLIENT_A, et, APP_CODE, CLIENT_A), AUDIT_CALLER);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -701,8 +717,8 @@ class IngestApiTest {
         Instant before = Instant.now();
         var r = http.post("/api/audit-logs/batch", """
                 {"items":[
-                   {"entityType":"%s","entityId":"e1","operation":"CREATE","performedAt":"2026-01-02T03:04:05Z"},
-                   {"entityType":"%s","entityId":"e2","operation":"CREATE","performedAt":"not-a-timestamp"}
+                   {"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001","performedAt":"2026-01-02T03:04:05Z"},
+                   {"entityType":"%s","entityId":"e2","operation":"CREATE","principalId":"prn_TESTACTOR0000001","performedAt":"not-a-timestamp"}
                 ]}
                 """.formatted(et, et), AUDIT_CALLER);
         Instant after = Instant.now();
@@ -713,19 +729,28 @@ class IngestApiTest {
     }
 
     @Test
-    void principalIdDefaultsToTheCallersPrincipalWhenAbsentButAnExplicitOneWins() {
-        String et = uniqueType("principaldefault");
+    void anAuditItemWithoutPrincipalIdIsRefusedInItsSlotAndTheRestLands() {
+        // Owner ruling 2026-09-06 #10b: never attributed to the caller.
+        String et = uniqueType("principalrequired");
         String explicitPrincipal = EntityType.PRINCIPAL.generate();
         var r = http.post("/api/audit-logs/batch", """
                 {"items":[
                    {"entityType":"%s","entityId":"e1","operation":"CREATE"},
-                   {"entityType":"%s","entityId":"e2","operation":"CREATE","principalId":"%s"}
+                   {"entityType":"%s","entityId":"e2","operation":"CREATE","principalId":"%s"},
+                   {"entityType":"%s","entityId":"e3","operation":"CREATE","principalId":"   "}
                 ]}
-                """.formatted(et, et, explicitPrincipal), AUDIT_CALLER);
+                """.formatted(et, et, explicitPrincipal, et), AUDIT_CALLER);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
-        var rows = DB.db.selectFrom(AUD_LOGS).where(AUD_LOGS.ENTITY_TYPE.eq(et)).orderBy(AUD_LOGS.ENTITY_ID.asc()).fetch();
-        assertThat(rows.get(0).getPrincipalId()).isEqualTo(AUDIT_CALLER_PRINCIPAL);
-        assertThat(rows.get(1).getPrincipalId()).isEqualTo(explicitPrincipal);
+        var results = json(r).get("results");
+        assertThat(results.get(0).get("status").asText()).isEqualTo("BAD_REQUEST");
+        assertThat(results.get(0).get("error").asText()).isEqualTo("principalId is required");
+        assertThat(results.get(0).get("id").asText()).isEmpty();
+        assertThat(results.get(1).get("status").asText()).isEqualTo("SUCCESS");
+        assertThat(results.get(2).get("status").asText()).as("blank is absent").isEqualTo("BAD_REQUEST");
+        var rows = DB.db.selectFrom(AUD_LOGS).where(AUD_LOGS.ENTITY_TYPE.eq(et)).fetch();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.getFirst().getEntityId()).isEqualTo("e2");
+        assertThat(rows.getFirst().getPrincipalId()).isEqualTo(explicitPrincipal);
     }
 
     // ── Test scaffolding ─────────────────────────────────────────────────

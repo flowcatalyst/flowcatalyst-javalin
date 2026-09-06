@@ -1,6 +1,6 @@
 {
   "name": "audit-logs: cursor pagination, filters, facets, entity/principal lists, permission gate (no client-scope)",
-  "why": "docs/spec/audit.md \u00a78: audit rows carry NO client-scope visibility rule at all (any AUDIT_LOG_VIEW holder sees every row) \u2014 unlike the write aggregates in this group, so the meaningful negative test here is the permission gate, not tenant isolation, and this file substitutes that for the usual confinement block. Rows are seeded through POST /api/audit-logs/batch (outside the lockfile, gated only by 'any authenticated principal' per docs/spec/sdk-ingest.md) so the cursor/facet/entity/principal routes have real, attributable data to read back rather than only testing on an empty table.",
+  "why": "docs/spec/audit.md §8: audit rows carry NO client-scope visibility rule at all (any AUDIT_LOG_VIEW holder sees every row) — unlike the write aggregates in this group, so the meaningful negative test here is the permission gate, not tenant isolation, and this file substitutes that for the usual confinement block. Rows are seeded through POST /api/audit-logs/batch (outside the lockfile, gated only by 'any authenticated principal' per docs/spec/sdk-ingest.md) so the cursor/facet/entity/principal routes have real, attributable data to read back rather than only testing on an empty table.",
   "covers": [
     "listAuditLogs",
     "listAuditLogsRecent",
@@ -43,7 +43,8 @@
             {
               "entityType": "S1cAuditEntity${run}",
               "entityId": "e1-${run}",
-              "operation": "CREATE"
+              "operation": "CREATE",
+              "principalId": "${admin.id}"
             }
           ]
         }
@@ -79,6 +80,32 @@
       }
     },
     {
+      "id": "seed-without-principal-is-refused-per-item",
+      "why": "ruling 2026-09-06 #10b (Go ece54fe): an audit item with no principalId is refused in its own slot and never defaulted to the caller; the other item still lands",
+      "request": {
+        "method": "POST",
+        "path": "/api/audit-logs/batch",
+        "body": {
+          "items": [
+            {
+              "entityType": "S1cAuditEntity${run}",
+              "entityId": "np-${run}",
+              "operation": "CREATE"
+            },
+            {
+              "entityType": "S1cAuditEntity${run}",
+              "entityId": "wp-${run}",
+              "operation": "CREATE",
+              "principalId": "${admin.id}"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
       "id": "seed-skipped-cases",
       "request": {
         "method": "POST",
@@ -89,13 +116,15 @@
               "entityType": "S1cAuditEntity${run}",
               "entityId": "e3-${run}",
               "operation": "CREATE",
-              "applicationCode": "s1c-no-such-app-code-${run}"
+              "applicationCode": "s1c-no-such-app-code-${run}",
+              "principalId": "${admin.id}"
             },
             {
               "entityType": "S1cAuditEntity${run}",
               "entityId": "e4-${run}",
               "operation": "CREATE",
-              "clientCode": "s1c-no-such-client-code-${run}"
+              "clientCode": "s1c-no-such-client-code-${run}",
+              "principalId": "${admin.id}"
             }
           ]
         }
@@ -114,7 +143,8 @@
             {
               "entityType": "s1c-audit-page-${run}",
               "entityId": "p1",
-              "operation": "CREATE"
+              "operation": "CREATE",
+              "principalId": "${admin.id}"
             }
           ]
         }
@@ -136,7 +166,8 @@
             {
               "entityType": "s1c-audit-page-${run}",
               "entityId": "p2",
-              "operation": "CREATE"
+              "operation": "CREATE",
+              "principalId": "${admin.id}"
             }
           ]
         }
@@ -158,7 +189,8 @@
             {
               "entityType": "s1c-audit-page-${run}",
               "entityId": "p3",
-              "operation": "CREATE"
+              "operation": "CREATE",
+              "principalId": "${admin.id}"
             }
           ]
         }
@@ -232,11 +264,12 @@
       }
     },
     {
-      "id": "by-principal-defaulted-to-caller",
+      "id": "by-principal",
       "request": {
         "method": "GET",
         "path": "/api/audit-logs/principal/${admin.id}"
-      }
+      },
+      "why": "ruling 2026-09-06 #10b: every seeded row names the admin explicitly, so the by-principal read finds them all"
     },
     {
       "id": "entity-types-facet-contains-our-entity-type",

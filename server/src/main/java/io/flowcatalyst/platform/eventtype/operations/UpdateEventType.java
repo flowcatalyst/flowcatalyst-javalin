@@ -29,6 +29,9 @@ public final class UpdateEventType {
                     EventType et = Access.loadScoped(repo, cmd.id())
                             .withName(cmd.name())
                             .withDescription(cmd.description());
+                    if (cmd.clientScoped() != null) {
+                        et = et.withClientScoped(cmd.clientScoped());
+                    }
                     return Plan.save(et, repo, EventTypeUpdated.of(ec, et));
                 });
     }

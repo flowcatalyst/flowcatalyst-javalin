@@ -112,6 +112,7 @@ class OAuthProviderTest {
     private static OAuthClient api;         // CONFIDENTIAL, apiAccess, confined to app A
     private static OAuthClient svc;         // CONFIDENTIAL, client_credentials, rotating secret
     private static OAuthClient noGrants;    // empty grant list (C-Q20)
+    private static OAuthClient unbound;     // CONFIDENTIAL, client_credentials, no linked principal (ruling 2026-09-06 #11)
     private static OAuthClient portal;
     private static Governor governor;
     private static TestHttp http;
@@ -156,6 +157,9 @@ class OAuthProviderTest {
                 .withGrantTypes(List.of("client_credentials"))
                 .withPrincipalId(servicePrincipalId);
         svc = svc.rotateSecret(ENC.encryptSecretRef(SECRET), Duration.ofHours(1), Instant.now()).client();
+        unbound = OAuthClient.create("unbound-" + RUN, "Unbound " + RUN, ClientType.CONFIDENTIAL)
+                .withSecretRef(ENC.encryptSecretRef(SECRET))
+                .withGrantTypes(List.of("client_credentials"));
         noGrants = OAuthClient.create("none-" + RUN, "None " + RUN, ClientType.PUBLIC)
                 .withRedirectUris(List.of(REDIRECT))
                 .withGrantTypes(List.of())
@@ -164,7 +168,7 @@ class OAuthProviderTest {
                 .withRedirectUris(List.of(REDIRECT))
                 .withGrantTypes(List.of("authorization_code"))
                 .withPortalAndApiAccess("cli_" + RUN, false);
-        for (OAuthClient c : List.of(web, api, svc, noGrants, portal)) {
+        for (OAuthClient c : List.of(web, api, svc, noGrants, portal, unbound)) {
             UOW.inTransaction(tx -> {
                 CLIENTS.persist(c, tx.dbTx());
                 return null;
@@ -197,7 +201,7 @@ class OAuthProviderTest {
         http.close();
         DB.deleteFrom(IAM_AUTHORIZATION_CODES).where(IAM_AUTHORIZATION_CODES.PRINCIPAL_ID.in(userId, developerId)).execute();
         DB.deleteFrom(IAM_REFRESH_TOKENS).where(IAM_REFRESH_TOKENS.PRINCIPAL_ID.in(userId, developerId)).execute();
-        for (OAuthClient c : List.of(web, api, svc, noGrants, portal)) {
+        for (OAuthClient c : List.of(web, api, svc, noGrants, portal, unbound)) {
             UOW.inTransaction(tx -> {
                 CLIENTS.delete(c, tx.dbTx());
                 return null;
@@ -638,6 +642,19 @@ class OAuthProviderTest {
         var notGranted = token(Map.of("grant_type", "client_credentials"), basic(api.clientId(), SECRET));
         assertThat(notGranted.statusCode()).isEqualTo(401);
         assertThat(json(notGranted).get("error").asString()).isEqualTo("unauthorized_client");
+    }
+
+    /// Owner ruling 2026-09-06 #11 (RFC 6749 §5.2): a confidential client with no
+    /// linked principal is the client's misconfiguration — 400 unauthorized_client,
+    /// not 500 — and the refusal is recorded like every other failure on this grant.
+    @Test
+    void aClientWithoutALinkedPrincipalIsUnauthorizedClientNotAServerError() {
+        int before = attempts(unbound.clientId(), "FAILURE");
+        var r = token(Map.of("grant_type", "client_credentials"), basic(unbound.clientId(), SECRET));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
+        assertThat(json(r).get("error").asString()).isEqualTo("unauthorized_client");
+        assertThat(json(r).get("error_description").asString()).isEqualTo("Client is not configured for this grant");
+        assertThat(attempts(unbound.clientId(), "FAILURE")).as("the attempt row Go writes too").isEqualTo(before + 1);
     }
 
     @Test

@@ -156,16 +156,17 @@ public final class EventTypeApi {
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
 
     /// Body of `POST /api/event-types`.
-    public record CreateEventTypeRequest(String code, String name, String description, String clientId, JsonNode schema) {
+    public record CreateEventTypeRequest(String code, String name, String description, String clientId, JsonNode schema,
+            Boolean clientScoped) {
         public CreateCommand toCommand() {
-            return new CreateCommand(code, name, description, clientId, schema);
+            return new CreateCommand(code, name, description, clientId, schema, Boolean.TRUE.equals(clientScoped));
         }
     }
 
     /// Body of `PUT /api/event-types/{id}`; the path id is authoritative, a body `id` is ignored.
-    public record UpdateEventTypeRequest(String name, String description) {
+    public record UpdateEventTypeRequest(String name, String description, Boolean clientScoped) {
         public UpdateCommand toCommand(String id) {
-            return new UpdateCommand(id, name, description);
+            return new UpdateCommand(id, name, description, clientScoped);
         }
     }
 
@@ -177,7 +178,9 @@ public final class EventTypeApi {
     }
 
     /// The wire shape of one event type; optional fields (`description`,
-    /// `clientId`, `createdBy`) are omitted when `null`.
+    /// `clientId`, `createdBy`) are omitted when `null`. `clientScoped` is
+    /// always present (owner ruling 2026-09-06 #7 — the SPA's detail page
+    /// reads it; Go's response still omits it, `docs/go-mirror`).
     public record EventTypeResponse(
             String id,
             String code,
@@ -190,6 +193,7 @@ public final class EventTypeApi {
             String status,
             String source,
             String clientId,
+            boolean clientScoped,
             String createdBy,
             Instant createdAt,
             Instant updatedAt,
@@ -198,7 +202,7 @@ public final class EventTypeApi {
         public static EventTypeResponse from(EventType et) {
             return new EventTypeResponse(et.id(), et.code(), et.name(), et.application(), et.subdomain(),
                     et.aggregate(), et.eventName(), et.description(), et.status().name(), et.source().name(),
-                    et.clientId(), et.createdBy(), et.createdAt(), et.updatedAt(),
+                    et.clientId(), et.clientScoped(), et.createdBy(), et.createdAt(), et.updatedAt(),
                     et.specVersions().stream().map(SpecVersionResponse::from).toList());
         }
     }

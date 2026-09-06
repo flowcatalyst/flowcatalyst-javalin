@@ -363,6 +363,11 @@ public final class Runner {
                 }
                 value = at.isString() ? at.asString() : Json.write(at);
             }
+            // An empty capture would later mask every empty string in every body on that side
+            // (rule 1's whole-value form matched "" == "" on 2026-09-06 and painted 90 steps red).
+            if (value.isEmpty()) {
+                throw new IllegalStateException("capture '" + name + "': " + spec + " resolved to an empty value");
+            }
             vars.capture(name, value);
         });
     }

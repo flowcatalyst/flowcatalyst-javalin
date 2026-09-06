@@ -204,6 +204,13 @@ public record EventType(
                 application, subdomain, aggregate, eventName, newClientId, createdBy, createdAt, updatedAt);
     }
 
+    /// Owner ruling 2026-09-06 #7: the create/update request's `clientScoped`
+    /// is honoured (Go 3c22690 carries it the same way).
+    public EventType withClientScoped(boolean newClientScoped) {
+        return new EventType(id, code, name, description, specVersions, status, source, newClientScoped,
+                application, subdomain, aggregate, eventName, clientId, createdBy, createdAt, updatedAt);
+    }
+
     public EventType withCreatedBy(String principalId) {
         return new EventType(id, code, name, description, specVersions, status, source, clientScoped,
                 application, subdomain, aggregate, eventName, clientId, principalId, createdAt, updatedAt);

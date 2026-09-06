@@ -185,6 +185,7 @@ class ServiceAccountOperationsTest {
         return Stream.of(
                 Arguments.of("empty code", new CreateCommand("", "X", null, null, null, null, null), "CODE_REQUIRED"),
                 Arguments.of("underscore code", new CreateCommand("bad_code", "X", null, null, null, null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("reserved app: namespace (ruling 2026-09-06 #16)", new CreateCommand("app:orders", "X", null, null, null, null, null), "RESERVED_CODE"),
                 Arguments.of("digit-leading code", new CreateCommand("9digit", "X", null, null, null, null, null), "INVALID_CODE_FORMAT"),
                 Arguments.of("blank name", new CreateCommand(code("sacreatebad"), " ", null, null, null, null, null), "NAME_REQUIRED"));
     }

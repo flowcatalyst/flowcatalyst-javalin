@@ -186,8 +186,11 @@ class ScheduledJobsBffTest {
         assertThat(r.statusCode()).as("404, not 403 — bff spec §9 D5").isEqualTo(404);
     }
 
+    /// Owner ruling 2026-09-06 #6: a non-anchor sees only jobs of clients it can
+    /// access — platform-scoped jobs are anchor-only — and `total`/`totalPages`
+    /// count exactly those rows (Go 491d961 folds the same rule into its SQL).
     @Test
-    void listOnlyShowsAccessibleAndPlatformJobsToANonAnchor() {
+    void listShowsOnlyAccessibleClientJobsToANonAnchor() {
         String tag = code("scope-list");
         String mine = create(tag + "-mine", ",\"clientId\":\"" + CLIENT + "\"");
         String platformJob = create(tag + "-plat", "");
@@ -196,9 +199,23 @@ class ScheduledJobsBffTest {
         var body = json(http.get("/bff/scheduled-jobs?search=" + tag, VIEWER));
         var ids = new java.util.ArrayList<String>();
         body.get("data").forEach(n -> ids.add(n.get("id").asText()));
-        assertThat(ids).containsExactlyInAnyOrder(mine, platformJob);
-        assertThat(ids).doesNotContain(theirs);
-        assertThat(body.get("total").asLong()).isEqualTo(2);
+        assertThat(ids).containsExactly(mine);
+        assertThat(ids).doesNotContain(platformJob, theirs);
+        assertThat(body.get("total").asLong()).isEqualTo(1);
+        assertThat(body.get("totalPages").asInt()).isEqualTo(1);
+
+        // Asking for the platform pseudo-client (or another client) yields nothing, with total 0 / totalPages 0.
+        var platformOnly = json(http.get("/bff/scheduled-jobs?search=" + tag + "&clientIds=platform", VIEWER));
+        assertThat(platformOnly.get("data")).isEmpty();
+        assertThat(platformOnly.get("total").asLong()).isZero();
+        assertThat(platformOnly.get("totalPages").asInt()).isZero();
+        var theirsOnly = json(http.get("/bff/scheduled-jobs?search=" + tag + "&clientIds=" + OTHER_CLIENT, VIEWER));
+        assertThat(theirsOnly.get("data")).isEmpty();
+        assertThat(theirsOnly.get("total").asLong()).isZero();
+
+        // The anchor still sees all three.
+        var all = json(http.get("/bff/scheduled-jobs?search=" + tag, ANCHOR));
+        assertThat(all.get("total").asLong()).isEqualTo(3);
     }
 
     // ── Instances: filters + inaccessible 404 ───────────────────────────────

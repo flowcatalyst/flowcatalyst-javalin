@@ -195,12 +195,10 @@ public final class InitCommand implements Callable<Integer> {
             // ── 5. Service account + SERVICE principal ───────────────────
             String saCode = "app:" + app.code();
             String saName = app.name() + " Service Account";
-            // Not ServiceAccountCode.parse(saCode): that pattern rejects ':'
-            // (it validates user-chosen codes), but "app:<code>" is the
-            // system-generated convention for an application's own service
-            // account — the same literal shape ApplicationOperationsTest's
-            // AttachServiceAccount fixture uses, unvalidated there too.
-            ServiceAccount sa = ServiceAccount.create(new ServiceAccountCode(saCode), saName)
+            // "app:<code>" is the reserved namespace of an application's own
+            // service account (owner ruling 2026-09-06 #16): the value object
+            // admits it, only the admin API's create path refuses it.
+            ServiceAccount sa = ServiceAccount.create(ServiceAccountCode.parse(saCode), saName)
                     .withDescription("Service account for application: " + app.name())
                     .withApplicationId(app.id());
             Principal principal = Principal.newService(sa.id(), saName)

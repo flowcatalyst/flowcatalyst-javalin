@@ -34,22 +34,30 @@ OR permission).
 
 Request `{ "items": [ … ] }`. Response `{ "results": [ {id, status, error?} ] }`,
 **one result per input item, in input order**; `status` is one of
-`SUCCESS` | `SKIPPED` (audit only, §4.3). Empty `items` → 200 (events:
+`SUCCESS` | `SKIPPED` (audit only, §4.3) | `BAD_REQUEST` (events and
+audit, per item, with `error` naming the reason). Empty `items` → 200 (events:
 201 — Go's huma default) with `{"results": []}` and nothing touched.
 Malformed JSON → 400 `INVALID_JSON`. Over the limit → 400 `BATCH_TOO_LARGE`
 ("max 1000 items per batch" for events and dispatch jobs, "Maximum 100
-items per batch" for audit). Validation and tenant failures on **any**
-item reject the **whole batch** (400 / 403) before anything is written —
-there are no per-item error results on those paths (`error` is in the
-shape but Go never sets it). The insert itself is one batch: all rows or
-none.
+items per batch" for audit). **Owner ruling 2026-09-06 #10a (Go `ece54fe`,
+Java the same night): partial success with honest per-item results** — an
+event item missing `type`, `source` or `data` reports
+`{"id": <its id or "">, "status": "BAD_REQUEST", "error": "<field> is required"}`
+in its own slot and the valid items are still written (one insert, all of
+them or none); an audit item without `principalId` reports
+`{"id": "", "status": "BAD_REQUEST", "error": "principalId is required"}`
+(#10b: never defaulted to the caller). A tenant failure on any event item
+still rejects the whole batch (403) before anything is written; dispatch
+jobs keep whole-batch rejection on validation too (Go unchanged there).
+Senders (the outbox dispatcher, the SDK pollers) must read `results[]`
+per item: a batch is no longer one outcome.
 
 ## 3. Events [C]
 
 ### 3.1 `POST /api/events/batch` — `BatchEventItem`
 `{id?, type, source, subject?, specVersion?, data, deduplicationId?, correlationId?, causationId?, messageGroup?, clientId?, clientCode?, contextData?:[{key,value}]}`
-(all optional on the wire; Go validates `data` presence per item as for the
-singular — `"data is required"` 400 `VALIDATION` when absent/`null`).
+(all optional on the wire; `type`, `source` and `data` are required per
+item — a missing one is that item's `BAD_REQUEST` slot, §2).
 - `id` absent → server mints an event TSID. Supplied id is stored as given
   (SDK-side idempotency).
 - `clientId` wins; else `clientCode` is resolved through

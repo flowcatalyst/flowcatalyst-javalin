@@ -112,6 +112,27 @@ class EventTypeApiTest {
 
     // ── Happy paths ────────────────────────────────────────────────────────
 
+    /// Owner ruling 2026-09-06 #7: `clientScoped` is honoured on create and on
+    /// update (absent leaves it unchanged), and answered on every read.
+    @Test
+    void clientScopedIsHonouredOnCreateAndUpdateAndAbsentLeavesItUnchanged() {
+        String id = create(APP + ":scoped:thing:happened", "Scoped", ",\"clientScoped\":true");
+        assertThat(json(send("GET", "/api/event-types/" + id, null, ANCHOR)).get("clientScoped").asBoolean()).isTrue();
+
+        var renamed = send("PUT", "/api/event-types/" + id, "{\"name\":\"Renamed\"}", ANCHOR);
+        assertThat(renamed.statusCode()).as(renamed.body()).isEqualTo(204);
+        assertThat(json(send("GET", "/api/event-types/" + id, null, ANCHOR)).get("clientScoped").asBoolean())
+                .as("absent on update leaves the stored value").isTrue();
+
+        var unscoped = send("PUT", "/api/event-types/" + id, "{\"name\":\"Renamed\",\"clientScoped\":false}", ANCHOR);
+        assertThat(unscoped.statusCode()).as(unscoped.body()).isEqualTo(204);
+        assertThat(json(send("GET", "/api/event-types/" + id, null, ANCHOR)).get("clientScoped").asBoolean()).isFalse();
+
+        String plain = create(APP + ":scoped:thing:defaulted", "Defaulted", "");
+        assertThat(json(send("GET", "/api/event-types/" + plain, null, ANCHOR)).get("clientScoped").asBoolean())
+                .as("absent on create is false").isFalse();
+    }
+
     @Test
     void createThenReadByIdByCodeAndInList() {
         String code = APP + ":orders:order:created";
@@ -148,7 +169,7 @@ class EventTypeApiTest {
         assertThat(sv.get("schema").get("type").asText()).isEqualTo("object");
         assertThat(sv.get("createdAt").asText()).endsWith("Z");
         assertThat(et.propertyNames()).containsExactly("id", "code", "name", "application", "subdomain",
-                "aggregate", "eventName", "description", "status", "source", "createdBy", "createdAt", "updatedAt", "specVersions");
+                "aggregate", "eventName", "description", "status", "source", "clientScoped", "createdBy", "createdAt", "updatedAt", "specVersions");
 
         // GET by code.
         var byCode = send("GET", "/api/event-types/by-code/" + code, null, ANCHOR);

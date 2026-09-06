@@ -65,6 +65,14 @@
       "request": { "method": "POST", "path": "/api/oauth-clients/${confOcId}/regenerate-secret" },
       "capture": { "regeneratedClientSecret": "/clientSecret" } },
 
+    { "id": "revoke-previous-secret",
+      "why": "the rotation's overlap window ends early: the previous secret is revoked at once (lockfile revokeOAuthClientPreviousSecret, vendored 3c22690).",
+      "request": { "method": "POST", "path": "/api/oauth-clients/${confOcId}/revoke-previous-secret" } },
+
+    { "id": "revoke-previous-secret-again",
+      "why": "nothing left to revoke — both sides answer the same either way; the corpus records which.",
+      "request": { "method": "POST", "path": "/api/oauth-clients/${confOcId}/revoke-previous-secret" } },
+
     { "id": "rotate-secret-not-confidential",
       "why": "documented business rule (spec §6.3): a PUBLIC client has no rotatable secret — 409 NOT_CONFIDENTIAL.",
       "request": { "method": "POST", "path": "/api/oauth-clients/${publicOcId}/rotate-secret" } },

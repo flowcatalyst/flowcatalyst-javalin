@@ -106,21 +106,20 @@ class ConnectionTest {
 
     // ── Wire-side lenient reader (the update command's status field) ───────
 
-    /// Exactly `PAUSED` pauses; anything else — other case, whitespace,
-    /// unknown, absent — reads as `ACTIVE` (spec §1, open question 4). This
-    /// is [ConnectionStatus#parseCommandStatus], the wire-only reader —
-    /// untouched by X-06, which governs stored rows, not request bodies.
+    /// [ConnectionStatus#parseCommandStatus] reads the update command's
+    /// `status`: trimmed, exactly `ACTIVE` or `PAUSED`, anything else a
+    /// validation error — owner ruling 2026-09-06 #19 (X-06 at the wire,
+    /// Go's `ParseStatus` after `TrimSpace`).
     @ParameterizedTest(name = "''{0}'' → {1}")
-    @CsvSource(nullValues = "null", value = {
-            "PAUSED, PAUSED",
-            "ACTIVE, ACTIVE",
-            "'  PAUSED ', ACTIVE",
-            "paused, ACTIVE",
-            "UNKNOWN, ACTIVE",
-            "'', ACTIVE",
-            "null, ACTIVE"})
-    void commandStatusIsReadLenientlyWithActiveAsTheDefault(String raw, ConnectionStatus expected) {
+    @CsvSource({"PAUSED, PAUSED", "ACTIVE, ACTIVE", "'  PAUSED ', PAUSED", "' ACTIVE', ACTIVE"})
+    void commandStatusReadsTheTwoTrimmedSpellings(String raw, ConnectionStatus expected) {
         assertThat(ConnectionStatus.parseCommandStatus(raw)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest
+    @CsvSource(nullValues = "null", value = {"paused", "UNKNOWN", "''", "null"})
+    void commandStatusRejectsEverythingElse(String raw) {
+        assertUseCaseError(() -> ConnectionStatus.parseCommandStatus(raw), UseCaseError.Validation.class, "INVALID_STATUS");
     }
 
     // ── Stored-side strict reader (X-06) ────────────────────────────────────

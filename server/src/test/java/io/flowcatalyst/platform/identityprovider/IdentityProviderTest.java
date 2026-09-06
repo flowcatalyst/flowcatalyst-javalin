@@ -48,14 +48,16 @@ class IdentityProviderTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"OIDC, OIDC", "INTERNAL, INTERNAL", "oidc, INTERNAL", "anything, INTERNAL", "'', INTERNAL"})
-    void wireTypeReadsOidcExactlyAndEverythingElseAsInternal(String given, IdentityProviderType expected) {
+    @CsvSource({"OIDC, OIDC", "INTERNAL, INTERNAL"})
+    void wireTypeReadsTheTwoExactSpellings(String given, IdentityProviderType expected) {
         assertThat(IdentityProviderType.parseWire(given)).isEqualTo(expected);
     }
 
-    @Test
-    void wireTypeReadsNullAsInternal() {
-        assertThat(IdentityProviderType.parseWire(null)).isEqualTo(IdentityProviderType.INTERNAL);
+    /// Owner ruling 2026-09-06 #19 (X-06 at the wire): anything else is a 400, never a silent INTERNAL.
+    @ParameterizedTest
+    @CsvSource(nullValues = "null", value = {"oidc", "internal", "anything", "''", "null"})
+    void wireTypeRejectsEverythingElse(String given) {
+        assertUseCaseError(() -> IdentityProviderType.parseWire(given), UseCaseError.Validation.class, "INVALID_TYPE");
     }
 
     // ── Create ─────────────────────────────────────────────────────────────

@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.platformconfig;
 
+import io.flowcatalyst.sdk.usecase.UseCaseException;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -156,12 +158,18 @@ class PlatformConfigTest {
         assertThat(ConfigValueType.parse("PLAIN")).isEqualTo(ConfigValueType.PLAIN);
     }
 
-    /// [ConfigValueType#parseWire] is the wire-only lenient reader (the set
-    /// command's `valueType` field) — untouched by X-06.
+    /// [ConfigValueType#parseWire] reads the set command's `valueType` field:
+    /// owner ruling 2026-09-06 #19 (X-06 at the wire) — an unknown value is a
+    /// validation error, never a silent PLAIN.
     @ParameterizedTest
     @NullAndEmptySource
     @ValueSource(strings = {"secret", "BANANA"})
-    void unknownWireValueTypeReadsAsPlain(String given) {
-        assertThat(ConfigValueType.parseWire(given)).isEqualTo(ConfigValueType.PLAIN);
+    void unknownWireValueTypeIsAValidationError(String given) {
+        assertThatThrownBy(() -> ConfigValueType.parseWire(given))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error().code())
+                .isEqualTo("INVALID_VALUE_TYPE");
+        assertThat(ConfigValueType.parseWire("PLAIN")).isEqualTo(ConfigValueType.PLAIN);
+        assertThat(ConfigValueType.parseWire("SECRET")).isEqualTo(ConfigValueType.SECRET);
     }
 }

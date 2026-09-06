@@ -40,6 +40,7 @@ public final class CreateEventType {
                     EventType et = EventType.create(cmd.code(), cmd.name())
                             .withDescription(cmd.description())
                             .withClientId(cmd.clientId())
+                            .withClientScoped(cmd.clientScoped())
                             .withCreatedBy(ec.principalId());
                     if (cmd.schema() != null && !cmd.schema().isNull()) {
                         et = et.addSchemaVersion("1.0", cmd.schema());

@@ -183,38 +183,39 @@ class IngestMappingTest {
 
     @Test
     void performedAtParsesRfc3339WhenPresent() {
-        var log = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, null,
-                "2026-01-02T03:04:05Z", null, null, "caller-principal");
+        var log = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "prn_ACTOR",
+                "2026-01-02T03:04:05Z", null, null);
         assertThat(log.performedAt()).isEqualTo(Instant.parse("2026-01-02T03:04:05Z"));
     }
 
     @Test
     void performedAtDefaultsToNowWhenAbsentOrUnparseable() {
         Instant before = Instant.now();
-        var absent = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, null,
-                null, null, null, "caller-principal");
-        var malformed = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, null,
-                "not-a-timestamp", null, null, "caller-principal");
+        var absent = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "prn_ACTOR",
+                null, null, null);
+        var malformed = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "prn_ACTOR",
+                "not-a-timestamp", null, null);
         Instant after = Instant.now();
 
         assertThat(absent.performedAt()).isBetween(before, after);
         assertThat(malformed.performedAt()).isBetween(before, after);
     }
 
+    /// Owner ruling 2026-09-06 #10b: the actor is required — the mapper never
+    /// invents one, the handler refuses the item before calling it.
     @Test
-    void principalIdDefaultsToTheCallersPrincipalWhenAbsent() {
-        var defaulted = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, null,
-                null, null, null, "caller-principal");
-        assertThat(defaulted.principalId()).isEqualTo("caller-principal");
-
+    void principalIdIsRequiredAndKeptVerbatim() {
         var explicit = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "explicit-principal",
-                null, null, null, "caller-principal");
+                null, null, null);
         assertThat(explicit.principalId()).isEqualTo("explicit-principal");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "  ", null, null, null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void idIsAFreshAuditLogTsid() {
-        var log = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, null, null, null, null, "p");
+        var log = AuditLogIngestMapper.toLog("Entity", "e1", "CREATE", null, "p", null, null, null);
         assertThat(log.id()).startsWith("aud_");
     }
 }

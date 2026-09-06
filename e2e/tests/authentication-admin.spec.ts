@@ -110,11 +110,8 @@ test.describe("authentication admin / oauth clients", () => {
 
 test.describe("authentication admin / identity providers", () => {
     test("create, edit, then delete — reflected after reload", async ({ adminPage: page }) => {
-        // The create drawer omits `oidcMultiTenant` for an INTERNAL provider while the
-        // lockfile requires it, so both servers answer 400 VALIDATION and the SPA
-        // never leaves the drawer (docs/backlog.md). `test.fail` keeps the flow running;
-        // it flips to an unexpected pass when the SPA or the contract is fixed.
-        test.fail(true, "SPA/contract defect on both sides: INTERNAL identity-provider create omits the required oidcMultiTenant");
+        // Go 3c22690 made `oidcMultiTenant` optional on create (owner ruling 2026-09-06 #8);
+        // the re-vendored lockfile lets the drawer's INTERNAL body through on both sides.
         const { name } = await createInternalIdentityProvider(page);
 
         await page.goto("/authentication/identity-providers");

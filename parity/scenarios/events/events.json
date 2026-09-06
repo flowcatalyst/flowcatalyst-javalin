@@ -36,7 +36,7 @@
       "request": { "method": "POST", "path": "/api/events/batch", "body": { "items": [] } },
       "expect": { "status": 201 } },
 
-    { "id": "batch-one-bad-item-rejects-the-whole-batch",
+    { "id": "batch-one-bad-item-reports-it-in-its-slot",
       "request": { "method": "POST", "path": "/api/events/batch",
                    "body": { "items": [
                        { "type": "s1cev.${run}.wholea", "source": "s1c-harness", "data": {} },

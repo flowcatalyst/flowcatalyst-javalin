@@ -181,15 +181,10 @@ test.describe("catalogue / event types", () => {
     });
 
     test("a client-scoped event type is tagged Yes on its detail page", async ({ adminPage: page }) => {
-        // Expected to FAIL on both sides — a real finding, not a selector
-        // problem. The create drawer sends `clientScoped: true` (the helper
-        // asserts the switch is checked before submitting), but neither
-        // server reads it on create: Go's eventtype/entity.go:208
-        // hard-codes `ClientScoped: false` and its API only uses the flag to
-        // filter lists; Java mirrors that. The detail page then reads
-        // "Client Scoped: No". `test.fail` keeps the flow running so it
-        // flips loudly the day either side honours the field.
-        test.fail(true, "SPA defect on both sides: `clientScoped` is dropped on event-type create (Go eventtype/entity.go:208 hard-codes false; Java mirrors)");
+        // Owner ruling 2026-09-06 #7: the field is honoured on create (Go 3c22690;
+        // Java the same day). Java's response carries `clientScoped`; Go's
+        // EventTypeResponse still omits it (docs/go-mirror fix list), so this
+        // flow is Java-green and Go-red until Go adds it.
         const { code: appCode } = await createApplication(page);
         const { id } = await createEventType(page, appCode, { clientScoped: true });
 

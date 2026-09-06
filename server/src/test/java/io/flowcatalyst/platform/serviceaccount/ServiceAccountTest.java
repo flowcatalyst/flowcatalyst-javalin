@@ -42,6 +42,19 @@ class ServiceAccountTest {
         assertThat(ServiceAccountCode.parse(raw).value()).isEqualTo(raw);
     }
 
+    /// Owner ruling 2026-09-06 #16: `app:<code>` is the reserved namespace of an
+    /// application's own service account — the value object admits it, the
+    /// user-chosen path refuses it.
+    @Test
+    void appNamespaceIsAdmittedByTheValueObjectAndRefusedForUserChosenCodes() {
+        assertThat(ServiceAccountCode.parse("app:orders").value()).isEqualTo("app:orders");
+        assertThat(ServiceAccountCode.parse(" APP:Orders ").value()).isEqualTo("app:orders");
+        assertUseCaseError(() -> ServiceAccountCode.parse("app:"), UseCaseError.Validation.class, "INVALID_CODE_FORMAT");
+        assertUseCaseError(() -> ServiceAccountCode.parse("app:9x"), UseCaseError.Validation.class, "INVALID_CODE_FORMAT");
+        assertUseCaseError(() -> ServiceAccountCode.parseUserChosen("app:orders"), UseCaseError.Validation.class, "RESERVED_CODE");
+        assertThat(ServiceAccountCode.parseUserChosen("orders").value()).isEqualTo("orders");
+    }
+
     // ── WebhookAuthType ──────────────────────────────────────────────────────
 
     @ParameterizedTest

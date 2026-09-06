@@ -13,6 +13,10 @@ might be stale.
   cross-side mismatch.
 - `pnpm test:unit` — the runner's own unit tests (mail-log parser, port
   picker, SPA gate decision).
+- Knobs: `E2E_TEST_TIMEOUT_MS` (per flow, default 60000) and `E2E_RETRIES`
+  (default 1) — a discovery run wants `E2E_RETRIES=0`; `E2E_FORCE_JAVA_BUILD=1`
+  rebuilds the Java jar; `E2E_GO_EMBED_TREE_SPA=1` builds Go against its own
+  `frontend/dist` instead of the Java-synced SPA (see the spec §1).
 
 Reports: `test-results/{go,java}.log` (each side's captured output — §4
 reads mail from it), `test-results/{go,java}-report.json`, traces on

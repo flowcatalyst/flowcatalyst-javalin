@@ -1,5 +1,12 @@
 # Go-side fixes found by the port (2026-09-06)
 
+> **Re-synced against Go `b3c75cd` the same night.** The owner's Go agent
+> had already landed `ba45035`, `3c22690`, `642f5da`, `491d961`, `b3c75cd`,
+> which close A1, A2, B1, B2 (create/update only — see G1), B3, B4, C1, C3
+> (Go's way — see G5), C4, C5, C6, C7 and D1. The corpus against that HEAD
+> (this repo, 2026-09-06 01:00): 8 DIFF steps, all explained below, and 11
+> allow-list entries gone stale and deleted. **What is still Go's is §G.**
+
 Everything the parity corpus (`parity/`, 1,145 steps) and the frontend e2e
 (`e2e/`, 49 flows) found that is Go's to fix — as opposed to the rulings
 already mirrored in `2026-09-05-auth-rulings.patch`. Go tree at `cb83fd5`.
@@ -83,6 +90,25 @@ change), D2 (`rememberDeviceAllowed`).
 
 Two lockfile re-dumps come out of this (#8, #10b); do them together and
 hand the file over once.
+
+## G. Still Go's after the re-sync (2026-09-06, Go `b3c75cd`)
+
+| # | Item | Where | Note |
+|---|---|---|---|
+| G1 | `clientScoped` still never reaches the SPA on Go: (a) `EventTypeResponse.fromEntity` never copies it; (b) **the SPA creates through `POST /bff/event-types`, whose `bffCreateEventTypeRequest` has no `clientScoped` and whose `CreateCommand` literal omits it** (`shared/bff/event_types.go:178`), so `3c22690` fixed a route the drawer does not use. The e2e flow "a client-scoped event type is tagged Yes" fails on Go for this reason | `internal/platform/eventtype/api/dto.go:66`; `internal/platform/shared/bff/event_types.go:84,178` (+ the BFF update) | carry it on the BFF create/update and the `/api` response; re-dump the lockfile |
+| G2 | `setDifference` iterates a map, so `added` / `removed` on `PUT /api/principals/{id}/roles` and the application-access counterpart come back in random order | `internal/platform/principal/api/api.go:1766` | range over the request's slice instead (Java answers request order); allow-list `bff* confinement-assign-roles /added` |
+| G3 | Ruling #6 reaches only the BFF list: `GET /api/scheduled-jobs` still shows platform-scoped jobs to client-scoped callers (`FilterClientScoped` passes `nil` client ids) | `internal/platform/scheduledjob/api` list | Java mirrors Go there for now; align both when Go changes |
+| ~~G4~~ | **Done in Go `b422466`** (same `RESERVED_CODE` and message as Java). Ruling #16 mirror: `app:` is a reserved service-account namespace — Java's create path answers 400 `RESERVED_CODE` ("codes starting with 'app:' are reserved for application service accounts"); the value object accepts `app:<code>` | `internal/platform/serviceaccount/operations/create_credentials.go` + `validate.CodePattern` | use the same code and message |
+| ~~G5~~ | **Resolved by Go `ece54fe`: `principalId` is required per item (`BAD_REQUEST`, "principalId is required"), Java follows the same night.** Was: ruling #10b says audit-log `principalId` becomes *required*; Go `491d961` instead defaults it to the ingesting principal (and Java does the same). Both sides agree today; the lockfile still marks it optional | `internal/platform/shared/sdk/audit_batch.go` | keep the default (amend the ruling) or make it required on both and re-dump |
+| G6 | Rulings #13, #14, #15 mirrors (principal sub-route gating before load; sync `archiveUnlisted` narrowed to the application; audit row on the token mint) | see the rulings table above | unchanged |
+| G8 | **The profile page's 2FA card is blank on Go for anyone without a trusted device** (frontend e2e, the first Go run 2026-09-06): `GET /auth/2fa/trusted-devices` answers `{"devices": null}` for an empty list, the SPA's `TwoFactorSection` does `devices.length` in its template, the render throws and Vue drops the card — so no user can enrol TOTP from the profile. The corpus had accepted the nil-slice `null` as a wire difference; the SPA does not | `internal/platform/auth/login/twofactor_selfservice.go` (trusted-device list) | answer `[]` (`make([]…, 0)`), as Java does; the `**/permissions` nil-slice entry deserves the same look |
+| ~~G7~~ | **Done in Go `ece54fe`** (per-item `BAD_REQUEST` with the reason; valid items persisted). Java follows the same night. Ruling #10a: batch event ingest reports every persisted event `SUCCESS` and is all-or-nothing today — the ruled behaviour is partial success with honest per-item results | `internal/platform/event/api/api.go:187` | Java changes first (Phase 5b item 3), then mirror |
+
+**Not a Go defect, but the owner's tree:** `flowcatalyst-go/frontend/dist`
+was two weeks behind `frontend/src` (2026-08-24 vs `642f5da`), and the Go
+binary embeds it. The e2e runner now builds Go's `fcdev` in a scratch copy
+with the freshly built SPA, so the runs here are unaffected; a `make
+frontend` there keeps a hand-built Go binary honest.
 
 ## After fixing
 

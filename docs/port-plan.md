@@ -189,18 +189,20 @@ in it), so the frontend is their acceptance test.
 ## Phase 5b — after the 2026-09-06 rulings (`docs/rulings-2026-09-06.md`)
 
 Java work the rulings created, plus one owner requirement, in build order:
-1. Rulings #7 (event-type `clientScoped`), #11 (400 `unauthorized_client`),
-   #16 (`app:` namespace), #19 (wire enums) — small, orchestrator.
-2. #6 scheduled-job visibility hides platform-scoped rows from client users.
-3. #10a/#10b sdk-ingest: partial success with per-item results, the outbox
-   dispatcher reading them; audit-log `principalId` required.
+1. ~~Rulings #7 (event-type `clientScoped`), #11 (400 `unauthorized_client`),
+   #16 (`app:` namespace), #19 (wire enums)~~ **done 2026-09-06 (night)**.
+2. ~~#6 scheduled-job visibility hides platform-scoped rows from client users~~ **done (BFF list, Go's rule)**.
+3. ~~#10a/#10b sdk-ingest: partial success with per-item results, the outbox
+   dispatcher reading them; audit-log `principalId` required~~ **done 2026-09-06
+   (night), matching Go `ece54fe`; the outbox `HttpDispatcher` already read
+   `results[]` per item.**
 4. #13 principal mutations gate before load (the sub-route scoping is
    already done — `PrincipalApiTest.rolesSubRouteIsNowClientScoped`).
 5. #15 audit row on the service-account token mint.
 6. #20 native fcdev (`-Pnative` profile, picocli reflection config).
 7. **HTTP/2 + HTTP/3 on the listeners** (owner, 2026-09-06; `docs/backlog.md`
    "HTTP/2 and HTTP/3"): spec `http-transport.md`, then a Sonnet unit.
-8. Re-vendor the lockfile when Go re-dumps it (#8, #10b).
+8. ~~Re-vendor the lockfile when Go re-dumps it (#8)~~ **done (`3c22690`)**; again for #10b / G1 when Go re-dumps.
 
 ## Phase 5 — drop-in verification and release
 
