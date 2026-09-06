@@ -30,6 +30,7 @@ import io.flowcatalyst.db.generated.tables.IamRoles;
 import io.flowcatalyst.db.generated.tables.IamServiceAccounts;
 import io.flowcatalyst.db.generated.tables.IamUserMfaMethods;
 import io.flowcatalyst.db.generated.tables.IamUserMfaRecoveryCodes;
+import io.flowcatalyst.db.generated.tables.MailOutbox;
 import io.flowcatalyst.db.generated.tables.MsgConnections;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
@@ -163,6 +164,7 @@ public class Indexes {
     public static final Index IDX_IAM_USER_MFA_METHODS_PRINCIPAL_METHOD = Internal.createIndex(DSL.name("idx_iam_user_mfa_methods_principal_method"), IamUserMfaMethods.IAM_USER_MFA_METHODS, new OrderField[] { IamUserMfaMethods.IAM_USER_MFA_METHODS.PRINCIPAL_ID, IamUserMfaMethods.IAM_USER_MFA_METHODS.METHOD }, true);
     public static final Index IDX_IAM_USER_MFA_RECOVERY_CODES_HASH = Internal.createIndex(DSL.name("idx_iam_user_mfa_recovery_codes_hash"), IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES, new OrderField[] { IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES.CODE_HASH }, false);
     public static final Index IDX_IAM_USER_MFA_RECOVERY_CODES_PRINCIPAL = Internal.createIndex(DSL.name("idx_iam_user_mfa_recovery_codes_principal"), IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES, new OrderField[] { IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES.PRINCIPAL_ID }, false);
+    public static final Index IDX_MAIL_OUTBOX_STATUS_NEXT_ATTEMPT_AT = Internal.createIndex(DSL.name("idx_mail_outbox_status_next_attempt_at"), MailOutbox.MAIL_OUTBOX, new OrderField[] { MailOutbox.MAIL_OUTBOX.STATUS, MailOutbox.MAIL_OUTBOX.NEXT_ATTEMPT_AT }, false);
     public static final Index IDX_MSG_CONNECTIONS_CLIENT_ID = Internal.createIndex(DSL.name("idx_msg_connections_client_id"), MsgConnections.MSG_CONNECTIONS, new OrderField[] { MsgConnections.MSG_CONNECTIONS.CLIENT_ID }, false);
     public static final Index IDX_MSG_CONNECTIONS_CODE_CLIENT = Internal.createIndex(DSL.name("idx_msg_connections_code_client"), MsgConnections.MSG_CONNECTIONS, new OrderField[] { MsgConnections.MSG_CONNECTIONS.CODE, MsgConnections.MSG_CONNECTIONS.CLIENT_ID }, true);
     public static final Index IDX_MSG_CONNECTIONS_SERVICE_ACCOUNT = Internal.createIndex(DSL.name("idx_msg_connections_service_account"), MsgConnections.MSG_CONNECTIONS, new OrderField[] { MsgConnections.MSG_CONNECTIONS.SERVICE_ACCOUNT_ID }, false);

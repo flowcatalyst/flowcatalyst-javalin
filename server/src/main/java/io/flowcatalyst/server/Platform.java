@@ -27,7 +27,8 @@ import io.flowcatalyst.platform.auth.oidc.LoginStateRepository;
 import io.flowcatalyst.platform.auth.oidc.OidcBridgeApi;
 import io.flowcatalyst.platform.auth.oidc.OidcClients;
 import io.flowcatalyst.platform.auth.oidc.OidcIpLimit;
-import io.flowcatalyst.platform.mail.MailService;
+import io.flowcatalyst.platform.mail.MailOutboxRepository;
+import io.flowcatalyst.platform.mail.OutboxMailService;
 import io.flowcatalyst.platform.notify.Notifications;
 import io.flowcatalyst.platform.passkey.CeremonyRepository;
 import io.flowcatalyst.platform.passkey.PasskeyRepository;
@@ -231,10 +232,12 @@ public final class Platform {
         // whenever the session cookie is. The TOTP label carries the live platform name.
         var cookiesSecure = !env.authAllowTestHeaders();
         var mfaBranding = new Branding(new PlatformConfigRepository(pool));
-        // Outbound mail (auth-identity §9): SMTP when FC_SMTP_HOST/SMTP_HOST is set,
-        // else the logging transport. The security-notification catalogue (§10) and
-        // every link mailer ride on it.
-        var mail = MailService.fromEnv(env.reader());
+        // Outbound mail (auth-identity §9; mail-outbox §2): every caller here gets the
+        // outbox — one PENDING row inserted in its own short transaction, returned at
+        // once. MailSender (wired in Server, next to the reaper) is what actually
+        // delivers, off this request path entirely, through SMTP-when-configured /
+        // logging the same way MailService.fromEnv always resolved it.
+        var mail = new OutboxMailService(new MailOutboxRepository(pool));
         var notices = new Notifications(mail, mfaBranding::platformName);
         var mfa = new Mfa(new MfaRepository(pool), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
                 MailSender.of(mail), mfaBranding::platformName, Mfa.Config.DEFAULT, Clock.systemUTC(), new AuditLogRepository(pool));

@@ -24,7 +24,8 @@ class PurgerEventsTest {
             RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(java.util.Map.of())));
     private static final List<String> STEPS = List.of("oauth-payloads", "oidc-login-states", "portal-login-flows",
             "rate-limit-events", "oauth-previous-secrets", "mfa-email-pins", "mfa-trusted-devices",
-            "password-reset-tokens", "reset-approval-requests", "login-attempt-partitions");
+            "password-reset-tokens", "reset-approval-requests", "mail-outbox-sent", "mail-outbox-failed",
+            "login-attempt-partitions");
 
     @Test
     @DisplayName("a normal tick records every step succeeded, with no error")

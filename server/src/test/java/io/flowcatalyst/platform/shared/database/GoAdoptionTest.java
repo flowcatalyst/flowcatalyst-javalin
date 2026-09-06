@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.List;
 
 import javax.sql.DataSource;
 
@@ -41,15 +42,18 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V7 even
-        // though the Go database already has their effect: each one is
-        // idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op here.
-        assertThat(result.migrationsExecuted).isEqualTo(6);
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V8 even
+        // though the Go database already has V2..V7's effect: each of those
+        // is idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op
+        // here; V8 (`mail_outbox`) is a genuinely new, Java-only table this
+        // Go-adopted database does not have yet (spec `mail-outbox.md`,
+        // Go mirror item G9) and is created for the first time.
+        assertThat(result.migrationsExecuted).isEqualTo(7);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(7);
+        assertThat(applied).hasSize(8);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -69,12 +73,20 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 7; v++) {
+                for (int v = 2; v <= 8; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
                 }
                 assertThat(rs.next()).isFalse();
+            }
+            // V8 (`mail_outbox`) is genuinely new on a Go-HEAD database (Go mirror
+            // item G9): unlike V2..V7 it is not a no-op, it creates the table.
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'mail_outbox'""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
             }
             // V2..V7 are no-ops on a Go-HEAD database: the schema they add is
             // already there exactly once, not duplicated or altered.
@@ -118,8 +130,20 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(4)).as("chk_msg_dispatch_jobs_kind on the parent").isEqualTo(1);
             }
         }
-        // Schema untouched (flyway_schema_history is ignored by the fingerprint).
-        assertThat(SchemaFingerprint.compute(ds)).isEqualTo(before);
+        // V2..V7 still change nothing (flyway_schema_history is ignored by the
+        // fingerprint); V8 is the one genuine addition (`mail_outbox`, Go mirror
+        // item G9) — assert the only lines the fingerprint gained are its own.
+        List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
+        List<String> mailOutboxLines = afterLines.stream()
+                .filter(l -> l.split("\t", -1).length > 1 && l.split("\t", -1)[1].equals("mail_outbox"))
+                .toList();
+        List<String> afterWithoutMailOutbox = afterLines.stream()
+                .filter(l -> !mailOutboxLines.contains(l))
+                .toList();
+        assertThat(afterWithoutMailOutbox)
+                .as("V2..V7 change nothing beyond V8's own new mail_outbox table")
+                .containsExactlyInAnyOrderElementsOf(before.lines().toList());
+        assertThat(mailOutboxLines).as("V8 adds the mail_outbox table/columns/constraint/indexes").isNotEmpty();
 
         // And a second run is still a no-op.
         assertThat(Migrator.migrate(ds).migrationsExecuted).isZero();

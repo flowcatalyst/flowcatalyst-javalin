@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.auth.mfa.MfaRepository;
 import io.flowcatalyst.platform.auth.ratelimit.PostgresRateLimitStore;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.mail.MailOutboxRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.purger.jfr.PurgerStepEvent;
 import org.slf4j.Logger;
@@ -40,12 +41,15 @@ public final class Purger implements AutoCloseable {
     static final Duration EXPIRED_ROW_GRACE = Duration.ofHours(24);
     private static final int LOOKAHEAD_MONTHS = 3;
     private static final int RETENTION_YEARS = 3;
+    /// `docs/spec/mail-outbox.md` §2's two retention sweeps.
+    static final Duration MAIL_SENT_RETENTION = Duration.ofDays(7);
+    static final Duration MAIL_FAILED_RETENTION = Duration.ofDays(30);
 
     /// Everything one tick touches. Built once at start; a test builds its
     /// own over the embedded database.
     public record Sweeps(LoginAttemptRepository loginAttempts, RateLimit.Store rateLimitEvents, Duration rateLimitRetention,
                          GrantStore grants, OAuthClientRepository oauthClients, MfaRepository mfa,
-                         AuthHousekeeping housekeeping) {
+                         AuthHousekeeping housekeeping, MailOutboxRepository mailOutbox) {
         public Sweeps {
             Objects.requireNonNull(loginAttempts, "loginAttempts");
             Objects.requireNonNull(rateLimitEvents, "rateLimitEvents");
@@ -54,13 +58,14 @@ public final class Purger implements AutoCloseable {
             Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(mfa, "mfa");
             Objects.requireNonNull(housekeeping, "housekeeping");
+            Objects.requireNonNull(mailOutbox, "mailOutbox");
         }
 
         public static Sweeps over(DataSource pool, RateLimit.Policies policies) {
             return new Sweeps(new LoginAttemptRepository(pool), new PostgresRateLimitStore(pool),
                     policies.maxWindow().plus(RATE_LIMIT_PRUNE_MARGIN), new GrantStore(pool),
                     new OAuthClientRepository(pool, new io.flowcatalyst.platform.application.ApplicationRepository(pool)),
-                    new MfaRepository(pool), new AuthHousekeeping(pool));
+                    new MfaRepository(pool), new AuthHousekeeping(pool), new MailOutboxRepository(pool));
         }
     }
 
@@ -101,6 +106,8 @@ public final class Purger implements AutoCloseable {
         step("mfa-trusted-devices", () -> s.mfa().deleteExpiredTrustedDevices(graced));
         step("password-reset-tokens", () -> s.housekeeping().deleteExpiredPasswordResetTokens(graced));
         step("reset-approval-requests", () -> s.housekeeping().expirePendingApprovalRequests(now));
+        step("mail-outbox-sent", () -> s.mailOutbox().purgeSent(now.minus(MAIL_SENT_RETENTION)));
+        step("mail-outbox-failed", () -> s.mailOutbox().purgeFailed(now.minus(MAIL_FAILED_RETENTION)));
         step("login-attempt-partitions", () -> {
             s.loginAttempts().ensureQuarterlyPartition(now);
             s.loginAttempts().ensureQuarterlyPartition(now.atZone(ZoneOffset.UTC).plusMonths(LOOKAHEAD_MONTHS).toInstant());

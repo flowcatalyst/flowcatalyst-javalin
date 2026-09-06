@@ -22,6 +22,26 @@ class SchemaFingerprintTest {
     static final String FIXTURE = "/db/go-schema-fingerprint.txt";
     static final Path FIXTURE_PATH = Path.of("src/test/resources/db/go-schema-fingerprint.txt");
 
+    /// Tables that exist only on the Java side. Additive-only is the rule
+    /// (`docs/database.md`; rollback to Go must stay possible), and a table Go
+    /// never reads or writes leaves that rollback intact — so these are
+    /// removed from the Java fingerprint before the byte-for-byte comparison
+    /// instead of being pretended away. Each entry names its spec.
+    static final java.util.Set<String> JAVA_ONLY_TABLES = java.util.Set.of(
+            "mail_outbox"   // docs/spec/mail-outbox.md §2, V8
+    );
+
+    static boolean isJavaOnly(String fingerprintLine) {
+        for (String table : JAVA_ONLY_TABLES) {
+            if (fingerprintLine.contains("\t" + table + "\t") || fingerprintLine.contains("\tidx_" + table + "_")
+                    || fingerprintLine.endsWith("\t" + table) || fingerprintLine.contains(table + "_pkey")
+                    || fingerprintLine.contains(table + "_status_check")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Test
     void javaMigratedSchemaMatchesGoSchemaFingerprint() throws Exception {
         DataSource ds = TestPg.newDatabase("fingerprint_java");
@@ -33,9 +53,13 @@ class SchemaFingerprintTest {
             assertThat(in).as("fixture %s (regenerate with -Dfc.regenerateFingerprint=true)", FIXTURE).isNotNull();
             expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-        assertThat(actual.lines().toList())
-                .as("schema fingerprint: Java-migrated vs Go (src/test/resources/db/go-schema-fingerprint.txt)")
+        var javaLines = actual.lines().filter(l -> !isJavaOnly(l)).toList();
+        assertThat(javaLines)
+                .as("schema fingerprint: Java-migrated vs Go (src/test/resources/db/go-schema-fingerprint.txt), Java-only tables %s removed", JAVA_ONLY_TABLES)
                 .containsExactlyElementsOf(expected.lines().toList());
+        assertThat(actual.lines().filter(SchemaFingerprintTest::isJavaOnly).count())
+                .as("every declared Java-only table is actually in the Java schema")
+                .isGreaterThan(0);
     }
 
     /// Regenerates the fixture from `db/go-schema.sql` loaded into a fresh

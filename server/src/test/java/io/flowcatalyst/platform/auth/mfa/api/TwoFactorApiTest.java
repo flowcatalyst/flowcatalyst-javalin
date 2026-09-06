@@ -25,6 +25,8 @@ import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
+import io.flowcatalyst.platform.mail.MailOutboxRepository;
+import io.flowcatalyst.platform.mail.OutboxMailService;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -43,6 +45,7 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import tools.jackson.databind.JsonNode;
 
 import javax.sql.DataSource;
@@ -50,6 +53,7 @@ import java.net.http.HttpResponse;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -503,6 +507,48 @@ class TwoFactorApiTest {
         assertThat(NOTICES).contains("enrolled:" + email + ":EMAIL_PIN");
         assertThat(auditCount(pid, "2FA_EMAIL_ENROLLED")).isEqualTo(1);
         assertThat(MFA.confirmed(pid)).containsExactly(MfaMethod.EMAIL_PIN);
+    }
+
+    // ── mail-outbox spec §4 row 6: the request path never touches SMTP ─────
+
+    /// `TwoFactorApi.challengeEmail` calls `Mfa.sendLoginEmailPin` — a DB
+    /// write, then `mail.send(...)` — synchronously on the request thread
+    /// (`docs/spec/mail-outbox.md` §1). Wired the way `Platform.register`
+    /// wires it (`MailSender.of(new OutboxMailService(repo))`), that
+    /// `send` is an insert-only write through the outbox, never SMTP, so the
+    /// request answers fast regardless of whether anything downstream can
+    /// actually deliver the row. `@Timeout` bounds a failure (a reverted,
+    /// inline-sending wiring) to a hang the test framework reports rather
+    /// than one that stalls the whole suite.
+    @Test
+    @Timeout(5)
+    void loginEmailChallengeAnswersFastThroughTheOutboxWiring() {
+        String email = "outbox2fa-" + RUN + "@" + LOOSE;
+        String pid = principal(email);
+        String mfaToken = TOKENS.mint(pid, MfaToken.Purpose.PENDING);
+
+        var mailRepo = new MailOutboxRepository(DS);
+        var mfa = new Mfa(MFA_REPO, Optional.of(ENC),
+                io.flowcatalyst.platform.auth.mfa.MailSender.of(new OutboxMailService(mailRepo)),
+                Mfa.Config.DEFAULT, Clock.systemUTC());
+        var mfaGate = new LoginMfaGate(mfa, POLICY, TOKENS, DEVICE_COOKIE);
+        var backoff = new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT);
+        var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, backoff, TOKEN_ISSUER, RESOLVER,
+                mfaGate, new SessionCookie(false), DS, Clock.systemUTC());
+
+        try (TestHttp isolated = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before(authenticator());
+            TwoFactorApi.register(routes,
+                    new TwoFactorApi.State(loginState, mfa, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+        })) {
+            long start = System.nanoTime();
+            var r = isolated.post("/auth/2fa/challenge/email", Json.writeLine(Map.of("mfaToken", mfaToken)),
+                    "Content-Type", "application/json");
+            long elapsedMs = Duration.ofNanos(System.nanoTime() - start).toMillis();
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(elapsedMs).as("the challenge-email request never waits on mail delivery").isLessThan(1000);
+        }
     }
 
     @Test

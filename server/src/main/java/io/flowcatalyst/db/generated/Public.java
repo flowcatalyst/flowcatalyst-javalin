@@ -30,6 +30,7 @@ import io.flowcatalyst.db.generated.tables.IamRoles;
 import io.flowcatalyst.db.generated.tables.IamServiceAccounts;
 import io.flowcatalyst.db.generated.tables.IamUserMfaMethods;
 import io.flowcatalyst.db.generated.tables.IamUserMfaRecoveryCodes;
+import io.flowcatalyst.db.generated.tables.MailOutbox;
 import io.flowcatalyst.db.generated.tables.MsgConnections;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
@@ -224,6 +225,11 @@ public class Public extends SchemaImpl {
      * The table <code>public.iam_user_mfa_recovery_codes</code>.
      */
     public final IamUserMfaRecoveryCodes IAM_USER_MFA_RECOVERY_CODES = IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES;
+
+    /**
+     * The table <code>public.mail_outbox</code>.
+     */
+    public final MailOutbox MAIL_OUTBOX = MailOutbox.MAIL_OUTBOX;
 
     /**
      * The table <code>public.msg_connections</code>.
@@ -478,6 +484,7 @@ public class Public extends SchemaImpl {
             IamServiceAccounts.IAM_SERVICE_ACCOUNTS,
             IamUserMfaMethods.IAM_USER_MFA_METHODS,
             IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES,
+            MailOutbox.MAIL_OUTBOX,
             MsgConnections.MSG_CONNECTIONS,
             MsgDispatchJobAttempts.MSG_DISPATCH_JOB_ATTEMPTS,
             MsgDispatchJobProjectionFeed.MSG_DISPATCH_JOB_PROJECTION_FEED,

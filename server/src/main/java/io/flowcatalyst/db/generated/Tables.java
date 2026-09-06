@@ -30,6 +30,7 @@ import io.flowcatalyst.db.generated.tables.IamRoles;
 import io.flowcatalyst.db.generated.tables.IamServiceAccounts;
 import io.flowcatalyst.db.generated.tables.IamUserMfaMethods;
 import io.flowcatalyst.db.generated.tables.IamUserMfaRecoveryCodes;
+import io.flowcatalyst.db.generated.tables.MailOutbox;
 import io.flowcatalyst.db.generated.tables.MsgConnections;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
@@ -209,6 +210,11 @@ public class Tables {
      * The table <code>public.iam_user_mfa_recovery_codes</code>.
      */
     public static final IamUserMfaRecoveryCodes IAM_USER_MFA_RECOVERY_CODES = IamUserMfaRecoveryCodes.IAM_USER_MFA_RECOVERY_CODES;
+
+    /**
+     * The table <code>public.mail_outbox</code>.
+     */
+    public static final MailOutbox MAIL_OUTBOX = MailOutbox.MAIL_OUTBOX;
 
     /**
      * The table <code>public.msg_connections</code>.
