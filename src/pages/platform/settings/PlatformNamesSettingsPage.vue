@@ -7,7 +7,7 @@ import { getErrorMessage } from "@/utils/errors";
 
 const platformConfig = usePlatformConfigStore();
 
-const DEFAULT_NAME = "Flowcatalyst";
+const DEFAULT_NAME = "FlowCatalyst";
 const platformName = ref(DEFAULT_NAME);
 const loading = ref(true);
 const saving = ref(false);
@@ -71,13 +71,13 @@ function resetToDefault() {
         <FcFormField
           label="Platform name"
           :error="error || undefined"
-          help="Shown wherever the product is named to users: security emails, the authenticator-app label for two-factor codes, passkey prompts, and the browser tab. Defaults to “Flowcatalyst”."
+          help="Shown wherever the product is named to users: security emails, the authenticator-app label for two-factor codes, passkey prompts, and the browser tab. Defaults to “FlowCatalyst”."
         >
           <template #default="{ id: fieldId }">
             <InputText
               :id="fieldId"
               v-model="platformName"
-              placeholder="Flowcatalyst"
+              placeholder="FlowCatalyst"
               @keyup.enter="save"
             />
           </template>

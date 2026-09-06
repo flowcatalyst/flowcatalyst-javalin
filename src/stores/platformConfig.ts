@@ -8,7 +8,7 @@ export interface PlatformFeatures {
 export interface PlatformConfig {
 	features: PlatformFeatures;
 	// Configurable brand name; the SPA uses it for the document title and as the
-	// fallback brand. Defaults to "Flowcatalyst".
+	// fallback brand. Defaults to "FlowCatalyst".
 	platformName: string;
 }
 
@@ -16,7 +16,7 @@ const DEFAULT_CONFIG: PlatformConfig = {
 	features: {
 		messagingEnabled: true,
 	},
-	platformName: "Flowcatalyst",
+	platformName: "FlowCatalyst",
 };
 
 export const usePlatformConfigStore = defineStore("platformConfig", () => {
