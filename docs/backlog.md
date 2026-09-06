@@ -769,7 +769,7 @@ the SDK is published.
   `oidcMultiTenant: false`, or Go's DTO makes it optional and the lockfile
   is re-dumped. The e2e flow pins it as an expected failure meanwhile.
 
-## HTTP/2 and HTTP/3 on the server listeners (owner requirement, 2026-09-06)
+## HTTP/2 and HTTP/3 on the server listeners (owner requirement, 2026-09-06) — **done the same night (`58187c8`, `docs/spec/http-transport.md`); only the graceful-stop delay below remains**
 
 The owner: "we need to enable HTTP/2/3". Today the Java server speaks
 HTTP/1.1 only (Javalin 7.2.3 on Jetty 12, default connector); Go's inbound
