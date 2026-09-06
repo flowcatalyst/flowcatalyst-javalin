@@ -13,9 +13,10 @@ import java.util.function.Function;
 /// operation, deliberately: Go's `mintToken` is a bare handler, not wrapped
 /// in its envelope either, because minting emits no domain event (spec §6's
 /// event list has no "token minted" entry) and the audit side effect must be
-/// best-effort in a way the all-or-nothing envelope commit cannot express
-/// (see [io.flowcatalyst.platform.serviceaccount.api.ServiceAccountApi] class
-/// doc for the audit-row gap this leaves). This class holds the business
+/// best-effort in a way the all-or-nothing envelope commit cannot express —
+/// [io.flowcatalyst.platform.serviceaccount.api.ServiceAccountApi] emits the
+/// `token-minted` event (and so the audit row) after this returns, ruling
+/// 2026-09-06 #15. This class holds the business
 /// logic so it stays out of `api/`, per CONVENTIONS, without pretending it is
 /// an `Operation`.
 ///

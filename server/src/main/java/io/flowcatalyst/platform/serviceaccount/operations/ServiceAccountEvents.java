@@ -26,6 +26,7 @@ public final class ServiceAccountEvents {
     public static final String ROLES_ASSIGNED = "platform:iam:serviceaccount:roles-assigned";
     public static final String TOKEN_REGENERATED = "platform:iam:serviceaccount:token-regenerated";
     public static final String SECRET_REGENERATED = "platform:iam:serviceaccount:secret-regenerated";
+    public static final String TOKEN_MINTED = "platform:iam:serviceaccount:token-minted";
 
     private ServiceAccountEvents() {
     }
@@ -38,6 +39,28 @@ public final class ServiceAccountEvents {
     private static EventMetadata metadataFor(ExecutionContext ec, String type, String serviceAccountId) {
         return EventMetadata.of(ec, type, SOURCE, subjectFor(serviceAccountId))
                 .withMessageGroup(EventConventions.buildMessageGroup("platform", "serviceaccount", serviceAccountId));
+    }
+
+    /// Owner ruling 2026-09-06 #15: who obtained a credential for which
+    /// account (spec §8 step 8). Carries the account, its SERVICE principal,
+    /// the lifetime and the scope — **never the token**. `principalId()` on
+    /// [DomainEvent] stays the actor (the anchor who minted).
+    public record ServiceAccountTokenMinted(EventMetadata metadata, String serviceAccountId, String servicePrincipalId,
+                                            long expiresInSeconds, List<String> permissions) implements DomainEvent {
+
+        public static ServiceAccountTokenMinted of(ExecutionContext ec, String serviceAccountId, String servicePrincipalId,
+                                                   long expiresInSeconds, List<String> permissions) {
+            return new ServiceAccountTokenMinted(metadataFor(ec, TOKEN_MINTED, serviceAccountId), serviceAccountId,
+                    servicePrincipalId, expiresInSeconds, List.copyOf(permissions));
+        }
+
+        @Override
+        public Object data() {
+            return new Data(serviceAccountId, servicePrincipalId, expiresInSeconds, permissions);
+        }
+
+        private record Data(String serviceAccountId, String servicePrincipalId, long expiresInSeconds, List<String> permissions) {
+        }
     }
 
     public record ServiceAccountCreated(EventMetadata metadata, String serviceAccountId, String code, String name)

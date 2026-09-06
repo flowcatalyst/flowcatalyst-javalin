@@ -201,7 +201,7 @@ Java work the rulings created, plus one owner requirement, in build order:
    id answers the same 404 as a missing one — `PrincipalApiTest` "PR-4
    closes the role-mutation existence oracle"; the sub-routes are scoped
    too. Go mirror only (fix list G6).**
-5. #15 audit row on the service-account token mint.
+5. ~~#15 audit row on the service-account token mint~~ **done 2026-09-06 (night): `ServiceAccountTokenMinted` under `MintServiceAccountTokenCommand`, best-effort, mutant-checked.**
 6. #20 native fcdev (`-Pnative` profile, picocli reflection config).
 7. **HTTP/2 + HTTP/3 on the listeners** (owner, 2026-09-06; `docs/backlog.md`
    "HTTP/2 and HTTP/3"): spec `http-transport.md`, then a Sonnet unit.

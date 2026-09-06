@@ -440,6 +440,47 @@ class ServiceAccountApiTest {
         // last_used_at is stamped by the mint (spec §9.2).
         var got = json(http.get("/api/service-accounts/" + id, VIEWER));
         assertThat(got.has("lastUsedAt")).isTrue();
+
+        // Owner ruling 2026-09-06 #15: the mint is audited — who obtained a credential
+        // for which account — and neither the audit row nor the event carries the token.
+        var db = org.jooq.impl.DSL.using(TestPg.dataSource(), org.jooq.SQLDialect.POSTGRES);
+        var audits = db.fetch("SELECT principal_id, operation_json::text AS operation_json FROM aud_logs WHERE entity_id = ? AND operation = ?",
+                id, "MintServiceAccountTokenCommand");
+        assertThat(audits).as("one audit row per mint").hasSize(1);
+        assertThat(audits.getFirst().get("principal_id", String.class)).as("the actor is the anchor who minted, not the service principal")
+                .isNotEqualTo(principalId).isNotNull();
+        assertThat(audits.getFirst().get("operation_json", String.class)).doesNotContain(body.get("accessToken").asText());
+        var events = db.fetch("SELECT data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
+                "platform.serviceaccount." + id, "platform:iam:serviceaccount:token-minted");
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("data", String.class)).contains(principalId).doesNotContain(body.get("accessToken").asText());
+    }
+
+    /// The audit is best-effort (spec §8 step 8): a unit of work that cannot
+    /// commit must not refuse the credential.
+    @Test
+    void mintTokenStillAnswersWhenTheAuditCannotBeWritten() {
+        var created = create(code("mintnoaudit"), "MintNoAudit");
+        String id = created.get("serviceAccount").get("id").asText();
+        javax.sql.DataSource broken = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[] {javax.sql.DataSource.class},
+                (proxy, method, args) -> { throw new java.sql.SQLException("audit store down"); });
+        var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, new UnitOfWork(broken, new PlatformSink(Json.MAPPER)),
+                OAUTH_CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of());
+        var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(KEYS.publicKey())));
+        var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
+        try (var h = new TestHttp(cfg -> {
+            HttpError.install(cfg.routes);
+            cfg.routes.before("/api/*", auth);
+            ServiceAccountApi.register(cfg.routes, state);
+        })) {
+            var r = h.post("/api/service-accounts/" + id + "/token", null, anchor());
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).get("accessToken").asText()).isNotBlank();
+        }
+        var db = org.jooq.impl.DSL.using(TestPg.dataSource(), org.jooq.SQLDialect.POSTGRES);
+        assertThat(db.fetch("SELECT 1 FROM aud_logs WHERE entity_id = ? AND operation = ?", id, "MintServiceAccountTokenCommand"))
+                .as("nothing was audited — and the mint answered anyway").isEmpty();
     }
 
     @Test

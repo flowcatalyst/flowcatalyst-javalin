@@ -1,5 +1,10 @@
 package io.flowcatalyst.platform.serviceaccount.api;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import io.flowcatalyst.platform.serviceaccount.operations.MintServiceAccountTokenCommand;
+import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountTokenMinted;
+
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
@@ -67,22 +72,20 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 /// | POST | `/api/service-accounts/{id}/regenerate-secret` (+`regenerate-signing-secret` alias) | 200 [RegenerateSigningSecretResponse] |
 /// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor-only) |
 ///
-/// **One remaining gap versus the spec, not improvised around (report it,
-/// do not silently patch it):**
-///
-///   - `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
-///     obtained a credential for which account" (spec §8 step 8) is not
-///     written: `AuditLogRepository` is read-only by design ("the rows are
-///     written by the unit-of-work sink, never here"), and this endpoint
-///     mints no domain event (spec §6 has no "token minted" entry) for the
-///     envelope to carry an audit row alongside. Adding a write path to
-///     `AuditLogRepository` is another aggregate's file, out of this unit's
-///     scope.
+/// `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
+/// obtained a credential for which account" (spec §8 step 8) is written
+/// since owner ruling 2026-09-06 #15: the mint emits
+/// [ServiceAccountEvents.ServiceAccountTokenMinted] through the unit of work
+/// under [MintServiceAccountTokenCommand], which lands the event and the
+/// audit row in one transaction — after the token is minted, and swallowed
+/// (logged) on failure, so a broken audit path never refuses a credential.
 ///
 /// `POST /api/service-accounts`'s `oauth` field (spec §4.1, §8) is now a real,
 /// persisted `CONFIDENTIAL` OAuth client — see
 /// [io.flowcatalyst.platform.serviceaccount.operations.CreateServiceAccountWithCredentials].
 public final class ServiceAccountApi {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ServiceAccountApi.class);
 
     private ServiceAccountApi() {
     }
@@ -225,8 +228,7 @@ public final class ServiceAccountApi {
         ctx.json(new RegenerateSigningSecretResponse(id, secret.get()));
     }
 
-    /// Anchor-only and best-effort-audited (spec §3, §8) — see the class doc
-    /// for why the audit row is not written here.
+    /// Anchor-only and best-effort-audited (spec §3, §8; owner ruling 2026-09-06 #15).
     private static void mintToken(Context ctx, State s) {
         Checks.requireAnchor(Auth.current());
         String id = ctx.pathParam("id");
@@ -234,6 +236,16 @@ public final class ServiceAccountApi {
         // A bearer was handed out for this account — a use of its credentials
         // (spec §9.2). Best-effort: a failed stamp must never fail the mint.
         s.repo().touchLastUsed(id);
+        // Spec §8 step 8: who obtained a credential for which account — never the
+        // token. Best-effort too: the credential is already minted, so an audit
+        // failure is logged, not answered.
+        try {
+            var ec = Auth.executionContext();
+            s.uow().emitEvent(ServiceAccountTokenMinted.of(ec, id, principalIdOf(s, id), result.expiresInSeconds(),
+                    result.permissions()), new MintServiceAccountTokenCommand(id));
+        } catch (RuntimeException e) {
+            LOG.warn("service-account token mint for {} was not audited: {}", id, e.toString());
+        }
         String scope = result.permissions().isEmpty() ? null : String.join(" ", result.permissions());
         ctx.json(new ServiceAccountTokenResponse(result.accessToken(), "Bearer", result.expiresInSeconds(), scope));
     }

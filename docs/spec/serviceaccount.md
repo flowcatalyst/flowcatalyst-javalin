@@ -314,15 +314,13 @@ are folded into the Java port as drift, per the task that implemented it:
 
 Further deviations, recorded rather than improvised around:
 
-- **The token mint's "best-effort audit row" (§8 step 8) is not written.**
-  `AuditLogRepository` is read-only by design ("the rows are written by the
-  unit-of-work sink, never here"), and the mint emits no domain event (§6 has
-  no "token minted" entry) for the envelope to carry an audit row alongside.
-  Adding a write path to `AuditLogRepository` is outside this unit's scope
-  (`io.flowcatalyst.platform.serviceaccount.**`). `MintServiceAccountToken`
-  and `ServiceAccountApi#mintToken` implement every other step of §8 exactly,
-  including the account/principal inactive checks with their two distinct
-  messages and the `last_used_at` stamp.
+- ~~The token mint's "best-effort audit row" (§8 step 8) is not written.~~
+  **Written since 2026-09-06 (owner ruling #15):** after the mint the handler
+  emits `platform:iam:serviceaccount:token-minted` (account, its SERVICE
+  principal, lifetime, scope — never the token) through the unit of work
+  under `MintServiceAccountTokenCommand`, which is the audit row's
+  `operation`; a failure there is logged and the credential still answered.
+  Go mirror: `docs/go-mirror/2026-09-06-go-fix-list.md` G6.
 - **The token mint signs RS256 under the platform signing key**
   (`RsaServiceAccountTokenMinter`, orchestrator 2026-09-05), with `kid` in
   the header and the full access-token claim set (`type`, `tier`, `email`,
