@@ -29,7 +29,7 @@ Two deliverables come out of the same tree, the same split as the Go repo:
 
 | | What | How |
 |---|---|---|
-| `fc-server` | The production server. The platform API is on by default; every other subsystem is **off** until its `FC_*_ENABLED` is set, and the router only runs the built-in Postgres broker when `FC_DEFAULT_BROKER=postgres`; otherwise it takes its queues from `FLOWCATALYST_CONFIG_URL`. | `mvn -q -DskipTests -pl server -am package` → `java --enable-preview -jar server/target/flowcatalyst-server-0.0.1-SNAPSHOT-exec.jar` |
+| `fc-server` | The production server. The platform API is on by default; every other subsystem is **off** until its `FC_*_ENABLED` is set, and the router only runs the built-in Postgres broker when `FC_DEFAULT_BROKER=postgres`; otherwise it takes its queues from `FLOWCATALYST_CONFIG_URL`. | `mvn -q -DskipTests -pl server -am package` → `java --enable-preview --enable-native-access=ALL-UNNAMED -jar server/target/flowcatalyst-server-0.0.1-SNAPSHOT-exec.jar` |
 | `fcdev` | The developer monolith: fc-server plus embedded Postgres, dev defaults, and the `start\|stop\|fresh\|db upgrade` lifecycle. See [`docs/fcdev.md`](docs/fcdev.md). | `mvn -q -DskipTests package` → `java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar start` |
 
 Both are plain executable jars; JBang is optional for `fcdev`. The
@@ -48,6 +48,21 @@ server/target/fc-server
 
 A new SQL migration must also be listed in `server/src/main/resources/db/migration.index`;
 `IndexedMigrationsTest` fails until it is.
+
+### HTTP/2 and HTTP/3 (Java-only, `docs/spec/http-transport.md`)
+
+Go's inbound server is HTTP/1.1 only, so these listeners and env vars have
+no Go counterpart:
+
+| Listener | Env | Protocols | Default |
+|---|---|---|---|
+| API (`FC_API_PORT`/`PORT`) | — | HTTP/1.1 and h2c (cleartext HTTP/2) | on, 8080 |
+| API TLS | `FC_TLS_PORT` | TLS with ALPN → h2, http/1.1 | on only with TLS material, 8443 |
+| API HTTP/3 (UDP) | `FC_HTTP3_PORT` | QUIC → h3 | on only with TLS material and `FC_HTTP3_ENABLED=true`; default = `FC_TLS_PORT` |
+
+TLS material is either `FC_TLS_KEYSTORE_PATH` + `FC_TLS_KEYSTORE_PASSWORD`
+(a PKCS#12 keystore) or `FC_TLS_CERT_PATH` + `FC_TLS_KEY_PATH` (a leaf-first
+PEM chain + an unencrypted PKCS#8 key) — set exactly one pair, or neither.
 
 ## Docs
 

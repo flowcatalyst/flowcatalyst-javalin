@@ -813,3 +813,18 @@ filesystem path, which a native image's `resource:` URL is not) — every
 other surface verified. Same code path as the native fc-server; fix by
 listing the published docs through an index file at build time, as
 `IndexedMigrations` does for Flyway. Small; not blocking.
+
+## HTTP/3 sessions hold the graceful stop (2026-09-06)
+
+With `FC_HTTP3_ENABLED=true`, after an h3 exchange whose client simply
+went away (curl exits without a QUIC CONNECTION_CLOSE), `Server.stop`
+waits the whole `SHUTDOWN_GRACE` (31 s measured) before the connectors
+close — idle, or after an h2 exchange, the stop is immediate. Overriding
+`QuicheServerConnector.shutdown()` and closing its connected end points
+changed nothing, so the waiting `Graceful` is inside Jetty's QUIC/HTTP3
+session stack (`Http3Test` tolerates the timeout with a pointer here).
+Impact: a slower stop on instances that served h3 — HTTP/3 is off by
+default and the ALB topology never enables it on the target. Fix: find the
+Graceful bean (a thread dump during the stall shows `Server.doStop:711`
+waiting), or set a short QUIC idle timeout if Jetty exposes one; possibly a
+Jetty issue.

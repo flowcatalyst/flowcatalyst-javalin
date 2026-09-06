@@ -531,6 +531,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             // method to the SPA NotFound handler — index.html for a POST — which nobody relies on).
             cfg.http.prefer405over404 = false;
             cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
+            // h2c on the plain API port, plus TLS+ALPN (h2) and HTTP/3 when
+            // configured (docs/spec/http-transport.md §1). Adding a connector
+            // here is what makes Javalin skip the default one it would
+            // otherwise build from cfg.jetty.host/port (Listeners' javadoc).
+            io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
 
             cfg.routes.get("/health", health(mode)::handle);
             io.flowcatalyst.platform.shared.http.ResponseDefaults.register(cfg);

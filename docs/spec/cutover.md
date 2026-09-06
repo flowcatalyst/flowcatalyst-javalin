@@ -122,6 +122,12 @@ the Java `server` and `fcdev` sources:
   (access-token lifetime, default 3600; sets `exp` and `expires_in`
   together). If a deployment sets it, Java must honour it — see
   `docs/backlog.md`.
+- **Java-only, added 2026-09-06** (`docs/spec/http-transport.md`): Go's
+  inbound server is HTTP/1.1-only, so these seven have no Go counterpart and
+  the parity script above will never find them on the Go side — that is
+  expected, not drift. `FC_TLS_PORT` (default 8443), `FC_TLS_KEYSTORE_PATH`,
+  `FC_TLS_KEYSTORE_PASSWORD`, `FC_TLS_CERT_PATH`, `FC_TLS_KEY_PATH`,
+  `FC_HTTP3_ENABLED`, `FC_HTTP3_PORT`.
 
 Re-run before each rehearsal (Go moves):
 

@@ -42,6 +42,29 @@ public record Env(
         // `FC_METRICS_PORT`, default 9090: Prometheus listener.
         int metricsPort,
 
+        // ── HTTP/2 (h2c/h2) and HTTP/3 (QUIC): docs/spec/http-transport.md ───
+        // `FC_TLS_PORT`, default 8443: TLS 1.2/1.3 with ALPN -> h2, http/1.1.
+        // The listener only binds when TLS material (below) is configured.
+        int tlsPort,
+        // `FC_TLS_KEYSTORE_PATH`: a PKCS#12 keystore holding one key entry
+        // with its chain. Pairs with [#tlsKeystorePassword]; set one or
+        // neither, never one without the other.
+        String tlsKeystorePath,
+        // `FC_TLS_KEYSTORE_PASSWORD`: the PKCS#12 keystore's password.
+        String tlsKeystorePassword,
+        // `FC_TLS_CERT_PATH`: a leaf-first PEM certificate chain. Pairs with
+        // [#tlsKeyPath]. Mutually exclusive with the keystore pair above —
+        // exactly one form, or neither, may be set (`TlsMaterial#resolve`).
+        String tlsCertPath,
+        // `FC_TLS_KEY_PATH`: an unencrypted PKCS#8 PEM private key.
+        String tlsKeyPath,
+        // `FC_HTTP3_ENABLED`, default false: QUIC -> h3. A startup error
+        // without TLS material (`TlsMaterial#resolve`).
+        boolean http3Enabled,
+        // `FC_HTTP3_PORT` (UDP), default = [#tlsPort]: resolved from the
+        // already-resolved tlsPort, not a separate literal default.
+        int http3Port,
+
         // ── database / identity ────────────────────────────────────────────
         // See [#resolveDatabaseUrl(EnvReader)] for the three-mode precedence.
         String databaseUrl,
@@ -283,9 +306,19 @@ public record Env(
         var authMode = e.get("AUTH_MODE").trim();
         var authOff = authMode.equalsIgnoreCase("NONE");
 
+        var tlsPort = e.integer("FC_TLS_PORT", 8443);
+
         return new Env(
                 apiPort,
                 e.integer("FC_METRICS_PORT", 9090),
+
+                tlsPort,
+                e.get("FC_TLS_KEYSTORE_PATH"),
+                e.get("FC_TLS_KEYSTORE_PASSWORD"),
+                e.get("FC_TLS_CERT_PATH"),
+                e.get("FC_TLS_KEY_PATH"),
+                e.bool("FC_HTTP3_ENABLED", false),
+                e.integer("FC_HTTP3_PORT", tlsPort),
 
                 resolveDatabaseUrl(e),
                 e.firstSet("FC_JWT_ISSUER", "FC_EXTERNAL_BASE_URL", "EXTERNAL_BASE_URL").orElse("http://localhost:8080"),

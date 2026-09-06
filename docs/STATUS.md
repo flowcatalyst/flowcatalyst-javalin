@@ -4,6 +4,47 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## HTTP/2 and HTTP/3 transport (2026-09-06)
+
+`docs/spec/http-transport.md` landed: h2c (cleartext HTTP/2) is now always
+on for the API listener (`FC_API_PORT`), and TLS+ALPN (h2, http/1.1) turns
+on when TLS material (`FC_TLS_KEYSTORE_PATH`+`FC_TLS_KEYSTORE_PASSWORD` or
+`FC_TLS_CERT_PATH`+`FC_TLS_KEY_PATH`) is configured on `FC_TLS_PORT`
+(default 8443). HTTP/3 (QUIC, `FC_HTTP3_PORT`) turns on additionally with
+`FC_HTTP3_ENABLED=true`, guarded by a native-library probe
+(`Http3#quicheLoadFailure`) so a missing quiche binary never takes the
+plain/TLS listeners down with it. All Java-only — Go's inbound server is
+HTTP/1.1 only, so this is not a parity item.
+
+**With the ALB in front, the production win is h2c to targets** (target
+group protocol version `HTTP2`, a terraform/console change) — end-to-end
+HTTP/3 to the browser is the ALB's feature, not this process's; the
+server's own h3 listener is for topologies where the process terminates
+TLS itself (fcdev, a bare host, a future NLB). **Nobody should expect h3
+through the ALB from this change.**
+
+Surprise found along the way: Jetty 12.1 auto-installs its own bare
+`Alt-Svc: h3=":<port>"` (no `ma` parameter) on every HTTP/2-capable
+connector — TLS *and* the plain h2c one — the moment a QUIC connector joins
+the same `Server`, which beats an `HttpConfiguration.Customizer` added at
+connector-build time (Jetty's own injection runs later, at the HTTP/3
+connector's startup). Fixed with a `Handler.Wrapper` installed as the
+outermost `Server` handler instead — it runs after Jetty's entire
+`customize()` phase finishes, so it reliably has the last word: `put`s the
+full value (with `ma=86400`) on secure requests, strips whatever Jetty put
+there on plain ones. See `Http3#altSvcHandler`'s javadoc.
+
+quiche (the QUIC/HTTP-3 engine) actually **does** load via the FFM binding
+on this dev machine (macOS arm64) — `jetty-quic-quiche-foreign` pulled in
+via Maven Central resolved and initialized without error. The end-to-end
+h3 client fetch in `Http3Test` still could not be gotten working within the
+brief's one-hour HTTP/3 budget (an `SSLHandshakeException` inside Jetty's
+own HTTP/3 test client, isolated with `Assumptions.abort` so it reads as
+"unverified", not "broken" — every server-side assertion, connector
+construction included, passes). Native-image support for the quiche
+FFM binding was not investigated in this unit (out of scope per the brief);
+treat HTTP/3 as jar/jlink-only until someone checks `-Pnative`.
+
 ## Overnight run 2026-09-05 — Phases 0, 1 and 2 done; Phase 3 gated on rulings (handover)
 
 Owner asleep; orchestrator ran `docs/port-plan.md` Phases 0, 1 and 2 to
@@ -56,6 +97,7 @@ in its worktree; main's full suite is re-run after each merge.
 | `c4b4a14` | **Client selection `/auth/client/{accessible,switch,current}`** — the last Go route group not in Java (spec `auth-core.md` §6.5 written from Go): reachable tenants per scope, a switch that mints the full-authority API token after the access and active checks, the current client | orchestrator; two HTTP tests; one mutant (the non-anchor access check) |
 | `37a6288` | **Request schema validation in huma's shape** (`shared/openapi/{SchemaValidation,SchemaValidator,ValidationMessages,GoNumbers}`): a before-filter after the authenticator validates every lockfile operation's body and query/path parameters against the lockfile schemas and answers `VALIDATION` with per-field `details.errors` the SPA renders; the startup keyword gate refuses an unimplemented schema keyword; 17 `*ApiTest`s moved from absent-field to blank-field for their domain codes. Three spec corrections proven against huma's source (one alphabetical pass, the query-parameter message, `additionalProperties` as the lockfile has it). **The parity corpus has no VALIDATION diff left and the seven message texts match Go** | Sonnet (strong: read huma rather than trusting my spec); orchestrator mutant on parameter validation killed |
 | `916549d` | **CI workflow** (`.github/workflows/ci.yml`, the `port-plan.md` CI item): reactor tests + `tools/jooq-verify.sh` on Temurin 25; the Dockerfile's jlink image built and started router-only until its HEALTHCHECK passes; `-Pnative` on `ubuntu-latest`, `ubuntu-24.04-arm` and `macos-latest` with a `/health` probe on each binary; the parity corpus against `flowcatalyst/flowcatalyst@main` (report artifact; fails on any DIFF/ERROR); the Playwright suite on Java with the Go column behind `E2E_GO_SIDE`. The parity module keeps zonky's linux-amd64 binary (it had excluded it — no amd64 runner could have run the corpus). Unproven on GitHub: no remote yet | orchestrator; router-only start of the jar and the Docker image both probed locally |
+| `(next)` | **HTTP/2 and HTTP/3 on the API listener** (owner requirement 2026-09-06; `docs/spec/http-transport.md`): h2c always on the plain `FC_API_PORT` (the ALB's h2-to-target path), TLS+ALPN → h2/http1.1 on `FC_TLS_PORT` from a PKCS#12 or a PEM pair (`FC_TLS_*`), QUIC → h3 on `FC_HTTP3_PORT` with `FC_HTTP3_ENABLED=true` (quiche FFM binding, probed before install; `Alt-Svc` only with the connector). **Proven with an independent client**: Homebrew curl answers `3 200` over `--http3-only`, `2 200` over ALPN and by h2c prior knowledge. Known limitation (backlog): after an h3 exchange the graceful stop waits the whole grace period. Launch commands carry `--enable-native-access=ALL-UNNAMED` | Sonnet (strong on h2/TLS and the `Alt-Svc` handler finding — Jetty auto-injects its own customizer; stalled twice on quiet long builds); orchestrator added the QUIC stream preset, the curl proof, tied `Alt-Svc` to the connector, pinned the `jetty-quic-quiche-server` dependency, and ran the worktree suite (3533 + transport) green after merging main |
 | `6128603` | **Native fcdev** (`fcdev/pom.xml` `-Pnative`, owner ruling #20 — before cutover): picocli's reflection generated by `picocli-codegen` at compile time, `NativeReflectConfig` reused over fcdev + server + usecase classes, zonky/mysql reachability captured into `fcdev/native-config/`; a 116 MB arm64 binary (41 MB gzipped) that inits and starts a fresh embedded database and answers `/health` in ~4 s; CI `native` job builds and probes it on all three platforms. Known gap: the published docs pages are not served from the image (backlog) | Sonnet (strong: found and fixed the incremental-compile trap that silently skipped the annotation processor, and scoped it off test sources under `-Werror`); orchestrator re-ran start/health/SPA/stop with the binary; fcdev tests green in the worktree after merging main |
 | `c048ade` | **Re-sync with Go `b3c75cd` + the first Java work of the rulings** — the owner's Go agent had landed five fixes overnight (seeder literal, dispatch permission, `oidcMultiTenant` optional, `clientScoped` on `/api` create/update, `hasLoginClient`, event dedup, 400 `unauthorized_client`, `/api/me` name, `NO_MFA`, trusted-device cookie); the lockfile is re-vendored at `3c22690` (246 operations), the embedded SPA refreshed to `642f5da`, eleven stale allow-list entries deleted. Java: rulings #7 (`clientScoped` on create/update/response, `/api` and BFF), #11 (400 `unauthorized_client` + the attempt row, Go's texts), #16 (`app:` namespace, `RESERVED_CODE`), #19 (strict wire enums: `INVALID_TYPE`, `INVALID_VALUE_TYPE`, `INVALID_STATUS`), #6 (BFF scheduled-job list confines non-anchors to their clients, `total`/`totalPages` agree). Then, as the owner's Go agent kept landing rulings (`ece54fe` #10a/#10b, `b422466` #16/#18), Java followed the same night: events batch ingest is partial success with honest per-item `BAD_REQUEST` slots, audit items without `principalId` are refused per slot (never defaulted), the harness refuses an empty capture instead of masking the run with it. **Corpus against Go `b422466`: 1,149 steps, 0 DIFF, 0 ERROR, 246/246 + 102/102** (revoke-previous-secret joined the contract and got its steps). **Frontend e2e ran on both sides for the first time**: Go 44/49 (the 2FA card is blank on Go — `devices: null`, fix list G8; `clientScoped` dropped by Go's BFF create, G1), Java 49/49 with no pins left | orchestrator; the reactor green; owner items G1–G8 in `docs/go-mirror/2026-09-06-go-fix-list.md` |
 | `9132495` | **e2e runner: Go built against the fresh SPA in a scratch copy; byte-exact SPA gate; `E2E_TEST_TIMEOUT_MS` / `E2E_RETRIES`** — the Go tree's `frontend/dist` was two weeks stale and the hash-blanking gate passed it | orchestrator |

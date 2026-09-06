@@ -58,4 +58,7 @@ EXPOSE 8080 9090
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1
 # --enable-preview: the build compiles with preview features on (CONVENTIONS §8).
-ENTRYPOINT ["java", "--enable-preview", "-jar", "/usr/local/lib/fc-server.jar"]
+# --enable-native-access: the HTTP/3 connector's quiche binding uses the FFM API
+# (docs/spec/http-transport.md); without the flag the JDK warns that restricted
+# methods "will be blocked in a future release".
+ENTRYPOINT ["java", "--enable-preview", "--enable-native-access=ALL-UNNAMED", "-jar", "/usr/local/lib/fc-server.jar"]

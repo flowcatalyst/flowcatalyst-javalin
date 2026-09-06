@@ -202,9 +202,10 @@ Java work the rulings created, plus one owner requirement, in build order:
    closes the role-mutation existence oracle"; the sub-routes are scoped
    too. Go mirror only (fix list G6).**
 5. ~~#15 audit row on the service-account token mint~~ **done 2026-09-06 (night): `ServiceAccountTokenMinted` under `MintServiceAccountTokenCommand`, best-effort, mutant-checked.**
-6. #20 native fcdev (`-Pnative` profile, picocli reflection config).
-7. **HTTP/2 + HTTP/3 on the listeners** (owner, 2026-09-06; `docs/backlog.md`
-   "HTTP/2 and HTTP/3"): spec `http-transport.md`, then a Sonnet unit.
+6. ~~#20 native fcdev (`-Pnative` profile, picocli reflection config)~~ **done 2026-09-06 (`6128603`).**
+7. ~~**HTTP/2 + HTTP/3 on the listeners**~~ **done 2026-09-06 (morning):
+   `docs/spec/http-transport.md`, curl-proven h2c/h2/h3; the graceful-stop
+   delay after h3 traffic is backlogged.**
 8. ~~Re-vendor the lockfile when Go re-dumps it (#8)~~ **done (`3c22690`)**; again for #10b / G1 when Go re-dumps.
 
 ## Phase 5 — drop-in verification and release

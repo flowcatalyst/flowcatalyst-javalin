@@ -28,6 +28,48 @@
       <artifactId>javalin</artifactId>
     </dependency>
 
+    <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN) and
+         HTTP/3 (QUIC) on the server listeners: docs/spec/http-transport.md.
+         Versions come from the jetty-bom import in the parent pom, pinned to
+         the exact Jetty release Javalin 7.2.3 already brings. -->
+    <dependency>
+      <groupId>org.eclipse.jetty.http2</groupId>
+      <artifactId>jetty-http2-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-alpn-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-alpn-java-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty.http3</groupId>
+      <artifactId>jetty-http3-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty.quic</groupId>
+      <artifactId>jetty-quic-server</artifactId>
+    </dependency>
+    <dependency>
+      <!-- The QUIC implementation: quiche's server binding (QuicheServerConnector) over the FFM
+           native binding, which bundles the quiche shared library for linux x86_64/aarch64 and
+           macOS aarch64. -->
+      <groupId>org.eclipse.jetty.quic</groupId>
+      <artifactId>jetty-quic-quiche-server</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty.quic</groupId>
+      <artifactId>jetty-quic-quiche-foreign</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Jetty's HTTP/2 client (test scope): the prior-knowledge h2c probe in Http2Test. -->
+      <groupId>org.eclipse.jetty.http2</groupId>
+      <artifactId>jetty-http2-client-transport</artifactId>
+      <scope>test</scope>
+    </dependency>
+
     <!-- JSON -->
     <dependency>
       <groupId>tools.jackson.core</groupId>

@@ -43,7 +43,10 @@ parity corpus and the e2e keep running over HTTP/1.1 and must not change.
   not appear on the h2c/HTTP/1.1 plain listener where it would be a lie).
 - Metrics stays a plain HTTP/1.1 Jetty as today (`Metrics.java`).
 - Shutdown: the existing `setStopTimeout(SHUTDOWN_GRACE)` applies to every
-  connector; HTTP/2 GOAWAY and QUIC close are Jetty's job.
+  connector; HTTP/2 GOAWAY and QUIC close are Jetty's job. **Known
+  limitation (2026-09-06):** a QUIC session whose client vanished holds the
+  graceful stop for the whole grace period — `docs/backlog.md` "HTTP/3
+  sessions hold the graceful stop".
 
 ## 2. TLS material
 
