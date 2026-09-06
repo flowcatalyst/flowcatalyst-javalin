@@ -1,3 +1,5 @@
 results/
 flowcatalyst-server-exec.jar
 fc-server-linux
+fc-server-native
+ts-dist/

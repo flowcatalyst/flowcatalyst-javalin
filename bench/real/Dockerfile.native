@@ -1,0 +1,5 @@
+# The Java server as a GraalVM native image (server/pom.xml -Pnative, built in the
+# ghcr.io/graalvm/native-image-community:25 container → glibc; hence Debian, not Alpine).
+FROM debian:bookworm-slim
+COPY fc-server-native /app/fc-server
+ENTRYPOINT ["/app/fc-server"]

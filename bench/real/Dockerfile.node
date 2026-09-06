@@ -1,0 +1,9 @@
+# The TypeScript platform (../flowcatalyst, Fastify + Drizzle + postgres.js) on Node 24.
+# dist/index.cjs is the tsup bundle with everything inlined except argon2 (native addon,
+# installed here for linux/arm64) and embedded-postgres (unused in a container).
+FROM node:24-bookworm-slim
+WORKDIR /app
+RUN npm init -y >/dev/null && npm install argon2@0.41.1 >/dev/null 2>&1
+COPY ts-dist/ /app/dist/
+ENV NODE_ENV=production
+ENTRYPOINT ["node", "/app/dist/index.cjs"]

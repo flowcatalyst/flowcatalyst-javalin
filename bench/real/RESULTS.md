@@ -140,3 +140,135 @@ committed, unfair gate; the fair variant is this one-line change.
 3. On one CPU the JVM's JIT competes with the request path for the whole run. The native image
    is the one-CPU answer and has not been measured on the real server yet.
 4. Memory at the same 1 GB limit: Go 132 MB, Java 437 MB.
+
+## Round 6 — one gate permit per request (experiment, uncommitted), 60 s warm-up
+
+The gate is crossed once per request: the first checkout takes the permit, later checkouts in
+the same request skip the wait, the adapter releases at the end of the chain (`Admission#gatePermit`).
+
+| CPU / memory | server | req/s | share of Go | mean | p50 | p90 | p99 | max | σ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 CPU, 2 GB | Go | 2,550 | 100% | 385 ms | 393 | 411 | 440 ms | 506 ms | 33 ms |
+| 2 CPU, 2 GB | Vert.x, unfair per checkout (round 4) | 2,373 | 93% | 410 ms | 334 | 788 | 960 ms | 1.87 s | 282 ms |
+| 2 CPU, 2 GB | Vert.x, fair per checkout (round 5) | 1,959 | 77% | 497 ms | 498 | 542 | 600 ms | 711 ms | 53 ms |
+| 2 CPU, 2 GB | **Vert.x, one permit per request** | **2,440** | **96%** | 397 ms | 498 | 700 | 824 ms | 1.22 s | 264 ms |
+| 1 CPU, 1 GB | Vert.x, one permit per request | 1,201 | 64% | | | | 912 ms | | |
+
+Throughput parity is essentially reached at two CPUs (96%); the per-request CPU cost is now
+level with Go's. The tail is not: σ 264 ms against Go's 33. That spread is not the gate any
+more (one crossing) and not the collector (round 4). What it looks like is CFS quota
+throttling: under `--cpus=2` the JVM runs 28+ threads (carriers, the loop, GC workers, JIT, VM
+thread) and bursts past the quota, so the kernel throttles it for the rest of the 100 ms period;
+Go 1.25+ sets `GOMAXPROCS` from the cgroup quota and stays inside it. Round 7 pins both servers
+to two cores (`--cpuset-cpus=0,1`, no quota) to separate throttling from work.
+
+## Round 7 — two pinned cores (`--cpuset-cpus=0,1`, no quota), 2 GB, one permit per request
+
+| server | req/s | share | mean | p50 | p90 | p99 | max | σ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Go | 2,425 | 100% | 403 ms | 407 | 441 | 475 ms | 501 ms | 34 ms |
+| Vert.x, one permit per request | 2,160 | 89% | 440 ms | 507 | 914 | 1.03 s | 2.00 s | 391 ms |
+
+Throttling is not the tail: pinned cores changed nothing for Java's spread. The distribution is
+bimodal (p50 507 ms, p90 914 ms), which is what an unfair queue produces — and the one permit per
+request is still taken from an unfair semaphore by 1,000 competing requests. Round 5 showed
+fairness collapses the spread (σ 53 ms) at four hand-offs per request; round 8 combines the two:
+fair semaphore, one crossing per request.
+
+## Round 8 — fair semaphore, one crossing per request (2 GB, 60 s warm-up)
+
+| CPU | server | req/s | share | mean | p50 | p90 | p99 | max | σ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 CPU quota | Go | 2,550 | 100% | 385 ms | 393 | 411 | 440 ms | 506 ms | 33 ms |
+| 2 CPU quota | Vert.x, unfair, one permit (round 6) | 2,440 | 96% | 397 ms | 498 | 700 | 824 ms | 1.22 s | 264 ms |
+| 2 CPU quota | **Vert.x, fair, one permit** | **2,252** | **88%** | 434 ms | 434 | 460 | **560 ms** | 683 ms | **51 ms** |
+| 2 pinned | Go | 2,425 | 100% | 403 ms | 407 | 441 | 475 ms | 501 ms | 34 ms |
+| 2 pinned | Vert.x, fair, one permit | 1,983 | 82% | 493 ms | 487 | 602 | 705 ms | 807 ms | 78 ms |
+
+The tail is ordering, confirmed twice over: fairness at one crossing per request brings the
+p99 to within 120 ms of Go (the queueing floor itself is ~400 ms at 1,000 connections) with
+Go's spread, and costs ~8% throughput against the unfair one-permit row (one fair hand-off per
+request instead of four). The four Java rows at 2 CPUs now span a clean trade:
+
+| gate | throughput share | p99 vs Go |
+|---|---:|---:|
+| unfair, per checkout (committed) | 93% | +520 ms |
+| fair, per checkout | 77% | +160 ms |
+| unfair, one per request | 96% | +384 ms |
+| fair, one per request | 88% | +120 ms |
+
+Still open: one CPU (JIT contention; the native image is round 9), and whether "one permit
+per request" is acceptable as a design — a request that holds a permit across a long non-DB
+wait (the dispatch endpoint's up-to-120 s customer wait) would hold a pool permit for that long;
+the `DISPATCH` group would need to release at its last checkout, or be excluded.
+
+## Round 9 — GraalVM native image of the server (`-Pnative` as committed: `-Os`), fair gate, one crossing
+
+| CPU / memory | server | req/s | share of Go | p99 | startup |
+|---|---|---:|---:|---:|---:|
+| 1 CPU, 1 GB | Go | 1,869 | 100% | 601 ms | 0.4 s |
+| 1 CPU, 1 GB | Java JIT jar (round 6 shape) | 1,201 | 64% | 912 ms | 3.3 s |
+| 1 CPU, 1 GB | **Java native, `-Os`** | **254** | **14%** | 2.0 s | 0.9 s |
+| 2 CPU, 2 GB | Go | 2,550 | 100% | 440 ms | 0.9 s |
+| 2 CPU, 2 GB | Java native, `-Os` | 582 | 23% | 1.9 s | 0.9 s |
+
+Five times slower than the JIT jar on the same code, CPU-bound on the carrier. The committed
+native profile optimises for size (`-Os`, the fcdev binary-size ruling); the hello app in
+`../test-size` was built without it and reached 88% of Rust. Round 10 rebuilds at the default
+optimisation level to separate "native image" from "size-optimised native image".
+
+## Round 10 — native image at the default optimisation level (`-O2`), same code
+
+| CPU / memory | server | req/s | share of Go | p50 | p99 | startup |
+|---|---|---:|---:|---:|---:|---:|
+| 1 CPU, 1 GB | Go | 1,869 | 100% | | 601 ms | 0.4 s |
+| 1 CPU, 1 GB | Java JIT jar | 1,201 | 64% | | 912 ms | 3.3 s |
+| 1 CPU, 1 GB | Java native `-Os` | 254 | 14% | 1.89 s | 2.0 s | 0.9 s |
+| 1 CPU, 1 GB | Java native `-O2` | 602 | 32% | 1.63 s | 1.81 s | 0.8 s |
+| 2 CPU, 2 GB | Go | 2,550 | 100% | | 440 ms | 0.9 s |
+| 2 CPU, 2 GB | Java JIT jar, fair one-permit | 2,252 | 88% | 434 ms | 560 ms | 2.5 s |
+| 2 CPU, 2 GB | Java native `-O2` | 1,132 | 44% | 871 ms | 995 ms | 0.9 s |
+
+The native image is **not** the one-CPU answer for this platform: at the default optimisation
+level it is half the JIT jar's throughput (`-Os` a fifth), because GraalVM's ahead-of-time code
+without profile guidance loses to C2 on the JSON, jOOQ and JWT work that dominates here. It wins
+startup (0.8 s vs 2.5–3.3 s) and memory, which is what `../test-size` measured on a trivial
+handler. Profile-guided optimisation (`--pgo`) is Oracle GraalVM only, not the community build in
+use. The committed `-Os` stays for the deliverable's size; nothing here argues for shipping the
+native server as the throughput path.
+
+## Round 11 — the TypeScript platform on Node 24 (`../flowcatalyst`, Fastify + Drizzle + postgres.js)
+
+Its own Drizzle-migrated database, bootstrapped admin, an application and 72 event types with one
+JSON schema each seeded through its API. Its list response is **86 KB** (the schema content is
+inlined per version) against the Go/Java 48 KB, so it does more work per request. One process,
+no cluster mode, so the second CPU is idle.
+
+| CPU / memory | server | req/s | share of Go | p50 | p99 |
+|---|---|---:|---:|---:|---:|
+| 1 CPU, 1 GB | Go | 1,869 | 100% | | 601 ms |
+| 1 CPU, 1 GB | Java JIT jar | 1,201 | 64% | | 912 ms |
+| 1 CPU, 1 GB | **Node** | **456** | **24%** | 1.31 s | 2.0 s (client timeout) |
+| 2 CPU, 2 GB | Go | 2,550 | 100% | | 440 ms |
+| 2 CPU, 2 GB | Java JIT jar, fair one-permit | 2,252 | 88% | 434 ms | 560 ms |
+| 2 CPU, 2 GB | Node (single process) | 569 | 22% | 1.70 s | 1.9 s |
+
+On the light endpoint in `../test-size` Deno sat within 2% of Go on one core; on this page load
+Node is at a quarter, with the same shape as the native image's story: a fast runtime headline,
+a per-request cost in the layers above (Fastify routing, TypeBox validation, Drizzle, a
+pure-JavaScript Postgres driver, and twice the bytes) that dominates it. A fair two-CPU row
+would need cluster mode and would land near 2 × 456.
+
+## Final table (2 CPUs, 2 GB, 60 s warm-up, same rig and day)
+
+| server | req/s | share of Go | p99 | memory after run |
+|---|---:|---:|---:|---:|
+| Go 1.27 | 2,550 | 100% | 440 ms | 156 MB |
+| Java 25 JIT, Vert.x, unfair gate per checkout (committed) | 2,373 | 93% | 960 ms | 370 MB heap |
+| Java 25 JIT, Vert.x, fair gate, one crossing per request | 2,252 | 88% | 560 ms | ~420 MB |
+| Java 25 JIT, Vert.x, unfair, one crossing | 2,440 | 96% | 824 ms | |
+| Java 25 JIT, Javalin (round 1 shape) | 2,387 | 94% | 843 ms | |
+| Java native `-O2` | 1,132 | 44% | 995 ms | |
+| Node 24, TypeScript platform (one process, 86 KB responses) | 569 | 22% | 1.9 s | |
+
+At one CPU: Go 1,869; Java JIT 1,201–1,282 (64–69%); Java native 602; Node 456.

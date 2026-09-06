@@ -51,6 +51,10 @@ images() {
   cp /tmp/fc-server-linux "$here/fc-server-linux"
   docker build -q -t bench-real-java -f "$here/Dockerfile.java" "$here" >/dev/null
   docker build -q -t bench-real-go -f "$here/Dockerfile.go" "$here" >/dev/null
+  if [ -f "$root/server/target/fc-server" ] && file "$root/server/target/fc-server" | grep -q ELF; then
+    cp "$root/server/target/fc-server" "$here/fc-server-native"
+    docker build -q -t bench-real-native -f "$here/Dockerfile.native" "$here" >/dev/null && echo "   + bench-real-native (GraalVM native image)"
+  fi
   echo "prepared: postgres at $(pg_ip), images bench-real-java / bench-real-go"
 }
 
@@ -58,20 +62,28 @@ run() {
   local label=$1 image=$2 cpuargs=$3; shift 3
   local name="bench-real-$label"
   docker rm -f "$name" >/dev/null 2>&1
-  local envs=(-e FC_DATABASE_URL="postgresql://pg:pg@$(pg_ip):5432/fc" -e FC_API_PORT=8080 -e FC_METRICS_PORT=9090
+  local envs=()
+  if [ "${RAW_ENV:-0}" = 1 ]; then
+    # A non-FC server (the TypeScript platform on Node): every variable comes from the args.
+    envs=()
+  else
+  envs=(-e FC_DATABASE_URL="postgresql://pg:pg@$(pg_ip):5432/fc" -e FC_API_PORT=8080 -e FC_METRICS_PORT=9090
               -e FC_PLATFORM_ENABLED=true -e FC_ROUTER_ENABLED=false -e FC_SCHEDULER_ENABLED=false
               -e FC_SCHEDULED_JOB_ENABLED=false -e FC_STREAM_PROCESSOR_ENABLED=false -e FC_OUTBOX_ENABLED=false
               -e FC_MCP_ENABLED=false -e FC_STANDBY_ENABLED=false -e FC_RATE_LIMIT_DISABLE=1)
+  fi
   for kv in "$@"; do envs+=(-e "$kv"); done
   # A fixed address on the rig's own network, so the issuer/base URL is known before start.
   local ip=$SERVER_IP t0; t0=$(python3 -c 'import time;print(time.time())')
-  docker run -d --name "$name" --network $NET --ip $ip $cpuargs "${envs[@]}" \
-      -e FC_JWT_ISSUER="http://$ip:8080" -e FC_EXTERNAL_BASE_URL="http://$ip:8080" -e FC_WEBAUTHN_ORIGINS="http://$ip:8080" "$image" >/dev/null
+  local issuer=(-e FC_JWT_ISSUER="http://$ip:8080" -e FC_EXTERNAL_BASE_URL="http://$ip:8080" -e FC_WEBAUTHN_ORIGINS="http://$ip:8080")
+  [ "${RAW_ENV:-0}" = 1 ] && issuer=()
+  # ${arr[@]+"${arr[@]}"}: an empty array is "unbound" under set -u on macOS's bash 3.2.
+  docker run -d --name "$name" --network $NET --ip $ip $cpuargs ${envs[@]+"${envs[@]}"} ${issuer[@]+"${issuer[@]}"} "$image" >/dev/null
   local probe="docker run --rm --network $NET curlimages/curl:8.10.1 -s"
   for i in $(seq 1 300); do $probe -o /dev/null -w '%{http_code}' "http://$ip:8080/health" 2>/dev/null | grep -q 200 && break; sleep 0.2; done
   local startup; startup=$(python3 -c "import time;print(round(time.time()-$t0,2))")
   local cookie; cookie=$($probe -D - -o /dev/null -H 'Content-Type: application/json' \
-      -d "{\"email\":\"$ADMIN\",\"password\":\"$PASS\",\"rememberMe\":false}" "http://$ip:8080/auth/login" \
+      -d "${LOGIN_BODY:-{\"email\":\"$ADMIN\",\"password\":\"$PASS\",\"rememberMe\":false\}}" "http://$ip:8080${LOGIN_PATH:-/auth/login}" \
       | tr -d '\r' | awk -F': ' 'tolower($1)=="set-cookie" && $2 ~ /^fc_session=/ {split($2,a,";"); print a[1]}' | head -1)
   [ -n "$cookie" ] || { echo "login failed on $label"; docker logs "$name" 2>&1 | tail -20; return 1; }
   local endpoint=${ENDPOINT:-/api/event-types}
