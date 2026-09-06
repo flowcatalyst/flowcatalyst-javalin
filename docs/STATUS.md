@@ -141,10 +141,12 @@ written against GitHub's runners but unproven, since this repo has no
 remote yet; the first push is the owner's. **What is left of Phase 5 is
 `docs/spec/cutover.md`**: the staging rehearsal, which needs an environment
 only the owner can provide.
-Owner items are in `docs/backlog.md` (the OpenAPI documents, `$schema`,
-introspection `client_id`, the WebAuthn option defaults, platform-scoped
-scheduled jobs, `clientScoped` on event-type create, the brand spelling,
-pagination, TypeBox as the contract source after cutover).
+Owner items: the twenty questions of 2026-09-06 are ruled
+(`docs/rulings-2026-09-06.md`); what is still the owner's is the staging
+rehearsal, the first CI run on a GitHub remote, the Go hand-off
+(`docs/go-mirror/2026-09-06-go-fix-list.md` §G), and the two shared
+defects in `docs/backlog.md` tail (an over-long audit `entityId` is a 500
+on both sides; TypeBox and pagination wait for after cutover).
 
 **Sonnet, honestly, across eleven ports:** reliable when the brief names
 the template class, the exact routes and the mutants to run; two agents
