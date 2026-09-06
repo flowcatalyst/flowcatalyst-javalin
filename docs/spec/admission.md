@@ -149,3 +149,24 @@ reserved lane in `Server.health`. Mutants killed: gate off (rows 1+4), timed acq
 guard removed (row 5), release on every close (row 6), permit released before the
 handler (row 7). Row 8 (deadline) is Phase 2. Not yet done: the background-worker
 nested-checkout audit (§1), `docs/spec/cutover.md` deployment rule (§5).
+
+## 9. Request-level admission (owner design 2026-09-06, landed; replaces §2's mechanism on Vert.x)
+
+Measured in `bench/real/RESULTS.md` rounds 4–12: the pool gate's *waiting* is the tail, and
+every semaphore shape trades throughput for ordering. The owner's shape gets both: **per group,
+a FIFO queue and N long-lived virtual-thread workers** (`io.flowcatalyst.http.RequestWorkers`).
+The Vert.x loop pushes each parsed request; a worker pops it, runs the whole seam chain, hands
+the buffered response back to the loop, and pops the next. Sizes are derived: the main pool is
+the gate's ordinary permits (each worker holds at most one connection, so the gate — kept, unfair,
+per checkout — never waits on the request path); `LOGIN` and `OIDC` are the processor count;
+`DISPATCH` has its own pool so its customer waits never occupy a main-group slot. **Routes that
+never touch the database run unbounded** (`Group.NO_DB`, declared at registration: the SPA, the
+OpenAPI documents, the router's in-memory API, the 404 and failure paths) — nothing to queue
+for. Result at two CPUs: 98% of Go's throughput with Go's spread (round 12). On the Javalin
+adapter nothing changes (its own thread model); `Budgets` still applies there.
+
+Rules that follow: a bounded pool plus a request that calls back into the same listener is a
+deadlock — the in-process router→platform call in fcdev must not go through the main pool;
+queue depth is memory (a parked request holds its parsed body), and a bound on it is where
+tier 3's immediate `503` arrives. Gauges: `fc_request_workers_busy{pool}`,
+`fc_request_queue_depth{pool}`.

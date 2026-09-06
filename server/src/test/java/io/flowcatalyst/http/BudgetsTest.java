@@ -57,7 +57,10 @@ class BudgetsTest {
         var budgets = Budgets.of(Map.of(Group.LOGIN, 1));
         var inHandler = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        try (TestHttp http = TestHttp.routes(budgets, routes -> routes.in(Group.LOGIN).get("/login", ctx -> {
+        // The Javalin adapter enforces Budgets with a semaphore around the handler; the
+        // Vert.x adapter enforces the same group budget as a worker pool
+        // (RequestWorkersTest), so this pins the Javalin mechanism explicitly.
+        try (TestHttp http = TestHttp.routes(TestHttp.Adapter.JAVALIN, budgets, routes -> routes.in(Group.LOGIN).get("/login", ctx -> {
             inHandler.countDown();
             release.await();
             ctx.status(200).result("ok");

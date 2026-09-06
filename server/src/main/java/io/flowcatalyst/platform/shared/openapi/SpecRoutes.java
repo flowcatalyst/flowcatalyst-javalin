@@ -46,10 +46,10 @@ public final class SpecRoutes {
     }
 
     public void register(Routes routes) {
-        routes.get("/api/openapi.json", ctx -> ctx.contentType("application/json").result(json));
-        routes.get("/api/openapi.yaml", ctx -> ctx.contentType("application/yaml").result(yaml));
-        routes.get("/q/openapi", ctx -> ctx.contentType("application/json").result(json));
-        routes.get("/swagger-ui", ctx -> ctx.contentType("text/html; charset=utf-8").result(SWAGGER_UI_HTML));
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/api/openapi.json", ctx -> ctx.contentType("application/json").result(json));
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/api/openapi.yaml", ctx -> ctx.contentType("application/yaml").result(yaml));
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/q/openapi", ctx -> ctx.contentType("application/json").result(json));
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/swagger-ui", ctx -> ctx.contentType("text/html; charset=utf-8").result(SWAGGER_UI_HTML));
     }
 
     private static byte[] toYaml(Lockfile lockfile) {

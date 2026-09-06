@@ -72,6 +72,12 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
         return reserved;
     }
 
+    /// Permits for ordinary callers: `poolSize − reserved`. The request workers'
+    /// main pool is sized to this so a worker never waits at the gate.
+    public int ordinaryPermits() {
+        return poolSize - reserved;
+    }
+
     /// The Hikari pool underneath, for credential rotation
     /// (`DbSecretRefresher`); `null` when built over a plain [DataSource].
     public HikariDataSource hikari() {

@@ -89,8 +89,9 @@ public final class Frontend {
     /// route is registered (Javalin 7 registers routes inside
     /// `Javalin.create(config -> …)`).
     public void register(Routes routes) {
-        routes.get("/", this::serve);
-        routes.get("/<path>", this::serve);
+        // Classpath assets only, never the database: unbounded (Group.NO_DB).
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/", this::serve);
+        routes.in(io.flowcatalyst.http.Group.NO_DB).get("/<path>", this::serve);
     }
 
     void serve(Exchange ctx) throws IOException {

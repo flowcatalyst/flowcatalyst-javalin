@@ -6,6 +6,7 @@ import io.flowcatalyst.http.ExceptionMappers;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Handler;
 import io.flowcatalyst.http.HttpException;
+import io.flowcatalyst.http.RequestWorkers;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.vertx.core.Context;
@@ -47,18 +48,23 @@ public final class VertxListener implements AutoCloseable {
     /// (30 s); `DISPATCH` routes get `dispatchDeadline` (130 s) — both derived,
     /// neither configurable (admission.md §4).
     public record Options(String host, int port, boolean h2c, Budgets budgets, Duration deadline,
-                          Duration dispatchDeadline, Duration shutdownGrace) {
+                          Duration dispatchDeadline, Duration shutdownGrace, RequestWorkers workers) {
         public static Options local(int port, Budgets budgets) {
-            return new Options("127.0.0.1", port, true, budgets, Duration.ofSeconds(30), Duration.ofSeconds(130), Duration.ofSeconds(5));
+            return local(port, budgets, RequestWorkers.derived(io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2));
+        }
+
+        public static Options local(int port, Budgets budgets, RequestWorkers workers) {
+            return new Options("127.0.0.1", port, true, budgets, Duration.ofSeconds(30), Duration.ofSeconds(130), Duration.ofSeconds(5), workers);
         }
 
         public Options withDeadline(Duration d) {
-            return new Options(host, port, h2c, budgets, d, d, shutdownGrace);
+            return new Options(host, port, h2c, budgets, d, d, shutdownGrace, workers);
         }
     }
 
     private final Vertx vertx;
     private final HttpServer server;
+    /// Kept for the failure path only; requests run on [RequestWorkers].
     private final ExecutorService handlers;
     private final VertxRoutes routes;
     private final Options options;
@@ -130,12 +136,12 @@ public final class VertxListener implements AutoCloseable {
                 else listener[0].dispatch(rc, g.group(), g.handler());
             });
         }
-        router.route().last().handler(rc -> listener[0].dispatch(rc, null, NOT_FOUND));
+        router.route().last().handler(rc -> listener[0].dispatch(rc, Group.NO_DB, NOT_FOUND));
         router.route().failureHandler(rc -> {
             int status = rc.statusCode() > 0 ? rc.statusCode() : 500;
             Throwable failure = rc.failure();
             String message = failure != null && failure.getMessage() != null ? failure.getMessage() : "";
-            listener[0].dispatch(rc, null, x -> {
+            listener[0].dispatch(rc, Group.NO_DB, x -> {
                 throw new HttpException(status, message);
             });
         });
@@ -166,6 +172,10 @@ public final class VertxListener implements AutoCloseable {
         return options.budgets();
     }
 
+    public RequestWorkers workers() {
+        return options.workers();
+    }
+
     /// Runs on the event loop: reads the body (capped at Javalin's
     /// `maxRequestSize`, the excess drained and remembered as "oversized" so the
     /// body accessors answer 413 lazily), captures the request's context and
@@ -177,7 +187,7 @@ public final class VertxListener implements AutoCloseable {
             // Re-dispatched (failure handler after the body was already read).
             byte[] bytes = rc.get(BODY_KEY);
             boolean oversized = Boolean.TRUE.equals(rc.get(OVERSIZED_KEY));
-            handlers.execute(() -> runChain(rc, requestContext, group, handler, bytes, oversized));
+            options.workers().submit(group, () -> runChain(rc, requestContext, group, handler, bytes, oversized));
             return;
         }
         String contentType = request.getHeader("Content-Type");
@@ -202,7 +212,8 @@ public final class VertxListener implements AutoCloseable {
             byte[] bytes = buffer.getBytes();
             rc.put(BODY_KEY, bytes);
             rc.put(OVERSIZED_KEY, oversized[0]);
-            handlers.execute(() -> runChain(rc, requestContext, group, handler, bytes, oversized[0]));
+            // Request-level admission (RequestWorkers): FIFO into the group's worker pool.
+            options.workers().submit(group, () -> runChain(rc, requestContext, group, handler, bytes, oversized[0]));
         });
     }
 
@@ -237,9 +248,7 @@ public final class VertxListener implements AutoCloseable {
                 if (!finished.get()) me.interrupt();
             });
         });
-        Budgets.Permit permit = null;
         try {
-            permit = options.budgets().acquire(group);
             ScopedValue.where(Admission.CURRENT, admission).call(() -> {
                 chain(x, handler);
                 return null;
@@ -250,7 +259,6 @@ public final class VertxListener implements AutoCloseable {
         } finally {
             finished.set(true);
             vertx.cancelTimer(timer);
-            if (permit != null) permit.close();
             Thread.interrupted();
         }
         if (deadlineFired.get()) x.override(503, DEADLINE_BODY);
@@ -303,6 +311,7 @@ public final class VertxListener implements AutoCloseable {
             LOG.warn("graceful shutdown of the Vert.x listener did not complete cleanly", e);
         }
         handlers.shutdown();
+        options.workers().close();
         try {
             vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {

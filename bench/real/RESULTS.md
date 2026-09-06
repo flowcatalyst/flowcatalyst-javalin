@@ -272,3 +272,31 @@ would need cluster mode and would land near 2 × 456.
 | Node 24, TypeScript platform (one process, 86 KB responses) | 569 | 22% | 1.9 s | |
 
 At one CPU: Go 1,869; Java JIT 1,201–1,282 (64–69%); Java native 602; Node 456.
+
+## Round 12 — request-level admission (owner design): FIFO queue + N worker virtual threads per group
+
+The gate leaves the hot path. Per group, the loop pushes each parsed request onto a FIFO
+queue and N long-lived virtual threads pop and run the whole chain; the main group's N is the
+pool's ordinary permits (30), so each worker holds at most one connection and never waits;
+`LOGIN`/`OIDC` = processor count, `DISPATCH` its own pool; routes that never touch the database
+(`Group.NO_DB`: SPA, OpenAPI documents, router API, 404 path) run unbounded, one virtual thread
+each, never behind a database-bound request. Mutants killed: one worker over the size (three
+tests), `NO_DB` routed through the pool (two tests).
+
+| CPU / memory | server | req/s | share of Go | mean | p50 | p90 | p99 | max | σ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 CPU quota, 2 GB | Go | 2,550 | 100% | 385 ms | 393 | 411 | 440 ms | 506 ms | 33 ms |
+| 2 CPU quota, 2 GB | Vert.x, unfair gate per checkout (committed before) | 2,373 | 93% | 410 ms | 334 | 788 | 960 ms | 1.87 s | 282 ms |
+| 2 CPU quota, 2 GB | Vert.x, fair gate, one crossing | 2,252 | 88% | 434 ms | 434 | 460 | 560 ms | 683 ms | 51 ms |
+| 2 CPU quota, 2 GB | **Vert.x, request workers** | **2,496** | **98%** | 392 ms | 385 | 438 | **556 ms** | 771 ms | 52 ms |
+| 2 pinned, 2 GB | Go | 2,425 | 100% | 403 ms | 407 | 441 | 475 ms | 501 ms | 34 ms |
+| 2 pinned, 2 GB | Vert.x, request workers | 2,403 | 99% | 407 ms | 405 | 453 | 565 ms | 1.44 s | 52 ms |
+| 1 CPU, 1 GB | Go | 1,869 | 100% | | | | 601 ms | | |
+| 1 CPU, 1 GB | Vert.x, request workers | 1,232 | 66% | 782 ms | 736 | 951 | 1.32 s | 1.64 s | 157 ms |
+
+The best of both measured semaphore variants at once: the unfair gate's throughput (a worker
+that finishes is already running when it takes the next request, so the connection never idles
+behind a wake) and the fair gate's ordering (the queue is first-in first-out). The plan §8 line
+is met on throughput at two CPUs (98%); the p99 sits 116 ms over Go, where the floor is 400 ms
+of queueing at 1,000 connections and the "within 15 ms" line was written for the hello endpoint.
+One CPU is unchanged: the JIT and the collector share the core with the requests.

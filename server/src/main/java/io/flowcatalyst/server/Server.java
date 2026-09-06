@@ -585,18 +585,21 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 // "guard, routes, page" is worth the ordering.
                 //
                 // TODO(port): the /metrics alias under the router prefix.
-                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(routes,
+                // The router's API and dashboard read the router's in-memory state, never
+                // the database: unbounded (Group.NO_DB).
+                var routerRoutes = routes.in(io.flowcatalyst.http.Group.NO_DB);
+                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(routerRoutes,
                         new io.flowcatalyst.router.api.auth.BasicAuthFilter(
                                 env.routerAuthMode(), env.routerAuthUser(), env.routerAuthPass(),
                                 env.routerHttpPrefix()));
-                io.flowcatalyst.router.api.RouterApi.register(routes,
+                io.flowcatalyst.router.api.RouterApi.register(routerRoutes,
                         new io.flowcatalyst.router.api.RouterApi.State(
                                 router.manager(), router.tracker(), router.warnings(), router.breakers(),
                                 router.election(), router.electionConfig(), Version.current(),
                                 env.routerHttpPrefix(), null, router.poolMetrics(),
                                 router.traffic(), router.brokerStats(), router.server()));
                 io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
-                        routes, env.routerHttpPrefix());
+                        routerRoutes, env.routerHttpPrefix());
             }
             switch (spa) {
                 case Spa.Embedded(var frontend) -> frontend.register(routes);
@@ -607,8 +610,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         };
         return switch (env.httpListener()) {
             case VERTX -> {
+                int mainWorkers = switch (mode) {
+                    case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
+                    case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
+                    default -> io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2;
+                };
+                var workers = io.flowcatalyst.http.RequestWorkers.derived(mainWorkers);
+                registry.register(workers.collector());
                 var prepared = VertxListener.prepare(new VertxListener.Options("0.0.0.0", env.apiPort(), true, Budgets.derived(),
-                        java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE), configure);
+                        java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE, workers), configure);
                 ApiStarter starter = port -> {
                     var listener = prepared.listen();
                     return new ApiListener() {

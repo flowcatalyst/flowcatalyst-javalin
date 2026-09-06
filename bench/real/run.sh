@@ -62,6 +62,8 @@ run() {
   local label=$1 image=$2 cpuargs=$3; shift 3
   local name="bench-real-$label"
   docker rm -f "$name" >/dev/null 2>&1
+  # whatever still holds the rig's server address goes too (a failed earlier run)
+  docker ps -aq --filter "network=$NET" | while read c; do [ "$(docker inspect -f '{{.Name}}' $c)" = "/$PG" ] || docker rm -f $c >/dev/null 2>&1; done
   local envs=()
   if [ "${RAW_ENV:-0}" = 1 ]; then
     # A non-FC server (the TypeScript platform on Node): every variable comes from the args.
@@ -82,10 +84,16 @@ run() {
   local probe="docker run --rm --network $NET curlimages/curl:8.10.1 -s"
   for i in $(seq 1 300); do $probe -o /dev/null -w '%{http_code}' "http://$ip:8080/health" 2>/dev/null | grep -q 200 && break; sleep 0.2; done
   local startup; startup=$(python3 -c "import time;print(round(time.time()-$t0,2))")
-  local cookie; cookie=$($probe -D - -o /dev/null -H 'Content-Type: application/json' \
-      -d "${LOGIN_BODY:-{\"email\":\"$ADMIN\",\"password\":\"$PASS\",\"rememberMe\":false\}}" "http://$ip:8080${LOGIN_PATH:-/auth/login}" \
-      | tr -d '\r' | awk -F': ' 'tolower($1)=="set-cookie" && $2 ~ /^fc_session=/ {split($2,a,";"); print a[1]}' | head -1)
-  [ -n "$cookie" ] || { echo "login failed on $label"; docker logs "$name" 2>&1 | tail -20; return 1; }
+  local cookie="" body="${LOGIN_BODY:-}"
+  [ -n "$body" ] || body="{\"email\":\"$ADMIN\",\"password\":\"$PASS\",\"rememberMe\":false}"
+  for attempt in 1 2 3 4 5; do
+    cookie=$($probe -m 15 -D - -o /dev/null -H 'Content-Type: application/json' \
+        -d "$body" "http://$ip:8080${LOGIN_PATH:-/auth/login}" \
+        | tr -d '\r' | awk -F': ' 'tolower($1)=="set-cookie" && $2 ~ /^fc_session=/ {split($2,a,";"); print a[1]}' | head -1)
+    [ -n "$cookie" ] && break
+    sleep 1
+  done
+  [ -n "$cookie" ] || { echo "login failed on $label"; docker logs "$name" 2>&1 | tail -20; docker rm -f "$name" >/dev/null 2>&1; return 1; }
   local endpoint=${ENDPOINT:-/api/event-types}
   local first; first=$($probe -o /dev/null -w '%{http_code}' -H "Cookie: $cookie" "http://$ip:8080$endpoint")
   mem() { docker stats --no-stream --format '{{.MemUsage}}' "$name" | awk '{print $1}'; }
