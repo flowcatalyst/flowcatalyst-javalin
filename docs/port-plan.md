@@ -196,8 +196,11 @@ Java work the rulings created, plus one owner requirement, in build order:
    dispatcher reading them; audit-log `principalId` required~~ **done 2026-09-06
    (night), matching Go `ece54fe`; the outbox `HttpDispatcher` already read
    `results[]` per item.**
-4. #13 principal mutations gate before load (the sub-route scoping is
-   already done — `PrincipalApiTest.rolesSubRouteIsNowClientScoped`).
+4. ~~#13 principal mutations gate before load~~ **already the case (PR-4,
+   2026-08-27): the coarse permission is checked first and an out-of-scope
+   id answers the same 404 as a missing one — `PrincipalApiTest` "PR-4
+   closes the role-mutation existence oracle"; the sub-routes are scoped
+   too. Go mirror only (fix list G6).**
 5. #15 audit row on the service-account token mint.
 6. #20 native fcdev (`-Pnative` profile, picocli reflection config).
 7. **HTTP/2 + HTTP/3 on the listeners** (owner, 2026-09-06; `docs/backlog.md`
