@@ -188,6 +188,180 @@ class NatsQueueTest {
     }
 
     @Test
+    @DisplayName("close stops the standing listener")
+    void closeStopsTheStandingConsumer() {
+        // Pins §7.4's listener model (owner ruling 2026-09-07: NATS must be
+        // a genuine subscription, not a poller): [NatsQueue] holds one
+        // standing `MessageConsumer` for the queue's whole life, so closing
+        // the QUEUE must be what finally stops it — nothing else in
+        // NatsQueue does.
+        var consumer = new FakeMessageConsumer();
+        var queue = new NatsQueue("nats-test", NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C"),
+                consumer);
+
+        queue.close();
+
+        assertThat(consumer.closeCalls).isOne();
+
+        // Idempotent close must not close it a second time.
+        queue.close();
+        assertThat(consumer.closeCalls).isOne();
+    }
+
+    // ── poll: a genuine listener, not a poller ────────────────────────────
+    //
+    // `docs/spec/router.md` §7.4 (owner ruling 2026-09-07): the standing
+    // consumer's handler pushes each message into [NatsQueue#buffer], a
+    // `BlockingQueue` bounded at `max-messages`; [NatsQueue#poll] is an
+    // untimed [java.util.concurrent.BlockingQueue#take] for the first
+    // message plus a [java.util.concurrent.BlockingQueue#drainTo] for the
+    // rest. These tests seed/read `buffer` directly (CONVENTIONS §6) rather
+    // than faking the NATS client's `consume` machinery — the machinery
+    // itself (a continuously refilled server-side pull, one message
+    // delivered at a time to the handler) is a live-broker fact, not
+    // reachable without a real connection; what IS reachable, and what
+    // throughput depends on, is this class's own buffering and blocking
+    // logic.
+
+    private static NatsQueue queueWithMaxMessages(int maxMessages) {
+        return new NatsQueue("nats-test",
+                NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C&max-messages=" + maxMessages),
+                new FakeMessageConsumer());
+    }
+
+    @Test
+    @DisplayName("already-buffered messages are returned in order, up to max, without waiting")
+    void bufferedMessagesReturnedInOrderUpToMaxWithoutWaiting() throws InterruptedException {
+        var queue = queueWithMaxMessages(10);
+        var termOrder = new java.util.ArrayList<String>();
+        var m1 = new FakeJetStreamMessage(new byte[0], "m1", termOrder);
+        var m2 = new FakeJetStreamMessage(new byte[0], "m2", termOrder);
+        var m3 = new FakeJetStreamMessage(new byte[0], "m3", termOrder);
+        var m4 = new FakeJetStreamMessage(new byte[0], "m4", termOrder);
+        var m5 = new FakeJetStreamMessage(new byte[0], "m5", termOrder);
+        queue.buffer.put(m1);
+        queue.buffer.put(m2);
+        queue.buffer.put(m3);
+        queue.buffer.put(m4);
+        queue.buffer.put(m5);
+
+        long startNanos = System.nanoTime();
+        var result = queue.poll(3);
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+
+        assertThat(elapsedMs).isLessThan(100);
+        // Fake messages have no readable JetStream metadata
+        // (`FakeJetStreamMessage`'s class doc), so every one classifies as
+        // Malformed and is termed rather than delivered — classification
+        // itself is not what this test is about (see
+        // `malformedVerdictTermsTheMessage`). `termOrder` is how it proves
+        // poll read exactly the first 3, in order, and left the rest — the
+        // `delivered` list's own order is not usable here since it stays
+        // empty for a Malformed batch.
+        assertThat(result).isEqualTo(PollResult.empty());
+        assertThat(termOrder).containsExactly("m1", "m2", "m3");
+        assertThat(queue.buffer).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("poll on an empty buffer blocks until a message is handed in, then returns promptly")
+    void pollOnEmptyBufferBlocksUntilMessageArrives() throws InterruptedException {
+        var queue = queueWithMaxMessages(10);
+        var msg = new FakeJetStreamMessage(new byte[0]);
+        var pollReturned = new java.util.concurrent.CountDownLatch(1);
+        var poller = new Thread(() -> {
+            try {
+                queue.poll(10);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                pollReturned.countDown();
+            }
+        });
+        poller.start();
+        try {
+            // Give the poller time to genuinely park in `buffer.take()`.
+            Thread.sleep(150);
+            assertThat(pollReturned.getCount()).isEqualTo(1);
+
+            queue.buffer.put(msg);
+            boolean completed = pollReturned.await(300, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+            assertThat(completed).isTrue();
+        } finally {
+            poller.interrupt();
+            poller.join(1000);
+        }
+    }
+
+    @Test
+    @DisplayName("close while poll is blocked unblocks it promptly")
+    void closeWhileBlockedUnblocksPollPromptly() throws InterruptedException {
+        var queue = queueWithMaxMessages(10);
+        var pollReturned = new java.util.concurrent.CountDownLatch(1);
+        var poller = new Thread(() -> {
+            try {
+                queue.poll(10);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                pollReturned.countDown();
+            }
+        });
+        poller.start();
+        try {
+            Thread.sleep(150);
+            assertThat(pollReturned.getCount()).isEqualTo(1);
+
+            long startNanos = System.nanoTime();
+            queue.close();
+            boolean completed = pollReturned.await(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+
+            assertThat(completed).isTrue();
+            assertThat(elapsedMs).isLessThan(500);
+        } finally {
+            poller.join(1000);
+        }
+    }
+
+    @Test
+    @DisplayName("the handler blocks when the buffer is full, and unblocks after a poll")
+    void handlerBlocksWhenBufferIsFullAndUnblocksAfterPoll() throws InterruptedException {
+        // max-messages=1: the smallest buffer that can actually be filled.
+        var queue = queueWithMaxMessages(1);
+        var m1 = new FakeJetStreamMessage(new byte[0]);
+        var m2 = new FakeJetStreamMessage(new byte[0]);
+        queue.buffer.put(m1); // fills the buffer (capacity 1)
+
+        var putCompleted = new java.util.concurrent.CountDownLatch(1);
+        var putter = new Thread(() -> {
+            try {
+                queue.buffer.put(m2); // must block: no room
+                putCompleted.countDown();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        putter.start();
+        try {
+            // The putter is standing in for the real MessageHandler
+            // (`NatsQueue`'s class doc: "put blocking... is the
+            // back-pressure"); it must still be blocked after a generous
+            // wait, or the buffer was not actually bounded.
+            boolean completedWhileFull = putCompleted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            assertThat(completedWhileFull).isFalse();
+
+            queue.poll(10); // frees the one slot
+
+            boolean completedAfterPoll = putCompleted.await(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+            assertThat(completedAfterPoll).isTrue();
+        } finally {
+            putter.join(1000);
+        }
+    }
+
+    @Test
     @DisplayName("close clears pending deliveries")
     void closeClearsPending() {
         var queue = testQueue();

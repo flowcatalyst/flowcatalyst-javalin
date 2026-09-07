@@ -265,3 +265,79 @@ equivalent per-pool/per-manager "capacity freed" signal (Go's pools already know
 `queueSize` on every enqueue/dequeue) that the poll loop selects/waits on instead of
 `time.Sleep(2 * time.Second)`, and drop the partial-batch `time.Sleep` entirely so a partial batch
 re-polls immediately like a full one.
+
+## G13 — NATS JetStream `Poll` (Java): three revisions chasing a throughput collapse under several queues; landed on a genuine listener (owner ruling 2026-09-07) instead of any poller shape. Go still polls (`Fetch`) and should move to the same listener shape (`Consumer.Consume`), not because it has been *proven* to collapse the same way, but because a poller is the wrong shape for NATS on both sides
+
+`docs/spec/router.md` §7.4 "Poll". Bench throughout: `bench/router`, NATS JetStream, 50,000
+messages, pool concurrency 256, one router.
+
+**Revision 1 — the per-poll ephemeral subscription.** Java's `NatsQueue.poll` (pre-fix) called
+`ConsumerContext#fetch`, which opens a **fresh** ephemeral core-NATS subscription for every poll
+and closes it the moment its own local wait budget elapses — set to *exactly* the `expiresIn`
+sent to the server (jnats `NatsFetchConsumer`, `maxWaitNanos = expiresInMillis`), with **no
+margin**, unlike Go's `jetstream.Consumer.Fetch` (`nats.go` v1.52.0 `jetstream/pull.go`,
+`pullConsumer.fetch`), which has the same per-call-ephemeral-subscription shape but waits
+`Expires + 1s` — a full second's margin — before giving up locally. Confirmed by instrumentation,
+not assumed: counting `msg.metaData().deliveredCount() > 1` per fetch on the pre-fix build
+(`QUEUES=4`, 1 CPU) found only 2 redeliveries in the whole run, narrowing rather than confirming
+the originally-suspected "lost until ack-wait redelivers" mechanism. Fix: bind **one**
+`JetStreamSubscription` for the life of the queue and call `subscription.fetch(batch, maxWait)`
+on it every poll instead. Result: `QUEUES=4` 374/s (133 s drain) → 6,930/s (6.0 s drain), an 18×
+improvement. `QUEUES=8` improved much less (1,361→1,385/s at 1 CPU) — a second, separate
+bottleneck, not this one, remained at higher queue counts.
+
+**Revision 2 — no-wait-first fetch.** A follow-up measurement (a per-second sink sampler) showed
+`QUEUES=8`'s shortfall was a **tail**, not a uniform slowdown: 49,954/50,000 delivered in the
+first few seconds, the last 46 straggling in over ~20 s — exactly `poll-timeout`. Root cause:
+`JetStreamSubscription#fetch` (jnats source, `NatsJetStreamPullSubscription#_fetch`) sends one
+pull request for the whole batch and keeps reading until it is either fully satisfied or its own
+`expiresIn` lapses — it never returns early just because *some* messages arrived, so a queue with
+fewer than `batch` messages left blocks for the full `poll-timeout` before handing back what it
+already has. Fix: two phases, neither waiting for a full batch — a `NoWait` pull read back with a
+short, network-RTT-bounded timeout, and only if that yields nothing, a genuine wait for the FIRST
+message followed by the same immediate drain of anything else already sent. This is closer to
+Go's documented behaviour for `Fetch` in general, though `internal/queue/nats/nats.go`'s own call
+site does not use the `NoWait`-first shape.
+
+**Revision 3 — a genuine listener, superseding both of the above (owner ruling 2026-09-07).**
+Both revisions above were still `NatsQueue` **polling** — issuing its own timed pull requests on
+a schedule of its own choosing. The owner ruling that landed on the Rust router's agent first,
+and applies here the same way: NATS must be a genuine subscription/listener; polling is an
+SQS/Postgres limitation (those brokers have no other shape to offer), not the design NATS itself
+calls for. `NatsQueue` now opens **one** standing `MessageConsumer`
+(`ConsumerContext#consume(ConsumeOptions, MessageHandler)`, `batchSize=max-messages`) for the
+queue's whole life: the NATS client keeps a pull request continuously outstanding and hands each
+message to a handler — `buffer.put(msg)`, a `BlockingQueue` bounded at `max-messages` — the
+moment it arrives, on the client's own delivery thread; `put` blocking when full **is** the
+back-pressure that stops the client asking for more. `poll(max)` is `buffer.take()` (untimed —
+free on a virtual thread) for the first message, then `drainTo` for the rest already buffered.
+There is no poll cycle left to time and no `expiresIn` to race, so revisions 1 and 2's defects
+cannot recur — the shape that caused both (`NatsQueue` issuing its own timed pull requests) no
+longer exists. `poll-timeout-ms` on the URI is parsed but unused for NATS now (documented on
+`NatsQueueUri`, kept as a parameter). Pinned without a live broker
+(`NatsQueueTest`, a hand-written `FakeMessageConsumer` plus direct seeding of the package-private
+`buffer`): already-buffered messages return in FIFO order, up to `max`, without waiting (<100 ms);
+an empty buffer blocks until a message is handed in, then returns promptly; `close()` while
+blocked unblocks within 500 ms; the buffer is bounded — a background thread simulating the
+handler blocks on `put` when full and unblocks after one `poll` (mutant: an unbounded buffer
+fails this test). Result (`bench/router`, pool concurrency 256): `QUEUES=1` 7,671/s (6.4 s),
+`QUEUES=4` 6,401/s (6.6 s), `QUEUES=8` at 2 CPU 3,959/s (13.3 s) — all clear the ≥3,500/s / <15 s
+bar with no tail. `QUEUES=8` at 1 CPU: 3,338/s, 15.08 s — a large improvement (was 1,361/s) but
+0.08 s over the bar; a per-second timeline shows the count stalling for several seconds around
+~47.4k/50k on **both** 1 and 2 CPU runs before catching up, a residual mechanism not root-caused
+here. Candidate not yet tested: `ConsumeOptions` was not given an explicit `expiresIn`, so its
+internal per-refill pull requests default to 30 s (`BaseConsumeOptions.DEFAULT_EXPIRES_IN_MILLIS`)
+— worth checking whether a shorter explicit value changes the stall, but not changed speculatively
+here (`feedback_no_tuning.md`: a knob is not owed to a problem that has not been diagnosed).
+
+**Go**, `internal/queue/nats/nats.go`, still calls `jetstream.Consumer.Fetch` in
+`Poll(ctx, max)` — a poller, the same shape Java just moved away from on the owner's explicit
+ruling that NATS should not be polled at all. Go's own client (`nats.go` v1.52.0
+`jetstream/consumer.go`) already has the listener-shaped equivalent: `Consumer.Consume(handler
+MessageHandler, opts ...PullConsumeOpt) (ConsumeContext, error)` — directly analogous to Java's
+`ConsumerContext#consume`. This is **not** filed as a confirmed throughput defect in Go — nobody
+has reproduced the collapse against Go's implementation, and revision 1's finding (Go's 1 s
+`Fetch` margin) means Go was likely never exposed to that specific window. It is filed because
+the owner ruling is about the *right shape for NATS*, independent of whether the wrong shape has
+yet been measured to misbehave on the Go side: recommended follow-up is `Consume` with a handler
+pushing into a bounded Go channel, `Poll` reading from that channel instead of calling `Fetch`.
