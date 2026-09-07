@@ -839,3 +839,29 @@ appears swapped. Six allow-list entries in `parity/expected-diffs.json` (`by-pri
 it. To retire them: construct the rollup event before the per-row events in the nine `Sync*`
 operations (the `TxScopedUnitOfWork.commitSync` write order is pinned and is not the lever —
 ids come from the events).
+
+## Session path per-request CPU: verify once, render once (owner: "document as a to-do, don't do it", 2026-09-07)
+
+`bench/real/RESULTS.md` round 14: on the 1 KB single-item endpoint at 1 CPU, Java spends
+321 µs of CPU per request (JIT) against Go's 153 µs, and the two largest buckets are the same in
+the JIT and native profiles — the RS256 verify of the session JWT (29–34%) and jOOQ rendering
+the three session-path queries from the AST on every request (~20%). Neither fix is a knob.
+
+1. **Verify a session token once.** A bounded verdict cache keyed by a hash of the token: fixed
+   number of slots, each entry expiring at the token's own `exp`, least-recently-used eviction when
+   full, backed by Caffeine (already a dependency). A hit skips the RSA verify and the JWT parse;
+   revocation and the session's own DB checks are unchanged (they run after the verify today and
+   keep running). Memory: one slot ≈ token hash + claims record, ~1 KB; the slot count is derived,
+   not configured (e.g. the request-worker count × 1,000, i.e. the number of distinct sessions the
+   process can be serving at once), so a 1-CPU deployment holds ~30k entries ≈ 30 MB worst case.
+   The owner's questions to settle before building: fixed slots yes; LRU on full yes; whether the
+   cache should be per-process only (yes — it holds verdicts on tokens, not sessions, so nothing
+   to share). Expected gain: ~30% of the Java request, and the same verify is ~14% of Go's.
+2. **Render the session-path queries once.** The three queries `Authenticator` runs per request
+   (session lookup, principal, roles) are rendered by jOOQ from the AST on every call. Render them
+   once — jOOQ static SQL (`dsl.resultQuery(String, binds)` on a `Query` rendered at startup) or
+   plain JDBC on that path only — keeping the row mapping. Expected gain: ~20%.
+
+Together these are the gap between Java JIT and Go on this endpoint (48% → ~100% of Go's
+throughput at 1 CPU). Native `-O2` additionally pays 3× the JIT on the RSA verify (GraalVM CE has
+no Montgomery-multiply intrinsics on arm64), so item 1 matters most for the native binary.
