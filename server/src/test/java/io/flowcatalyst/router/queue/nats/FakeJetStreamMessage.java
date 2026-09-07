@@ -11,6 +11,7 @@ import io.nats.client.impl.NatsJetStreamMetaData;
 import io.nats.client.support.Status;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /// Hand-written stub of a JetStream [Message] (CONVENTIONS §7: no mocking
@@ -22,6 +23,15 @@ import java.util.concurrent.TimeoutException;
 final class FakeJetStreamMessage implements Message {
 
     private final byte[] data;
+    /// Nullable — set only by the constructor that names a `label` and a
+    /// shared `termOrder` list, for a test that needs to prove *ordering*
+    /// across several fakes (since these fakes' `metaData()` always throws,
+    /// every one of them classifies as Malformed and is termed rather than
+    /// delivered — `termOrder` is how such a test observes the order poll
+    /// actually processed them in, `delivered`'s own order being unusable
+    /// here).
+    private final String label;
+    private final List<String> termOrder;
 
     int ackCalls;
     int nakCalls;
@@ -32,7 +42,13 @@ final class FakeJetStreamMessage implements Message {
     RuntimeException failWith;
 
     FakeJetStreamMessage(byte[] data) {
+        this(data, null, null);
+    }
+
+    FakeJetStreamMessage(byte[] data, String label, List<String> termOrder) {
         this.data = data;
+        this.label = label;
+        this.termOrder = termOrder;
     }
 
     private void maybeFail() {
@@ -75,6 +91,9 @@ final class FakeJetStreamMessage implements Message {
     @Override
     public void term() {
         termCalls++;
+        if (termOrder != null) {
+            termOrder.add(label);
+        }
     }
 
     @Override
