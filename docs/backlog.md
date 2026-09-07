@@ -857,10 +857,17 @@ the three session-path queries from the AST on every request (~20%). Neither fix
    The owner's questions to settle before building: fixed slots yes; LRU on full yes; whether the
    cache should be per-process only (yes — it holds verdicts on tokens, not sessions, so nothing
    to share). Expected gain: ~30% of the Java request, and the same verify is ~14% of Go's.
-2. **Render the session-path queries once.** The three queries `Authenticator` runs per request
-   (session lookup, principal, roles) are rendered by jOOQ from the AST on every call. Render them
-   once — jOOQ static SQL (`dsl.resultQuery(String, binds)` on a `Query` rendered at startup) or
-   plain JDBC on that path only — keeping the row mapping. Expected gain: ~20%.
+2. **Render the session-path queries once, and fewer of them.** Measured with `pg_stat_user_tables`
+   (200 requests, counters settled — idle backends flush ~10 s late): the endpoint runs **eight
+   statements per request, identical on Java and Go** — five for the session/authorisation lookups
+   (`iam_principals`, `iam_principal_roles`, `iam_roles`, `iam_principal_application_access`,
+   `iam_client_access_grants`; `iam_role_permissions` is a 151-row seq scan every time) and three
+   for the item (`msg_event_types` and `msg_event_type_spec_versions`, 72-row seq scans each on
+   this tiny table). jOOQ renders all eight from the AST on every call. Render them once — jOOQ
+   static SQL (`dsl.resultQuery(String, binds)` on a `Query` rendered at startup) or plain JDBC on
+   that path only — keeping the row mapping; and fold the five authorisation lookups into one or
+   two joins, which is a Go mirror item too (`docs/go-mirror/`). Expected gain: ~20% from rendering
+   alone; the round-trip reduction helps every runtime equally.
 
 Together these are the gap between Java JIT and Go on this endpoint (48% → ~100% of Go's
 throughput at 1 CPU). Native `-O2` additionally pays 3× the JIT on the RSA verify (GraalVM CE has
