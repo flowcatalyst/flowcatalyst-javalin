@@ -326,6 +326,20 @@ wait_health() {
 # ---- run -------------------------------------------------------------------------------
 
 run() {
+  # One run at a time on the shared network: a run's start-up removes every bench-router-*
+  # container, so two concurrent runs destroy each other. mkdir is atomic; a lock whose owner
+  # is gone is stale and reclaimed.
+  local lock="$here/results/.run.lock"
+  while ! mkdir "$lock" 2>/dev/null; do
+    local owner; owner=$(cat "$lock/pid" 2>/dev/null || echo 0)
+    if [ "$owner" -gt 0 ] 2>/dev/null && kill -0 "$owner" 2>/dev/null; then
+      echo "another run (pid $owner) is in progress; waiting"; sleep 15
+    else
+      rm -rf "$lock"
+    fi
+  done
+  echo $$ > "$lock/pid"
+  trap 'rm -rf "$lock"' EXIT
   local label=$1 image=$2 cpuargs=$3; shift 3
   local sname="bench-router-srv-$label" kname="bench-router-sink"
 
