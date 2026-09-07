@@ -78,8 +78,21 @@ public final class ConsumerSupervisor {
     }
 
     /// Convenience for the supervising loop, which holds the [ConsumerLoop].
+    ///
+    /// Judged against [ConsumerLoop#lastAlive], not [ConsumerLoop#lastPoll]
+    /// alone: this method is what actually triggers a rebuild
+    /// (`RouterServer#restartStalledLoops`), so it must see everything that
+    /// makes a loop legitimately silent rather than stuck — a capacity pause
+    /// with no pool to feed, or (`docs/spec/router.md` §3.2, §5 row 47) a
+    /// `NatsQueue` poll still blocked on its continuous subscription while
+    /// the broker itself remains provably alive. Reading `lastPoll` here
+    /// directly would restart both, in a loop: NATS idling past the stall
+    /// threshold is exactly the shape that collapsed Go's throughput to
+    /// 1,100 deliveries/s under repeated "stalled consumer detected (poll is
+    /// hung)" restarts, and this consumer never even reaches the poll error
+    /// or empty-batch branches that would otherwise heartbeat it.
     public boolean stalled(ConsumerLoop loop) {
-        return stalled(loop.lastPoll());
+        return stalled(loop.lastAlive());
     }
 
     /// Records that a queue is polling again, so its next stall starts from

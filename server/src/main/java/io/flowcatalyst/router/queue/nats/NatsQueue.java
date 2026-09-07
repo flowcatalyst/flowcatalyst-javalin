@@ -22,7 +22,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -84,6 +86,24 @@ import java.util.concurrent.atomic.AtomicReference;
 /// until [#ack] or [#nack] resolves it — a redelivery after a dropped
 /// connection is simply a fresh entry under a fresh receipt.
 ///
+/// ### Liveness while [#poll] is blocked waiting on the broker
+///
+/// [#poll] parking untimed in [BlockingQueue#take] means an idle queue and a
+/// hung one look identical to anything that only watches whether `poll()`
+/// has *returned* — including
+/// [io.flowcatalyst.router.manager.ConsumerSupervisor]'s stall watchdog
+/// (`docs/spec/router.md` §3.2, §5 row 47). [#lastBrokerActivity] is this
+/// class's answer: it reports "now" for as long as [#connection] reads
+/// [Connection.Status#CONNECTED], falling back to [#lastActivity] (the last
+/// time a message actually reached this consumer) once it does not. jnats'
+/// simplified `consume` API exposes no positive per-heartbeat callback — only
+/// a negative `ErrorListener#heartbeatAlarm` for a *missed* one — so
+/// `CONNECTED` is read as the positive signal instead: the connection's own
+/// PING/PONG keepalive is independent of the JetStream idle-heartbeat and
+/// will flip the status the moment the broker is actually unreachable, which
+/// is exactly the case that must still be caught (a genuinely hung poll
+/// stays stalled once the connection itself drops).
+///
 /// ### Malformed payloads
 /// A message whose JetStream metadata can't be read, or whose body isn't
 /// valid [Message] JSON, is termed (`Message#term()`) rather than delivered:
@@ -102,6 +122,17 @@ public final class NatsQueue implements Consumer {
     private final NatsQueueUri config;
     private final Connection connection;
     private final MessageConsumer consumer;
+    private final Clock clock;
+
+    /// The last time a message actually reached this consumer — through the
+    /// standing [#consumer]'s handler in production, or through [#poll]
+    /// draining messages a test seeded directly into [#buffer]
+    /// (`NatsQueueTest`, CONVENTIONS §6). Seeded at construction so a
+    /// freshly connected queue is never judged stale before its first
+    /// delivery. Read by [#lastBrokerActivity] as the fallback for when
+    /// [#connection] is not [Connection.Status#CONNECTED] — see the class
+    /// doc's "Liveness while poll is blocked waiting on the broker".
+    private final AtomicReference<Instant> lastActivity;
 
     /// Messages the standing [#consumer]'s handler has already pulled off
     /// the wire, waiting for [#poll] to hand them to the router. Bounded at
@@ -144,8 +175,10 @@ public final class NatsQueue implements Consumer {
     public NatsQueue(String queueUri) {
         this.config = NatsQueueUri.parse(queueUri);
         this.identifier = config.identifier();
+        this.clock = Clock.systemUTC();
         this.buffer = new ArrayBlockingQueue<>(config.maxMessagesPerPoll());
-        Resources resources = connect(config, queueUri, buffer, stopped);
+        this.lastActivity = new AtomicReference<>(clock.instant());
+        Resources resources = connect(config, queueUri, buffer, stopped, clock, lastActivity);
         this.connection = resources.connection();
         this.consumer = resources.consumer();
     }
@@ -169,11 +202,20 @@ public final class NatsQueue implements Consumer {
     /// test can pin its capacity and blocking behaviour directly rather than
     /// against a fake standing in for it.
     NatsQueue(String identifier, NatsQueueUri config, MessageConsumer consumer) {
+        this(identifier, config, consumer, Clock.systemUTC());
+    }
+
+    /// Test-only seam, variant of the constructor above that also injects a
+    /// [Clock] — for pinning [#lastBrokerActivity]'s staleness threshold
+    /// without waiting out real time (`NatsQueueTest`).
+    NatsQueue(String identifier, NatsQueueUri config, MessageConsumer consumer, Clock clock) {
         this.identifier = identifier;
         this.config = config;
         this.connection = null;
         this.consumer = consumer;
+        this.clock = clock;
         this.buffer = new ArrayBlockingQueue<>(config.maxMessagesPerPoll());
+        this.lastActivity = new AtomicReference<>(clock.instant());
     }
 
     private record Resources(Connection connection, MessageConsumer consumer) {
@@ -222,7 +264,8 @@ public final class NatsQueue implements Consumer {
     }
 
     private static Resources connect(NatsQueueUri config, String queueUri,
-                                      BlockingQueue<io.nats.client.Message> buffer, AtomicBoolean stopped) {
+                                      BlockingQueue<io.nats.client.Message> buffer, AtomicBoolean stopped,
+                                      Clock clock, AtomicReference<Instant> lastActivity) {
         try {
             Options options = new Options.Builder()
                     .servers(config.servers().toArray(new String[0]))
@@ -246,6 +289,13 @@ public final class NatsQueue implements Consumer {
                         .batchSize(config.maxMessagesPerPoll())
                         .build();
                 MessageConsumer consumer = ctx.consume(consumeOptions, msg -> {
+                    // Real broker evidence, independent of whether poll() is
+                    // even blocked right now — see the class doc's "Liveness
+                    // while poll is blocked waiting on the broker". Recorded
+                    // before the (possibly blocking) put so a full buffer
+                    // does not delay the timestamp behind the back-pressure
+                    // wait.
+                    lastActivity.set(clock.instant());
                     // Dropped rather than risking an indefinite block on the
                     // client library's own delivery thread once this queue
                     // is closing: nothing will ever poll() it again, and an
@@ -341,6 +391,12 @@ public final class NatsQueue implements Consumer {
             waitingThread.set(null);
         }
 
+        // A message reached this consumer — real broker evidence for
+        // [#lastBrokerActivity]'s fallback, and (CONVENTIONS §6) the seam
+        // `NatsQueueTest` drives directly, since its fakes have no live
+        // handler to update [#lastActivity] the production way (`connect`'s
+        // consume handler, above).
+        lastActivity.set(clock.instant());
         List<io.nats.client.Message> messages = new ArrayList<>(batch);
         messages.add(first);
         buffer.drainTo(messages, batch - 1);
@@ -509,6 +565,24 @@ public final class NatsQueue implements Consumer {
             log.warn("nats: metrics query failed on queue {}", identifier, e);
             return Optional.empty();
         }
+    }
+
+    /// Independent evidence the broker is alive — see the class doc's
+    /// "Liveness while poll is blocked waiting on the broker"
+    /// (`docs/spec/router.md` §3.2, §5 row 47). While [#connection] reads
+    /// [Connection.Status#CONNECTED] this reports the current instant: the
+    /// connection's own keepalive is continuously re-proving liveness even
+    /// when no JetStream message has arrived in a while, which is the
+    /// ordinary shape of an idle queue, not a hung one. Once it is not
+    /// `CONNECTED` — or in the test seam, where [#connection] is always
+    /// `null` — this falls back to [#lastActivity], the last time a message
+    /// genuinely reached this consumer.
+    @Override
+    public Optional<Instant> lastBrokerActivity() {
+        if (connection != null && connection.getStatus() == Connection.Status.CONNECTED) {
+            return Optional.of(clock.instant());
+        }
+        return Optional.ofNullable(lastActivity.get());
     }
 
     /// Terminal. Clears [#pending] and [#buffer], stops the standing

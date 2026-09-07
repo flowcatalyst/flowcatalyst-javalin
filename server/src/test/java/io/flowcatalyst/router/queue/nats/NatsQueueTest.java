@@ -11,7 +11,11 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -553,4 +557,107 @@ class NatsQueueTest {
         assertThat(queue.pending).containsKey(verdict.receipt());
     }
 
+    // ── lastBrokerActivity (2026-09-07) ───────────────────────────────────
+    //
+    // `docs/spec/router.md` §3.2, §5 row 47: `poll()` now blocks untimed, so
+    // `ConsumerSupervisor`'s stall watchdog needs independent evidence the
+    // broker is alive rather than reading "poll has not returned" as a hang.
+    // The test seam has no live `Connection` ([NatsQueue#connection] is
+    // always `null` here), so [NatsQueue#lastBrokerActivity] falls straight
+    // through to [NatsQueue]'s own `lastActivity` tracking — the branch that
+    // actually needs a test, since the CONNECTED-status branch is only
+    // reachable with a live broker (see the class doc's "not testable
+    // without a live broker" list).
+
+    @Test
+    @DisplayName("lastBrokerActivity is seeded at construction, so a fresh queue is never judged stale before its first delivery")
+    void lastBrokerActivitySeededAtConstruction() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var queue = new NatsQueue("nats-test",
+                NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C"), new FakeMessageConsumer(), clock);
+
+        assertThat(queue.lastBrokerActivity()).hasValue(clock.instant());
+    }
+
+    @Test
+    @DisplayName("lastBrokerActivity advances to the moment poll delivers a message, and stays behind it until the next one")
+    void lastBrokerActivityAdvancesOnDeliveredMessage() throws InterruptedException {
+        // Mutant: stop recording activity in poll() → this test fails, since
+        // lastBrokerActivity() would stay pinned at the construction-time
+        // seed instead of advancing past it.
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var queue = new NatsQueue("nats-test",
+                NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C&max-messages=10"),
+                new FakeMessageConsumer(), clock);
+        var m1 = new FakeJetStreamMessage(new byte[0]);
+        queue.buffer.put(m1);
+
+        clock.advance(Duration.ofSeconds(30));
+        queue.poll(10);
+
+        assertThat(queue.lastBrokerActivity())
+                .as("a delivered message is fresh broker evidence at the instant it was observed")
+                .hasValue(clock.instant());
+
+        // A second poll with nothing buffered must NOT advance it again —
+        // otherwise a genuinely hung poll would look alive forever just by
+        // being asked.
+        var pollReturned = new java.util.concurrent.CountDownLatch(1);
+        var afterFirstDelivery = clock.instant();
+        var poller = new Thread(() -> {
+            try {
+                queue.poll(10);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                pollReturned.countDown();
+            }
+        });
+        poller.start();
+        try {
+            Thread.sleep(150); // parked in buffer.take(); nothing delivered
+            clock.advance(stallGap());
+
+            assertThat(queue.lastBrokerActivity())
+                    .as("no NEW delivery yet — activity must not have advanced past the last real one")
+                    .hasValue(afterFirstDelivery);
+        } finally {
+            poller.interrupt();
+            poller.join(1000);
+        }
+    }
+
+    /// A gap comfortably past any real stall threshold this suite cares
+    /// about, without depending on `ConsumerSupervisor`'s constant from a
+    /// different package.
+    private static Duration stallGap() {
+        return Duration.ofSeconds(90);
+    }
+
+    private static final class MutableClock extends Clock {
+        private volatile Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+    }
 }

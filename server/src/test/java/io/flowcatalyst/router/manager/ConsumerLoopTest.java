@@ -20,13 +20,18 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
@@ -353,6 +358,106 @@ class ConsumerLoopTest {
         assertThat(loop.lastAlive()).as("a capacity pause is alive, not stalled").isPresent();
     }
 
+    // ── Liveness while a poll is genuinely in progress (2026-09-07) ──────
+    //
+    // `docs/spec/router.md` §3.2, §5 row 47: `NatsQueue#poll` now blocks
+    // untimed on its continuous subscription's buffer, so an idle queue and
+    // a hung one both look like "poll has not returned in a while" to
+    // anything that only watches `lastPoll`. These pin the fix —
+    // `ConsumerLoop#lastAlive` consulting `Consumer#lastBrokerActivity`
+    // while a poll is in progress — at the level that actually decides a
+    // restart: `ConsumerSupervisor#stalled(ConsumerLoop)`, the method
+    // `RouterServer#restartStalledLoops` calls on every housekeeping tick.
+
+    @Test
+    @DisplayName("2026-09-07: a poll blocked on a live broker is alive on its broker-activity signal, and is not restarted")
+    void pollInProgressWithRecentBrokerActivityIsNotStalled() throws InterruptedException {
+        // Mutant: delete the `pollInProgress`/`lastBrokerActivity` branch
+        // from ConsumerLoop#lastAlive → this test fails. Without it,
+        // lastAlive() falls back to the FIRST poll's timestamp (seeded
+        // before the clock jump below) as the only heartbeat this consumer
+        // will ever report while its second poll stays blocked, so the
+        // supervisor reads it as 61s stale and restarts a consumer that is
+        // in fact still hearing from the broker.
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var localWarnings = new RecordingWarnings();
+        var localTracker = new InFlightTracker(mutableClock);
+        var localManager = new RouterManager(localTracker, localWarnings, mutableClock,
+                cfg -> new Pool(cfg, (msg, rf) -> MediationOutcome.Success.of(200), NO_OP_BROKER,
+                        PoolMetrics.NO_OP, mutableClock));
+        localManager.registerPool(RouterManager.DEFAULT_POOL,
+                new Pool(new Pool.Config(RouterManager.DEFAULT_POOL, 4, 0),
+                        (msg, rf) -> MediationOutcome.Success.of(200), NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        managers.add(localManager);
+        var brokerConsumer = new BlockingBrokerConsumer("queue-broker");
+        localManager.registerConsumer(brokerConsumer);
+        var loop = new ConsumerLoop(brokerConsumer, localManager, localWarnings, mutableClock);
+        var thread = Thread.ofVirtual().start(loop);
+        try {
+            await(() -> brokerConsumer.polls.get() >= 1); // seeds lastPoll at T0
+            await(() -> brokerConsumer.polls.get() >= 2); // now blocked in the SECOND poll
+
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+            // The broker is still delivering (or idle-heartbeating) right
+            // now, under the ADVANCED clock — even though this poll() CALL
+            // has itself been "running" far longer than the stall
+            // threshold.
+            brokerConsumer.setBrokerActivity(mutableClock.instant());
+
+            assertThat(loop.lastAlive()).hasValueSatisfying(last -> assertThat(Duration.between(last, mutableClock.instant()))
+                    .as("recent broker activity makes the loop's liveness recent, not 61s stale")
+                    .isLessThan(ConsumerSupervisor.STALL_THRESHOLD));
+
+            var supervisor = new ConsumerSupervisor(localWarnings, mutableClock, Duration.ofMillis(1));
+            assertThat(supervisor.stalled(loop))
+                    .as("a poll in progress with recent broker activity must not be flagged for restart").isFalse();
+        } finally {
+            brokerConsumer.release();
+            thread.interrupt();
+            thread.join(Duration.ofSeconds(2).toMillis());
+        }
+    }
+
+    @Test
+    @DisplayName("2026-09-07: a poll blocked with STALE broker activity is genuinely hung, and IS flagged for restart")
+    void pollInProgressWithStaleBrokerActivityIsStalled() throws InterruptedException {
+        // The companion case: broker-activity awareness must not blanket-
+        // suppress restarts. A poll that has been in progress past the
+        // threshold with NO fresher broker evidence than its own stale seed
+        // is exactly the "poll is hung" case the watchdog exists for.
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var localWarnings = new RecordingWarnings();
+        var localTracker = new InFlightTracker(mutableClock);
+        var localManager = new RouterManager(localTracker, localWarnings, mutableClock,
+                cfg -> new Pool(cfg, (msg, rf) -> MediationOutcome.Success.of(200), NO_OP_BROKER,
+                        PoolMetrics.NO_OP, mutableClock));
+        localManager.registerPool(RouterManager.DEFAULT_POOL,
+                new Pool(new Pool.Config(RouterManager.DEFAULT_POOL, 4, 0),
+                        (msg, rf) -> MediationOutcome.Success.of(200), NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        managers.add(localManager);
+        var brokerConsumer = new BlockingBrokerConsumer("queue-broker");
+        localManager.registerConsumer(brokerConsumer);
+        var loop = new ConsumerLoop(brokerConsumer, localManager, localWarnings, mutableClock);
+        var thread = Thread.ofVirtual().start(loop);
+        try {
+            await(() -> brokerConsumer.polls.get() >= 1);
+            await(() -> brokerConsumer.polls.get() >= 2); // now blocked in the second poll
+            var staleActivity = mutableClock.instant();
+            brokerConsumer.setBrokerActivity(staleActivity); // never refreshed again
+
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+
+            var supervisor = new ConsumerSupervisor(localWarnings, mutableClock, Duration.ofMillis(1));
+            assertThat(supervisor.stalled(loop))
+                    .as("no broker evidence newer than the stale seed — a genuinely hung poll must still restart")
+                    .isTrue();
+        } finally {
+            brokerConsumer.release();
+            thread.interrupt();
+            thread.join(Duration.ofSeconds(2).toMillis());
+        }
+    }
+
     // ── Fixtures ────────────────────────────────────────────────────────
 
     private static final Broker NO_OP_BROKER = new Broker() {
@@ -535,6 +640,98 @@ class ConsumerLoopTest {
         @Override
         public void raise(Severity severity, String category, String message) {
             raised.add(severity + " " + category + " " + message);
+        }
+    }
+
+    /// A consumer whose SECOND poll onward blocks until [#release] is
+    /// called — the shape a continuous-subscription backend takes while
+    /// genuinely idle (`NatsQueue`, `docs/spec/router.md` §3.2, §5 row 47)
+    /// — while independently reporting a controllable
+    /// [Consumer#lastBrokerActivity]. The FIRST poll returns empty
+    /// immediately, purely to seed [ConsumerLoop#lastPoll] with a timestamp
+    /// a test can then advance the clock past — the shape a poll that is
+    /// blocked right now, on an already-stale prior heartbeat, actually
+    /// takes.
+    private static final class BlockingBrokerConsumer implements Consumer {
+        private final String id;
+        final AtomicInteger polls = new AtomicInteger();
+        private final AtomicReference<Instant> brokerActivity = new AtomicReference<>();
+        private final CountDownLatch releaseLatch = new CountDownLatch(1);
+
+        BlockingBrokerConsumer(String id) {
+            this.id = id;
+        }
+
+        void setBrokerActivity(Instant instant) {
+            brokerActivity.set(instant);
+        }
+
+        void release() {
+            releaseLatch.countDown();
+        }
+
+        @Override
+        public String identifier() {
+            return id;
+        }
+
+        @Override
+        public PollResult poll(int max) throws InterruptedException {
+            if (polls.incrementAndGet() == 1) {
+                return PollResult.empty();
+            }
+            releaseLatch.await();
+            return PollResult.empty();
+        }
+
+        @Override
+        public Optional<Instant> lastBrokerActivity() {
+            return Optional.ofNullable(brokerActivity.get());
+        }
+
+        @Override
+        public boolean ack(QueuedMessage message) {
+            return true;
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public Optional<QueueMetrics> metrics() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    private static final class MutableClock extends Clock {
+        private volatile Instant now;
+
+        MutableClock(Instant now) {
+            this.now = now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
         }
     }
 }

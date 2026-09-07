@@ -341,3 +341,46 @@ has reproduced the collapse against Go's implementation, and revision 1's findin
 the owner ruling is about the *right shape for NATS*, independent of whether the wrong shape has
 yet been measured to misbehave on the Go side: recommended follow-up is `Consume` with a handler
 pushing into a bounded Go channel, `Poll` reading from that channel instead of calling `Fetch`.
+
+**Revision 3's own follow-on defect, found before it shipped: an untimed `poll()` looks hung to
+the consumer-health/stall watchdog.** Revision 3's `poll()` blocks **untimed** in
+`BlockingQueue#take` waiting on the broker (correct — see above), but
+`ConsumerLoop#lastAlive`/`ConsumerSupervisor` judged liveness solely off `lastPoll`, which only
+advances when `poll()` *returns*. An idle continuous subscription and a genuinely hung one are
+therefore indistinguishable once the poll has been running longer than
+`ConsumerSupervisor#STALL_THRESHOLD` (60 s, `docs/spec/router.md` §5 row 47) — the watchdog
+restarts a perfectly healthy, merely-idle consumer, and keeps doing so every threshold, forever.
+This is not hypothetical: a Go router carrying the equivalent change (untimed poll, `lastPoll`-only
+liveness) was measured collapsing to 1,100 deliveries/s under exactly this "stalled consumer
+detected (poll is hung) → restart" cycle. Java had not shown it only because no bench run had
+idled a NATS queue past 60 s.
+
+Fix: `Consumer` (queue contract) gains `default Optional<Instant> lastBrokerActivity() { return
+Optional.empty(); }` — evidence the broker is alive, independent of whether `poll()` has returned.
+`NatsQueue` overrides it: "now" for as long as its connection reads `CONNECTED` (jnats' simplified
+`consume` API exposes no positive per-heartbeat callback, only a negative
+`ErrorListener#heartbeatAlarm` for a *missed* one, so the connection's own PING/PONG keepalive —
+independent of the JetStream idle-heartbeat — stands in as the positive signal), falling back to
+the last time a message actually reached it otherwise. Every other backend (Postgres, SQS) keeps
+the default: their `poll()` returns within a bounded time, so a stale `lastPoll` already IS the
+staleness signal and there is nothing this method would add. `ConsumerLoop` tracks whether a poll
+is currently on the stack (`pollInProgress`, set/cleared immediately around the `Consumer#poll`
+call) and `lastAlive()` consults `lastBrokerActivity()` while it is true, taking whichever of that
+or the existing poll/pause-based instant is later — the broker signal can only ever rescue a loop
+the old logic would call stale, never hide one it would call fresh, so a genuinely hung poll
+(broker activity as stale as the poll itself) still gets flagged and restarted.
+`ConsumerSupervisor#stalled(ConsumerLoop)` — the method `RouterServer#restartStalledLoops` actually
+calls on every housekeeping tick — was ALSO reading `lastPoll` directly, bypassing `lastAlive`
+entirely; fixed to read `lastAlive()`, which incidentally also protects the existing
+capacity-pause case (`ConsumerLoop`'s own `pausedForCapacity` liveness) from the same restart path,
+not just the readiness API that already used it. Pinned in `ConsumerLoopTest` (a fake consumer
+blocked in `poll()` past the stall threshold with recent broker activity is not restarted; the same
+fake with stale broker activity IS restarted — mutant: dropping the `pollInProgress`/broker-activity
+branch from `lastAlive()`, or routing `stalled(ConsumerLoop)` back through `lastPoll()`, fails the
+first case) and `NatsQueueTest` (`lastBrokerActivity()` advances on each delivered message; a second
+poll with nothing new buffered does not advance it again). No timed park, no knob.
+
+Go should apply the equivalent fix once it lands the `Consume`-based listener recommended above:
+whatever heartbeat/stall mechanism watches Go's consumer loops needs the same second liveness
+signal, or it inherits the identical restart-storm collapse the moment its own `Poll` stops
+returning on a timer.

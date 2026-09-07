@@ -590,6 +590,18 @@ Per iteration (`router/manager.go:436-507`):
    step 2's — it holds the loop back from work the broker may already have
    ready; G12 covers both in one fix).
 
+**Liveness while a poll itself is blocked (Java-first correction, 2026-09-07,
+constant 47)**: step 3's `lastPoll` heartbeat only ever advances when `Poll`
+*returns*, which is wrong for a backend whose `Poll` blocks **untimed**
+waiting on the broker (`NatsQueue`'s continuous subscription, §7.4) — an idle
+queue and a hung one both look identical to the stall watchdog once the poll
+has been running longer than the stall threshold, so the watchdog restarted a
+perfectly healthy, merely-idle consumer, repeatedly, which is what collapsed
+a Go build carrying the same change to 1,100 deliveries/s; the fix is a
+second, independent liveness signal (`Consumer#lastBrokerActivity`) that a
+poll in progress can be judged alive against instead of its own return —
+G13, `docs/go-mirror/2026-09-06-go-fix-list.md`.
+
 ### 3.3 Routing — required behaviour (`router/manager.go:319-389`)
 
 For each message of a batch, in batch order:
@@ -989,7 +1001,7 @@ Evidence column says why.
 | 44 | `mediationBucketsSeconds` | .005 .01 .025 .05 .1 .25 .5 1 2.5 5 10 | s | Prometheus histogram (`metrics.go:68`) | **LB** | Prometheus contract; test pins bucket emission |
 | 45 | Warning `MaxWarningAge` / `MaxWarnings` / `AutoAcknowledgeAge` / evict fraction / cleanup fallback | 8 h / 1000 / 8 h / 10 % / 5 min | — | `warning.go:26-32,318,300` | ACC? | `TestWarningService_EvictOnCapacity`; auto-ack age == max age makes auto-ack moot |
 | 46 | Health `HealthyThreshold` / `WarningThreshold` / `RollingWindow` / `WarningAgeMinutes` / `ConsumerStallThreshold` / `MaxWarningsHealthy` / `MaxWarningsWarning` | 0.90 / 0.70 / 30 min / 30 / 60 s / 5 / 20 | — | `health.go:39-49` | **LB** for 5/20/30 (drive readiness); rest dead (never fed) | `TestHealthService_HealthReport_WarnsOnCount` |
-| 47 | Lifecycle `WarningCleanupInterval` / `HealthReportInterval` / `ConsumerHealthInterval` / `ConsumerStallThreshold` | 5 min / 1 min / 30 s / 60 s (constructor fallback **90 s**) | — | `lifecycle.go:38-45,91` | ACC? | 60 vs 90 inconsistency; 60 is effective |
+| 47 | Lifecycle `WarningCleanupInterval` / `HealthReportInterval` / `ConsumerHealthInterval` / `ConsumerStallThreshold` | 5 min / 1 min / 30 s / 60 s (constructor fallback **90 s**) | — | `lifecycle.go:38-45,91` | ACC? | 60 vs 90 inconsistency; 60 is effective. **Java-first correction, 2026-09-07**: the threshold is judged against liveness, not raw `lastPoll` — a poll still blocked on a backend that parks untimed waiting on the broker (`NatsQueue`) is alive for as long as `Consumer#lastBrokerActivity` stays recent, so an idle continuous subscription is not restarted every threshold; see §3.2, G13 |
 | 48 | ConfigSource client timeout / `MaxAttempts` / `RetryDelay` | 10 s / 12 / 5 s | — | `config_sync.go:44-46` | **LB** | `TestNewConfigSourceParsesCommaSeparated` pins 12 |
 | 49 | Election `LockTTLSeconds` / `HeartbeatIntervalSeconds` / loop fallbacks / `Subscribe` buffer | 30 / 10 / 10 s & 30 s / 1 | — | `common/config.go:100-104`, `election.go:106-134,66` | ACC? | |
 | 50 | Election lock key | `fc:leader` (lib default) vs `fc:server:leader` (env default) | — | `config.go:102`, `envcfg.go:209` | ACC? | two defaults |

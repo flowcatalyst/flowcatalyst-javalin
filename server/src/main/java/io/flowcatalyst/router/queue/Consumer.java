@@ -3,6 +3,7 @@ package io.flowcatalyst.router.queue;
 import io.flowcatalyst.router.pool.QueuedMessage;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -61,6 +62,30 @@ public interface Consumer extends Acknowledger, AutoCloseable {
     /// Broker-side depth, when the backend can report it cheaply enough to
     /// ask on a schedule. Empty is always acceptable.
     Optional<QueueMetrics> metrics();
+
+    /// The last time this consumer had independent evidence the broker is
+    /// alive — a message delivered, or (where observable) an idle
+    /// heartbeat — distinct from [#poll] returning at all
+    /// (`docs/spec/router.md` §3.2, §5 row 47).
+    ///
+    /// Empty is the default and is correct for a request/response backend
+    /// (Postgres, SQS): [#poll] itself returns within a bounded time on
+    /// those, so a poll that has not returned in a while already IS the
+    /// staleness signal, and there is nothing this method could report that
+    /// [io.flowcatalyst.router.manager.ConsumerLoop#lastPoll] does not
+    /// already cover.
+    ///
+    /// A backend whose [#poll] instead blocks **untimed** waiting on the
+    /// broker (NATS's continuous subscription, `NatsQueue`) must override
+    /// this: without it, a consumer idling on a genuinely quiet queue is
+    /// indistinguishable from one whose poll has hung, and both look
+    /// "stalled" to [io.flowcatalyst.router.manager.ConsumerSupervisor]
+    /// after the same threshold — restarting a healthy, merely-idle
+    /// consumer, over and over, which is exactly the throughput collapse
+    /// this method exists to prevent.
+    default Optional<Instant> lastBrokerActivity() {
+        return Optional.empty();
+    }
 
     /// Terminal. Subsequent polls answer [PollResult.Stopped].
     @Override
