@@ -241,7 +241,7 @@ public final class Router implements AutoCloseable {
         var traffic = trafficFor(env, clock);
 
         var server = new RouterServer(manager, tracker, election,
-                consumerFactory(dataSource), configSource(env, dataSource, warningSink),
+                consumerFactory(dataSource, env), configSource(env, dataSource, warningSink),
                 warningSink, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
 
         // Traffic follows leadership: an instance that is not leading has
@@ -402,9 +402,19 @@ public final class Router implements AutoCloseable {
     ///
     /// `dataSource` may be null: a deployment consuming solely from SQS or
     /// NATS needs no database, which is what lets a router-only instance skip
-    /// Postgres entirely.
-    private static RouterManager.ConsumerFactory consumerFactory(DataSource dataSource) {
-        return new io.flowcatalyst.router.queue.QueueFactory(dataSource);
+    /// Postgres entirely — and, since a `postgres://…` queue now opens its
+    /// own pool from its own URI (`QueueFactory#createPostgres`), a router
+    /// consuming Postgres queues from `FLOWCATALYST_CONFIG_URL` needs no
+    /// platform pool either.
+    ///
+    /// `dataSource`'s own connection string is [#defaultQueueUri] — the same
+    /// derivation [#configSource] uses for the synthesised default-broker
+    /// queue — so [QueueFactory] can recognise that queue's URI as "already
+    /// [dataSource]'s database" and reuse it instead of opening a redundant
+    /// second pool next to it.
+    private static RouterManager.ConsumerFactory consumerFactory(DataSource dataSource, Env env) {
+        return new io.flowcatalyst.router.queue.QueueFactory(
+                dataSource, dataSource == null ? null : defaultQueueUri(env));
     }
 
     /// Where the router's configuration comes from.
@@ -435,6 +445,16 @@ public final class Router implements AutoCloseable {
         }
         LOG.info("router using the default broker queue={}", queue.queueName());
         return RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(queue)));
+    }
+
+    /// Whether [#configSource] would run the built-in Postgres broker for
+    /// this [Env] — the same two conditions [#configSource] itself checks
+    /// (no config URL, `FC_DEFAULT_BROKER=postgres`). [Main] calls this to
+    /// decide whether a router-only deployment still needs a database pool
+    /// (`docs/spec/router.md` §8.4): the config-URL and non-Postgres broker
+    /// branches above start with no pools at all, so neither needs one.
+    static boolean usesDefaultPostgresBroker(Env env) {
+        return env.routerConfigUrl().isBlank() && DEFAULT_BROKER_POSTGRES.equals(env.defaultBroker());
     }
 
     private static final String DEFAULT_BROKER_POSTGRES = "postgres";

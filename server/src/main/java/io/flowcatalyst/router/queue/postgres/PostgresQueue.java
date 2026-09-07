@@ -4,6 +4,7 @@ import tools.jackson.core.JacksonException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.Publisher;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
@@ -29,10 +30,14 @@ import java.util.concurrent.atomic.AtomicLong;
 /// pre-existing `queue_messages` table (`docs/spec/router.md` §7.3), so this
 /// and the Go consumer can drain the same table.
 ///
-/// Unlike the Go consumer, which owns a dedicated `pgxpool` per instance,
-/// this class borrows connections from the platform's shared HikariCP
-/// [DataSource] and never closes it — the composition root owns the pool's
-/// lifecycle, not the queue.
+/// Connects the same way Go's consumer does: when
+/// [io.flowcatalyst.router.queue.QueueFactory] builds this from a queue URI
+/// that carries its own connection, that instance owns a dedicated pool
+/// (Go's per-instance `pgxpool`) and closes it in [#close]. When the URI
+/// carries none — or names the platform's own database — this instance
+/// instead borrows the platform's shared HikariCP [DataSource] and never
+/// closes it; the composition root owns that pool's lifecycle, not the
+/// queue. See [#ownedPool].
 ///
 /// ### Claim algorithm
 /// One SQL statement (a `WITH … FOR UPDATE SKIP LOCKED` claim CTE feeding an
@@ -42,7 +47,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /// (`COALESCE(message_group_id, id)`)" — a claimed (invisible) head does not
 /// block its successors on a *later* poll, so cross-poll group ordering is
 /// not enforced by the broker (§7.3 "Ordering consequence").
-public final class PostgresQueue implements Consumer {
+public final class PostgresQueue implements Consumer, Publisher {
 
     private static final Logger log = LoggerFactory.getLogger(PostgresQueue.class);
 
@@ -101,6 +106,14 @@ public final class PostgresQueue implements Consumer {
     private final String queueName;
     private final Duration visibility;
 
+    /// The pool this consumer exclusively owns — built by
+    /// [io.flowcatalyst.router.queue.QueueFactory] from this queue's own URI
+    /// (`docs/spec/router.md` §7.3) rather than borrowed from the platform —
+    /// and therefore closed alongside this consumer in [#close]. `null` when
+    /// [#dataSource] is the shared platform pool, which outlives this
+    /// consumer and is owned by the composition root instead.
+    private final AutoCloseable ownedPool;
+
     /// Set by [#close]; checked at the top of every [#poll] (CONVENTIONS §5:
     /// an explicit stop signal, never a silently-closed resource).
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -114,11 +127,17 @@ public final class PostgresQueue implements Consumer {
     ///                          `null`, zero or negative falls back to 30 s,
     ///                          matching the Go `cfg seconds, ≤0 → 30 s` rule
     public PostgresQueue(DataSource dataSource, String queueName, Duration visibilityTimeout) {
+        this(dataSource, queueName, visibilityTimeout, null);
+    }
+
+    /// @param ownedPool see [#ownedPool]; `null` when `dataSource` is shared
+    public PostgresQueue(DataSource dataSource, String queueName, Duration visibilityTimeout, AutoCloseable ownedPool) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.queueName = Objects.requireNonNull(queueName, "queueName");
         this.visibility = (visibilityTimeout == null || visibilityTimeout.isZero() || visibilityTimeout.isNegative())
                 ? DEFAULT_VISIBILITY
                 : visibilityTimeout;
+        this.ownedPool = ownedPool;
     }
 
     /// Creates the `queue_messages` table and its index if absent. Matches
@@ -320,6 +339,37 @@ public final class PostgresQueue implements Consumer {
         }
     }
 
+    /// Inserts one row (§7.3 "Publish"). `message.id()` is the returned
+    /// broker id even when a row with that id already existed — the
+    /// `ON CONFLICT DO NOTHING` in [PostgresQueueRows] makes a republish of
+    /// an id already on the queue a no-op, not an error.
+    @Override
+    public String publish(Message message) throws PublishException {
+        try {
+            PostgresQueueRows.insertBatch(dataSource, queueName, List.of(message));
+        } catch (SQLException e) {
+            throw new PublishException("postgres publish failed for queue " + queueName, e);
+        }
+        return message.id();
+    }
+
+    /// One JDBC batch for every message (§7.3 "PublishBatch": "loop of
+    /// Publish; error aborts and returns nil ids") — a batch statement
+    /// failure throws and publishes nothing, rather than reporting which
+    /// messages happened to insert before the failure.
+    @Override
+    public List<String> publishBatch(List<Message> messages) throws PublishException {
+        if (messages.isEmpty()) {
+            return List.of();
+        }
+        try {
+            PostgresQueueRows.insertBatch(dataSource, queueName, messages);
+        } catch (SQLException e) {
+            throw new PublishException("postgres publishBatch failed for queue " + queueName, e);
+        }
+        return messages.stream().map(Message::id).toList();
+    }
+
     /// Pending = not claimed and visible now; in-flight = claimed (an
     /// expired claim still counts as in-flight, a delayed nack counts as
     /// neither — §7.3 "Metrics"). A query failure is tolerated: [Consumer]
@@ -350,11 +400,20 @@ public final class PostgresQueue implements Consumer {
         }
     }
 
-    /// Terminal. Does not touch the shared [DataSource] — it is owned by the
-    /// composition root, not by this consumer.
+    /// Terminal. Never touches a shared [DataSource] — that pool is owned by
+    /// the composition root, not by this consumer — but closes [#ownedPool]
+    /// when this consumer opened one of its own. Best-effort: a failure here
+    /// is logged, not thrown — this consumer is stopping either way.
     @Override
     public void close() {
         stopped.set(true);
+        if (ownedPool != null) {
+            try {
+                ownedPool.close();
+            } catch (Exception e) {
+                log.warn("closing queue {}'s own pool failed", queueName, e);
+            }
+        }
     }
 
     /// Whether `e` (or the interrupt flag) signals that a blocking JDBC call

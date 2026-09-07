@@ -31,10 +31,17 @@ public final class Main {
                 env.platformEnabled(), env.routerEnabled(), env.schedulerEnabled(), env.streamEnabled(),
                 env.outboxEnabled(), env.mcpEnabled(), env.standbyEnabled(), env.apiPort(), env.metricsPort());
 
-        // The platform database is only needed by subsystems that read/write
-        // Postgres: a router-only or MCP-only instance skips connect/migrate/seed.
-        boolean needsDb = env.platformEnabled() || env.streamEnabled() || env.schedulerEnabled()
-                || env.scheduledJobEnabled() || env.outboxEnabled();
+        // The platform database is needed by any subsystem that reads/writes
+        // Postgres — including a router-only instance running the built-in
+        // Postgres broker (`docs/spec/router.md` §8.4): it still writes/reads
+        // `queue_messages` even with FC_PLATFORM_ENABLED=false. A router-only
+        // or MCP-only instance with no Postgres broker skips connect entirely.
+        boolean needsDb = needsDb(env);
+        // Migrations and the seeder are platform-shaped work: `queue_messages`
+        // is created by PostgresQueue.initSchema (Router.configSource), not
+        // Flyway, so a router-only instance must never run either against a
+        // database that may host nothing but that one table.
+        boolean needsMigrateAndSeed = needsMigrateAndSeed(env);
 
         GatedDataSource pool = null;
         DbSecretRefresher dbSecretRefresher = null;
@@ -76,11 +83,18 @@ public final class Main {
                 }
             }
 
-            Migrator.migrate(pool);
-            LOG.info("migrations applied");
-            new Seeder(pool).run();
-            LOG.info("seed complete");
-            mode = env.platformEnabled() ? new Mode.Platform(pool) : new Mode.Worker(pool);
+            if (needsMigrateAndSeed) {
+                Migrator.migrate(pool);
+                LOG.info("migrations applied");
+                new Seeder(pool).run();
+                LOG.info("seed complete");
+            } else {
+                LOG.info("router-only Postgres broker: skipping platform migrations and seed "
+                        + "(queue_messages is created by PostgresQueue.initSchema)");
+            }
+            mode = env.platformEnabled() ? new Mode.Platform(pool)
+                    : needsMigrateAndSeed ? new Mode.Worker(pool)
+                    : Mode.routerOnly(pool);
         } else {
             LOG.info("no database-backed subsystem enabled; skipping postgres connect/migrate/seed router={} mcp={}",
                     env.routerEnabled(), env.mcpEnabled());
@@ -107,5 +121,25 @@ public final class Main {
             if (poolToClose != null) poolToClose.close();
         }));
         running.awaitStop();
+    }
+
+    /// Whether this instance needs a Postgres pool at all: any DB-backed
+    /// background subsystem ([#needsMigrateAndSeed]), or the router running
+    /// its own built-in Postgres broker (`docs/spec/router.md` §8.4,
+    /// [Router#usesDefaultPostgresBroker]) — a router-only deployment with
+    /// `FC_ROUTER_ENABLED=true FC_DEFAULT_BROKER=postgres` still needs a pool
+    /// even though `FC_PLATFORM_ENABLED` and every worker flag are off.
+    static boolean needsDb(Env env) {
+        return needsMigrateAndSeed(env) || (env.routerEnabled() && Router.usesDefaultPostgresBroker(env));
+    }
+
+    /// Whether platform migrations and the seeder should run against the
+    /// pool. Deliberately **not** widened by the router's own Postgres
+    /// broker: `queue_messages` is created by `PostgresQueue.initSchema`,
+    /// not Flyway, and a router-only instance's database may host nothing
+    /// else — running Flyway/the seeder against it would be pure surprise.
+    static boolean needsMigrateAndSeed(Env env) {
+        return env.platformEnabled() || env.streamEnabled() || env.schedulerEnabled()
+                || env.scheduledJobEnabled() || env.outboxEnabled();
     }
 }

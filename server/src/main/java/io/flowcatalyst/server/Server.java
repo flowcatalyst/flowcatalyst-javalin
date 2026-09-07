@@ -104,13 +104,21 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
         }
 
-        /// No database: the router and/or MCP surfaces only.
-        enum RouterOnly implements Mode {
-            INSTANCE
+        /// The router and/or MCP surfaces only — no platform API, no
+        /// worker-tier subsystem enabled. `pool` is null unless the router
+        /// itself needs Postgres (`FC_DEFAULT_BROKER=postgres`, no config
+        /// URL — [Router#usesDefaultPostgresBroker]): that pool exists
+        /// solely for the router's own `queue_messages` table, so [Main]
+        /// never runs platform migrations or the seeder against it.
+        record RouterOnly(DataSource pool) implements Mode {
         }
 
         static Mode routerOnly() {
-            return RouterOnly.INSTANCE;
+            return new RouterOnly(null);
+        }
+
+        static Mode routerOnly(DataSource pool) {
+            return new RouterOnly(pool);
         }
     }
 
@@ -293,8 +301,14 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
-        DataSource dbPool = mode instanceof Mode.Platform(var pool) ? pool
-                : mode instanceof Mode.Worker(var pool) ? pool : null;
+        DataSource dbPool = switch (mode) {
+            case Mode.Platform(var pool) -> pool;
+            case Mode.Worker(var pool) -> pool;
+            // RouterOnly's pool is null unless the router itself needs
+            // Postgres for the built-in broker (§8.4) — either way this is
+            // exactly the pool the router (and only the router) should see.
+            case Mode.RouterOnly(var pool) -> pool;
+        };
 
         // The router is started BEFORE the listeners bind, so a readiness
         // probe never sees a server that is accepting traffic while its
@@ -394,10 +408,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
         }
 
-        // Not leader-gated (purger spec §4): every instance purges, whenever a
-        // pool exists at all — the statements are idempotent/`IF EXISTS`, so a
-        // duplicate pass from a second instance is harmless.
-        Purger purger = dbPool != null ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system())) : null;
+        // Not leader-gated (purger spec §4): every Platform/Worker instance
+        // purges, whenever a pool exists at all — the statements are
+        // idempotent/`IF EXISTS`, so a duplicate pass from a second instance
+        // is harmless. Excluded for RouterOnly: its pool (when present) is
+        // the router's own Postgres broker, whose database may host nothing
+        // but `queue_messages` — the purger's sweeps read platform tables
+        // (auth, mail, oauth…) that a router-only deployment never migrates.
+        boolean platformTablesAvailable = mode instanceof Mode.Platform || mode instanceof Mode.Worker;
+        Purger purger = platformTablesAvailable
+                ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system()))
+                : null;
         // Mail (mail-outbox spec §2): Platform.register wired Notifications/Mfa/ResetLinks
         // to the OutboxMailService; this is the other half, the background sender that
         // delivers through the SMTP-or-logging transport. Platform mode only.

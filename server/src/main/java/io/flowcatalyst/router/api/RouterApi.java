@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 ///   - [QueueRoutes] — broker-side depth, forced sampling, traffic status
 ///   - [AdminRoutes] — standby, stream health, config snapshot
 ///   - [MockRoutes] — the dev mock targets
+///   - [MessageRoutes] — `POST /messages`, `POST /api/seed/messages`
 ///
 /// [Wire] holds every shape that goes on the wire and [Http] the request
 /// reading and error responses they share.
@@ -49,8 +50,6 @@ import java.util.concurrent.atomic.AtomicLong;
 /// Every route needs a live data source. These have none, and are missing
 /// rather than faked:
 ///
-///   - `GET/POST /messages`, `POST /api/seed/messages` — need a publisher
-///     abstraction that does not exist yet.
 ///   - `POST /config/reload` beyond the "no reloader wired" branch — no
 ///     config-source/reload mechanism ported; see [AdminRoutes].
 ///   - `GET /monitoring/dashboard`, `/dashboard.html` — served by
@@ -191,5 +190,6 @@ public final class RouterApi {
         QueueRoutes.register(routes, s);
         AdminRoutes.register(routes, s);
         MockRoutes.register(routes, s);
+        MessageRoutes.register(routes, s);
     }
 }
