@@ -33,6 +33,14 @@ public record RouterConfig(List<PoolSpec> processingPools, List<QueueConfig> que
     /// conditions. An identical duplicate is silently dropped — two sources
     /// agreeing is not a problem.
     public static RouterConfig merge(List<RouterConfig> sources, ConflictReporter onConflict) {
+        if (sources.size() == 1) {
+            // A single source passes through unchanged. Keying queues by
+            // `queueUri` is a cross-source disambiguation rule; applying it
+            // to one document would collapse distinct queue names that
+            // legitimately share a URI — the normal shape for the Postgres
+            // backend, one database with many queue names.
+            return sources.get(0);
+        }
         Map<String, PoolSpec> pools = new LinkedHashMap<>();
         Map<String, QueueConfig> queues = new LinkedHashMap<>();
         for (var source : sources) {

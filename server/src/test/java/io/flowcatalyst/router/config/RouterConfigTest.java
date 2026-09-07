@@ -91,6 +91,42 @@ class RouterConfigTest {
     }
 
     @Test
+    @DisplayName("a single source keeps distinct queue names that share a queueUri")
+    void singleSourceKeepsQueuesSharingAUri() {
+        // The keyed-by-queueUri rule exists to disambiguate *across*
+        // sources. Applying it within one source would collapse the normal
+        // Postgres shape: one database URI, many queue names. Regression
+        // for a defect where a single 8-queue Postgres config collapsed to
+        // one consumer.
+        var reported = new ArrayList<String>();
+        var q1 = new QueueConfig("postgres://db", "BENCH-1", 1, 30);
+        var q2 = new QueueConfig("postgres://db", "BENCH-2", 1, 30);
+        var source = config(List.of(pool("A", 4, 0)), List.of(q1, q2));
+
+        var merged = RouterConfig.merge(List.of(source), reported::add);
+
+        assertThat(merged.queues()).containsExactly(q1, q2);
+        assertThat(reported).as("a single source is not conflict-checked").isEmpty();
+    }
+
+    @Test
+    @DisplayName("across sources, a shared queueUri still keys the merge — first name wins, reported")
+    void multiSourceQueuesAreKeyedByUri() {
+        // Two sources is exactly where the keyed merge applies: distinct
+        // queue names sharing a queueUri across documents collapse to the
+        // first, with a conflict report. This is the specified behaviour
+        // (`docs/spec/router.md` §8.1) and Go's — not a defect.
+        var reported = new ArrayList<String>();
+        var first = config(List.of(), List.of(new QueueConfig("postgres://db", "BENCH-1", 1, 30)));
+        var second = config(List.of(), List.of(new QueueConfig("postgres://db", "BENCH-2", 1, 30)));
+
+        var merged = RouterConfig.merge(List.of(first, second), reported::add);
+
+        assertThat(merged.queues()).extracting(QueueConfig::queueName).containsExactly("BENCH-1");
+        assertThat(reported).singleElement().asString().contains("queue").contains("keeping the first");
+    }
+
+    @Test
     @DisplayName("sources are unioned, and the first definition wins")
     void firstDefinitionWins() {
         // Position is precedence: an operator can tell which document is

@@ -872,3 +872,13 @@ the three session-path queries from the AST on every request (~20%). Neither fix
 Together these are the gap between Java JIT and Go on this endpoint (48% → ~100% of Go's
 throughput at 1 CPU). Native `-O2` additionally pays 3× the JIT on the RSA verify (GraalVM CE has
 no Montgomery-multiply intrinsics on arm64), so item 1 matters most for the native binary.
+
+## Config merge across sources keys queues by URI (Go behaviour, 2026-09-07)
+
+Fixed 2026-09-07: a *single* config source now passes through `RouterConfig.merge` unchanged
+instead of being keyed, so several queue names sharing one `queueUri` (the normal Postgres shape)
+all survive. Across *several* sources the `queueUri` key still applies and still collapses distinct
+queue names that share a URI to the first source's definition — Go does the same
+(`mergeConfigs`/keying by URI in `../flowcatalyst-go/internal/router/config_sync.go`), so this is
+left as spec-conformant; a Go mirror item only if multi-source Postgres configs with shared URIs
+ever turn out to matter in practice.
