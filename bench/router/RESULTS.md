@@ -732,3 +732,75 @@ BROKER=nats POOL_CONCURRENCY=256 TOTAL_MESSAGES=50000 QUEUES=8 bash run.sh run j
 **Recommendation to the owner:** re-run this matrix after the `QueueIdentifier` fix above lands
 — these six runs measure the ack-defect's retry churn, not NATS's real throughput ceiling, and
 should not be compared against the Postgres/SQS numbers elsewhere in this file until then.
+
+## Java rows and the fixes they forced (orchestrator, 2026-09-07 night)
+
+Every Java row below is on `vertx-listener` after the router fixes of the day (`5335a07` single-source
+config merge, `97cd7b0` ack by consumer identifier + `/router/metrics` + per-queue Postgres pool
+`max(4, nCPU)` ungated, `7468aaf` queue-scoped broker-id index, `cbcf792` event-driven capacity gate and
+no partial-batch sleep) and the NATS standing-subscription change in the fetch worktree. Go rows marked
+"fixed" are the Go branch `router-fixes-g10-g12` (same three defects fixed there). Pass criteria for every
+row: all messages delivered, broker depth 0 at the end, sink count = seeded (no redeliveries).
+
+### Postgres broker, 8 queues, pool 256, 50,000 messages
+| server | deliveries/s | router CPU | RSS | Postgres CPU |
+|---|---:|---:|---:|---:|
+| Go, 1 CPU | 5,962 | 44% | 88 MB | ~8 cores |
+| Go, 2 CPU | 6,683 | 43% | 35 MB | ~7.4 cores |
+| Java, 1 CPU (2-connection gated pool) | 1,069 | 25% | 236 MB | 1.4 cores |
+| Java, 1 CPU (pool max(4,nCPU) ungated) | 2,175 | 45% | 261 MB | 2.3 cores |
+| Java, 2 CPU (same) | 2,365 | 70% | 193 MB | 2.9 cores |
+
+Java is latency-bound in its poll cycle here, not CPU-bound; not investigated further because the Postgres
+broker is the embedded/dev broker, not the production bus.
+
+### SQS on LocalStack, 8 queues, pool 256 (LocalStack at ~100% of one core is the ceiling in every row)
+| server | deliveries/s | router CPU | RSS |
+|---|---:|---:|---:|
+| Go, 1 CPU | 1,238 | 22% | 43 MB |
+| Go, 2 CPU | 1,184 | 20% | 88 MB |
+| Java, 1 CPU | 1,137 | 39% | 388 MB |
+| Java, 2 CPU | 1,010 | 53% | 339 MB |
+
+### NATS JetStream, single queue, pool 256 — the router is the bottleneck
+| server | messages | deliveries/s | router CPU | user CPU/msg | RSS |
+|---|---:|---:|---:|---:|---:|
+| Go (fixed), 1 CPU | 50,000 | 24,404 | 97% | | 77 MB |
+| Go (fixed), 1 CPU | 150,000 | 28,293 | 99% | 26 µs | 112 MB |
+| Go (fixed), 2 CPU | 50,000 | 28,710 | 105% | | 27 MB |
+| Java, 1 CPU | 50,000 | 7,916 | 99% | | 422 MB |
+| Java, 1 CPU | 150,000 | 10,463 | 74% | 72 µs (incl. JIT) | 424 MB |
+| Java, 1 CPU | **500,000** | **25,384** | 95% | **34 µs** | 428 MB |
+| Java, 2 CPU | 50,000 | 15,546 | 199% | | 230 MB |
+
+**The short rows measure JIT warm-up, not the router.** A 50,000-message drain is six seconds on one core
+that the C2 compiler shares with the workers. Warm (500,000 messages), Java reaches 90% of Go's
+throughput at 1.3× Go's user CPU per message; kernel CPU per message is the same (~9–10 µs) on both,
+so the receiver and the network are not the variable. Memory is the real difference (4×). The JFR
+execution sampler is useless on this workload (17 samples in 25 s on virtual threads at one core); the
+process user/kernel split from `/proc/1/stat` is the reliable instrument. Java rows should default to
+500,000 messages.
+
+### NATS JetStream, 8 queues — the two Java-only shapes that were defects
+| server | deliveries/s | note |
+|---|---:|---|
+| Go (fixed), 1 CPU | 9,154 | |
+| Go (fixed), 2 CPU | 21,140 | |
+| Java, 1 CPU, per-poll `ConsumerContext.fetch` | 1,361 | zero warnings; a straggler tail, see below |
+| Java, 1 CPU, standing subscription (4 queues) | 6,930 | was 374 with the per-poll fetch |
+| Java, 1 CPU, standing subscription (8 queues) | 1,385–1,495 | 49,954 of 50,000 delivered in seconds, the last 46 over ~20 s |
+
+The residual 8-queue number is a tail, not throughput: the classic `fetch(batch, maxWait)` waits for a
+full batch, so once fewer than ten messages remain per consumer every poll waits the 20 s poll-timeout.
+Owner ruling: NATS is not a poller — the backend is being moved to a continuous subscription (the client
+keeps a pull request open, the server pushes, the client's flow control is the back-pressure, `poll`
+takes from a one-batch buffer with an untimed park). Rows for that shape follow when it lands.
+
+### Defects found by these rows (all fixed in Java; G10–G12 also fixed on the Go branch)
+1. Config merge collapsed same-URI queues in a single source (Java only).
+2. Router-only mode with the Postgres broker had no pool; Postgres queues did not connect from their URI; the publish/seed API was unimplemented (Java only).
+3. NATS acks never resolved — registry keyed by config name, messages stamped with `<stream>/<consumer>` (G10, both).
+4. In-flight broker-id index unscoped by queue — NATS ids collide across streams, cross-wired acks (G11, both).
+5. Capacity gate was a 2 s sleep; partial batch slept 500 ms (G12, both; owner ruling: no sleeps).
+6. Per-queue Postgres pool of 2 gated connections serialised acks (Java only).
+7. NATS fetch lifecycle: per-poll ephemeral fetch (tail of lost-until-ack-wait messages), then full-batch waits (20 s tail) (G13; Go's no-wait-first Fetch avoids the second, the continuous subscription is the ruled shape for all three routers).
