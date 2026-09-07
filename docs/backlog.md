@@ -882,3 +882,29 @@ queue names that share a URI to the first source's definition — Go does the sa
 (`mergeConfigs`/keying by URI in `../flowcatalyst-go/internal/router/config_sync.go`), so this is
 left as spec-conformant; a Go mirror item only if multi-source Postgres configs with shared URIs
 ever turn out to matter in practice.
+
+## JSpecify + NullAway (owner to-do, 2026-09-07 — agreed)
+
+Adopt JSpecify nullness annotations and NullAway (an Error Prone check) so nullness is enforced
+by `javac`, not by tests. Why: the owner's stated Java weakness versus Rust is what the compiler
+cannot catch; nullness is the largest such class and this closes it at build time with no runtime
+or reflection cost (dependency mindset: build-time only). Shape:
+
+1. `@NullMarked` at package level (`package-info.java`) across `usecase`, `sdk`, `server`, `fcdev`;
+   `@Nullable` only where a null is meaningful (e.g. `MediationTransport.Response.retryAfter`,
+   `Message.authToken` "present-but-empty is distinct from absent"). `org.jspecify:jspecify` is
+   already on the classpath transitively — declare it explicitly.
+2. Error Prone + NullAway wired into `maven-compiler-plugin` (`-Xplugin:ErrorProne
+   -XepOpt:NullAway:AnnotatedPackages=io.flowcatalyst`), severity ERROR under the existing
+   `-Werror`; verify the versions support JDK 25 (`--enable-preview` is on) before committing to it.
+   Exclude generated code (jOOQ `io.flowcatalyst.db.generated`, picocli-generated) via
+   `NullAway:ExcludedClassAnnotations`/package excludes; Jackson-populated records need
+   `@Nullable` components rather than exclusion.
+3. Roll out package by package (largest signal first: `router`, `platform/shared/auth`,
+   `http`), fixing real findings as they surface; each package is one commit. Record any
+   finding that is a genuine defect (a null that could reach production) in `docs/STATUS.md`.
+4. Native image: annotations are compile-time only; confirm the GraalVM build is unaffected
+   (no new reachability metadata).
+
+Not started. Estimated as a Sonnet unit per module with orchestrator review of every `@Nullable`
+added — an annotation placed to silence the checker is worse than none.
