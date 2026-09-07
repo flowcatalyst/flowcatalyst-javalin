@@ -844,12 +844,22 @@ a drain (3× on Postgres, 8× on SQS) and one restart looked the consumer up by 
 Java (`59c30ef`) and Go (`62e159f`) fixed today; and "Pool at capacity, deferring" is logged per message
 under saturation (883 lines), which wants a once-per-transition warning as in the other routers.
 
-## Go, continuous subscription + h2c (branch `router-fixes-g10-g12` at `62e159f`) — partial
-| queues | messages | deliveries/s | router CPU | result |
-|---|---:|---:|---:|---|
-| 1, 1 CPU | 150,000 | 21,516 | 85% | pass |
-| 8, 1 CPU | 500,000 | 16,196 | 75% | pass |
-| 1, 2 CPU | 500,000 | 112,980 delivered at 35,525/s then froze | 1% | FAIL — subscription died silently, liveness rule hid it |
-| 1, 1 CPU | 500,000 | 0 | 0% | FAIL — process produced no output |
-Being fixed (forward loop must resubscribe on iterator error and surface a dead subscription to the
-supervisor; startup failure must be logged).
+## Go, continuous subscription + h2c (branch `router-fixes-g10-g12` at `992c8a2`) — 2026-09-08
+Eight commits over the owner's `b422466`: G10–G12, continuous NATS subscription, h2c mediator, liveness
+while parked, resubscribe on iterator error (the single-queue freeze: nats.go's iterator returned
+"no heartbeat received" and the forwarder exited silently), startup-panic logging, pull threshold at
+half a batch. All rows: delivered = seeded, depth 0, zero stalls/restarts.
+
+| queues | CPUs | messages | deliveries/s | router CPU | RSS | note |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 1 | 150,000 | 21,516 | 85% | 32 MB | before the continuous-subscription rewrite settled |
+| 1 | 1 | 500,000 | 2,940 | 11% | 63 MB | 5 heartbeat misses, each resubscribed in µs; router mostly idle |
+| 1 | 2 | 500,000 | 33,295 | 131% | 53 MB | clean |
+| 8 | 1 | 500,000 | 16,165 | 75% | 105 MB | clean |
+
+**Open (Go, one core, one queue):** the continuous `Messages()` path is RTT/scheduling-bound on
+GOMAXPROCS=1 — 11% CPU, heartbeat misses that never occur at 2 CPUs — while the pre-rewrite
+`Fetch` build did 28,293/s on the same row and Java/Rust do 25–35k/s on it. Java/Rust were run on the
+same host minutes apart, so host noise does not explain it. Candidates: the forwarder goroutine
+starved behind 256 workers on one P (each message crosses two goroutine hand-offs), or the
+iterator's heartbeat monitor timer starved. Not chased further tonight; the owner merges the Go branch.
