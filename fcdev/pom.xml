@@ -20,6 +20,7 @@
   </description>
 
   <properties>
+    <native.optimization>-Os</native.optimization>
     <!-- Stamped into fcdev-build.properties; a release build passes -Dfcdev.vcs.revision=<sha>. -->
     <fcdev.vcs.revision></fcdev.vcs.revision>
   </properties>
@@ -154,6 +155,14 @@
                     <exclude>META-INF/*.EC</exclude>
                     <exclude>module-info.class</exclude>
                     <exclude>META-INF/versions/*/module-info.class</exclude>
+                    <!-- netty ships its own native-image reflection metadata inside each jar, and
+                         the GraalVM reachability-metadata repository OVERRIDES it (native-maven-plugin
+                         passes an exclude-config for every netty jar). Shaded into this jar the same
+                         files ride along under a path the exclusion does not cover, so the native build
+                         read netty's blanket handler registration, reached the OpenSSL engine through a
+                         constructor signature, and failed initialising tcnative's JNI interface at build
+                         time. The individual netty jars are on the native classpath anyway. -->
+                    <exclude>META-INF/native-image/io.netty/**</exclude>
                   </excludes>
                 </filter>
               </filters>
@@ -307,7 +316,9 @@
                      classpath-root resources (VERSION, fcdev-build.properties) to the
                      server's list; everything else here is the embedded server. -->
                 <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties</buildArg>
-                <buildArg>-Os</buildArg>
+                <!-- -Os by default (binary-size ruling for the developer binary); pass
+                     -Dnative.optimization=-O2 for the server-speed build (see server/pom.xml). -->
+                <buildArg>${native.optimization}</buildArg>
                 <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
                 <!-- Both directories: server/native-config covers the third-party reachability
                      every server binary needs (jOOQ, Jackson, the Postgres driver, Jetty);
