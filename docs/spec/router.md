@@ -590,6 +590,18 @@ Per iteration (`router/manager.go:436-507`):
    step 2's — it holds the loop back from work the broker may already have
    ready; G12 covers both in one fix).
 
+**Liveness while a poll itself is blocked (Java-first correction, 2026-09-07,
+constant 47)**: step 3's `lastPoll` heartbeat only ever advances when `Poll`
+*returns*, which is wrong for a backend whose `Poll` blocks **untimed**
+waiting on the broker (`NatsQueue`'s continuous subscription, §7.4) — an idle
+queue and a hung one both look identical to the stall watchdog once the poll
+has been running longer than the stall threshold, so the watchdog restarted a
+perfectly healthy, merely-idle consumer, repeatedly, which is what collapsed
+a Go build carrying the same change to 1,100 deliveries/s; the fix is a
+second, independent liveness signal (`Consumer#lastBrokerActivity`) that a
+poll in progress can be judged alive against instead of its own return —
+G13, `docs/go-mirror/2026-09-06-go-fix-list.md`.
+
 ### 3.3 Routing — required behaviour (`router/manager.go:319-389`)
 
 For each message of a batch, in batch order:
@@ -989,7 +1001,7 @@ Evidence column says why.
 | 44 | `mediationBucketsSeconds` | .005 .01 .025 .05 .1 .25 .5 1 2.5 5 10 | s | Prometheus histogram (`metrics.go:68`) | **LB** | Prometheus contract; test pins bucket emission |
 | 45 | Warning `MaxWarningAge` / `MaxWarnings` / `AutoAcknowledgeAge` / evict fraction / cleanup fallback | 8 h / 1000 / 8 h / 10 % / 5 min | — | `warning.go:26-32,318,300` | ACC? | `TestWarningService_EvictOnCapacity`; auto-ack age == max age makes auto-ack moot |
 | 46 | Health `HealthyThreshold` / `WarningThreshold` / `RollingWindow` / `WarningAgeMinutes` / `ConsumerStallThreshold` / `MaxWarningsHealthy` / `MaxWarningsWarning` | 0.90 / 0.70 / 30 min / 30 / 60 s / 5 / 20 | — | `health.go:39-49` | **LB** for 5/20/30 (drive readiness); rest dead (never fed) | `TestHealthService_HealthReport_WarnsOnCount` |
-| 47 | Lifecycle `WarningCleanupInterval` / `HealthReportInterval` / `ConsumerHealthInterval` / `ConsumerStallThreshold` | 5 min / 1 min / 30 s / 60 s (constructor fallback **90 s**) | — | `lifecycle.go:38-45,91` | ACC? | 60 vs 90 inconsistency; 60 is effective |
+| 47 | Lifecycle `WarningCleanupInterval` / `HealthReportInterval` / `ConsumerHealthInterval` / `ConsumerStallThreshold` | 5 min / 1 min / 30 s / 60 s (constructor fallback **90 s**) | — | `lifecycle.go:38-45,91` | ACC? | 60 vs 90 inconsistency; 60 is effective. **Java-first correction, 2026-09-07**: the threshold is judged against liveness, not raw `lastPoll` — a poll still blocked on a backend that parks untimed waiting on the broker (`NatsQueue`) is alive for as long as `Consumer#lastBrokerActivity` stays recent, so an idle continuous subscription is not restarted every threshold; see §3.2, G13 |
 | 48 | ConfigSource client timeout / `MaxAttempts` / `RetryDelay` | 10 s / 12 / 5 s | — | `config_sync.go:44-46` | **LB** | `TestNewConfigSourceParsesCommaSeparated` pins 12 |
 | 49 | Election `LockTTLSeconds` / `HeartbeatIntervalSeconds` / loop fallbacks / `Subscribe` buffer | 30 / 10 / 10 s & 30 s / 1 | — | `common/config.go:100-104`, `election.go:106-134,66` | ACC? | |
 | 50 | Election lock key | `fc:leader` (lib default) vs `fc:server:leader` (env default) | — | `config.go:102`, `envcfg.go:209` | ACC? | two defaults |
@@ -1331,6 +1343,7 @@ scheduler publishes to the same synthesised queue (`server/subsystems.go:96-110`
 | Provisioning | `CreateOrUpdateStream` (WorkQueue retention, subjects=[subject], storage, replicas, max age); `CreateOrUpdateConsumer` (durable=name, AckWait, MaxDeliver, MaxAckPending, FilterSubject) |
 | Identity | `Identifier()` = `<stream>/<consumer>` |
 | Poll | `Fetch(min(n, max-messages), MaxWait=poll-timeout)`; per msg: metadata error → `Term`; malformed JSON → `Term`; receipt `<stream>:<streamSeq>`; broker id `<streamSeq>:<consumerSeq>`; msg kept in a pending map by receipt |
+| Poll (Java, listener model — owner ruling 2026-09-07, superseding two earlier revisions) | NATS is a genuine subscription, not a poller — polling (`Poll(ctx, max)`, a request-response shape) is an SQS/Postgres limitation, not the design NATS itself calls for. `NatsQueue` opens **one** standing `MessageConsumer` for the queue's whole life (`ConsumerContext#consume(ConsumeOptions, MessageHandler)`, `batchSize=max-messages`): the NATS client keeps a pull request continuously outstanding against the server and hands each message to a handler on its own delivery thread the moment it arrives. The handler's entire job is `buffer.put(msg)` — a `BlockingQueue` bounded at `max-messages` — so `put` blocking when the buffer is full **is** the back-pressure that stops the client asking for more. `poll(max)` is `buffer.take()` (untimed — free on a virtual thread) for the first message, then `drainTo` for up to `max-1` more already sitting in the buffer; there is no poll cycle to time and no `expiresIn` to race, so the two throughput defects the earlier revisions fixed (ephemeral-subscription churn; a no-wait-first fetch still capable of a multi-second tail — see G13's history) cannot recur, because the shape that caused them — this class issuing its own timed pull requests — no longer exists. `close()` interrupts a `poll` parked in `take()` directly (`waitingThread`), rather than relying on an external caller to interrupt the right thread. `poll-timeout-ms` on the URI is **parsed but unused** for NATS — documented on `NatsQueueUri`, never removed as a parameter. Confirmed by bench (`bench/router`, NATS JetStream, 50,000 messages, pool concurrency 256): QUEUES=1 7,671/s (6.4 s), QUEUES=4 6,401/s (6.6 s), QUEUES=8 at 2 CPU 3,959/s (13.3 s) — all pass; QUEUES=8 at 1 CPU 3,338/s (15.08 s, just over the 15 s bar) — a per-second timeline shows a multi-second stall late in the drain (~47.4k/50k, both 1 and 2 CPU) not yet root-caused (candidate: `ConsumeOptions`'s unset `expiresIn` defaulting to 30 s per internal refill cycle) — see G13, `docs/go-mirror/2026-09-06-go-fix-list.md`. |
 | Ack / Nack / Defer | pop pending by receipt (unknown → error); `Ack()`; `NakWithDelay(delay)` if >0 else `Nak()` |
 | ExtendVisibility | `InProgress()` (never called) |
 | Publish | subject = filter with trailing `.>`/`.*` replaced by `.<poolCode>` (or `.default`); returns stream sequence as decimal |

@@ -5,12 +5,12 @@ import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
+import io.nats.client.ConsumeOptions;
 import io.nats.client.Connection;
 import io.nats.client.ConsumerContext;
-import io.nats.client.FetchConsumeOptions;
-import io.nats.client.FetchConsumer;
 import io.nats.client.JetStreamApiException;
 import io.nats.client.JetStreamManagement;
+import io.nats.client.MessageConsumer;
 import io.nats.client.Nats;
 import io.nats.client.Options;
 import io.nats.client.api.ConsumerConfiguration;
@@ -22,31 +22,98 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /// NATS JetStream-backed [Consumer] — a pull consumer against a
 /// WorkQueue-retention stream (`docs/spec/router.md` §7.4), matching the Go
-/// `queue/nats/nats.go` backend.
+/// `queue/nats/nats.go` backend's *intent* (owner ruling 2026-09-07: NATS
+/// must be a genuine subscription/listener, not a poller — polling is an
+/// SQS/Postgres limitation, not the design).
 ///
-/// A durable pull consumer, provisioned (create-or-update) at construction
-/// time, is fetched from in batches bounded by `max-messages` and
-/// `poll-timeout-ms`. Every fetched message is held in [#pending], keyed by
-/// its receipt handle, until [#ack] or [#nack] resolves it — a redelivery
-/// after a dropped connection is simply a fresh entry under a fresh receipt.
+/// ### A genuine listener, not a poller
+///
+/// [#consumer] is a standing `MessageConsumer` opened once, at construction,
+/// via the simplified `ConsumerContext#consume` API: the NATS client itself
+/// keeps a pull request continuously outstanding against the server (issuing
+/// a fresh one automatically as messages are delivered — see
+/// [ConsumeOptions]) and hands each message to [#handler] the moment it
+/// arrives, on the client library's own dedicated delivery thread. There is
+/// no poll cycle to time, no `expiresIn` to race, no ephemeral subscription
+/// to open and close — the two throughput defects the earlier revisions of
+/// this class fixed (`docs/go-mirror/2026-09-06-go-fix-list.md` G13's
+/// history) cannot recur because the shape that caused them — this class
+/// issuing its own timed pull requests — no longer exists.
+///
+/// [#handler] does exactly one thing: `[#buffer].put(msg)`. [#buffer] is a
+/// `BlockingQueue` bounded at `max-messages`
+/// (`NatsQueueUri#maxMessagesPerPoll`) — matching [ConsumeOptions]'s own
+/// batch size, so the client never holds more than one batch's worth of
+/// messages with their `ack-wait` already ticking. `put` blocking when the
+/// buffer is full **is** the back-pressure that stops the client asking the
+/// server for more: the delivery thread cannot return from [#handler] (and
+/// therefore cannot process whatever comes next) until [#poll] has drained
+/// room for it.
+///
+/// [#poll] itself is now trivial: [BlockingQueue#take] for the first message
+/// — an **untimed** park, which is free on a virtual thread
+/// (`docs/spec/admission.md` §0) and correct here because there is nothing
+/// else this thread could usefully do while the queue is empty — then
+/// [BlockingQueue#drainTo] for whatever else is already buffered, up to the
+/// requested batch. `poll-timeout-ms` on the URI is therefore **unused** for
+/// NATS: still parsed (`NatsQueueUri`), still documented, never removed as a
+/// parameter (a config a caller already has must keep working), simply not
+/// consulted by anything — see `docs/spec/router.md` §7.4.
+///
+/// [#close] must unblock a [#poll] parked in [BlockingQueue#take]: it
+/// records the thread currently waiting there ([#waitingThread]) and
+/// interrupts it directly, rather than relying on an external caller (a
+/// [io.flowcatalyst.router.manager.ConsumerLoop] tear-down) to happen to
+/// interrupt the right thread.
+///
+/// Every fetched message is held in [#pending], keyed by its receipt handle,
+/// until [#ack] or [#nack] resolves it — a redelivery after a dropped
+/// connection is simply a fresh entry under a fresh receipt.
+///
+/// ### Liveness while [#poll] is blocked waiting on the broker
+///
+/// [#poll] parking untimed in [BlockingQueue#take] means an idle queue and a
+/// hung one look identical to anything that only watches whether `poll()`
+/// has *returned* — including
+/// [io.flowcatalyst.router.manager.ConsumerSupervisor]'s stall watchdog
+/// (`docs/spec/router.md` §3.2, §5 row 47). [#lastBrokerActivity] is this
+/// class's answer: it reports "now" for as long as [#connection] reads
+/// [Connection.Status#CONNECTED], falling back to [#lastActivity] (the last
+/// time a message actually reached this consumer) once it does not. jnats'
+/// simplified `consume` API exposes no positive per-heartbeat callback — only
+/// a negative `ErrorListener#heartbeatAlarm` for a *missed* one — so
+/// `CONNECTED` is read as the positive signal instead: the connection's own
+/// PING/PONG keepalive is independent of the JetStream idle-heartbeat and
+/// will flip the status the moment the broker is actually unreachable, which
+/// is exactly the case that must still be caught (a genuinely hung poll
+/// stays stalled once the connection itself drops).
 ///
 /// ### Malformed payloads
 /// A message whose JetStream metadata can't be read, or whose body isn't
 /// valid [Message] JSON, is termed (`Message#term()`) rather than delivered:
 /// termed messages are neither acked nor nacked, so they never redeliver
 /// (§7.1, §7.4). [#classify] makes this decision as a pure function so it is
-/// testable without a live broker — see `NatsQueueTest`.
+/// testable without a live broker — see `NatsQueueTest`. A batch that is
+/// **entirely** malformed hands [#poll]'s caller an empty `Delivered` even
+/// though this class never blocks on an empty queue — the one case
+/// `docs/spec/router.md` §3.2's empty-batch pause is still reachable for
+/// NATS; see [ConsumerLoop][io.flowcatalyst.router.manager.ConsumerLoop].
 public final class NatsQueue implements Consumer {
 
     private static final Logger log = LoggerFactory.getLogger(NatsQueue.class);
@@ -54,7 +121,25 @@ public final class NatsQueue implements Consumer {
     private final String identifier;
     private final NatsQueueUri config;
     private final Connection connection;
-    private final ConsumerContext consumerContext;
+    private final MessageConsumer consumer;
+    private final Clock clock;
+
+    /// The last time a message actually reached this consumer — through the
+    /// standing [#consumer]'s handler in production, or through [#poll]
+    /// draining messages a test seeded directly into [#buffer]
+    /// (`NatsQueueTest`, CONVENTIONS §6). Seeded at construction so a
+    /// freshly connected queue is never judged stale before its first
+    /// delivery. Read by [#lastBrokerActivity] as the fallback for when
+    /// [#connection] is not [Connection.Status#CONNECTED] — see the class
+    /// doc's "Liveness while poll is blocked waiting on the broker".
+    private final AtomicReference<Instant> lastActivity;
+
+    /// Messages the standing [#consumer]'s handler has already pulled off
+    /// the wire, waiting for [#poll] to hand them to the router. Bounded at
+    /// `max-messages` — see the class doc's "A genuine listener, not a
+    /// poller". Package-private so a test can seed it directly, the same
+    /// seam [#pending] already uses (CONVENTIONS §6).
+    final BlockingQueue<io.nats.client.Message> buffer;
 
     /// Fetched, not yet resolved. Package-private so tests can seed and
     /// inspect it directly without a live broker (CONVENTIONS §6: hand-write
@@ -65,6 +150,16 @@ public final class NatsQueue implements Consumer {
     /// an explicit stop signal, never a silently-closed resource).
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
+    /// The thread currently parked in [#poll]'s [BlockingQueue#take], or
+    /// `null` — set immediately on entry to [#poll], cleared in its
+    /// `finally`, so [#close] can find and interrupt it even though [#poll]
+    /// runs on whatever thread the caller (a
+    /// [io.flowcatalyst.router.manager.ConsumerLoop]) happens to be using.
+    /// Without this, closing a queue whose poll is genuinely parked (nothing
+    /// buffered, nothing else to interrupt it) would leave that thread
+    /// waiting for a message the now-closed consumer will never deliver.
+    private final AtomicReference<Thread> waitingThread = new AtomicReference<>();
+
     // Process-local counters (`queue.Metrics` contract, §2.9) — no
     // round-trip. Package-private, alongside `pending`, so tests can read
     // them directly without a live broker.
@@ -74,31 +169,56 @@ public final class NatsQueue implements Consumer {
 
     /// Connects, provisions the stream and durable consumer (create-or-update,
     /// matching Go's `CreateOrUpdateStream`/`CreateOrUpdateConsumer`), and
-    /// resolves the pull-consumer context.
+    /// starts the standing [#consumer] — see the class doc.
     ///
     /// @throws NatsQueueException connecting or provisioning failed
     public NatsQueue(String queueUri) {
         this.config = NatsQueueUri.parse(queueUri);
         this.identifier = config.identifier();
-        Resources resources = connect(config, queueUri);
+        this.clock = Clock.systemUTC();
+        this.buffer = new ArrayBlockingQueue<>(config.maxMessagesPerPoll());
+        this.lastActivity = new AtomicReference<>(clock.instant());
+        Resources resources = connect(config, queueUri, buffer, stopped, clock, lastActivity);
         this.connection = resources.connection();
-        this.consumerContext = resources.consumerContext();
+        this.consumer = resources.consumer();
     }
 
     /// Test-only seam: builds an instance with no live NATS connection.
-    /// [#connection] and [#consumerContext] stay `null`; the only production
-    /// paths that dereference them are [#poll] while running and
-    /// [#metrics] — both guard against the test seam by checking `null` or
-    /// [#stopped] first, so `ack`/`nack`/`close`/stopped-`poll` are all
-    /// exercisable here (see `NatsQueueTest`).
+    /// [#connection] and [#consumer] stay `null`; the only production paths
+    /// that dereference them are [#poll] while running and [#metrics] —
+    /// both guard against the test seam by checking `null` or [#stopped]
+    /// first, so `ack`/`nack`/`close`/stopped-`poll` are all exercisable
+    /// here (see `NatsQueueTest`).
     NatsQueue(String identifier, NatsQueueUri config) {
+        this(identifier, config, null);
+    }
+
+    /// Test-only seam, variant of the constructor above that also seeds a
+    /// (fake) [#consumer] — for pinning what [#close] does to it without a
+    /// live broker (`NatsQueueTest`). [#connection] still stays `null`;
+    /// [#close] guards that independently, so a fake consumer can be
+    /// exercised without also needing a fake connection. [#buffer] is
+    /// always real (a genuine `ArrayBlockingQueue`, same as production) so a
+    /// test can pin its capacity and blocking behaviour directly rather than
+    /// against a fake standing in for it.
+    NatsQueue(String identifier, NatsQueueUri config, MessageConsumer consumer) {
+        this(identifier, config, consumer, Clock.systemUTC());
+    }
+
+    /// Test-only seam, variant of the constructor above that also injects a
+    /// [Clock] — for pinning [#lastBrokerActivity]'s staleness threshold
+    /// without waiting out real time (`NatsQueueTest`).
+    NatsQueue(String identifier, NatsQueueUri config, MessageConsumer consumer, Clock clock) {
         this.identifier = identifier;
         this.config = config;
         this.connection = null;
-        this.consumerContext = null;
+        this.consumer = consumer;
+        this.clock = clock;
+        this.buffer = new ArrayBlockingQueue<>(config.maxMessagesPerPoll());
+        this.lastActivity = new AtomicReference<>(clock.instant());
     }
 
-    private record Resources(Connection connection, ConsumerContext consumerContext) {
+    private record Resources(Connection connection, MessageConsumer consumer) {
     }
 
     /// Runs the provisioning that turns an open connection into a usable
@@ -143,7 +263,9 @@ public final class NatsQueue implements Consumer {
         void close() throws InterruptedException;
     }
 
-    private static Resources connect(NatsQueueUri config, String queueUri) {
+    private static Resources connect(NatsQueueUri config, String queueUri,
+                                      BlockingQueue<io.nats.client.Message> buffer, AtomicBoolean stopped,
+                                      Clock clock, AtomicReference<Instant> lastActivity) {
         try {
             Options options = new Options.Builder()
                     .servers(config.servers().toArray(new String[0]))
@@ -158,8 +280,32 @@ public final class NatsQueue implements Consumer {
                 JetStreamManagement jsm = connection.jetStreamManagement();
                 createOrUpdateStream(jsm, config);
                 createOrUpdateConsumer(jsm, config);
-                return new Resources(connection,
-                        connection.getConsumerContext(config.streamName(), config.consumerName()));
+                // The standing listener — see the class doc's "A genuine
+                // listener, not a poller". batchSize matches [#buffer]'s own
+                // capacity: the client never holds more than one batch's
+                // worth of messages in flight with their ack-wait ticking.
+                ConsumerContext ctx = connection.getConsumerContext(config.streamName(), config.consumerName());
+                ConsumeOptions consumeOptions = ConsumeOptions.builder()
+                        .batchSize(config.maxMessagesPerPoll())
+                        .build();
+                MessageConsumer consumer = ctx.consume(consumeOptions, msg -> {
+                    // Real broker evidence, independent of whether poll() is
+                    // even blocked right now — see the class doc's "Liveness
+                    // while poll is blocked waiting on the broker". Recorded
+                    // before the (possibly blocking) put so a full buffer
+                    // does not delay the timestamp behind the back-pressure
+                    // wait.
+                    lastActivity.set(clock.instant());
+                    // Dropped rather than risking an indefinite block on the
+                    // client library's own delivery thread once this queue
+                    // is closing: nothing will ever poll() it again, and an
+                    // un-acked message simply redelivers once ack-wait
+                    // lapses, same as any other abandoned delivery.
+                    if (!stopped.get()) {
+                        buffer.put(msg);
+                    }
+                });
+                return new Resources(connection, consumer);
             });
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -210,63 +356,59 @@ public final class NatsQueue implements Consumer {
         if (Thread.interrupted()) {
             throw new InterruptedException("interrupted before polling queue " + identifier);
         }
-        if (stopped.get()) {
-            return PollResult.STOPPED;
-        }
 
         int batch = effectiveBatch(max, config.maxMessagesPerPoll());
-        FetchConsumeOptions options = FetchConsumeOptions.builder()
-                .maxMessages(batch)
-                .expiresIn(config.pollTimeout().toMillis())
-                .build();
 
-        List<QueuedMessage> delivered = new ArrayList<>();
-        // Closed by hand rather than with try-with-resources: FetchConsumer's
-        // close() declares InterruptedException, so an implicit close can
-        // throw one that masks whatever the body threw — including a
-        // *different* InterruptedException, which would make an interrupt
-        // during cleanup indistinguishable from one during the fetch.
-        // Closing in a finally, and swallowing only the close's own failure,
-        // keeps the body's outcome authoritative.
-        FetchConsumer fetch;
+        // Registered BEFORE the stopped check below (not after): a close()
+        // landing between the two must still find this thread here and
+        // interrupt it, or a poll() that started a moment too early would
+        // park forever on a consumer nothing will ever feed again. See the
+        // class doc's "[#close] must unblock a [#poll]".
+        waitingThread.set(Thread.currentThread());
+        io.nats.client.Message first;
         try {
-            fetch = consumerContext.fetch(options);
-        } catch (Exception e) {
-            log.warn("nats: fetch failed on queue {}", identifier, e);
-            return PollResult.empty();
-        }
-        try {
-            io.nats.client.Message msg;
-            while ((msg = fetch.nextMessage()) != null) {
-                handleFetched(msg, delivered);
+            if (stopped.get()) {
+                // Absorb a close()-sent interrupt that may have landed
+                // between this thread registering above and this check —
+                // it is reported as STOPPED, not propagated, so it must not
+                // be left set on the thread for the next blocking call to
+                // trip over.
+                Thread.interrupted();
+                return PollResult.STOPPED;
             }
+            // Untimed park: free on a virtual thread (`docs/spec/admission.md`
+            // §0) and correct here — there is nothing else useful this
+            // thread could do while the queue is empty. Blocks until either
+            // the standing consumer's handler buffers a message, or [#close]
+            // interrupts this thread.
+            first = buffer.take();
         } catch (InterruptedException e) {
+            if (stopped.get()) {
+                return PollResult.STOPPED;
+            }
             throw e;
-        } catch (Exception e) {
-            // A real fetch error. A timeout waiting for messages is not one —
-            // it simply yields an empty batch, same as Go.
-            log.warn("nats: fetch failed on queue {}", identifier, e);
-            return PollResult.empty();
         } finally {
-            closeQuietly(fetch);
+            waitingThread.set(null);
         }
 
+        // A message reached this consumer — real broker evidence for
+        // [#lastBrokerActivity]'s fallback, and (CONVENTIONS §6) the seam
+        // `NatsQueueTest` drives directly, since its fakes have no live
+        // handler to update [#lastActivity] the production way (`connect`'s
+        // consume handler, above).
+        lastActivity.set(clock.instant());
+        List<io.nats.client.Message> messages = new ArrayList<>(batch);
+        messages.add(first);
+        buffer.drainTo(messages, batch - 1);
+
+        List<QueuedMessage> delivered = new ArrayList<>(messages.size());
+        for (var msg : messages) {
+            handleFetched(msg, delivered);
+        }
         if (!delivered.isEmpty()) {
             polled.addAndGet(delivered.size());
         }
         return PollResult.of(delivered);
-    }
-
-    /// Closes a fetch without letting its failure replace the poll's own
-    /// outcome. An interrupt during close is restored rather than swallowed.
-    private void closeQuietly(FetchConsumer fetch) {
-        try {
-            fetch.close();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            log.warn("nats: closing fetch failed on queue {}", identifier, e);
-        }
     }
 
     /// Classifies one fetched message and acts on the verdict.
@@ -412,11 +554,11 @@ public final class NatsQueue implements Consumer {
     /// connection (the [Consumer] contract tolerates this).
     @Override
     public Optional<QueueMetrics> metrics() {
-        if (consumerContext == null) {
+        if (consumer == null) {
             return Optional.empty();
         }
         try {
-            ConsumerInfo info = consumerContext.getConsumerInfo();
+            ConsumerInfo info = consumer.getConsumerInfo();
             return Optional.of(new QueueMetrics(
                     info.getNumPending(), info.getNumAckPending(), polled.get(), acked.get(), nacked.get()));
         } catch (Exception e) {
@@ -425,14 +567,46 @@ public final class NatsQueue implements Consumer {
         }
     }
 
-    /// Terminal. Clears [#pending] and closes the connection — subsequent
-    /// deliveries redeliver once their ack-wait lapses, same as Go.
+    /// Independent evidence the broker is alive — see the class doc's
+    /// "Liveness while poll is blocked waiting on the broker"
+    /// (`docs/spec/router.md` §3.2, §5 row 47). While [#connection] reads
+    /// [Connection.Status#CONNECTED] this reports the current instant: the
+    /// connection's own keepalive is continuously re-proving liveness even
+    /// when no JetStream message has arrived in a while, which is the
+    /// ordinary shape of an idle queue, not a hung one. Once it is not
+    /// `CONNECTED` — or in the test seam, where [#connection] is always
+    /// `null` — this falls back to [#lastActivity], the last time a message
+    /// genuinely reached this consumer.
+    @Override
+    public Optional<Instant> lastBrokerActivity() {
+        if (connection != null && connection.getStatus() == Connection.Status.CONNECTED) {
+            return Optional.of(clock.instant());
+        }
+        return Optional.ofNullable(lastActivity.get());
+    }
+
+    /// Terminal. Clears [#pending] and [#buffer], stops the standing
+    /// [#consumer] and unblocks a [#poll] parked waiting on it, and closes
+    /// the connection — subsequent deliveries redeliver once their ack-wait
+    /// lapses, same as Go.
     @Override
     public void close() {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
         pending.clear();
+        buffer.clear();
+        var blocked = waitingThread.get();
+        if (blocked != null) {
+            blocked.interrupt();
+        }
+        if (consumer != null) {
+            try {
+                consumer.close();
+            } catch (Exception e) {
+                log.warn("nats: error closing consumer for queue {}", identifier, e);
+            }
+        }
         if (connection != null) {
             try {
                 connection.close();

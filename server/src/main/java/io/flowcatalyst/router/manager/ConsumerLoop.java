@@ -107,6 +107,17 @@ public final class ConsumerLoop implements Runnable {
     /// clears with an INFO on the first poll that succeeds again (§7.3).
     private boolean pollFailing;
 
+    /// Whether [Consumer#poll] is currently on the stack — set immediately
+    /// before the call and cleared in a `finally` around it, nothing more.
+    /// Read by [#lastAlive] on another thread (the stall watchdog), hence
+    /// **volatile**: a backend whose `poll()` blocks untimed waiting on its
+    /// broker (`NatsQueue`, `docs/spec/router.md` §3.2, §5 row 47) has no
+    /// heartbeat to offer for however long that call runs, and without this
+    /// flag [#lastAlive] would have no way to know a poll is even in
+    /// progress, let alone ask [Consumer#lastBrokerActivity] whether it is a
+    /// legitimate wait or a hang.
+    private volatile boolean pollInProgress;
+
     public ConsumerLoop(Consumer consumer, RouterManager manager, Warnings warnings, Clock clock) {
         this.consumer = consumer;
         this.manager = manager;
@@ -144,19 +155,46 @@ public final class ConsumerLoop implements Runnable {
     /// interruption. Once it leaves the pause, this falls back to the later
     /// of [#lastPoll] and the instant the *last* pause began, unchanged from
     /// before.
+    ///
+    /// ### While a poll is in progress
+    ///
+    /// [#pollInProgress] alone says nothing about whether *this particular*
+    /// call is healthy — a poll that blocks for its own reasons (the
+    /// request/response backends' bounded wait) is no different from one
+    /// that has actually hung. What distinguishes them is
+    /// [Consumer#lastBrokerActivity]: a poll in progress on a consumer that
+    /// also has *recent* broker activity is alive on that evidence alone,
+    /// even if it is far outside [ConsumerSupervisor#STALL_THRESHOLD] since
+    /// the last successful *return* from [Consumer#poll] — exactly the shape
+    /// of `NatsQueue`'s continuous subscription sitting idle
+    /// (`docs/spec/router.md` §3.2, §5 row 47). A backend with no such
+    /// evidence to offer ([Consumer#lastBrokerActivity] empty — every
+    /// backend but `NatsQueue` today) falls straight through to the
+    /// poll/pause logic above, unchanged. The broker signal only ever makes
+    /// this report a **later** instant than the poll/pause logic alone
+    /// would — it can rescue a loop that logic would call stale, never hide
+    /// one that logic would call fresh.
     public Optional<Instant> lastAlive() {
         if (pausedForCapacity) {
             return Optional.of(clock.instant());
         }
         var poll = lastPoll.get();
         var pause = lastCapacityPause.get();
+        Instant fromPollOrPause;
         if (poll == null) {
-            return Optional.ofNullable(pause);
+            fromPollOrPause = pause;
+        } else if (pause == null) {
+            fromPollOrPause = poll;
+        } else {
+            fromPollOrPause = poll.isAfter(pause) ? poll : pause;
         }
-        if (pause == null) {
-            return Optional.of(poll);
+        if (pollInProgress) {
+            var broker = consumer.lastBrokerActivity();
+            if (broker.isPresent() && (fromPollOrPause == null || broker.get().isAfter(fromPollOrPause))) {
+                return broker;
+            }
         }
-        return Optional.of(poll.isAfter(pause) ? poll : pause);
+        return Optional.ofNullable(fromPollOrPause);
     }
 
     @Override
@@ -234,6 +272,7 @@ public final class ConsumerLoop implements Runnable {
     ///         stopped and this loop is finished
     private boolean pollOnce() throws InterruptedException {
         Consumer.PollResult result;
+        pollInProgress = true;
         try {
             result = consumer.poll(MAX_POLL);
         } catch (InterruptedException e) {
@@ -249,6 +288,8 @@ public final class ConsumerLoop implements Runnable {
             }
             Thread.sleep(POLL_ERROR_PAUSE);
             return true;
+        } finally {
+            pollInProgress = false;
         }
 
         return switch (result) {

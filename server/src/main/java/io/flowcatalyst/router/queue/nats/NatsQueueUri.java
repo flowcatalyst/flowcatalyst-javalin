@@ -27,6 +27,16 @@ import java.util.Objects;
 /// component, which the multi-host form above relies on.
 ///
 /// @param servers            one `nats://host:port` entry per configured host
+/// @param pollTimeout        **parsed but unused** (owner ruling 2026-09-07,
+///                            `docs/spec/router.md` §7.4): `NatsQueue` is a
+///                            genuine listener, not a poller — `poll()`
+///                            blocks untimed on its own already-buffered
+///                            messages rather than issuing a timed pull
+///                            request, so there is no wait for this to
+///                            bound. Kept parsed (never removed as a
+///                            parameter — an existing URI must keep working)
+///                            so `poll-timeout-ms=` on a URI is accepted and
+///                            silently ignored rather than rejected.
 /// @param maxAge             stream retention; [Duration#ZERO] means unlimited
 record NatsQueueUri(
         List<String> servers,
