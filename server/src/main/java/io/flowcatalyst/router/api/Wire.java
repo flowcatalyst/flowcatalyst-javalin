@@ -256,6 +256,36 @@ public final class Wire {
     public record GroupFlushClearResponse(boolean cleared) {
     }
 
+    /// `POST /messages` body (§9.1). `dispatch_mode`/`mediation_type` are the
+    /// raw wire strings — [MessageRoutes] parses/defaults them, never this
+    /// record — because "absent" and "present but blank/unrecognised" are
+    /// different outcomes only the handler needs to tell apart.
+    public record PublishMessageRequest(String id, @JsonProperty("pool_code") String poolCode,
+                                        @JsonProperty("mediation_type") String mediationType,
+                                        @JsonProperty("mediation_target") String mediationTarget,
+                                        @JsonProperty("message_group_id") String messageGroupId,
+                                        @JsonProperty("high_priority") boolean highPriority,
+                                        @JsonProperty("dispatch_mode") String dispatchMode,
+                                        @JsonProperty("auth_token") String authToken,
+                                        @JsonProperty("signing_secret") String signingSecret) {
+    }
+
+    public record PublishMessageResponse(@JsonProperty("message_id") String messageId,
+                                         @JsonProperty("broker_message_id") String brokerMessageId,
+                                         @JsonProperty("pool_code") String poolCode,
+                                         @JsonProperty("queue_identifier") String queueIdentifier) {
+    }
+
+    /// `POST /api/seed/messages` body (§9.1). `count` is validated (1..10000)
+    /// by [MessageRoutes], not here.
+    public record SeedMessagesRequest(@JsonProperty("pool_code") String poolCode,
+                                      @JsonProperty("mediation_target") String mediationTarget, int count) {
+    }
+
+    public record SeedMessagesResponse(@JsonProperty("pool_code") String poolCode,
+                                       @JsonProperty("queue_identifier") String queueIdentifier, long published) {
+    }
+
     /// One row of `GET /monitoring/blocked-groups` (R-04): a live message
     /// group, its buffer depth, whether a drainer currently owns it, and —
     /// when a target has flushed it — until when it is suppressed, alongside

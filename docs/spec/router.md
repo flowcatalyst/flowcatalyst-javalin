@@ -1262,6 +1262,11 @@ in the tree**.
 
 ### 7.3 Postgres — `queue/postgres/postgres.go`
 
+The Java backend now connects from the queue URI like Go's `pgxpool.New(ctx,
+cfg.URI)` below (`QueueFactory#createPostgres`): a URI carrying its own
+connection opens a dedicated pool, falling back to the platform's shared
+pool only when the URI carries none or names that same database.
+
 DDL (`InitSchema`, idempotent, matches the pre-existing layout):
 
 ```sql

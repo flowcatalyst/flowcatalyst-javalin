@@ -11,6 +11,7 @@ import io.flowcatalyst.router.config.PoolSpec;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.Publisher;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
@@ -306,6 +307,26 @@ public final class RouterManager implements AutoCloseable {
     /// per queue without holding its own copy of the registry.
     public Set<String> consumerNames() {
         return Set.copyOf(consumers.keySet());
+    }
+
+    /// Resolves a [Publisher] for manual/test message injection (§9.1
+    /// `POST /messages`, `POST /api/seed/messages`; §5 #61): a queue named
+    /// `key` if one is registered, else the alphabetically-first registered
+    /// queue — deterministic, matching Go's `Manager.queueForPublish`. The
+    /// SAME object a poll loop reads from, not a second connection to the
+    /// broker (Go's doc: "reuses the same broker the consumer reads from").
+    ///
+    /// Empty when no queue is registered at all, or when the resolved
+    /// queue's backend does not implement [Publisher] (SQS, NATS — no
+    /// publisher wired for those backends today) — both are the caller's
+    /// 503 "no publisher" case (§9.1 "Provider-absent degradation").
+    public Optional<Publisher> publisher(String key) {
+        var names = consumers.keySet();
+        String queueName = names.contains(key) ? key : names.stream().sorted().findFirst().orElse(null);
+        if (queueName == null) {
+            return Optional.empty();
+        }
+        return consumers.get(queueName) instanceof Publisher publisher ? Optional.of(publisher) : Optional.empty();
     }
 
     /// One metrics source per registered queue, for

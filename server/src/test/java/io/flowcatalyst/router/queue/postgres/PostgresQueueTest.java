@@ -3,6 +3,7 @@ package io.flowcatalyst.router.queue.postgres;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
+import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
@@ -16,6 +17,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -374,6 +376,50 @@ class PostgresQueueTest {
 
         assertThat(consumer.poll(10)).isEqualTo(Consumer.PollResult.STOPPED);
         assertThat(rowCount(queue, id)).as("row untouched").isEqualTo(1);
+    }
+
+    /// [io.flowcatalyst.router.queue.QueueFactory#createPostgres] passes a
+    /// pool it opened itself as `ownedPool` when the queue's URI carries its
+    /// own connection (`docs/spec/router.md` §7.3, Go `pgxpool.New` parity).
+    /// Pinned here directly against a real dedicated pool, rather than
+    /// through the factory, so the assertion is the pool's own closed state —
+    /// not an inference from `poll()`'s behaviour, which would hold whether
+    /// or not `close()` actually closed anything.
+    @Test
+    @DisplayName("close() closes a pool this consumer owns, but never one it was only lent")
+    void closeClosesAnOwnedPoolButNeverABorrowedOne() {
+        var ownPool = Database.newPool(ownPoolUrl(), 2);
+        try {
+            var owning = new PostgresQueue(ownPool, freshQueue(), Duration.ofSeconds(30), ownPool);
+            owning.close();
+            assertThat(ownPool.hikari().isClosed()).as("an owned pool is closed with its consumer").isTrue();
+        } finally {
+            if (!ownPool.hikari().isClosed()) {
+                ownPool.close();
+            }
+        }
+
+        // The shared fixture pool DS must survive a borrowing consumer's
+        // close() — every other test in this class depends on it staying
+        // open. A `close()` that (wrongly) closed a borrowed `dataSource`
+        // too would make this connection attempt throw.
+        var borrowing = new PostgresQueue(DS, freshQueue(), Duration.ofSeconds(30));
+        borrowing.close();
+        try (Connection conn = DS.getConnection(); Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT 1")) {
+            assertThat(rs.next()).as("DS still answers queries after a borrowing consumer closes").isTrue();
+            assertThat(rs.getInt(1)).isEqualTo(1);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /// The embedded [TestPg] instance's own connection string — used here to
+    /// open a genuinely separate pool from the shared fixture [#DS], so
+    /// [#closeClosesAnOwnedPoolButNeverABorrowedOne] can close it without
+    /// affecting `DS`.
+    private static String ownPoolUrl() {
+        return "postgres://postgres@localhost:" + TestPg.instance().getPort() + "/postgres";
     }
 
     @Test

@@ -41,6 +41,18 @@ final class Http {
         ctx.status(503).json(new ErrorBody(message));
     }
 
+    /// `POST /messages` / `POST /api/seed/messages` (§9.1): a required field
+    /// missing, or a value outside its accepted range.
+    static void unprocessable(Exchange ctx, String message) {
+        ctx.status(422).json(new ErrorBody(message));
+    }
+
+    /// `POST /messages` / `POST /api/seed/messages` (§9.1): the resolved
+    /// publisher's own [io.flowcatalyst.router.queue.Publisher.PublishException].
+    static void badGateway(Exchange ctx, String message) {
+        ctx.status(502).json(new ErrorBody(message));
+    }
+
     /// 409, for a request refused because of *who is asking*, not what the
     /// data looks like — currently only `POST /config/reload` on a follower
     /// (R-33: a follower must never start consumers).
