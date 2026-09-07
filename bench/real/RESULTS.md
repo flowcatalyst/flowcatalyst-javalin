@@ -300,3 +300,76 @@ behind a wake) and the fair gate's ordering (the queue is first-in first-out). T
 is met on throughput at two CPUs (98%); the p99 sits 116 ms over Go, where the floor is 400 ms
 of queueing at 1,000 connections and the "within 15 ms" line was written for the hello endpoint.
 One CPU is unchanged: the JIT and the collector share the core with the requests.
+
+## Round 13 — is native memory-bound? and the single-item endpoint at one CPU (2026-09-07)
+
+Native image at 1 CPU / 1 GB with `-XX:+PrintGC`: 1,257 collections in the ~75 s run, 3.7 s of
+pauses (≈5%), old generation flat at 130 MB, young 95 MB — **not** memory pressure. (The earlier
+"doubled at 2 GB" reading compared the 1-CPU/1-GB row with the 2-CPU/2-GB row: that was the CPU
+doubling.) Native is CPU-bound and about half the JIT per request on this platform.
+
+The 1 KB single-item endpoint (`GET /api/event-types/{id}`: the same cookie-session path,
+three queries and a JWT verify, almost no serialisation) at 1 CPU / 1 GB:
+
+| server | req/s | share of Go | p99 |
+|---|---:|---:|---:|
+| Go | 6,538 | 100% | 189 ms |
+| Java JIT | 3,115 | 48% | 582 ms |
+| Java native `-O2` | 2,135 | 33% | 566 ms |
+| Node (TypeScript platform, own schema) | 1,101 | 17% | 1.24 s |
+
+The same ratios as the 48 KB page: the cost is the per-request session path, not the payload.
+Where exactly is the next measurement (a JFR profile of the JIT jar on this endpoint).
+
+## Round 14 — where the per-request CPU goes: JFR profiles of the JIT jar and the native `-O2` image (2026-09-07)
+
+Both on the single-item endpoint at 1 CPU / 1 GB, Vert.x listener, `settings=profile` (10 ms
+sampling), 40 s inside steady load. HotSpot's sampler only sees Java frames (976 samples); the
+native-image sampler sees everything including its GC and socket calls (3,112 samples, 78% of the
+core). Buckets are per sample, first matching frame in the stack wins.
+
+| bucket | JIT (Java frames) | native `-O2` (all frames) |
+|---|---:|---:|
+| jOOQ: render SQL / send+wait on pgjdbc / fetch+map rows | 36% | 43% (20% / 15% / 9%) |
+| RSA-2048 verify of the session JWT (`RSACore`, `BigInteger`) | 34% | 29% |
+| Vert.x + netty (parse request, write response) | 13% | 11% |
+| own code (`io.flowcatalyst`) | 8% | 6% |
+| Jackson | 5% | 4% |
+| Nimbus JWT parse | 4% | 2% |
+| GC | (not sampled) | 4.5% |
+
+The request does one RS256 verify (one call path, one key, no signing: confirmed with 40-deep
+stacks). The verify itself, measured in the same 1-CPU container:
+
+| runtime | RS256 verify, 2048-bit |
+|---|---:|
+| Go 1.25 | 22 µs |
+| Java 25 JIT (C2) | 23 µs |
+| Java 25 JIT, C1 only | 128 µs |
+| GraalVM CE 25 native `-O2` | 69 µs |
+
+GraalVM CE has `mulAdd`/`squareToLen` stubs but not HotSpot C2's Montgomery-multiply
+intrinsics on arm64, so native pays 3× the JIT for the identical verify. Both runtimes spend a
+quarter to a third of the request on a verify that Go also does (Go's ~22 µs is ~14% of its
+153 µs request). The other half is jOOQ rendering the same three session-path queries from the
+AST on every request; pgjdbc's wire cost is 15%.
+
+| server | req/s | CPU per request |
+|---|---:|---:|
+| Go | 6,538 | 153 µs |
+| Java JIT | 3,115 | 321 µs |
+| Java native `-O2` | 2,135 | 468 µs |
+
+Two follow-ups fall out, neither a tuning knob: (1) verify a session token once and remember the
+verdict for the token's remaining lifetime (removes ~30% of both Java runtimes' request and ~14%
+of Go's); (2) the three session-path queries rendered once, not per request (jOOQ static SQL or
+plain JDBC on that path; ~20%). Together they are the gap between Java JIT and Go on this endpoint.
+
+Size: the `-Os` binary is 170.5 MB, the `-O2` binary with JFR compiled in 181.5 MB (+6%) for 2.4×
+the throughput. The committed profile is still `-Os` (fcdev size ruling); worth an owner ruling
+for fc-server.
+
+Rig: `KEEP=1` leaves the server container up after a run (to `docker cp` a profile out);
+`SERVER_ARGS` passes binary arguments (`-XX:StartFlightRecording=...` on native). Linux native
+build without a Linux Maven: run the reactor inside `ghcr.io/graalvm/native-image-community:25`
+with mise's Maven and `~/.m2` mounted (`mvn -o -Pnative -pl server -am package -DskipTests`).

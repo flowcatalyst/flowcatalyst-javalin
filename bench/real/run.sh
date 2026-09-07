@@ -80,7 +80,8 @@ run() {
   local issuer=(-e FC_JWT_ISSUER="http://$ip:8080" -e FC_EXTERNAL_BASE_URL="http://$ip:8080" -e FC_WEBAUTHN_ORIGINS="http://$ip:8080")
   [ "${RAW_ENV:-0}" = 1 ] && issuer=()
   # ${arr[@]+"${arr[@]}"}: an empty array is "unbound" under set -u on macOS's bash 3.2.
-  docker run -d --name "$name" --network $NET --ip $ip $cpuargs ${envs[@]+"${envs[@]}"} ${issuer[@]+"${issuer[@]}"} "$image" >/dev/null
+  # SERVER_ARGS: extra command-line arguments for the server binary (e.g. native-image -XX flags).
+  docker run -d --name "$name" --network $NET --ip $ip $cpuargs ${envs[@]+"${envs[@]}"} ${issuer[@]+"${issuer[@]}"} "$image" ${SERVER_ARGS:-} >/dev/null
   local probe="docker run --rm --network $NET curlimages/curl:8.10.1 -s"
   for i in $(seq 1 300); do $probe -o /dev/null -w '%{http_code}' "http://$ip:8080/health" 2>/dev/null | grep -q 200 && break; sleep 0.2; done
   local startup; startup=$(python3 -c "import time;print(round(time.time()-$t0,2))")
@@ -129,7 +130,8 @@ print(f"-- threads={len(a)} requests={req} voluntary={tv} nonvoluntary={tn} tota
 PY
   } | tee "$out/$label.log"
   docker logs "$name" > "$out/$label.server.log" 2>&1
-  docker rm -f "$name" >/dev/null 2>&1
+  # KEEP=1 leaves the server container running (to copy a profile out of it).
+  [ "${KEEP:-0}" = 1 ] || docker rm -f "$name" >/dev/null 2>&1
 }
 
 case ${1:-} in
