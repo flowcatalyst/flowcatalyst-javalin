@@ -70,6 +70,52 @@ class QueueBrokerTest {
         assertThat(broker.owns(message("m1", "b1"))).isTrue();
     }
 
+    // ── broker id collisions across queues ──────────────────────────────
+
+    @Test
+    @DisplayName("ack does not cross-wire when two queues' broker ids collide (docs/spec/router.md §2, key #2 scoped by queue)")
+    void ackDoesNotCrossWireOnACollidingBrokerId() {
+        // A NATS broker id is `<streamSeq>:<consumerSeq>` — unique only
+        // within its own stream. Two different queues routinely deliver a
+        // message with the very same broker id, e.g. "9:9" for each
+        // stream's ninth message (`docs/spec/router.md` §7.4; observed in
+        // `bench/router/results/java-nats-q8-c1-fixed.server.log`).
+        var s1Queue = new FakeAcknowledger("S1/router");
+        var s2Queue = new FakeAcknowledger("S2/router");
+        var localTracker = new InFlightTracker(clock);
+        var localBroker = new QueueBroker(Map.of("S1/router", s1Queue, "S2/router", s2Queue), localTracker, clock);
+
+        // S2 registers FIRST, so it is the entry that an unscoped index
+        // would keep in byMessageId — S1's later arrival is what the bug
+        // treats as "the same delivery again" and uses to steal S2's slot.
+        var now = Instant.now();
+        localTracker.register(new InFlightMessage("m-s2", "9:9", "POOL-A", "S2/router",
+                now, now, "", "batch-1", "S2:9", 0));
+        localTracker.register(new InFlightMessage("m-s1", "9:9", "POOL-A", "S1/router",
+                now, now, "", "batch-1", "S1:9", 0));
+
+        var s2Message = QueuedMessage.of(
+                new Message("m-s2", "", null, null, MediationType.HTTP, "https://x.test/h", null, false,
+                        DispatchMode.IMMEDIATE),
+                "9:9", "S2:9", "S2/router");
+
+        localBroker.ack(s2Message);
+
+        // Load-bearing: the S2 consumer must receive the ack with ITS OWN
+        // receipt handle. An unscoped broker-id index makes register() treat
+        // S1's later arrival as a redelivery of S2's message, swapping S2's
+        // tracked entry to S1's handle and never tracking S1 at all — so
+        // acking S2 lands its own receipt-substitution logic on S1's handle
+        // instead: the exact defect that produced "nats: no pending message
+        // for receipt BENCH1:9 on queue BENCH4/router".
+        assertThat(s2Queue.ackedReceipts).containsExactly("S2:9");
+        // S1's consumer must never see an ack at all — it wasn't touched.
+        assertThat(s1Queue.ackedReceipts).isEmpty();
+        // S1's entry must still be in flight, on its own receipt handle —
+        // never having been swallowed as a phantom "redelivery" of S2's.
+        assertThat(localTracker.freshestHandle("m-s1")).contains("S1:9");
+    }
+
     // ── R-26/X-11: lingering consumers ─────────────────────────────────
 
     @Test
@@ -174,13 +220,25 @@ class QueueBrokerTest {
     }
 
     private static final class FakeAcknowledger implements Acknowledger {
+        private final String id;
+        final java.util.List<String> ackedReceipts = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        FakeAcknowledger() {
+            this("queue-1");
+        }
+
+        FakeAcknowledger(String id) {
+            this.id = id;
+        }
+
         @Override
         public String identifier() {
-            return "queue-1";
+            return id;
         }
 
         @Override
         public boolean ack(QueuedMessage message) {
+            ackedReceipts.add(message.receiptHandle());
             return true;
         }
 

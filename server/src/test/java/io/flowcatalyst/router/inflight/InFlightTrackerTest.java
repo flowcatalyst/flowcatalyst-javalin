@@ -64,6 +64,33 @@ class InFlightTrackerTest {
     }
 
     @Test
+    @DisplayName("a broker id that collides across queues is not mistaken for a redelivery (docs/spec/router.md §2, key #2 scoped by queue)")
+    void brokerIdCollisionAcrossQueuesStaysDistinct() {
+        // NATS broker ids are `<streamSeq>:<consumerSeq>` — unique only
+        // within their own stream. "9:9" is an ordinary id on BOTH streams'
+        // ninth message. An index keyed on the bare broker id would treat
+        // S2's arrival as a redelivery of S1's message and steal S1's
+        // receipt handle, producing an ACK on S1's consumer with S2's
+        // handle (or vice versa) — the cross-wired-ack defect.
+        var s1 = tracker.register(message("m-s1", "9:9", "S1:9", "S1/router"));
+        assertThat(s1).isEqualTo(Registration.NEW);
+
+        // The dedup path: a poll returning broker id "9:9" on S2 while "9:9"
+        // is already in flight on S1 must be classified as a brand new
+        // message, not a redelivery of S1's.
+        var s2 = tracker.register(message("m-s2", "9:9", "S2:9", "S2/router"));
+
+        assertThat(s2).as("a different queue's message sharing S1's broker id is NEW, not a redelivery")
+                .isEqualTo(Registration.NEW);
+        assertThat(tracker.size()).isEqualTo(2);
+        // S1's entry must be untouched by S2's arrival: its handle must not
+        // have been swapped, which is exactly what an unscoped index does
+        // via register()'s redelivery branch.
+        assertThat(tracker.freshestHandle("m-s1")).as("S1's handle is not stolen by S2's arrival").contains("S1:9");
+        assertThat(tracker.freshestHandle("m-s2")).contains("S2:9");
+    }
+
+    @Test
     @DisplayName("a blank broker id on either side is treated as a redelivery, not a requeue")
     void blankBrokerIdFallsBackToRedelivery() {
         // The cautious fallback: mis-classifying a redelivery as an external
@@ -274,8 +301,12 @@ class InFlightTrackerTest {
     }
 
     private InFlightMessage message(String messageId, String brokerId, String receipt) {
+        return message(messageId, brokerId, receipt, "queue-1");
+    }
+
+    private InFlightMessage message(String messageId, String brokerId, String receipt, String queue) {
         var now = clock.instant();
-        return new InFlightMessage(messageId, brokerId, "", "queue-1", now, now, "", "1", receipt, 0);
+        return new InFlightMessage(messageId, brokerId, "", queue, now, now, "", "1", receipt, 0);
     }
 
     private static final class TestClock extends Clock {

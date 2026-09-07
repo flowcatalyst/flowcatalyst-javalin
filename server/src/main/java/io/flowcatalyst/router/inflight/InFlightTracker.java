@@ -21,10 +21,25 @@ import java.util.concurrent.locks.ReentrantLock;
 /// the eventual acknowledgement lands on a delivery the broker still knows
 /// about (`docs/spec/router.md` §2.3, §4.2).
 ///
-/// Two indexes: application id, and broker id when the backend supplies one.
+/// Two indexes: application id (global — the application's dedup key is
+/// unique by contract), and broker id scoped to the queue it arrived on.
+/// The broker id alone is **not** globally unique: a NATS `<streamSeq>:
+/// <consumerSeq>` broker id is only unique within its own stream, so two
+/// different queues routinely deliver messages sharing one broker id
+/// (`docs/spec/router.md` §2.3). Keying the second index by
+/// `(queueIdentifier, brokerMessageId)` is what keeps those apart — an
+/// unscoped key let one queue's arriving message look like a redelivery of
+/// another queue's, corrupting the victim's receipt handle and producing an
+/// ACK on the wrong consumer with another queue's handle.
 /// The pair is what makes the three-way distinction possible — see
 /// [#register].
 public final class InFlightTracker {
+
+    /// The broker-id index's key. A broker message id is only unique within
+    /// the queue that produced it (see the class doc), so every lookup and
+    /// mutation of [#byBrokerId] must go through this pair, never the bare id.
+    private record BrokerKey(String queueId, String brokerMessageId) {
+    }
 
     /// The mutable half of an entry. Kept private and only ever touched under
     /// [#lock]; [InFlightMessage] is the immutable view handed out.
@@ -85,7 +100,7 @@ public final class InFlightTracker {
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Map<String, Entry> byMessageId = new HashMap<>();
-    private final Map<String, Entry> byBrokerId = new HashMap<>();
+    private final Map<BrokerKey, Entry> byBrokerId = new HashMap<>();
     private final Clock clock;
 
     public InFlightTracker(Clock clock) {
@@ -96,8 +111,10 @@ public final class InFlightTracker {
     ///
     /// The three-way decision, in order:
     ///
-    /// 1. **Known broker id** → the very same delivery again. Swap the handle
-    ///    and refresh liveness; it is a redelivery.
+    /// 1. **Known broker id on the same queue** → the very same delivery
+    ///    again. Swap the handle and refresh liveness; it is a redelivery.
+    ///    The lookup is scoped to `(queueIdentifier, brokerMessageId)`: the
+    ///    broker id alone is not unique across queues (see the class doc).
     /// 2. **Known application id.** Now the broker ids decide: two non-empty
     ///    ids that *differ* mean two distinct deliveries of one message —
     ///    an external requeue. Anything else (either id blank, or equal) is
@@ -112,7 +129,7 @@ public final class InFlightTracker {
         try {
             var now = clock.instant();
             if (!message.brokerMessageId().isEmpty()) {
-                var byBroker = byBrokerId.get(message.brokerMessageId());
+                var byBroker = byBrokerId.get(new BrokerKey(message.queueIdentifier(), message.brokerMessageId()));
                 if (byBroker != null) {
                     refresh(byBroker, message.receiptHandle(), now);
                     return new Registration.Redelivery(byBroker.snapshot());
@@ -200,7 +217,7 @@ public final class InFlightTracker {
             if (entry != null && !entry.brokerMessageId.isEmpty()) {
                 // Remove by identity: a later copy may already own the broker
                 // index, and evicting that would un-track a live delivery.
-                byBrokerId.remove(entry.brokerMessageId, entry);
+                byBrokerId.remove(new BrokerKey(entry.queueIdentifier, entry.brokerMessageId), entry);
             }
         } finally {
             lock.unlock();
@@ -280,14 +297,14 @@ public final class InFlightTracker {
     private void insert(Entry entry) {
         byMessageId.put(entry.messageId, entry);
         if (!entry.brokerMessageId.isEmpty()) {
-            byBrokerId.put(entry.brokerMessageId, entry);
+            byBrokerId.put(new BrokerKey(entry.queueIdentifier, entry.brokerMessageId), entry);
         }
     }
 
     private void removeLocked(String messageId) {
         var entry = byMessageId.remove(messageId);
         if (entry != null && !entry.brokerMessageId.isEmpty()) {
-            byBrokerId.remove(entry.brokerMessageId, entry);
+            byBrokerId.remove(new BrokerKey(entry.queueIdentifier, entry.brokerMessageId), entry);
         }
     }
 

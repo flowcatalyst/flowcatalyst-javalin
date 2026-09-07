@@ -166,3 +166,47 @@ Go fix: key `m.consumers` (and any lingering/detached-consumer bookkeeping) by
 `Consumer.Identifier()` as well as, or instead of, the config name, and resolve ack/nack
 through that key — the identity the queue backend itself reports, not the label an operator
 gave it in config.
+
+## G11 — the in-flight tracker's broker-id index is keyed on the bare broker id, so it collides across NATS streams and cross-wires acks
+
+`docs/spec/router.md` §2.3: `InFlightMessage` carries two tracker keys — `MessageID` (key #1,
+the application's global dedup key) and `BrokerMessageID` (key #2). §7.4: the NATS backend's
+`BrokerMessageID` is `<streamSeq>:<consumerSeq>` — unique only *within one stream*. Every
+stream's Nth message gets the same broker id, so with more than one NATS queue configured,
+`InFlightTracker`'s broker-id index routinely holds one map slot per *broker id*, silently
+shared by every queue that happens to be at that sequence number.
+
+`InFlightTracker#register` checks that index first: an arriving message whose broker id
+matches an existing entry is classified as a **redelivery** of whatever queue got there first,
+regardless of which queue the arriving message actually came from. That swaps the existing
+entry's receipt handle to the new arrival's handle and returns without ever tracking the new
+arrival under its own application id. The corrupted entry is later ACKed on its *own* queue's
+consumer, but with the *other* queue's receipt handle — the broker rejects it because that
+handle was never issued on this consumer.
+
+Measured in the router bench with 8 NATS queues (`bench/router/results/java-nats-q8-c1-fixed.server.log`,
+read-only evidence, pre-fix): 1,272 occurrences of `"nats: no pending message for receipt
+BENCH1:9 on queue BENCH4/router"` and the same pattern for other sequence numbers — every one a
+receipt handle from one stream (`BENCH1`) presented to a different stream's consumer
+(`BENCH4/router`) because both streams' 9th message shared broker id `9:9`.
+Single-queue runs never see this: with one queue every broker id really is unique.
+
+Where in Go: `internal/router/inflight.go` — `byBroker map[string]*common.InFlightMessage`,
+keyed on the bare `im.BrokerMessageID` (`Register`, `EnsureTracked`, `Remove`, and the
+consistency sweep all read/write it unscoped). Go has the exact same key shape as Java did
+before this fix, so it most likely shares the defect; not reproduced against Go directly here.
+
+Java fix: `InFlightTracker`'s broker-id index (`byBrokerId`) is now keyed by
+`(queueIdentifier, brokerMessageId)` instead of the bare broker id, so a lookup can never
+cross queues. The application-id index (`byMessageId`, key #1) is unchanged — application
+message ids are the app's own dedup key and are unique by contract, so no queue scoping is
+needed there. Audited every reader of the broker-id index: the only one is
+`InFlightTracker#register` itself (the dedup/`ExternalRequeue` classification on poll,
+`RouterManager#routeOne`); `QueueBroker#withFreshestHandle` (ack/nack) and the dashboard/API
+surfaces (`InFlightRoutes`, `RouterApi`, `Wire`) all read the freshest handle through
+`byMessageId`, so they only ever saw the corruption *indirectly*, once `register` had already
+poisoned an entry's receipt handle — scoping the one writer/reader fixes all of them.
+
+Go fix: key `t.byBroker` by `(QueueIdentifier, BrokerMessageID)` instead of the bare
+`BrokerMessageID` — same change as Java's, everywhere the map is read or written
+(`Register`, `EnsureTracked`, `Remove`, the consistency sweep in the stall-detector path).

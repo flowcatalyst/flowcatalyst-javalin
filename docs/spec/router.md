@@ -222,7 +222,7 @@ time, released on ACK / nack / pool-stop / flush / reap / force-ack).
 | Field | Type | Meaning |
 |---|---|---|
 | `MessageID` | string | app id (tracker key #1) |
-| `BrokerMessageID` | string | broker id (tracker key #2; `""` → not indexed by broker id) |
+| `BrokerMessageID` | string | broker id (tracker key #2; `""` → not indexed by broker id). Key #2 is scoped by `QueueIdentifier` — a broker id (e.g. NATS's `<streamSeq>:<consumerSeq>`) is unique only within the queue that issued it, not across queues (G11). |
 | `PoolCode` | string | as on the message (raw, *not* resolved — an empty pool code stays `""`) |
 | `QueueIdentifier` | string | source consumer id |
 | `StartedAt` | time | when the entry was created (route time) |
