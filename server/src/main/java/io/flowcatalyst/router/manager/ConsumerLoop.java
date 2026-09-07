@@ -23,21 +23,33 @@ import java.util.stream.Collectors;
 ///
 /// ### The pacing rules are not arbitrary
 ///
-/// Each pause answers a different question, which is why there are four of
-/// them rather than one:
-///
-/// - **All pools full** → [#ALL_FULL_PAUSE]. Pulling messages now would only
-///   mean handing them straight back, so the loop waits for room instead of
-///   churning the broker's visibility windows.
+/// - **No pool has room** → parks, **untimed**, on
+///   [RouterManager#capacityGate] until a pool signals room has returned or a
+///   reconfigure changes what pools exist ([Pool#onCapacityFreed]). This
+///   replaced a fixed `Thread.sleep(2s)` here (defect fixed 2026-09-07): on a
+///   fast broker (NATS, fetch ≈ 1 ms) several pollers filled a shared pool
+///   buffer in well under a second, the workers drained it in a fraction of
+///   that, and every poller then sat out the rest of the 2 s pause with the
+///   router mostly idle — eight queues together fell to 1,312 deliveries/s at
+///   22% CPU where one queue alone reached 7,916/s at 99% CPU. See
+///   `docs/spec/admission.md` §0 for why a park on this path must be untimed.
+/// - **No pool exists at all** → [#NO_POOLS_PAUSE]. The one case this design
+///   cannot make event-driven in general: there is no pool to raise the
+///   event. In practice [RouterManager#reconfigure] always creates
+///   `DEFAULT-POOL` before any [ConsumerLoop] is started
+///   (`docs/spec/router.md` §3.3), so this fires only if something starts a
+///   loop against a manager with zero pools registered — a bounded,
+///   deliberately rare fallback, not a knob.
 /// - **Poll failed** → [#POLL_ERROR_PAUSE], and deliberately **no
 ///   heartbeat**: a queue whose polls are failing is not alive, and saying
 ///   otherwise would hide it from the stall detector.
 /// - **Empty batch** → [#EMPTY_POLL_PAUSE]. Nothing to do; for a long-polling
 ///   backend this stacks on top of a wait the poll already did.
-/// - **Partial batch** → [#PARTIAL_BATCH_PAUSE]. Fewer than a full batch
-///   suggests the queue is draining, so a brief pause lets it refill rather
-///   than spinning on ones and twos. A *full* batch re-polls immediately —
-///   there is evidently more work.
+/// - **Partial or full batch** → re-polls immediately. Owner ruling
+///   2026-09-07: a partial batch used to pause 500 ms on the theory that the
+///   queue was draining, but that pause is exactly the same throughput bug
+///   as the capacity one — it holds the loop back from work the broker may
+///   already have ready. There is no partial-batch pause any more.
 public final class ConsumerLoop implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(ConsumerLoop.class);
@@ -46,10 +58,12 @@ public final class ConsumerLoop implements Runnable {
     /// the NATS default batch, so no backend has to split a request.
     public static final int MAX_POLL = 10;
 
-    static final Duration ALL_FULL_PAUSE = Duration.ofSeconds(2);
+    /// Fallback for the "no pool exists at all" branch only — see the class
+    /// doc. Every other pacing pause but this one, [#POLL_ERROR_PAUSE] and
+    /// [#EMPTY_POLL_PAUSE] is event-driven.
+    static final Duration NO_POOLS_PAUSE = Duration.ofSeconds(2);
     static final Duration POLL_ERROR_PAUSE = Duration.ofSeconds(1);
     static final Duration EMPTY_POLL_PAUSE = Duration.ofSeconds(1);
-    static final Duration PARTIAL_BATCH_PAUSE = Duration.ofMillis(500);
 
     private final Consumer consumer;
     private final RouterManager manager;
@@ -66,10 +80,11 @@ public final class ConsumerLoop implements Runnable {
     /// detector; never advanced by a failed poll.
     private final AtomicReference<Instant> lastPoll = new AtomicReference<>();
 
-    /// When this loop last ticked while paused for capacity. Together with
-    /// [#lastPoll], the source of [#lastAlive]: a loop legitimately holding
-    /// back because every pool it feeds is full is alive, not stalled, even
-    /// though it is not polling (`docs/spec/router.md` §2.4, §6).
+    /// When this loop most recently *entered* a capacity pause. Together with
+    /// [#lastPoll], the fallback source for [#lastAlive] once the loop has
+    /// left the pause — while it is still paused, [#lastAlive] reports the
+    /// current instant instead (see there): a parked loop has no periodic
+    /// tick any more to keep this fresh.
     private final AtomicReference<Instant> lastCapacityPause = new AtomicReference<>();
 
     /// The pool codes this loop's own last **non-empty** batch was submitted
@@ -81,9 +96,10 @@ public final class ConsumerLoop implements Runnable {
 
     /// Whether the loop is currently paused for capacity. Tracked so the
     /// warning fires on the *transition* into "all full" rather than once per
-    /// two seconds — a warning store holding a thousand entries would
-    /// otherwise be flooded by a single busy period.
-    private boolean pausedForCapacity;
+    /// wake — a warning store holding a thousand entries would otherwise be
+    /// flooded by a single busy period. **Volatile**: [#lastAlive] reads it
+    /// from the stall detector's thread, not this loop's own.
+    private volatile boolean pausedForCapacity;
 
     /// Whether the loop is currently in a run of failing polls. Tracked the
     /// same way as [#pausedForCapacity]: the CONNECTION warning fires once on
@@ -113,17 +129,25 @@ public final class ConsumerLoop implements Runnable {
         return Optional.ofNullable(lastPoll.get());
     }
 
-    /// The later of [#lastPoll] and the last capacity-pause tick, or empty if
-    /// neither has ever happened.
+    /// The instant the stall detector should treat as this loop's most
+    /// recent sign of life, or empty if it has never had one.
     ///
     /// What the stall detector should read instead of [#lastPoll] alone
     /// (`docs/spec/router.md` §2.4, §6): a loop deliberately idle because
-    /// every pool it feeds is full is making a decision, not stuck, and each
-    /// pause tick — not just the transition into pausing — refreshes this so
-    /// a long capacity outage does not itself look stale. [#lastPoll] keeps
-    /// its own meaning unchanged for callers that want the poll heartbeat
-    /// specifically (§7.3's CONNECTION liveness, for one).
+    /// every pool it feeds is full is making a decision, not stuck. While
+    /// [#pausedForCapacity] is true this reports the **current** instant: the
+    /// loop parks untimed on [RouterManager#capacityGate] with no periodic
+    /// tick to keep a stored instant fresh, but it is nonetheless
+    /// provably alive for as long as this flag reads true — the only two
+    /// things it can be doing are that untimed park or (no pools at all) a
+    /// bounded sleep, and both clear the flag on the way out, including on
+    /// interruption. Once it leaves the pause, this falls back to the later
+    /// of [#lastPoll] and the instant the *last* pause began, unchanged from
+    /// before.
     public Optional<Instant> lastAlive() {
+        if (pausedForCapacity) {
+            return Optional.of(clock.instant());
+        }
         var poll = lastPoll.get();
         var pause = lastCapacityPause.get();
         if (poll == null) {
@@ -150,6 +174,7 @@ public final class ConsumerLoop implements Runnable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
+            pausedForCapacity = false;
             log.info("consumer loop stopped for queue {}", queueId());
         }
     }
@@ -157,6 +182,13 @@ public final class ConsumerLoop implements Runnable {
     /// @return whether there is room to poll now; false means the caller
     ///         should loop round and check again
     private boolean awaitCapacity() throws InterruptedException {
+        // Snapshotted BEFORE the room check, and waited on afterwards: a
+        // pool freeing up (or a reconfigure changing what pools exist)
+        // between this line and the park below still advances the
+        // generation, so the park below returns at once instead of missing
+        // it (see CapacityGate).
+        var gate = manager.capacityGate();
+        var generation = gate.generation();
         if (hasRoom()) {
             if (pausedForCapacity) {
                 log.info("capacity returned; resuming queue {}", queueId());
@@ -170,7 +202,12 @@ public final class ConsumerLoop implements Runnable {
                     "all pools at capacity; pausing " + queueId());
         }
         lastCapacityPause.set(clock.instant());
-        Thread.sleep(ALL_FULL_PAUSE);
+        if (manager.pools().isEmpty()) {
+            // Nobody exists to ever signal the gate — see the class doc.
+            Thread.sleep(NO_POOLS_PAUSE);
+        } else {
+            gate.awaitChangeSince(generation);
+        }
         return false;
     }
 
@@ -240,9 +277,11 @@ public final class ConsumerLoop implements Runnable {
             return true;
         }
         lastFedPools = manager.route(batch, consumer);
-        if (batch.size() < MAX_POLL) {
-            Thread.sleep(PARTIAL_BATCH_PAUSE);
-        }
+        // A partial batch re-polls immediately, exactly like a full one
+        // (owner ruling 2026-09-07): pausing here on the theory that the
+        // queue was draining cost the same throughput the capacity pause
+        // did, for the same reason — it held the loop back from work that
+        // may already be sitting on the broker.
         return true;
     }
 }

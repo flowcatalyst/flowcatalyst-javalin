@@ -143,6 +143,14 @@ public final class RouterManager implements AutoCloseable {
     private final PoolFactory poolFactory;
     private final AtomicLong batchCounter = new AtomicLong();
 
+    /// Wakes a [ConsumerLoop] parked in [ConsumerLoop#awaitCapacity] the
+    /// moment a pool's capacity changes, rather than it polling on a fixed
+    /// interval (`docs/spec/router.md` §3.2). Every pool this manager adds is
+    /// wired to signal it (see [#addPool]); a reconfigure or eviction that
+    /// adds, removes, or drains a pool also signals it directly, since that
+    /// too can change what [#anyPoolHasCapacity]/[#poolsHaveCapacity] answer.
+    private final CapacityGate capacityGate = new CapacityGate();
+
     /// R-13/R-16: with the gate on, a message reaching the router with no
     /// usable `poolCode`, no `dispatchMode` on the wire, or an ordered
     /// `dispatchMode` with no `messageGroupId` is malformed — ACKed without
@@ -182,7 +190,23 @@ public final class RouterManager implements AutoCloseable {
     }
 
     public void registerPool(String code, Pool pool) {
+        addPool(code, pool);
+    }
+
+    /// The one place a pool is added to [#pools]: wires it to
+    /// [#capacityGate] so its own crossing back under capacity wakes a
+    /// parked [ConsumerLoop], and signals once for the addition itself —
+    /// a brand new pool can turn "no pools at all" or "every pool full"
+    /// into "there is room" just by existing.
+    private void addPool(String code, Pool pool) {
         pools.put(code, pool);
+        pool.onCapacityFreed(capacityGate::signal);
+        capacityGate.signal();
+    }
+
+    /// Package-private: only [ConsumerLoop] parks on this.
+    CapacityGate capacityGate() {
+        return capacityGate;
     }
 
     public void registerConsumer(Consumer consumer) {
@@ -540,8 +564,16 @@ public final class RouterManager implements AutoCloseable {
                 return Optional.of(pool);
             }
             if (code.endsWith(DEFAULT_POOL_SUFFIX)) {
-                return Optional.of(pools.computeIfAbsent(code,
-                        synthesised -> poolFactory.create(new Pool.Config(synthesised, DEFAULT_POOL_CONCURRENCY, 0))));
+                return Optional.of(pools.computeIfAbsent(code, synthesised -> {
+                    // computeIfAbsent guarantees this lambda runs at most once
+                    // per code, so wiring the listener and signalling the gate
+                    // here — rather than unconditionally after the call —
+                    // fires exactly once, on the actual creation.
+                    var created = poolFactory.create(new Pool.Config(synthesised, DEFAULT_POOL_CONCURRENCY, 0));
+                    created.onCapacityFreed(capacityGate::signal);
+                    capacityGate.signal();
+                    return created;
+                }));
             }
             warnings.raise(Warnings.Severity.WARNING, "ROUTING",
                     "no pool for pool_code \"" + code + "\"; routed to " + DEFAULT_POOL);
@@ -664,10 +696,19 @@ public final class RouterManager implements AutoCloseable {
                 }
             }
         }
+        if (removed > 0) {
+            // A pool leaving [#pools] can turn a consumer's remembered
+            // fed-pool set stale (`docs/spec/router.md` §2.4/§6): its
+            // [ConsumerLoop#hasRoom] falls back to
+            // [#anyPoolHasCapacity]/[#poolsHaveCapacity], which must be
+            // re-evaluated rather than left parked on a set that no longer
+            // exists.
+            capacityGate.signal();
+        }
         wanted.forEach((code, config) -> {
             var existing = pools.get(code);
             if (existing == null) {
-                pools.put(code, poolFactory.create(config.toRuntime()));
+                addPool(code, poolFactory.create(config.toRuntime()));
                 return;
             }
             // Rate limit is always reapplied; concurrency only when the
@@ -726,6 +767,9 @@ public final class RouterManager implements AutoCloseable {
                 pool.close();
                 evicted++;
             }
+        }
+        if (evicted > 0) {
+            capacityGate.signal();
         }
         return evicted;
     }

@@ -242,16 +242,72 @@ class ConsumerLoopTest {
         start(manager);
         await(() -> !warnings.raised.isEmpty());
 
-        sleep(Duration.ofMillis(2_500)); // more than one ALL_FULL_PAUSE
+        sleep(Duration.ofMillis(2_500)); // well past the old fixed pause
 
         assertThat(warnings.raised).hasSize(1);
     }
 
     @Test
-    @DisplayName("a full batch is re-polled immediately; a partial batch pauses first")
-    void fullBatchRepollsImmediately() {
-        // A full batch says there is more work; a partial one says the queue
-        // is draining and a brief pause lets it refill.
+    @DisplayName("2026-09-07: capacity returning wakes the loop within 100 ms, not after a fixed pause")
+    void resumesPromptlyWhenCapacityReturns() {
+        // Mutant: put `Thread.sleep(ALL_FULL_PAUSE)` back in place of the
+        // park in ConsumerLoop#awaitCapacity → this test fails on the
+        // resume-timing assertion below, because the loop would still be
+        // asleep 100 ms after the pool frees up.
+        var manager = manager();
+        fillPool(manager);
+        consumer.deliver(batch("m1"));
+        start(manager);
+
+        await(() -> !warnings.raised.isEmpty());
+        int pollsWhileFull = consumer.polls.get();
+
+        // Parked, not spinning: confirms the loop is actually waiting on the
+        // gate rather than busy-polling while every pool is full.
+        sleep(Duration.ofMillis(300));
+        assertThat(consumer.polls.get())
+                .as("no poll should happen while every pool stays full")
+                .isEqualTo(pollsWhileFull);
+
+        // Free the pool: stop the filler and let the blocked deliveries
+        // through, so queueSize drops back under the threshold.
+        long freedAt = System.nanoTime();
+        topUp.interrupt();
+        deliveryBlocked.set(false);
+
+        await(() -> consumer.polls.get() > pollsWhileFull);
+        var elapsed = Duration.ofNanos(System.nanoTime() - freedAt);
+
+        assertThat(elapsed)
+                .as("the loop must resume within 100 ms of capacity returning, not wait out a fixed pause")
+                .isLessThan(Duration.ofMillis(100));
+    }
+
+    @Test
+    @DisplayName("2026-09-07: stopping a loop parked for capacity returns promptly, not after a fixed pause")
+    void stopsPromptlyWhileParkedForCapacity() {
+        var manager = manager();
+        fillPool(manager);
+        start(manager);
+        await(() -> !warnings.raised.isEmpty());
+
+        long stoppedAt = System.nanoTime();
+        loopThread.interrupt();
+        await(() -> !loopThread.isAlive());
+        var elapsed = Duration.ofNanos(System.nanoTime() - stoppedAt);
+
+        assertThat(elapsed)
+                .as("interrupting a loop parked on the capacity gate must not wait out a fixed pause")
+                .isLessThan(Duration.ofMillis(500));
+    }
+
+    @Test
+    @DisplayName("owner ruling 2026-09-07: neither a full nor a partial batch pauses before the next poll")
+    void batchesRepollImmediately() {
+        // A full batch (evidently more work) and a partial one (which used
+        // to pause 500 ms on the theory the queue was draining) now behave
+        // identically — the second batch below is partial (one message),
+        // exactly the case the removed pause used to slow down.
         consumer.deliver(batch(IntStream.range(0, ConsumerLoop.MAX_POLL)
                 .mapToObj(i -> "m" + i).toArray(String[]::new)));
         consumer.deliver(batch("second-batch"));
@@ -262,8 +318,8 @@ class ConsumerLoopTest {
         var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
 
         assertThat(elapsed)
-                .as("a full batch must not wait out the partial-batch pause")
-                .isLessThan(ConsumerLoop.PARTIAL_BATCH_PAUSE);
+                .as("a partial batch must not pause before the next poll")
+                .isLessThan(Duration.ofMillis(100));
     }
 
     @Test

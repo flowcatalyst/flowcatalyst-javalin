@@ -156,6 +156,22 @@ public final class Pool implements AutoCloseable {
     /// delivery proceeds unlimited.
     private final AtomicBoolean rateLimitWarned = new AtomicBoolean();
 
+    /// Whether this pool's [#queueSize] is currently at or over
+    /// [Config#queueCapacity] — tracked so [#capacityChanged] notifies
+    /// [#capacityListener] only on the crossing back under capacity, never on
+    /// every admission or completion (`docs/spec/router.md` §3.2; defect
+    /// fixed 2026-09-07 — see [#capacityChanged]).
+    private final AtomicBoolean full = new AtomicBoolean(false);
+
+    /// Run on the crossing back under capacity — how a parked
+    /// [io.flowcatalyst.router.manager.ConsumerLoop] learns there is room
+    /// again without polling on a fixed interval (§3.2). Defaults to a no-op
+    /// so a pool built and used before [#onCapacityFreed] is wired up —
+    /// every test in this module, and any pool warmed before it is
+    /// registered — never NPEs.
+    private volatile Runnable capacityListener = () -> {
+    };
+
     /// Resized in place rather than replaced — see [ResizableSemaphore] for
     /// why swapping the instance strands everyone already waiting on it.
     private final ResizableSemaphore slots;
@@ -239,6 +255,35 @@ public final class Pool implements AutoCloseable {
         return immediateWaiting.get() + groups.buffered();
     }
 
+    /// Registers `listener` to run on the crossing back under capacity
+    /// (`docs/spec/router.md` §3.2) — set once, by whatever registers this
+    /// pool with a [io.flowcatalyst.router.manager.RouterManager].
+    public void onCapacityFreed(Runnable listener) {
+        this.capacityListener = listener;
+    }
+
+    /// Re-evaluates [#full] against the current [#queueSize] and runs
+    /// [#capacityListener] exactly on the transition from full to not-full —
+    /// never on every admission or completion, which at pool throughput would
+    /// mean a lock/wake on every single message.
+    ///
+    /// Called after every event that can change [#queueSize] (an admission,
+    /// a worker taking a slot, a completion, a re-queue). Each call is cheap
+    /// — a read of two counters and an [AtomicBoolean#getAndSet] — and only
+    /// the crossing itself pays for waking a parked consumer loop.
+    ///
+    /// Replaces the fixed 2 s poll [io.flowcatalyst.router.manager.ConsumerLoop]
+    /// used to sleep whenever no pool had room: on a fast broker, several
+    /// pollers filled a shared buffer in well under a second, the workers
+    /// drained it in a fraction of that, and every poller then sat out the
+    /// rest of a 2 s pause with the router mostly idle. Fixed 2026-09-07.
+    private void capacityChanged() {
+        boolean atCapacity = queueSize() >= config.queueCapacity();
+        if (full.getAndSet(atCapacity) && !atCapacity) {
+            capacityListener.run();
+        }
+    }
+
     /// Deliveries in progress right now.
     public int activeWorkers() {
         // Derived from the set rather than counted alongside it, so the number
@@ -281,6 +326,7 @@ public final class Pool implements AutoCloseable {
             submitOrdered(message);
         } else {
             immediateWaiting.incrementAndGet();
+            capacityChanged();
             if (!start(() -> runImmediate(message))) {
                 // Raced with close(): the executor was already shutting
                 // down when this reached it, so runImmediate never got the
@@ -291,6 +337,7 @@ public final class Pool implements AutoCloseable {
                 // evictIdleSynthesisedPools and a reconfigure removal both
                 // close a pool a concurrent route() may be mid-submit on.
                 immediateWaiting.decrementAndGet();
+                capacityChanged();
                 broker.nack(message, REJECTED_NACK_DELAY, "pool-closed");
             }
         }
@@ -314,10 +361,12 @@ public final class Pool implements AutoCloseable {
 
     private void submitOrdered(QueuedMessage message) {
         boolean mustDrain = groups.offer(message);
+        capacityChanged();
         if (stopped) {
             // Raced with stop: the buffer is being flushed and nothing will
             // drain it, so hand the message back rather than stranding it.
             groups.drainAll().forEach(m -> broker.nack(m, REJECTED_NACK_DELAY));
+            capacityChanged();
             return;
         }
         if (mustDrain) {
@@ -340,12 +389,14 @@ public final class Pool implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 immediateWaiting.decrementAndGet();
+                capacityChanged();
                 broker.nack(message, REJECTED_NACK_DELAY);
                 return;
             }
             Attempt attempt;
             try {
                 immediateWaiting.decrementAndGet();
+                capacityChanged();
                 attempt = deliverOnce(message);
             } finally {
                 semaphore.release();
@@ -387,11 +438,13 @@ public final class Pool implements AutoCloseable {
             broker.retrying(message);
             message = message.retrying();
             immediateWaiting.incrementAndGet();
+            capacityChanged();
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 immediateWaiting.decrementAndGet();
+                capacityChanged();
                 // No broker action: the message was never acknowledged, so
                 // the broker's own redelivery brings it back. Nacking here
                 // would race that redelivery with our own.
@@ -410,6 +463,7 @@ public final class Pool implements AutoCloseable {
     private void runDrainer(String group) {
         while (true) {
             var head = groups.pollHead(group);
+            capacityChanged();
             if (head.isEmpty()) {
                 return;
             }
@@ -422,6 +476,7 @@ public final class Pool implements AutoCloseable {
                 // Undelivered: put it back at the front and let go of the
                 // group, so a later submit or redelivery resumes in order.
                 groups.reFront(message);
+                capacityChanged();
                 groups.releaseDrainer(group);
                 return;
             }
@@ -508,12 +563,14 @@ public final class Pool implements AutoCloseable {
 
     private boolean handleHeadFailure(String group, QueuedMessage message, MediationOutcome outcome) {
         var failure = groups.onHeadFailure(message, outcome);
+        capacityChanged();
         decided(group, message, outcome, failure);
         return switch (failure) {
             case HeadFailure.RetryHead retry -> {
                 broker.retrying(retry.head());
                 var next = retry.head().retrying();
                 groups.reFront(next);
+                capacityChanged();
                 yield sleepBackoff(group, backoffFor(retry.head(), outcome));
             }
             case HeadFailure.ReturnGroup returned -> {
@@ -853,6 +910,7 @@ public final class Pool implements AutoCloseable {
     /// Deliveries already in flight finish on their own.
     public void releaseBuffered() {
         handBack(groups.drainAll());
+        capacityChanged();
     }
 
     /// Stops admitting new work but leaves everything already buffered alone
@@ -890,6 +948,7 @@ public final class Pool implements AutoCloseable {
     public void stop() {
         stopped = true;
         handBack(groups.drainAll());
+        capacityChanged();
     }
 
     private void handBack(List<QueuedMessage> buffered) {
