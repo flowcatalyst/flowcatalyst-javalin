@@ -371,7 +371,7 @@ public final class RouterServer implements AutoCloseable {
     /// pools and tracker in place for a later leadership gain.
     private void stopSources() {
         var consumers = manager.consumerNames().stream()
-                .map(manager::consumer)
+                .map(manager::activeConsumer)
                 .flatMap(Optional::stream)
                 .toList();
         // standDown, not shutdown: the pools must survive so a later
@@ -404,7 +404,7 @@ public final class RouterServer implements AutoCloseable {
         log.info("router stopping; draining in-flight work and closing pools");
         running = false;
         var consumers = manager.consumerNames().stream()
-                .map(manager::consumer)
+                .map(manager::activeConsumer)
                 .flatMap(Optional::stream)
                 .toList();
         new RouterShutdown(tracker, drainTimeout, TRANSITION_TIMEOUT)

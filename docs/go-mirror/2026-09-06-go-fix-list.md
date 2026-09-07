@@ -126,3 +126,43 @@ unreachable mail server holds the login request for the SMTP timeout. The Java p
 mail to a `mail_outbox` table drained by a background sender with the dispatch-job backoff
 ladder (`docs/spec/mail-outbox.md`); the request answers once the row is written. Go
 should do the same: enqueue, answer, send in the background.
+
+## G10 — NATS deliveries are never acknowledged; a consumer's ack-resolution key is its registration key, not its own identifier (present in Go too)
+
+`docs/spec/router.md` §7.1: `Identifier()` is "the stable string used as `QueueIdentifier`
+on every polled message and as the key for ack/nack resolution". §7.4: the NATS backend's
+identity is `<stream>/<consumer>`, which for a queue configured under a different name (the
+common case — the config's queue name is an operator-chosen label, not the broker's stream/
+consumer pair) differs from the config key the manager registers the consumer under. Both
+sides register consumers keyed by the config name and resolve ack/nack by the same key, so
+for NATS every delivery fails resolution and nothing is ever acked — JetStream redelivers on
+ack-wait until `MaxDeliver` and then dead-letters the message silently.
+
+Where in Go: `internal/router/manager.go:~1261` (`m.consumers[qc.Name] = rc`, keyed by the
+config queue name) vs `internal/queue/nats/nats.go` (`QueueIdentifier: q.identifier`, the
+`<stream>/<consumer>` pair) — the same registration/resolution mismatch as the Java `G10`
+fix below, just without the second, identifier-keyed index Java now maintains.
+
+Measured in the router bench (`bench/router/results/java-nats-q1-c1.server.log`, pre-fix):
+50,000 seeded, 3,000 delivered, stream depth rising to 51,000 — every delivered message logs
+`"ack skipped: queue BENCH1/router is no longer registered (message bench-N)"` (3,000
+occurrences) and redelivers forever. Identical on Go for the same reason.
+
+Java fix: `RouterManager` keeps its existing name-keyed `consumers` map for reconfigure's
+wanted-set diffing (§8.2) and adds a second map keyed by `Consumer#identifier()`, maintained
+on every put/remove (register, replace, reconfigure-build, stop, forget); `RouterManager#consumer`
+(ack/nack resolution, and every caller that resolves from a `message.queueId()` or an
+in-flight entry's `queueIdentifier()` — `QueueBroker`, `InFlightRoutes` force-ack,
+`StallDetector`, `queueMetricSources()` feeding `BrokerStatsCache`/`GET /monitoring/queues`/
+the Prometheus `queue` and `consumer` labels) now resolves through that index; callers that
+genuinely want the config name (`RouterServer#stopSources`/`#shutDownSources`,
+`RouterShutdown#consumersOf`) use the pre-existing name-keyed `#activeConsumer` instead.
+`RouterManager#retireLingeringConsumers` had the same name-vs-identifier mismatch one level
+down (comparing a lingering deque's queue-name key against `InFlightTracker#countForQueue`,
+which is keyed by identifier) and is fixed the same way, using each lingering consumer's own
+`identifier()`.
+
+Go fix: key `m.consumers` (and any lingering/detached-consumer bookkeeping) by
+`Consumer.Identifier()` as well as, or instead of, the config name, and resolve ack/nack
+through that key — the identity the queue backend itself reports, not the label an operator
+gave it in config.

@@ -140,6 +140,14 @@ public final class PostgresQueue implements Consumer, Publisher {
         this.ownedPool = ownedPool;
     }
 
+    /// See [#ownedPool] — a testing seam so [io.flowcatalyst.router.queue.QueueFactory]'s
+    /// per-queue pool sizing (`docs/spec/router.md` §7.3, Go `pgxpool.New`
+    /// parity) can be asserted against the actual pool this consumer runs
+    /// on, not a value recomputed alongside the code under test.
+    public AutoCloseable ownedPool() {
+        return ownedPool;
+    }
+
     /// Creates the `queue_messages` table and its index if absent. Matches
     /// the pre-existing production layout exactly (§7.3 DDL) — idempotent,
     /// safe to call against a database the existing Go system already

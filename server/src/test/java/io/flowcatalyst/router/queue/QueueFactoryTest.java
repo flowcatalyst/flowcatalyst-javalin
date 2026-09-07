@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.queue;
 
+import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.config.QueueConfig;
@@ -179,6 +180,34 @@ class QueueFactoryTest {
             assertThat(delivered.messages()).extracting(QueuedMessage::id).containsExactly("msg-1");
         } finally {
             consumer.get().close();
+        }
+    }
+
+    @Test
+    @DisplayName("the dedicated per-queue pool is sized like Go's pgxpool default (max(4, NumCPU)), not off QueueConfig#connections")
+    void ownPoolIsSizedLikeGoNotOffConnectionsConfig() {
+        PostgresQueue.initSchema(TestPg.dataSource());
+        String queueName = "sized-pool-queue-" + UUID.randomUUID();
+        var factory = new QueueFactory(null); // no shared pool at all
+        // connections=1 in the config — if the pool were still sized off it
+        // (the pre-fix `connections + 1`), this would open a 2-connection
+        // pool instead of the Go-parity max(4, NumCPU) this test pins.
+        var config = new QueueConfig(testPgUri(), queueName, 1, 30);
+
+        var consumer = factory.create(config);
+        assertThat(consumer).isPresent();
+        var postgresQueue = (PostgresQueue) consumer.get();
+        try {
+            // The observable effect that would still hold either way is "a
+            // pool exists" — the load-bearing assertion is its actual
+            // maximum size, which a reverted fix changes.
+            var pool = (GatedDataSource) postgresQueue.ownedPool();
+            int expected = Math.max(4, Runtime.getRuntime().availableProcessors());
+            assertThat(pool.hikari().getMaximumPoolSize())
+                    .as("per-queue pool sized like Go's pgxpool.New default, ignoring QueueConfig#connections")
+                    .isEqualTo(expected);
+        } finally {
+            postgresQueue.close();
         }
     }
 

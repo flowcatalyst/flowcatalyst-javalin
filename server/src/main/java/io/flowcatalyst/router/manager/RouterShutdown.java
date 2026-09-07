@@ -175,8 +175,9 @@ public final class RouterShutdown {
     }
 
     /// The pools and consumers of a manager, in the order shutdown wants
-    /// them.
+    /// them. `queueNames` are config queue names — [RouterManager#activeConsumer],
+    /// not the identifier-keyed [RouterManager#consumer] ack/nack resolves.
     public static List<Consumer> consumersOf(RouterManager manager, Collection<String> queueNames) {
-        return queueNames.stream().map(manager::consumer).flatMap(java.util.Optional::stream).toList();
+        return queueNames.stream().map(manager::activeConsumer).flatMap(java.util.Optional::stream).toList();
     }
 }

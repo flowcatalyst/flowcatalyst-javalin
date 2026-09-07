@@ -41,6 +41,9 @@ import java.util.concurrent.atomic.AtomicLong;
 ///   - [AdminRoutes] — standby, stream health, config snapshot
 ///   - [MockRoutes] — the dev mock targets
 ///   - [MessageRoutes] — `POST /messages`, `POST /api/seed/messages`
+///   - [MetricsRoutes] — `GET /metrics`, the Prometheus alias under this
+///     prefix (§1.4/§9.2), rendered by
+///     `io.flowcatalyst.router.prometheus.RouterPrometheusCollector`
 ///
 /// [Wire] holds every shape that goes on the wire and [Http] the request
 /// reading and error responses they share.
@@ -55,9 +58,6 @@ import java.util.concurrent.atomic.AtomicLong;
 ///   - `GET /monitoring/dashboard`, `/dashboard.html` — served by
 ///     `io.flowcatalyst.router.api.dashboard.DashboardHandler`, which is a
 ///     consumer of this API rather than part of it.
-///   - `GET /metrics` (Prometheus) — rendered by
-///     `io.flowcatalyst.router.prometheus.RouterPrometheusCollector`; only
-///     the alias under this prefix is still to be mounted.
 ///   - `GET /openapi.json`, `/docs` — huma-generated docs; no equivalent
 ///     generator wired for the router surface.
 ///   - `DELETE /warnings`, `DELETE /warnings/old` — see [WarningRoutes].
@@ -191,5 +191,6 @@ public final class RouterApi {
         AdminRoutes.register(routes, s);
         MockRoutes.register(routes, s);
         MessageRoutes.register(routes, s);
+        MetricsRoutes.register(routes, s);
     }
 }

@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -84,6 +85,17 @@ public final class RouterManager implements AutoCloseable {
     private final Map<String, Pool> drainingPools = new ConcurrentHashMap<>();
 
     private final Map<String, Consumer> consumers = new ConcurrentHashMap<>();
+
+    /// Every currently active consumer, ALSO indexed by [Consumer#identifier],
+    /// maintained in parallel with [#consumers] on every put/remove
+    /// (`docs/spec/router.md` §7.1/§7.4). Ack/nack resolution (the wire's
+    /// `QueueIdentifier`, §7.1) must key on `identifier()`, which for a
+    /// Postgres or SQS backend equals the config queue name but for NATS is
+    /// `<stream>/<consumer>` (§7.4) — a distinct string. [#consumers] stays
+    /// name-keyed because reconfigure's wanted-set diffing (§8.2) and
+    /// [#consumerNames]/[#activeConsumer] operate on the config name; this
+    /// index is the only structure [#consumer] (ack/nack resolution) reads.
+    private final Map<String, Consumer> consumersByIdentifier = new ConcurrentHashMap<>();
 
     /// A consumer [#stopConsumer] detached, plus when. Kept resolvable by
     /// [#consumer] until [#retireLingeringConsumers] finds nothing in the
@@ -175,25 +187,31 @@ public final class RouterManager implements AutoCloseable {
 
     public void registerConsumer(Consumer consumer) {
         consumers.put(consumer.identifier(), consumer);
+        consumersByIdentifier.put(consumer.identifier(), consumer);
     }
 
-    /// Resolves a queue's consumer for ack/nack: the active one first, then —
-    /// so a message buffered or in flight on a queue that has since been
-    /// removed or changed can still settle — the most recently detached
-    /// lingering one (`docs/spec/router-completion.md` §2 ruling 5).
+    /// Resolves a consumer for ack/nack **by [Consumer#identifier]** — the
+    /// wire's `QueueIdentifier` stamped on every polled message (§7.1) — the
+    /// active one first, then — so a message buffered or in flight on a queue
+    /// that has since been removed or changed can still settle — the most
+    /// recently detached lingering one carrying that identifier
+    /// (`docs/spec/router-completion.md` §2 ruling 5).
     ///
-    /// [#activeConsumer] is the routing-only view a poll loop must use
-    /// instead: this method resolving a lingering consumer must never be
-    /// read as "this queue is still being polled".
-    public Optional<Consumer> consumer(String queueId) {
-        var active = consumers.get(queueId);
+    /// Callers pass `message.queueId()` or an [io.flowcatalyst.router.inflight.InFlightMessage]'s
+    /// `queueIdentifier()` — never the config queue name; [#activeConsumer] is
+    /// the name-keyed, routing-only view a poll loop or a config-driven
+    /// caller must use instead. Resolving a lingering consumer here must
+    /// never be read as "this queue is still being polled".
+    public Optional<Consumer> consumer(String identifier) {
+        var active = consumersByIdentifier.get(identifier);
         if (active != null) {
             return Optional.of(active);
         }
-        var lingering = lingeringConsumers.get(queueId);
-        return lingering == null || lingering.isEmpty()
-                ? Optional.empty()
-                : Optional.of(lingering.getLast().consumer());
+        return lingeringConsumers.values().stream()
+                .flatMap(Collection::stream)
+                .filter(lingering -> lingering.consumer().identifier().equals(identifier))
+                .max(Comparator.comparing(Lingering::detachedAt))
+                .map(Lingering::consumer);
     }
 
     /// The consumer currently being polled for `queueId`, or empty when
@@ -222,7 +240,14 @@ public final class RouterManager implements AutoCloseable {
     /// nothing more for its queue.
     public void replaceConsumer(String queueName, Consumer replacement) {
         var old = consumers.put(queueName, replacement);
+        consumersByIdentifier.put(replacement.identifier(), replacement);
         if (old != null) {
+            // Only drop the identifier entry if it is still THIS old
+            // consumer's — a replacement that happens to share an identifier
+            // with its predecessor (Postgres/SQS, where identifier ==
+            // queueName) must not have the `put` above undone by a stale
+            // removal.
+            consumersByIdentifier.remove(old.identifier(), old);
             linger(queueName, old);
         }
     }
@@ -245,7 +270,13 @@ public final class RouterManager implements AutoCloseable {
             var it = deque.iterator();
             while (it.hasNext()) {
                 var candidate = it.next();
-                if (tracker.countForQueue(queueName, candidate.detachedAt()) == 0) {
+                // The tracker's entries carry the consumer's IDENTIFIER
+                // (§7.1's `QueueIdentifier`), not the config queue name this
+                // deque is keyed by — for NATS the two differ (§7.4), and
+                // comparing against `queueName` here would always count zero
+                // and retire (close) a lingering consumer while it still
+                // owed acks/nacks for genuinely in-flight messages.
+                if (tracker.countForQueue(candidate.consumer().identifier(), candidate.detachedAt()) == 0) {
                     it.remove();
                     closeQuietly(candidate.consumer());
                     retired++;
@@ -329,8 +360,14 @@ public final class RouterManager implements AutoCloseable {
         return consumers.get(queueName) instanceof Publisher publisher ? Optional.of(publisher) : Optional.empty();
     }
 
-    /// One metrics source per registered queue, for
-    /// [io.flowcatalyst.router.lifecycle.BrokerStatsCache#refresh].
+    /// One metrics source per registered queue, keyed by [Consumer#identifier]
+    /// — §7.1's "key for ... metrics, Prometheus label" — for
+    /// [io.flowcatalyst.router.lifecycle.BrokerStatsCache#refresh] and, from
+    /// there, `GET /monitoring/queues`' `queue_identifier` and the
+    /// Prometheus `queue`/`consumer` labels ([RouterPrometheusCollector]).
+    /// Keying by the config queue name here would silently fail to resolve
+    /// for NATS (§7.4: identifier is `<stream>/<consumer>`, not the queue
+    /// name) exactly as ack/nack resolution did before this index existed.
     ///
     /// Resolved lazily per queue rather than captured: a reconfigure replaces
     /// a consumer without renaming its queue, and a map of bound consumers
@@ -339,9 +376,9 @@ public final class RouterManager implements AutoCloseable {
     /// endpoint must sample the same queues the loop does, not a second list
     /// that can drift from it.
     public Map<String, Supplier<Optional<QueueMetrics>>> queueMetricSources() {
-        return consumerNames().stream().collect(Collectors.toMap(
-                queueId -> queueId,
-                queueId -> () -> consumer(queueId).flatMap(Consumer::metrics)));
+        return consumers.values().stream().map(Consumer::identifier).distinct().collect(Collectors.toMap(
+                identifier -> identifier,
+                identifier -> () -> consumer(identifier).flatMap(Consumer::metrics)));
     }
 
     /// Drops every consumer. Used on a leadership loss, where the pools and
@@ -375,6 +412,7 @@ public final class RouterManager implements AutoCloseable {
     public void forgetConsumers() {
         consumers.values().forEach(RouterManager::closeQuietly);
         consumers.clear();
+        consumersByIdentifier.clear();
         queueConfigs.clear();
         // Lingering consumers too: nothing is going to poll on their behalf
         // any more once leadership is gone, so there is no reason left to
@@ -734,6 +772,7 @@ public final class RouterManager implements AutoCloseable {
                 return;
             }
             consumers.put(entry.getKey(), built.get());
+            consumersByIdentifier.put(built.get().identifier(), built.get());
             queueConfigs.put(entry.getKey(), entry.getValue());
             started.incrementAndGet();
         }, CONSUMER_BUILD_TIMEOUT, "consumer build");
@@ -758,6 +797,7 @@ public final class RouterManager implements AutoCloseable {
         queueConfigs.remove(queueName);
         var consumer = consumers.remove(queueName);
         if (consumer != null) {
+            consumersByIdentifier.remove(consumer.identifier(), consumer);
             linger(queueName, consumer);
         }
     }

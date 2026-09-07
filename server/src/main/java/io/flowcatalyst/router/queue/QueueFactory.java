@@ -92,7 +92,9 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
     /// string when it carries one (`docs/spec/router.md` §7.3). A router
     /// consuming from `FLOWCATALYST_CONFIG_URL`-supplied `postgres://…`
     /// queues therefore never needs the platform's own database pool — each
-    /// queue opens its own, sized off [QueueConfig#connections].
+    /// queue opens its own, sized like Go's `pgxpool.New` default (see
+    /// [#createPostgres]) — never off [QueueConfig#connections], which is
+    /// read by no backend.
     ///
     /// The one case that still prefers [#dataSource]: a queue URI that names
     /// the identical database [#dataSource] already connects to — chiefly
@@ -116,17 +118,33 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
                     Duration.ofSeconds(config.visibilityTimeout())));
         }
 
-        // `PostgresQueue#poll` holds at most one connection at a time, and it
-        // is the only poll loop this consumer ever runs (RouterServer starts
-        // exactly one poll thread per consumer); `#ack`/`#nack`/`#metrics`
-        // each borrow-and-return their own. `connections` is the config's
-        // knob for exactly this (`QueueConfig` §2.5) — sizing to
-        // `connections + 1` gives the poll loop headroom to run alongside one
-        // concurrent ack/nack/metrics call without contending for the same
-        // connection; a bigger burst just waits its turn, the same as any
-        // pool.
-        GatedDataSource ownPool = Database.newPool(ownConnection.get(), config.connections() + 1);
-        return Optional.of(new PostgresQueue(ownPool, config.queueName(),
+        // Sized like Go's `pgxpool.New` default for a per-queue pool
+        // (`max(4, NumCPU)`, `../flowcatalyst-go/internal/queue/postgres/postgres.go:53-61`),
+        // not off `QueueConfig#connections` — that field is read by no
+        // backend (`QueueConfig`'s own doc). `PostgresQueue#poll` holds at
+        // most one connection at a time and is the only poll loop this
+        // consumer ever runs (RouterServer starts exactly one poll thread per
+        // consumer), but every one of the pool's workers acks/nacks
+        // concurrently on this same queue, so the pool must have real
+        // headroom for that fan-in, not just the poll loop's one connection.
+        // Measured without this fix: two connections total (the pre-fix
+        // `connections + 1` = 2), one of which the gate below reserves for
+        // probes, so a single ordinary permit serialised every concurrent
+        // ack — ~1,000 msg/s at 25-40% router CPU against Go's ~6,000 msg/s
+        // on the same config.
+        int poolSize = Math.max(4, Runtime.getRuntime().availableProcessors());
+        GatedDataSource ownPool = Database.newPool(ownConnection.get(), poolSize);
+        // The plain Hikari pool, not the gate: the gate (Tier 1,
+        // `docs/spec/admission.md` §1) exists to keep the platform's shared
+        // request-serving pool from reaching HikariCP's timed wait under
+        // request-path contention, and reserves a slice of the pool for
+        // `/health`/`/ready` probes accordingly. A broker consumer's poll
+        // loop and its pool workers' acks/nacks are not request-path
+        // traffic and have no probe lane to share — gating them only
+        // reintroduces the serialisation this fix removes, on a pool
+        // nothing else ever contends for. `ownPool` itself is still passed
+        // as the owned resource so it gets closed with the consumer.
+        return Optional.of(new PostgresQueue(ownPool.hikari(), config.queueName(),
                 Duration.ofSeconds(config.visibilityTimeout()), ownPool));
     }
 

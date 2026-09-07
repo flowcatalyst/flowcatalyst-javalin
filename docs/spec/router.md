@@ -1221,7 +1221,7 @@ client configuration as long as per-pool concurrency is the only cap.
 
 | Method | Contract (as the router relies on it) |
 |---|---|
-| `Identifier()` | stable string used as `QueueIdentifier` on every polled message and as the key for ack/nack resolution, metrics, Prometheus label (normalised after the last `/`) |
+| `Identifier()` | stable string used as `QueueIdentifier` on every polled message and as the key for ack/nack resolution, metrics, Prometheus label (normalised after the last `/`). Java's `RouterManager` resolves ack/nack (and every other `QueueIdentifier` lookup) through an index keyed by `Identifier()` kept alongside its name-keyed config registry, precisely so this holds when `Identifier()` differs from the config queue name (§7.4) — see G10, `docs/go-mirror/2026-09-06-go-fix-list.md` |
 | `Poll(ctx, max)` | return ≤`max` messages now owned by this consumer for one visibility window; may block (SQS 20 s, NATS 20 s); return `ErrStopped` (possibly wrapped) forever after `Stop()`; malformed payloads must not be returned (SQS: acked; NATS: termed; Postgres: **poll error**, §7.3) |
 | `Ack(ctx, receipt)` | permanently remove the delivery identified by `receipt`; error if unknown (Postgres/NATS) |
 | `Nack(ctx, receipt, *delay)` | make the delivery visible again after `delay` seconds (nil → 0); counts as a failure in counters. Router calls it only on the non-retryable control paths (§4.1 state 8) |

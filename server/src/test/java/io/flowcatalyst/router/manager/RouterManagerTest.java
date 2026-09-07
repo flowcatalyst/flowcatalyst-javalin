@@ -3,6 +3,7 @@ package io.flowcatalyst.router.manager;
 import io.flowcatalyst.router.observability.Warnings;
 
 import io.flowcatalyst.router.config.PoolSpec;
+import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.policy.RetryPolicy;
@@ -113,6 +114,68 @@ class RouterManagerTest {
 
         assertThat(source.acked).containsExactly("m1");
         assertThat(pool.delivered()).containsExactly("m1");
+    }
+
+    // ── §7.1/§7.4: ack resolves by Consumer#identifier, not the config queue name ──
+
+    @Test
+    @DisplayName("ack resolves by Consumer#identifier, not the config queue name — the NATS shape "
+            + "(`<stream>/<consumer>` != queueName, §7.1/§7.4) that dropped every ack in the router bench")
+    void ackResolvesByConsumerIdentifierNotConfigQueueName() {
+        // Mirrors the router bench's NATS run exactly: config queue name
+        // "BENCH-1", consumer identifier "S1/router" (§7.4's
+        // <stream>/<consumer> shape) — the mismatch that produced "ack
+        // skipped: queue BENCH1/router is no longer registered" for every
+        // one of 3,000 deliveries (bench/router/results/java-nats-q1-c1.server.log).
+        var natsLike = new RecordingConsumer("S1/router");
+        var pools = new CopyOnWriteArrayList<Pool>();
+        // Two-step construction: the pool factory needs to resolve consumers
+        // through the very manager it is building a pool for — the same
+        // circularity [io.flowcatalyst.server.Router] resolves with
+        // `manager.consumer(...)` inside a lambda handed to the manager's own
+        // constructor.
+        var holder = new RouterManager[1];
+        var localManager = new RouterManager(tracker, Warnings.NO_OP, clock, cfg -> {
+            var pool = new Pool(cfg, (msg, recordFailure) -> MediationOutcome.Success.of(200),
+                    new QueueBroker(qid -> holder[0].consumer(qid).orElse(null), tracker, clock),
+                    PoolMetrics.NO_OP, clock);
+            pools.add(pool);
+            return pool;
+        });
+        holder[0] = localManager;
+        try {
+            localManager.reconfigure(
+                    new RouterConfig(List.of(), List.of(new QueueConfig("nats://host?stream=S1&consumer=router",
+                            "BENCH-1", 0, 30))),
+                    queue -> Optional.of(natsLike));
+
+            // A poll stamps QueueIdentifier from Identifier() (§7.1), never
+            // the config queue name.
+            var message = QueuedMessage.of(
+                    new Message("m1", null, null, null, MediationType.HTTP, "https://x.test/h",
+                            null, false, DispatchMode.IMMEDIATE),
+                    "b1", "receipt-b1", natsLike.identifier());
+
+            localManager.route(List.of(message), natsLike);
+
+            await(() -> !natsLike.acked.isEmpty());
+            // The load-bearing assertion: the fake consumer that actually
+            // polled the message receives the ack exactly once. Resolving by
+            // the config name instead ("BENCH-1") finds nothing, logs "ack
+            // skipped: queue ... is no longer registered", and this list
+            // stays empty forever.
+            assertThat(natsLike.acked).as("ack(receipt) reaches the polling consumer, by identifier")
+                    .containsExactly("m1");
+
+            // After a reconfigure drops the queue, the identifier index no
+            // longer resolves it once nothing lingers on the tracker's behalf.
+            localManager.reconfigure(RouterConfig.EMPTY, queue -> Optional.empty());
+            localManager.retireLingeringConsumers();
+            assertThat(localManager.consumer("S1/router"))
+                    .as("gone from the identifier index once retired").isEmpty();
+        } finally {
+            pools.forEach(Pool::close);
+        }
     }
 
     // ── Pool resolution ─────────────────────────────────────────────────

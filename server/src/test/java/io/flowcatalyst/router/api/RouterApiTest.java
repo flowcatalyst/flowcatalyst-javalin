@@ -1765,6 +1765,38 @@ class RouterApiTest {
         assertThat(body.has("lastChangedAt")).isFalse();
     }
 
+    // ── Metrics (Prometheus alias, §1.4/§9.2) ────────────────────────────
+
+    @Test
+    @DisplayName("GET /metrics renders Prometheus text exposition, including a pool family for the registered pool")
+    void metricsAliasRendersPrometheusText() {
+        var r = http.get("/router/metrics");
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(r.headers().firstValue("Content-Type").orElse(""))
+                .as("Prometheus text exposition, the same format Metrics#scrape negotiates")
+                .contains("text/plain");
+        // A router metric family this collector actually emits, with the
+        // registered pool's own label — not just "some text came back".
+        assertThat(r.body())
+                .contains("# TYPE fc_pool_queue_size gauge")
+                .contains("fc_pool_queue_size{pool=\"POOL-A\"}");
+    }
+
+    @Test
+    @DisplayName("GET /metrics needs no BasicAuth credentials even when the prefix would otherwise require them")
+    void metricsAliasIsExemptFromBasicAuth() {
+        var filter = new io.flowcatalyst.router.api.auth.BasicAuthFilter("BASIC", "op", "secret", "/router");
+        try (var guarded = TestHttp.routes(routes -> {
+            io.flowcatalyst.router.api.auth.BasicAuthFilter.register(routes, filter);
+            RouterApi.register(routes, new RouterApi.State(manager, tracker, warnings, breakers, election,
+                    null, "test-version", "/router", null, Map.of("POOL-A", poolAMetrics), traffic, brokerStats));
+        })) {
+            var r = guarded.get("/router/metrics");
+            assertThat(r.statusCode()).as("§9.7: /metrics is public even under BasicAuth").isEqualTo(200);
+        }
+    }
+
     // ── Pool update ──────────────────────────────────────────────────────
 
     @Test
