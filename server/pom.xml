@@ -408,7 +408,9 @@
                      .class under io/netty, io/prometheus, io/nats and io/flowcatalyst into the
                      image heap as bytes: 24 MB of bytecode the binary already contained as code. -->
                 <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt</buildArg>
-                <buildArg>-Os</buildArg>
+                <!-- -O2, not -Os: the same code at -Os ran at 14% of Go and at -O2 at 32%
+                     (bench/real/RESULTS.md rounds 9–10) for 6% more bytes; owner ruling 2026-09-07. -->
+                <buildArg>-O2</buildArg>
                 <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
                 <!-- Third-party reachability captured with the tracing agent (see native-config/README). -->
                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/native-config</buildArg>
