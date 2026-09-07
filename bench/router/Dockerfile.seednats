@@ -1,0 +1,10 @@
+# One-shot bulk NATS JetStream producer (bench/router/seednats). Vendored deps, no network at
+# build time.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY seednats/ .
+RUN CGO_ENABLED=0 go build -mod=vendor -o /out/seednats .
+
+FROM alpine:3.20
+COPY --from=build /out/seednats /app/seednats
+ENTRYPOINT ["/app/seednats"]

@@ -1,0 +1,11 @@
+# The mediation target the router POSTs {"messageId":"<id>"} to. Vendored deps (h2c only),
+# so the build stage needs no network.
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY sink/ .
+RUN CGO_ENABLED=0 go build -mod=vendor -o /out/sink .
+
+FROM alpine:3.20
+COPY --from=build /out/sink /app/sink
+EXPOSE 9000
+ENTRYPOINT ["/app/sink"]

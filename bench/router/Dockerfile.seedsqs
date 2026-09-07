@@ -1,0 +1,9 @@
+# One-shot bulk SQS producer (bench/router/seedsqs). Vendored deps, no network at build time.
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY seedsqs/ .
+RUN CGO_ENABLED=0 go build -mod=vendor -o /out/seedsqs .
+
+FROM alpine:3.20
+COPY --from=build /out/seedsqs /app/seedsqs
+ENTRYPOINT ["/app/seedsqs"]
