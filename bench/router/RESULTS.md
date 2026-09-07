@@ -816,3 +816,40 @@ nothing and removes the poll timeout. Eight queues: no 20 s tail any more, but 7
 single-queue rate — the remaining gap is the capacity-gate crossing thrash with eight producers
 (pool buffer oscillating at its limit) and is the next thing to root-cause; it is a throughput
 detail on a shape the owner has ruled out of scope (one router instance, receiver-bound).
+
+## Rust router (owner's `flowcatalyst-rust`, branch `router-bench-wiring` at `39f2d8e5`) — 2026-09-08
+
+The Rust router only consumed SQS until tonight: its NATS and Postgres consumers existed as library
+types nobody constructed. Two Sonnet units wired a scheme-dispatching consumer factory, ported G10–G13
+and the owner's no-sleep ruling, moved NATS to a continuous subscription, made deployed-mode mediation
+HTTP/2 (prior-knowledge h2c), gated `/health` on consumers started, and fixed a Postgres "ack race"
+whose root cause was **three poll tasks per queue** (config-sync hot-add, the binary's own start-up loop
+and `start()` each spawned one). Image `bench-real-rust` from `Dockerfile.rust`; every row needs
+`FC_ROUTER_HTTP_PREFIX=/router`. All rows: delivered = seeded, depth 0.
+
+| broker | queues | messages | deliveries/s | router CPU | RSS | broker CPU |
+|---|---:|---:|---:|---:|---:|---:|
+| NATS | 1 | 500,000 | 34,871 | 71% | 15 MB | 21% |
+| NATS | 8 | 500,000 | 31,770 | 76% | 59 MB | 20% |
+| Postgres | 8 | 50,000 | 4,653 | 30% | 9 MB | 4 cores |
+| SQS (LocalStack) | 8 | 50,000 | 1,329 | 18% | 21 MB | 98% (LocalStack) |
+
+Like-for-like with the Java warm rows (NATS, 1 CPU, h2c): Rust 34,871/s at 15 MB, Java 25,638/s at
+368 MB, Go 21,516/s at 32 MB (Go's continuous-subscription build; its single-queue 500k row is
+still failing, see below). Rust is the only one whose eight-queue rate stays near its single-queue rate.
+
+Residue seen in the Rust logs, for a third unit: the stall detector restarts healthy consumers during
+a drain (3× on Postgres, 8× on SQS) and one restart looked the consumer up by the wrong key
+("Consumer not found for restart consumer_id=BENCH1/router") — the same liveness/identity class
+Java (`59c30ef`) and Go (`62e159f`) fixed today; and "Pool at capacity, deferring" is logged per message
+under saturation (883 lines), which wants a once-per-transition warning as in the other routers.
+
+## Go, continuous subscription + h2c (branch `router-fixes-g10-g12` at `62e159f`) — partial
+| queues | messages | deliveries/s | router CPU | result |
+|---|---:|---:|---:|---|
+| 1, 1 CPU | 150,000 | 21,516 | 85% | pass |
+| 8, 1 CPU | 500,000 | 16,196 | 75% | pass |
+| 1, 2 CPU | 500,000 | 112,980 delivered at 35,525/s then froze | 1% | FAIL — subscription died silently, liveness rule hid it |
+| 1, 1 CPU | 500,000 | 0 | 0% | FAIL — process produced no output |
+Being fixed (forward loop must resubscribe on iterator error and surface a dead subscription to the
+supervisor; startup failure must be logged).

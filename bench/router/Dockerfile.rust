@@ -1,0 +1,30 @@
+# Rust router (fc-router-bin) — bench image.
+#
+# Build context is the flowcatalyst-rust checkout (or worktree) that has the
+# fixes under test, NOT this repo:
+#
+#   docker build -f bench/router/Dockerfile.rust -t bench-real-rust <path-to-flowcatalyst-rust>
+#
+# Two stages on images already present locally (rust:1-bookworm,
+# debian:bookworm-slim) — no cargo-chef, so no extra image pull and no
+# dependency-cache layer; acceptable for a one-off bench build. All TLS in
+# fc-router-bin is rustls (no OpenSSL needed); the sink this rig talks to is
+# plain HTTP, so the runtime stage carries no CA bundle.
+#
+# `bin/fc-router/Cargo.toml` declares `fc-queue` with
+# features = ["sqs", "postgres", "nats"] unconditionally (item 1 of this
+# change: scheme-dispatched queue wiring), so a default `cargo build
+# --release --bin fc-router-bin` already carries every backend this rig's
+# BROKER=postgres/sqs/nats matrix needs — no --features flag required here.
+
+FROM rust:1-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY bin ./bin
+RUN cargo build --release --bin fc-router-bin
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/fc-router-bin /app/fc-router
+EXPOSE 8080
+ENTRYPOINT ["/app/fc-router"]
