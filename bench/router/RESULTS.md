@@ -863,3 +863,25 @@ GOMAXPROCS=1 — 11% CPU, heartbeat misses that never occur at 2 CPUs — while 
 same host minutes apart, so host noise does not explain it. Candidates: the forwarder goroutine
 starved behind 256 workers on one P (each message crosses two goroutine hand-offs), or the
 iterator's heartbeat monitor timer starved. Not chased further tonight; the owner merges the Go branch.
+
+### Rust, unit 3 (`38e7b0a0`: liveness seeded at consumer start + broker-activity signal, restart by identifier, capacity warnings once per transition, no second spawn at start) — final rows
+| broker | queues | messages | deliveries/s | router CPU | RSS | log |
+|---|---:|---:|---:|---:|---:|---|
+| Postgres | 8 | 50,000 | 6,236 | 40% | 9 MB | clean |
+| NATS | 1 | 500,000 | 35,038 | 73% | 14 MB | clean |
+| NATS | 8 | 500,000 | 31,894 | 79% | 60 MB | capacity pause/resume per loop per transition only |
+| SQS (LocalStack) | 8 | 50,000 | 1,330 | 21% | 23 MB | clean |
+
+All delivered, depth 0, no stalls, no restarts. The Rust router is usable on all three brokers.
+
+## Where the three routers ended up (2026-09-08, all fixes in, NATS, HTTP/2, 1 CPU, 500,000 messages)
+| router | 1 queue | 8 queues | RSS (1 queue) | user CPU/msg | branch |
+|---|---:|---:|---:|---:|---|
+| Rust | 35,038/s | 31,894/s | 14 MB | — | `router-bench-wiring` @ `38e7b0a0` |
+| Java | 25,638/s | 14,117/s | 368 MB | 34 µs | `vertx-listener` @ `10af68c` |
+| Go | 2,940/s (open, 33,295/s at 2 CPU) | 16,165/s | 53–63 MB | 26 µs (fetch build) | `router-fixes-g10-g12` @ `992c8a2` |
+
+Every router was corrected by these rows: Java 7 defects, Go 6 (4 shared with Java), Rust 8 (three
+pollers per queue, false stalls, restart key, receipt handle, plus the four ported ones). The
+receiver-bound production shape (one router, hot standby, slow targets) needs none of the peak
+numbers; what it needed was the correctness the rows forced.
