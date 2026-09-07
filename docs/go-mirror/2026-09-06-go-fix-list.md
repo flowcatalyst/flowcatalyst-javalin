@@ -210,3 +210,58 @@ poisoned an entry's receipt handle — scoping the one writer/reader fixes all o
 Go fix: key `t.byBroker` by `(QueueIdentifier, BrokerMessageID)` instead of the bare
 `BrokerMessageID` — same change as Java's, everywhere the map is read or written
 (`Register`, `EnsureTracked`, `Remove`, the consistency sweep in the stall-detector path).
+
+## G12 — the consumer poll loop's backpressure gate is a fixed 2 s sleep, which starves the workers on a fast broker (and a partial batch adds a second, separate pause on top)
+
+`docs/spec/router.md` §3.2 step 2 (pre-fix): when no pool has spare buffer capacity
+(`queueSize >= max(concurrency×20, 50)`), the consumer loop "pauses 2 s and retries." Step 5
+(pre-fix): a batch smaller than the poll size ("partial") additionally slept 500 ms before the
+next poll, on the theory that a partial batch means the queue is draining. Both are fixed
+`Thread.sleep`s, independent of when the condition that caused them actually clears.
+
+Measured on NATS JetStream (fetch ≈ 1 ms) with `Pool.Config(concurrency=256)` (Java, pre-fix,
+`bench/router` harness, single CPU): one queue alone drains at 7,916 deliveries/s with the
+router at 99% CPU — 256 workers × ~33 ms mediation ≈ 7,750/s, i.e. the workers are the limit,
+correctly. **Eight** queues sharing one pool buffer on the same box drain at only 1,312/s with
+the router at 22% CPU: eight pollers fill the 5,120-slot pool buffer in well under a second, all
+enter the capacity pause, the workers drain the buffer in roughly 0.7 s and then sit idle for the
+remainder of the fixed 2 s every poller is sleeping through. The log shows 21 "capacity returned;
+resuming queue …" transitions in a 38 s run — 21 pollers that were ready to resume long before
+their sleep let them. The 500 ms partial-batch pause is the identical bug in miniature: it holds
+a loop back from a broker that may already have the next batch ready.
+
+Both are fixed constants, not derived from anything the loop can observe, and both hold the loop
+back from work regardless of whether the condition that justified the pause is still true a
+moment later — the general shape CLAUDE.md's "no tuning" note and `docs/spec/admission.md` §0
+rule out for a request path; the same reasoning applies to this poll path.
+
+Java fix (`io.flowcatalyst.router.manager.ConsumerLoop`, `io.flowcatalyst.router.pool.Pool`,
+`io.flowcatalyst.router.manager.CapacityGate`, 2026-09-07): the capacity pause parks the loop,
+**untimed**, on a per-manager `CapacityGate` (a monotonic generation counter under an intrinsic
+lock — closes the classic lost-wakeup race a bare `Condition` would have between a waiter's last
+check and the moment it actually parks). Every `Pool` is wired to signal the gate the moment its
+`queueSize` crosses back under its capacity threshold (`Pool#onCapacityFreed`, fired on the
+crossing only, never on every admission or completion, so a busy pool costs one wakeup per
+capacity outage, not one per message); a reconfigure or eviction that adds, removes, or drains a
+pool signals it too, since either can change what `anyPoolHasCapacity`/`poolsHaveCapacity`
+answer. The fixed sleep survives in exactly one place: a loop started against a manager with
+*zero* pools registered has nothing that could ever signal it (in production
+`RouterManager#reconfigure` always creates `DEFAULT-POOL` before any loop starts, so this is a
+defensive fallback, not a real steady-state path). The partial-batch pause is removed outright —
+a partial batch now re-polls immediately, exactly like a full one (owner ruling 2026-09-07).
+
+Pinned by `ConsumerLoopTest`: `resumesPromptlyWhenCapacityReturns` — no poll for 300 ms while
+every pool stays full, then the next poll within 100 ms of capacity actually returning (elapsed
+measured from the signal, not from loop start); mutating the park back to `Thread.sleep(2s)`
+fails it at ~1.7 s actual vs. the 100 ms bound. `stopsPromptlyWhileParkedForCapacity` — interrupt
+while parked returns in well under 500 ms. `batchesRepollImmediately` — a partial batch's next
+poll lands within 100 ms, not 500 ms later.
+
+Go fix: the same two fixed sleeps live in `internal/router/manager.go`'s poll loop (the 2 s
+"all pools full" pause and the partial-batch pause after `route()`) — not reproduced against Go
+directly here, but the code shape is identical to Java's pre-fix, so it is expected to show the
+same collapse on a fast broker with several queues sharing pool capacity. Recommended: an
+equivalent per-pool/per-manager "capacity freed" signal (Go's pools already know their own
+`queueSize` on every enqueue/dequeue) that the poll loop selects/waits on instead of
+`time.Sleep(2 * time.Second)`, and drop the partial-batch `time.Sleep` entirely so a partial batch
+re-polls immediately like a full one.

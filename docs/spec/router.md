@@ -558,9 +558,21 @@ queue it came from*.
 Per iteration (`router/manager.go:436-507`):
 
 1. Stop if cancelled.
-2. **Backpressure gate**: if *no* pool has spare buffer capacity (or there are
-   no pools), pause **2 s** and retry; on the *transition* into "all full"
-   record one `POOL_CAPACITY`/`WARNING` warning
+2. **Backpressure gate**: if *no* pool has spare buffer capacity, wait,
+   **event-driven**, for capacity to return — a pool signals the moment its
+   `queueSize` crosses back under the threshold, and the loop parks untimed
+   on that signal rather than polling a fixed interval (**Java-first
+   correction, 2026-09-07**: Go still pauses a fixed 2 s and retries; on a
+   fast broker several pollers fill a shared pool buffer in well under a
+   second, the workers drain it in a fraction of that, and every poller then
+   sits out the rest of the fixed pause with the router mostly idle —
+   measured 1,312 deliveries/s at 22% CPU across eight queues where one
+   queue alone reaches 7,916/s at 99% CPU; `docs/go-mirror/2026-09-06-go-fix-list.md`
+   G12). If there are no pools at all, no signal exists to wait on, so this
+   still pauses a fixed 2 s and retries — a defensive fallback for a state
+   production never actually reaches (`RouterManager#reconfigure` always
+   creates `DEFAULT-POOL` before any loop starts), not a knob. On the
+   *transition* into "all full" record one `POOL_CAPACITY`/`WARNING` warning
    `"all pools at capacity; pausing <queueId>"` (not repeated while it stays
    full). A pool "has capacity" iff `queueSize < max(concurrency×20, 50)`.
 3. `Poll(ctx, 10)`.
@@ -571,8 +583,12 @@ Per iteration (`router/manager.go:436-507`):
    - Success → heartbeat `lastPoll = now` (empty or not).
 4. Empty batch → sleep **1 s**. (For SQS the `Poll` itself already long-polled
    up to 20 s.)
-5. Non-empty → `route(batch)`; if the batch was **partial** (<10) sleep
-   **500 ms**; a full batch re-polls immediately.
+5. Non-empty → `route(batch)`; re-polls immediately, whether the batch was
+   **partial** (<10) or full (**Java-first correction, owner ruling
+   2026-09-07**: Go still sleeps 500 ms after a partial batch on the theory
+   that the queue is draining, but that pause is the same throughput bug as
+   step 2's — it holds the loop back from work the broker may already have
+   ready; G12 covers both in one fix).
 
 ### 3.3 Routing — required behaviour (`router/manager.go:319-389`)
 

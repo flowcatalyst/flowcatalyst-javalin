@@ -439,9 +439,13 @@ class RouterServerTest {
                 await(() -> !warnings.raised.isEmpty());
 
                 mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
-                // Real-time capacity-pause ticks (ALL_FULL_PAUSE) keep firing
-                // and now read the advanced clock, refreshing lastAlive()
-                // past the point lastPoll() alone would read as stale.
+                // The loop is still parked, untimed, on the capacity gate —
+                // no periodic tick to refresh a stored instant any more
+                // (ConsumerLoop#awaitCapacity is event-driven, 2026-09-07).
+                // ConsumerLoop#lastAlive instead reports the *current*
+                // instant for as long as it is genuinely still paused, which
+                // reads past-the-jump immediately rather than waiting for a
+                // wake that would never come while pool "A" stays full.
                 await(() -> localServer.stalledConsumers().isEmpty());
             } finally {
                 filler.interrupt();
