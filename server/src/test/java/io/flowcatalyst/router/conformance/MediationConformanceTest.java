@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.pool.HttpMediator;
+import io.flowcatalyst.router.pool.JdkTransport;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
@@ -73,7 +74,7 @@ class MediationConformanceTest {
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
         breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, FIXED);
-        mediator = new HttpMediator(HttpMediator.defaultClient(true), Duration.ofSeconds(5), breakers, FIXED,
+        mediator = new HttpMediator(new JdkTransport(HttpMediator.defaultClient(true)), Duration.ofSeconds(5), breakers, FIXED,
                 (severity, category, text) -> raised.add(severity + "/" + category));
     }
 

@@ -1,6 +1,5 @@
 package io.flowcatalyst.router.pool;
 
-import java.net.http.HttpClient;
 import java.time.Duration;
 
 /// What a pool records about its own deliveries.
@@ -36,7 +35,7 @@ public interface PoolMetrics {
     /// `fc_router_mediation_http_version_total{version="HTTP_2"|"HTTP_1_1"}`
     /// counter, the only way a target still stuck on 1.1 is visible once h2
     /// is preferred by default.
-    void recordHttpVersion(HttpClient.Version version);
+    void recordHttpVersion(HttpVersion version);
 
     PoolMetrics NO_OP = new PoolMetrics() {
         @Override
@@ -60,7 +59,7 @@ public interface PoolMetrics {
         }
 
         @Override
-        public void recordHttpVersion(HttpClient.Version version) {
+        public void recordHttpVersion(HttpVersion version) {
         }
     };
 }

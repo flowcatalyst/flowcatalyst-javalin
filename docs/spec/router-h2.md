@@ -60,3 +60,46 @@ server dependency) or OkHttp's `H2_PRIOR_KNOWLEDGE`; the Vert.x client is exclud
 (c) accept 1.1 for cleartext and bound the connection count another way (the router's per-pool
 concurrency already bounds in-flight requests, and idle 1.1 connections are pooled by the JDK
 client with a default keep-alive of 20 min — measure how many a busy router actually holds).
+
+### Ruling 2026-09-07
+
+Option (b), via Vert.x rather than Jetty or OkHttp: the router's outbound mediation now uses
+`io.vertx:vertx-core`'s `HttpClient` — `HttpClientOptions.setHttp2ClearTextUpgrade(false)` sends
+the h2 connection preface *by prior knowledge* for `http://` targets (no `Upgrade` round trip, so
+it works on a POST carrying a body, which every mediation call is) and `setUseAlpn(true)`
+negotiates h2 during the TLS handshake for `https://` targets, same as before. This supersedes the
+"the Vert.x client is excluded by the plan" line above — the plan's blanket exclusion was about the
+Vert.x **listener** question, not this narrower client seam, and Vert.x core was already a
+dependency (`io.flowcatalyst.http.vertx.VertxListener`).
+
+A `MediationTransport` seam (`io.flowcatalyst.router.pool`) separates `HttpMediator`'s decision
+logic — request shape, classification, breaker, warnings, all unchanged — from the client that
+makes the call: `JdkTransport` (the JDK client, HTTP/1.1 only) for dev mode, and
+`io.flowcatalyst.http.vertx.VertxTransport` for deployed mode. `VertxTransport` lives in the Vert.x
+adapter package, not in `router.pool`, because `NoFrameworkLeakTest` forbids an `io.vertx` import
+anywhere else; the router's composition root (`io.flowcatalyst.server.Router`) depends only on the
+adapter package's own `VertxMediationClient`, never on `io.vertx.*` directly, for the same reason.
+
+The router owns its own single-event-loop `Vertx` instance for this client (`VertxMediationClient`,
+`setEventLoopPoolSize(1)`) — never the listener's, since the listener may not even be a Vert.x one
+— created in `Router.start` and closed in `Router.close`, after the consumers have drained. The
+per-request deadline lives on that loop's timer wheel (`RequestOptions.setTimeout`), not on the
+calling thread: the caller is a router pool worker running on a virtual thread, and the Vert.x
+`Future` is bridged to it with an **untimed** blocking wait
+(`toCompletionStage().toCompletableFuture().get()`, no `get(timeout)`) — the same "the loop owns
+time" discipline `VertxListener` uses for inbound requests. A Vert.x-side timeout is reported
+through the same `"request timeout"` outcome as the JDK path.
+
+**Confirmed, not merely asserted:** an HTTP/1.1-only target fails the delivery
+(`MediationOutcome.ErrorConnection`) rather than being silently reinterpreted as HTTP/1.1 — a
+prior-knowledge h2 connection preface sent to a server that only speaks HTTP/1.1 is not a request
+that server can answer. No tuning knobs were added; every `HttpClientOptions`/`HttpServerOptions`
+value not called out above is Vert.x's own default (`CLAUDE.md` "no tuning; defaults are the
+product").
+
+Tests: `io.flowcatalyst.http.vertx.VertxTransportTest` (h2c by prior knowledge against a cleartext
+target with a body — the case Q7 identified the JDK client as unable to do; no silent downgrade
+against an HTTP/1.1-only target; dev mode still succeeds against that same target; a slow target
+times out close to the deadline, not the target's sleep) plus the adapted `HttpMediatorTest`,
+`HttpMediatorVersionTest`, `MediationConformanceTest` and `PoolMetricsCollectorTest`, all green
+through the `JdkTransport`/`HttpVersion` seam.

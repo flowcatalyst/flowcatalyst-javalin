@@ -13,11 +13,12 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /// Delivers a message over HTTP and classifies the result
@@ -43,20 +44,20 @@ public final class HttpMediator implements Mediator {
     private static final int DEFAULT_RETRY_AFTER_SECONDS = 30;
     private static final int SERVER_ERROR_DELAY_SECONDS = 30;
 
-    private final HttpClient client;
+    private final MediationTransport transport;
     private final Duration requestTimeout;
     private final BreakerRegistry breakers;
     private final Clock clock;
     private final Warnings warnings;
     private final PoolMetrics metrics;
 
-    public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers, Clock clock) {
-        this(client, requestTimeout, breakers, clock, Warnings.NO_OP, PoolMetrics.NO_OP);
+    public HttpMediator(MediationTransport transport, Duration requestTimeout, BreakerRegistry breakers, Clock clock) {
+        this(transport, requestTimeout, breakers, clock, Warnings.NO_OP, PoolMetrics.NO_OP);
     }
 
-    public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers,
+    public HttpMediator(MediationTransport transport, Duration requestTimeout, BreakerRegistry breakers,
                         Clock clock, Warnings warnings) {
-        this(client, requestTimeout, breakers, clock, warnings, PoolMetrics.NO_OP);
+        this(transport, requestTimeout, breakers, clock, warnings, PoolMetrics.NO_OP);
     }
 
     /// `metrics` is where the negotiated HTTP version of every successful
@@ -65,9 +66,9 @@ public final class HttpMediator implements Mediator {
     /// `Router.start` and handed to every pool's factory closure before any
     /// per-pool [PoolMetrics] exists, so there is no single pool's metrics
     /// object to reuse here.
-    public HttpMediator(HttpClient client, Duration requestTimeout, BreakerRegistry breakers,
+    public HttpMediator(MediationTransport transport, Duration requestTimeout, BreakerRegistry breakers,
                         Clock clock, Warnings warnings, PoolMetrics metrics) {
-        this.client = client;
+        this.transport = transport;
         this.requestTimeout = requestTimeout;
         this.breakers = breakers;
         this.clock = clock;
@@ -123,14 +124,14 @@ public final class HttpMediator implements Mediator {
 
     private MediationOutcome attempt(Message message, URI target) throws InterruptedException {
         var body = message.deliveryBody();
-        HttpRequest request;
+        List<Map.Entry<String, String>> headers;
         try {
-            request = buildRequest(message, target, body);
+            headers = buildHeaders(message, body);
         } catch (RuntimeException e) {
             return MediationOutcome.ErrorConfig.undeliverable(0, "could not build request: " + e.getMessage());
         }
         try {
-            var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            var response = transport.send(target, body, headers, requestTimeout);
             // Recorded for every successful send regardless of status code —
             // this is about which HTTP version the target actually spoke,
             // not whether the delivery succeeded (`docs/spec/router-h2.md`
@@ -147,24 +148,22 @@ public final class HttpMediator implements Mediator {
         }
     }
 
-    private HttpRequest buildRequest(Message message, URI target, byte[] body) {
-        var builder = HttpRequest.newBuilder(target)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                .timeout(requestTimeout)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json");
+    private List<Map.Entry<String, String>> buildHeaders(Message message, byte[] body) {
+        var headers = new ArrayList<Map.Entry<String, String>>();
+        headers.add(Map.entry("Content-Type", "application/json"));
+        headers.add(Map.entry("Accept", "application/json"));
 
         if (message.authToken() != null) {
             // Present-but-empty is meaningful and distinct from absent.
-            builder.header("Authorization", "Bearer " + message.authToken());
+            headers.add(Map.entry("Authorization", "Bearer " + message.authToken()));
         }
         if (message.signingSecret() != null) {
             var timestamp = WebhookSigner.timestamp(clock.instant());
-            builder.header("X-FlowCatalyst-Timestamp", timestamp);
-            builder.header("X-FlowCatalyst-Signature",
-                    WebhookSigner.sign(message.signingSecret(), timestamp, body));
+            headers.add(Map.entry("X-FlowCatalyst-Timestamp", timestamp));
+            headers.add(Map.entry("X-FlowCatalyst-Signature",
+                    WebhookSigner.sign(message.signingSecret(), timestamp, body)));
         }
-        return builder.build();
+        return headers;
     }
 
     /// The one 5xx that is permanent rather than transient.
@@ -216,8 +215,8 @@ public final class HttpMediator implements Mediator {
         };
     }
 
-    private MediationOutcome classify(Message message, HttpResponse<byte[]> response) {
-        int status = response.statusCode();
+    private MediationOutcome classify(Message message, MediationTransport.Response response) {
+        int status = response.status();
         if (status >= 200 && status < 300) {
             // The body may steer us: defer, or flush the group.
             return io.flowcatalyst.router.wire.MediationResponse.resolve(status, response.body());
@@ -281,8 +280,8 @@ public final class HttpMediator implements Mediator {
     /// or not an integer. The HTTP-date form is not honoured — Go does not
     /// parse it either, and silently mis-parsing a date into a huge delay is
     /// worse than using the default.
-    private int retryAfterSeconds(HttpResponse<byte[]> response) {
-        return response.headers().firstValue("Retry-After")
+    private int retryAfterSeconds(MediationTransport.Response response) {
+        return Optional.ofNullable(response.retryAfter())
                 .map(String::trim)
                 .flatMap(HttpMediator::parsePositiveInt)
                 .orElse(DEFAULT_RETRY_AFTER_SECONDS);

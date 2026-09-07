@@ -1,5 +1,6 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.http.vertx.VertxMediationClient;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;
@@ -17,6 +18,9 @@ import io.flowcatalyst.router.observability.WarningStore;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.pool.HttpMediator;
+import io.flowcatalyst.router.pool.HttpVersion;
+import io.flowcatalyst.router.pool.JdkTransport;
+import io.flowcatalyst.router.pool.MediationTransport;
 import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.postgres.PostgresQueue;
@@ -85,12 +89,18 @@ public final class Router implements AutoCloseable {
     /// get there.
     private final Map<String, PoolMetricsCollector> poolMetrics = new ConcurrentHashMap<>();
 
+    /// The deployed-mode mediation transport's own Vert.x instance
+    /// (`docs/spec/router-h2.md` §5) — `null` in dev mode, where the
+    /// mediator uses [JdkTransport] instead and there is nothing here to
+    /// close.
+    private final VertxMediationClient vertxMediationClient;
+
     private Router(RouterServer server, RouterManager manager, InFlightTracker tracker,
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
                    Warnings notifier, LifecycleLoops housekeeping, BrokerStatsCache brokerStats,
-                   PoolMetricsCollector mediationMetrics) {
+                   PoolMetricsCollector mediationMetrics, VertxMediationClient vertxMediationClient) {
         this.server = server;
         this.mediationMetrics = mediationMetrics;
         this.manager = manager;
@@ -105,6 +115,7 @@ public final class Router implements AutoCloseable {
         this.housekeeping = housekeeping;
         this.brokerStats = brokerStats;
         this.poolMetrics.putAll(metrics);
+        this.vertxMediationClient = vertxMediationClient;
     }
 
     public RouterManager manager() {
@@ -139,7 +150,7 @@ public final class Router implements AutoCloseable {
             var b = io.prometheus.metrics.model.snapshots.CounterSnapshot.builder()
                     .name("fc_router_mediation_http_version")
                     .help("Outbound mediation requests by the HTTP version the target actually spoke.");
-            for (var v : new java.net.http.HttpClient.Version[] {java.net.http.HttpClient.Version.HTTP_2, java.net.http.HttpClient.Version.HTTP_1_1}) {
+            for (var v : new HttpVersion[] {HttpVersion.HTTP_2, HttpVersion.HTTP_1_1}) {
                 b.dataPoint(io.prometheus.metrics.model.snapshots.CounterSnapshot.CounterDataPointSnapshot.builder()
                         .labels(io.prometheus.metrics.model.snapshots.Labels.of("version", v.name()))
                         .value(mediationMetrics.httpVersionCount(v)).build());
@@ -188,7 +199,20 @@ public final class Router implements AutoCloseable {
         // exists, so the HTTP-version counter it feeds lives on its own
         // collector rather than any individual pool's.
         var mediationMetrics = new PoolMetricsCollector(clock);
-        var mediator = new HttpMediator(HttpMediator.defaultClient(env.routerDevMode()),
+        // Owner ruling 2026-09-07 (`docs/spec/router-h2.md` §5): dev mode
+        // keeps the JDK client pinned to HTTP/1.1; deployed mode gets its
+        // own Vert.x instance, never the listener's — the listener may not
+        // even be Vert.x — so it has something of its own to close on
+        // shutdown.
+        VertxMediationClient vertxMediationClient = null;
+        MediationTransport transport;
+        if (env.routerDevMode()) {
+            transport = new JdkTransport(HttpMediator.defaultClient(true));
+        } else {
+            vertxMediationClient = VertxMediationClient.start();
+            transport = vertxMediationClient.transport();
+        }
+        var mediator = new HttpMediator(transport,
                 env.routerDevMode() ? HttpMediator.DEV_TIMEOUT : HttpMediator.PRODUCTION_TIMEOUT,
                 breakers, clock, warningSink, mediationMetrics);
 
@@ -269,7 +293,7 @@ public final class Router implements AutoCloseable {
         LOG.info("router started leader={} prefix={} standby={} alb={}",
                 server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
-                redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics);
+                redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics, vertxMediationClient);
     }
 
     /// The A-01 gate: [BlockedSiblings.Settle] iff a platform base URL is
@@ -444,6 +468,13 @@ public final class Router implements AutoCloseable {
         }
         if (redisClient != null) {
             redisClient.close();
+        }
+        // Only set in production mode (`docs/spec/router-h2.md` §5) — dev
+        // mode's JdkTransport owns nothing of its own to close. After
+        // server.close() above, which has already drained the consumers
+        // that would otherwise still be calling into it.
+        if (vertxMediationClient != null) {
+            vertxMediationClient.close();
         }
         LOG.info("router stopped");
     }

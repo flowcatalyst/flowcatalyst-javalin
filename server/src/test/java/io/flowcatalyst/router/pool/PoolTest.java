@@ -1098,7 +1098,7 @@ class PoolTest {
         }
 
         @Override
-        public void recordHttpVersion(java.net.http.HttpClient.Version version) {
+        public void recordHttpVersion(HttpVersion version) {
         }
     }
 }

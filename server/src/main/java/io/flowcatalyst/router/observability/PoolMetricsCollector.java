@@ -1,8 +1,8 @@
 package io.flowcatalyst.router.observability;
 
+import io.flowcatalyst.router.pool.HttpVersion;
 import io.flowcatalyst.router.pool.PoolMetrics;
 
-import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -124,7 +124,7 @@ public final class PoolMetricsCollector implements PoolMetrics {
 
     /// `fc_router_mediation_http_version_total{version=...}`
     /// (`docs/spec/router-h2.md` §3) — kept as two counters rather than a
-    /// map since [HttpClient.Version] only ever negotiates one of these two
+    /// map since [HttpVersion] only ever negotiates one of these two
     /// over HTTP (never HTTP/3 for outbound mediation).
     private final AtomicLong totalHttpVersion2 = new AtomicLong();
     private final AtomicLong totalHttpVersion1_1 = new AtomicLong();
@@ -187,8 +187,8 @@ public final class PoolMetricsCollector implements PoolMetrics {
     }
 
     @Override
-    public void recordHttpVersion(HttpClient.Version version) {
-        if (version == HttpClient.Version.HTTP_2) {
+    public void recordHttpVersion(HttpVersion version) {
+        if (version == HttpVersion.HTTP_2) {
             totalHttpVersion2.incrementAndGet();
         } else {
             totalHttpVersion1_1.incrementAndGet();
@@ -201,8 +201,8 @@ public final class PoolMetricsCollector implements PoolMetrics {
     /// view) rather than folded into [Snapshot], since that record is
     /// specifically the per-pool delivery-outcome shape and this counter is
     /// router-wide, not per-pool (`docs/spec/router-h2.md` §3).
-    public long httpVersionCount(HttpClient.Version version) {
-        return version == HttpClient.Version.HTTP_2 ? totalHttpVersion2.get() : totalHttpVersion1_1.get();
+    public long httpVersionCount(HttpVersion version) {
+        return version == HttpVersion.HTTP_2 ? totalHttpVersion2.get() : totalHttpVersion1_1.get();
     }
 
     private void recordEvent(Deque<Instant> events) {

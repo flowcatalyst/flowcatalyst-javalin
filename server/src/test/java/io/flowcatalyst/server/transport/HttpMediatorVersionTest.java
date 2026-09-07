@@ -6,6 +6,8 @@ import io.flowcatalyst.router.observability.PoolMetricsCollector;
 import io.flowcatalyst.router.policy.BreakerRegistry;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.router.pool.HttpMediator;
+import io.flowcatalyst.router.pool.HttpVersion;
+import io.flowcatalyst.router.pool.JdkTransport;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
@@ -118,8 +120,8 @@ class HttpMediatorVersionTest {
         // cleartext (`Version.HTTP_2` is `HttpClient.Builder`'s own
         // default), so this assertion only holds because dev mode pins 1.1
         // explicitly.
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_1_1)).isEqualTo(1);
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(0);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_1_1)).isEqualTo(1);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(0);
     }
 
     @Test
@@ -132,8 +134,8 @@ class HttpMediatorVersionTest {
 
         mediator.deliver(message("https://localhost:" + port + "/hook"), true);
 
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(1);
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_1_1)).isEqualTo(0);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(1);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_1_1)).isEqualTo(0);
     }
 
     @Test
@@ -154,8 +156,8 @@ class HttpMediatorVersionTest {
 
         mediator.deliver(message(baseUrl), true);
 
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_1_1)).isEqualTo(1);
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(0);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_1_1)).isEqualTo(1);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(0);
     }
 
     @Test
@@ -167,16 +169,16 @@ class HttpMediatorVersionTest {
         var mediator = mediator(client, metrics);
         var target = "https://localhost:" + port + "/hook";
 
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(0);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(0);
 
         mediator.deliver(message(target), true);
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(1);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(1);
 
         mediator.deliver(message(target), true);
         mediator.deliver(message(target), true);
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_2)).isEqualTo(3);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_2)).isEqualTo(3);
         // Never mislabelled onto the other counter.
-        assertThat(metrics.httpVersionCount(HttpClient.Version.HTTP_1_1)).isEqualTo(0);
+        assertThat(metrics.httpVersionCount(HttpVersion.HTTP_1_1)).isEqualTo(0);
     }
 
     @Test
@@ -191,7 +193,7 @@ class HttpMediatorVersionTest {
 
     private static HttpMediator mediator(HttpClient client, PoolMetricsCollector metrics) {
         var breakers = new BreakerRegistry(CircuitBreaker.Config.DEFAULTS, FIXED);
-        return new HttpMediator(client, Duration.ofSeconds(10), breakers, FIXED,
+        return new HttpMediator(new JdkTransport(client), Duration.ofSeconds(10), breakers, FIXED,
                 (severity, category, text) -> { }, metrics);
     }
 
