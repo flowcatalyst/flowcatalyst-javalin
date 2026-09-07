@@ -804,3 +804,15 @@ takes from a one-batch buffer with an untimed park). Rows for that shape follow 
 5. Capacity gate was a 2 s sleep; partial batch slept 500 ms (G12, both; owner ruling: no sleeps).
 6. Per-queue Postgres pool of 2 gated connections serialised acks (Java only).
 7. NATS fetch lifecycle: per-poll ephemeral fetch (tail of lost-until-ack-wait messages), then full-batch waits (20 s tail) (G13; Go's no-wait-first Fetch avoids the second, the continuous subscription is the ruled shape for all three routers).
+
+### NATS JetStream, Java on the continuous subscription (`cbeaf60`), warm rows (500,000 messages, 1 CPU, pool 256)
+| queues | deliveries/s | router CPU | RSS | depth end |
+|---|---:|---:|---:|---:|
+| 1 | 25,638 | 96% | 368 MB | 0 |
+| 8 | 14,117 | 79% | 372 MB | 0 |
+
+Single queue: unchanged from the standing-subscription build (25,384), i.e. the listener model costs
+nothing and removes the poll timeout. Eight queues: no 20 s tail any more, but 79% CPU and 55% of the
+single-queue rate — the remaining gap is the capacity-gate crossing thrash with eight producers
+(pool buffer oscillating at its limit) and is the next thing to root-cause; it is a throughput
+detail on a shape the owner has ruled out of scope (one router instance, receiver-bound).
