@@ -203,13 +203,28 @@ that one method:
 
 | | mechanism | what it costs | what it gives |
 |---|---|---|---|
-| **(a) today** | `Budgets.acquire(group)`, a semaphore per group, untimed | nothing beyond the acquire | a concurrency bound |
-| **(b) planned** | `RequestWorkers.submit(group, task)`, the Jetty thread parks untimed until a worker finishes | one hand-off per request, two continuation switches | FIFO fairness, a measurable queue depth, a hard bound |
+| **(a) today** | `Budgets.acquire(group)`, a semaphore per group, untimed, **unfair** | nothing beyond the acquire | a concurrency bound; a releasing thread can barge ahead of waiters, which is what produced the bad tail in round 12 |
+| **(a′) recommended** | the same, constructed **fair** | FIFO ordering, a little throughput under heavy contention | a bound *and* predictable ordering, with one park per request |
+| **(b)** | `RequestWorkers.submit(group, task)`, the Jetty thread parks until a worker finishes | one hand-off and a second thread per request | nothing (a′) does not already give, on this listener |
 
-So "plug it in" is the body of one method plus its wiring, not a redesign. Start with (a), which is
-already there, and move to (b) only if the tail shows unfairness under load — on the Vert.x adapter
-(b) beat the semaphore on both throughput and tail, but that comparison was against a *per-checkout*
-gate, not against a per-request semaphore, so it does not transfer and must be re-measured here.
+Neither mechanism has anything to do with the kernel-switch problem: both are **untimed** parks, so
+the continuation unmounts, no timer is armed and the delay scheduler is never involved. That problem
+came only from *timed* waits (`tryAcquire(timeout)`, `poll(timeout)`), which is why HikariCP's borrow
+was the defect and why §1's gate fixed it.
+
+**(b) is the wrong default on Javalin.** Its advantage on the Vert.x adapter was that a queued
+request was a *task*, not a thread: the event loop had not yet created a virtual thread for it, so a
+thousand queued requests cost a thousand small objects. Under Javalin the thread already exists
+before the request reaches `admitted()`, because Jetty made one, so submitting to a worker parks that
+thread and starts a second one — a hand-off added rather than a thread saved. The only property (b)
+has left is FIFO ordering, and a fair semaphore has that by construction.
+
+So the plan is (a′): one fair semaphore per group, acquired once per request, permits equal to the
+group's pool size. `RequestWorkers` stays in the tree with its tests in case a future listener is
+event-loop shaped again, but it is not the Javalin design. The fairness cost measured in round 12
+(2,373 unfair against 1,959 fair) was on the *per-checkout* gate, three or four acquisitions per
+request; with one acquisition per request it should be small, and that is the one thing worth
+measuring before committing to it.
 
 ### 11.2 Bucketing: group by what a request holds while it waits
 
