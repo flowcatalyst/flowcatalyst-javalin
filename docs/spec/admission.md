@@ -186,3 +186,96 @@ operation must), its `close()` releases nothing, and it refuses `commit`, `rollb
 `setAutoCommit` (`SQLSTATE 25000`): the outer checkout owns the transaction. No second permit, no
 wait, no deadlock. Pinned by `GatedDataSourceTest` (an uncommitted write on the outer handle is
 visible through the inner one; the mutant that takes a fresh connection fails it).
+
+## 11. Endpoint groups and request-level worker pools on Javalin (plan, 2026-09-08)
+
+The Vert.x cutover was reverted on the owner's ruling, so the listener is Javalin/Jetty again and
+each request runs on its own virtual thread from Jetty's pool. `io.flowcatalyst.http.RequestWorkers`
+— the per-group queue with N long-lived virtual-thread workers, §9 — was only ever wired to the
+Vert.x adapter and is therefore unused code after the revert. It is kept deliberately, with its
+tests, because it is the mechanism this section plans to plug back in. Nothing here is built yet.
+
+### 11.1 Where it plugs in
+
+`JavalinRoutes.admitted(Handler)` is the single seam: every route is wrapped by it, it takes the
+group's permit, opens the `Admission` scope and calls the handler. Two mechanisms can live behind
+that one method:
+
+| | mechanism | what it costs | what it gives |
+|---|---|---|---|
+| **(a) today** | `Budgets.acquire(group)`, a semaphore per group, untimed | nothing beyond the acquire | a concurrency bound |
+| **(b) planned** | `RequestWorkers.submit(group, task)`, the Jetty thread parks untimed until a worker finishes | one hand-off per request, two continuation switches | FIFO fairness, a measurable queue depth, a hard bound |
+
+So "plug it in" is the body of one method plus its wiring, not a redesign. Start with (a), which is
+already there, and move to (b) only if the tail shows unfairness under load — on the Vert.x adapter
+(b) beat the semaphore on both throughput and tail, but that comparison was against a *per-checkout*
+gate, not against a per-request semaphore, so it does not transfer and must be re-measured here.
+
+### 11.2 Bucketing: group by what a request holds while it waits
+
+Not by URL shape. A request can occupy three things — a worker slot, a gate permit and a database
+connection — and the groups exist so that a request holding one of them for a long time cannot
+starve requests that need a different one.
+
+| group | holds a connection | worker bound | note |
+|---|---|---|---|
+| ingest / dispatch (from the message router) | for its transaction | own pool size | must not be starved by user traffic |
+| API / BFF **write** | whole request: the transaction pins one connection | own pool size | cannot release mid-request; a transaction lives on one connection |
+| API / BFF **read** | per statement, if §11.4 is adopted | own pool size, or higher | replica-capable once identified |
+| long external wait (slow downstream, minutes) | **never across the wait** | large or unbounded | bounded by memory; a parked virtual thread costs almost nothing but does occupy a worker |
+| SSE | never | unbounded | see §11.5 |
+| no database (health, SPA, docs, 404) | never | unbounded | as today's `Group.NO_DB` |
+
+### 11.3 Connection pools
+
+Owner's preference: one pool per group, sized per deployment, rather than one pool with per-group
+shares. Isolation is the point — a lane over a shared pool still lets one group's slow queries
+occupy connections another group needs, and a separate pool can later point at a read replica.
+The invariants stay derived, so the pool size remains the only number a deployment sets:
+
+- permits(group) = poolSize(group) — nobody ever waits inside HikariCP, where the wait is a timed
+  park (§1, and the measurement in `../test-size/RESULTS.md`).
+- workers(group) = permits(group) — a worker can always get a connection immediately.
+- probes keep their own reservation, or their own small pool, so a saturated instance is not killed
+  by its own health check.
+
+Consequence worth stating: with background work (purger, outbox, scheduler, stream processor, mail)
+moved onto its own pool, the request path's gate becomes redundant — workers = pool size is then the
+whole limit and nothing can contend. The gate exists today only because those subsystems share the
+request path's pool. It should be deleted at the same time as the split, not carried forward.
+
+Sizing today is broken in both languages and must be fixed as part of this: Java's
+`Database.DEFAULT_POOL_SIZE = 32` is a constant with no environment override, and Go never sets
+`MaxConnections` so pgxpool defaults to `max(4, NumCPU)`, which reads the host and ignores the CPU
+quota. Measured: 32 against 14 for the same deployment (`docs/backlog.md`).
+
+### 11.4 The read/write question (open)
+
+A write holds one connection from `begin` to `commit` and cannot do otherwise. A read has no
+transaction, so each statement could take a different connection and give it back, which would
+roughly halve a read's hold time: the round-15 profile put ~30% of a request in the RS256 verify and
+~20% in jOOQ rendering, all of it CPU spent while holding a connection that is doing nothing.
+The cost is eight gate acquisitions per request instead of one. They are untimed, so no timers are
+involved, but each blocked acquire is still a park and an unpark. Decide it by measurement, at ONE
+core, watching switches per request rather than throughput — `../test-size/RESULTS.md` shows the
+cost of a wake is invisible above one core and material on it.
+
+### 11.5 SSE (owner ruling 2026-09-08)
+
+No pool and no database connection. One virtual thread per connection parked **untimed** on a
+bounded per-subscriber queue (`take()`, never `poll(timeout)`); the publisher `offer()`s and closes
+the stream of any subscriber whose queue is full, because that client cannot keep up. Keepalive is
+ONE tick on a shared timer for every subscriber, never a timer per connection. Over HTTP/2 a
+subscriber is a stream on a shared connection rather than a socket, so the bound is subscriber count
+and memory, not file descriptors; note that the server's max-concurrent-streams (100 by default)
+becomes the per-client ceiling, and that in development over cleartext browsers fall back to
+HTTP/1.1 and its six-connections-per-origin limit. A snapshot needed at subscribe time is one query
+before streaming starts, borrowed from the API read group.
+
+### 11.6 Metrics needed to run any of this
+
+`fc_request_queue_depth` (per pool) and `fc_db_gate_waiting` / `fc_db_gate_held` (per lane) already
+exist and are registered. Missing, and needed before the sizing questions above can be answered from
+data rather than argument: **connection-hold time per request, per group**. Its ratio to request
+duration is the fraction that decides how much admission a pool can support, and it is the reading
+that says whether §11.4 was worth doing.
