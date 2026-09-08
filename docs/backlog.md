@@ -137,6 +137,41 @@ item names its origin; items marked **owner** need Andrew's call.
   fallback, closed external-scheme list, `encrypted:<non-base64>` rejection,
   `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
 
+## OAuth client secrets are reversibly encrypted, not hashed (2026-09-08, **owner**)
+
+Found doing a hashing/encryption inventory of the codebase. `ClientAuthentication.acceptClientSecret`
+/ `verifySecretRef` (`platform/auth/oauth/ClientAuthentication.java`) only ever
+does `decrypt(secretRef)` then `MessageDigest.isEqual(plaintext, provided)` —
+a pure verify-only comparison, structurally identical to a password check.
+Nothing ever re-sends a client secret anywhere. Storing it via
+`shared.encryption.Encryption` (AES-256-GCM, reversible under
+`FLOWCATALYST_APP_KEY`) buys nothing over one-way hashing here, and costs
+something real: a leaked `FLOWCATALYST_APP_KEY` instantly and fully recovers
+every OAuth client secret in the database in plaintext. Hashed (even a keyed
+HMAC-SHA256 pepper, not full Argon2id — these are already 32 random bytes,
+not human-guessable passwords, so brute force isn't the threat model), a
+leaked app key would recover nothing.
+
+This is inherited from Go as-is (`docs/spec/auth-core.md` line 273 / 867 cite
+Go's `OC:371-394`), not something re-justified when it was ported — exactly
+the "Go is evidence of what Go does, not of what is right" case
+([[feedback_correctness_over_conformance]]).
+
+Contrast: `WebhookCredentials` (signing secret, bearer token, outbound
+basic-auth password / API key — `platform/serviceaccount/WebhookCredentials.java`)
+correctly *must* stay reversible, because the platform is an active user of
+those secrets — it computes an HMAC signature with the signing secret on
+every outbound delivery, or attaches the bearer token/API key as a live
+`Authorization` header when calling the subscriber's endpoint. Nothing to
+change there.
+
+**Owner to rule:** hash OAuth client secrets instead of encrypting them
+(a migration: existing `client_secret_ref` rows would need re-issuing or a
+one-time encrypt→hash backfill on next successful auth), or leave as-is if
+there's a reason to keep them recoverable (e.g. a redisplay-the-secret admin
+UI — itself arguably a separate anti-pattern, secrets are conventionally
+shown once at creation only).
+
 ## From the identityprovider audit
 - `identityprovider/operations/DomainRouting.moveTo` restates the mapping
   aggregate's "move a mapping to a provider" rule (re-point + emit
@@ -908,3 +943,15 @@ or reflection cost (dependency mindset: build-time only). Shape:
 
 Not started. Estimated as a Sonnet unit per module with orchestrator review of every `@Nullable`
 added — an annotation placed to silence the checker is worse than none.
+
+## OAuth client secrets are reversibly encrypted where a keyed hash would do (2026-09-08, owner question)
+
+`ClientAuthentication` only ever decrypts the stored client secret to compare it (`MessageDigest.isEqual`)
+— verify-only, structurally a password check — yet the secret is stored AES-GCM-encrypted under
+`FLOWCATALYST_APP_KEY` (inherited from Go, `docs/spec/auth-core.md`). A leaked app key therefore
+recovers every OAuth client secret in plaintext. Webhook credentials (signing secret, bearer token,
+API key, outbound basic-auth password) genuinely need reversibility — the platform uses them on every
+outbound call — and stay encrypted. Ruling to take: store OAuth client secrets as a keyed hash
+(HMAC-SHA256 with the app key as pepper is enough for 32 random bytes; Argon2id is unnecessary for
+non-human secrets), migrate existing rows on next use or by a one-off rotation, and mirror the change
+in Go (`docs/go-mirror/`). Not started.
