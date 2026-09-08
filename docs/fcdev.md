@@ -351,6 +351,27 @@ PostgreSQL cannot start in the environment.
   downloads the zonky jar into `<cache>/flowcatalyst/embedded-pg/downloads/`
   and zonky extracts it into `<cache>/flowcatalyst/embedded-pg/PG-<md5>`. Same
   cache dir, different layout; both are safe to delete.
+- **PostGIS is provisioned automatically; Go needs a manual transplant.** The
+  Zonky binaries both sides download are vanilla PostgreSQL, so neither ships
+  PostGIS. Go documents a hand transplant
+  (`../flowcatalyst-go/docs/embedded-postgres-postgis.md`); Java does it on
+  start. Because the two binaries share ONE cluster but keep SEPARATE Postgres
+  trees, a cluster carrying PostGIS objects would otherwise start fine under
+  the Java binary and fail inside the first query that touched one.
+  On start, `EmbeddedPg` asks the running server for its own `PKGLIBDIR` and
+  `SHAREDIR` (via `pg_config()`, so nothing guesses at the `PG-<md5>` name) and,
+  if `postgis.control` is absent, copies the PostGIS family in from the first
+  usable donor for that exact Postgres major: Homebrew
+  (`/opt/homebrew/opt/postgis/{lib,share}/postgresql@<major>`, then
+  `/usr/local` for Intel), the Linux distribution paths
+  (`/usr/{lib,share}/postgresql/<major>`), and finally the sibling Go tree at
+  `<cache>/flowcatalyst/embedded-pg/bin`. It never overwrites an existing file,
+  so a tree that already has PostGIS is left alone, and a machine with no
+  PostGIS anywhere is simply left without it — not an error.
+  Then, fatally this time, every extension actually registered in the database
+  is checked for its control file. A cluster that needs an extension this tree
+  cannot serve fails at startup naming it, rather than failing later inside an
+  unrelated query.
 - `--embedded-db-port 0` picks a free port (handy for tests); Go has no
   equivalent.
 - Every Go subcommand exists; the only exit-2 "not supported" path left is

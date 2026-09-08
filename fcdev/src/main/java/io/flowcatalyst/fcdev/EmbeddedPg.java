@@ -15,6 +15,9 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
@@ -121,11 +124,91 @@ public final class EmbeddedPg implements AutoCloseable {
         var handle = new EmbeddedPg(pg, dataPath);
         try {
             handle.ensureDatabase();
+            handle.provisionPostgis(cacheDir);
+            handle.verifyExtensionsServable();
         } catch (SQLException e) {
             handle.close();
             throw new IOException("prepare embedded database: " + e.getMessage(), e);
         }
         return handle;
+    }
+
+    /// Step 1 of the PostGIS story ([PgExtensions] javadoc): copy the family
+    /// into this fcdev's *own* Postgres tree if the running server doesn't
+    /// already have it, resolving that tree via `pg_config()` rather than
+    /// guessing zonky's `PG-<md5>` directory name — this only works after
+    /// the server has started, since extension files are read lazily.
+    ///
+    /// Deliberately non-fatal: this provisions an *optional* extension, and
+    /// a developer without PostGIS on their machine (no donor found) is the
+    /// common case, not an error. Any failure here — a locked-down
+    /// filesystem, a donor tree that turns out to be unreadable — is logged
+    /// and swallowed so it can never keep the database from coming up.
+    private void provisionPostgis(Path cacheDir) {
+        try {
+            var dirs = pgConfigDirs();
+            var pkglibdir = Path.of(dirs.get("PKGLIBDIR"));
+            var sharedir = Path.of(dirs.get("SHAREDIR"));
+            var extensionDir = sharedir.resolve("extension");
+            if (Files.isRegularFile(extensionDir.resolve("postgis.control"))) return;
+
+            var donor = PgExtensions.firstUsable(PgExtensions.donorCandidates(pinnedMajor(), cacheDir));
+            if (donor.isEmpty()) return;
+
+            var copied = PgExtensions.mirror(donor.get(), pkglibdir, extensionDir);
+            LOG.info("provisioned {} PostGIS file(s) into {} from {}", copied.size(), sharedir, donor.get().extensions());
+        } catch (Exception e) {
+            LOG.warn("provisioning PostGIS into the embedded Postgres tree: {}", e.toString());
+        }
+    }
+
+    /// `SELECT name, setting FROM pg_config() WHERE name IN ('PKGLIBDIR','SHAREDIR')`
+    /// — the running server's own module directory (`$libdir`) and share
+    /// directory, straight from Postgres rather than reconstructed from
+    /// `cacheDir`.
+    private Map<String, String> pgConfigDirs() throws SQLException {
+        var dirs = new HashMap<String, String>();
+        try (Connection c = pg.getPostgresDatabase().getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT name, setting FROM pg_config() WHERE name IN ('PKGLIBDIR','SHAREDIR')")) {
+            while (rs.next()) {
+                dirs.put(rs.getString("name"), rs.getString("setting"));
+            }
+        }
+        return dirs;
+    }
+
+    /// Step 2: fail loudly, at startup, if the cluster needs an extension
+    /// this Postgres tree cannot supply. The cluster directory is *shared*
+    /// with the Go `fcdev` ([EmbeddedPg] javadoc) and Go's tree carries a
+    /// hand-transplanted PostGIS the Java tree does not — so a cluster
+    /// created or extended under Go can legitimately contain extensions
+    /// this tree can't serve. Catching that here, with the reason, beats
+    /// discovering it later inside an unrelated query.
+    private void verifyExtensionsServable() throws SQLException, IOException {
+        var dirs = pgConfigDirs();
+        var extensionDir = Path.of(dirs.get("SHAREDIR")).resolve("extension");
+
+        var registered = new HashSet<String>();
+        try (Connection c = pg.getDatabase(USER, DATABASE).getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT extname FROM pg_extension")) {
+            while (rs.next()) {
+                registered.add(rs.getString("extname"));
+            }
+        }
+
+        var missing = PgExtensions.missingControlFiles(registered, extensionDir);
+        if (missing.isEmpty()) return;
+
+        close();
+        throw new IOException(
+                "embedded Postgres cluster at " + dataPath + " has extension(s) " + missing
+                        + " installed, but this fcdev's Postgres tree at " + extensionDir
+                        + " does not provide them, so any query touching those objects will fail; "
+                        + "install the matching PostGIS for PG" + pinnedMajor()
+                        + " (on macOS 'brew install postgis') and start again");
     }
 
     private void ensureDatabase() throws SQLException {
