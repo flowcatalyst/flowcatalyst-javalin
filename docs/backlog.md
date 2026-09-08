@@ -1083,15 +1083,29 @@ and one connection per in-flight mediation. Owner's design: queue the incoming r
 have a batcher fetch them together.
 
 Shape agreed:
-- **K batchers, self-clocking, never timed.** Not one batcher: a lone batcher makes every arrival wait
-  for the in-flight query, which is the latency this is meant to avoid. Run K batchers (owner: up to ~20)
-  each taking up to ~20 records. A request waits only when all K are busy, and then leaves with whichever
-  frees first, so nothing ever waits for a batch to *fill*. Under light load a request is dispatched alone
-  as a batch of one and pays nothing. Batches grow only when arrivals outpace the database, which is when
-  grouping is free. No timer is armed, so no timed park (§1 of `docs/spec/admission.md`); a fixed
-  "20 rows or 100 ms" would add 100 ms to every request on an idle system, and a load-detecting switch is
-  a second way of deciding something contention already decides correctly. If particular messages must
-  never queue behind others, give them a priority lane that bypasses batching, not a global mode.
+- **K batchers, self-clocking, never timed. Batch size is an OUTCOME, not a setting.** Not one batcher:
+  a lone batcher makes every arrival wait for the in-flight query. Run K batchers; a request waits only
+  when all K are busy and then leaves with whichever frees first, so nothing ever waits for a batch to
+  *fill*. Under light load a request is dispatched alone as a batch of one and pays nothing; batches grow
+  only when arrivals outpace the database, which is when grouping is free.
+  **Correcting an earlier version of this note (2026-09-08):** it said "up to ~20 batchers each taking
+  ~20 records", which implies 400 mediation requests in flight and cannot happen. One router polls
+  `ConsumerLoop.MAX_POLL` = 10 messages and routes them into a pool running
+  `RouterManager.DEFAULT_POOL_CONCURRENCY` = 20 deliveries concurrently, so in-flight mediation requests
+  W = the sum of pool concurrencies, ~20 for one default pool. With K batchers the mean batch is W/K —
+  so K = 20 would make every batch one row and buy nothing at all. **Choose K for the database (it IS
+  this group's connection count) and let batch size fall out of contention. Never target a batch size.**
+  No timer is armed, so no timed park (§1 of `docs/spec/admission.md`); a fixed "20 rows or 100 ms" would
+  add 100 ms to every request on an idle system, and a load-detecting switch is a second way of deciding
+  something contention already decides correctly. If particular messages must never queue behind others,
+  give them a priority lane that bypasses batching, not a global mode.
+- **The router's poll batch is not the unit either (owner asked, 2026-09-08).** Tempting, since the poll
+  already produces a natural batch and would need no timer. But the poll batch is dissolved before the
+  first mediation call: `ConsumerLoop` hands it to `RouterManager.route`, which spreads it across pools
+  whose workers deliver under a concurrency semaphore, per-group ordering and a rate limit. Delivering a
+  poll batch as a unit would mean undoing the pool, and one response would be held open for the slowest
+  subscriber in the batch, head-of-line-blocking unrelated subscribers. Self-clocking gives the same
+  "no timer" property without coupling the two services.
 - **The batch fetch is a claim, and the claim commits before the handler runs.** A row lock belongs to a
   transaction on one connection and cannot be handed to another; committing is the only way to release
   it. So the lock is not what the delivery runs under — the `status` column is. One statement does the
