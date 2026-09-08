@@ -955,3 +955,18 @@ outbound call — and stay encrypted. Ruling to take: store OAuth client secrets
 (HMAC-SHA256 with the app key as pepper is enough for 32 random bytes; Argon2id is unnecessary for
 non-human secrets), migrate existing rows on next use or by a one-off rotation, and mirror the change
 in Go (`docs/go-mirror/`). Not started.
+
+## The per-queue Postgres pool is sized from the wrong quantity (2026-09-08, measured)
+
+`QueueFactory.createPostgres` sizes a queue's own pool `max(4, availableProcessors())`, mirroring Go's
+`pgxpool` default `max(4, NumCPU())`. Measured in a `--cpus=1` container: Java's `availableProcessors()`
+honours the CFS quota and returns **1** (pool = 4); Go's `NumCPU()` ignores it and returns **14**
+(pool = 14). Over eight queues that is 32 connections against 112, and it is the whole of the
+Postgres-broker gap: Java 2,361 deliveries/s with Postgres at 274% CPU, Go 5,456/s with Postgres at
+901% (`bench/router/RESULTS.md`). Java is not slower; it is a quarter as parallel because it reads the
+quota correctly.
+
+The rule itself is the defect: a broker consumer's connection need is set by how many acks can be in
+flight, not by how many CPUs the router was given. Ruling to take, then mirror in Go: size the
+per-queue pool from the admission concurrency the queue feeds (capped), or fix it at a small constant
+independent of CPU. Whatever is chosen must be derived, not an env knob (`feedback_no_tuning`).
