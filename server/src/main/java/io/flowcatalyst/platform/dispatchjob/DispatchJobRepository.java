@@ -471,15 +471,27 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .fetch(T.ID);
     }
 
-    /// First delivery attempt begins (spec §4): `QUEUED` → `PROCESSING`,
-    /// stamps `last_attempt_at`.
-    public void markInProgress(String id, Instant createdAt) {
-        dsl.update(T)
+    /// Atomically claims a job for one delivery (dispatch-seam spec §5): the
+    /// same `PROCESSING` flip [#markInProgress] used to do, but guarded on the
+    /// status it is flipping FROM, so the row count answers "did I win this
+    /// delivery?". Only `PENDING`/`QUEUED` is claimable — a row already
+    /// `PROCESSING` belongs to a delivery still in flight, and a terminal row
+    /// is finished — so a concurrent redelivery of the same job updates no row
+    /// and its caller must not call the subscriber. A positive status list
+    /// rather than an exclusion list: an unrecognised stored value is then
+    /// un-claimable rather than deliverable.
+    ///
+    /// @return `true` when this call won the claim (exactly one row updated)
+    public boolean claimForDelivery(String id, Instant createdAt) {
+        Instant now = Instant.now();
+        return dsl.update(T)
                 .set(T.STATUS, DispatchJobStatus.PROCESSING.name())
-                .set(T.LAST_ATTEMPT_AT, utc(Instant.now()))
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
-                .execute();
+                .set(T.LAST_ATTEMPT_AT, utc(now))
+                .set(T.UPDATED_AT, utc(now))
+                .where(T.ID.eq(id))
+                .and(T.CREATED_AT.eq(utc(createdAt)))
+                .and(T.STATUS.in(DispatchJobStatus.PENDING.name(), DispatchJobStatus.QUEUED.name()))
+                .execute() == 1;
     }
 
     /// Delivery succeeded (spec §4): `PROCESSING` → `COMPLETED`, stamps

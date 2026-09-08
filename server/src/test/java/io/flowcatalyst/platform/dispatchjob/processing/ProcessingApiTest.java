@@ -29,10 +29,15 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DS;
@@ -60,6 +65,10 @@ class ProcessingApiTest {
     private final AtomicReference<String> responseBody = new AtomicReference<>("");
     private final Map<String, String> responseHeaders = new ConcurrentHashMap<>();
     private final AtomicInteger hits = new AtomicInteger();
+    /// Holds the subscriber inside one delivery long enough for a second
+    /// callback for the same job to reach the claim while the first is still
+    /// in flight — the interleaving the claim exists to survive.
+    private final AtomicLong subscriberDelayMillis = new AtomicLong();
     private final AtomicReference<byte[]> lastBody = new AtomicReference<>();
     private final Map<String, String> lastHeaders = new ConcurrentHashMap<>();
 
@@ -72,6 +81,10 @@ class ProcessingApiTest {
             ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         });
         subscriber = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        // A real executor, not the default in-line one: without it the stand-in
+        // serialises every request and no test here could ever observe two
+        // deliveries overlapping (which is what the duplicate-delivery mutant does).
+        subscriber.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         subscriber.start();
         subscriberUrl = "http://127.0.0.1:" + subscriber.getAddress().getPort() + "/hook";
     }
@@ -88,6 +101,7 @@ class ProcessingApiTest {
         responseBody.set("");
         responseHeaders.clear();
         hits.set(0);
+        subscriberDelayMillis.set(0);
         lastBody.set(null);
         lastHeaders.clear();
         subscriber.createContext("/hook", this::handle);
@@ -100,6 +114,14 @@ class ProcessingApiTest {
 
     private void handle(HttpExchange exchange) throws IOException {
         hits.incrementAndGet();
+        long delay = subscriberDelayMillis.get();
+        if (delay > 0) {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         lastBody.set(exchange.getRequestBody().readAllBytes());
         exchange.getRequestHeaders().forEach((k, v) -> lastHeaders.put(k.toLowerCase(), v.getFirst()));
         responseHeaders.forEach((k, v) -> exchange.getResponseHeaders().add(k, v));
@@ -471,6 +493,79 @@ class ProcessingApiTest {
         assertThat(after.attemptCount()).as("counts as an ordinary retryable failure").isEqualTo(1);
     }
 
+    // ── the claim: one delivery per job, however many callbacks arrive ──
+
+    /// The duplicate-delivery guard (spec §5), and the reason the claim is a
+    /// status-guarded conditional UPDATE rather than the unguarded flip it used
+    /// to be: the `isTerminal()` check above it reads an UNLOCKED row, so two
+    /// callbacks for one job — a queue redelivery racing an attempt still in
+    /// flight, or a restarted router re-sending — both pass it. Only the claim's
+    /// row count separates them.
+    ///
+    /// The subscriber is held for [#subscriberDelayMillis] so the loser reaches
+    /// the claim while the winner is still inside its delivery; asserting that
+    /// exactly one caller was told `already claimed` is what pins the loser to
+    /// the CLAIM rather than to the terminal check it would hit if the two
+    /// requests happened to serialise.
+    ///
+    /// Mutant: drop `AND status IN ('PENDING','QUEUED')` from
+    /// `DispatchJobRepository#claimForDelivery` and the subscriber is called
+    /// twice.
+    @Test
+    void twoConcurrentCallbacksForOneJobDeliverToTheSubscriberExactlyOnce() throws Exception {
+        String id = seedJob(Seed.of(code("proc-race")));
+        subscriberDelayMillis.set(400);
+
+        var bothReady = new CyclicBarrier(2);
+        List<HttpResponse<String>> responses;
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = threads.submit(() -> {
+                bothReady.await();
+                return process(id);
+            });
+            var second = threads.submit(() -> {
+                bothReady.await();
+                return process(id);
+            });
+            responses = List.of(first.get(30, TimeUnit.SECONDS), second.get(30, TimeUnit.SECONDS));
+        }
+
+        assertThat(hits.get()).as("the subscriber is called once per JOB, not once per callback").isEqualTo(1);
+        assertThat(responses).allSatisfy(r -> {
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("ack").asBoolean()).as("both callbacks ACK — neither is redelivered").isTrue();
+        });
+        assertThat(responses.stream().filter(ProcessingApiTest::lostTheClaim).count())
+                .as("exactly one caller lost the claim (and lost it to the claim, not to the terminal check)")
+                .isEqualTo(1);
+
+        assertThat(repo.attemptsByJob(id)).as("one delivery, one attempt row").hasSize(1);
+        assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+    }
+
+    /// The same guard without the race: a row already `PROCESSING` is a delivery
+    /// someone else owns. `isTerminal()` is false for `PROCESSING`, so before the
+    /// claim this callback delivered a second time.
+    @Test
+    void aJobAlreadyBeingDeliveredIsAckedWithoutASecondDelivery() {
+        String id = seedJob(Seed.of(code("proc-inflight")).withStatus("PROCESSING"));
+
+        var r = process(id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(json(r).get("ack").asBoolean()).as("ACK — redelivering would not help").isTrue();
+        assertThat(lostTheClaim(r)).isTrue();
+        assertThat(hits.get()).as("no second call to the subscriber").isZero();
+        assertThat(repo.attemptsByJob(id)).as("no attempt row for a delivery we never made").isEmpty();
+        assertThat(reload(id).status()).as("and the other delivery's row is left alone")
+                .isEqualTo(DispatchJobStatus.PROCESSING);
+    }
+
+    private static boolean lostTheClaim(HttpResponse<String> r) {
+        JsonNode message = json(r).get("message");
+        return message != null && !message.isNull() && "already claimed".equals(message.asText());
+    }
+
     // ── injected repository failures: the three 500 ack:false branches (audit finding, test-gap) ──
 
     /// A thin decorator over the real [DispatchJobRepository] (via
@@ -485,6 +580,7 @@ class ProcessingApiTest {
         boolean failFindById;
         boolean failGroupHeldBefore;
         boolean failReschedule;
+        boolean failClaim;
 
         FailingRepo(ProcessingRepository delegate) {
             this.delegate = delegate;
@@ -509,8 +605,9 @@ class ProcessingApiTest {
         }
 
         @Override
-        public void markInProgress(String id, Instant createdAt) {
-            delegate.markInProgress(id, createdAt);
+        public boolean claimForDelivery(String id, Instant createdAt) {
+            if (failClaim) throw new RuntimeException("injected: claim failed");
+            return delegate.claimForDelivery(id, createdAt);
         }
 
         @Override
@@ -611,6 +708,31 @@ class ProcessingApiTest {
             // invariant); the injected failure means the job is left exactly as it was.
             assertThat(reload(id).status()).as("job status untouched — still QUEUED, never reverted")
                     .isEqualTo(DispatchJobStatus.QUEUED);
+        }
+    }
+
+    /// A claim that THREW leaves ownership unknown, and delivering anyway is
+    /// exactly the duplicate the claim exists to prevent — so unlike the
+    /// best-effort flip it replaced, a claim failure NACKs and makes no call.
+    ///
+    /// Mutant: swallow the exception and deliver anyway (what the code did
+    /// before) and both the 500 and the zero hit count fail.
+    @Test
+    void claimFailureIsA500ThatNacksWithoutDelivering() {
+        var failing = new FailingRepo(repo);
+        failing.failClaim = true;
+        try (TestHttp failingHttp = httpOver(failing)) {
+            String id = seedJob(Seed.of(code("proc-claimfail")));
+
+            var body = "{\"messageId\":\"%s\"}".formatted(id);
+            var r = failingHttp.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(id));
+
+            assertThat(r.statusCode()).isEqualTo(500);
+            assertThat(json(r).get("ack").asBoolean()).as("NACK so the queue redelivers").isFalse();
+            assertThat(hits.get()).as("ownership unknown — no delivery").isZero();
+            assertThat(repo.attemptsByJob(id)).as("no attempt row").isEmpty();
+            assertThat(reload(id).status()).as("job left exactly where a redelivery can pick it up")
+                    .isEqualTo(DispatchJobStatus.PENDING);
         }
     }
 }

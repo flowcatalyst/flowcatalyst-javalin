@@ -23,7 +23,9 @@ public interface ProcessingRepository {
 
     void reschedule(String id, Instant createdAt, Instant scheduledFor);
 
-    void markInProgress(String id, Instant createdAt);
+    /// @return `true` when this call won the claim (exactly one row updated);
+    /// `false` means another delivery already claimed (or finished) the job.
+    boolean claimForDelivery(String id, Instant createdAt);
 
     void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
                         String responseBody, String errorMessage, AttemptErrorType errorType,

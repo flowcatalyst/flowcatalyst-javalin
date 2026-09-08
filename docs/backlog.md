@@ -1018,7 +1018,7 @@ Open for a ruling before building:
    split and it is only possible once reads are identified.
 Not started; SSE is not implemented at all yet.
 
-## Defect: `/api/dispatch/process` claims a job without a lock (Java **and** Go, 2026-09-08)
+## Defect: `/api/dispatch/process` claims a job without a lock — FIXED in Java 2026-09-08, open in Go (go-mirror G14)
 
 Found while settling the batching design above (owner: *"we MUST check the db and get a transaction lock
 on the record"*). The handler reads the job with a plain `findById`, tests `isTerminal()` in application
@@ -1037,7 +1037,14 @@ contract, and untrue here: this is the one write on the seam with no such guard.
 - Go: `internal/platform/dispatchjob/processing/processing.go:219` +
   `internal/sqlc/queries/dispatchjob.sql` (`DispatchJobMarkInProgress`) — identical shape, identical hole
 
-Fix (both sides): make the claim atomic and let it decide whether to deliver. Either
+**Java: done** (`DispatchJobRepository#claimForDelivery`, `ProcessingApi#deliver`). The claim is a single
+conditional `UPDATE ... AND status IN ('PENDING','QUEUED')` whose row count decides delivery; a lost
+claim ACKs with `already claimed` and makes no call; a claim that throws NACKs instead of delivering.
+Pinned by `ProcessingApiTest#twoConcurrentCallbacksForOneJobDeliverToTheSubscriberExactlyOnce` — with
+the status predicate removed the subscriber is called twice, which is the defect reproduced.
+**Go: still open**, tracked as G14.
+
+Fix (Go): make the claim atomic and let it decide whether to deliver. Either
 `UPDATE ... SET status='PROCESSING' WHERE id = ? AND created_at = ? AND status NOT IN (<terminal>)` and
 deliver only when one row was affected, or the `SELECT ... FOR UPDATE` the batching design needs anyway.
 Stop swallowing the failure: a claim that changes no row means someone else owns this delivery, and the

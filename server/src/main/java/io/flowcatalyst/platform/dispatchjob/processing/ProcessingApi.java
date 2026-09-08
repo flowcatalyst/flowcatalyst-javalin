@@ -43,6 +43,8 @@ import java.util.Objects;
 /// | `groupHeldBefore` DB error | 500 | `false` |
 /// | group held | 200 | `true`, `"message":"group blocked"` |
 /// | `reschedule` fails while held | 500 | `false` |
+/// | job already claimed by a concurrent delivery | 200 | `true`, no delivery |
+/// | claim DB error | 500 | `false` |
 /// | any delivery attempt (delivered/deferred/failed) | 200 | `true` |
 public final class ProcessingApi {
 
@@ -202,12 +204,26 @@ public final class ProcessingApi {
     }
 
     private static void deliver(Exchange ctx, State s, DispatchJob job) {
+        // The claim, not the earlier isTerminal() read, is what decides whether
+        // this call owns the delivery: the read is unlocked and a concurrent
+        // redelivery can pass it too. A claim that changes no row means another
+        // delivery of this job is in flight (or it finished) — ACK and make no
+        // call, or the subscriber sees the same delivery twice.
+        boolean claimed;
         try {
-            s.repo().markInProgress(job.id(), job.createdAt());
+            claimed = s.repo().claimForDelivery(job.id(), job.createdAt());
         } catch (RuntimeException e) {
-            // Best-effort (spec §5 open question 2, Go's own scope): the
-            // handler proceeds to deliver and always ACKs regardless.
-            LOG.warn("dispatch process: mark in-progress failed, job_id={}", job.id(), e);
+            // NOT best-effort any more: a failed claim leaves ownership
+            // unknown, and delivering anyway is exactly the duplicate this
+            // guard exists to prevent. NACK and let the queue redeliver.
+            LOG.error("dispatch process: claim failed, job_id={}", job.id(), e);
+            ack(ctx, 500, false, "claim failed");
+            return;
+        }
+        if (!claimed) {
+            emit(job.id(), "AlreadyClaimed", 0, false);
+            ack(ctx, 200, true, "already claimed");
+            return;
         }
 
         int attemptNumber = job.attemptCount() + 1;

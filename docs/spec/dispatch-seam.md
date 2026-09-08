@@ -384,6 +384,8 @@ the router's behalf... [poller owns retries]":
 | `GroupHeldBefore` DB error | 500 | `false` | `processing.go:196-203` |
 | group held (see below) | 200 | `true`, `"message":"group blocked"` | `processing.go:204-217` |
 | `Reschedule` (revert-to-PENDING) fails while held | 500 | `false` | `processing.go:205-211` — **NACK, not ack**, or the job would sit `QUEUED` with no queue message until stale recovery |
+| job already claimed by a concurrent delivery | 200 | `true`, no delivery | Java-only, `ProcessingApi.deliver` — see caveat below (Go has no equivalent guard) |
+| claim DB error | 500 | `false` | Java-only, `ProcessingApi.deliver` — see caveat below |
 | any successful/failed/deferred delivery attempt | 200 | `true` | `processing.go:240` |
 
 **Router-spec §9's two invariants**, checked against this code:
@@ -391,13 +393,26 @@ the router's behalf... [poller owns retries]":
 - *"A job MUST NOT be left in an in-progress state with no queue message
   behind it."* Held — every path that can strand a job (the blocked-group
   revert) NACKs on failure rather than ACKing (`processing.go:205-211`).
-  **Caveat**: `MarkInProgress` itself (`processing.go:219-221`) and
-  `RecordAttempt` (`processing.go:234-236`) are logged-but-swallowed on
-  error — a `MarkInProgress` failure does not abort the request; the
-  handler proceeds to `deliver()` and always ACKs afterward regardless.
-  This means a DB error at exactly that point does **not** trigger the
-  NACK path the invariant implies; it is best-effort by design, not a
-  gap this spec can resolve — flagged in §14.
+  **Caveat**: this held in Go only by accident of scope, and Java
+  (`ProcessingApi.deliver`, fixed 2026-09-08) no longer matches it exactly.
+  Go's `MarkInProgress` (`processing.go:219-221`) is an unconditional
+  `UPDATE` with no status guard, logged-but-swallowed on error, and
+  `RecordAttempt` (`processing.go:234-236`) is swallowed the same way — a
+  `MarkInProgress` failure does not abort the request; the handler proceeds
+  to `deliver()` and always ACKs afterward regardless. Two overlapping
+  deliveries of the same job (a redelivered queue message racing the
+  original, or two scheduler instances) both pass Go's unlocked
+  `IsTerminal()` read and both flip the row, so the subscriber's webhook can
+  be called twice for one job. Java replaces the unconditional flip with
+  `DispatchJobRepository.claimForDelivery`: a single conditional `UPDATE`
+  guarded on `status IN ('PENDING','QUEUED')`, whose row count is the
+  claim's answer. A concurrent delivery that finds the row already
+  `PROCESSING` (or terminal) updates no row, does not call
+  `deliver()`/the subscriber, and ACKs with `"already claimed"` — no retry
+  budget spent, no duplicate call. A DB error during the claim NACKs
+  (`ack:false`) instead of proceeding, because a failed claim leaves
+  ownership unknown and delivering anyway is exactly the duplicate the
+  guard exists to prevent — no longer best-effort.
 - *"A hold-back MUST cost no retry budget."* Held: the blocked-group
   branch calls `Reschedule` (`repository.go:412-423`), which sets
   `status='PENDING', scheduled_for=$2` **without** touching
@@ -861,7 +876,7 @@ called out as unsafe for production (`subsystems.go:114-115`).
 | `PendingJobPoller` (claim) | **yes** | `poller.go:105-111,136-138`; `scheduler.go:126` |
 | `StaleQueuedJobPoller` (stale recovery) | **yes** | `stale_recovery.go:20-23,43-45`; `scheduler.go:127` |
 | Reaper (`RunReaper`) | **no** | `reaper.go:90-98`, `run.go:127-128` — safe because every sweep is one conditional `UPDATE` on a status guard, not a claim |
-| Processing endpoint (`/api/dispatch/process`) | n/a — stateless HTTP handler, one row at a time, guarded by its own status checks; safe under concurrent instances | `processing.go` throughout |
+| Processing endpoint (`/api/dispatch/process`) | n/a — stateless HTTP handler, one row at a time; safe under concurrent instances ONLY once the PROCESSING flip is a status-guarded conditional UPDATE whose row count decides whether to deliver — true in Java since 2026-09-08 (`claimForDelivery`), NOT yet true in Go (go-mirror G14), where the unguarded flip lets a duplicate delivery call the subscriber twice | `processing.go` throughout |
 | Settled endpoint (`/api/dispatch/settled`) | n/a — same reasoning, guarded by `SettleAcked`'s `status IN (...)` | `settled.go` |
 
 The scheduler's rationale for leader-gating both its loops: *"the
@@ -939,11 +954,15 @@ under concurrent execution from multiple platform instances.
    real-503 target gets the "outage" treatment distinct from a genuine
    `500` bug) / No: current uniform retry-then-fail behaviour is
    intentional and should be preserved as spec.*
-2. **`MarkInProgress`/`RecordAttempt` failures are swallowed, not NACKed
-   (§5).** A DB error at exactly `MarkInProgress` or `RecordAttempt`
-   currently logs and proceeds rather than triggering router-spec §9's
-   "every failure path NACKs" invariant. *Load-bearing gap, or accepted
-   best-effort scope?*
+2. **`RecordAttempt` failures are swallowed, not NACKed (§5).** A DB error
+   at exactly `RecordAttempt` logs and proceeds rather than triggering
+   router-spec §9's "every failure path NACKs" invariant. *Load-bearing gap,
+   or accepted best-effort scope?*
+   The `MarkInProgress` half of this question is **answered** (2026-09-08): it
+   was load-bearing, and worse than the swallowed error — the flip had no
+   status guard at all, so a duplicate delivery called the subscriber twice.
+   Java replaced it with the guarded `claimForDelivery` and NACKs on a claim
+   error; Go still has the original and must follow (go-mirror G14).
 3. **Scheduler `Config` env-overridability (§3, §11).** `DefaultConfig`'s
    doc comment claims all five timing knobs are env-overridable and
    mentions an `in-flight` cap that doesn't exist on the struct; only

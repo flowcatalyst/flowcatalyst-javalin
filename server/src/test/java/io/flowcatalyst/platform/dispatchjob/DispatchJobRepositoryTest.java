@@ -461,13 +461,61 @@ class DispatchJobRepositoryTest {
     // ── Infra writes (spec §4, direct — outside the envelope) ───────────────
 
     @Test
-    void markInProgressFlipsQueuedToProcessingAndStampsLastAttemptAt() {
+    void claimForDeliveryFlipsQueuedToProcessingAndStampsLastAttemptAt() {
         String id = seedWriteRow(Seed.of(code("mip")).withStatus("QUEUED"));
         DispatchJob before = repo.findById(id).orElseThrow();
-        repo.markInProgress(id, before.createdAt());
+        assertThat(repo.claimForDelivery(id, before.createdAt())).isTrue();
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.PROCESSING);
         assertThat(after.lastAttemptAt()).isNotNull();
+    }
+
+    @Test
+    void claimForDeliveryAlsoClaimsAPendingJob() {
+        String id = seedWriteRow(Seed.of(code("claimpend")));
+        DispatchJob before = repo.findById(id).orElseThrow();
+        assertThat(before.status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(repo.claimForDelivery(id, before.createdAt())).isTrue();
+    }
+
+    /// The whole point of the guard: the row count, not the caller's earlier
+    /// unlocked read, decides who delivers. The second caller here is a
+    /// redelivery of a job whose first delivery is still in flight.
+    @Test
+    void claimForDeliveryIsWonOnceAndRefusedToEverySubsequentCaller() {
+        String id = seedWriteRow(Seed.of(code("claimonce")).withStatus("QUEUED"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+
+        assertThat(repo.claimForDelivery(id, before.createdAt())).as("first caller wins").isTrue();
+        assertThat(repo.claimForDelivery(id, before.createdAt()))
+                .as("a job already PROCESSING belongs to a delivery in flight").isFalse();
+        assertThat(repo.claimForDelivery(id, before.createdAt())).as("and stays unclaimable").isFalse();
+    }
+
+    /// `isTerminal()` covers these in the handler, but only from an unlocked
+    /// read — the claim must refuse them itself, and must not touch the row.
+    @Test
+    void claimForDeliveryRefusesATerminalJobAndLeavesItUntouched() {
+        for (String terminal : List.of("COMPLETED", "FAILED", "CANCELLED", "EXPIRED")) {
+            String id = seedWriteRow(Seed.of(code("claim" + terminal)).withStatus(terminal));
+            DispatchJob before = repo.findById(id).orElseThrow();
+
+            assertThat(repo.claimForDelivery(id, before.createdAt()))
+                    .as("%s is not claimable", terminal).isFalse();
+            assertThat(repo.findById(id).orElseThrow().status().name())
+                    .as("%s row untouched", terminal).isEqualTo(terminal);
+        }
+    }
+
+    /// Wrong partition key, right id: the claim must miss, exactly as every
+    /// other write on this partitioned table does.
+    @Test
+    void claimForDeliveryMissesOnAMismatchedCreatedAt() {
+        String id = seedWriteRow(Seed.of(code("claimpart")).withStatus("QUEUED"));
+        DispatchJob before = repo.findById(id).orElseThrow();
+
+        assertThat(repo.claimForDelivery(id, before.createdAt().minusSeconds(86_400))).isFalse();
+        assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
     }
 
     @Test

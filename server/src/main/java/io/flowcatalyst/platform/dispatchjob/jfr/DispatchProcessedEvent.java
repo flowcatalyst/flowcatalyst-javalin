@@ -26,7 +26,8 @@ public final class DispatchProcessedEvent extends Event {
     @Label("Job ID")
     public String jobId;
 
-    /// `Held`, `Delivered`, `Deferred` or `Failed`.
+    /// `Held`, `Delivered`, `Deferred`, `Failed`, `AlreadyTerminal` or
+    /// `AlreadyClaimed`.
     @Label("Result")
     public String result;
 
