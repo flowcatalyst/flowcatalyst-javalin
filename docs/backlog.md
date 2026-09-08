@@ -1026,11 +1026,20 @@ and one connection per in-flight mediation. Owner's design: queue the incoming r
 have a batcher fetch them together.
 
 Shape agreed:
-- **Self-clocking, not timed.** Dispatch a batch as soon as the previous one completes, taking whatever
-  accumulated, capped at a maximum. A lone request under no load is dispatched immediately as a batch of
-  one, so nothing pays added latency; batches grow only when there is load to grow them. No timer is
-  armed, so no timed park (§1 of `docs/spec/admission.md`). A fixed "20 rows or 100 ms" would add 100 ms
-  to every request on an idle system.
+- **K batchers, self-clocking, never timed.** Not one batcher: a lone batcher makes every arrival wait
+  for the in-flight query, which is the latency this is meant to avoid. Run K batchers (owner: up to ~20)
+  each taking up to ~20 records. A request waits only when all K are busy, and then leaves with whichever
+  frees first, so nothing ever waits for a batch to *fill*. Under light load a request is dispatched alone
+  as a batch of one and pays nothing. Batches grow only when arrivals outpace the database, which is when
+  grouping is free. No timer is armed, so no timed park (§1 of `docs/spec/admission.md`); a fixed
+  "20 rows or 100 ms" would add 100 ms to every request on an idle system, and a load-detecting switch is
+  a second way of deciding something contention already decides correctly. If particular messages must
+  never queue behind others, give them a priority lane that bypasses batching, not a global mode.
+- **Batch the status writes too — they pay more than the reads.** Each is a transaction, so twenty writes
+  are twenty begin/commit cycles on twenty connections; one `UPDATE ... FROM (VALUES ...)` collapses them
+  into one. The batch is all-or-nothing with every waiter failing together (or retried individually), and
+  the same job must not appear twice in a batch — collapse duplicates last-write-wins before building the
+  statement.
 - **In-process primitives, not a message bus.** A bounded queue, one batcher virtual thread per group,
   and a `CompletableFuture` per request; the request thread parks untimed on its own future and the
   batcher completes it. The Vert.x event bus would add addressing, codecs and cluster routing for an
@@ -1041,6 +1050,15 @@ Shape agreed:
 - Failure semantics up front: a failed batch query fails every waiter in it; a missing row fails only
   its own waiter; the queue is bounded and rejects with 503 when full rather than growing; the terminal
   write that records the outcome batches through the same mechanism.
+
+**Open, related (owner, 2026-09-08): a full-payload option on the router.** Carrying the job in the
+message would remove the fetch entirely. Against it: the identifier indirection reads the payload fresh
+at delivery, so a job cancelled or amended after publication is not delivered stale; the broker stays
+cheap (SQS caps a message at 256 KB, and the router's in-flight tracker holds every message in memory);
+and the router stays a relay that never inspects payloads, which is what keeps it simple enough to be
+correct. Suggested resolution: keep the identifier as the default and add a per-pool opt-in for
+payload-carrying messages where the payload is small, immutable once published, and latency matters more
+than freshness.
 
 **Not to be built yet.** The expensive part of these endpoints is the outbound call to the subscriber,
 which cannot be batched, and at production rates (~200/s) the fetch is not the constraint. The trigger
