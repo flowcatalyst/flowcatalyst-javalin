@@ -14,12 +14,17 @@ import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.net.PfxOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.core.buffer.Buffer;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.sql.Connection;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,33 +51,69 @@ public final class VertxListener implements AutoCloseable {
 
     /// What the listener needs beyond routes. `deadline` is the product default
     /// (30 s); `DISPATCH` routes get `dispatchDeadline` (130 s) — both derived,
-    /// neither configurable (admission.md §4).
+    /// neither configurable (admission.md §4). `tls`, present only when
+    /// `docs/spec/http-transport.md` §2 TLS material is configured, is a second
+    /// `HttpServer` on the SAME `Router` (`docs/spec/vertx-listener.md` §1
+    /// "Listeners"): TLS 1.2/1.3 with ALPN -> h2, http/1.1.
     public record Options(String host, int port, boolean h2c, Budgets budgets, Duration deadline,
-                          Duration dispatchDeadline, Duration shutdownGrace, RequestWorkers workers) {
+                          Duration dispatchDeadline, Duration shutdownGrace, RequestWorkers workers,
+                          Optional<Tls> tls) {
         public static Options local(int port, Budgets budgets) {
             return local(port, budgets, RequestWorkers.derived(io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2));
         }
 
         public static Options local(int port, Budgets budgets, RequestWorkers workers) {
-            return new Options("127.0.0.1", port, true, budgets, Duration.ofSeconds(30), Duration.ofSeconds(130), Duration.ofSeconds(5), workers);
+            return new Options("127.0.0.1", port, true, budgets, Duration.ofSeconds(30), Duration.ofSeconds(130),
+                    Duration.ofSeconds(5), workers, Optional.empty());
         }
 
         public Options withDeadline(Duration d) {
-            return new Options(host, port, h2c, budgets, d, d, shutdownGrace, workers);
+            return new Options(host, port, h2c, budgets, d, d, shutdownGrace, workers, tls);
+        }
+
+        public Options withTls(Tls tls) {
+            return new Options(host, port, h2c, budgets, deadline, dispatchDeadline, shutdownGrace, workers,
+                    Optional.of(tls));
+        }
+    }
+
+    /// TLS material for the second listener, framework-neutral (a
+    /// [KeyStore] + its key password — `server.transport.TlsMaterial`'s
+    /// shape, without this package depending on that one): PKCS#12 either
+    /// way, keystore-loaded or PEM-assembled in memory
+    /// (`docs/spec/http-transport.md` §2). Handed to Vert.x as
+    /// [PfxOptions] bytes ([#pfxOptions]) since Vert.x has no
+    /// `KeyStore`-object entry point.
+    public record Tls(int port, KeyStore keyStore, char[] keyPassword) {
+        PfxOptions pfxOptions() {
+            try {
+                var out = new ByteArrayOutputStream();
+                keyStore.store(out, keyPassword);
+                return new PfxOptions().setValue(Buffer.buffer(out.toByteArray())).setPassword(new String(keyPassword));
+            } catch (GeneralSecurityException | java.io.IOException e) {
+                throw new IllegalStateException("re-encoding the TLS key store for Vert.x", e);
+            }
         }
     }
 
     private final Vertx vertx;
     private final HttpServer server;
+    /// The TLS listener (`docs/spec/http-transport.md` §1), `null` when no
+    /// TLS material is configured — same [Vertx], same `Router`, a second
+    /// `HttpServer` on [Options.Tls#port].
+    private final HttpServer tlsServer;
     /// Kept for the failure path only; requests run on [RequestWorkers].
     private final ExecutorService handlers;
     private final VertxRoutes routes;
     private final Options options;
     private volatile int port;
+    private volatile int tlsPort;
 
-    private VertxListener(Vertx vertx, HttpServer server, ExecutorService handlers, VertxRoutes routes, Options options, int port) {
+    private VertxListener(Vertx vertx, HttpServer server, HttpServer tlsServer, ExecutorService handlers,
+                          VertxRoutes routes, Options options, int port) {
         this.vertx = vertx;
         this.server = server;
+        this.tlsServer = tlsServer;
         this.handlers = handlers;
         this.routes = routes;
         this.options = options;
@@ -102,6 +143,9 @@ public final class VertxListener implements AutoCloseable {
             var l = listener;
             try {
                 l.server.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
+                if (l.tlsServer != null) {
+                    l.tlsServer.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("interrupted while binding the Vert.x listener", e);
@@ -110,6 +154,7 @@ public final class VertxListener implements AutoCloseable {
                 throw new IllegalStateException("binding the Vert.x listener on " + l.options.host() + ":" + l.options.port(), e.getCause() != null ? e.getCause() : e);
             }
             l.port = l.server.actualPort();
+            if (l.tlsServer != null) l.tlsPort = l.tlsServer.actualPort();
             return l;
         }
 
@@ -150,9 +195,24 @@ public final class VertxListener implements AutoCloseable {
                 .setPort(options.port())
                 .setHttp2ClearTextEnabled(options.h2c());
         HttpServer server = vertx.createHttpServer(serverOptions).requestHandler(router);
+
+        // The TLS listener (`docs/spec/http-transport.md` §1): TLS 1.2/1.3 with
+        // ALPN -> h2, http/1.1, the SAME router as the plain listener — Vert.x
+        // negotiates HTTP/2 over ALPN automatically once SSL is on, no separate
+        // "enable h2" flag the way the plain listener needs for cleartext h2c.
+        HttpServer tlsServer = options.tls().map(tls -> {
+            var tlsServerOptions = new HttpServerOptions()
+                    .setHost(options.host())
+                    .setPort(tls.port())
+                    .setSsl(true)
+                    .setUseAlpn(true)
+                    .setKeyCertOptions(tls.pfxOptions());
+            return vertx.createHttpServer(tlsServerOptions).requestHandler(router);
+        }).orElse(null);
+
         // The route handlers above capture `listener[0]`; no request can arrive
         // before `listen()`, so the reference is set in time.
-        listener[0] = new VertxListener(vertx, server, handlers, routes, options, -1);
+        listener[0] = new VertxListener(vertx, server, tlsServer, handlers, routes, options, -1);
         return new Prepared(listener[0]);
     }
 
@@ -162,6 +222,11 @@ public final class VertxListener implements AutoCloseable {
 
     public int port() {
         return port;
+    }
+
+    /// `-1` when no TLS material is configured (`Options.tls()` empty).
+    public int tlsPort() {
+        return tlsServer == null ? -1 : tlsPort;
     }
 
     public RouteRegistry registry() {
@@ -309,6 +374,16 @@ public final class VertxListener implements AutoCloseable {
             Thread.currentThread().interrupt();
         } catch (ExecutionException | TimeoutException e) {
             LOG.warn("graceful shutdown of the Vert.x listener did not complete cleanly", e);
+        }
+        if (tlsServer != null) {
+            try {
+                tlsServer.shutdown(options.shutdownGrace()).toCompletionStage().toCompletableFuture()
+                        .get(options.shutdownGrace().toMillis() + 1000, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException | TimeoutException e) {
+                LOG.warn("graceful shutdown of the Vert.x TLS listener did not complete cleanly", e);
+            }
         }
         handlers.shutdown();
         options.workers().close();

@@ -321,7 +321,7 @@
                 <buildArg>${native.optimization}</buildArg>
                 <buildArg>-H:ReflectionConfigurationFiles=${project.build.directory}/native-reflect-config.json</buildArg>
                 <!-- Both directories: server/native-config covers the third-party reachability
-                     every server binary needs (jOOQ, Jackson, the Postgres driver, Jetty);
+                     every server binary needs (jOOQ, Jackson, the Postgres driver, Vert.x);
                      fcdev/native-config adds what only the dev monolith uses in production
                      (zonky's embedded-postgres — server never ships that to production, see
                      the dependency comment above; mysql-connector-j for `fcdev outbox`). -->

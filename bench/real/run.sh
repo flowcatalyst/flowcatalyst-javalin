@@ -2,7 +2,7 @@
 # The plan §8 runtime comparison, real server vs Go, one container each under a CPU quota.
 #
 #   bench/real/run.sh prepare            # postgres + seed (Java fcdev init), builds both images
-#   bench/real/run.sh run <label> <image> <cpu-args> [FC_HTTP=vertx ...]
+#   bench/real/run.sh run <label> <image> <cpu-args> [env=value ...]
 #
 # `run`: starts the server container with the given docker cpu args (e.g. "--cpus=1"),
 # logs in once through POST /auth/login, then drives GET /api/event-types (cookie session:

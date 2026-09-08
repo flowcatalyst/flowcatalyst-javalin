@@ -1,117 +1,44 @@
 package io.flowcatalyst.server.transport;
 
+import io.flowcatalyst.http.vertx.VertxListener;
 import io.flowcatalyst.server.Env;
-import io.javalin.config.JettyConfig;
-import org.eclipse.jetty.alpn.server.ALPNServerConnectionFactory;
-import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory;
-import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
-import org.eclipse.jetty.server.HttpConfiguration;
-import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SslConnectionFactory;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 
-/// Builds the API listener's connectors from [Env] (`docs/spec/http-transport.md`
-/// §1): the plain h2c connector (always) and, when TLS material is configured
-/// (§2, [TlsMaterial]), the TLS+ALPN connector for h2/http1.1, plus HTTP/3
-/// ([Http3]) when `FC_HTTP3_ENABLED=true`.
+/// Resolves the API listener's TLS configuration from [Env]
+/// (`docs/spec/http-transport.md` §1) into the framework-neutral shape
+/// [VertxListener.Tls] wants — this class exists so
+/// [io.flowcatalyst.server.Server] (which must not import `io.vertx.*`;
+/// `NoFrameworkLeakTest` enforces it) never has to reach past [TlsMaterial]
+/// for the conversion.
 ///
-/// Installed through `cfg.jetty.addConnector`
-/// ([io.javalin.config.JettyConfig#addConnector]) from
-/// [io.flowcatalyst.server.Server#buildApiAndReaper]. Adding at least one
-/// connector this way is what makes Javalin skip the connector it would
-/// otherwise build itself from `cfg.jetty.host`/`cfg.jetty.port` — decompiling
-/// `io.javalin.jetty.JettyServer#start` (Javalin 7.2.3, no sources jar
-/// published) shows `if (connectors.isEmpty()) { connectors = arrayOf(...) }`
-/// guarding the default `ServerConnector`, so once [#install] registers ours
-/// that branch never runs. No `cfg.jetty.port = -1` trick is needed:
-/// `Javalin#start(int)` still runs afterward ([io.flowcatalyst.server.Server#start]
-/// calls `api.start(env.apiPort())` unchanged), it just sets
-/// `state.jetty.port`, a field nothing reads once custom connectors exist.
+/// HTTP/3 (`FC_HTTP3_ENABLED`) was Jetty/quiche-only
+/// (`org.eclipse.jetty.quic`, `jetty-quic-quiche-foreign`) and is dropped
+/// with the Vert.x cutover (`docs/vertx-plan.md` Q6, closed 2026-09-08):
+/// Vert.x 5.1 serves HTTP/3 only through Netty's incubator QUIC native
+/// codec, and nothing in this platform needs it — production sits behind an
+/// ALB that terminates TLS and never speaks h3 to the target, so h3 was
+/// always a client-edge feature of the deployment, not the process. Rather
+/// than silently keep accepting the knob and doing nothing,
+/// `FC_HTTP3_ENABLED=true` is now a startup error, the same way
+/// [TlsMaterial#resolve] already fails loud for a malformed/partial/doubled
+/// TLS configuration instead of quietly staying HTTP/1.1.
 public final class Listeners {
-
-    private static final Logger LOG = LoggerFactory.getLogger(Listeners.class);
 
     private Listeners() {
     }
 
-    /// Registers every connector the configured [Env] calls for. The h2c
-    /// connector is added FIRST: `JettyServer#port()` (and therefore
-    /// [io.flowcatalyst.server.Server.Running#apiPort]) reads
-    /// `connectors[0].getLocalPort()`, so the plain listener has to stay
-    /// connector zero for `apiPort()` to keep meaning what it always has.
-    public static void install(JettyConfig jetty, Env env) {
-        Optional<TlsMaterial> tls = TlsMaterial.resolve(env);
-
-        jetty.addConnector((server, httpConfig) -> h2c(server, httpConfig, env));
-
-        tls.ifPresent(material -> {
-            jetty.addConnector((server, httpConfig) -> tls(server, httpConfig, env, material));
-
-            if (env.http3Enabled()) {
-                // The probe runs BEFORE anything is handed to the live
-                // Server: a QuicheServerConnector whose native library
-                // cannot load would fail inside Jetty's own connector
-                // startup, which aborts every connector — the plain and TLS
-                // listeners included, not just this one (Http3's javadoc).
-                // Alt-Svc goes with the connector, never without it: a
-                // client told "h3 here" by a server that cannot speak it
-                // would only be sent to a closed UDP port (spec §1: the
-                // header must not be a lie).
-                var failure = Http3.quicheLoadFailure();
-                if (failure.isPresent()) {
-                    LOG.warn("FC_HTTP3_ENABLED=true but the quiche native library did not load "
-                            + "(HTTP/3 will not be served and Alt-Svc is not advertised): {}", failure.get().toString());
-                } else {
-                    var sslContextFactory = sslContextFactory(material);
-                    jetty.modifyServer(server -> Http3.install(server, env));
-                    jetty.addConnector((server, httpConfig) -> Http3.connector(server, env, sslContextFactory));
-                }
-            }
-        });
-    }
-
-    private static ServerConnector h2c(Server server, HttpConfiguration httpConfig, Env env) {
-        var connector = new ServerConnector(server,
-                new HttpConnectionFactory(httpConfig),
-                new HTTP2CServerConnectionFactory(httpConfig));
-        connector.setPort(env.apiPort());
-        return connector;
-    }
-
-    /// TLS 1.2/1.3 with ALPN -> h2, http/1.1 (§1). `httpConfig` is the SAME
-    /// [HttpConfiguration] instance Javalin hands to every connector
-    /// builder — mutating it here would leak `SecureRequestCustomizer` (and,
-    /// on the HTTP/3 path, `Alt-Svc`) onto the plain h2c connector too, so a
-    /// copy is customized instead and the shared instance is left alone.
-    private static ServerConnector tls(Server server, HttpConfiguration httpConfig, Env env, TlsMaterial material) {
-        var sslContextFactory = sslContextFactory(material);
-
-        var tlsHttpConfig = new HttpConfiguration(httpConfig);
-        // SecureRequestCustomizer marks this connector's requests secure —
-        // Http3#altSvcHandler relies on exactly that flag to know which
-        // listener it is answering for.
-        tlsHttpConfig.addCustomizer(new SecureRequestCustomizer());
-
-        var connector = new ServerConnector(server,
-                new SslConnectionFactory(sslContextFactory, "alpn"),
-                new ALPNServerConnectionFactory("h2", "http/1.1"),
-                new HTTP2ServerConnectionFactory(tlsHttpConfig),
-                new HttpConnectionFactory(tlsHttpConfig));
-        connector.setPort(env.tlsPort());
-        return connector;
-    }
-
-    static SslContextFactory.Server sslContextFactory(TlsMaterial material) {
-        var scf = new SslContextFactory.Server();
-        scf.setKeyStore(material.keyStore());
-        scf.setKeyManagerPassword(new String(material.keyPassword()));
-        return scf;
+    /// `Optional.empty()` when no TLS material is configured
+    /// ([TlsMaterial#resolve]); throws the same startup errors that class
+    /// already throws for a malformed/partial/doubled configuration, plus
+    /// its own for `FC_HTTP3_ENABLED=true` (class doc above).
+    public static Optional<VertxListener.Tls> resolve(Env env) {
+        if (env.http3Enabled()) {
+            throw new IllegalStateException("FC_HTTP3_ENABLED=true, but HTTP/3 was dropped in the Vert.x cutover "
+                    + "(docs/vertx-plan.md Q6): Vert.x 5 has no HTTP/3 support without Netty's incubator QUIC "
+                    + "native codec, which nothing in this platform needs — unset FC_HTTP3_ENABLED");
+        }
+        return TlsMaterial.resolve(env)
+                .map(material -> new VertxListener.Tls(env.tlsPort(), material.keyStore(), material.keyPassword()));
     }
 }

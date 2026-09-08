@@ -11,6 +11,15 @@ Extracted 2026-09-05 against Go HEAD (`9f7be62`) from `internal/mcp/`
 `io.modelcontextprotocol.sdk:mcp` (already managed in the parent POM,
 `mcp.version`). Behaviour tables, never code. `[C]` contract.
 
+**Status 2026-09-08:** the streamable-HTTP transport this spec describes has
+no Vert.x implementation (`docs/vertx-plan.md` Q4, `docs/backlog.md` "MCP's
+HTTP transport has no Vert.x implementation") — the Jetty-hosted servlet
+transport it used to run on is gone with the Vert.x cutover.
+`FC_MCP_ENABLED=true` fails the server at startup rather than silently
+serving nothing; `fcdev mcp`'s default **stdio** transport is unaffected (no
+HTTP listener involved) and still matches this spec. Everything below
+describes the target behaviour for whichever transport serves it.
+
 ## 1. Purpose and topology [C]
 
 A **read-only** Model Context Protocol server that proxies a fixed set of

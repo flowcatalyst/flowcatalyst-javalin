@@ -849,7 +849,13 @@ other surface verified. Same code path as the native fc-server; fix by
 listing the published docs through an index file at build time, as
 `IndexedMigrations` does for Flyway. Small; not blocking.
 
-## HTTP/3 sessions hold the graceful stop (2026-09-06)
+## HTTP/3 sessions hold the graceful stop (2026-09-06) — resolved 2026-09-08
+
+Moot: HTTP/3 was dropped with the Vert.x cutover (`docs/vertx-plan.md` Q6,
+closed) — `Http3.java`, the Jetty/quiche dependencies and `Http3Test` are all
+deleted, and `FC_HTTP3_ENABLED=true` is now a startup error. Kept below as
+the historical record of the Jetty-era limitation, in case HTTP/3 ever
+returns on a different transport.
 
 With `FC_HTTP3_ENABLED=true`, after an h3 exchange whose client simply
 went away (curl exits without a QUIC CONNECTION_CLOSE), `Server.stop`
@@ -863,6 +869,35 @@ default and the ALB topology never enables it on the target. Fix: find the
 Graceful bean (a thread dump during the stall shows `Server.doStop:711`
 waiting), or set a short QUIC idle timeout if Jetty exposes one; possibly a
 Jetty issue.
+
+## MCP's HTTP transport has no Vert.x implementation (2026-09-08)
+
+`FC_MCP_ENABLED=true` fails the server at startup
+(`io.flowcatalyst.mcp.McpServer.UNAVAILABLE`); `fcdev mcp --http` fails the
+same way. The MCP Java SDK (`io.modelcontextprotocol.sdk:mcp` 2.0.1) ships
+streamable-HTTP as a plain `jakarta.servlet.http.HttpServlet`
+(`HttpServletStreamableServerTransportProvider`) — Jetty used to host it via
+Javalin's `JettyConfig#modifyServletContextHandler`; there is no
+framework-agnostic alternative in the SDK. `fcdev mcp`'s default stdio
+transport (`StdioServerTransportProvider`) is unaffected — no HTTP listener
+involved — so this only blocks the streamable-HTTP path (`fc-server`'s
+`FC_MCP_ENABLED`, `fcdev start --mcp`, `fcdev mcp --http`).
+
+Investigated (this unit): the transport's HttpServletRequest/Response/
+AsyncContext surface is narrow (~20 methods — `getHeader(Names)`,
+`getInputStream`, `getContentLengthLong`, `startAsync`, `getWriter`,
+`setStatus/ContentType/Header`, `sendError`, `AsyncContext#complete/
+addListener/setTimeout`), so a purpose-built bridge over a raw (non-seam)
+Vert.x `HttpServer` — not the buffered dispatch-model-B `Exchange`, since
+the transport's SSE responses outlive the request that opens them, written
+to from other threads as the session's reactive stream produces events — is
+tractable; a rough sketch is in the session that did this cutover. Not
+attempted here: novel, security/correctness-sensitive infrastructure (an
+async response bridge) is a separate spec-implement-audit unit
+(`CONVENTIONS.md` §8), not a line item inside a Javalin/Jetty removal. Fix:
+write `docs/spec/mcp-vertx-transport.md`, then implement + test it as its
+own unit (own break-it-on-purpose mutants for the async/threading surface
+in particular — a wrong `AsyncContext` bridge fails quietly, mid-stream).
 
 ## Sync rollup audit rows sort after Go's (2026-09-06)
 

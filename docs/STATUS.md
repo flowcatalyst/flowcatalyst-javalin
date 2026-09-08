@@ -4,6 +4,61 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## The Vert.x cutover — Javalin and Jetty removed (2026-09-08)
+
+`docs/vertx-plan.md` Phase 3: Vert.x is now the ONLY HTTP stack.
+`io.flowcatalyst.http.javalin` (`JavalinAdapter`, `JavalinRoutes`,
+`JavalinExchange`, `JavalinJsonMapper`, `SkipRemainingHandlersSignal`) and
+`server/transport/Http3.java` are deleted; `Javalin`, every
+`org.eclipse.jetty*` artifact and the Kotlin-stdlib/quiche reachability
+entries they dragged in are gone from both poms and both
+`native-config/reachability-metadata.json` files. `Env.HttpListener`/
+`FC_HTTP` are gone — the Vert.x listener builds unconditionally.
+
+**TLS landed on Vert.x** (`docs/spec/http-transport.md`): a second
+`HttpServer` on the same `Vertx`/`Router`, `setSsl(true).setUseAlpn(true)`,
+the same `TlsMaterial` (`FC_TLS_KEYSTORE_*` / `FC_TLS_CERT_PATH`+
+`FC_TLS_KEY_PATH`) re-encoded to PKCS#12 bytes in memory for Vert.x's
+`PfxOptions` — no native library either way, same as the Jetty
+implementation it replaces. **HTTP/3 is dropped (Q6, closed):** Vert.x 5.1
+has no HTTP/3 without Netty's incubator QUIC native codec, and nothing in
+this platform needed it — production's h3 path was always the ALB's, never
+the process's. `FC_HTTP3_ENABLED=true` is now a startup error instead of a
+silently-accepted knob. Metrics and OutboxAdmin are their own `VertxListener`s
+now (previously the last two Javalin apps); a genuine bug the cutover found
+and fixed along the way: `VertxListener.Options.local(...)` defaults `h2c`
+and the loopback bind, both wrong for the metrics listener (spec: HTTP/1.1
+only, every interface) — caught by a test failing against the first draft,
+not by inspection.
+
+**MCP's HTTP transport has no Vert.x implementation** (`docs/backlog.md`):
+the MCP SDK's streamable-HTTP transport is a Jetty-hosted servlet with no
+framework-agnostic alternative, and its long-lived SSE responses (written
+to from other threads after the request returns) do not fit the seam's
+buffered-response dispatch model. `FC_MCP_ENABLED=true` now fails the
+server at startup rather than silently serving nothing (`fcdev mcp`'s
+default stdio transport is unaffected). A native Vert.x transport is future
+work (its own spec-implement-audit unit, not a line item here).
+
+**Verification:** full server suite 3630/0 (0 skipped-unrelated), fcdev
+87/0, `NoFrameworkLeakTest` green for both the seam (`io.flowcatalyst.http`
+outside the adapter) and Vert.x (`io.vertx.*` outside
+`io.flowcatalyst.http.vertx`, plus two named test-fixture exceptions);
+`grep -rn 'io\.javalin|org\.eclipse\.jetty|quiche' server/src fcdev/src
+parity server/pom.xml fcdev/pom.xml` returns only two comments explaining
+what was removed, no code or dependency. Exec jar **58.8 MB, down from
+76.5 MB (−16.8 MB, −23%)** — Jetty's connectors, ALPN/HTTP2/HTTP3/QUIC
+modules and the transitive Kotlin stdlib are gone; `runtime artifact
+count` was not re-measured (`bench/real` tooling, out of scope for this
+unit). Packaged jars boot and serve in both platform mode (`fc-server`)
+and fcdev's embedded-db dev mode; `/health`, `/metrics`, `/index.html`
+verified (fcdev's own listener), h2c prior-knowledge confirmed on the API
+port. Parity corpus against Go `b422466` (unchanged since the last run):
+**1,149 steps, 349 OK, 800 allow-listed, 0 DIFF, 0 ERROR**, lockfile
+coverage 246/246, outside-lockfile surface 102/102 — identical to the
+Phase 2 reference-unit run, i.e. the cutover changed nothing a client can
+observe.
+
 ## HTTP/2 and HTTP/3 transport (2026-09-06)
 
 `docs/spec/http-transport.md` landed: h2c (cleartext HTTP/2) is now always
