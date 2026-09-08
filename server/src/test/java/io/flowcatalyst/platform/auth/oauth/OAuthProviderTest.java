@@ -622,6 +622,129 @@ class OAuthProviderTest {
         assertThat(CLIENTS.findById(svc.id()).orElseThrow().previousSecretLastUsedAt()).isEqualTo(stamp);
     }
 
+    // ── keyed hashing migration (docs/spec/encryption.md §3) ───────────────
+
+    /// A client provisioned with a legacy `encrypted:` ref still authenticates,
+    /// and a successful match rewrites the row's ref to the hashed form — the
+    /// load-bearing assertion is on the PERSISTED VALUE after reload, not on
+    /// any method having been invoked.
+    @Test
+    void successfulClientCredentialsAuthMigratesTheCurrentSecretRefToTheHashedForm() {
+        String secret = "migrate-secret-" + UUID.randomUUID();
+        String principalId = principal("SERVICE", null, serviceAccount("migrate-" + RUN), null);
+        OAuthClient c = OAuthClient.create("migrate-" + RUN, "Migrate " + RUN, ClientType.CONFIDENTIAL)
+                .withSecretRef(ENC.encryptSecretRef(secret))
+                .withGrantTypes(List.of("client_credentials"))
+                .withPrincipalId(principalId);
+        UOW.inTransaction(tx -> {
+            CLIENTS.persist(c, tx.dbTx());
+            return null;
+        });
+        try {
+            assertThat(CLIENTS.findById(c.id()).orElseThrow().secretRef()).startsWith("encrypted:");
+
+            var wrongBefore = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), "not-it"));
+            assertThat(wrongBefore.statusCode()).as("a wrong secret against the legacy shape still fails").isEqualTo(401);
+
+            var ok = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), secret));
+            assertThat(ok.statusCode()).as(ok.body()).isEqualTo(200);
+
+            String storedAfter = CLIENTS.findById(c.id()).orElseThrow().secretRef();
+            assertThat(storedAfter).as("the successful match rewrote the ref to the hashed form")
+                    .startsWith("hashed:v1:");
+
+            // Transparent: the same plaintext still authenticates against the now-hashed
+            // ref, and a wrong one still fails against it.
+            var again = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), secret));
+            assertThat(again.statusCode()).as(again.body()).isEqualTo(200);
+            var wrongAfter = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), "not-it"));
+            assertThat(wrongAfter.statusCode()).isEqualTo(401);
+        } finally {
+            UOW.inTransaction(tx -> {
+                CLIENTS.delete(c, tx.dbTx());
+                return null;
+            });
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(principalId)).execute();
+        }
+    }
+
+    /// The mirror case for the previous (in-grace) secret: only the ref that
+    /// actually matched is rewritten, and the current ref — which never
+    /// matched — is left exactly as it was.
+    @Test
+    void successfulAuthOnAPreviousSecretMigratesOnlyThePreviousRef() {
+        String secret = "migrate2-secret-" + UUID.randomUUID();
+        String oldSecret = "migrate2-old-" + UUID.randomUUID();
+        String principalId = principal("SERVICE", null, serviceAccount("migrate2-" + RUN), null);
+        OAuthClient seed = OAuthClient.create("migrate2-" + RUN, "Migrate2 " + RUN, ClientType.CONFIDENTIAL)
+                .withSecretRef(ENC.encryptSecretRef(oldSecret))
+                .withGrantTypes(List.of("client_credentials"))
+                .withPrincipalId(principalId);
+        OAuthClient c = seed.rotateSecret(ENC.encryptSecretRef(secret), Duration.ofHours(1), Instant.now()).client();
+        UOW.inTransaction(tx -> {
+            CLIENTS.persist(c, tx.dbTx());
+            return null;
+        });
+        try {
+            var r = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), oldSecret));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+
+            OAuthClient reloaded = CLIENTS.findById(c.id()).orElseThrow();
+            assertThat(reloaded.previousSecretRef()).as("the ref that matched (previous) is migrated")
+                    .startsWith("hashed:v1:");
+            assertThat(reloaded.secretRef()).as("the ref that did NOT match (current) is untouched")
+                    .startsWith("encrypted:");
+
+            var again = token(Map.of("grant_type", "client_credentials"), basic(c.clientId(), oldSecret));
+            assertThat(again.statusCode()).as("still authenticates now that the previous ref is hashed").isEqualTo(200);
+        } finally {
+            UOW.inTransaction(tx -> {
+                CLIENTS.delete(c, tx.dbTx());
+                return null;
+            });
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(principalId)).execute();
+        }
+    }
+
+    /// With no app key configured, verification fails closed exactly as
+    /// decryption does today — even the RIGHT secret is rejected, because
+    /// there is no key to check it (or write against) with.
+    @Test
+    void withNoEncryptionConfiguredTheRightSecretStillFailsClosed() {
+        String secret = "noenc-secret-" + UUID.randomUUID();
+        String principalId = principal("SERVICE", null, serviceAccount("noenc-" + RUN), null);
+        OAuthClient c = OAuthClient.create("noenc-" + RUN, "NoEnc " + RUN, ClientType.CONFIDENTIAL)
+                .withSecretRef(ENC.encryptSecretRef(secret))
+                .withGrantTypes(List.of("client_credentials"))
+                .withPrincipalId(principalId);
+        UOW.inTransaction(tx -> {
+            CLIENTS.persist(c, tx.dbTx());
+            return null;
+        });
+        try {
+            OAuthState noEnc = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS,
+                    new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
+                    RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.empty(),
+                    ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
+                    new Governor(new Governor.Config(60, 1000)), KEYS, ISSUER, Clock.systemUTC(), null);
+            try (var h = TestHttp.routes(routes -> {
+                HttpError.install(routes);
+                OAuthTokenApi.register(routes, noEnc);
+            })) {
+                var form = "grant_type=client_credentials";
+                var creds = basic(c.clientId(), secret);
+                var r = h.post("/oauth/token", form, "Content-Type", "application/x-www-form-urlencoded", creds[0], creds[1]);
+                assertThat(r.statusCode()).as("no app key configured -> the right secret still fails closed").isEqualTo(401);
+            }
+        } finally {
+            UOW.inTransaction(tx -> {
+                CLIENTS.delete(c, tx.dbTx());
+                return null;
+            });
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(principalId)).execute();
+        }
+    }
+
     @Test
     void anExplicitScopeOutsideTheCeilingIsInvalidScopeAndInsideItNarrows() {
         var outside = token(Map.of("grant_type", "client_credentials", "scope", "crm:read"), basic(svc.clientId(), SECRET));
@@ -706,10 +829,25 @@ class OAuthProviderTest {
         assertThat(String.valueOf(access.get("scope"))).contains("crm:read");
         assertThat(attempts(developerId, "SUCCESS")).isEqualTo(before + 1);
 
+        // `developerId` was seeded with a legacy `encrypted:` ref (`@BeforeAll`); the
+        // successful match above must have rewritten it to the hashed form
+        // (`docs/spec/encryption.md` §3 — asserts the PERSISTED VALUE changed, not
+        // merely that a method was called). Holds regardless of test execution
+        // order: once migrated it stays migrated, and a later run of this same
+        // assertion still finds it hashed.
+        String storedRef = DB.select(IAM_PRINCIPALS.DEV_CLIENT_SECRET_REF).from(IAM_PRINCIPALS)
+                .where(IAM_PRINCIPALS.ID.eq(developerId)).fetchOne(IAM_PRINCIPALS.DEV_CLIENT_SECRET_REF);
+        assertThat(storedRef).as("a successful developer-credential match migrates the ref to hashed:v1:")
+                .startsWith("hashed:v1:");
+
         int failures = attempts(developerId, "FAILURE");
         var wrong = token(Map.of("grant_type", "client_credentials", "client_id", developerId, "client_secret", "wrong"));
         assertThat(wrong.statusCode()).isEqualTo(401);
         assertThat(attempts(developerId, "FAILURE")).isEqualTo(failures + 1);
+
+        // Transparent: the real secret still authenticates now that the ref is hashed.
+        var again = token(Map.of("grant_type", "client_credentials", "client_id", developerId, "client_secret", DEV_SECRET));
+        assertThat(again.statusCode()).as(again.body()).isEqualTo(200);
     }
 
     @Test

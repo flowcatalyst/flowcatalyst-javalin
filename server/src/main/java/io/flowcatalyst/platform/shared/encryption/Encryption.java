@@ -4,6 +4,7 @@ import io.flowcatalyst.server.EnvReader;
 
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.List;
@@ -11,11 +12,13 @@ import java.util.Objects;
 import java.util.Optional;
 import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import static io.flowcatalyst.platform.shared.encryption.SecretRef.ENCRYPTED_PREFIX;
+import static io.flowcatalyst.platform.shared.encryption.SecretRef.HASHED_PREFIX;
 
 /// Field-level AES-256-GCM encryption with one-step key rotation
 /// (`docs/spec/encryption.md`). Envelopes are base64 of
@@ -42,8 +45,11 @@ public final class Encryption {
     /// Smallest v0 / v1 envelope: nonce, tag, and nothing encrypted.
     static final int MIN_V0 = NONCE_BYTES + TAG_BYTES;
     static final int MIN_V1 = 1 + MIN_V0;
+    /// `HmacSHA256` output length — the payload length a `hashed:v1:` ref's MAC must decode to.
+    static final int HMAC_BYTES = 32;
 
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
+    private static final String HMAC_ALGORITHM = "HmacSHA256";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     /// Which keys decrypt: the current one alone, or current plus the previous
@@ -221,12 +227,87 @@ public final class Encryption {
         return switch (ref) {
             case SecretRef.None _ -> new Decryption.Failed(Decryption.Reason.EMPTY);
             case SecretRef.Encrypted(var envelope) -> open(envelope);
+            case SecretRef.Hashed _ -> new Decryption.Failed(Decryption.Reason.HASHED);
             case SecretRef.External ext -> new Decryption.External(ext);
             case SecretRef.Literal(var value) -> new Decryption.Plaintext(value);
             case SecretRef.Plain(var value) -> bareEnvelope(value)
                     .<Decryption>map(this::open)
                     .orElseGet(() -> new Decryption.Failed(Decryption.Reason.NOT_ENCRYPTED));
         };
+    }
+
+    // ── keyed hashing (verify-only secrets) ─────────────────────────────────
+
+    /// Outcome of [#verifySecret(String, String)]: whether the provided
+    /// plaintext matched the stored ref, and — when it did — whether the
+    /// caller should rewrite the row to the hashed form
+    /// (`docs/spec/encryption.md` §3 transparent migration): `true` for any
+    /// match not already a `hashed:v1:` ref sealed under the *current* key
+    /// (a legacy decrypt-and-compare shape, or a hash under a previous key).
+    public sealed interface SecretVerification {
+        record Matched(boolean rehash) implements SecretVerification {
+        }
+
+        record NoMatch() implements SecretVerification {
+        }
+    }
+
+    /// Verifies `providedPlaintext` against a stored secret ref of either
+    /// shape (`docs/spec/encryption.md` §3): a `hashed:v1:` ref is verified
+    /// by keyed MAC (current key, then previous — same order as [#decrypt]),
+    /// no decryption involved; any other shape keeps today's decrypt-and-compare.
+    /// Constant-time either way ([MessageDigest#isEqual]). Never throws for
+    /// bad data — a malformed or unmatched ref is [SecretVerification.NoMatch].
+    public SecretVerification verifySecret(String stored, String providedPlaintext) {
+        Objects.requireNonNull(providedPlaintext, "providedPlaintext");
+        SecretRef ref;
+        try {
+            ref = SecretRef.parse(stored);
+        } catch (IllegalArgumentException _) {
+            return new SecretVerification.NoMatch();
+        }
+        if (ref instanceof SecretRef.Hashed(var mac)) {
+            return verifyHashed(mac, providedPlaintext);
+        }
+        return switch (decrypt(stored)) {
+            case Decryption.Plaintext(var pt) -> MessageDigest.isEqual(
+                    pt.getBytes(StandardCharsets.UTF_8), providedPlaintext.getBytes(StandardCharsets.UTF_8))
+                    ? new SecretVerification.Matched(true) // any successful legacy-shape match migrates
+                    : new SecretVerification.NoMatch();
+            case Decryption.External _, Decryption.Failed _ -> new SecretVerification.NoMatch();
+        };
+    }
+
+    /// Tries every key, current first (the order [#decrypt] uses); a match
+    /// under anything but the current key needs rehashing.
+    private SecretVerification verifyHashed(byte[] mac, String providedPlaintext) {
+        List<SecretKey> ordered = keys.decryptionKeys(); // current first, then previous when rotating
+        for (int i = 0; i < ordered.size(); i++) {
+            if (MessageDigest.isEqual(hmac(ordered.get(i), providedPlaintext), mac)) {
+                return new SecretVerification.Matched(i > 0);
+            }
+        }
+        return new SecretVerification.NoMatch();
+    }
+
+    /// The at-rest form of a verify-only secret: `hashed:v1:` + the base64
+    /// `HmacSHA256` MAC of `plaintext` under the *current* key. Unlike
+    /// [#encryptSecretRef(String)] this is not idempotent over secret-ref
+    /// shapes — callers mint a verify-only secret's plaintext once and hash
+    /// it directly, they never re-hash an already-stored ref.
+    public String hashSecretRef(String plaintext) {
+        return HASHED_PREFIX + Base64Strict.encode(hmac(keys.current(), plaintext));
+    }
+
+    /// `HmacSHA256(key, plaintext)` — the MAC inside a `hashed:v1:` ref.
+    private static byte[] hmac(SecretKey key, String plaintext) {
+        try {
+            Mac mac = Mac.getInstance(HMAC_ALGORITHM);
+            mac.init(new SecretKeySpec(key.getEncoded(), HMAC_ALGORITHM));
+            return mac.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(HMAC_ALGORITHM + " unavailable: " + e.getMessage(), e);
+        }
     }
 
     /// The legacy reading of a bare value: strict base64 of at least the smallest
@@ -320,7 +401,10 @@ public final class Encryption {
         return switch (ref) {
             case SecretRef.Encrypted(var envelope) -> Optional.of(new Inline(envelope, true));
             case SecretRef.Plain(var value) -> bareEnvelope(value).map(b -> new Inline(b, false));
-            case SecretRef.None _, SecretRef.External _, SecretRef.Literal _ -> Optional.empty();
+            // Hashed refs migrate off a previous key lazily, at verify time
+            // (#verifySecret) — never via this batch job, which only knows
+            // how to re-seal an AES-GCM envelope.
+            case SecretRef.None _, SecretRef.External _, SecretRef.Literal _, SecretRef.Hashed _ -> Optional.empty();
         };
     }
 }

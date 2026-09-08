@@ -4,14 +4,12 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.HasId;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.function.BiPredicate;
 
 /// The OAuth-client aggregate root (spec: `docs/spec/auth-core.md` §3.6,
 /// §6.3, §8.5; grace-window ruling A-22, `docs/improvements.md`). A
@@ -22,10 +20,12 @@ import java.util.function.Function;
 /// Immutable record: each transition returns a copy (or a small nested
 /// result record when the transition has a side result) and throws
 /// [UseCaseException] when an invariant is violated. `client_secret_ref` /
-/// `previous_secret_ref` hold ciphertext ([io.flowcatalyst.platform.shared.encryption.SecretRef])
-/// exactly as written by the repository — the entity never decrypts on its
-/// own; [#acceptsSecret] takes a decryptor so the token endpoint (out of
-/// this unit's scope) can supply the real one.
+/// `previous_secret_ref` hold a verify-only ref ([io.flowcatalyst.platform.shared.encryption.SecretRef]
+/// — `hashed:v1:` for a client provisioned or rotated since the keyed-hash
+/// migration, `encrypted:` for one not yet migrated) exactly as written by
+/// the repository — the entity never verifies on its own; [#acceptsSecret]
+/// takes a matcher so the token endpoint (out of this unit's scope) can
+/// supply the real one ([io.flowcatalyst.platform.shared.encryption.Encryption#verifySecret]).
 ///
 /// @param id                       `oac_…` TSID
 /// @param clientId                 the OAuth2 `client_id` string, unique; backend-generated when omitted (internal-only)
@@ -218,24 +218,19 @@ public record OAuthClient(
     /// would make a still-valid old secret measurably slower than a new one,
     /// leaking where a client sits in its rotation — a lazily-evaluated `||`
     /// over the two calls would reintroduce exactly that, so `current` and
-    /// `previousMatches` are each fully computed (decryptor included) before
-    /// they are combined. `decryptor` resolves a stored ref to its plaintext
-    /// (empty when it cannot).
-    public boolean acceptsSecret(String providedPlaintext, Instant now, Function<String, Optional<String>> decryptor) {
+    /// `previousMatches` are each fully computed (matcher included) before
+    /// they are combined. `matcher` compares a stored ref against
+    /// `providedPlaintext` — a `hashed:v1:` ref by keyed MAC, any other shape
+    /// by decrypt-and-compare (both constant-time); it is `false` whenever the
+    /// ref cannot be read at all (`docs/spec/encryption.md` §3, §4).
+    public boolean acceptsSecret(String providedPlaintext, Instant now, BiPredicate<String, String> matcher) {
         Objects.requireNonNull(providedPlaintext, "providedPlaintext");
         Objects.requireNonNull(now, "now");
-        Objects.requireNonNull(decryptor, "decryptor");
-        boolean current = secretRef != null && matches(secretRef, providedPlaintext, decryptor);
+        Objects.requireNonNull(matcher, "matcher");
+        boolean current = secretRef != null && matcher.test(secretRef, providedPlaintext);
         Optional<String> previous = usablePreviousSecretRef(now);
-        boolean previousMatches = previous.isPresent() && matches(previous.get(), providedPlaintext, decryptor);
+        boolean previousMatches = previous.isPresent() && matcher.test(previous.get(), providedPlaintext);
         return current || previousMatches;
-    }
-
-    private static boolean matches(String ref, String providedPlaintext, Function<String, Optional<String>> decryptor) {
-        return decryptor.apply(ref)
-                .map(pt -> MessageDigest.isEqual(
-                        pt.getBytes(StandardCharsets.UTF_8), providedPlaintext.getBytes(StandardCharsets.UTF_8)))
-                .orElse(false);
     }
 
     // ── Construction-time / admin-update copies ──────────────────────────────

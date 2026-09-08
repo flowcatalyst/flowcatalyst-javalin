@@ -19,6 +19,9 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
 
     /// The at-rest prefix of an inline ciphertext.
     String ENCRYPTED_PREFIX = "encrypted:";
+    /// The at-rest prefix of a keyed-hash MAC — a verify-only secret
+    /// (`docs/spec/encryption.md` §3): never decryptable, only comparable.
+    String HASHED_PREFIX = "hashed:v1:";
     /// The SPA's "encrypt this on save" directive; stripped, never stored.
     String ENCRYPT_DIRECTIVE = "encrypt:";
     /// The dev bypass: the rest of the string *is* the plaintext.
@@ -27,9 +30,9 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
     List<String> EXTERNAL_SCHEMES = List.of("aws-sm", "aws-ps", "gcp-sm", "vault", "env");
 
     /// Parse a stored or incoming value. `null` is a caller bug (map omitted /
-    /// `NULL` fields before calling); an `encrypted:` payload that is not
-    /// base64 is rejected with [IllegalArgumentException] — it is not a secret
-    /// ref of any kind.
+    /// `NULL` fields before calling); an `encrypted:` or `hashed:v1:` payload
+    /// that is not base64 of the right length is rejected with
+    /// [IllegalArgumentException] — it is not a secret ref of any kind.
     static SecretRef parse(String value) {
         var v = Objects.requireNonNull(value, "value").strip();
         if (v.isEmpty()) return None.INSTANCE;
@@ -37,6 +40,15 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
             var payload = v.substring(ENCRYPTED_PREFIX.length());
             return new Encrypted(Base64Strict.decode(payload)
                     .orElseThrow(() -> new IllegalArgumentException("encrypted: payload is not base64")));
+        }
+        if (v.startsWith(HASHED_PREFIX)) {
+            var payload = v.substring(HASHED_PREFIX.length());
+            var mac = Base64Strict.decode(payload)
+                    .orElseThrow(() -> new IllegalArgumentException("hashed:v1: payload is not base64"));
+            if (mac.length != Encryption.HMAC_BYTES) {
+                throw new IllegalArgumentException("hashed:v1: payload must be " + Encryption.HMAC_BYTES + " bytes, got " + mac.length);
+            }
+            return new Hashed(mac);
         }
         var sep = v.indexOf("://");
         if (sep > 0) {
@@ -51,7 +63,7 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
     /// The shapes that are safe to persist as they are. [Plain] is not one:
     /// it must go through [Encryption#encryptSecretRef(String)] (or be rejected
     /// when no key is configured).
-    sealed interface AtRest extends SecretRef permits None, Encrypted, External, Literal {
+    sealed interface AtRest extends SecretRef permits None, Encrypted, Hashed, External, Literal {
         /// The canonical stored string.
         String stored();
     }
@@ -95,6 +107,43 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
         @Override
         public String toString() {
             return "Encrypted[" + envelope.length + " bytes]";
+        }
+    }
+
+    /// `hashed:v1:<base64>` — a keyed-hash MAC ([Encryption] `HmacSHA256` under
+    /// the app key), decoded. One-way: never decryptable, only verified against
+    /// a caller-supplied plaintext ([Encryption#verifySecret(String, String)]).
+    /// The at-rest form of a verify-only secret (OAuth client secrets,
+    /// self-service developer client secrets) — never a secret the platform
+    /// itself must later use or send (`docs/spec/encryption.md` §3).
+    record Hashed(byte[] mac) implements AtRest {
+        public Hashed {
+            mac = Objects.requireNonNull(mac, "mac").clone();
+        }
+
+        @Override
+        public byte[] mac() {
+            return mac.clone();
+        }
+
+        @Override
+        public String stored() {
+            return HASHED_PREFIX + Base64Strict.encode(mac);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Hashed other && Arrays.equals(mac, other.mac);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(mac);
+        }
+
+        @Override
+        public String toString() {
+            return "Hashed[***]";
         }
     }
 

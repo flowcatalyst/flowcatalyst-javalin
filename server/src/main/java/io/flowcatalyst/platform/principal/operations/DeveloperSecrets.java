@@ -50,29 +50,32 @@ public final class DeveloperSecrets {
         return new DeveloperSecrets(null);
     }
 
-    /// A freshly issued secret: the plaintext (returned once) and its encrypted at-rest form.
-    public record Issued(String plaintext, String encryptedRef) {
+    /// A freshly issued secret: the plaintext (returned once) and its
+    /// at-rest keyed-hash form (`docs/spec/encryption.md` §3 — a developer
+    /// client secret is verify-only, so it is stored `hashed:v1:…`, never
+    /// reversibly encrypted).
+    public record Issued(String plaintext, String hashedRef) {
         @Override
         public String toString() {
             return "Issued[***]";
         }
     }
 
-    /// Mints 32 random bytes → base64url (no padding) and encrypts them.
+    /// Mints 32 random bytes → base64url (no padding) and hashes them.
     ///
-    /// The caller keeps [Issued#plaintext] and hands [Issued#encryptedRef] to
+    /// The caller keeps [Issued#plaintext] and hands [Issued#hashedRef] to
     /// the operation — see the class doc for why the plaintext does not travel
     /// the other way.
     ///
     /// @throws UseCaseException internal `SECRET` when no app key is configured
     public Issued issue() {
         if (encryption == null) {
-            throw UseCaseException.internal("SECRET", "FLOWCATALYST_APP_KEY not configured; cannot encrypt developer client secret", null);
+            throw UseCaseException.internal("SECRET", "FLOWCATALYST_APP_KEY not configured; cannot hash developer client secret", null);
         }
         byte[] bytes = new byte[SECRET_BYTES];
         random.nextBytes(bytes);
         String plaintext = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        return new Issued(plaintext, encryption.encrypt(plaintext));
+        return new Issued(plaintext, encryption.hashSecretRef(plaintext));
     }
 
     @Override

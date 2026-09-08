@@ -49,7 +49,7 @@ public final class RotateOAuthClientSecret {
                         throw UseCaseException.conflict("NOT_CONFIDENTIAL", "Only CONFIDENTIAL clients have rotatable secrets");
                     }
                     String plaintext = Secrets.generatePlaintext();
-                    String ref = Secrets.encryptedRef(encryption, plaintext);
+                    String ref = Secrets.hashedRef(encryption, plaintext);
                     Duration grace = cmd.graceSeconds() != null ? Duration.ofSeconds(cmd.graceSeconds()) : DEFAULT_GRACE;
                     OAuthClient.RotateResult result = c.rotateSecret(ref, grace, Instant.now());
                     disclose.accept(plaintext);

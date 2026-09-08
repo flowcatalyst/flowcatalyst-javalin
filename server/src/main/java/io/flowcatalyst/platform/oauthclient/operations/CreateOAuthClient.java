@@ -63,7 +63,7 @@ public final class CreateOAuthClient {
 
                     if (type == ClientType.CONFIDENTIAL) {
                         String plaintext = Secrets.generatePlaintext();
-                        c = c.withSecretRef(Secrets.encryptedRef(encryption, plaintext));
+                        c = c.withSecretRef(Secrets.hashedRef(encryption, plaintext));
                         disclose.accept(plaintext);
                     }
 

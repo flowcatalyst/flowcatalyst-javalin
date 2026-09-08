@@ -14,7 +14,6 @@ import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -312,7 +311,7 @@ class ApplicationApiTest {
         var app = json(http.get("/api/applications/" + id, ANCHOR));
         assertThat(app.get("serviceAccountId").asText()).isEqualTo(sa.get("principalId").asText());
         OAuthClient oc = OAUTH_CLIENTS.findById(oauth.get("id").asText()).orElseThrow();
-        assertThat(oc.acceptsSecret(secret, Instant.now(), ApplicationApiTest::decrypt))
+        assertThat(oc.acceptsSecret(secret, Instant.now(), ApplicationApiTest::matches))
                 .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
 
         int saBefore = countServiceAccountsForApp(id);
@@ -385,12 +384,12 @@ class ApplicationApiTest {
         assertThat(confSecret).isNotBlank();
         OAuthClient confOc = OAUTH_CLIENTS.findById(confClient.get("oauthClient").get("id").asText()).orElseThrow();
         assertThat(confOc.clientType()).isEqualTo(ClientType.CONFIDENTIAL);
-        assertThat(confOc.acceptsSecret(confSecret, Instant.now(), ApplicationApiTest::decrypt))
+        assertThat(confOc.acceptsSecret(confSecret, Instant.now(), ApplicationApiTest::matches))
                 .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
     }
 
-    private static Optional<String> decrypt(String ref) {
-        return ENCRYPTION.get().decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
+    private static boolean matches(String ref, String provided) {
+        return ENCRYPTION.get().verifySecret(ref, provided) instanceof Encryption.SecretVerification.Matched;
     }
 
     private static int countServiceAccountsForApp(String applicationId) {

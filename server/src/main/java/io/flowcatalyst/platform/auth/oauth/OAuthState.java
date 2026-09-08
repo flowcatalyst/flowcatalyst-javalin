@@ -15,7 +15,6 @@ import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +22,6 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
 
 /// What the OAuth / OIDC provider endpoints share (`docs/spec/auth-core.md`
 /// §6.2; Go `oauthapi.State`). Optional collaborators are nullable, with
@@ -87,17 +85,27 @@ public record OAuthState(
         baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
     }
 
-    /// Resolves a stored secret ref to its plaintext, or empty when there is
-    /// no encryption service or the ref will not decrypt — the entity's
-    /// `acceptsSecret` then fails closed.
-    public Function<String, Optional<String>> decryptor() {
-        return ref -> encryption.flatMap(enc -> {
+    /// Whether `providedPlaintext` matches the secret stored as `ref`
+    /// ([Encryption#verifySecret]) — `false` with no encryption service
+    /// (fails closed, same as today's decrypt path) or on any verification
+    /// error. What [io.flowcatalyst.platform.oauthclient.OAuthClient#acceptsSecret]
+    /// is supplied as its matcher.
+    public boolean matchesSecret(String ref, String providedPlaintext) {
+        return verifySecret(ref, providedPlaintext) instanceof Encryption.SecretVerification.Matched;
+    }
+
+    /// [#matchesSecret], but with the full outcome — whether it matched, and
+    /// if so whether the stored ref should be rewritten to the hashed form
+    /// (`docs/spec/encryption.md` §3 transparent migration). `NoMatch` with
+    /// no encryption service configured.
+    public Encryption.SecretVerification verifySecret(String ref, String providedPlaintext) {
+        return encryption.map(enc -> {
             try {
-                return enc.decrypt(ref) instanceof Decryption.Plaintext p ? Optional.of(p.value()) : Optional.empty();
+                return enc.verifySecret(ref, providedPlaintext);
             } catch (RuntimeException e) {
-                return Optional.empty();
+                return (Encryption.SecretVerification) new Encryption.SecretVerification.NoMatch();
             }
-        });
+        }).orElseGet(Encryption.SecretVerification.NoMatch::new);
     }
 
     /// Best-effort attempt row; a logging miss never fails the auth flow.

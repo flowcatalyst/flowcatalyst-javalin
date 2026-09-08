@@ -45,6 +45,10 @@ public sealed interface Decryption permits Decryption.Plaintext, Decryption.Exte
         /// prefix, "too short" means plaintext ([#NOT_ENCRYPTED]).
         MALFORMED,
         /// A well-formed envelope neither the current nor the previous key authenticates.
-        NO_MATCHING_KEY
+        NO_MATCHING_KEY,
+        /// `hashed:v1:` — a keyed-hash MAC, one-way by design: there is no
+        /// plaintext to recover. Verify it with
+        /// [Encryption#verifySecret(String, String)] instead.
+        HASHED
     }
 }

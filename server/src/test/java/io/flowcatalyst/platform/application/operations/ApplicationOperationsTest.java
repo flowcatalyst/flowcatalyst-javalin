@@ -18,7 +18,6 @@ import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
-import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -383,8 +382,8 @@ class ApplicationOperationsTest {
         return DB.fetchCount(OAUTH_CLIENT_APPLICATION_IDS, OAUTH_CLIENT_APPLICATION_IDS.APPLICATION_ID.eq(applicationId));
     }
 
-    private static Optional<String> decrypt(String ref) {
-        return ENCRYPTION.get().decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
+    private static boolean matches(String ref, String provided) {
+        return ENCRYPTION.get().verifySecret(ref, provided) instanceof Encryption.SecretVerification.Matched;
     }
 
     @Test
@@ -424,7 +423,7 @@ class ApplicationOperationsTest {
         assertThat(oc.grantTypes()).containsExactlyInAnyOrder("client_credentials", "refresh_token");
         assertThat(oc.defaultScopes()).containsExactly("openid");
         assertThat(oc.applicationIds()).containsExactly(app.applicationId());
-        assertThat(oc.acceptsSecret(result.oauthClientSecret(), Instant.now(), ApplicationOperationsTest::decrypt))
+        assertThat(oc.acceptsSecret(result.oauthClientSecret(), Instant.now(), ApplicationOperationsTest::matches))
                 .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
 
         // Events + audit: the service-account-provisioned event carries the SA id, not
