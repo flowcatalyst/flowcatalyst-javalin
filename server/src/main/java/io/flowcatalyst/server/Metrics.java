@@ -1,31 +1,22 @@
 package io.flowcatalyst.server;
 
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.Exchange;
-import io.flowcatalyst.http.Group;
-import io.flowcatalyst.http.RequestWorkers;
-import io.flowcatalyst.http.vertx.VertxListener;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.javalin.Javalin;
 import io.prometheus.metrics.expositionformats.ExpositionFormats;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 
 /// The second listener (`FC_METRICS_PORT`, default 9090): `/health`,
 /// `/ready` and `/metrics` — the "is the binary up" surface every
 /// deployment scrapes. Go served a placeholder string at `/metrics` and kept
 /// the real series under `/router/metrics`; the agreed tidy-up is to expose
 /// the real Prometheus registry here (the router alias stays for existing
-/// scrapes). A second [VertxListener] on the same host, its own event loop
-/// and worker: this listener is deliberately independent of the API
-/// listener's admission (`docs/spec/vertx-listener.md` §1) — a saturated API
-/// must not make the process look unreachable to a liveness probe.
+/// scrapes).
 public final class Metrics {
 
     private final Env env;
@@ -45,42 +36,32 @@ public final class Metrics {
     /// so there is no "started?" state to get wrong.
     public Running start() {
         var formats = ExpositionFormats.init();
-        // Every route unbounded (Group.NO_DB): a liveness/readiness/metrics
-        // scrape must never queue behind another, and none of these three
-        // touch the database — a single MAIN pool slot exists only because
-        // RequestWorkers always has one, never because anything runs in it.
-        // Bound to every interface (unlike the loopback-only outbox admin
-        // API) — an external scraper (a different pod/host) has to reach it —
-        // and plain HTTP/1.1 only (`docs/spec/http-transport.md` §1
-        // "Metrics stays a plain HTTP/1.1 Jetty as today"; `VertxListener.Options.local`
-        // would default h2c on, which this listener was never meant to have).
-        var options = new VertxListener.Options("0.0.0.0", env.metricsPort(), false, Budgets.none(),
-                Duration.ofSeconds(30), Duration.ofSeconds(130), Duration.ofSeconds(5),
-                RequestWorkers.of(1, Map.of()), Optional.empty());
-        var listener = VertxListener.start(options, routes -> {
-            var noDb = routes.in(Group.NO_DB);
-            noDb.get("/health", Health.noChecks()::handle);
-            noDb.get("/ready", this::ready);
-            noDb.get("/metrics", ctx -> scrape(ctx, formats));
-        });
-        return new Running(listener);
+        var app = Javalin.create(cfg -> {
+            cfg.startup.showJavalinBanner = false;
+            cfg.concurrency.useVirtualThreads = true;
+            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
+            routes.get("/health", Health.noChecks()::handle);
+            routes.get("/ready", this::ready);
+            routes.get("/metrics", ctx -> scrape(ctx, formats));
+        }).start(env.metricsPort());
+        return new Running(app);
     }
 
     /// A bound metrics listener.
     public static final class Running {
-        private final VertxListener listener;
+        private final Javalin app;
 
-        private Running(VertxListener listener) {
-            this.listener = listener;
+        private Running(Javalin app) {
+            this.app = app;
         }
 
         /// The bound port (differs from the configured one when it was 0, e.g. in tests).
         public int port() {
-            return listener.port();
+            return app.port();
         }
 
         public void stop() {
-            listener.close();
+            app.stop();
         }
     }
 

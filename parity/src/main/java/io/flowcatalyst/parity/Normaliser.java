@@ -47,8 +47,7 @@ public final class Normaliser {
         record.headers().forEach((name, value) -> headers.put(name, normaliseHeader(name, value, vars, baseUrl)));
 
         // A redirect's body and Content-Type are not part of any contract (Go's
-        // net/http writes an HTML stub, the Java listener a text one); Location and
-        // status are.
+        // net/http writes an HTML stub, Javalin a text one); Location and status are.
         if (record.status() >= 300 && record.status() < 400) {
             headers.remove(ComparedHeaders.CONTENT_TYPE);
         }

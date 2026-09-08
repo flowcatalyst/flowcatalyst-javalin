@@ -23,12 +23,10 @@ import java.util.concurrent.CountDownLatch;
 /// [io.flowcatalyst.server.Server] subsystems — `docs/spec/mcp.md` §1).
 /// Defaults to the stdio transport (the usual way an MCP client launches a
 /// server as a subprocess: JSON-RPC on stdin/stdout, every log line on
-/// stderr — stdout is reserved for the protocol) — unaffected by the Vert.x
-/// cutover, since stdio needs no HTTP listener at all. `--http <bind>`
-/// would switch to the streamable-HTTP transport, but that transport has no
-/// Vert.x implementation ([io.flowcatalyst.mcp.McpServer]'s class doc,
-/// `docs/vertx-plan.md` Q4) — `--http` fails fast with the same message
-/// [io.flowcatalyst.server.Server#start] does for `FC_MCP_ENABLED=true`.
+/// stderr — stdout is reserved for the protocol); `--http <bind>` switches
+/// to the streamable-HTTP transport [io.flowcatalyst.mcp.McpServer] already
+/// serves for `fcdev start --mcp` and `fc-server`, so this command reuses it
+/// rather than re-implementing a listener.
 ///
 /// Config resolution mirrors [io.flowcatalyst.mcp.McpConfig#resolve]
 /// exactly (env / credentials-file, `FLOWCATALYST_URL` → `FC_MCP_PLATFORM_URL`
@@ -79,8 +77,9 @@ public final class McpCommand implements Callable<Integer> {
         if (http == null || http.isBlank()) {
             return blockUntilShutdown(startStdio(platform, config.baseUrl())::close);
         }
-        Bind.parse(http); // validated even though unusable, so a malformed --http still fails on its own message first
-        throw new IllegalStateException(io.flowcatalyst.mcp.McpServer.UNAVAILABLE);
+        var bind = Bind.parse(http);
+        var running = io.flowcatalyst.mcp.McpServer.start(platform, bind.host(), bind.port(), Version.current());
+        return blockUntilShutdown(running::stop);
     }
 
     // ── config / auth ────────────────────────────────────────────────────

@@ -59,6 +59,9 @@ public final class JavaSide implements Side {
         String baseUrl = "http://127.0.0.1:" + port;
         Map<String, String> env = new LinkedHashMap<>(baseEnv);
         env.put("FC_DATABASE_URL", databaseUrl);
+        // Which listener serves the Java side: FC_HTTP from the harness's own environment
+        // (docs/spec/vertx-listener.md §1 "Selection"), so the corpus runs under both.
+        env.put("FC_HTTP", System.getenv().getOrDefault("FC_HTTP", "javalin"));
         env.put("FC_API_PORT", String.valueOf(port));
         env.put("FC_METRICS_PORT", "0");
         env.put("FC_PLATFORM_ENABLED", "true");

@@ -22,10 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// reported as a coverage figure until the port is complete, then flipped to
 /// a hard assertion (see `REQUIRED_COVERAGE`).
 ///
-/// Walks [RouteRegistry#registrations()] (`docs/spec/http-seam.md` §1) —
-/// `before`/`after`/`exception` are not registrations, so there is nothing
-/// to skip: a route (`get`/`post`/`put`/`patch`/`delete`) is the only thing
-/// that can be enumerated.
+/// Walks [RouteRegistry#registrations()] (`docs/spec/http-seam.md` §1) rather
+/// than Javalin's `HandlerType` internals — `before`/`after`/`exception` are
+/// not registrations, so there is nothing left to skip the way the old
+/// `HandlerType.BEFORE`/`AFTER` filter did.
 class LockfileCoverageTest {
 
     /// The platform port is complete: every lockfile operation must be routed.
@@ -52,7 +52,8 @@ class LockfileCoverageTest {
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
-        Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
+        Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true",
+                "FC_HTTP", System.getProperty("fc.http", System.getenv().getOrDefault("FC_HTTP", "javalin"))));
         var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
         RouteRegistry registry = server.buildApi().registry();
 

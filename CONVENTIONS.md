@@ -14,7 +14,7 @@ or an envelope shape, the lockfile wins — the Java code is written *from* it.
 | Concern | Choice | Notes |
 |---|---|---|
 | Language | Java 25, no preview features | records, sealed interfaces, exhaustive `switch`, pattern matching, `var`, `_`, text blocks, `///` Markdown doc comments |
-| HTTP | Vert.x 5 core + web (listener only; virtual threads run the handlers, dispatch model B — `docs/spec/vertx-listener.md`) | handlers are written against the framework-neutral `io.flowcatalyst.http` seam (`Routes`/`Exchange`), never against `io.vertx.*` directly (`NoFrameworkLeakTest`); one `XxxApi.register(routes, state)` per aggregate |
+| HTTP | Javalin 7 (Jetty 12, virtual threads) | routes registered on `JavalinDefaultRoutingApi` inside `Javalin.create(cfg -> …)`; one `XxxApi.register(routes, state)` per aggregate |
 | JSON | Jackson 2.x via `platform.shared.json.Json.MAPPER` only | `NON_ABSENT`, unknown properties ignored, microsecond RFC 3339 timestamps. Never build a second `ObjectMapper`. |
 | Database | jOOQ 3.21 (generated code committed under `io.flowcatalyst.db.generated`) + HikariCP + pgjdbc | typed DSL in repositories; plain-SQL text blocks only for `SKIP LOCKED` claims and partition DDL |
 | Migrations | Flyway, `V1__baseline.sql` = the Go schema | additive-only while rollback to the Go binary must stay possible; never touch `goose_db_version` |

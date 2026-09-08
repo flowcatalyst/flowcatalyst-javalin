@@ -1,8 +1,9 @@
 package io.flowcatalyst.http;
 
-/// A framework-neutral exception carrying its own HTTP status. The adapter
-/// maps it to the `HttpError` envelope named by the status — `BAD_REQUEST`,
-/// `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, else `INTERNAL`
+/// Replaces `io.javalin.http.HttpResponseException`: an exception that
+/// carries its own HTTP status. The adapter maps it to the `HttpError`
+/// envelope named by the status — `BAD_REQUEST`, `UNAUTHORIZED`,
+/// `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, else `INTERNAL`
 /// (`docs/spec/http-seam.md` §4 row 4).
 public final class HttpException extends RuntimeException {
 
