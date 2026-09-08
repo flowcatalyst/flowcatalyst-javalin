@@ -1,0 +1,310 @@
+name: Release fcdev
+
+# Mirrors ../flowcatalyst-go/.github/workflows/release-fcdev.yml: publishes the
+# `fcdev` developer binary as downloadable GitHub Release assets, named and
+# checksummed the way `io.flowcatalyst.fcdev.UpgradeCommand` expects so that
+# `fcdev upgrade` can find and verify them.
+#
+# CALL-OUT 1 — tag/repo collision with Go, unresolved here on purpose:
+#   UpgradeCommand.DEFAULT_REPO ("flowcatalyst/flowcatalyst", see
+#   fcdev/src/main/java/io/flowcatalyst/fcdev/UpgradeCommand.java) currently
+#   points at the GO repository, and Go's own release-fcdev.yml publishes
+#   releases under the SAME tag prefix (`fcdev/v*`) and the SAME asset
+#   filenames (`fcdev-v<ver>-<os>-<arch>.tar.gz` etc). Until the Java binary
+#   is the canonical `fcdev`, THIS workflow and Go's release-fcdev.yml must
+#   NOT both publish a release for the same `fcdev/v*` tag — that would be
+#   two different binaries fighting over one release's assets. The owner
+#   must decide which repository owns the `fcdev/v*` tag stream (and update
+#   DEFAULT_REPO / this workflow's target repo accordingly) before this is
+#   turned on for real.
+#
+# CALL-OUT 2 — no GitHub remote yet:
+#   This Java repo (flowcatalyst-javalin) currently has NO git remote
+#   configured, so there is no GitHub repository for this workflow to run
+#   in, and no `gh release` target for it to publish to. This file cannot
+#   run until the repo has a GitHub home.
+#
+# Structural difference from Go's release-fcdev.yml: Go cross-compiles all
+# five targets (darwin/linux amd64+arm64, windows amd64) on one Linux
+# runner. GraalVM native-image cannot cross-compile, so this workflow uses a
+# build matrix of native runners (one job run per target platform) and a
+# separate `release` job that collects every platform's archive and
+# publishes them together. Windows is omitted: a GraalVM Windows native
+# build needs MSVC build-tools setup this repo has never established (unlike
+# ci.yml's `native` job, which only covers Linux amd64/arm64 + macOS
+# arm64) — inventing an untested Windows toolchain here would be worse than
+# leaving the platform out for now.
+
+on:
+  push:
+    tags:
+      - "fcdev/v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. fcdev/v0.4.17"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    name: Resolve tag + version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Resolve tag + version
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^fcdev/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag '$TAG' does not match fcdev/vX.Y.Z[-suffix]" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#fcdev/v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build fcdev native (${{ matrix.os }}/${{ matrix.arch }})
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # cosign keyless signing (Linux archives only) mints its OIDC token in
+      # this job, right after the archive is built — same step order as
+      # Go's release-fcdev.yml, just split across per-platform runners.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same runner->platform mapping as ci.yml's `native` job:
+        # ubuntu-latest = linux/amd64; ubuntu-24.04-arm = linux/arm64 (free
+        # for public repositories); macos-latest = darwin/arm64 (Apple
+        # silicon, the platform proven by hand). `os`/`arch` here are the
+        # exact tokens UpgradeCommand.osName()/archName() produce, since
+        # they drive the asset filename below.
+        include:
+          - runner: ubuntu-latest
+            os: linux
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+          - runner: macos-latest
+            os: darwin
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      # Same GraalVM setup as ci.yml's `native` job — reuse its action
+      # version, distribution and cache settings rather than inventing new
+      # ones.
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "25"
+          distribution: graalvm
+          cache: maven
+
+      - name: Build fcdev native binary
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          mvn -B -q -DskipTests -pl fcdev -am -Pnative package \
+            -Dfcdev.vcs.revision=$(git rev-parse HEAD)
+          ls -la fcdev/target/fcdev
+
+      # Stage + archive: the binary lives at "<stem>/fcdev" inside the
+      # tar.gz (the archive's staging DIRECTORY is tarred, not its
+      # contents) — the exact layout UpgradeCommand.nativeAsset()'s
+      # innerPath ("<stem>/fcdev") expects, matching Go's release archives.
+      #
+      # Asset filename derived from UpgradeCommand.nativeAsset()
+      # (fcdev/src/main/java/io/flowcatalyst/fcdev/UpgradeCommand.java):
+      #   String stem = "fcdev-v" + version + "-" + os + "-" + arch;
+      #   return new Asset(stem + "." + ext, stem + "/" + binName);
+      # with ext="tar.gz" and binName="fcdev" for every non-Windows os.
+      - name: Stage archive
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          stem="fcdev-v${VERSION}-${OS}-${ARCH}"
+          mkdir -p "dist/${stem}"
+          cp fcdev/target/fcdev "dist/${stem}/fcdev"
+          ( cd dist && tar -czf "${stem}.tar.gz" "${stem}" && rm -rf "${stem}" )
+          echo "ARCHIVE=${stem}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      # Cosign keyless signing, Linux archives only — same as Go's
+      # release-fcdev.yml. macOS is skipped exactly as Go skips it.
+      - name: Install cosign
+        if: matrix.os == 'linux'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign (Linux only)
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign sign-blob --yes \
+            --output-signature "$ARCHIVE.sig" \
+            --output-certificate "$ARCHIVE.pem" \
+            "$ARCHIVE"
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fcdev-release-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # The JVM fallback. UpgradeCommand.jarAsset() (UpgradeCommand.java:219-221)
+  # looks for `fcdev-v<version>.jar` whenever fcdev is running from a jar
+  # rather than a native image (UpgradeCommand.java:139 picks the asset by
+  # LaunchKind), so a release without it leaves every jar-installed fcdev
+  # unable to upgrade: "release <v> has no asset for this platform". Go has
+  # no equivalent because it has no JVM build.
+  #
+  # Platform-independent, so one runner, and no matrix.
+  jar:
+    name: Build fcdev shaded jar
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "25"
+          distribution: temurin
+          cache: maven
+
+      - name: Build shaded jar
+        run: |
+          mvn -B -q -DskipTests -pl fcdev -am package \
+            -Dfcdev.vcs.revision=$(git rev-parse HEAD)
+
+      # maven-shade-plugin has shadedArtifactAttached=false, so the shaded jar
+      # REPLACES the module's main artifact (flowcatalyst-fcdev-<v>.jar) and
+      # shade leaves the pre-shade thin jar beside it as original-*.jar.
+      # Match on that shape rather than hardcoding the Maven version, which is
+      # a SNAPSHOT and unrelated to the release version.
+      - name: Stage jar
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          shaded=$(find fcdev/target -maxdepth 1 -name '*.jar' ! -name 'original-*' -print | head -1)
+          if [ -z "$shaded" ]; then echo "no shaded jar produced" >&2; exit 1; fi
+          echo "shaded jar: $shaded"
+          mkdir -p dist
+          cp "$shaded" "dist/fcdev-v${VERSION}.jar"
+          ( cd dist && sha256sum "fcdev-v${VERSION}.jar" > "fcdev-v${VERSION}.jar.sha256" )
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign sign-blob --yes \
+            --output-signature "fcdev-v${VERSION}.jar.sig" \
+            --output-certificate "fcdev-v${VERSION}.jar.pem" \
+            "fcdev-v${VERSION}.jar"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fcdev-release-jar
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [meta, build, jar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fcdev-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -lh dist/
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="fcdev v${VERSION}
+
+          ### Install
+          Download the archive for your platform, extract, and put \`fcdev\` on your PATH.
+
+          Available platforms: linux/amd64, linux/arm64, darwin/arm64 (macOS
+          Apple silicon). No Windows or Intel-mac build yet.
+
+          A platform-independent \`fcdev-v${VERSION}.jar\` is also published for
+          running on a JVM (Java 25+): \`java -jar fcdev-v${VERSION}.jar\`.
+
+          ### Verify
+          Each archive ships a \`.sha256\` sidecar:
+          \`\`\`
+          shasum -a 256 -c fcdev-v${VERSION}-<os>-<arch>.tar.gz.sha256
+          \`\`\`
+          Linux archives are additionally cosign-signed (keyless):
+          \`\`\`
+          cosign verify-blob \\
+            --signature fcdev-v${VERSION}-linux-amd64.tar.gz.sig \\
+            --certificate fcdev-v${VERSION}-linux-amd64.tar.gz.pem \\
+            --certificate-identity-regexp '^https://github.com/<owner>/<repo>/.github/workflows/release-fcdev.yml@refs/tags/fcdev/v' \\
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\
+            fcdev-v${VERSION}-linux-amd64.tar.gz
+          \`\`\`"
+
+          # Upload to an existing (e.g. draft) release for this tag, else create one.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "fcdev v${VERSION}" \
+              --notes "$NOTES" \
+              --verify-tag
+          fi
