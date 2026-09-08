@@ -1017,3 +1017,32 @@ Open for a ruling before building:
 3. Whether the read group's pool points at a read replica. This is the real payoff of the read/write
    split and it is only possible once reads are identified.
 Not started; SSE is not implemented at all yet.
+
+## Batch the dispatch-job fetch behind the mediation endpoints (owner design, 2026-09-08)
+
+The endpoints the message router POSTs to (`/api/dispatch/process`, `/api/dispatch/settled`) load one
+dispatch job per request, then make the outbound call to the subscriber. Under load that is one query
+and one connection per in-flight mediation. Owner's design: queue the incoming requests in-process and
+have a batcher fetch them together.
+
+Shape agreed:
+- **Self-clocking, not timed.** Dispatch a batch as soon as the previous one completes, taking whatever
+  accumulated, capped at a maximum. A lone request under no load is dispatched immediately as a batch of
+  one, so nothing pays added latency; batches grow only when there is load to grow them. No timer is
+  armed, so no timed park (§1 of `docs/spec/admission.md`). A fixed "20 rows or 100 ms" would add 100 ms
+  to every request on an idle system.
+- **In-process primitives, not a message bus.** A bounded queue, one batcher virtual thread per group,
+  and a `CompletableFuture` per request; the request thread parks untimed on its own future and the
+  batcher completes it. The Vert.x event bus would add addressing, codecs and cluster routing for an
+  in-process fan-in, and Vert.x is no longer the listener.
+- **The request path then holds no connection at all.** Only the batcher borrows one, so this group's
+  pool is sized by the number of batchers (one or two) rather than by request concurrency, and "never
+  hold a connection across an external wait" becomes structural rather than a discipline.
+- Failure semantics up front: a failed batch query fails every waiter in it; a missing row fails only
+  its own waiter; the queue is bounded and rejects with 503 when full rather than growing; the terminal
+  write that records the outcome batches through the same mechanism.
+
+**Not to be built yet.** The expensive part of these endpoints is the outbound call to the subscriber,
+which cannot be batched, and at production rates (~200/s) the fetch is not the constraint. The trigger
+is connection-hold time on this group against request duration (§11.6) showing the fetch taking a
+meaningful share of a busy group's pool.
