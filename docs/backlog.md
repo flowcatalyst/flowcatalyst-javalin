@@ -1032,13 +1032,23 @@ Ruled by the owner already:
   deployment can see which group is starved. Needs `RequestWorkers` to expose per-pool queue length and
   in-flight count, and a collector next to the existing gate/worker gauges.
 
+Ruled 2026-09-08 (owner):
+- **One port. All groups on it.** Separate ports are complexity without a point.
+- **Split the API by transaction span, not by URL shape**: a write holds its connection for the whole
+  request because the transaction spans it; a read does not need to.
+- The group is declared per route (`Routes.in(Group)`), as today.
+
 Open for a ruling before building:
 1. N Hikari pools (one per group) versus today's single pool with per-group semaphore lanes. Separate
    pools give real isolation and independent sizing; they also multiply idle connections and make the
    total against Postgres's `max_connections` the operator's sum to get right.
-2. Whether a group is also its own *listener* (own port), which is what makes "deploy only ingest"
-   possible, versus one port with the group chosen by route. Separate ports also let a load balancer
-   route groups to different instances.
-3. Where the split is declared: a group per route in `Routes.in(Group)` as today, or a listener
-   assembled per group at start-up from a deployment profile.
+2. **Whether a non-transactional read releases its connection between statements.** Today `Admission`
+   holds one connection per request and nested checkouts join it (the re-entrant handle), so a read
+   doing eight statements holds a connection across the CPU between them — and that CPU is not small:
+   the session profile put jOOQ rendering at ~20% and the JWT verify at ~30% of the request. Releasing
+   between statements would cut read hold time by roughly half at the cost of one (untimed, therefore
+   cheap) gate acquire per statement. It changes no consistency guarantee: those statements are not in
+   a transaction today.
+3. Whether the read group's pool points at a read replica. This is the real payoff of the read/write
+   split and it is only possible once reads are identified.
 Not started; SSE is not implemented at all yet.
