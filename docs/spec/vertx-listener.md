@@ -60,21 +60,24 @@ until Phase 3. Admission and time are `docs/spec/admission.md`.
 - **Listeners** (`docs/spec/http-transport.md` §1): the plain API listener with
   `setHttp2ClearTextEnabled(true)` (h2c by prior knowledge and upgrade); the TLS
   listener when `TlsMaterial` resolves, `setSsl(true).setUseAlpn(true)` with the key
-  store handed to Vert.x as PKCS12 bytes (JDK TLS, no native); **HTTP/3 is not in this
-  unit** — Vert.x 5.1 does HTTP/3 only through Netty's QUIC native codec, which plan
-  ruling Q3 excludes unless measured; the Jetty listener keeps it behind `FC_HTTP=javalin`
-  and the gap is owner question Q6 (§5). `Alt-Svc` therefore is not emitted by the Vert.x
-  listener.
-- **Metrics and OutboxAdmin listeners** stay on Javalin in this unit (they are not on the
-  request path being measured); they move to a second `HttpServer` on the same `Vertx`
-  in Phase 3 when Javalin is removed.
+  store handed to Vert.x as PKCS12 bytes (JDK TLS, no native) — **landed 2026-09-08**,
+  a second `HttpServer` on the same `Vertx`/`Router` (`VertxListener.Options.Tls`).
+  HTTP/3 is dropped for good (Q6, §3, closed 2026-09-08) — Vert.x 5.1 does HTTP/3 only
+  through Netty's QUIC native codec, which plan ruling Q3 excludes unless measured, and
+  nothing in this platform needs it now that Jetty (which used to carry it behind
+  `FC_HTTP=javalin`) is gone. `Alt-Svc` is therefore never emitted.
+- **Metrics and OutboxAdmin listeners** — **landed 2026-09-08**: both are their own
+  `VertxListener` (their own `Vertx`, event loop and `RequestWorkers`, not a second
+  `HttpServer` sharing the API's — simpler, and neither is on the request path the
+  admission design measures). Metrics binds every interface, plain HTTP/1.1
+  (`h2c=false` — `VertxListener.Options.local` defaults `h2c` on, which this listener
+  was never meant to have); OutboxAdmin keeps binding loopback-only.
 - **Shutdown.** `HttpServer.shutdown(SHUTDOWN_GRACE)` (in-flight requests drain, new
   connections refused), then `vertx.close()`; the executor is shut down after the server.
-- **Selection.** `FC_HTTP=vertx|javalin` in `Env` (default `javalin` until Phase 3).
-  `Server.Running.apiPort()`/`stop()` work for both through a small `ApiListener`
-  interface. `TestHttp` picks the adapter from the `FC_HTTP` system property or env, and
-  `TestHttp.routes(Adapter, …)` forces one; `SeamContractTest` becomes abstract with a
-  Javalin and a Vert.x subclass so every pinned behaviour runs against both.
+- **Selection — removed 2026-09-08.** `FC_HTTP` and the Javalin adapter are gone
+  (`docs/vertx-plan.md` Phase 3); Vert.x is the only listener, unconditionally.
+  `TestHttp` no longer takes an `Adapter`; `SeamContract` keeps its one concrete
+  subclass, `VertxSeamContractTest`.
 
 ## 2. Tests (break-it-on-purpose each)
 
@@ -94,12 +97,13 @@ runtime comparison of plan §8 run and recorded.
 
 ## 3. Owner question
 
-- **Q6 — HTTP/3 on the Vert.x listener.** Vert.x 5.1 supports HTTP/3 only via Netty's
-  incubator QUIC codec and its native library. Options: (a) keep HTTP/3 out of the Vert.x
-  listener and drop it at Phase 3 (the ALB terminates TLS in production, so h3 never
-  reaches the process there anyway); (b) measure the Netty QUIC native the way Jetty's
-  quiche binding was measured and decide on evidence. Until ruled, `FC_HTTP=javalin`
-  keeps today's HTTP/3.
+- **Q6 — HTTP/3 on the Vert.x listener. Closed 2026-09-08: dropped.** Vert.x 5.1
+  supports HTTP/3 only via Netty's incubator QUIC codec and its native library, which
+  nothing in this platform needs — the ALB terminates TLS in production and never
+  speaks h3 to the target, so h3 was always a client-edge feature of the deployment,
+  not the process. `FC_HTTP3_ENABLED=true` is a startup error
+  (`server.transport.Listeners#resolve`); `Http3.java` and the `jetty-http3-*`/
+  `jetty-quic-*` dependencies are removed.
 
 ## 4. Landed 2026-09-06 (branch `vertx-listener`)
 
@@ -122,3 +126,41 @@ still running 250 ms later — an immediate interrupt races the cancel and close
 **Not in this unit:** the TLS listener on Vert.x (§1; `FC_HTTP=javalin` keeps it), HTTP/3
 (Q6), Metrics and OutboxAdmin listeners (still Javalin), the native image on Vert.x, and the
 plan §8 runtime comparison against Go.
+
+## 5. Landed 2026-09-08 — the cutover (`docs/vertx-plan.md` Phase 3)
+
+Everything §4 listed as "not in this unit" except the native image and the runtime
+comparison (unchanged from 2026-09-06, not re-measured in this unit) is done: the TLS
+listener (§1), Metrics and OutboxAdmin as their own `VertxListener`s (§1), Q6 closed
+(§3). Javalin, every `org.eclipse.jetty*` artifact and `io.javalin:javalin` are removed
+from both poms; `io.flowcatalyst.http.javalin` (`JavalinAdapter`, `JavalinRoutes`,
+`JavalinExchange`, `JavalinJsonMapper`, `SkipRemainingHandlersSignal`) and
+`server/transport/Http3.java` are deleted. `Env.HttpListener`/`FC_HTTP` are gone —
+`Server#buildApiAndReaper` builds the Vert.x listener unconditionally.
+`NoFrameworkLeakTest`'s Javalin rule is deleted; its Vert.x rule keeps two narrow
+test-only exceptions (`Http2Test`, `HttpMediatorVersionTest` — each stands up a
+throwaway Vert.x client/server as an "arbitrary HTTP/2 target", not part of the seam).
+`TestHttp` collapses to Vert.x only; `SeamContract` keeps one concrete subclass,
+`VertxSeamContractTest`; `JavalinSeamContractTest` and `BudgetsTest`'s
+Javalin-adapter-specific test are deleted.
+
+MCP's HTTP transport (`/mcp` streamable HTTP, a servlet
+`HttpServletStreamableServerTransportProvider` mounted on Javalin's embedded Jetty) has
+no Vert.x-native replacement — the MCP SDK ships no framework-agnostic HTTP transport,
+and its SSE responses outlive the request that opens them (written to from other
+threads as the session's reactive stream produces events), which does not fit dispatch
+model B's buffered-response-once model. `FC_MCP_ENABLED=true` now fails the server at
+startup (`io.flowcatalyst.mcp.McpServer.UNAVAILABLE`) rather than silently starting
+nothing; `fcdev mcp --http` fails the same way (`fcdev mcp`'s default stdio transport
+is unaffected — no HTTP listener involved). A native Vert.x transport (a small
+`jakarta.servlet.http.HttpServletRequest`/`Response`/`AsyncContext` bridge over a raw,
+non-seam `HttpServer`) is future work, not this unit.
+
+A genuine bug this cutover found and fixed: `VertxListener.Options.local(...)`
+defaults `h2c` to `true`, which is right for `TestHttp`/the API listener but wrong for
+`Metrics` (`docs/spec/http-transport.md` §1 always specified HTTP/1.1 only) — caught by
+`Http2Test.metricsListenerNeverUpgradesToH2c` failing against the first draft; fixed by
+building `Metrics`'s `VertxListener.Options` directly instead of through `.local(...)`,
+with `h2c=false` and host `0.0.0.0` (the metrics port must be reachable from another
+pod/host, unlike the loopback-only outbox admin API — `.local()` also defaults to
+`127.0.0.1`, which would have been silently wrong for the exact same reason).

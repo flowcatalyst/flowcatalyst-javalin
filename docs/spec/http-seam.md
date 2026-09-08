@@ -1,10 +1,15 @@
 # Spec — the HTTP seam (`io.flowcatalyst.http`)
 
-Status: owner-ruled 2026-09-06 (`docs/vertx-plan.md` §5 Phase 1, Q2 = the seam).
-Purpose: every handler, filter and exception mapper in `server` is written against
-this package and nothing else. Today it is implemented by a Javalin adapter; the
-Vert.x adapter (Phase 2) implements the same types. Swapping the listener is then a
-change to one package and four bootstrap sites, never to handlers.
+Status: owner-ruled 2026-09-06 (`docs/vertx-plan.md` §5 Phase 1, Q2 = the seam);
+Javalin/Jetty removed 2026-09-08 (`docs/vertx-plan.md` Phase 3, the cutover) —
+`io.flowcatalyst.http.vertx` is now the ONLY implementation. Purpose: every
+handler, filter and exception mapper in `server` is written against this
+package and nothing else, so a future listener swap is a change to one
+package and its bootstrap sites, never to handlers. The rest of this
+document is kept as the design record of Phase 1 (why `Exchange`'s methods
+are named the way they are, the two Javalin quirks §3 found, the
+Javalin-adapter mutants §4 pinned) — read it as history, not current state;
+`docs/spec/vertx-listener.md` is current for the listener itself.
 
 ## 1. Shape
 

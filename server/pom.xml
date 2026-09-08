@@ -22,12 +22,10 @@
       <artifactId>flowcatalyst-usecase</artifactId>
     </dependency>
 
-    <!-- HTTP -->
-    <dependency>
-      <groupId>io.javalin</groupId>
-      <artifactId>javalin</artifactId>
-    </dependency>
-    <!-- The Vert.x listener (docs/spec/vertx-listener.md): core + web only, ever. -->
+    <!-- HTTP: Vert.x is the only listener (docs/spec/vertx-listener.md) — core + web
+         only, ever; HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN via
+         Vert.x's own ALPN support) needs nothing beyond these two. HTTP/3 was
+         Jetty/quiche-only and is dropped (docs/vertx-plan.md Q6, closed 2026-09-08). -->
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-core</artifactId>
@@ -45,48 +43,6 @@
       <groupId>io.vertx</groupId>
       <artifactId>vertx-codegen-json</artifactId>
       <scope>provided</scope>
-    </dependency>
-
-    <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN) and
-         HTTP/3 (QUIC) on the server listeners: docs/spec/http-transport.md.
-         Versions come from the jetty-bom import in the parent pom, pinned to
-         the exact Jetty release Javalin 7.2.3 already brings. -->
-    <dependency>
-      <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>jetty-http2-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-alpn-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-alpn-java-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.http3</groupId>
-      <artifactId>jetty-http3-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-server</artifactId>
-    </dependency>
-    <dependency>
-      <!-- The QUIC implementation: quiche's server binding (QuicheServerConnector) over the FFM
-           native binding, which bundles the quiche shared library for linux x86_64/aarch64 and
-           macOS aarch64. -->
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-quiche-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-quiche-foreign</artifactId>
-    </dependency>
-    <dependency>
-      <!-- Jetty's HTTP/2 client (test scope): the prior-knowledge h2c probe in Http2Test. -->
-      <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>jetty-http2-client-transport</artifactId>
-      <scope>test</scope>
     </dependency>
 
     <!-- JSON -->
@@ -232,14 +188,14 @@
       <artifactId>prometheus-metrics-exposition-formats</artifactId>
     </dependency>
 
-    <!-- MCP server: `mcp` pulls in mcp-core (the streamable-HTTP servlet transport,
-         HttpServletStreamableServerTransportProvider, mounted on Javalin's embedded
-         Jetty via JettyConfig#modifyServletContextHandler — see McpServer) and
-         mcp-json-jackson3. jakarta.servlet-api itself comes from Javalin's own
-         Jetty EE10 dependency (6.0.0); mcp-core compiles against 6.1.0 but only
-         as `provided` (so it is not pulled in transitively) — the Servlet API's
-         core surface (HttpServlet/HttpServletRequest/Response) is unchanged
-         between 6.0 and 6.1, so Javalin's 6.0.0 satisfies it at runtime. -->
+    <!-- MCP domain logic only ([McpTools], [McpResources] use `McpServerFeatures`/
+         `McpSchema`): `mcp` pulls in mcp-core and mcp-json-jackson3. The HTTP
+         transport this SDK also ships (`HttpServletStreamableServerTransportProvider`,
+         a `jakarta.servlet.http.HttpServlet`) is unused — nothing in this module
+         imports `jakarta.servlet.*` (see [io.flowcatalyst.mcp.McpServer]'s class doc
+         for why: no Vert.x-native transport exists yet, `docs/vertx-plan.md` Q4) —
+         so `jakarta.servlet-api`, which Javalin's own Jetty used to supply
+         transitively, is not needed on this classpath at all. -->
     <dependency>
       <groupId>io.modelcontextprotocol.sdk</groupId>
       <artifactId>mcp</artifactId>

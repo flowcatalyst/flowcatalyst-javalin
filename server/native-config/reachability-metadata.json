@@ -1096,79 +1096,6 @@
       "type": "jdk.internal.jrtfs.JrtFileSystemProvider"
     },
     {
-      "type": "kotlin.SafePublicationLazyImpl"
-    },
-    {
-      "type": "org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServlet"
-    },
-    {
-      "type": "org.eclipse.jetty.http.Http10FieldPreEncoder"
-    },
-    {
-      "type": "org.eclipse.jetty.http.Http11FieldPreEncoder"
-    },
-    {
-      "type": "org.eclipse.jetty.util.TypeUtil",
-      "methods": [
-        {
-          "name": "getClassLoaderLocation",
-          "parameterTypes": [
-            "java.lang.Class"
-          ]
-        },
-        {
-          "name": "getCodeSourceLocation",
-          "parameterTypes": [
-            "java.lang.Class"
-          ]
-        },
-        {
-          "name": "getModuleLocation",
-          "parameterTypes": [
-            "java.lang.Class"
-          ]
-        },
-        {
-          "name": "getSystemClassLoaderLocation",
-          "parameterTypes": [
-            "java.lang.Class"
-          ]
-        }
-      ]
-    },
-    {
-      "type": "org.eclipse.jetty.util.Utf8StringBuilder",
-      "methods": [
-        {
-          "name": "errorActionIgnore",
-          "parameterTypes": []
-        },
-        {
-          "name": "errorActionReplace",
-          "parameterTypes": []
-        },
-        {
-          "name": "errorActionReport",
-          "parameterTypes": []
-        }
-      ]
-    },
-    {
-      "type": "org.eclipse.jetty.websocket.core.internal.FragmentExtension"
-    },
-    {
-      "type": "org.eclipse.jetty.websocket.core.internal.FrameCaptureExtension"
-    },
-    {
-      "type": "org.eclipse.jetty.websocket.core.internal.IdentityExtension"
-    },
-    {
-      "type": "org.eclipse.jetty.websocket.core.internal.PerMessageDeflateExtension"
-    },
-    {
-      "type": "org.eclipse.jetty.websocket.core.internal.ValidationExtension"
-    },
-    {
       "type": "org.flywaydb.core.api.migration.baseline.BaselineAppliedMigration"
     },
     {
@@ -1816,9 +1743,6 @@
   ],
   "resources": [
     {
-      "glob": "META-INF/maven/io.javalin/javalin/pom.properties"
-    },
-    {
       "glob": "META-INF/services/ch.qos.logback.classic.spi.Configurator"
     },
     {
@@ -1841,12 +1765,6 @@
     },
     {
       "glob": "META-INF/services/java.util.spi.ResourceBundleControlProvider"
-    },
-    {
-      "glob": "META-INF/services/org.eclipse.jetty.http.HttpFieldPreEncoder"
-    },
-    {
-      "glob": "META-INF/services/org.eclipse.jetty.websocket.core.Extension"
     },
     {
       "glob": "META-INF/services/org.flywaydb.core.extensibility.Plugin"
@@ -1943,15 +1861,6 @@
     },
     {
       "glob": "openapi/openapi.lock.json"
-    },
-    {
-      "glob": "org/eclipse/jetty/http/encoding.properties"
-    },
-    {
-      "glob": "org/eclipse/jetty/http/mime.properties"
-    },
-    {
-      "glob": "org/eclipse/jetty/version/build.properties"
     },
     {
       "glob": "org/flywaydb/core/internal/version.txt"

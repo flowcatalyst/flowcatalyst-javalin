@@ -179,7 +179,7 @@ final class VertxExchange implements Exchange {
 
     @Override
     public Exchange json(Object value) {
-        // Newline-terminated, as `JavalinJsonMapper` (and Go's encoder) write it.
+        // Newline-terminated, as Go's json.Encoder writes it.
         body = Json.writeLine(value).getBytes(StandardCharsets.UTF_8);
         if (!headers.containsKey(CONTENT_TYPE)) contentType("application/json");
         return this;
