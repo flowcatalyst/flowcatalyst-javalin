@@ -384,3 +384,32 @@ Go should apply the equivalent fix once it lands the `Consume`-based listener re
 whatever heartbeat/stall mechanism watches Go's consumer loops needs the same second liveness
 signal, or it inherits the identical restart-storm collapse the moment its own `Poll` stops
 returning on a timer.
+
+## G14 — `/api/dispatch/process` claims a job without a lock or a status guard, so a duplicate delivery calls the subscriber twice (present in Go and Java)
+
+Go: `internal/platform/dispatchjob/processing/processing.go:219` calls `repo.MarkInProgress`, whose
+SQL (`internal/sqlc/queries/dispatchjob.sql`, `DispatchJobMarkInProgress`) is
+`UPDATE msg_dispatch_jobs SET status='PROCESSING', ... WHERE id = $1 AND created_at = $3` — no status
+predicate. The terminal check that precedes it is an application-level test on a value read by a plain
+unlocked `FindByID`. Two deliveries of the same job that overlap (a queue redelivery racing an attempt
+still in flight, or a router restart re-sending) both read a non-terminal row, both flip it, and both
+call the subscriber's webhook. The `MarkInProgress` error is also swallowed — logged, then delivery
+proceeds regardless.
+
+This contradicts `docs/spec/dispatch-seam.md`'s own leader-gating table, which lists the processing
+endpoint as "guarded by its own status checks; safe under concurrent instances". The settled endpoint
+genuinely is (`SettleAcked`'s `status IN ('QUEUED','PROCESSING')` is the idempotency contract). The
+processing endpoint is the one write on the seam that has no equivalent.
+
+Fix, both sides: make the claim atomic and let its result decide whether to deliver — either
+`UPDATE ... WHERE id = $1 AND created_at = $3 AND status NOT IN (<terminal>)` delivering only when one
+row was affected, or `SELECT ... FOR UPDATE` + the flip in one transaction, committed before the
+outbound call so no lock is held across the network. A claim that changes no row means another delivery
+owns this job: answer `ack:true` and make no call. Stop treating the claim failure as best-effort, and
+correct the spec table in the same change. Pin it with two concurrent `process` calls for one job
+asserting exactly one webhook call (mutant: remove the status predicate and the count becomes two).
+
+Found 2026-09-08 while settling the mediation-batching design, where the same lock is required for a
+different reason (the batch fetch is a claim). Owner: *"we MUST check the db and get a transaction lock
+on the record so we have to fetch anyway"* — which is also why the router will NOT gain a full-payload
+option.

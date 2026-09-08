@@ -1018,6 +1018,33 @@ Open for a ruling before building:
    split and it is only possible once reads are identified.
 Not started; SSE is not implemented at all yet.
 
+## Defect: `/api/dispatch/process` claims a job without a lock (Java **and** Go, 2026-09-08)
+
+Found while settling the batching design above (owner: *"we MUST check the db and get a transaction lock
+on the record"*). The handler reads the job with a plain `findById`, tests `isTerminal()` in application
+code, then flips the row to `PROCESSING` with an `UPDATE ... WHERE id = ? AND created_at = ?` carrying
+**no status guard** — and treats a failure of that flip as best-effort, logging and delivering anyway.
+Read-then-act with no lock and no guard: two concurrent deliveries of the same job (a queue redelivery
+racing an in-flight attempt, or a router restart re-sending) both pass the terminal check, both flip the
+row, and both call the subscriber. The subscriber sees the delivery twice.
+
+`docs/spec/dispatch-seam.md` §(leader-gating table) asserts the opposite — the processing endpoint is
+listed as *"guarded by its own status checks; safe under concurrent instances"*. That is true of the
+settled endpoint, whose `UPDATE ... AND status IN ('QUEUED','PROCESSING')` really is the idempotency
+contract, and untrue here: this is the one write on the seam with no such guard.
+
+- Java: `ProcessingApi#deliver` + `DispatchJobRepository#markInProgress`
+- Go: `internal/platform/dispatchjob/processing/processing.go:219` +
+  `internal/sqlc/queries/dispatchjob.sql` (`DispatchJobMarkInProgress`) — identical shape, identical hole
+
+Fix (both sides): make the claim atomic and let it decide whether to deliver. Either
+`UPDATE ... SET status='PROCESSING' WHERE id = ? AND created_at = ? AND status NOT IN (<terminal>)` and
+deliver only when one row was affected, or the `SELECT ... FOR UPDATE` the batching design needs anyway.
+Stop swallowing the failure: a claim that changes no row means someone else owns this delivery, and the
+answer is `ack:true` with no call. Correct the spec's leader-gating table in the same change. Pinning
+test: two concurrent `process` calls for one job, assert the subscriber is called exactly once (mutant:
+drop the status guard from the claim and the count becomes two).
+
 ## Batch the dispatch-job fetch behind the mediation endpoints (owner design, 2026-09-08)
 
 The endpoints the message router POSTs to (`/api/dispatch/process`, `/api/dispatch/settled`) load one
@@ -1035,6 +1062,13 @@ Shape agreed:
   "20 rows or 100 ms" would add 100 ms to every request on an idle system, and a load-detecting switch is
   a second way of deciding something contention already decides correctly. If particular messages must
   never queue behind others, give them a priority lane that bypasses batching, not a global mode.
+- **The batch fetch is a claim, so it locks.** `SELECT ... WHERE id = ANY(?) ... FOR UPDATE` ordered
+  deterministically (`created_at, id`, matching the partition key) so two batches that overlap can never
+  deadlock on opposite lock orders, with the claim's `PROCESSING` flip in the same transaction and the
+  transaction committed **before** the outbound call. Not `SKIP LOCKED`: the scheduler's poller skips
+  because it is choosing work, whereas here each row was asked for by name and skipping it would report
+  "not found" to a waiter whose job exists. A row already locked by a concurrent delivery is one this
+  batch must see the settled state of, not one it may ignore.
 - **Batch the status writes too — they pay more than the reads.** Each is a transaction, so twenty writes
   are twenty begin/commit cycles on twenty connections; one `UPDATE ... FROM (VALUES ...)` collapses them
   into one. The batch is all-or-nothing with every waiter failing together (or retried individually), and
@@ -1051,14 +1085,12 @@ Shape agreed:
   its own waiter; the queue is bounded and rejects with 503 when full rather than growing; the terminal
   write that records the outcome batches through the same mechanism.
 
-**Open, related (owner, 2026-09-08): a full-payload option on the router.** Carrying the job in the
-message would remove the fetch entirely. Against it: the identifier indirection reads the payload fresh
-at delivery, so a job cancelled or amended after publication is not delivered stale; the broker stays
-cheap (SQS caps a message at 256 KB, and the router's in-flight tracker holds every message in memory);
-and the router stays a relay that never inspects payloads, which is what keeps it simple enough to be
-correct. Suggested resolution: keep the identifier as the default and add a per-pool opt-in for
-payload-carrying messages where the payload is small, immutable once published, and latency matters more
-than freshness.
+**Closed (owner, 2026-09-08): no full-payload option on the router.** Carrying the job in the message
+would remove the fetch, but the fetch is not optional: the handler must take a transaction lock on the
+row to claim it, so it has to go to the database whether or not it already has the payload. The
+identifier indirection is also what keeps the router accurate — the payload is read fresh at delivery,
+so a job cancelled or amended after publication is not delivered stale — and keeps the router a relay
+that never inspects payloads. Not to be revisited.
 
 **Not to be built yet.** The expensive part of these endpoints is the outbound call to the subscriber,
 which cannot be batched, and at production rates (~200/s) the fetch is not the constraint. The trigger
