@@ -1,0 +1,53 @@
+# TypeScript/Node message router (../flowcatalyst, apps/flowcatalyst + packages/message-router)
+# — bench image for the router-only rig (bench/router/run.sh).
+#
+# apps/flowcatalyst is the single unified binary (Platform + Stream Processor + Message Router,
+# feature-flagged — see apps/flowcatalyst/src/index.ts). Router-only mode needs no database:
+# `needsDatabase` there is `PLATFORM_ENABLED || STREAM_PROCESSOR_ENABLED ||
+# OUTBOX_PROCESSOR_ENABLED || DISPATCH_SCHEDULER_ENABLED`, all false in the env below, so the
+# DATABASE_URL / embedded-Postgres / migration paths never execute.
+#
+# The TS repo is read-only for this rig: bench/router/ts-dist/index.cjs is a plain copy of the
+# repo's own `pnpm --filter @flowcatalyst/flowcatalyst build` output (tsup CJS bundle, see
+# tsup.config.ts — everything is inlined except argon2 and @embedded-postgres/*, neither of
+# which router-only mode ever touches). Populate it before building:
+#
+#   cd /path/to/flowcatalyst && pnpm --filter @flowcatalyst/flowcatalyst build
+#   cp apps/flowcatalyst/dist/index.cjs /path/to/flowcatalyst-javalin/bench/router/ts-dist/
+#
+# ts-dist/static/ is a copy of @fastify/swagger-ui's own `static/` asset directory (logo.svg,
+# swagger-ui.js, etc — find it under node_modules/.pnpm/@fastify+swagger-ui@*/node_modules/
+# @fastify/swagger-ui/static in the TS repo). message-router/app.ts mounts that plugin
+# unconditionally (`await app.register(import("@fastify/swagger-ui"), {routePrefix: "/docs"})`),
+# and the plugin resolves its assets as `path.join(__dirname, "./static/...")` — after tsup
+# bundles it into one CJS file, `__dirname` is our bundle's own directory, not the package's, so
+# without this copy `fastify.register` throws ENOENT on `logo.svg` at startup (discovered via a
+# local smoke run of this image) and the whole process exits before it ever binds a port. This
+# is a packaging gap in bundling the app standalone, not a router behaviour change.
+#
+#   docker build -f bench/router/Dockerfile.node-router -t bench-real-node-router bench/router
+#
+# node-router/proxy.mjs + entrypoint.sh are this rig's own files (not from the TS repo) — see
+# proxy.mjs's header comment for why they exist: the TS router has no "/router"-prefixed HTTP
+# API the way the Go/Java/Rust routers this rig also benchmarks do, so run.sh's hardcoded
+# "/router/health" etc. would otherwise never resolve.
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+COPY ts-dist/index.cjs /app/dist/index.cjs
+COPY ts-dist/static/ /app/dist/static/
+COPY node-router/proxy.mjs /app/proxy.mjs
+COPY node-router/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV NODE_ENV=production
+ENV PLATFORM_ENABLED=false
+ENV STREAM_PROCESSOR_ENABLED=false
+ENV OUTBOX_PROCESSOR_ENABLED=false
+ENV DISPATCH_SCHEDULER_ENABLED=false
+ENV STANDBY_ENABLED=false
+ENV MESSAGE_ROUTER_ENABLED=true
+ENV AUTO_MIGRATE=false
+
+EXPOSE 8080
+ENTRYPOINT ["/app/entrypoint.sh"]

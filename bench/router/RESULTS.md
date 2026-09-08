@@ -904,3 +904,204 @@ All rows: delivered = seeded, depth 0, no errors; Java `cbeaf60`+`59c30ef` image
 | Go | Postgres, 8 queues | 5,456 | 41% | 91 MB | clean |
 | Go | SQS (LocalStack), 8 queues | 1,291 | 18% | 46 MB | 8 informational backlog lines |
 With this every router has been proven on every broker it supports on its final build.
+
+## Node.js/TypeScript router (owner's `flowcatalyst`, `packages/message-router` + `apps/flowcatalyst`) — 2026-09-08
+
+### Discovery
+
+- **Process/entry point.** `apps/flowcatalyst` is a single unified binary (Platform + Stream
+  Processor + Message Router, feature-flagged — `apps/flowcatalyst/src/index.ts`). It runs
+  router-only with no database: `needsDatabase = PLATFORM_ENABLED || STREAM_PROCESSOR_ENABLED ||
+  OUTBOX_PROCESSOR_ENABLED || DISPATCH_SCHEDULER_ENABLED` (index.ts), all `false` in our env, so
+  the `DATABASE_URL` / embedded-Postgres / migration paths never execute. Confirmed by a bare
+  `docker run` of the built image: it logs `"services":["Message Router"]` and starts cleanly
+  with no DB.
+- **Config mechanism.** The router reads `ROUTER_CONFIG_URL` (`packages/message-router/src/
+  env.ts`), *not* the rig's `FLOWCATALYST_CONFIG_URL` — different name, so the sink's `/config`
+  is never fetched under the rig's own env wiring either way. More importantly, for
+  `QUEUE_TYPE=NATS`, `services/queue-manager-service.ts` `start()` takes the
+  `if (env.QUEUE_TYPE === "NATS") { await initializeNatsMode(...); ...; return; }` branch and
+  **returns before reaching the `ROUTER_CONFIG_URL`-polling block below it**, which only runs for
+  the (implicit) SQS/default case. So NATS mode never fetches config at all — not for queues, not
+  for pools.
+- **NATS queue URI / provisioning.** There is no URI parser for NATS the way the rig expects
+  (`nats://host:port?stream=&consumer=&subject=&...`). `broker-initializers.ts`
+  `initializeNatsMode()` builds exactly one `NatsConsumer` from **discrete env vars**
+  (`NATS_STREAM_NAME`, `NATS_SUBJECT`, `NATS_CONSUMER_NAME`, `NATS_MAX_MESSAGES_PER_POLL`,
+  `NATS_POLL_TIMEOUT_SECONDS`, `NATS_ACK_WAIT_SECONDS`, `NATS_MAX_DELIVER`, `NATS_MAX_ACK_PENDING`,
+  `NATS_STORAGE_TYPE`, `NATS_REPLICAS`, `NATS_MAX_AGE_DAYS`), i.e. **one stream, statically,
+  for the life of the process**. Unlike SQS (`config-applicator.ts` `syncSqsConsumers`, gated
+  `if (env.QUEUE_TYPE === "SQS")`), there is no per-queue fan-out for NATS — nothing analogous
+  ever creates a second `NatsConsumer`. `NatsConsumer.ensureStream()`/`ensureConsumer()`
+  (`consumers/nats-consumer.ts`) *are* correctly idempotent — `streams.info`/`consumers.info`
+  succeed against the rig's pre-created, pre-filled stream and the `catch` (create) branch never
+  runs — confirmed by the smoke-test server log (no "Creating stream"/"Creating consumer" lines).
+  So single-stream provisioning is a verified no-op; the gap is that the rig always seeds N
+  separate JetStream streams (`BENCH1..BENCHn`, `bench/router/run.sh` `create_nats_streams`) and
+  the TS router can only ever attach to one of them.
+- **Message JSON / delivery.** `consumers/parse-pointer.ts` `parseMessagePointer()` reads
+  `poolCode`, `messageGroupId` (falls back to the NATS message-id header, or a random UUID),
+  `mediationTarget`/`callbackUrl`, `authToken`, `payload`, `dispatchMode` — matches the rig's
+  seeded `{"id","poolCode","mediationType","mediationTarget","dispatchMode"}` exactly for the
+  fields it uses. `packages/queue-core/src/mediation/http-mediator.ts` `executeRequest()` POSTs
+  `Content-Type: application/json`, body `{"messageId": ...}`, to `pointer.callbackUrl`
+  (= the seeded `mediationTarget`) — satisfies the sink's "any POST to `/hook` counts".
+- **Health endpoint / port.** `PORT`/`ROUTER_PORT` default `8080` (matches the rig's
+  `$SERVER_IP:8080` assumption). But the TS router has no `/router`-prefixed API at all — health
+  is `/health/live`, `/health/ready`, `/health/startup` (`routes/health.ts`); metrics is
+  `/metrics`; pool stats is `/monitoring/pool-stats` (a `Record<poolCode,PoolStats>`, not a list).
+  The rig's `run.sh` hardcodes `/router/health`, `/router/metrics`, `/router/monitoring/pools`
+  (`wait_health()`, lines ~310-320, 500, 580, 583) — a convention from the Go/Java/Rust routers
+  this rig was built against (Java: `server/src/main/java/io/flowcatalyst/router/api/
+  HealthRoutes.java`, mounted at `p = "/router"`). None of this is satisfiable read-only from the
+  TS repo alone; addressed with a rig-side shim (below), not a run.sh or TS-source change.
+
+**Blocking finding (discovered by code review before any run, then confirmed empirically):**
+because NATS mode never polls config and only ever attaches one static `(stream, subject,
+consumer)`, **any `QUEUES>1` NATS scenario cannot drain** — one stream gets consumed, the others
+sit full forever. This affects the smoke test (`QUEUES=2`) and `node-nats-q8-c1` (`QUEUES=8`)
+identically. Separately, because pools are never config-synced in NATS mode either, every message
+(seeded `poolCode: "BENCH"`) misses the three hardcoded `POOL-HIGH/MEDIUM/LOW` pools (concurrency
+10 each, `registerDefaultPools()`) and falls back to a synthesized `DEFAULT-POOL` pool hardcoded
+to **concurrency 20** (`services/queue-manager/batch-dispatcher.ts`, `DEFAULT_POOL_CONCURRENCY =
+20`) — `POOL_CONCURRENCY=64`/`256` passed to the sink's `/config` has no effect on the Node router
+in NATS mode at all.
+
+### What was built
+
+- `bench/router/Dockerfile.node-router` — `node:24-bookworm-slim`, copies the TS repo's own
+  `pnpm --filter @flowcatalyst/flowcatalyst build` (tsup) output,
+  `apps/flowcatalyst/dist/index.cjs`, staged locally at `bench/router/ts-dist/index.cjs`
+  (gitignored, not committed). Router-only env baked in (`PLATFORM_ENABLED=false`,
+  `STREAM_PROCESSOR_ENABLED=false`, `OUTBOX_PROCESSOR_ENABLED=false`,
+  `DISPATCH_SCHEDULER_ENABLED=false`, `STANDBY_ENABLED=false`, `MESSAGE_ROUTER_ENABLED=true`);
+  `QUEUE_TYPE`/`NATS_*` passed per run (see commands below).
+- `bench/router/ts-dist/static/` — a copy of `@fastify/swagger-ui`'s own `static/` asset
+  directory. **Packaging bug found while smoke-testing the image, fixed on our side, not in the
+  TS source**: `message-router/app.ts` registers `@fastify/swagger-ui` unconditionally
+  (`await app.register(import("@fastify/swagger-ui"), {routePrefix: "/docs"})`); the plugin
+  resolves its logo as `path.join(__dirname, "./static/logo.svg")`
+  (`@fastify/swagger-ui/index.js`), and once tsup bundles it into one CJS file `__dirname` is the
+  *bundle's* directory, not the package's — so without this copy, `fastify.register` threw
+  `ENOENT` on `logo.svg` synchronously during `createApp()`, and the whole process exited before
+  binding a port, **regardless of NATS reachability**. Confirmed by a local `docker run` before
+  the copy was added (see `entrypoint.sh` note below) and confirmed fixed after.
+- `bench/router/node-router/proxy.mjs` + `entrypoint.sh` — a small, dependency-free path-rewriting
+  reverse proxy (Node `http` builtin only) in front of the real app: listens on `8080` (what the
+  rig expects), forwards to the app on internal port `18080`, rewriting `/router/health` →
+  `/health/live`, `/router/metrics` → `/metrics`, `/router/monitoring/pools` →
+  `/monitoring/pool-stats`, `/router/api/*` → `/api/*`. This only handles the rig's own inbound
+  probes (health/metrics/pools scraping) — it never sits on the message-delivery path (router →
+  NATS → sink), so it has no effect on throughput. `run.sh` and the TS repo were **not** modified.
+
+### Runs (from `bench/router`, `PATH` including `/opt/homebrew/bin`)
+
+Smoke (as literally specified — `QUEUES=2`, pointed at `BENCH1` since only one stream is
+supported):
+```
+TOTAL_MESSAGES=2000 QUEUES=2 BROKER=nats POOL_CONCURRENCY=64 bash run.sh run node-smoke bench-real-node-router "--cpus=1 --memory=1g" \
+  QUEUE_TYPE=NATS NATS_SERVERS=nats://172.30.0.13:4222 NATS_STREAM_NAME=BENCH1 "NATS_SUBJECT=bench.1.>" \
+  NATS_CONSUMER_NAME=router NATS_MAX_MESSAGES_PER_POLL=10 NATS_POLL_TIMEOUT_SECONDS=20 NATS_ACK_WAIT_SECONDS=120 \
+  NATS_MAX_DELIVER=10 NATS_MAX_ACK_PENDING=1000 NATS_STORAGE_TYPE=memory NATS_REPLICAS=1 NATS_MAX_AGE_DAYS=7
+```
+Result (verbatim):
+```
+seednats: acked=2000 failed=0 submit_errors=0 total=2000 queues=2
+-- seeded 2000 messages across 2 NATS stream(s) in 0.26s (streams full BEFORE the router starts)
+   BENCH1 messages=1000
+   BENCH2 messages=1000
+WARNING: timed out at count=1000/2000 after 300s
+WARNING: broker depth=1000 after sink completion + 30s grace (abandoned in-flight acks, not lost messages — the sink already counted them)
+== node-smoke image=bench-real-node-router cpu='--cpus=1 --memory=1g' env='...' authmode=auth broker=nats pool_code=BENCH pool_concurrency=64 queues=2 pool_seen=no seed_via=nats
+   total_messages=2000 delivered=1000 deliveries_per_s=97.3 drain_time_s=330.61 queue_depth_end=1000 nats_mean_cpu_pct=0.3
+   max_rss_mb=242.1 end_rss_mb=159.8 mean_cpu_pct=0.3 context_switches=0 switches_per_delivery=0.0
+   proto_counts={'HTTP/1.1': 1000}
+```
+**Smoke row: FAILED the pass criteria** (delivered 1000/2000, `queue_depth_end=1000`, timed out).
+Diagnosed from the server log, matching the code-review finding exactly: `BENCH1` appears in the
+log (5 lines: consumer start/health), `BENCH2` appears **nowhere** — the router never attempted
+it. The sink shows all 1000 `BENCH1` messages delivered cleanly (`{"count":1000,...,
+"status_counts":{"200":1000}}`, first-to-last span ~10.3s) — BENCH1's own drain is correct, the
+router simply has no second consumer. `pools.json` confirms the pool-fallback finding too:
+`POOL-HIGH/MEDIUM/LOW` all `totalProcessed:0`; `DEFAULT-POOL` (`maxConcurrency:20`) processed all
+1000. Warning breakdown from `node-smoke.server.log`: 2770 `"level":"warn"` lines, 0 errors —
+1350 "No pool found, routing to DEFAULT-POOL" (one per batch), the rest "Warning added" (the
+warning-service echo of the same event).
+
+**Per the task's instruction ("if it needs a source change, describe the change precisely and
+stop"): it needs a source change.** Two, precisely:
+1. In `services/queue-manager-service.ts` `start()`, the `QUEUE_TYPE === "NATS"` branch would
+   need to fetch config from `ROUTER_CONFIG_URL` (like the SQS path does) and, for each
+   `queues[]` entry, parse a `nats://` URI (stream/consumer/subject/etc. as query params, mirroring
+   the Go/Java/Rust URI shape) and start one `NatsConsumer` per queue — i.e. give NATS the same
+   `syncSqsConsumers`-shaped dynamic fan-out `config-applicator.ts` already has for SQS, instead of
+   the single static `initializeNatsMode()` consumer built from env vars.
+2. Once (1) exists, `doApply()` in `config-applicator.ts` would need its
+   `if (env.QUEUE_TYPE === "SQS") { await this.syncSqsConsumers(config); }` gate widened to also
+   cover NATS, so `poolCode`s from config (e.g. `BENCH`) actually get created as real pools instead
+   of only ever hitting the `DEFAULT-POOL` fallback.
+
+No TypeScript source was changed to force a pass.
+
+Since `node-nats-q8-c1` (`QUEUES=8`) exercises the identical single-stream limitation just proven
+above (it would attach to one of eight streams and hang until `TIMEOUT_S=900` + 30s grace with
+7/8 of the queue permanently undelivered), it was **not re-run** — running it would reproduce the
+smoke-test finding at 15x the wall-clock cost for no new information. The two `QUEUES=1` rows
+below are not affected by the multi-stream limitation (there is only one stream to begin with) and
+were run for real, comparative numbers; they are still affected by the `DEFAULT-POOL`
+concurrency-20 fallback (`POOL_CONCURRENCY=256` has no effect on Node in NATS mode).
+
+```
+TOTAL_MESSAGES=500000 QUEUES=1 BROKER=nats POOL_CONCURRENCY=256 TIMEOUT_S=900 bash run.sh run node-nats-q1-c1 bench-real-node-router "--cpus=1 --memory=1g" \
+  QUEUE_TYPE=NATS NATS_SERVERS=nats://172.30.0.13:4222 NATS_STREAM_NAME=BENCH1 "NATS_SUBJECT=bench.1.>" \
+  NATS_CONSUMER_NAME=router NATS_MAX_MESSAGES_PER_POLL=10 NATS_POLL_TIMEOUT_SECONDS=20 NATS_ACK_WAIT_SECONDS=120 \
+  NATS_MAX_DELIVER=10 NATS_MAX_ACK_PENDING=1000 NATS_STORAGE_TYPE=memory NATS_REPLICAS=1 NATS_MAX_AGE_DAYS=7
+```
+```
+seednats: acked=500000 failed=0 submit_errors=0 total=500000 queues=1
+-- seeded 500000 messages across 1 NATS stream(s) in 1.81s (streams full BEFORE the router starts)
+   BENCH1 messages=500000
+== node-nats-q1-c1 image=bench-real-node-router cpu='--cpus=1 --memory=1g' env='...' authmode=auth broker=nats pool_code=BENCH pool_concurrency=256 queues=1 pool_seen=no seed_via=nats
+   total_messages=500000 delivered=500000 deliveries_per_s=8255.9 drain_time_s=61.02 queue_depth_end=0 nats_mean_cpu_pct=30.9
+   max_rss_mb=445.0 end_rss_mb=445.0 mean_cpu_pct=90.8 context_switches=0 switches_per_delivery=0.0
+   proto_counts={'HTTP/1.1': 500000}
+```
+**PASSED**: delivered = seeded, `queue_depth_end=0`, `successRate=1`/`totalFailed=0` on
+`DEFAULT-POOL` (no redeliveries). Server log: 200,580 `"level":"warn"` lines (100,290 "No pool
+found, routing to DEFAULT-POOL" + 100,290 "Warning added" echoes), 0 errors.
+
+```
+TOTAL_MESSAGES=500000 QUEUES=1 BROKER=nats POOL_CONCURRENCY=256 TIMEOUT_S=900 bash run.sh run node-nats-q1-c2 bench-real-node-router "--cpus=2 --memory=2g" \
+  QUEUE_TYPE=NATS NATS_SERVERS=nats://172.30.0.13:4222 NATS_STREAM_NAME=BENCH1 "NATS_SUBJECT=bench.1.>" \
+  NATS_CONSUMER_NAME=router NATS_MAX_MESSAGES_PER_POLL=10 NATS_POLL_TIMEOUT_SECONDS=20 NATS_ACK_WAIT_SECONDS=120 \
+  NATS_MAX_DELIVER=10 NATS_MAX_ACK_PENDING=1000 NATS_STORAGE_TYPE=memory NATS_REPLICAS=1 NATS_MAX_AGE_DAYS=7
+```
+```
+seednats: acked=500000 failed=0 submit_errors=0 total=500000 queues=1
+-- seeded 500000 messages across 1 NATS stream(s) in 1.67s (streams full BEFORE the router starts)
+   BENCH1 messages=500000
+== node-nats-q1-c2 image=bench-real-node-router cpu='--cpus=2 --memory=2g' env='...' authmode=noauth broker=nats pool_code=BENCH pool_concurrency=256 queues=1 pool_seen=no seed_via=nats
+   total_messages=500000 delivered=500000 deliveries_per_s=12437.8 drain_time_s=40.6 queue_depth_end=0 nats_mean_cpu_pct=38.7
+   max_rss_mb=526.1 end_rss_mb=526.1 mean_cpu_pct=116.3 context_switches=0 switches_per_delivery=0.0
+   proto_counts={'HTTP/1.1': 500000}
+```
+**PASSED**: delivered = seeded, `queue_depth_end=0`, no failures/redeliveries. Server log: 197,935
+`"level":"warn"` lines (98,968 "No pool found, routing to DEFAULT-POOL" + 98,967 "Warning added"),
+0 errors.
+
+### Summary — NATS JetStream, single queue, 1 CPU, 500,000 messages
+
+| server | deliveries/s | router CPU | RSS | note |
+|---|---:|---:|---:|---|
+| Rust | 35,038 | 71-73% | 14-15 MB | |
+| Java | 25,638 | 96% | 368 MB | |
+| Go | 25,612 | 99% | 83 MB | |
+| **Node (this run)** | **8,256** | **91%** | **445 MB** | capped at `DEFAULT-POOL` concurrency 20 |
+
+At 2 CPUs Node reaches 12,438/s at 526 MB RSS and 116% mean CPU (`node-nats-q1-c2`) — still CPU-
+bound single-digit-thousands, well below Go/Java/Rust's one-core numbers, and the concurrency-20
+ceiling means this is not yet a fair comparison of Node's raw HTTP-mediation throughput at the
+`POOL_CONCURRENCY=256` the other three routers actually ran at. `QUEUES=8` could not be measured
+at all (see above) — the Node router needs the two source changes described above (config-driven
+NATS consumer fan-out, and widening `syncSqsConsumers`-equivalent pool sync to NATS) before a
+like-for-like comparison across queue counts and concurrency is possible.
