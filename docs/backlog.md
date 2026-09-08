@@ -970,3 +970,40 @@ The rule itself is the defect: a broker consumer's connection need is set by how
 flight, not by how many CPUs the router was given. Ruling to take, then mirror in Go: size the
 per-queue pool from the admission concurrency the queue feeds (capped), or fix it at a small constant
 independent of CPU. Whatever is chosen must be derived, not an env knob (`feedback_no_tuning`).
+
+## Endpoint groups: own admission pool, own DB pool, own listener (owner direction, 2026-09-08)
+
+Today one listener serves everything and `io.flowcatalyst.http.Group` {LOGIN, OIDC, DISPATCH, INGEST,
+NO_DB} only picks a `RequestWorkers` lane in front of one shared `GatedDataSource`. The owner wants the
+grouping to go all the way down, so a deployment can split or prioritise:
+
+| group | endpoints | DB |
+|---|---|---|
+| ingest / dispatch | what the message router POSTs (processing endpoint, settled) | own pool |
+| BFF | what the SPA calls | own pool |
+| API | the ordinary REST surface | own pool |
+| SSE | event streams | **none** |
+
+Ruled by the owner already:
+- **SSE has no pool and no DB connection.** One virtual thread per connection parked *untimed* on a
+  bounded per-subscriber queue (`take()`, never `poll(timeout)`: an untimed park is a continuation
+  unmount, no timer, no kernel switch — the finding behind the Tier-1 gate). The publisher `offer()`s;
+  a full queue means the client cannot keep up and its stream is closed. Keepalive is ONE tick on the
+  event loop's timer wheel for all subscribers, never a timer per connection. A snapshot needed at
+  subscribe time is a single query before streaming starts, borrowed from the API group.
+- **Per-group pool sizes are configurable per deployment.** This is the one number the owner has always
+  accepted (`feedback_no_tuning`: "the DB pool size is something for every version"), now per group.
+- **Queue-depth metrics**: how many requests are waiting for a worker, per group, exported so a
+  deployment can see which group is starved. Needs `RequestWorkers` to expose per-pool queue length and
+  in-flight count, and a collector next to the existing gate/worker gauges.
+
+Open for a ruling before building:
+1. N Hikari pools (one per group) versus today's single pool with per-group semaphore lanes. Separate
+   pools give real isolation and independent sizing; they also multiply idle connections and make the
+   total against Postgres's `max_connections` the operator's sum to get right.
+2. Whether a group is also its own *listener* (own port), which is what makes "deploy only ingest"
+   possible, versus one port with the group chosen by route. Separate ports also let a load balancer
+   route groups to different instances.
+3. Where the split is declared: a group per route in `Routes.in(Group)` as today, or a listener
+   assembled per group at start-up from a deployment profile.
+Not started; SSE is not implemented at all yet.
