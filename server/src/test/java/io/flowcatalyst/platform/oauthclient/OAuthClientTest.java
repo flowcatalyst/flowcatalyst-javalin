@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.oauthclient;
 
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -8,9 +9,8 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
+import java.util.function.BiPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -185,39 +185,39 @@ class OAuthClientTest {
 
     // ── acceptsSecret ────────────────────────────────────────────────────────
 
-    /// A decryptor that records how many times, and for which refs, it was called.
-    private static final class CountingDecryptor implements Function<String, Optional<String>> {
+    /// A matcher that records how many times, and for which refs, it was called.
+    private static final class CountingMatcher implements BiPredicate<String, String> {
         final AtomicInteger calls = new AtomicInteger();
         private final java.util.Map<String, String> plaintextByRef;
 
-        CountingDecryptor(java.util.Map<String, String> plaintextByRef) {
+        CountingMatcher(java.util.Map<String, String> plaintextByRef) {
             this.plaintextByRef = plaintextByRef;
         }
 
         @Override
-        public Optional<String> apply(String ref) {
+        public boolean test(String ref, String providedPlaintext) {
             calls.incrementAndGet();
-            return Optional.ofNullable(plaintextByRef.get(ref));
+            return providedPlaintext.equals(plaintextByRef.get(ref));
         }
     }
 
     @Test
     void acceptsSecretMatchesTheCurrentSecret() {
         var c = confidential();
-        var decryptor = new CountingDecryptor(java.util.Map.of("encrypted:current-ref", "the-secret"));
-        assertThat(c.acceptsSecret("the-secret", Instant.now(), decryptor)).isTrue();
-        assertThat(c.acceptsSecret("wrong", Instant.now(), decryptor)).isFalse();
+        var matcher = new CountingMatcher(java.util.Map.of("encrypted:current-ref", "the-secret"));
+        assertThat(c.acceptsSecret("the-secret", Instant.now(), matcher)).isTrue();
+        assertThat(c.acceptsSecret("wrong", Instant.now(), matcher)).isFalse();
     }
 
     @Test
     void acceptsSecretMatchesAnUnexpiredPreviousSecret() {
         Instant t0 = Instant.now();
         var rotated = confidential().rotateSecret("encrypted:new-ref", Duration.ofHours(24), t0).client();
-        var decryptor = new CountingDecryptor(java.util.Map.of(
+        var matcher = new CountingMatcher(java.util.Map.of(
                 "encrypted:new-ref", "new-secret",
                 "encrypted:current-ref", "old-secret"));
 
-        assertThat(rotated.acceptsSecret("old-secret", t0.plusSeconds(5), decryptor))
+        assertThat(rotated.acceptsSecret("old-secret", t0.plusSeconds(5), matcher))
                 .as("the demoted secret still authenticates inside the grace window").isTrue();
     }
 
@@ -225,19 +225,19 @@ class OAuthClientTest {
     void acceptsSecretRejectsAnExpiredPreviousSecret() {
         Instant t0 = Instant.now();
         var rotated = confidential().rotateSecret("encrypted:new-ref", Duration.ofHours(1), t0).client();
-        var decryptor = new CountingDecryptor(java.util.Map.of(
+        var matcher = new CountingMatcher(java.util.Map.of(
                 "encrypted:new-ref", "new-secret",
                 "encrypted:current-ref", "old-secret"));
 
-        assertThat(rotated.acceptsSecret("old-secret", t0.plus(Duration.ofHours(2)), decryptor))
+        assertThat(rotated.acceptsSecret("old-secret", t0.plus(Duration.ofHours(2)), matcher))
                 .as("the overlap window has lapsed").isFalse();
     }
 
     @Test
     void acceptsSecretRejectsAWrongSecretWithNoUsablePrevious() {
         var c = confidential();
-        var decryptor = new CountingDecryptor(java.util.Map.of("encrypted:current-ref", "the-secret"));
-        assertThat(c.acceptsSecret("not-it", Instant.now(), decryptor)).isFalse();
+        var matcher = new CountingMatcher(java.util.Map.of("encrypted:current-ref", "the-secret"));
+        assertThat(c.acceptsSecret("not-it", Instant.now(), matcher)).isFalse();
     }
 
     /// Mutant: `acceptsSecret` short-circuits on a current-secret match and
@@ -248,13 +248,13 @@ class OAuthClientTest {
     void acceptsSecretDecryptsBothRefsEvenWhenTheCurrentOneAlreadyMatches() {
         Instant t0 = Instant.now();
         var rotated = confidential().rotateSecret("encrypted:new-ref", Duration.ofHours(24), t0).client();
-        var decryptor = new CountingDecryptor(java.util.Map.of(
+        var matcher = new CountingMatcher(java.util.Map.of(
                 "encrypted:new-ref", "new-secret",       // matches — this is "current"
                 "encrypted:current-ref", "old-secret"));  // does NOT match "new-secret" but the ref IS usable
 
-        boolean ok = rotated.acceptsSecret("new-secret", t0.plusSeconds(1), decryptor);
+        boolean ok = rotated.acceptsSecret("new-secret", t0.plusSeconds(1), matcher);
         assertThat(ok).as("matches on the current secret").isTrue();
-        assertThat(decryptor.calls.get())
+        assertThat(matcher.calls.get())
                 .as("both the current AND the usable previous ref must be decrypted, never short-circuited")
                 .isEqualTo(2);
     }
@@ -266,20 +266,46 @@ class OAuthClientTest {
     void acceptsSecretAuthenticatesOnAWrongCurrentPlusAValidPrevious() {
         Instant t0 = Instant.now();
         var rotated = confidential().rotateSecret("encrypted:new-ref", Duration.ofHours(24), t0).client();
-        var decryptor = new CountingDecryptor(java.util.Map.of(
+        var matcher = new CountingMatcher(java.util.Map.of(
                 "encrypted:new-ref", "new-secret",
                 "encrypted:current-ref", "old-secret"));
 
-        boolean ok = rotated.acceptsSecret("old-secret", t0.plusSeconds(1), decryptor);
+        boolean ok = rotated.acceptsSecret("old-secret", t0.plusSeconds(1), matcher);
         assertThat(ok).as("a still-valid previous secret must authenticate").isTrue();
-        assertThat(decryptor.calls.get()).isEqualTo(2);
+        assertThat(matcher.calls.get()).isEqualTo(2);
     }
 
     @Test
     void acceptsSecretOnAPublicClientWithNoSecretNeverMatches() {
         var c = OAuthClient.create("cli_1", "X", ClientType.PUBLIC);
-        var decryptor = new CountingDecryptor(java.util.Map.of());
-        assertThat(c.acceptsSecret("anything", Instant.now(), decryptor)).isFalse();
-        assertThat(decryptor.calls.get()).as("nothing to decrypt when there is no secretRef").isZero();
+        var matcher = new CountingMatcher(java.util.Map.of());
+        assertThat(c.acceptsSecret("anything", Instant.now(), matcher)).isFalse();
+        assertThat(matcher.calls.get()).as("nothing to decrypt when there is no secretRef").isZero();
+    }
+
+    /// `acceptsSecret` is shape-agnostic (`docs/spec/encryption.md` §3): a real
+    /// [Encryption]'s `verifySecret` accepts a current ref already migrated to
+    /// `hashed:v1:` alongside a previous ref still in its legacy `encrypted:`
+    /// form — the client-migrates-independently case a matcher-level fake
+    /// cannot exercise.
+    @Test
+    void acceptsSecretWorksAcrossMixedHashedAndEncryptedShapes() {
+        var enc = Encryption.withKey(Encryption.generateKey());
+        Instant t0 = Instant.now();
+        var c = OAuthClient.create("cli_1", "My Client", ClientType.CONFIDENTIAL);
+        var rotated = new OAuthClient(c.id(), c.clientId(), c.clientName(), c.clientType(),
+                enc.hashSecretRef("new-secret"), enc.encryptSecretRef("old-secret"), t0.plusSeconds(3600), null,
+                c.redirectUris(), c.postLogoutRedirectUris(), c.grantTypes(), c.defaultScopes(), c.allowedOrigins(),
+                c.applicationIds(), c.pkceRequired(), c.active(), c.principalId(), c.portalClientId(), c.apiAccess(),
+                c.createdAt(), c.updatedAt());
+
+        BiPredicate<String, String> matches = (ref, provided) ->
+                enc.verifySecret(ref, provided) instanceof Encryption.SecretVerification.Matched;
+
+        assertThat(rotated.acceptsSecret("new-secret", t0, matches))
+                .as("current ref, already hashed").isTrue();
+        assertThat(rotated.acceptsSecret("old-secret", t0, matches))
+                .as("previous ref, still legacy-encrypted").isTrue();
+        assertThat(rotated.acceptsSecret("wrong", t0, matches)).isFalse();
     }
 }

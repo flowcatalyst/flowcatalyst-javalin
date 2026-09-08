@@ -214,6 +214,24 @@ public final class PrincipalRepository implements Persist<Principal> {
                 .execute();
     }
 
+    /// The keyed-hash migration (`docs/spec/encryption.md` §3): rewrites a
+    /// developer client secret's stored ref to `newRef` (its hashed form),
+    /// leaving `dev_client_secret_updated_at` untouched — the secret and its
+    /// grace are unchanged, only the ref's shape is. Guarded on `oldRef`
+    /// still being the stored value, so a concurrent rotation or revoke is
+    /// never clobbered. Runs in its own autocommit statement, like
+    /// [OAuthClientRepository#touchPreviousSecretUsed] — the auth flow's
+    /// outcome must not depend on it.
+    ///
+    /// @return whether a row was rewritten
+    public boolean rewriteDevClientSecretRef(String principalId, String oldRef, String newRef) {
+        return dsl.update(P)
+                .set(P.DEV_CLIENT_SECRET_REF, newRef)
+                .where(P.ID.eq(principalId))
+                .and(P.DEV_CLIENT_SECRET_REF.eq(oldRef))
+                .execute() == 1;
+    }
+
     /// Removes application access, client grants and roles, then the row.
     @Override
     public void delete(Principal p, DbTx tx) {

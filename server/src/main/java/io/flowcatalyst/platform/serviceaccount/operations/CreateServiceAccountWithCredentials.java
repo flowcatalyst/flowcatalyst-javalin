@@ -119,11 +119,11 @@ public final class CreateServiceAccountWithCredentials {
 
                     // 3. A CONFIDENTIAL OAuth client scoped to this account's SERVICE principal
                     // (spec §8; Go create_credentials.go's oc, same shape as
-                    // ProvisionServiceAccount's). No app key configured -> Secrets.encryptedRef
+                    // ProvisionServiceAccount's). No app key configured -> Secrets.hashedRef
                     // throws internal SECRET here, rolling back the service account and principal
                     // writes above too (spec §4.1's atomicity).
                     String plaintext = Secrets.generatePlaintext();
-                    String secretRef = Secrets.encryptedRef(encryption, plaintext);
+                    String secretRef = Secrets.hashedRef(encryption, plaintext);
                     OAuthClient oc = OAuthClient.create(EntityType.OAUTH_CLIENT.generate(), sa.name() + " Client", ClientType.CONFIDENTIAL)
                             .withSecretRef(secretRef)
                             .withPrincipalId(principal.id())

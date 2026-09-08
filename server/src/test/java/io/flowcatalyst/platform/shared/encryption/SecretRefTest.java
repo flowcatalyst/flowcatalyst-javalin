@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import io.flowcatalyst.platform.shared.encryption.SecretRef.Encrypted;
 import io.flowcatalyst.platform.shared.encryption.SecretRef.External;
+import io.flowcatalyst.platform.shared.encryption.SecretRef.Hashed;
 import io.flowcatalyst.platform.shared.encryption.SecretRef.Literal;
 import io.flowcatalyst.platform.shared.encryption.SecretRef.None;
 import io.flowcatalyst.platform.shared.encryption.SecretRef.Plain;
@@ -54,6 +55,51 @@ class SecretRefTest {
         assertThat(ref.envelope()).containsExactly(1, 2, 3);
         assertThat(ref).isEqualTo(new Encrypted(new byte[]{1, 2, 3})).hasSameHashCodeAs(new Encrypted(new byte[]{1, 2, 3}));
         assertThat(ref.toString()).doesNotContain("1, 2, 3");
+    }
+
+    /// A `HmacSHA256` MAC is always 32 bytes — the payload of every `hashed:v1:` ref.
+    static final String MAC_B64 = Base64.getEncoder().encodeToString(new byte[32]);
+
+    @Test
+    void hashedPrefixDecodesTheMacAndReEncodesCanonically() {
+        var ref = SecretRef.parse("  hashed:v1:" + MAC_B64 + " ");
+        assertThat(ref).isEqualTo(new Hashed(new byte[32]));
+        assertThat(((Hashed) ref).stored()).isEqualTo("hashed:v1:" + MAC_B64);
+    }
+
+    @Test
+    void hashedPrefixWithNonBase64OrWrongLengthPayloadIsRejected() {
+        assertThatThrownBy(() -> SecretRef.parse("hashed:v1:not base64!"))
+                .isInstanceOf(IllegalArgumentException.class);
+        // 31 bytes: one short of a HmacSHA256 MAC.
+        String short31 = Base64.getEncoder().encodeToString(new byte[31]);
+        assertThatThrownBy(() -> SecretRef.parse("hashed:v1:" + short31))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("32 bytes");
+        // 33 bytes: one too many.
+        String long33 = Base64.getEncoder().encodeToString(new byte[33]);
+        assertThatThrownBy(() -> SecretRef.parse("hashed:v1:" + long33))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("32 bytes");
+    }
+
+    @Test
+    void hashedIsValueBasedOnBytesAndDefensivelyCopied() {
+        var bytes = new byte[32];
+        bytes[0] = 1;
+        var ref = new Hashed(bytes);
+        bytes[0] = 9;
+        assertThat(ref.mac()[0]).as("the record clones its input").isEqualTo((byte) 1);
+        var expected = new byte[32];
+        expected[0] = 1;
+        assertThat(ref).isEqualTo(new Hashed(expected)).hasSameHashCodeAs(new Hashed(expected));
+        assertThat(ref.toString()).as("never prints the MAC").doesNotContain("1, 0, 0");
+    }
+
+    /// A `hashed:v1:` ref is not decryptable — [SecretRef] classifies it, but
+    /// only [Encryption#decrypt] and [Encryption#verifySecret] give it meaning;
+    /// this class's job ends at "well-formed" vs "not".
+    @Test
+    void hashedIsAnAtRestShapeLikeEncrypted() {
+        assertThat(SecretRef.parse("hashed:v1:" + MAC_B64)).isInstanceOf(SecretRef.AtRest.class);
     }
 
     @ParameterizedTest

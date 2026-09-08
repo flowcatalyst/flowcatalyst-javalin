@@ -1,12 +1,22 @@
-# Spec — field encryption (`io.flowcatalyst.platform.shared.encryption`)
+# Spec — field encryption and keyed hashing (`io.flowcatalyst.platform.shared.encryption`)
 
-The one reversible-encryption primitive: AES-256-GCM over single column
-values (OAuth client secrets, OIDC client secrets, TOTP secrets, webhook
-signing keys, developer-credential secrets). Written from the contract of
-`internal/platform/shared/encryption/` (`encryption.go`, `secretref.go`,
-their tests), the `internal/secrets` reference grammar, and the fcdev /
-operations call sites — not from the Go source line by line. Password
-hashing is **not** this ([`password-hash.md`](password-hash.md)).
+Two verify-or-recover primitives, one package. **Reversible** AES-256-GCM
+encryption (§2, §4–§7) for a value the platform must later *use* in the
+clear — OIDC client secrets, TOTP secrets, webhook signing keys and bearer
+tokens, outbound basic-auth passwords: the platform sends or signs with
+these, so it must be able to recover the plaintext. **Keyed hashing** (§3.1)
+for a value the platform only ever *compares* — a verify-only secret,
+structurally a password check, currently OAuth client secrets and
+self-service developer client secrets. Owner ruling 2026-09-08: a
+verify-only secret is stored as a keyed hash, never reversibly encrypted —
+a leaked `FLOWCATALYST_APP_KEY` must not recover every client secret in
+plaintext.
+
+Written from the contract of `internal/platform/shared/encryption/`
+(`encryption.go`, `secretref.go`, their tests), the `internal/secrets`
+reference grammar, and the fcdev / operations call sites — not from the Go
+source line by line. Password hashing is **not** this
+([`password-hash.md`](password-hash.md)).
 
 Items tagged **[owner?]** are "load-bearing or accident?" questions.
 **[C]** = contract shared with existing rows / the Go binary / the TS SDK;
@@ -116,7 +126,8 @@ stripping surrounding whitespace:
 |---|---|---|
 | `""` (blank) | `None` | no secret (public OIDC client; "clear the secret" on update) |
 | `encrypted:<base64 envelope>` | `Encrypted` | inline ciphertext — the canonical at-rest form; what the TS SDK and `EncryptSecretRef` write |
-| `<base64 envelope>` (no prefix) | *no claim* → `Plain`, **but `decrypt` tries it as an envelope** | rows written by Go `Encrypt` directly (`mfa`, developer credentials, service-account credentials, `fcdev init`, MCP bootstrap) and TS-era `client_secret_ref` rows |
+| `hashed:v1:<base64 MAC>` | `Hashed` | keyed-hash MAC (§3.1) — the at-rest form of a **verify-only** secret (OAuth client secrets, self-service developer client secrets); never decryptable, only verified |
+| `<base64 envelope>` (no prefix) | *no claim* → `Plain`, **but `decrypt` tries it as an envelope** | rows written by Go `Encrypt` directly (`mfa`, service-account credentials, `fcdev init`, MCP bootstrap) and TS-era `client_secret_ref` rows; developer-credential rows were this shape too until the §3.1 migration started writing `hashed:v1:` |
 | `aws-sm://…`, `aws-ps://…`, `gcp-sm://…`, `vault://…`, `env://…` | `External(scheme, ref)` | lives in a secret manager; stored verbatim, resolved at read time by a provider (none is in-process in Java yet) |
 | `literal:<value>` | `Literal(value)` | dev bypass: the value *is* the plaintext; stored verbatim |
 | `encrypt:<plaintext>` | `Plain(plaintext)` | the SPA's "encrypt on save" directive; the directive is stripped, never stored |
@@ -134,6 +145,99 @@ Rules:
   string; `""` alone clears. **[owner?]** accident (harmless); preserved.
 - Base64 is decoded strictly as Go does: standard alphabet, length a
   multiple of 4, padding required (Java's lenient decoder is not used).
+- `hashed:v1:` joins this list as a **closed** prefix claim (2026-09-08
+  ruling), exactly like `encrypted:`: its payload must be strict base64 of
+  exactly 32 bytes (the `HmacSHA256` output length) or `parse` throws
+  `IllegalArgumentException`, same as a malformed `encrypted:` payload.
+  **A reader without this change — an older Java binary, or the Go binary
+  before its own port lands — has no `Hashed` case: `SecretRef.parse` falls
+  through to the last rule and reads `hashed:v1:…` as `Plain`, and the
+  comparison then fails** (the "plaintext" is the whole prefixed hash
+  string, which never equals the real secret). This is *closed*, not open —
+  deliberately: a downlevel reader must fail the comparison, not silently
+  treat the hash's bytes as if they might be a legacy bare envelope or an
+  unknown scheme. It is why the Go port lands the same grammar change in
+  lockstep rather than as a follow-up.
+
+## 3.1. Keyed hashing — verify-only secrets **[C]**
+
+A **verify-only** secret is one the platform only ever *compares* against a
+caller-supplied value — never decrypts to send, sign, or display again
+after the moment it was minted. `OAuthClient.acceptsSecret` and the
+self-service developer client-credentials check are exactly this: a
+password check in all but name. Storing them reversibly (AES-GCM under the
+app key, like every other secret in this package) means a leaked app key
+recovers every one of them in plaintext — the owner ruling above replaces
+that with a keyed hash.
+
+**Classification** (every secret written through `Encryption` /
+`SecretRef`, verify-only vs. must-decrypt, and why):
+
+| Secret | Kind | Why | File |
+|---|---|---|---|
+| OAuth client secret (`client_secret_ref`, `previous_secret_ref`) | **verify-only** | `ClientAuthentication.acceptClientSecret` only ever compares it to a caller-supplied `client_secret` | `platform/oauthclient/OAuthClient.java`, `platform/auth/oauth/ClientAuthentication.java` |
+| Self-service developer client secret (`dev_client_secret_ref`) | **verify-only** | `OAuthTokenApi.developerCredential` only ever compares it to a caller-supplied `client_secret` | `platform/auth/oauth/OAuthTokenApi.java`, `platform/principal/operations/SetDeveloperCredential.java` |
+| OIDC identity-provider client secret (`oidc_client_secret_ref`) | must-decrypt | `OidcClients` decrypts it to authenticate the platform *to* the external IdP during token exchange | `platform/auth/oidc/OidcClients.java` |
+| Auth-admin OIDC client secret (`oidc_client_secret_ref`) | must-decrypt | same shape, the admin-configured OIDC provider | `platform/authadmin/ClientAuthConfig.java` |
+| TOTP secret (`secret_encrypted`) | must-decrypt | the raw secret is the HMAC *key* the platform uses to compute the expected TOTP code, not a value compared directly | `platform/auth/mfa/Mfa.java` |
+| Webhook bearer token (`wh_auth_token_ref`) | must-decrypt | sent as the outbound `Authorization: Bearer …` header when the platform delivers a webhook | `platform/serviceaccount/ServiceAccountRepository.java`, `platform/scheduler/jobs/JobDispatcher.java`, `platform/dispatchjob/processing/SubscriberDelivery.java` |
+| Webhook HMAC signing secret (`wh_signing_secret_ref`) | must-decrypt | used as the HMAC key to sign the outbound `X-FlowCatalyst-Signature` header | same as above |
+
+A secret returned to the caller once, at creation (a "show-once" response —
+`CreateOAuthClientResponse.clientSecret`, `RegenerateAuthTokenResponse`,
+`SetDeveloperCredentialResponse`), is **not** by itself must-decrypt: it is
+returned from the plaintext already in hand at mint time, never re-read
+from storage, so what matters is only whether the *stored* ref is ever
+decrypted again afterward.
+
+**Format** — a new prefix-claimed shape, §3's table:
+
+    hashed:v1:<Base64 standard, padded, of the 32-byte MAC>
+
+    MAC = HMAC-SHA256(key = the same key bytes Encryption uses for AES-GCM
+                            (the *current* key), message = UTF-8 bytes of the plaintext secret)
+
+**Golden vector** (pinned so the Go port's identical vector can be checked
+byte for byte):
+
+| | value |
+|---|---|
+| key (base64) | `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=` (bytes `0x00..0x1f`) |
+| plaintext | `client-secret-golden` |
+| stored string | `hashed:v1:HhInGB9kwvg6VsfBL0oHER0eslXRAg6GBwoTsRa2D4E=` |
+
+**Verification** (`Encryption.verifySecret(stored, providedPlaintext)`):
+tries the current key first, then each previous key `Encryption` holds —
+the same order `decrypt` tries — and reports whether the row should be
+rewritten to the hashed form (`rehash = true` for any match against a
+non-hashed shape, or a hash matched only under a previous key). Comparison
+is constant-time (`MessageDigest.isEqual`) throughout, including across the
+current/previous key loop. With encryption disabled (no key configured)
+hashing behaves exactly as encryption does today: writing a verify-only
+secret refuses (`ENCRYPTION_NOT_CONFIGURED` / internal `SECRET`, matching
+the existing write-refusal codes), and verifying reports no match — fail
+closed, never an unkeyed fallback hash.
+
+**Transparent migration** (no client-visible change, no forced rotation, no
+downtime step, no env flag): a new or rotated verify-only secret is always
+stored `hashed:v1:…`. The read path accepts both shapes — a `hashed:` ref
+verifies by MAC, any other shape keeps the decrypt-and-compare path. On a
+successful verify against a **non-hashed** ref (the legacy `encrypted:` /
+bare-envelope shape, or a hash still sealed under a previous key), the
+matched row's ref — current or previous, whichever matched — is rewritten
+to the hashed form in the same request, through the repository, not raw
+SQL (`OAuthClientRepository.rewriteSecretRef` /
+`#rewritePreviousSecretRef`, `PrincipalRepository.rewriteDevClientSecretRef`);
+the secret's value and its rotation grace are untouched, only the stored
+ref's shape changes. The rewrite is best-effort: its failure is logged and
+never fails the authentication that already succeeded.
+
+**Rotation**: unlike the AES-GCM batch re-encryption job (§6), a hashed ref
+never appears in `needsReEncryption` / `reEncrypt` — `false` / empty for
+every `hashed:v1:` value, because there is nothing that job knows how to
+re-seal (a MAC is not decryptable, and the job's contract is
+decrypt-then-encrypt). A hashed ref migrates off an old key exclusively
+through the lazy rewrite above, the next time its secret is presented.
 
 ## 4. `decrypt(stored)` — outcomes **[C] semantics, [I] shape**
 
@@ -150,6 +254,7 @@ Returns the sealed `Decryption`, never throws for bad data:
 | `None` | `Failed(EMPTY)` (Go: "empty ciphertext") |
 | `External` | `External(ref)` — the caller resolves it elsewhere (Go `Decrypt` errors "invalid base64"; the intent is plainly "not inline") |
 | `Literal` | `Plaintext(value)` **[owner?]** Go's `Decrypt` rejects it (only `secrets.Service.Resolve` honours `literal:`); Java honours it because that is what the shape means. Keep, or make it `Failed(NOT_ENCRYPTED)`? |
+| `Hashed` | `Failed(HASHED)` — one-way by design; there is no plaintext to recover. Verify it with `verifySecret` (§3.1) instead |
 
 Key order: current first, then previous. Plaintext is UTF-8. Whitespace
 around the stored value is stripped (Go: a leading space fails, a trailing
@@ -196,6 +301,13 @@ Rotation procedure: set `FLOWCATALYST_APP_KEY` = new, `…_PREVIOUS` = old,
 run the re-encryption job (`needsReEncryption` → `reEncrypt`), unset
 `…_PREVIOUS`.
 
+**`hashed:v1:` refs never enter this table** — `needsReEncryption` is
+`false` and `reEncrypt` is empty for every hashed value, always (§3.1): the
+batch job only knows how to decrypt-then-encrypt, and a MAC is not
+decryptable. A hashed ref sealed under the previous key migrates lazily,
+the next time its secret is presented and verified — see §3.1's
+"Transparent migration".
+
 ## 7. Error cases (summary)
 
 | Condition | Java |
@@ -212,9 +324,11 @@ run the re-encryption job (`needsReEncryption` → `reEncrypt`), unset
 - Thread-safe, stateless apart from one `SecureRandom`; `Cipher` per call.
 - Never logs keys, plaintexts or envelopes; `toString` of every carrier that
   holds one (`Decryption.Plaintext`, `SecretRef.Plain` / `Literal` /
-  `Encrypted`, `KeyRotation.Single` / `Rotating`) is masked.
+  `Encrypted` / `Hashed`, `KeyRotation.Single` / `Rotating`) is masked.
 - Random 96-bit nonces: the usual GCM bound (≈ 2^32 encryptions per key
   before nonce collision becomes a concern) applies; rotate keys long before.
 - The envelope layouts, the base64 alphabet/padding and the `encrypted:` /
-  external-scheme prefixes are a storage contract shared with existing rows,
-  the Go binary (rollback) and the TS SDK — do not change them.
+  `hashed:v1:` / external-scheme prefixes are a storage contract shared with
+  existing rows, the Go binary (rollback) and the TS SDK — do not change them.
+- A `hashed:v1:` MAC is deliberately one-way: no code path recovers the
+  plaintext from it, ever. This is the entire point of §3.1 — do not add one.

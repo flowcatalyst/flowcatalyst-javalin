@@ -19,7 +19,6 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.flowcatalyst.platform.shared.encryption.Decryption;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -130,10 +129,6 @@ class ServiceAccountOperationsTest {
                 subject, type);
     }
 
-    private static Optional<String> decrypt(String ref) {
-        return ENCRYPTION.decrypt(ref) instanceof Decryption.Plaintext(var pt) ? Optional.of(pt) : Optional.empty();
-    }
-
     // ── Create ─────────────────────────────────────────────────────────────
 
     @Test
@@ -241,10 +236,11 @@ class ServiceAccountOperationsTest {
         assertThat(oc.defaultScopes()).containsExactly("openid");
 
         String storedRef = DB.fetchOne(OAUTH_CLIENTS, OAUTH_CLIENTS.ID.eq(oc.id())).get(OAUTH_CLIENTS.CLIENT_SECRET_REF);
-        assertThat(storedRef).as("the column holds ciphertext, not the disclosed secret")
-                .startsWith("encrypted:").isNotEqualTo(res.oauthClientSecret());
-        assertThat(decrypt(storedRef)).as("the disclosed plaintext round-trips through the stored ciphertext")
-                .contains(res.oauthClientSecret());
+        assertThat(storedRef).as("an OAuth client secret is verify-only: the column holds a keyed hash, not ciphertext")
+                .startsWith("hashed:v1:").isNotEqualTo(res.oauthClientSecret());
+        assertThat(ENCRYPTION.verifySecret(storedRef, res.oauthClientSecret()))
+                .as("the disclosed plaintext matches the stored hash")
+                .isInstanceOf(Encryption.SecretVerification.Matched.class);
 
         var events = eventsForSubject(OAuthClientEvents.subjectFor(oc.id()), OAuthClientEvents.CREATED);
         assertThat(events).as("the client's own creation event was committed in the same transaction").hasSize(1);

@@ -248,6 +248,35 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
                 .execute() == 1;
     }
 
+    /// The keyed-hash migration (`docs/spec/encryption.md` §3): rewrites the
+    /// current secret ref to `newRef` (its hashed form) — guarded on `oldRef`
+    /// still being the stored value, so a concurrent rotation or another
+    /// migration write is never clobbered. Runs in its own autocommit
+    /// statement, like [#touchPreviousSecretUsed] — the auth flow's outcome
+    /// must not depend on it.
+    ///
+    /// @return whether a row was rewritten
+    public boolean rewriteSecretRef(String id, String oldRef, String newRef) {
+        return dsl.update(T)
+                .set(T.CLIENT_SECRET_REF, newRef)
+                .where(T.ID.eq(id))
+                .and(T.CLIENT_SECRET_REF.eq(oldRef))
+                .execute() == 1;
+    }
+
+    /// [#rewriteSecretRef], for the previous (in-grace) secret ref — the
+    /// secret and its rotation grace are untouched, only the stored ref's
+    /// shape changes.
+    ///
+    /// @return whether a row was rewritten
+    public boolean rewritePreviousSecretRef(String id, String oldRef, String newRef) {
+        return dsl.update(T)
+                .set(T.PREVIOUS_SECRET_REF, newRef)
+                .where(T.ID.eq(id))
+                .and(T.PREVIOUS_SECRET_REF.eq(oldRef))
+                .execute() == 1;
+    }
+
     /// The purger's sweep: a superseded secret whose overlap window has
     /// closed is cleared at rest (verification already refuses it). Returns
     /// the number of clients cleared.

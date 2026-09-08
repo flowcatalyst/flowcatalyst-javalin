@@ -1,13 +1,13 @@
 package io.flowcatalyst.platform.auth.oauth;
 
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.http.Exchange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Optional;
@@ -113,21 +113,30 @@ public final class ClientAuthentication {
         return Result.ok(client);
     }
 
-    /// The entity's constant-time, both-compares check, plus the rotation
-    /// signal: authenticating on the superseded secret stamps
-    /// `previous_secret_last_used_at` (best-effort, coalesced to a minute)
-    /// so an operator can see who has not redeployed.
+    /// The entity's constant-time, both-compares check, plus two best-effort
+    /// side effects on a successful match: the rotation signal (authenticating
+    /// on the superseded secret stamps `previous_secret_last_used_at`,
+    /// coalesced to a minute, so an operator can see who has not redeployed),
+    /// and the keyed-hash migration (`docs/spec/encryption.md` §3: a ref not
+    /// already `hashed:v1:` under the current key is rewritten). Neither
+    /// failing fails the authentication that already succeeded.
     public static boolean acceptClientSecret(OAuthState s, OAuthClient client, String provided) {
         Instant now = s.clock().instant();
-        boolean accepted = client.acceptsSecret(provided, now, s.decryptor());
+        boolean accepted = client.acceptsSecret(provided, now, s::matchesSecret);
         if (accepted && client.secretRef() != null) {
-            // Which one matched is what the signal needs; recompute only the
-            // current compare (both already ran inside acceptsSecret).
-            boolean current = s.decryptor().apply(client.secretRef())
-                    .map(pt -> MessageDigest.isEqual(pt.getBytes(StandardCharsets.UTF_8), provided.getBytes(StandardCharsets.UTF_8)))
-                    .orElse(false);
-            if (!current) {
+            // Which ref matched, and whether it needs migrating, is
+            // recomputed here — both compares inside acceptsSecret already
+            // ran; this only decides a non-fatal side effect of a request
+            // already known to have succeeded, not a timing-sensitive branch.
+            if (s.verifySecret(client.secretRef(), provided) instanceof Encryption.SecretVerification.Matched(var rehash)) {
+                if (rehash) migrateCurrentSecret(s, client, provided);
+            } else {
                 notePreviousSecretUsed(s, client, now);
+                client.usablePreviousSecretRef(now).ifPresent(prevRef -> {
+                    if (s.verifySecret(prevRef, provided) instanceof Encryption.SecretVerification.Matched(var rehash) && rehash) {
+                        migratePreviousSecret(s, client, prevRef, provided);
+                    }
+                });
             }
         }
         return accepted;
@@ -142,12 +151,29 @@ public final class ClientAuthentication {
         }
     }
 
-    /// A stored ref against a provided plaintext, constant-time; false
+    private static void migrateCurrentSecret(OAuthState s, OAuthClient client, String provided) {
+        try {
+            String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
+            s.oauthClients().rewriteSecretRef(client.id(), client.secretRef(), newRef);
+        } catch (RuntimeException e) {
+            LOG.warn("could not migrate oauth client secret to the hashed form oauth_client_id={}", client.id(), e);
+        }
+    }
+
+    private static void migratePreviousSecret(OAuthState s, OAuthClient client, String oldRef, String provided) {
+        try {
+            String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
+            s.oauthClients().rewritePreviousSecretRef(client.id(), oldRef, newRef);
+        } catch (RuntimeException e) {
+            LOG.warn("could not migrate oauth client previous secret to the hashed form oauth_client_id={}", client.id(), e);
+        }
+    }
+
+    /// A stored ref against a provided plaintext (`hashed:v1:` by keyed MAC,
+    /// any other shape by decrypt-and-compare), constant-time; [Encryption.SecretVerification.NoMatch]
     /// without an encryption service (the developer-credential path).
-    public static boolean verifySecretRef(OAuthState s, String secretRef, String provided) {
-        return s.decryptor().apply(secretRef)
-                .map(pt -> MessageDigest.isEqual(pt.getBytes(StandardCharsets.UTF_8), provided.getBytes(StandardCharsets.UTF_8)))
-                .orElse(false);
+    public static Encryption.SecretVerification verifySecretRef(OAuthState s, String secretRef, String provided) {
+        return s.verifySecret(secretRef, provided);
     }
 
     private static String formDecode(String v) {

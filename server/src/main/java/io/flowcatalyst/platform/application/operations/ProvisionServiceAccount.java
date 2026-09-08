@@ -120,10 +120,10 @@ public final class ProvisionServiceAccount {
                             ApplicationServiceAccountProvisioned.of(ec, attached, sa.id(), saCode.value()), cmd);
 
                     // 4. A CONFIDENTIAL OAuth client scoped to this application's service principal.
-                    // No app key configured -> Secrets.encryptedRef throws internal SECRET here,
+                    // No app key configured -> Secrets.hashedRef throws internal SECRET here,
                     // rolling back every write above (spec §10).
                     String plaintext = Secrets.generatePlaintext();
-                    String secretRef = Secrets.encryptedRef(encryption, plaintext);
+                    String secretRef = Secrets.hashedRef(encryption, plaintext);
                     OAuthClient oc = OAuthClient.create(EntityType.OAUTH_CLIENT.generate(), app.name() + " Service Account Client", ClientType.CONFIDENTIAL)
                             .withSecretRef(secretRef)
                             .withPrincipalId(principal.id())

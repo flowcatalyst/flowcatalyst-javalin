@@ -121,12 +121,12 @@ class OAuthClientOperationsTest {
         assertThat(got.redirectUris()).containsExactly("https://a.example/cb");
         assertThat(got.grantTypes()).containsExactly("authorization_code");
         assertThat(got.defaultScopes()).containsExactly("read");
-        assertThat(got.secretRef()).as("a CONFIDENTIAL client is minted a secret").startsWith("encrypted:");
+        assertThat(got.secretRef()).as("a CONFIDENTIAL client is minted a keyed-hash ref, not reversible ciphertext")
+                .startsWith("hashed:v1:");
         assertThat(secret.get()).as("plaintext disclosed once").isNotBlank();
         assertThat(got.acceptsSecret(secret.get(), java.time.Instant.now(),
-                ref -> ENCRYPTION.get().decrypt(ref) instanceof io.flowcatalyst.platform.shared.encryption.Decryption.Plaintext(var pt)
-                        ? Optional.of(pt) : Optional.empty()))
-                .as("the disclosed plaintext round-trips through the stored ciphertext").isTrue();
+                (ref, provided) -> ENCRYPTION.get().verifySecret(ref, provided) instanceof Encryption.SecretVerification.Matched))
+                .as("the disclosed plaintext matches the stored hash").isTrue();
 
         var events = eventsFor(ev.oauthClientId(), OAuthClientEvents.CREATED);
         assertThat(events).hasSize(1);

@@ -46,7 +46,7 @@ public final class SetDeveloperCredential {
                     // reach the minting path at all.
                     var issued = secrets.issue();
                     disclose.accept(issued.plaintext());
-                    p = p.withDeveloperSecret(issued.encryptedRef());
+                    p = p.withDeveloperSecret(issued.hashedRef());
                     return Plan.save(p, repo, DeveloperCredentialSet.of(ec, p));
                 });
     }

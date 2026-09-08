@@ -12,6 +12,7 @@ import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalType;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.http.Exchange;
@@ -217,12 +218,28 @@ public final class OAuthTokenApi {
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
             return;
         }
-        if (!ClientAuthentication.verifySecretRef(s, ref, req.clientSecret())) {
+        var verification = ClientAuthentication.verifySecretRef(s, ref, req.clientSecret());
+        if (!(verification instanceof Encryption.SecretVerification.Matched(var rehash))) {
             s.recordAttempt(AttemptType.DEVELOPER_TOKEN, AttemptOutcome.FAILURE, req.clientId(), p.id(), "Invalid developer client secret");
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
             return;
         }
+        if (rehash) {
+            migrateDeveloperSecret(s, p.id(), ref, req.clientSecret());
+        }
         mintClientCredentials(ctx, s, p, req, AttemptType.DEVELOPER_TOKEN, "your granted permissions");
+    }
+
+    /// The keyed-hash migration (`docs/spec/encryption.md` §3): a non-fatal
+    /// side effect of a developer-credential match already known to have
+    /// succeeded, mirroring [ClientAuthentication]'s OAuth-client migration.
+    private static void migrateDeveloperSecret(OAuthState s, String principalId, String oldRef, String provided) {
+        try {
+            String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
+            s.principals().rewriteDevClientSecretRef(principalId, oldRef, newRef);
+        } catch (RuntimeException e) {
+            LOG.warn("could not migrate developer client secret to the hashed form principal_id={}", principalId, e);
+        }
     }
 
     private static void mintClientCredentials(Exchange ctx, OAuthState s, Principal p, TokenRequest req,

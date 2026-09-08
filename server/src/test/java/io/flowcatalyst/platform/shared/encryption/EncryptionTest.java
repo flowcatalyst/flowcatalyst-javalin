@@ -16,6 +16,9 @@ import io.flowcatalyst.platform.shared.encryption.Decryption.Failed;
 import io.flowcatalyst.platform.shared.encryption.Decryption.Plaintext;
 import io.flowcatalyst.platform.shared.encryption.Decryption.Reason;
 import io.flowcatalyst.platform.shared.encryption.Encryption.KeyRotation;
+import io.flowcatalyst.platform.shared.encryption.Encryption.SecretVerification;
+import io.flowcatalyst.platform.shared.encryption.Encryption.SecretVerification.Matched;
+import io.flowcatalyst.platform.shared.encryption.Encryption.SecretVerification.NoMatch;
 import io.flowcatalyst.server.EnvReader;
 
 /// `docs/spec/encryption.md` §1, §2, §4–§6.
@@ -228,6 +231,105 @@ class EncryptionTest {
             assertThat(rotating.reEncrypt(untouched)).as(untouched).isEmpty();
         }
         assertThat(Encryption.withKey(OTHER_KEY).reEncrypt(GO_V1)).as("no key opens it").isEmpty();
+    }
+
+    // ── §3 keyed hashing (verify-only secrets) ──────────────────────────
+
+    /// Golden vector (`docs/spec/encryption.md` §3): key bytes 0x00..0x1f,
+    /// plaintext `client-secret-golden` — pinned so the Go port's identical
+    /// vector can be compared byte for byte.
+    static final String HASH_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+    static final String HASH_PLAINTEXT = "client-secret-golden";
+    static final String HASH_GOLDEN = "hashed:v1:HhInGB9kwvg6VsfBL0oHER0eslXRAg6GBwoTsRa2D4E=";
+
+    /// Pins the exact bytes. Mutant (c) — hashing with plain SHA-256 instead
+    /// of the keyed HMAC — fails this directly: SHA-256("client-secret-golden")
+    /// is a different 32 bytes than HMAC-SHA256(key, "client-secret-golden").
+    @Test
+    void hashSecretRefReproducesTheGoldenVector() {
+        assertThat(Encryption.withKey(HASH_KEY).hashSecretRef(HASH_PLAINTEXT)).isEqualTo(HASH_GOLDEN);
+    }
+
+    @Test
+    void verifySecretMatchesTheGoldenVectorAndRejectsAWrongSecret() {
+        var enc = Encryption.withKey(HASH_KEY);
+        assertThat(enc.verifySecret(HASH_GOLDEN, HASH_PLAINTEXT)).isEqualTo(new Matched(false));
+        assertThat(enc.verifySecret(HASH_GOLDEN, "wrong")).isEqualTo(new NoMatch());
+    }
+
+    @Test
+    void hashSecretRefIsDeterministicUnlikeEncrypt() {
+        // Unlike #encrypt (fresh random nonce every call), the same plaintext
+        // under the same key always hashes to the same string — that IS the
+        // point: nothing per-call to defeat a stored-value comparison.
+        assertThat(GO.hashSecretRef("same")).isEqualTo(GO.hashSecretRef("same"));
+        assertThat(GO.hashSecretRef("same")).isNotEqualTo(GO.hashSecretRef("different"));
+    }
+
+    @Test
+    void verifySecretAcceptsBothTheHashedAndTheLegacyEncryptedShape() {
+        var legacyRef = GO.encryptSecretRef("legacy-secret");
+        assertThat(GO.verifySecret(legacyRef, "legacy-secret"))
+                .as("a legacy encrypted: ref matches by decrypt-and-compare, and always migrates")
+                .isEqualTo(new Matched(true));
+        assertThat(GO.verifySecret(legacyRef, "wrong")).isEqualTo(new NoMatch());
+
+        var hashedRef = GO.hashSecretRef("hashed-secret");
+        assertThat(GO.verifySecret(hashedRef, "hashed-secret"))
+                .as("already hashed under the current key: no migration needed")
+                .isEqualTo(new Matched(false));
+        assertThat(GO.verifySecret(hashedRef, "wrong")).isEqualTo(new NoMatch());
+    }
+
+    @Test
+    void verifySecretOnAnEmptyOrMalformedRefNeverMatches() {
+        assertThat(GO.verifySecret("", "anything")).isEqualTo(new NoMatch());
+        assertThat(GO.verifySecret("hashed:v1:not base64!", "anything")).isEqualTo(new NoMatch());
+        // 16 bytes: not a HmacSHA256-length MAC — malformed, not a match.
+        assertThat(GO.verifySecret("hashed:v1:" + Base64.getEncoder().encodeToString(new byte[16]), "anything"))
+                .isEqualTo(new NoMatch());
+    }
+
+    @Test
+    void decryptOfAHashedRefFailsWithItsOwnReasonNotAnException() {
+        var hashedRef = GO.hashSecretRef("x");
+        assertThat(GO.decrypt(hashedRef)).isEqualTo(new Failed(Reason.HASHED));
+    }
+
+    @Test
+    void needsReEncryptionAndReEncryptLeaveHashedRefsAlone() {
+        // Hashed refs migrate lazily at verify time (#verifySecret), never
+        // through the AES-GCM rotation batch job.
+        var hashedRef = GO.hashSecretRef("x");
+        assertThat(GO.needsReEncryption(hashedRef)).isFalse();
+        assertThat(GO.reEncrypt(hashedRef)).isEmpty();
+    }
+
+    /// Key rotation: a ref hashed under the previous key still verifies, is
+    /// flagged for rehashing, and the rehashed form verifies under the
+    /// current key alone (no previous key needed any more).
+    @Test
+    void keyRotationVerifiesAHashUnderThePreviousKeyAndFlagsItForRehash() {
+        var previousOnly = Encryption.withKey(OTHER_KEY);
+        var hashedUnderPrevious = previousOnly.hashSecretRef("rotate-me");
+
+        // The current key alone does not recognise a hash sealed under a
+        // wholly different key.
+        assertThat(GO.verifySecret(hashedUnderPrevious, "rotate-me")).isEqualTo(new NoMatch());
+
+        // Rotating (current = GO_KEY, previous = OTHER_KEY) verifies it via
+        // the previous key — same key order [#decrypt] uses — and flags it.
+        var rotating = Encryption.of(KeyRotation.of(GO_KEY, OTHER_KEY));
+        assertThat(rotating.verifySecret(hashedUnderPrevious, "rotate-me")).isEqualTo(new Matched(true));
+
+        // Rehashing under the current key drops the dependency on the previous one.
+        var rehashed = rotating.hashSecretRef("rotate-me");
+        assertThat(GO.verifySecret(rehashed, "rotate-me")).isEqualTo(new Matched(false));
+    }
+
+    @Test
+    void hashedOutcomeDoesNotPrintTheMac() {
+        assertThat(new SecretRef.Hashed(new byte[32]).toString()).doesNotContain("0, 0, 0");
     }
 
     // ── §1 keys / fromEnv ──────────────────────────────────────────────
