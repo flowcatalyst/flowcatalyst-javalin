@@ -1105,3 +1105,148 @@ ceiling means this is not yet a fair comparison of Node's raw HTTP-mediation thr
 at all (see above) — the Node router needs the two source changes described above (config-driven
 NATS consumer fan-out, and widening `syncSqsConsumers`-equivalent pool sync to NATS) before a
 like-for-like comparison across queue counts and concurrency is possible.
+
+### Container-awareness experiment — how much of Node's gap is the quota, not the runtime (2026-09-08)
+
+**Hypothesis under test**: V8 sizes its heap and its background GC/compiler thread pool from the
+*host's* CPU/memory, not the cgroup quota, so under `--cpus=1` Node still runs several helper
+threads fighting the request path for the one allowed core, and plans for a multi-gigabyte heap.
+If that's the dominant cause of Node's 8,256/s (vs Rust 35,038 / Java 25,638 / Go 25,612 at 1
+CPU), pinning the container-blind knobs down and/or removing the quota entirely should recover
+most of the gap.
+
+Host was checked for memory pressure before starting and periodically between runs
+(`vm_stat` free pages, `sysctl -n vm.swapusage`, `memory_pressure -Q`): free pages hovered
+4k–46k (64–740 MB, noisy — macOS reclaims aggressively), swap held steady at ~4.3 GB used /
+0.8 GB free throughout (no growth), and `swapins`/`swapouts` counters in `vm_stat` were
+**static** across every check (no active paging), and `memory_pressure -Q` reported **66% system
+free** at every check. Conclusion: no active memory starvation during this run, though free
+pages were low enough (well under 1 GB literal "free") that this is noted rather than waved away
+— see the caveat on run-to-run variance below, which turned out to be the bigger problem.
+
+**Correction to the hypothesis, found before running anything**: the memory half doesn't hold for
+this Node version. `node:24-bookworm-slim`'s default `heap_size_limit` already reads the cgroup:
+
+| condition | `heap_size_limit` | `os.cpus().length` |
+|---|---:|---:|
+| no `--cpus`/`--memory` | 4,496 MB | 14 |
+| `--cpus=1 --memory=1g`, no `NODE_OPTIONS` | 587 MB | **14** |
+| `--cpus=1 --memory=1g`, `--max-old-space-size=256` | 319 MB | 14 |
+
+So V8 does **not** plan for a multi-gigabyte heap under a 1 GB container — Node 18+'s
+`uv_get_constrained_memory` already scales the default heap to the cgroup limit. The CPU half of
+the hypothesis holds exactly as stated: `os.cpus()` returns the host's 14 cores regardless of
+`--cpus=1`, confirmed structurally below.
+
+**Runs** (all `BROKER=nats QUEUES=1 TOTAL_MESSAGES=500000 TIMEOUT_S=900`, NATS env identical to
+`node-nats-q1-c1` above; `POOL_CONCURRENCY=256` set for parity with earlier rows but inert in
+NATS mode — the DEFAULT-POOL concurrency-20 fallback and single-stream limitation described
+above apply to every row here):
+
+| label | knobs | deliveries/s | drain_time_s | mean_cpu_pct | max RSS | pid-6 threads |
+|---|---|---:|---:|---:|---:|---:|
+| node-cw-base1 | none (baseline) | 9,895.3 | 50.81 | 87.8% | 455.4 MB | 11 |
+| node-cw-tuned512 | old-space=512 + v8-pool=1 + UV_THREADPOOL=1 | 9,932.2 | 50.98 | 83.2% | 524.0 MB | 5 |
+| node-cw-tuned256 | old-space=256 + v8-pool=1 + UV_THREADPOOL=1 | 8,281.3 | 60.73 | 85.0% | 416.8 MB | — |
+| node-cw-oldspace-only | old-space=512 alone | 9,899.1 | 51.01 | 91.1% | 458.4 MB | — |
+| node-cw-uvpool-only | UV_THREADPOOL=1 alone | 8,263.5 | 60.76 | 79.8% | 476.5 MB | — |
+| node-cw-v8pool-only | v8-pool=1 alone | 9,926.2 | 50.97 | 83.6% | 509.3 MB | — |
+| **node-cw-noquota** | none, **no `--cpus`** (`--memory=1g` only) | **12,432.2** | 40.38 | 113.5% | 447.4 MB | 11 |
+| node-cw-base2 (drift check) | none (baseline, repeat) | 12,383.6 | 40.53 | **99.6%** | 419.9 MB | — |
+| go-cw-noquota (calibration) | `bench-real-go-fixed2`, no `--cpus` | 1,142.4 | 438.13 | 6.0% | 78.7 MB | — |
+| java-cw-noquota (calibration) | `bench-real-java`, no `--cpus`, `FC_HTTP=vertx` | 39,150.3 | 13.05 | 208.1% | 416.3 MB | — |
+
+All ten runs delivered 500,000/500,000 with `queue_depth_end=0` (clean drains, no abandoned
+acks). Raw summaries: `bench/router/results/node-cw-*.log`, `go-cw-noquota.log`,
+`java-cw-noquota.log`. Node's `--v8-pool-size` is accepted inside `NODE_OPTIONS` on this image's
+Node 24.20.0 (verified directly: `node --entrypoint node ... -e NODE_OPTIONS=...`) — no variant
+Dockerfile was needed for it.
+
+**Every 1-CPU Node run in a narrow throughput band except one, and that one is the tell.**
+`node-cw-base1` and `node-cw-base2` are the *identical* command run twice, ~20 minutes apart, and
+they landed at 9,895/s (87.8% CPU — not saturating its own 1-core quota) and 12,384/s (99.6% CPU
+— fully saturating it). That 25% spread on a no-op repeat, driven entirely by whether the
+container actually got its full quota's worth of host scheduler attention (this Mac was running
+IntelliJ, PhpStorm and several Chrome helper processes throughout — see `top` in the session log),
+is **larger than the difference any single tuning knob produced** (8,263–9,932/s across the five
+tuned/partial variants). Read the per-knob table as directional, not as clean attribution: nothing
+here proves old-space sizing or `v8-pool-size` cost or bought throughput on its own; the
+`UV_THREADPOOL_SIZE=1`-alone and old-space=256 rows landing ~18% below the others in that band is
+consistent with host noise, not a knob effect (the *combined* tuned512 run, which also sets
+`UV_THREADPOOL_SIZE=1`, landed in the *fast* cluster, not the slow one).
+
+**What is not noise: the thread topology change, and what it costs in CPU.** Pinning
+`--v8-pool-size=1` and `UV_THREADPOOL_SIZE=1` reproducibly took the router process (pid 6 inside
+the container — pid 1 is the entrypoint's bash, pid 7 is the rig's tiny health-check proxy) from
+**11 OS threads to 5**: `V8Worker` 4→1, `libuv-worker` 4→1 (`/proc/6/status` `Threads:`, confirmed
+on `node-cw-base1`, `node-cw-tuned512`, and `node-cw-noquota` — the untuned no-quota run still
+shows 11 threads, same as baseline, confirming thread count tracks the knobs, not the quota).
+Per-thread CPU (`/proc/6/task/*/stat` fields 14/15, summed since these are short-lived processes
+that start at 0 and were snapshotted the instant the drain-measuring `run.sh` command returned, so
+cumulative ticks ≈ CPU spent during the drain):
+
+| run | MainThread | V8Worker (all) | libuv-worker (all) | total | V8Worker share of total |
+|---|---:|---:|---:|---:|---:|
+| node-cw-base1 (11 threads) | 33.01s | 11.57s (×4) | 0.79s (×4) | 45.37s | **25.5%** |
+| node-cw-tuned512 (5 threads) | 33.97s | 9.08s (×1) | 0.88s (×1) | 43.93s | **20.7%** |
+| node-cw-noquota (11 threads, real cores available) | 31.87s | 11.68s (×4) | 0.86s (×4) | 44.41s | 26.3% |
+
+So on the 1-CPU baseline, V8's background compiler/GC helper threads really do consume roughly a
+quarter of all CPU the process spends — confirming the hypothesis' mechanism. Pinning
+`v8-pool-size=1` cuts that to one thread and reduces its *total* CPU (not just thread count) by
+~21% (11.57s→9.08s) — the single thread isn't just serializing the same work, it does measurably
+less of it. But note what that CPU saving did **not** do: `node-cw-tuned512`'s total process CPU
+(43.93s) is only 3% below baseline's (45.37s), and its deliveries/s (9,932.2) is statistically
+indistinguishable from baseline's (9,895.3) given the noise band above. The freed CPU didn't turn
+into throughput because throughput here isn't CPU-limited in the first place — see next.
+
+**The no-quota ceiling: Node barely moves, Java moves a lot, Go breaks.** This is the load-bearing
+result. Removing `--cpus` entirely (real cores available, no artificial cap) took Node from
+9,895–12,384/s (1-CPU band) to **12,432/s at 113.5% CPU** — using barely more than one core's
+worth of CPU even when 14 were available, and landing within noise of the *already-measured*
+`--cpus=2` number from earlier in this file (`node-nats-q1-c2`: 12,437.8/s at 116.3% CPU). Two
+independent CPU-availability treatments — a 2-core quota, and no quota at all — converge on the
+same ~12,400/s ceiling. That is the signature of a ceiling set by something other than available
+CPU. It matches the defect already documented above for exactly this reason: NATS mode hardcodes
+`DEFAULT_POOL_CONCURRENCY=20` and attaches exactly one consumer to exactly one stream, regardless
+of `POOL_CONCURRENCY` or how many cores are free to run more of it.
+
+Java, run the identical way for calibration (`bench-real-java`, `--memory=1g`, no `--cpus`,
+`FC_HTTP=vertx`, otherwise identical NATS env), went from 25,638/s (1 CPU, from the summary table
+above) to **39,150.3/s at 208.1% CPU** — a proportional ~53% jump when given ~2 real cores' worth
+of scheduler time, because Java's router isn't artificially capped the way Node's NATS path is.
+That's what "the ceiling was CPU" looks like; Node's response is not that shape.
+
+Go's calibration run is a genuine anomaly, reported as measured rather than discarded: with no
+`--cpus` quota, `bench-real-go-fixed2` delivered at **1,142.4/s, 6.0% mean CPU, 438s drain** —
+dramatically *worse* than its own 1-CPU baseline (25,612/s, 99%), not better, and not remotely CPU
+bound (context_switches=561,825, `switches_per_delivery=1.124` — unremarkable). This is consistent
+with Go's runtime auto-setting `GOMAXPROCS` from the cgroup quota when one exists (giving
+`GOMAXPROCS=1` under `--cpus=1`, which is the well-behaved baseline) and falling back to
+`NumCPU()`=14 when no quota is present at all — i.e. exactly the CPU-unaware path the task
+background describes for `NumCPU`, except here it's the value `GOMAXPROCS` inherits by default in
+the absence of a quota, and this particular NATS consumer implementation degrades badly at
+`GOMAXPROCS=14` on this host (not investigated further — out of scope for the Node question, and
+the fix would be in Go source, not the rig). Flagged here because it means the "ceiling" row is
+not a clean apples-to-apples free-for-all across all three runtimes: Node's ceiling reflects its
+own concurrency cap, Java's reflects real added throughput from real added cores, and Go's reflects
+a distinct, container-*count*-triggered regression in the opposite direction. All three are real
+measurements; none of them is "the runtime being faster or slower" in a way comparable to the
+1-CPU table at the top of this section.
+
+**Plain answer.** On this workload, effectively none of Node's shortfall against Rust/Go/Java is
+explained by container-CPU-unawareness. The container-blindness is real and precisely measured —
+`os.cpus()` reports 14 regardless of `--cpus=1`, the router spins up 11 OS threads including 4 V8
+background-compiler/GC threads that burn about a quarter of the process's total CPU, and pinning
+`--v8-pool-size`/`UV_THREADPOOL_SIZE` reproducibly collapses that to 5 threads and ~21% less
+V8Worker CPU — but that saved CPU does not show up as extra deliveries/s, because Node in NATS
+mode was never CPU-bound at 1 core to begin with (87–100% mean CPU, i.e. it was *close* to
+saturating its one core, but "close to saturating one core" is exactly what 8,256–12,400/s looks
+like when the code path is throttled to concurrency 20 on a single poll loop, not when four extra
+V8Worker threads are stealing cycles from it). The decisive evidence is the no-quota run: giving
+Node the entire host's CPU budget only lifts it to ~12,400/s — the same number `--cpus=2` already
+produced — while Java's identical no-quota treatment lifts it 53% above its 1-CPU number. Node's
+gap to Go/Java/Rust here is the NATS-mode `DEFAULT-POOL` concurrency-20 fallback and single-stream
+limitation documented earlier in this file, not the runtime's container-awareness. The memory half
+of the original hypothesis (V8 planning a multi-gigabyte heap under a container) does not even
+apply to this Node version, which already reads the cgroup memory limit by default.
