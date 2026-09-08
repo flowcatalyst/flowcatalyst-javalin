@@ -844,7 +844,7 @@ a drain (3× on Postgres, 8× on SQS) and one restart looked the consumer up by 
 Java (`59c30ef`) and Go (`62e159f`) fixed today; and "Pool at capacity, deferring" is logged per message
 under saturation (883 lines), which wants a once-per-transition warning as in the other routers.
 
-## Go, continuous subscription + h2c (branch `router-fixes-g10-g12` at `992c8a2`) — 2026-09-08
+## Go, continuous subscription + h2c (branch `router-fixes-g10-g12` at `c446a45`) — 2026-09-08
 Eight commits over the owner's `b422466`: G10–G12, continuous NATS subscription, h2c mediator, liveness
 while parked, resubscribe on iterator error (the single-queue freeze: nats.go's iterator returned
 "no heartbeat received" and the forwarder exited silently), startup-panic logging, pull threshold at
@@ -857,7 +857,16 @@ half a batch. All rows: delivered = seeded, depth 0, zero stalls/restarts.
 | 1 | 2 | 500,000 | 33,295 | 131% | 53 MB | clean |
 | 8 | 1 | 500,000 | 16,165 | 75% | 105 MB | clean |
 
-**Open (Go, one core, one queue):** the continuous `Messages()` path is RTT/scheduling-bound on
+| 1 | 1 | 500,000 | **25,612** | 99% | 83 MB | `c446a45`: Next() gated on a room permit — zero warnings, zero heartbeat notices |
+
+**Resolved (Go, one core, one queue):** the forwarder fetched with `Next()` and THEN blocked on the
+full channel holding the message; with `Messages()` the next pull request is only issued from inside
+`Next()`, so a parked poll loop let the outstanding request expire, and the client then waited for
+messages nobody had requested until its heartbeat monitor tripped (`Consume` moved the same block onto
+the delivery goroutine). Fix: acquire a room permit before `Next()`, never hold a fetched message
+while blocked. Earlier text kept for the record:
+
+**Was open (Go, one core, one queue):** the continuous `Messages()` path is RTT/scheduling-bound on
 GOMAXPROCS=1 — 11% CPU, heartbeat misses that never occur at 2 CPUs — while the pre-rewrite
 `Fetch` build did 28,293/s on the same row and Java/Rust do 25–35k/s on it. Java/Rust were run on the
 same host minutes apart, so host noise does not explain it. Candidates: the forwarder goroutine
@@ -879,7 +888,7 @@ All delivered, depth 0, no stalls, no restarts. The Rust router is usable on all
 |---|---:|---:|---:|---:|---|
 | Rust | 35,038/s | 31,894/s | 14 MB | — | `router-bench-wiring` @ `38e7b0a0` |
 | Java | 25,638/s | 14,117/s | 368 MB | 34 µs | `vertx-listener` @ `10af68c` |
-| Go | 2,940/s (open, 33,295/s at 2 CPU) | 16,165/s | 53–63 MB | 26 µs (fetch build) | `router-fixes-g10-g12` @ `992c8a2` |
+| Go | 25,612/s (33,295/s at 2 CPU) | 16,165/s | 53–83 MB | 26 µs (fetch build) | `router-fixes-g10-g12` @ `c446a45` |
 
 Every router was corrected by these rows: Java 7 defects, Go 6 (4 shared with Java), Rust 8 (three
 pollers per queue, false stalls, restart key, receipt handle, plus the four ported ones). The
