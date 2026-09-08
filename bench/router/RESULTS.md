@@ -894,3 +894,13 @@ Every router was corrected by these rows: Java 7 defects, Go 6 (4 shared with Ja
 pollers per queue, false stalls, restart key, receipt handle, plus the four ported ones). The
 receiver-bound production shape (one router, hot standby, slow targets) needs none of the peak
 numbers; what it needed was the correctness the rows forced.
+
+### Cross-check: the backend-agnostic fixes on the other brokers, final images (2026-09-08 06:12)
+All rows: delivered = seeded, depth 0, no errors; Java `cbeaf60`+`59c30ef` image, Go `c446a45` image.
+| router | broker | deliveries/s | router CPU | RSS | log |
+|---|---|---:|---:|---:|---|
+| Java | Postgres, 8 queues | 2,361 | 52% | 307 MB | capacity pause/resume per loop only |
+| Java | SQS (LocalStack), 8 queues | 1,200 | 40% | 399 MB | clean |
+| Go | Postgres, 8 queues | 5,456 | 41% | 91 MB | clean |
+| Go | SQS (LocalStack), 8 queues | 1,291 | 18% | 46 MB | 8 informational backlog lines |
+With this every router has been proven on every broker it supports on its final build.
