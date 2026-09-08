@@ -1062,13 +1062,28 @@ Shape agreed:
   "20 rows or 100 ms" would add 100 ms to every request on an idle system, and a load-detecting switch is
   a second way of deciding something contention already decides correctly. If particular messages must
   never queue behind others, give them a priority lane that bypasses batching, not a global mode.
-- **The batch fetch is a claim, so it locks.** `SELECT ... WHERE id = ANY(?) ... FOR UPDATE` ordered
-  deterministically (`created_at, id`, matching the partition key) so two batches that overlap can never
-  deadlock on opposite lock orders, with the claim's `PROCESSING` flip in the same transaction and the
-  transaction committed **before** the outbound call. Not `SKIP LOCKED`: the scheduler's poller skips
-  because it is choosing work, whereas here each row was asked for by name and skipping it would report
-  "not found" to a waiter whose job exists. A row already locked by a concurrent delivery is one this
-  batch must see the settled state of, not one it may ignore.
+- **The batch fetch is a claim, and the claim commits before the handler runs.** A row lock belongs to a
+  transaction on one connection and cannot be handed to another; committing is the only way to release
+  it. So the lock is not what the delivery runs under — the `status` column is. One statement does the
+  whole claim: `UPDATE msg_dispatch_jobs SET status='PROCESSING' ... WHERE (id, created_at) IN (...)
+  AND status NOT IN ('PROCESSING', <terminal>) RETURNING ...`. It takes the row locks itself, returns
+  exactly the rows this batch won, and commits as a single statement. No explicit `SELECT ... FOR UPDATE`
+  and no transaction block. Order the id list by `created_at, id` so two overlapping batches cannot
+  deadlock on opposite lock orders.
+  Three outcomes per waiter, all distinguishable: row returned means we own the delivery; row absent from
+  the result but present in the table means terminal or already claimed, so `ack:true` with no call; row
+  absent from the table means the job is gone, also `ack:true`.
+  **Commit before handing to the handlers, never after** — a commit after delivery would hold the
+  transaction, the connection and the row lock across the outbound call to the subscriber, which is the
+  exact thing this design exists to avoid.
+  Blocking: a plain `UPDATE` waits on a row another transaction has locked, but under this rule every
+  lock holder is a claim that commits without doing any network work, so the wait is bounded by a single
+  statement. `SELECT ... FOR UPDATE SKIP LOCKED` followed by the update is the fallback if that ever
+  measures badly (it supersedes the earlier note here rejecting `SKIP LOCKED`; the rejection was about
+  how to *interpret* a skipped row, and the status predicate already answers that).
+  Cost of committing early: a crash between the claim and the outcome write leaves the row `PROCESSING`
+  with nobody working on it, recovered by `DispatchJobReaper` (`DEFAULT_PROCESSING_LIVE_AFTER`,
+  currently 45 minutes). That is the correct trade against holding a lock across a subscriber call.
 - **Batch the status writes too — they pay more than the reads.** Each is a transaction, so twenty writes
   are twenty begin/commit cycles on twenty connections; one `UPDATE ... FROM (VALUES ...)` collapses them
   into one. The batch is all-or-nothing with every waiter failing together (or retried individually), and
