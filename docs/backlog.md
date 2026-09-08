@@ -1052,6 +1052,29 @@ answer is `ack:true` with no call. Correct the spec's leader-gating table in the
 test: two concurrent `process` calls for one job, assert the subscriber is called exactly once (mutant:
 drop the status guard from the claim and the count becomes two).
 
+## Smell: `reschedule` has no status guard either (Java and Go, noticed 2026-09-08)
+
+Spotted while fixing the unguarded claim above; narrower, and NOT fixed in the same change because it is
+a design question rather than a missing predicate.
+
+`DispatchJobRepository#reschedule` sets `status='PENDING', scheduled_for=?` on `id + created_at` with no
+status predicate, and it has two callers that want different guards:
+- the delivery-time hold-back revert, which fires **before** any claim and should only move a row that is
+  still `PENDING`/`QUEUED`;
+- the `Deferred` outcome, which fires **after** a delivery and legitimately moves a row out of
+  `PROCESSING`.
+
+The reachable hole needs three jobs in one message group and two overlapping callbacks for one of them:
+callback A finds the group clear, claims, and is delivering; the group then blocks; callback B for the
+same job finds it held and reverts the row to `PENDING` underneath A's in-flight delivery. The poller can
+then re-claim and republish it while A is still talking to the subscriber. Rare, pre-existing, and it
+ends with the row `COMPLETED` either way, so the visible symptom is a duplicate delivery rather than a
+lost job.
+
+Fix when touched: give the two call sites separate methods with their own status guards
+(`revertHeldBack` guarded on `PENDING`/`QUEUED`, `deferAfterDelivery` guarded on `PROCESSING`) rather
+than one guard that has to satisfy both. Same shape in Go (`Reschedule`, `repository.go`).
+
 ## Batch the dispatch-job fetch behind the mediation endpoints (owner design, 2026-09-08)
 
 The endpoints the message router POSTs to (`/api/dispatch/process`, `/api/dispatch/settled`) load one
