@@ -1,23 +1,20 @@
-# Spec — HTTP/2 on the server listeners
+# Spec — HTTP/2 (and, formerly, HTTP/3) on the server listeners
 
-Owner requirement, 2026-09-06: "we need to enable HTTP/2/3". Go's inbound
-server is HTTP/1.1 only (no TLS in the process, no `h2c` handler), so this
-is a Java-side capability, not a parity item — the parity corpus and the
-e2e keep running over HTTP/1.1 and must not change.
+Owner requirement, 2026-09-06: "we need to enable HTTP/2/3". Today the Java
+server speaks HTTP/1.1 only (Javalin 7.2.3 on Jetty 12.1.12, the default
+connector); Go's inbound server is HTTP/1.1 too (no TLS in the process, no
+`h2c` handler), so this is a Java-side capability, not a parity item — the
+parity corpus and the e2e keep running over HTTP/1.1 and must not change.
 
-**Rewritten 2026-09-08** (Vert.x cutover, `docs/vertx-plan.md` Phase 3):
-Jetty is gone from the codebase; every listener below is Vert.x
-(`io.flowcatalyst.http.vertx.VertxListener`), not a Jetty connector — this
-document was updated in place rather than kept as a Jetty-era record, since
-the two implementations differ enough that stale Jetty prose next to
-current Vert.x prose would be more confusing than useful. **Q6 (HTTP/3 on
-Vert.x) is closed: dropped.** Vert.x 5.1 serves HTTP/3 only through Netty's
-incubator QUIC native codec, and nothing in this platform needs it in
-production — an ALB terminates TLS and never speaks h3 to the target, so h3
-was always a client-edge feature of the deployment, not the process (§5).
-`FC_HTTP3_ENABLED=true` is now a startup error
-(`io.flowcatalyst.server.transport.Listeners#resolve`) rather than a
-silently-accepted knob; `FC_HTTP3_PORT` is read but unused.
+**HTTP/3 was dropped 2026-09-08** (owner ruling, closed Q6 of
+`docs/vertx-plan.md`, alongside the reversion of the Vert.x listener
+cutover — see that document's closing section): the `jetty-http3-server` /
+`jetty-quic-*` dependencies, the `Http3` class and its test are gone, and
+`FC_HTTP3_ENABLED=true` is now a startup error rather than a silent no-op.
+§1's HTTP/3 row, §3's HTTP/3 dependency list, and §4 test 3 below are kept
+as the design record but no longer describe the running server. HTTP/2
+(h2c on the plain listener, h2 over TLS with ALPN) is unaffected — the
+"production win is h2c to targets" note in §5 still holds.
 
 ## 1. Listeners
 
@@ -25,33 +22,42 @@ silently-accepted knob; `FC_HTTP3_PORT` is read but unused.
 |---|---|---|---|
 | **API** (TCP) | `FC_API_PORT` (alias `PORT`) | HTTP/1.1 **and h2c** — cleartext HTTP/2 by prior knowledge and by `Upgrade: h2c` | on, 8080 |
 | **API TLS** (TCP) | `FC_TLS_PORT` | TLS 1.2/1.3 with ALPN → **h2**, http/1.1 | on only when TLS material is configured (§2), 8443 |
-| ~~API HTTP/3~~ | ~~`FC_HTTP3_PORT`~~ | **dropped** (Q6, above) | `FC_HTTP3_ENABLED=true` is a startup error |
+| ~~**API HTTP/3** (UDP)~~ | ~~`FC_HTTP3_PORT`~~ | ~~QUIC → **h3**~~ | **dropped 2026-09-08**; `FC_HTTP3_ENABLED=true` is now a startup error |
 | **Metrics** (TCP) | `FC_METRICS_PORT` | HTTP/1.1 | unchanged, 9090 |
 
-Current implementation (`io.flowcatalyst.http.vertx.VertxListener`):
-
-- The plain listener is `HttpServerOptions.setHttp2ClearTextEnabled(true)` —
-  h2c by prior knowledge and by `Upgrade: h2c` on the SAME port as HTTP/1.1,
-  no second connector needed (Vert.x multiplexes on the one `HttpServer`).
-  Why h2c on the plain listener: production sits behind an ALB that
-  terminates TLS (`docs/spec/cutover.md`); an ALB target group with protocol
-  version `HTTP2` talks h2c to targets, and that is the only way HTTP/2
-  reaches the process in that topology.
-- The TLS listener is a SECOND `HttpServer` on the same `Vertx` instance and
-  the same `Router` (`VertxListener.Options.Tls`, `VertxListener#prepare`):
-  `setSsl(true).setUseAlpn(true).setKeyCertOptions(...)`. Vert.x negotiates
-  HTTP/2 over ALPN automatically once SSL is on — no separate "enable h2"
-  flag the way the plain listener needs for cleartext h2c. The key material
-  is handed over as PKCS#12 bytes (`PfxOptions`): `TlsMaterial`'s
-  `java.security.KeyStore` (§2, unchanged) is re-encoded to PKCS#12 bytes in
-  memory (`VertxListener.Tls#pfxOptions`) since Vert.x has no
-  `KeyStore`-object entry point.
-- Metrics stays a plain HTTP/1.1 listener (`Metrics.java`): its own
-  `VertxListener.Options` with `h2c=false`, bound to every interface (an
-  external scraper reaches it, unlike the loopback-only outbox admin API).
-- Shutdown: `HttpServer#shutdown(SHUTDOWN_GRACE)` on both listeners (in
-  parallel is not needed — sequential is fine, `VertxListener#close`), then
-  `vertx.close()`.
+- The h2c connector is the API connector: one `ServerConnector` with an
+  `HttpConnectionFactory` and an `HTTP2CServerConnectionFactory`, installed
+  through Javalin's `cfg.jetty.addConnector((server, httpConfig) -> …)` on
+  the same port Javalin would have used (set `cfg.jetty.port` to `-1`/no
+  default connector if Javalin insists on adding its own — read
+  `io.javalin.config.JettyConfig` and `JavalinServer`; say in the report
+  which way was needed). Why h2c on the plain listener: production sits
+  behind an ALB that terminates TLS (`docs/spec/cutover.md`); an ALB target
+  group with protocol version `HTTP2` talks h2c to targets, and that is the
+  only way HTTP/2 reaches the process in that topology.
+- The TLS connector: `SslConnectionFactory` → `ALPNServerConnectionFactory`
+  ("h2", "http/1.1") → `HTTP2ServerConnectionFactory` + `HttpConnectionFactory`,
+  with `SecureRequestCustomizer` on the `HttpConfiguration` and
+  `jetty-alpn-java-server` (the JDK's ALPN, no native library).
+- ~~The HTTP/3 connector~~ (dropped 2026-09-08, see the note at the top of
+  this document): `HTTP3ServerConnector` from `jetty-http3-server`
+  over `jetty-quic-server` and the `jetty-quic-quiche-foreign` binding
+  (FFM; Java 22+; the quiche native library ships inside the artifact for
+  linux x86_64/aarch64 and macOS aarch64 — verify by loading it, and say
+  which platforms you could verify). Jetty 12.1's `ServerQuicConfiguration`
+  wants a PEM work directory (quiche reads the certificate and key from
+  files): use `<java.io.tmpdir>/fc-quic-<pid>` created at start with owner-only
+  permissions and deleted at stop. Every response on the TLS connector
+  carries `Alt-Svc: h3=":<FC_HTTP3_PORT>"; ma=86400` when HTTP/3 is on
+  (`HttpConfiguration.addCustomizer` or a Jetty `Handler.Wrapper`, not a
+  Javalin `after` filter — the header belongs to the transport, and it must
+  not appear on the h2c/HTTP/1.1 plain listener where it would be a lie).
+- Metrics stays a plain HTTP/1.1 Jetty as today (`Metrics.java`).
+- Shutdown: the existing `setStopTimeout(SHUTDOWN_GRACE)` applies to every
+  connector; HTTP/2 GOAWAY and QUIC close are Jetty's job. **Known
+  limitation (2026-09-06):** a QUIC session whose client vanished holds the
+  graceful stop for the whole grace period — `docs/backlog.md` "HTTP/3
+  sessions hold the graceful stop".
 
 ## 2. TLS material
 
@@ -65,78 +71,82 @@ Two equivalent ways to hand the server a certificate; exactly one may be set:
 The PEM pair is loaded with the JDK alone: `CertificateFactory.getInstance("X.509")`
 reads a PEM chain as-is; the key's Base64 body decodes to a `PKCS8EncodedKeySpec`
 and the algorithm is tried as RSA then EC (Ed25519 too if cheap). Both forms
-end as an in-memory `KeyStore` (`TlsMaterial`, unchanged by the Vert.x
-cutover — it stays a pure `java.security` class with no framework
-dependency); nothing is written to disk. Errors are startup errors with the
-path in the message (`FC_TLS_CERT_PATH …: not a PEM certificate`), never a
-listener that silently stays HTTP/1.1. Setting one of a pair without the
-other, or both forms at once, is a startup error too. `FC_HTTP3_ENABLED=true`
-is now unconditionally a startup error (§ above) — TLS material no longer
-changes that.
+end as an in-memory `KeyStore` handed to `SslContextFactory.Server`; nothing
+is written to disk. Errors are startup errors with the path in the message
+(`FC_TLS_CERT_PATH …: not a PEM certificate`), never a listener that
+silently stays HTTP/1.1. Setting one of a pair without the other, or both
+forms at once, is a startup error too. `FC_HTTP3_ENABLED=true` is a startup
+error unconditionally now (`Listeners#install`) — HTTP/3 was dropped
+2026-09-08, so there is no longer a "needs a certificate" distinction to
+draw.
 
 ## 3. Where
 
 `server/src/main/java/io/flowcatalyst/server/transport/`:
-`Listeners` (resolves `Env` into `Optional<VertxListener.Tls>` for
-`Server#buildApiAndReaper` — also where `FC_HTTP3_ENABLED=true` is rejected),
-`TlsMaterial` (§2, a sealed `Keystore | Pem` read from `Env`, unchanged).
-`io.flowcatalyst.http.vertx.VertxListener` (module `server`, package
-`io.flowcatalyst.http.vertx`) owns the actual `HttpServer` construction —
-see `docs/spec/vertx-listener.md`.
-`Env` carries the six `FC_TLS_*` / `FC_HTTP3_*` members (read through the
-`EnvReader` like every other knob — `Platform`/`Server` never read the
-process environment directly).
+`Listeners` (builds the connectors from `Env`, installed by `Server.buildApiAndReaper`;
+also rejects `FC_HTTP3_ENABLED=true` at startup, since HTTP/3 was dropped),
+`TlsMaterial` (§2, a sealed `Keystore | Pem` read from `Env`).
+~~`Http3` (the connector, the work directory, the `Alt-Svc` customizer)~~ —
+deleted 2026-09-08.
+`Env` still carries `http3Enabled`/`http3Port` (read through the `EnvReader`
+like every other knob — `Platform`/`Server` never read the process
+environment directly) purely so `Listeners#install` has something to reject;
+`docs/environment-variables` wherever the Java repo documents its env
+(README's table, `cutover.md` §4's parity table) should say `FC_HTTP3_*` is
+Java-only and rejected, not silently ignored.
 
-Dependencies: `io.vertx:vertx-core` and `io.vertx:vertx-web` only (already
-in `server/pom.xml` for the listener itself; no additional dependency for
-TLS/h2 — Vert.x's ALPN and h2c support ship in `vertx-core`). No Jetty, no
-native TLS/QUIC library, no `jetty-bom`.
+Jetty dependencies (all `${jetty.version}` = the one Javalin brings; use the
+`jetty-bom` if the parent pom does not already import it):
+`org.eclipse.jetty.http2:jetty-http2-server`, `org.eclipse.jetty:jetty-alpn-server`,
+`org.eclipse.jetty:jetty-alpn-java-server`.
+Test scope: `org.eclipse.jetty.http2:jetty-http2-client-transport` (HTTP/2 client).
+~~`org.eclipse.jetty.http3:jetty-http3-server`, `org.eclipse.jetty.quic:jetty-quic-server`,
+`org.eclipse.jetty.quic:jetty-quic-quiche-foreign`, `org.eclipse.jetty.http3:jetty-http3-client-transport`~~
+— removed from both `server/pom.xml` and the root `pom.xml`'s dependency
+management 2026-09-08.
 
-Native image (`-Pnative`): Vert.x/Netty reachability comes from the GraalVM
-metadata repository plus whatever the tracing agent finds under
-`server/native-config/`; no quiche FFM binding to register any more.
+~~Native image (`-Pnative`): the quiche binding is FFM + a bundled shared
+library~~ — moot; no quiche dependency remains on the classpath.
 
 ## 4. Tests (`server/src/test/java/io/flowcatalyst/server/transport/`)
 
 Each starts a real `Server` (as `ServerTest`/`TestHttp` do) on free ports.
 
-1. **h2c prior knowledge** (`Http2Test`): a Vert.x `HttpClient` configured
-   for `HttpVersion.HTTP_2` + `setHttp2ClearTextUpgrade(false)` (the same
-   shape `VertxMediationClient` uses in production — the JDK's own
-   `HttpClient` never does prior knowledge) gets `/health` 200 with the
-   response version HTTP/2. **h2c upgrade**: the JDK `HttpClient` with
+1. **h2c prior knowledge**: Jetty's HTTP/2 client (`HTTP2Client` +
+   `HttpClientTransportOverHTTP2`, cleartext) gets `/health` 200 and the
+   response version is HTTP/2. **h2c upgrade**: the JDK `HttpClient` with
    `Version.HTTP_2` against the plain port gets 200 and reports
    `HttpClient.Version.HTTP_2` for the second request at the latest.
-   **HTTP/1.1 still works** on the same port (TestHttp as today). **The
-   metrics listener never upgrades**: the same JDK-client two-request shape
-   that reaches HTTP/2 against the API listener stays HTTP/1.1 against
-   `FC_METRICS_PORT` for both requests.
-2. **TLS + ALPN** (`TlsAlpnTest`): with a PKCS#12 made by `keytool` in a temp
-   dir (the JDK ships it — resolve it under `System.getProperty("java.home")/bin`),
-   the JDK `HttpClient` with an SSLContext trusting that cert gets `/health`
-   over `https://` with version HTTP/2; with `Version.HTTP_1_1` it gets
-   HTTP/1.1. **PEM form**: `openssl` is not assumed — convert the PKCS#12 to
-   PEM in the test with JDK APIs (export the cert with
-   `CertificateFactory`/Base64 and the key with `PKCS8EncodedKeySpec`) and
-   start a second server from the PEM pair; same assertions. A wrong
-   password / a missing file / both forms set: startup fails with the path
-   in the message.
-3. ~~HTTP/3~~: dropped with Q6; `Http3Test` deleted.
+   **HTTP/1.1 still works** on the same port (TestHttp as today).
+2. **TLS + ALPN**: with a PKCS#12 made by `keytool` in a temp dir (the JDK
+   ships it — resolve it under `System.getProperty("java.home")/bin`), the
+   JDK `HttpClient` with an SSLContext trusting that cert gets `/health` over
+   `https://` with version HTTP/2; with `Version.HTTP_1_1` it gets HTTP/1.1.
+   **PEM form**: `openssl` is not assumed — convert the PKCS#12 to PEM in the
+   test with JDK APIs (export the cert with `CertificateFactory`/Base64 and
+   the key with `PKCS8EncodedKeySpec`) and start a second server from the
+   PEM pair; same assertions. A wrong password / a missing file / both forms
+   set: startup fails with the path in the message.
+3. ~~**HTTP/3**: `Alt-Svc` present on the TLS listener, absent on the
+   plain one; Jetty's HTTP/3 client fetches `/health` over `h3`~~ — dropped
+   2026-09-08 along with `Http3Test`. In its place, `Http2Test` now pins
+   `FC_HTTP3_ENABLED=true` as a rejected startup error naming the variable
+   (`http3EnabledIsARejectedStartupErrorNotASilentNoOp`).
 4. **Nothing else moved**: the parity harness and the e2e are untouched
-   (HTTP/1.1, plain).
-5. Mutants (run, confirm, revert): disable `setHttp2ClearTextEnabled` →
-   test 1 fails; drop `setUseAlpn` on the TLS listener → test 2 falls back
-   to HTTP/1.1 and fails; enable h2c on the metrics listener → test 1's
-   "never upgrades" assertion fails.
+   (HTTP/1.1, plain); the metrics listener answers HTTP/1.1 only (an h2c
+   prior-knowledge attempt on `FC_METRICS_PORT` fails).
+5. Mutants (run, confirm, revert): drop the `HTTP2CServerConnectionFactory`
+   → test 1 fails; drop the ALPN factory → test 2 falls back to HTTP/1.1
+   and fails; put `Alt-Svc` on the plain listener → test 3's absence
+   assertion fails.
 
 ## 5. Owner notes
 
 - With the ALB in front, the production win is **h2c to targets** (target
   group protocol version `HTTP2`) — a terraform/console change, not code.
-  End-to-end HTTP/3 to the browser was always the ALB's feature, not the
-  target's, which is why dropping the server-side h3 listener (Q6) costs
-  production nothing; the only topology it would have served (a process
-  terminating TLS itself — fcdev, a bare host, a future NLB) has no h3
-  requirement today.
+  End-to-end HTTP/3 to the browser is the ALB's feature, not the target's;
+  the server-side h3 listener is for deployments where the process
+  terminates TLS itself (fcdev, a bare host, a future NLB). Say so in
+  `docs/STATUS.md` when this lands so nobody expects h3 through the ALB.
 - `fcdev` keeps plain HTTP (the SPA's `Secure` cookie is fine on
   localhost); an `fcdev start --tls` is a later nicety, not this unit.

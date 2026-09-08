@@ -22,10 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// reported as a coverage figure until the port is complete, then flipped to
 /// a hard assertion (see `REQUIRED_COVERAGE`).
 ///
-/// Walks [RouteRegistry#registrations()] (`docs/spec/http-seam.md` §1) —
-/// `before`/`after`/`exception` are not registrations, so there is nothing
-/// to skip: a route (`get`/`post`/`put`/`patch`/`delete`) is the only thing
-/// that can be enumerated.
+/// Walks [RouteRegistry#registrations()] (`docs/spec/http-seam.md` §1) rather
+/// than Javalin's `HandlerType` internals — `before`/`after`/`exception` are
+/// not registrations, so there is nothing left to skip the way the old
+/// `HandlerType.BEFORE`/`AFTER` filter did.
 class LockfileCoverageTest {
 
     /// The platform port is complete: every lockfile operation must be routed.

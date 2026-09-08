@@ -29,8 +29,7 @@ import java.time.ZonedDateTime;
 ///     (`tools.jackson.databind.ext.javatime`);
 ///     enums go on the wire as their `name()` unless they declare `@JsonValue`.
 ///
-/// [io.flowcatalyst.http.Exchange#json] and [io.flowcatalyst.http.Exchange#bodyAsClass]
-/// write and read through this mapper directly (`io.flowcatalyst.http.vertx.VertxExchange`).
+/// The Javalin adapter is `io.flowcatalyst.http.javalin.JavalinJsonMapper`.
 public final class Json {
 
     public static final ObjectMapper MAPPER = build();

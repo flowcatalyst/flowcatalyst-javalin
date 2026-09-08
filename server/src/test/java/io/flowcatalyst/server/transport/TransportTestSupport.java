@@ -9,13 +9,11 @@ import java.net.ServerSocket;
 import java.util.HashMap;
 import java.util.Map;
 
-/// Shared plumbing for the HTTP/2 and HTTP/3 transport tests
+/// Shared plumbing for the HTTP/2 transport tests
 /// (`docs/spec/http-transport.md` §4): a DB-free [Server] (router-only mode,
 /// no SPA — the transport surface under test is `/health`) on explicit free
-/// ports above 20000, since the [io.flowcatalyst.server.transport.Http3]
-/// `Alt-Svc` header advertises `FC_HTTP3_PORT` as a literal number baked in
-/// at connector-build time, which an ephemeral `0` port cannot supply ahead
-/// of binding.
+/// ports above 20000. HTTP/3 was dropped (owner ruling 2026-09-08,
+/// `docs/vertx-plan.md` closing section).
 final class TransportTestSupport {
 
     private TransportTestSupport() {

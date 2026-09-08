@@ -35,8 +35,8 @@ negotiated version** so a target still on 1.1 is visible.
 
 | # | Behaviour | Pin | Mutant |
 |---|---|---|---|
-| 1 | Dev mode negotiates HTTP/1.1 against an h2c-capable local server | `HttpMediatorVersionTest`: a bare Vert.x `HttpServer` test fixture with TLS+ALPN (`setSsl(true).setUseAlpn(true)`, the same shape the real TLS listener serves — see that class's doc for why TLS+ALPN, not cleartext h2c, is what pins this claim); assert the recorded version is `HTTP_1_1` | drop `.version(...)` → the JDK default negotiates h2 and the assertion fails |
-| 2 | Deployed mode negotiates HTTP/2 against the same server, and 1.1 against a 1.1-only server (a plain JDK `com.sun.net.httpserver.HttpServer`, HTTP/1.1 only, no TLS) | assert `HTTP_2` then `HTTP_1_1` | force `HTTP_1_1` → first fails |
+| 1 | Dev mode negotiates HTTP/1.1 against an h2c-capable local server | `HttpMediatorVersionTest`: a Javalin/Jetty test listener with h2c on (the `server/transport` `Listeners` already do this); assert the recorded version is `HTTP_1_1` | drop `.version(...)` → the JDK default negotiates h2 and the assertion fails |
+| 2 | Deployed mode negotiates HTTP/2 against the same server, and 1.1 against a 1.1-only server (plain Jetty without h2c) | assert `HTTP_2` then `HTTP_1_1` | force `HTTP_1_1` → first fails |
 | 3 | The version counter increments once per delivered request with the right label | assert the counter value | never record → 0 |
 | 4 | `SubscriberDelivery`'s client has a connect timeout | `client.connectTimeout()` is present and 30 s | remove → empty |
 
