@@ -52,10 +52,10 @@ public sealed interface TlsMaterial permits TlsMaterial.Keystore, TlsMaterial.Pe
     String PEM_KEY_ALIAS = "fc";
 
     /// `Optional.empty()` when neither form is configured — the TLS listener
-    /// (and HTTP/3, which needs it) stays off. Throws `IllegalStateException`
-    /// for every other invalid combination: a half-set pair, both forms set,
-    /// a file that will not parse, or `FC_HTTP3_ENABLED=true` with no
-    /// material at all.
+    /// stays off. Throws `IllegalStateException` for every other invalid
+    /// combination: a half-set pair, both forms set, or a file that will not
+    /// parse. (`FC_HTTP3_ENABLED=true` is rejected earlier, in
+    /// [Listeners#install] — HTTP/3 was dropped, owner ruling 2026-09-08.)
     static Optional<TlsMaterial> resolve(Env env) {
         boolean keystorePathSet = !env.tlsKeystorePath().isBlank();
         boolean keystorePasswordSet = !env.tlsKeystorePassword().isBlank();
@@ -80,10 +80,6 @@ public sealed interface TlsMaterial permits TlsMaterial.Keystore, TlsMaterial.Pe
         }
         if (pemForm) {
             return Optional.of(loadPem(env.tlsCertPath(), env.tlsKeyPath()));
-        }
-        if (env.http3Enabled()) {
-            throw new IllegalStateException("HTTP/3 needs a certificate "
-                    + "(FC_HTTP3_ENABLED=true but no FC_TLS_KEYSTORE_PATH/FC_TLS_CERT_PATH is configured)");
         }
         return Optional.empty();
     }

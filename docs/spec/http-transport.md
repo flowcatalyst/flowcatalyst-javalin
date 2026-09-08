@@ -1,4 +1,4 @@
-# Spec — HTTP/2 and HTTP/3 on the server listeners
+# Spec — HTTP/2 (and, formerly, HTTP/3) on the server listeners
 
 Owner requirement, 2026-09-06: "we need to enable HTTP/2/3". Today the Java
 server speaks HTTP/1.1 only (Javalin 7.2.3 on Jetty 12.1.12, the default
@@ -6,13 +6,23 @@ connector); Go's inbound server is HTTP/1.1 too (no TLS in the process, no
 `h2c` handler), so this is a Java-side capability, not a parity item — the
 parity corpus and the e2e keep running over HTTP/1.1 and must not change.
 
+**HTTP/3 was dropped 2026-09-08** (owner ruling, closed Q6 of
+`docs/vertx-plan.md`, alongside the reversion of the Vert.x listener
+cutover — see that document's closing section): the `jetty-http3-server` /
+`jetty-quic-*` dependencies, the `Http3` class and its test are gone, and
+`FC_HTTP3_ENABLED=true` is now a startup error rather than a silent no-op.
+§1's HTTP/3 row, §3's HTTP/3 dependency list, and §4 test 3 below are kept
+as the design record but no longer describe the running server. HTTP/2
+(h2c on the plain listener, h2 over TLS with ALPN) is unaffected — the
+"production win is h2c to targets" note in §5 still holds.
+
 ## 1. Listeners
 
 | Listener | Env | Protocols | Default |
 |---|---|---|---|
 | **API** (TCP) | `FC_API_PORT` (alias `PORT`) | HTTP/1.1 **and h2c** — cleartext HTTP/2 by prior knowledge and by `Upgrade: h2c` | on, 8080 |
 | **API TLS** (TCP) | `FC_TLS_PORT` | TLS 1.2/1.3 with ALPN → **h2**, http/1.1 | on only when TLS material is configured (§2), 8443 |
-| **API HTTP/3** (UDP) | `FC_HTTP3_PORT` | QUIC → **h3** | on only when TLS material is configured **and** `FC_HTTP3_ENABLED=true`; default port = `FC_TLS_PORT` |
+| ~~**API HTTP/3** (UDP)~~ | ~~`FC_HTTP3_PORT`~~ | ~~QUIC → **h3**~~ | **dropped 2026-09-08**; `FC_HTTP3_ENABLED=true` is now a startup error |
 | **Metrics** (TCP) | `FC_METRICS_PORT` | HTTP/1.1 | unchanged, 9090 |
 
 - The h2c connector is the API connector: one `ServerConnector` with an
@@ -29,7 +39,8 @@ parity corpus and the e2e keep running over HTTP/1.1 and must not change.
   ("h2", "http/1.1") → `HTTP2ServerConnectionFactory` + `HttpConnectionFactory`,
   with `SecureRequestCustomizer` on the `HttpConfiguration` and
   `jetty-alpn-java-server` (the JDK's ALPN, no native library).
-- The HTTP/3 connector: `HTTP3ServerConnector` from `jetty-http3-server`
+- ~~The HTTP/3 connector~~ (dropped 2026-09-08, see the note at the top of
+  this document): `HTTP3ServerConnector` from `jetty-http3-server`
   over `jetty-quic-server` and the `jetty-quic-quiche-foreign` binding
   (FFM; Java 22+; the quiche native library ships inside the artifact for
   linux x86_64/aarch64 and macOS aarch64 — verify by loading it, and say
@@ -61,37 +72,41 @@ The PEM pair is loaded with the JDK alone: `CertificateFactory.getInstance("X.50
 reads a PEM chain as-is; the key's Base64 body decodes to a `PKCS8EncodedKeySpec`
 and the algorithm is tried as RSA then EC (Ed25519 too if cheap). Both forms
 end as an in-memory `KeyStore` handed to `SslContextFactory.Server`; nothing
-is written to disk except the QUIC work directory above. Errors are startup
-errors with the path in the message (`FC_TLS_CERT_PATH …: not a PEM
-certificate`), never a listener that silently stays HTTP/1.1. Setting one of
-a pair without the other, or both forms at once, is a startup error too.
-`FC_HTTP3_ENABLED=true` without TLS material is a startup error ("HTTP/3
-needs a certificate").
+is written to disk. Errors are startup errors with the path in the message
+(`FC_TLS_CERT_PATH …: not a PEM certificate`), never a listener that
+silently stays HTTP/1.1. Setting one of a pair without the other, or both
+forms at once, is a startup error too. `FC_HTTP3_ENABLED=true` is a startup
+error unconditionally now (`Listeners#install`) — HTTP/3 was dropped
+2026-09-08, so there is no longer a "needs a certificate" distinction to
+draw.
 
 ## 3. Where
 
 `server/src/main/java/io/flowcatalyst/server/transport/`:
-`Listeners` (builds the connectors from `Env`, installed by `Server.buildApiAndReaper`),
-`TlsMaterial` (§2, a sealed `Keystore | Pem` read from `Env`),
-`Http3` (the connector, the work directory, the `Alt-Svc` customizer).
-`Env` gains the six `FC_TLS_*` / `FC_HTTP3_*` members (read through the
-`EnvReader` like every other knob — `Platform`/`Server` never read the
-process environment directly), and `docs/environment-variables` wherever the
-Java repo documents its env (README's table, `cutover.md` §4's parity table:
-these are Java-only additions, mark them so).
+`Listeners` (builds the connectors from `Env`, installed by `Server.buildApiAndReaper`;
+also rejects `FC_HTTP3_ENABLED=true` at startup, since HTTP/3 was dropped),
+`TlsMaterial` (§2, a sealed `Keystore | Pem` read from `Env`).
+~~`Http3` (the connector, the work directory, the `Alt-Svc` customizer)~~ —
+deleted 2026-09-08.
+`Env` still carries `http3Enabled`/`http3Port` (read through the `EnvReader`
+like every other knob — `Platform`/`Server` never read the process
+environment directly) purely so `Listeners#install` has something to reject;
+`docs/environment-variables` wherever the Java repo documents its env
+(README's table, `cutover.md` §4's parity table) should say `FC_HTTP3_*` is
+Java-only and rejected, not silently ignored.
 
 Jetty dependencies (all `${jetty.version}` = the one Javalin brings; use the
 `jetty-bom` if the parent pom does not already import it):
 `org.eclipse.jetty.http2:jetty-http2-server`, `org.eclipse.jetty:jetty-alpn-server`,
-`org.eclipse.jetty:jetty-alpn-java-server`, `org.eclipse.jetty.http3:jetty-http3-server`,
-`org.eclipse.jetty.quic:jetty-quic-server`, `org.eclipse.jetty.quic:jetty-quic-quiche-foreign`.
-Test scope: `org.eclipse.jetty.http2:jetty-http2-client-transport` (HTTP/2 client),
-`org.eclipse.jetty.http3:jetty-http3-client-transport` (HTTP/3 client).
+`org.eclipse.jetty:jetty-alpn-java-server`.
+Test scope: `org.eclipse.jetty.http2:jetty-http2-client-transport` (HTTP/2 client).
+~~`org.eclipse.jetty.http3:jetty-http3-server`, `org.eclipse.jetty.quic:jetty-quic-server`,
+`org.eclipse.jetty.quic:jetty-quic-quiche-foreign`, `org.eclipse.jetty.http3:jetty-http3-client-transport`~~
+— removed from both `server/pom.xml` and the root `pom.xml`'s dependency
+management 2026-09-08.
 
-Native image (`-Pnative`): the quiche binding is FFM + a bundled shared
-library; register what the tracing agent finds under `server/native-config/`
-and say whether the native binary can serve h3 (if not, HTTP/3 is a jar/jlink
-feature and `docs/STATUS.md` says so — do not block the unit on it).
+~~Native image (`-Pnative`): the quiche binding is FFM + a bundled shared
+library~~ — moot; no quiche dependency remains on the classpath.
 
 ## 4. Tests (`server/src/test/java/io/flowcatalyst/server/transport/`)
 
@@ -112,11 +127,11 @@ Each starts a real `Server` (as `ServerTest`/`TestHttp` do) on free ports.
    the key with `PKCS8EncodedKeySpec`) and start a second server from the
    PEM pair; same assertions. A wrong password / a missing file / both forms
    set: startup fails with the path in the message.
-3. **HTTP/3**: `Alt-Svc` is present on the TLS listener's responses and
-   absent on the plain one; Jetty's HTTP/3 client fetches `/health` over
-   `h3` when the quiche library loads on this machine (`Assumptions` when it
-   does not — and the report says whether it did on macOS arm64 and on
-   Linux amd64 via CI).
+3. ~~**HTTP/3**: `Alt-Svc` present on the TLS listener, absent on the
+   plain one; Jetty's HTTP/3 client fetches `/health` over `h3`~~ — dropped
+   2026-09-08 along with `Http3Test`. In its place, `Http2Test` now pins
+   `FC_HTTP3_ENABLED=true` as a rejected startup error naming the variable
+   (`http3EnabledIsARejectedStartupErrorNotASilentNoOp`).
 4. **Nothing else moved**: the parity harness and the e2e are untouched
    (HTTP/1.1, plain); the metrics listener answers HTTP/1.1 only (an h2c
    prior-knowledge attempt on `FC_METRICS_PORT` fails).

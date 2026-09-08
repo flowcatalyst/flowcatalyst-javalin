@@ -158,8 +158,10 @@ EOF
   superuser_reserved_connections` (Postgres defaults 100 and 3). Past about three pods,
   raise `max_connections` (each idle backend costs a few MB) or front Postgres with
   PgBouncer in transaction mode (then `prepareThreshold=0` for pgjdbc).
-- **`FC_HTTP`**: `javalin` (today's default) or `vertx`; the rehearsal runs the corpus
-  under both until Phase 3 removes the flag.
+- **`FC_HTTP`**: gone. There was briefly a `javalin`/`vertx` flag during the Vert.x
+  listener cutover (2026-09-08); the owner reverted the cutover the same day
+  (`docs/vertx-plan.md` closing section) and Javalin/Jetty is again the only
+  listener, unconditionally — nothing to set here.
 
 ## 5. Production, after the third rehearsal
 

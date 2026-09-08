@@ -12,15 +12,15 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 
 /// Builds the API listener's connectors from [Env] (`docs/spec/http-transport.md`
 /// §1): the plain h2c connector (always) and, when TLS material is configured
-/// (§2, [TlsMaterial]), the TLS+ALPN connector for h2/http1.1, plus HTTP/3
-/// ([Http3]) when `FC_HTTP3_ENABLED=true`.
+/// (§2, [TlsMaterial]), the TLS+ALPN connector for h2/http1.1. HTTP/3 (QUIC)
+/// was dropped (owner ruling 2026-09-08, `docs/vertx-plan.md` closing
+/// section): `FC_HTTP3_ENABLED=true` is now a startup error rather than a
+/// silent no-op — see [#install].
 ///
 /// Installed through `cfg.jetty.addConnector`
 /// ([io.javalin.config.JettyConfig#addConnector]) from
@@ -36,8 +36,6 @@ import java.util.Optional;
 /// `state.jetty.port`, a field nothing reads once custom connectors exist.
 public final class Listeners {
 
-    private static final Logger LOG = LoggerFactory.getLogger(Listeners.class);
-
     private Listeners() {
     }
 
@@ -47,34 +45,21 @@ public final class Listeners {
     /// `connectors[0].getLocalPort()`, so the plain listener has to stay
     /// connector zero for `apiPort()` to keep meaning what it always has.
     public static void install(JettyConfig jetty, Env env) {
+        if (env.http3Enabled()) {
+            // HTTP/3 (QUIC) was dropped (owner ruling 2026-09-08): no quiche
+            // dependency is on the classpath any more, so honouring this
+            // silently would just mean "the flag does nothing" — a startup
+            // error is louder and correct.
+            throw new IllegalStateException(
+                    "FC_HTTP3_ENABLED=true but HTTP/3 support was removed (owner ruling 2026-09-08, "
+                            + "docs/vertx-plan.md closing section); unset FC_HTTP3_ENABLED");
+        }
+
         Optional<TlsMaterial> tls = TlsMaterial.resolve(env);
 
         jetty.addConnector((server, httpConfig) -> h2c(server, httpConfig, env));
 
-        tls.ifPresent(material -> {
-            jetty.addConnector((server, httpConfig) -> tls(server, httpConfig, env, material));
-
-            if (env.http3Enabled()) {
-                // The probe runs BEFORE anything is handed to the live
-                // Server: a QuicheServerConnector whose native library
-                // cannot load would fail inside Jetty's own connector
-                // startup, which aborts every connector — the plain and TLS
-                // listeners included, not just this one (Http3's javadoc).
-                // Alt-Svc goes with the connector, never without it: a
-                // client told "h3 here" by a server that cannot speak it
-                // would only be sent to a closed UDP port (spec §1: the
-                // header must not be a lie).
-                var failure = Http3.quicheLoadFailure();
-                if (failure.isPresent()) {
-                    LOG.warn("FC_HTTP3_ENABLED=true but the quiche native library did not load "
-                            + "(HTTP/3 will not be served and Alt-Svc is not advertised): {}", failure.get().toString());
-                } else {
-                    var sslContextFactory = sslContextFactory(material);
-                    jetty.modifyServer(server -> Http3.install(server, env));
-                    jetty.addConnector((server, httpConfig) -> Http3.connector(server, env, sslContextFactory));
-                }
-            }
-        });
+        tls.ifPresent(material -> jetty.addConnector((server, httpConfig) -> tls(server, httpConfig, env, material)));
     }
 
     private static ServerConnector h2c(Server server, HttpConfiguration httpConfig, Env env) {

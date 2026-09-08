@@ -31,8 +31,8 @@
     <javalin.version>7.2.3</javalin.version>
     <vertx.version>5.1.7</vertx.version>
     <!-- The exact Jetty version Javalin 7.2.3 brings (javalin-parent-7.2.3.pom
-         line ~105); pinned here too so the HTTP/2 and HTTP/3 artifacts below
-         cannot drift from what Javalin's own jetty-server is. -->
+         line ~105); pinned here too so the HTTP/2 artifacts below cannot
+         drift from what Javalin's own jetty-server is. -->
     <jetty.version>12.1.12</jetty.version>
     <jooq.version>3.21.7</jooq.version>
     <hikaricp.version>7.1.0</hikaricp.version>
@@ -76,10 +76,11 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
-      <!-- HTTP/2 (h2c/h2) and HTTP/3 (QUIC) connectors on the server listeners
+      <!-- HTTP/2 (h2c/h2) connectors on the server listeners
            (docs/spec/http-transport.md): pins every org.eclipse.jetty* artifact
            to the exact version Javalin 7.2.3 already brings via jetty-server,
-           so the http2/http3/quic/alpn add-ons below never drift from it. -->
+           so the http2/alpn add-ons below never drift from it. HTTP/3 (QUIC)
+           was dropped, owner ruling 2026-09-08. -->
       <dependency>
         <groupId>org.eclipse.jetty</groupId>
         <artifactId>jetty-bom</artifactId>
@@ -141,11 +142,6 @@
       <dependency>
         <groupId>io.vertx</groupId>
         <artifactId>vertx-core</artifactId>
-        <version>${vertx.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>io.vertx</groupId>
-        <artifactId>vertx-web</artifactId>
         <version>${vertx.version}</version>
       </dependency>
       <dependency>

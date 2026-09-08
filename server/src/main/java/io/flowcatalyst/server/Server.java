@@ -9,10 +9,8 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.mail.MailSender;
 import io.flowcatalyst.platform.mail.MailService;
 import io.flowcatalyst.platform.purger.Purger;
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
-import io.flowcatalyst.http.vertx.VertxListener;
 import java.util.function.Consumer;
 import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import java.time.Instant;
@@ -440,7 +438,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         var metrics = new Metrics(env, registry).start();
         LOG.info("metrics server listening addr=:{}", env.metricsPort());
         ApiListener api = built.starter().start(env.apiPort());
-        LOG.info("api server listening addr=:{} listener={}", env.apiPort(), env.httpListener());
+        LOG.info("api server listening addr=:{}", env.apiPort());
         return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
@@ -572,8 +570,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// [RouteRegistry] [io.flowcatalyst.http.javalin.JavalinAdapter#install]
     /// hands back, so [io.flowcatalyst.server.LockfileCoverageTest] can
     /// enumerate registrations without walking Javalin internals.
-    /// The bound API listener, whichever implementation `FC_HTTP` chose
-    /// (`docs/spec/vertx-listener.md` §1 "Selection").
+    /// The bound API listener — Javalin/Jetty, the only implementation
+    /// (`docs/spec/http-seam.md`; the Vert.x listener cutover was reverted
+    /// 2026-09-08, `docs/vertx-plan.md` closing section).
     interface ApiListener {
         int port();
 
@@ -629,62 +628,32 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
         };
-        return switch (env.httpListener()) {
-            case VERTX -> {
-                int mainWorkers = switch (mode) {
-                    case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
-                    case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
-                    default -> io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2;
-                };
-                var workers = io.flowcatalyst.http.RequestWorkers.derived(mainWorkers);
-                registry.register(workers.collector());
-                var prepared = VertxListener.prepare(new VertxListener.Options("0.0.0.0", env.apiPort(), true, Budgets.derived(),
-                        java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE, workers), configure);
-                ApiStarter starter = port -> {
-                    var listener = prepared.listen();
-                    return new ApiListener() {
-                        @Override
-                        public int port() {
-                            return listener.port();
-                        }
+        RouteRegistry[] registryHolder = new RouteRegistry[1];
+        Javalin api = Javalin.create(cfg -> {
+            cfg.startup.showJavalinBanner = false;
+            cfg.concurrency.useVirtualThreads = true;
+            cfg.jsonMapper(new JavalinJsonMapper());
+            cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
+            io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
+            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
+            registryHolder[0] = routes;
+            configure.accept(routes);
+        });
+        ApiStarter starter = port -> {
+            api.start(port);
+            return new ApiListener() {
+                @Override
+                public int port() {
+                    return api.port();
+                }
 
-                        @Override
-                        public void stop() {
-                            listener.close();
-                        }
-                    };
-                };
-                yield new ApiAndReaper(starter, prepared.registry(), reaperHolder[0]);
-            }
-            case JAVALIN -> {
-                RouteRegistry[] registryHolder = new RouteRegistry[1];
-                Javalin api = Javalin.create(cfg -> {
-                    cfg.startup.showJavalinBanner = false;
-                    cfg.concurrency.useVirtualThreads = true;
-                    cfg.jsonMapper(new JavalinJsonMapper());
-                    cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
-                    io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
-                    var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
-                    registryHolder[0] = routes;
-                    configure.accept(routes);
-                });
-                ApiStarter starter = port -> {
-                    api.start(port);
-                    return new ApiListener() {
-                        @Override
-                        public int port() {
-                            return api.port();
-                        }
-
-                        @Override
-                        public void stop() {
-                            api.stop();
-                        }
-                    };
-                };
-                yield new ApiAndReaper(starter, registryHolder[0], reaperHolder[0]);
-            }
+                @Override
+                public void stop() {
+                    api.stop();
+                }
+            };
         };
+        return new ApiAndReaper(starter, registryHolder[0], reaperHolder[0]);
     }
 
     private SigningKeys loadSigningKeys() {

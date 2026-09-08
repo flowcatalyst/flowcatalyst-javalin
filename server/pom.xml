@@ -27,14 +27,12 @@
       <groupId>io.javalin</groupId>
       <artifactId>javalin</artifactId>
     </dependency>
-    <!-- The Vert.x listener (docs/spec/vertx-listener.md): core + web only, ever. -->
+    <!-- The router's outbound h2c mediation client only (VertxTransport/VertxMediationClient,
+         docs/spec/router-h2.md §5): core, never web — Vert.x is no longer a listener
+         (the cutover was reverted 2026-09-08, docs/vertx-plan.md closing section). -->
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-core</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.vertx</groupId>
-      <artifactId>vertx-web</artifactId>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
@@ -47,10 +45,10 @@
       <scope>provided</scope>
     </dependency>
 
-    <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN) and
-         HTTP/3 (QUIC) on the server listeners: docs/spec/http-transport.md.
-         Versions come from the jetty-bom import in the parent pom, pinned to
-         the exact Jetty release Javalin 7.2.3 already brings. -->
+    <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN):
+         docs/spec/http-transport.md. HTTP/3 (QUIC) was dropped (owner ruling
+         2026-09-08). Versions come from the jetty-bom import in the parent
+         pom, pinned to the exact Jetty release Javalin 7.2.3 already brings. -->
     <dependency>
       <groupId>org.eclipse.jetty.http2</groupId>
       <artifactId>jetty-http2-server</artifactId>
@@ -62,25 +60,6 @@
     <dependency>
       <groupId>org.eclipse.jetty</groupId>
       <artifactId>jetty-alpn-java-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.http3</groupId>
-      <artifactId>jetty-http3-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-server</artifactId>
-    </dependency>
-    <dependency>
-      <!-- The QUIC implementation: quiche's server binding (QuicheServerConnector) over the FFM
-           native binding, which bundles the quiche shared library for linux x86_64/aarch64 and
-           macOS aarch64. -->
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-quiche-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty.quic</groupId>
-      <artifactId>jetty-quic-quiche-foreign</artifactId>
     </dependency>
     <dependency>
       <!-- Jetty's HTTP/2 client (test scope): the prior-knowledge h2c probe in Http2Test. -->

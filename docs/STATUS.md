@@ -4,7 +4,47 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Vert.x listener cutover — reverted (2026-09-08)
+
+The Vert.x listener work (`docs/vertx-plan.md` Phases 0–3) landed on branch
+`vertx-listener` and was merged, replacing Javalin/Jetty with a Vert.x
+listener as the sole HTTP implementation. The owner reverted the cutover
+the same day: **Javalin (Jetty) is the only HTTP listener again.** Reasons
+and the full account are in `docs/vertx-plan.md`'s closing section — in
+short, MCP's servlet-based transport and the general servlet-ecosystem
+dependency were judged not worth losing for a listener-choice difference
+that was within 2% on throughput at the 2-CPU-and-up scale the product
+ships at, even though dropping the framework altogether was worth about a
+fifth of the one-core gap on its own (`bench/real/RESULTS.md` Round 15) —
+that gain turned out to be about class count/metaspace pressure on one
+core, not about Vert.x vs. Javalin as libraries.
+
+Mechanically: `git revert -m 1` of the cutover merge (one commit), then a
+second commit that re-trimmed the restored state — HTTP/3 (QUIC) stays
+dropped (`FC_HTTP3_ENABLED=true` is now a startup error, never a silent
+no-op), and `io.flowcatalyst.http.vertx` no longer contains a listener,
+only the router's outbound h2c mediation client (`VertxTransport`/
+`VertxMediationClient`, `docs/spec/router-h2.md` §5 — `vertx-core` stays a
+dependency, `vertx-web` does not). Everything listener-independent that the
+Vert.x work also contributed survived: the pool gate (`GatedDataSource`),
+the four derived tier-2 admission bulkheads (`docs/spec/admission.md`), the
+router's `MediationTransport`/h2c work, `InFlightTracker`'s queue-scoped
+broker key, `CapacityGate`/`ConsumerLoop`/`ConsumerSupervisor`, the
+client-secret `hashed:v1:` work, and `RequestWorkers` (kept as a class with
+its own unit tests, currently without a production caller since Javalin's
+thread-per-request model does not go through it).
+
+Full reactor green after the revert: server 3645 (0 failures), fcdev 87 (0
+failures); parity corpus unchanged at 1,149 steps (349 OK, 800 ACCEPTED,
+0 DIFF, 0 ERROR) against Go. The exec jar is 65.6 MB (was 56.1 MB Vert.x-
+only) — restoring Javalin/Jetty/servlet costs about 9.5 MB net of dropping
+HTTP/3/QUIC and `vertx-web` again.
+
 ## HTTP/2 and HTTP/3 transport (2026-09-06)
+
+**HTTP/3 was dropped 2026-09-08** (see the section above) — this entry is
+kept as the design record; `Http3`, `Http3Test` and the quiche dependencies
+described below no longer exist. HTTP/2 is unaffected.
 
 `docs/spec/http-transport.md` landed: h2c (cleartext HTTP/2) is now always
 on for the API listener (`FC_API_PORT`), and TLS+ALPN (h2, http/1.1) turns

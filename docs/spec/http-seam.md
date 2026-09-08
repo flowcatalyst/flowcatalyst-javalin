@@ -1,10 +1,17 @@
 # Spec — the HTTP seam (`io.flowcatalyst.http`)
 
-Status: owner-ruled 2026-09-06 (`docs/vertx-plan.md` §5 Phase 1, Q2 = the seam).
-Purpose: every handler, filter and exception mapper in `server` is written against
-this package and nothing else. Today it is implemented by a Javalin adapter; the
-Vert.x adapter (Phase 2) implements the same types. Swapping the listener is then a
-change to one package and four bootstrap sites, never to handlers.
+Status: owner-ruled 2026-09-06 (`docs/vertx-plan.md` §5 Phase 1, Q2 = the seam);
+Javalin/Jetty was briefly removed 2026-09-08 (the cutover) and the cutover was
+**reverted the same day** — owner ruling, `docs/vertx-plan.md` closing section
+(MCP and the servlet ecosystem; the measured listener difference did not
+justify the framework change). Javalin/Jetty is the seam's one and only
+listener implementation again; `io.flowcatalyst.http.vertx` no longer
+contains a listener at all, only `VertxTransport`/`VertxMediationClient`, the
+router's outbound h2c mediation client (`docs/spec/router-h2.md` §5) —
+unrelated to this seam. Purpose: every handler, filter and exception mapper
+in `server` is written against this package and nothing else, so a future
+listener swap (should one ever be ruled again) is a change to one package
+and its bootstrap sites, never to handlers.
 
 ## 1. Shape
 
@@ -139,8 +146,10 @@ mapper produces the envelope and no handler code ever sees a Javalin type.
 | 9 | Registry lists every `get/post/…` with its `Group`, none of the filters | assert counts against a small fixture `Routes`. |
 | 10 | No `io.javalin` import outside the allowed set | `NoFrameworkLeakTest`: scan `server/src/main` and `server/src/test` sources; allowed: `io/flowcatalyst/http/javalin/**`, the four bootstrap classes, `server/transport/**`, `TestHttp`, `LockfileCoverageTest` (until it is rewritten, then it leaves the list). Mutant: add an import to a handler → fails. |
 
-`SeamContractTest` runs against the **adapter under test** through `TestHttp`, so the
-same class pins the Vert.x adapter in Phase 2 with no change.
+`SeamContractTest` runs against the **adapter under test** through `TestHttp`, designed
+so a second adapter could reuse it unchanged. A Vert.x adapter was in fact built this
+way (Phase 2, 2026-09-06/07) and later removed when the cutover was reverted
+2026-09-08 — Javalin (`JavalinSeamContractTest`) is again the sole concrete subclass.
 
 ## 5. Exit for Phase 1
 

@@ -64,9 +64,6 @@ public record Env(
         // `FC_HTTP3_PORT` (UDP), default = [#tlsPort]: resolved from the
         // already-resolved tlsPort, not a separate literal default.
         int http3Port,
-        // `FC_HTTP`, `javalin` (default until Phase 3) or `vertx`: which listener
-        // serves the API (`docs/spec/vertx-listener.md` §1 "Selection").
-        HttpListener httpListener,
 
         // ── database / identity ────────────────────────────────────────────
         // See [#resolveDatabaseUrl(EnvReader)] for the three-mode precedence.
@@ -322,7 +319,6 @@ public record Env(
                 e.get("FC_TLS_KEY_PATH"),
                 e.bool("FC_HTTP3_ENABLED", false),
                 e.integer("FC_HTTP3_PORT", tlsPort),
-                HttpListener.parse(e.or("FC_HTTP", "javalin")),
 
                 resolveDatabaseUrl(e),
                 e.firstSet("FC_JWT_ISSUER", "FC_EXTERNAL_BASE_URL", "EXTERNAL_BASE_URL").orElse("http://localhost:8080"),
@@ -490,18 +486,5 @@ public record Env(
             }
         }
         return sb.toString();
-    }
-
-    /// The API listener implementation.
-    public enum HttpListener {
-        JAVALIN, VERTX;
-
-        static HttpListener parse(String v) {
-            return switch (v == null ? "" : v.trim().toLowerCase()) {
-                case "", "javalin" -> JAVALIN;
-                case "vertx" -> VERTX;
-                default -> throw new IllegalArgumentException("FC_HTTP must be 'javalin' or 'vertx', got '" + v + "'");
-            };
-        }
     }
 }

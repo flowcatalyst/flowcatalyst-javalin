@@ -18,8 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Pins `docs/spec/http-seam.md` §4 rows 1-9 (row 10, `NoFrameworkLeakTest`,
 /// lands in a later unit) through the Javalin adapter under test —
 /// `TestHttp.routes(...)`, the JDK `HttpClient`, no shortcuts through the
-/// adapter's internals. The same class pins the Vert.x adapter in Phase 2
-/// unchanged.
+/// adapter's internals. Javalin/Jetty is the only concrete subclass
+/// (`JavalinSeamContractTest`) since the Vert.x listener cutover was
+/// reverted 2026-09-08 (`docs/vertx-plan.md` closing section).
 abstract class SeamContract {
 
     protected static TestHttp app;

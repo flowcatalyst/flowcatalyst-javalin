@@ -1,8 +1,19 @@
-# Spec — the Vert.x listener (`io.flowcatalyst.http.vertx`)
+# Spec — the Vert.x listener (`io.flowcatalyst.http.vertx`) — REMOVED 2026-09-08
 
-Status: Phase 2 of `docs/vertx-plan.md` (§5), owner-ruled 2026-09-06. The second
-implementation of the seam (`docs/spec/http-seam.md`); Javalin stays reachable by flag
-until Phase 3. Admission and time are `docs/spec/admission.md`.
+Status: Phase 2 of `docs/vertx-plan.md` (§5), owner-ruled 2026-09-06; the class this
+document describes (`VertxListener`, and `VertxExchange`/`VertxRoutes` beneath it) was
+deleted 2026-09-08 when the owner reverted the Vert.x listener cutover
+(`docs/vertx-plan.md` closing section) — Javalin/Jetty is the seam's only
+implementation again. Kept as the design record of dispatch model B, the admission
+wiring, and the deadline mechanism below, which the next listener experiment (should
+one ever be ruled) should start from; none of it describes a class that exists in the
+tree today. `io.flowcatalyst.http.vertx` now holds only the router's outbound h2c
+mediation client (`VertxTransport`/`VertxMediationClient`, `docs/spec/router-h2.md` §5),
+which this document does not cover.
+
+Below, as originally written: the second implementation of the seam
+(`docs/spec/http-seam.md`); Javalin stays reachable by flag until Phase 3. Admission and
+time are `docs/spec/admission.md`.
 
 ## 1. Shape
 

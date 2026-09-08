@@ -120,4 +120,19 @@ class Http2Test {
             client.stop();
         }
     }
+
+    /// HTTP/3 was dropped (owner ruling 2026-09-08, `docs/vertx-plan.md`
+    /// closing section): `FC_HTTP3_ENABLED=true` must fail the server at
+    /// startup with a message naming the variable, never silently boot with
+    /// HTTP/3 simply absent — that would be indistinguishable from a
+    /// misconfiguration nobody noticed.
+    @Test
+    void http3EnabledIsARejectedStartupErrorNotASilentNoOp() {
+        int apiPort = TransportTestSupport.freePort();
+        assertThatThrownBy(() -> TransportTestSupport.start(Map.of(
+                "FC_API_PORT", String.valueOf(apiPort),
+                "FC_HTTP3_ENABLED", "true")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FC_HTTP3_ENABLED");
+    }
 }

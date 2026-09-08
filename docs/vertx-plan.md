@@ -352,6 +352,57 @@ the real server at 1- and 2-CPU quotas — throughput within 10% of Go, p99 with
 **Nothing merges without the owner's explicit approval.** Meeting the line earns the
 request, not the merge.
 
+## 9. Cutover, and reversion (owner ruling 2026-09-08)
+
+The cutover (Phase 3) landed anyway on `vertx-listener` and was merged. The owner
+reverted it the same day (`git revert -m 1` of the cutover merge, one commit; a second
+commit trimmed the restored Javalin/Jetty state to drop HTTP/3 again and demote
+`io.flowcatalyst.http.vertx` to the router's outbound h2c mediation client only —
+`VertxTransport`/`VertxMediationClient`, `docs/spec/router-h2.md` §5 — never a
+listener). Reasons:
+
+- **MCP.** Phase 2/3 parked MCP rather than porting its servlet-based streamable-HTTP
+  transport to Vert.x (§4 row "MCP servlet transport" above, §5 Phase 4 "MCP: Vert.x
+  `McpStreamableServerTransportProvider` when MCP is revisited") — a real, un-costed
+  unit of work the plan never actually did. Reverting restores the MCP SDK's own
+  Javalin-compatible servlet transport for free.
+- **The servlet ecosystem.** Losing Javalin/Jetty means losing every library that
+  expects a `ServletContextHandler` — MCP's transport was the concrete case in hand,
+  but the risk is general: the platform would need a bespoke Vert.x integration for
+  the next one too, indefinitely.
+- **The measured gain did not clear that bar.** At the scale this ships at (2 CPUs and
+  up, §8's acceptance line), the listener choice itself was within 2% on throughput —
+  "the listener choice itself is within 2%" (§8, end-of-day 2026-09-06 status). The
+  one-core rows told a different, and initially more persuasive, story: Round 15
+  (`bench/real/RESULTS.md`) measured dropping Javalin and Jetty as worth about a fifth
+  of the one-core gap on its own (`/api/event-types/{id}`: 3,115 → 3,778 req/s against
+  the same Go baseline, ≈21%; the list endpoint 1,232 → 1,361, ≈10%) — but Round 15's
+  own read of it is "fewer classes, less metaspace and a smaller code cache to contend
+  for on a single core; **a side effect of the cutover rather than its purpose**." A
+  ~20% one-core CPU-contention win that is not actually about Vert.x vs. Javalin as
+  libraries does not justify carrying a bespoke MCP transport and closing the door on
+  every other servlet-shaped dependency, when the two-CPU-and-up number the product
+  actually ships at is within noise either way.
+
+Kept from the Vert.x work despite the reversion (owner ruling, listener-independent):
+the router's h2c mediation client (`VertxTransport`/`VertxMediationClient`, prior-
+knowledge HTTP/2 for cleartext dispatch targets), the pool gate and its nested-acquire
+guard, the four derived tier-2 group bulkheads (`docs/spec/admission.md`), the
+loop-owned-deadline design record above (§3b) as the reasoning the *next* listener
+experiment should reuse, and `RequestWorkers` (the request-level admission class,
+currently without a production caller — Javalin's own thread-per-request model does
+not go through it). HTTP/3 (QUIC) stays dropped independently of this reversion (owner
+ruling 2026-09-08, closed Q6): `FC_HTTP3_ENABLED=true` is now a startup error rather
+than a silent no-op (`docs/spec/http-transport.md`).
+
+This plan document is kept as the design record of Phases 0–3, including the
+evidence and rulings that argued FOR the move — they were real findings, not
+withdrawn, and are exactly what the next listener experiment (Helidon, a future
+Vert.x attempt, or otherwise) should start from. `docs/spec/http-seam.md` and
+`docs/spec/vertx-listener.md` carry pointers back here; the seam itself
+(`io.flowcatalyst.http`) is unaffected — it always was Javalin/Jetty's only caller
+and remains so.
+
 **Status 2026-09-06, end of day:** everything above is on the branch. Parity corpus identical
 under both listeners (1,149 steps, 349 OK, 800 allow-listed, 0 DIFF, 0 ERROR) and both full
 suites green (3604 server + 87 fcdev, each listener). **Runtime** (`bench/real/RESULTS.md`, 12
