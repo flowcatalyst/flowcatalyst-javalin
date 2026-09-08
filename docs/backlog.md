@@ -1045,7 +1045,7 @@ Shape agreed:
   batcher completes it. The Vert.x event bus would add addressing, codecs and cluster routing for an
   in-process fan-in, and Vert.x is no longer the listener.
 - **The request path then holds no connection at all.** Only the batcher borrows one, so this group's
-  pool is sized by the number of batchers (one or two) rather than by request concurrency, and "never
+  pool is sized by K, the number of batchers, rather than by request concurrency, and "never
   hold a connection across an external wait" becomes structural rather than a discipline.
 - Failure semantics up front: a failed batch query fails every waiter in it; a missing row fails only
   its own waiter; the queue is bounded and rejects with 503 when full rather than growing; the terminal
