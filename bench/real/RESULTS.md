@@ -373,3 +373,31 @@ Rig: `KEEP=1` leaves the server container up after a run (to `docker cp` a profi
 `SERVER_ARGS` passes binary arguments (`-XX:StartFlightRecording=...` on native). Linux native
 build without a Linux Maven: run the reactor inside `ghcr.io/graalvm/native-image-community:25`
 with mise's Maven and `~/.m2` mounted (`mvn -o -Pnative -pl server -am package -DskipTests`).
+
+## Round 15 — one core, clean machine, matched pools (2026-09-08)
+
+Earlier attempts this day were worthless: the host reached 0.1 GB free with 19 GB compressed and
+7 GB of swap, and everything measured a third of its morning figure. After releasing memory and
+restarting the VM, Go reproduced its morning number within 4%, and three Go controls spread across
+the run agree within 6%, so the set below is trustworthy.
+
+| endpoint, 1 CPU / 1 GB | Go (pgxpool default, 14 conns) | Java, 32 conns / 30 workers | Java, 14 conns / 13 workers, min=max |
+|---|---:|---:|---:|
+| `/api/event-types/{id}` (1 KB) | 6,280 · 6,578 · 6,662 | 3,778 (59%) | 3,660 (56%) |
+| `/api/event-types` (48 KB page) | 1,869 | 1,361 (73%) | 1,323 (71%) |
+| RSS | 114–140 MB | 412–427 MB | 406–409 MB |
+
+**Matching the pools changes nothing.** Java runs the same within 3% at 14 connections as at 32, so
+the one-core gap is not connection concurrency; both sides are bound by per-request CPU. Round 14's
+profile already located it: ~30% of the request is the RS256 verify of the session cookie and ~20%
+is jOOQ rendering the same session-path queries from the AST on every call. Those two backlog items
+are the only things that move this row.
+
+**Dropping Javalin and Jetty was worth about a fifth of the gap.** Same endpoints, same Go: the item
+row went 3,115 → 3,778 and the list row 1,232 → 1,361 against the pre-cutover build. Fewer classes,
+less metaspace and a smaller code cache to contend for on a single core; a side effect of the
+cutover rather than its purpose.
+
+Pool sizes as shipped: Java `Database.DEFAULT_POOL_SIZE = 32` (constant, no env override), Go never
+sets `MaxConnections` so pgxpool defaults to `max(4, NumCPU)` = 14 in this container. Neither is
+deployment-settable — see `docs/backlog.md`.
