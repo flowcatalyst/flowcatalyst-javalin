@@ -385,7 +385,7 @@ whatever heartbeat/stall mechanism watches Go's consumer loops needs the same se
 signal, or it inherits the identical restart-storm collapse the moment its own `Poll` stops
 returning on a timer.
 
-## G14 — `/api/dispatch/process` claims a job without a lock or a status guard, so a duplicate delivery calls the subscriber twice (present in Go and Java)
+## G14 — `/api/dispatch/process` claims a job without a lock or a status guard, so a duplicate delivery calls the subscriber twice (was present in Go and Java; **both now fixed, Go's on a branch awaiting your merge**)
 
 Go: `internal/platform/dispatchjob/processing/processing.go:219` calls `repo.MarkInProgress`, whose
 SQL (`internal/sqlc/queries/dispatchjob.sql`, `DispatchJobMarkInProgress`) is
@@ -413,3 +413,28 @@ Found 2026-09-08 while settling the mediation-batching design, where the same lo
 different reason (the batch fetch is a claim). Owner: *"we MUST check the db and get a transaction lock
 on the record so we have to fetch anyway"* — which is also why the router will NOT gain a full-payload
 option.
+
+**Patch ready (2026-09-08).** Branch `dispatch-claim-atomic` at `91aa82c`, based on `feat/owner-rulings`
+@ `b422466`, in a worktree at `/Users/andrewgraaff/Developer/flowcatalyst-go-claim`. Your own checkout
+was never switched or written to — it is still on `feat/owner-rulings` with your uncommitted frontend
+edits exactly as they were.
+
+What it does: `DispatchJobMarkInProgress` is replaced by `DispatchJobClaimForDelivery` (`:execrows`,
+`AND status IN ('PENDING','QUEUED')`), `Repository.ClaimForDelivery` returns `rows == 1`, and the
+handler branches on it — a claim error NACKs (500, `ack:false`) instead of delivering with ownership
+unknown, and a lost claim ACKs `already claimed` with no call. `MarkInProgress` is deleted; it had no
+other caller.
+
+Verified by the orchestrator, not just the coding agent: `sqlc` v1.31.1 (it is at `~/go/bin/sqlc`, not
+on `PATH`) regenerates the checked-in code **byte for byte**, so the generated files are genuine.
+`go build ./internal/... && go vet ./internal/...` clean. `go test -race -tags=integration -count=1
+./internal/platform/dispatchjob/...` all green. Own mutant: deleting the status predicate fails
+`TestProcess_ConcurrentDeliveriesCallSubscriberOnce` (subscriber called twice, two attempt rows) plus
+both repository tests; restored and green.
+
+Not covered: the claim-error branch has no handler test, because `Handler.repo` is a concrete
+`*dispatchjob.Repository` with no interface seam. Java pins that branch because its handler was already
+narrowed to a `ProcessingRepository` interface for exactly this purpose. Worth doing the same in Go if
+you want the 500 path pinned.
+
+Java's equivalent landed on `vertx-listener` at `c4eea1e`.
