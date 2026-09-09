@@ -120,6 +120,13 @@ const router = createRouter({
 						},
 					],
 				},
+				// Login branding is a full page, not a drawer — navigate away
+				// from the client detail drawer.
+				{
+					path: "clients/:id/theme",
+					name: "client-theme",
+					component: () => import("@/pages/clients/ClientLoginThemePage.vue"),
+				},
 				// Users (platform / anchor scope — full user administration).
 				// Detail/create render in a right-side drawer over the list; children
 				// inherit the parent's meta.scope via vue-router's merged meta.

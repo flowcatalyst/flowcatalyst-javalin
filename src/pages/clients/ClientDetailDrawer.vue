@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
 import { ref, computed, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useConfirm } from "primevue/useconfirm";
 import { clientsApi, type Client, type ClientApplication } from "@/api/clients";
-import { configApi, defaultLoginTheme, type LoginTheme } from "@/api/config";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
-import LoginThemeEditor from "@/components/theme/LoginThemeEditor.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 import { useDirtyForm } from "@/composables/useDirtyForm";
 
@@ -16,6 +14,7 @@ const emit = defineEmits<{
 }>();
 
 const route = useRoute();
+const router = useRouter();
 const confirm = useConfirm();
 
 const editing = ref(false);
@@ -43,21 +42,6 @@ const applications = ref<[ClientApplication[], ClientApplication[]]>([[], []]);
 const loadingApps = ref(false);
 const savingApps = ref(false);
 
-// Login branding. `themeEnabled` reflects whether a CLIENT-scoped theme
-// row exists: off means this client's users see the platform theme, and
-// saving with it off deletes the override rather than storing a copy.
-const theme = ref<LoginTheme>(defaultLoginTheme());
-const themeEnabled = ref(false);
-const loadingTheme = ref(false);
-const savingTheme = ref(false);
-
-// The URL a relying party sends users to in order to get this branding.
-// The client hint is optional and cosmetic — without it the sign-in page
-// falls back to the platform theme.
-const brandedLoginHint = computed(() =>
-	client.value ? `/oauth/authorize?…&client=${client.value.identifier}` : "",
-);
-
 const availableApps = computed(() => applications.value[0]);
 const enabledApps = computed(() => applications.value[1]);
 
@@ -69,11 +53,7 @@ watch(
 		editing.value = false;
 		resetDirty();
 		applications.value = [[], []];
-		await Promise.all([
-			loadClient(value),
-			loadApplications(value),
-			loadTheme(value),
-		]);
+		await Promise.all([loadClient(value), loadApplications(value)]);
 		if (route.query["edit"] === "true") {
 			startEditing();
 		}
@@ -132,56 +112,10 @@ async function saveApplications() {
 	}
 }
 
-async function loadTheme(clientId: string) {
-	loadingTheme.value = true;
-	try {
-		// The platform theme doubles as the starting point for a client that
-		// has no override yet, so the admin customises from the real look
-		// rather than from hard-coded defaults.
-		const [globalJson, clientJson] = await Promise.all([
-			configApi.getLoginThemeConfig(),
-			configApi.getLoginThemeConfig(clientId),
-		]);
-
-		let base = defaultLoginTheme();
-		if (globalJson) base = { ...base, ...safeParse(globalJson) };
-
-		themeEnabled.value = Boolean(clientJson);
-		theme.value = clientJson ? { ...base, ...safeParse(clientJson) } : base;
-	} catch (error) {
-		console.error("Failed to load client theme:", error);
-	} finally {
-		loadingTheme.value = false;
-	}
-}
-
-function safeParse(json: string): Partial<LoginTheme> {
-	try {
-		return JSON.parse(json) as Partial<LoginTheme>;
-	} catch {
-		return {};
-	}
-}
-
-async function saveTheme() {
+// Login branding is a full page, not a drawer — navigate away.
+function viewLoginBranding() {
 	if (!client.value) return;
-
-	savingTheme.value = true;
-	const clientId = client.value.id;
-	try {
-		if (themeEnabled.value) {
-			await configApi.setLoginThemeConfig(theme.value, clientId);
-			toast.success("Success", "Login branding saved");
-		} else {
-			await configApi.clearLoginThemeConfig(clientId);
-			toast.success("Success", "Login branding reset to the platform theme");
-		}
-		await loadTheme(clientId);
-	} catch (e) {
-		toast.error("Error", getErrorMessage(e, "Failed to save login branding"));
-	} finally {
-		savingTheme.value = false;
-	}
+	void router.push(`/clients/${client.value.id}/theme`);
 }
 
 function startEditing() {
@@ -313,6 +247,7 @@ function copyClientId() {
 <template>
   <EntityDrawer
     ref="drawer"
+    size="wide"
     :title="client?.name || 'Client'"
     :subtitle="client?.identifier"
     :loading="loading"
@@ -423,47 +358,15 @@ function copyClientId() {
 
       <!-- Login Branding -->
       <FcFormSection title="Login Branding" flat>
-        <template #actions>
-          <Button
-            label="Save"
-            icon="pi pi-save"
-            :loading="savingTheme"
-            :disabled="savingTheme || loadingTheme"
-            @click="saveTheme"
-          />
-        </template>
-
-        <div v-if="loadingTheme" class="loading-apps">
-          <ProgressSpinner strokeWidth="3" style="width: 30px; height: 30px" />
-          <span>Loading branding...</span>
-        </div>
-
-        <template v-else>
-          <div class="theme-toggle">
-            <ToggleSwitch v-model="themeEnabled" input-id="client-theme-enabled" />
-            <label for="client-theme-enabled">
-              <strong>Use custom branding for this client</strong>
-              <p>
-                When off, this client's users see the platform-wide theme. Turning it on starts
-                from the current platform theme so you only change what differs.
-              </p>
-            </label>
+        <div class="action-items">
+          <div class="action-item">
+            <div class="action-info">
+              <strong>Login Branding</strong>
+              <p>Customize the sign-in, forgot-password and reset-password pages for this client.</p>
+            </div>
+            <Button label="Edit Branding" icon="pi pi-palette" outlined @click="viewLoginBranding" />
           </div>
-
-          <LoginThemeEditor
-            v-if="themeEnabled"
-            v-model="theme"
-            layout="stacked"
-            class="theme-editor-slot"
-          />
-
-          <p class="help-text">
-            Applies to the sign-in, forgot-password and reset-password pages. To get this
-            branding, the application sends users to
-            <code>{{ brandedLoginHint }}</code
-            >. Portal users are not affected.
-          </p>
-        </template>
+        </div>
       </FcFormSection>
 
       <!-- Actions -->
@@ -563,26 +466,6 @@ function copyClientId() {
 .help-text code {
   font-size: 12px;
   word-break: break-all;
-}
-
-.theme-toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.theme-toggle label {
-  cursor: pointer;
-}
-
-.theme-toggle p {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: #64748b;
-}
-
-.theme-editor-slot {
-  margin-top: 20px;
 }
 
 .action-items {
