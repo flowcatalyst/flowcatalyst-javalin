@@ -125,9 +125,14 @@ export const configApi = {
 	// that client's CLIENT-scoped override; omitting it targets the
 	// platform-wide GLOBAL row. The public endpoint layers the former over
 	// the latter, so a client only needs to store what it changes.
+	// No stored theme is the normal case — a client that has never been
+	// branded, or a fresh platform — and the backend answers 404 for it. That
+	// is an answer, not a failure, so suppress the global error banner and let
+	// the `null` fallback below stand in silently.
 	getLoginThemeConfig(clientId?: string): Promise<string | null> {
 		return apiFetch<PlatformConfig>(
 			configUrl("platform", "login", "theme", clientId),
+			{ suppressGlobalErrorToast: true },
 		)
 			.then((response: PlatformConfig) => response.value)
 			.catch(() => null);
@@ -154,14 +159,17 @@ export const configApi = {
 	clearLoginThemeConfig(clientId: string): Promise<void> {
 		return apiFetch<void>(
 			configUrl("platform", "login", "theme", clientId),
-			{ method: "DELETE" },
+			{ method: "DELETE", suppressGlobalErrorToast: true },
 		).catch(() => undefined);
 	},
 
 	// Platform name — the brand shown in emails, the authenticator app (2FA
 	// issuer), passkey prompts, and the SPA. Stored at platform/branding/platform-name.
 	getPlatformName(): Promise<string | null> {
-		return apiFetch<PlatformConfig>("/config/platform/branding/platform-name")
+		return apiFetch<PlatformConfig>(
+			"/config/platform/branding/platform-name",
+			{ suppressGlobalErrorToast: true },
+		)
 			.then((response: PlatformConfig) => response.value)
 			.catch(() => null);
 	},
