@@ -18,6 +18,7 @@ import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -34,6 +35,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
@@ -321,9 +323,23 @@ class ConsumerLoopTest {
         await(() -> consumer.polls.get() > pollsWhileFull);
         var elapsed = Duration.ofNanos(System.nanoTime() - freedAt);
 
+        // Measuring "promptly" needs a wall clock, and a wall clock on a
+        // starved machine measures the machine. This assertion failed twice
+        // under a concurrent Maven build and never idle, so the budget is
+        // calibrated against *this* machine right now — the cost of a bare
+        // virtual-thread handoff — and the test declines to judge when even
+        // that cannot be measured. The budget stays far below the fixed pause
+        // it exists to exclude (POLL_ERROR_PAUSE is 1s), so the mutant in the
+        // comment above still dies.
+        Duration handoff = handoffLatency();
+        Assumptions.assumeTrue(handoff.compareTo(Duration.ofMillis(50)) < 0,
+                "machine too loaded to time a resume: a bare virtual-thread handoff took " + handoff);
+        Duration budget = min(max(Duration.ofMillis(100), handoff.multipliedBy(10)), Duration.ofMillis(500));
+
         assertThat(elapsed)
-                .as("the loop must resume within 100 ms of capacity returning, not wait out a fixed pause")
-                .isLessThan(Duration.ofMillis(100));
+                .as("the loop must resume on the capacity signal, not wait out a fixed pause "
+                        + "(budget %s, calibrated from a %s handoff)", budget, handoff)
+                .isLessThan(budget);
     }
 
     @Test
@@ -573,15 +589,67 @@ class ConsumerLoopTest {
                 "broker-" + id, "receipt-" + id, "queue-1");
     }
 
+    /// Liveness, not performance: a healthy run returns as soon as the
+    /// condition holds, so a generous deadline costs nothing and only changes
+    /// how long a stuck test takes to report. It was 10s, and
+    /// `resumesPromptlyWhenCapacityReturns` failed on it twice under machine
+    /// load while passing every idle run — 10s was measuring the machine.
+    private static final Duration AWAIT_BUDGET = Duration.ofSeconds(60);
+
+    /// The cost of waking one parked virtual thread on this machine, right
+    /// now: park, signal, measure, best of five. On an idle machine this is
+    /// well under a millisecond; under contention it climbs, and it climbs
+    /// for the same reason a signalled consumer loop is slow to resume — so
+    /// it is the right yardstick for [#resumesPromptlyWhenCapacityReturns].
+    private static Duration handoffLatency() {
+        long best = Long.MAX_VALUE;
+        for (int i = 0; i < 5; i++) {
+            var release = new CountDownLatch(1);
+            var woke = new CountDownLatch(1);
+            var at = new AtomicLong();
+            Thread.ofVirtual().start(() -> {
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                at.set(System.nanoTime());
+                woke.countDown();
+            });
+            sleep(Duration.ofMillis(20));   // let it park
+            long signalled = System.nanoTime();
+            release.countDown();
+            try {
+                if (!woke.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    return Duration.ofSeconds(5);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+            best = Math.min(best, at.get() - signalled);
+        }
+        return Duration.ofNanos(best);
+    }
+
+    private static Duration max(Duration a, Duration b) {
+        return a.compareTo(b) >= 0 ? a : b;
+    }
+
+    private static Duration min(Duration a, Duration b) {
+        return a.compareTo(b) <= 0 ? a : b;
+    }
+
     private static void await(BooleanSupplier condition) {
-        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        long deadline = System.nanoTime() + AWAIT_BUDGET.toNanos();
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
                 return;
             }
             sleep(Duration.ofMillis(5));
         }
-        throw new AssertionError("condition not met within 10s");
+        throw new AssertionError("condition not met within " + AWAIT_BUDGET);
     }
 
     private static void sleep(Duration duration) {

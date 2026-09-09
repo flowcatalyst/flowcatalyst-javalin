@@ -901,7 +901,15 @@ class PoolTest {
 
     // ── Fakes ───────────────────────────────────────────────────────────
 
-    private static final int AWAIT_MILLIS = 5_000;
+    /// How long `await` waits before calling a condition dead.
+    ///
+    /// This is a **liveness** deadline, not a performance assertion: a healthy
+    /// run returns the moment the condition holds, so a generous value costs
+    /// nothing and only changes how long a genuinely stuck test takes to
+    /// report. It was 5s, and `rateLimitWarnsOnceForARun` failed twice on a
+    /// machine running a second Maven build while never failing idle — the
+    /// deadline was measuring the machine, not the pool.
+    private static final int AWAIT_MILLIS = 60_000;
 
     private static void await(BooleanSupplier condition) {
         long deadline = System.nanoTime() + Duration.ofMillis(AWAIT_MILLIS).toNanos();

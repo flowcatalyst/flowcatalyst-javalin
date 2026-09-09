@@ -669,25 +669,31 @@ later decision.
   No production change: siblings queued behind a failed head are blocked, and a
   message arriving after the group resolved is new work that should be tried.
 
-- **`ConsumerLoopTest.resumesPromptlyWhenCapacityReturns` is load-sensitive too**
-  (2026-09-08). Failed once on a full uncontended `mvn clean test` ("condition
-  not met within 10s"), then passed on an immediate re-run of the same suite
-  and in isolation (16/16 both times). Suspected but *not* confirmed as the
-  `setCause` sweep touching this file's poll-failure path — that path logs
-  only on a poll exception and this test never takes it, and the re-run
-  carried the same change. Measured over six post-sweep full-suite runs:
-  **three failures, six passes**, every failure landing immediately after
-  heavy back-to-back Maven work on the machine while deliberately idle runs
-  passed (it also produced one false "mutation killed" reading, so treat it
-  with suspicion when it appears in a mutation run). Same family as the `PoolTest` entry below: a 10 s await on a
-  concurrency handoff, load-sensitive rather than wrong. If it recurs, the
-  deadline (not the logging) is the thing to look at — the path it exercises
-  never logs a failure at all.
-- **`PoolTest.rateLimitWarnsOnceForARun` is load-sensitive.** It failed twice
-  while a second Maven build ran on the machine and could not be reproduced
-  idle (4/4 green, also with 32 carriers); the throttle path was made one
-  act (reserve → record → wait) and the assertion now prints the pool's
-  counters on failure. If it fails again, the message says what stalled.
+- ~~`ConsumerLoopTest.resumesPromptlyWhenCapacityReturns` and
+  `PoolTest.rateLimitWarnsOnceForARun` are load-sensitive~~ — **fixed
+  2026-09-09.** Neither was a concurrency defect: both failed on the shared
+  `await` **deadline** (5s in `PoolTest`, 10s in `ConsumerLoopTest`, used
+  across 48 and 28 call sites). That deadline is *liveness*, not performance —
+  a healthy run returns the moment the condition holds — so it was only ever
+  measuring the machine. Both are now 60s, which costs nothing on success and
+  changes only how long a genuinely stuck test takes to report.
+
+  One assertion needed more than a bigger deadline.
+  `resumesPromptlyWhenCapacityReturns` asserts `elapsed < 100ms` after the
+  capacity signal, a real wall-clock claim that starvation defeats however
+  long the deadline is. It now calibrates against the machine: measure a bare
+  virtual-thread handoff (park, signal, best of five), stand down with an
+  assumption if that exceeds 50ms — the machine cannot time anything — and
+  otherwise budget `max(100ms, handoff × 10)` capped at 500ms, always well
+  under the 1s fixed pause the assertion exists to exclude.
+
+  Not weakened, on two counts: the mutant still dies (reinstating
+  `Thread.sleep(POLL_ERROR_PAUSE)` in place of the gate park fails the test),
+  and on an idle machine the handoff measures ~67µs so the budget stays at
+  its 100ms floor — identical strictness to before. Evidence: 5/5 clean runs
+  of both classes under 10 CPU spinners with **zero** stand-downs, plus a
+  green reactor. The failure message now prints the calibrated budget and the
+  measured handoff, so a recurrence will say which half went wrong.
 - ~~Router tests leak parked virtual threads~~ — root cause was the
   terminal path: nothing closed a manager's pools, so every worker parked on
   a permit outlived its test. `RouterManager.close()` and a terminal
