@@ -441,7 +441,15 @@ class PoolTest {
         mediator.always("m0", MediationOutcome.ErrorConfig.rejected(500, "boom"));
         var p = pool(2, 0);
 
+        // Hold the head inside the mediator until every sibling is queued
+        // behind it. `takeAndReleaseGroup` snapshots the group at the instant
+        // the head fails and then *releases* it, so a head that fails before
+        // its siblings are submitted blocks nothing and they are delivered as
+        // a fresh group — which is correct behaviour and a broken test. Under
+        // CPU contention that is a 1-in-8 failure.
+        mediator.block();
         IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+        mediator.unblock();
 
         await(() -> broker.acked.size() == 1 && broker.nacked.size() == 2);
         // A counter that must change: if the old retry-then-give-up budget
@@ -468,6 +476,10 @@ class PoolTest {
         pool = new Pool(new Pool.Config("POOL-A", 2, 0), FAST, mediator, broker, metrics,
                 Clock.systemUTC(), Warnings.NO_OP, new BlockedSiblings.Settle(reporter));
 
+        // See the gate-OFF test: the head must not be allowed to fail until
+        // its siblings are queued, or the group is released before they
+        // arrive and they are delivered as a fresh group.
+        mediator.block();
         pool.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
         pool.submit(orderedWithToken("g", "m1", DispatchMode.BLOCK_ON_ERROR, "tok-1"));
         // No auth token: never came from the platform scheduler, so there is
@@ -475,6 +487,7 @@ class PoolTest {
         // skipped from the report.
         pool.submit(ordered("g", "m2", DispatchMode.BLOCK_ON_ERROR));
         pool.submit(orderedWithToken("g", "m3", DispatchMode.BLOCK_ON_ERROR, "tok-3"));
+        mediator.unblock();
 
         await(() -> broker.acked.size() == 4);
         assertThat(broker.nacked).isEmpty();

@@ -629,31 +629,45 @@ later decision.
 
 - ~~Two `DispatchMode` enums~~ — merged into
   `platform.shared.dispatch.DispatchMode` (X-01) on 2026-09-02.
-- **`PoolTest.blockOnErrorSettlesSiblingsWhenGateIsOn` failed once, unexplained
-  (2026-09-09) — treat as a possible real defect, not a flake.** One failure in
-  ~15 full runs; 3/3 green in isolation afterwards. It is *not* the
-  `rateLimitWarnsOnceForARun` entry below, and unlike the other two entries
-  here it asserts a **correctness guarantee**, not a timing one:
+- **The two `BLOCK_ON_ERROR` PoolTests raced their own submits** (2026-09-09).
+  **Fixed.** Recorded because the first reading of it was wrong in an
+  instructive way.
+
+  `blockOnErrorSettlesSiblingsWhenGateIsOn` failed once in ~15 full runs with
 
   ```
   Expecting ["rejected-group-blocked", "delivered", "delivered", "delivered"]
   to contain only ["rejected-group-blocked"]
   ```
 
-  Those are `broker.ackReasons`: m1/m2/m3 were **actually delivered** when
-  `BLOCK_ON_ERROR` says a blocked group's untried siblings must be ACKed
-  without ever being tried (ruling of 2026-08-25 — "breaking the guarantee the
-  mode is named for"). If this can happen in production, a failing head lets
-  its siblings through to the target, which is the exact failure the mode
-  exists to prevent, and it would land in the subscriber's data.
+  Three siblings *delivered* where the mode says they must be ACKed untried
+  looks like the guarantee of the 2026-08-25 ruling failing, and it was
+  initially filed here as a possible product defect on the reasoning that CPU
+  starvation cannot manufacture deliveries that should not happen. **That
+  reasoning was wrong.**
 
-  A group is serialised by `groups.claimDrainer(group)` (`Pool.java:357`), so
-  on a quick read one drainer should take m0 first, fail it, block the group,
-  and ACK the rest — no window for a sibling to be delivered. That the read
-  and the observed behaviour disagree is the reason to look properly rather
-  than to re-run until it passes. Worth reproducing under artificial CPU load
-  and, if it reproduces, checking whether two drainers can hold the same group
-  or whether the block is published after the next sibling is claimed.
+  `OrderedGroups:193` builds the failure as
+  `new HeadFailure.BlockGroup(head, takeAndReleaseGroup(head.group()))` — the
+  siblings are a snapshot taken at the instant the head fails, and the group
+  is then *released*. The test fires four `submit` calls back to back and
+  assumes the head fails last. Under load it can fail first: the snapshot is
+  empty, only the head is ACKed `rejected-group-blocked`, and m1–m3 then
+  arrive as a **fresh** group with m1 as its head — delivered normally, which
+  is correct. Starvation manufactures the deliveries indirectly, by reordering
+  the head's failure ahead of the siblings' arrival.
+
+  Reproduced deliberately: 10 CPU spinners against 14 cores, 1 failure in 8
+  runs of `PoolTest` — which surfaced `blockOnErrorReleasesSiblingsWhenGateIsOff`
+  wearing the same root cause as a *timeout* instead (siblings that get
+  delivered are never nacked, so its `await` waits out its 5 s). One race, two
+  tests, two symptoms.
+
+  Both now hold the head inside the mediator (`mediator.block()` / `unblock()`,
+  the barrier this file already uses elsewhere) until every sibling is queued
+  behind it. Same contention afterwards: **0 failures in 8 runs.**
+
+  No production change: siblings queued behind a failed head are blocked, and a
+  message arriving after the group resolved is new work that should be tried.
 
 - **`ConsumerLoopTest.resumesPromptlyWhenCapacityReturns` is load-sensitive too**
   (2026-09-08). Failed once on a full uncontended `mvn clean test` ("condition
