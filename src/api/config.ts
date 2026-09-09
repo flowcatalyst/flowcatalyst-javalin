@@ -157,19 +157,18 @@ export const configApi = {
 	// Drops a client's override so its login page falls back to the
 	// platform theme. A 404 means there was nothing to clear.
 	clearLoginThemeConfig(clientId: string): Promise<void> {
-		return apiFetch<void>(
-			configUrl("platform", "login", "theme", clientId),
-			{ method: "DELETE", suppressGlobalErrorToast: true },
-		).catch(() => undefined);
+		return apiFetch<void>(configUrl("platform", "login", "theme", clientId), {
+			method: "DELETE",
+			suppressGlobalErrorToast: true,
+		}).catch(() => undefined);
 	},
 
 	// Platform name — the brand shown in emails, the authenticator app (2FA
 	// issuer), passkey prompts, and the SPA. Stored at platform/branding/platform-name.
 	getPlatformName(): Promise<string | null> {
-		return apiFetch<PlatformConfig>(
-			"/config/platform/branding/platform-name",
-			{ suppressGlobalErrorToast: true },
-		)
+		return apiFetch<PlatformConfig>("/config/platform/branding/platform-name", {
+			suppressGlobalErrorToast: true,
+		})
 			.then((response: PlatformConfig) => response.value)
 			.catch(() => null);
 	},
