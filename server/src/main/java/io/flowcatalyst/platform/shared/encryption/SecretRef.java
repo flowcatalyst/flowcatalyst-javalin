@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.shared.encryption;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /// What a stored (or incoming) secret-reference string *claims* to be — the
 /// grammar of `client_secret_ref`, `oidc_client_secret_ref`,
@@ -58,6 +59,44 @@ public sealed interface SecretRef permits SecretRef.AtRest, SecretRef.Plain {
         if (v.startsWith(LITERAL_PREFIX)) return new Literal(v.substring(LITERAL_PREFIX.length()));
         if (v.startsWith(ENCRYPT_DIRECTIVE)) return new Plain(v.substring(ENCRYPT_DIRECTIVE.length()));
         return new Plain(v);
+    }
+
+    /// The scheme of a `<scheme>://…` value whose scheme is **not** in
+    /// [#EXTERNAL_SCHEMES] (`docs/spec/encryption.md` §3, owner ruling
+    /// 2026-09-08: the list is closed and an unknown scheme is *rejected*,
+    /// not encrypted). Empty when there is nothing to reject.
+    ///
+    /// This is a **write-side** check only — [#parse] still reads such a value
+    /// as [Plain], so a row already stored under an unknown scheme keeps
+    /// decrypting exactly as before. The explicit `encrypt:` directive is the
+    /// override ("this is plaintext, seal it"), the escape hatch for a genuine
+    /// secret shaped like `foo://bar`.
+    static Optional<String> unsupportedScheme(String value) {
+        if (value == null) return Optional.empty();
+        var v = value.strip();
+        var sep = v.indexOf("://");
+        if (sep <= 0) return Optional.empty();
+        var scheme = v.substring(0, sep);
+        // The at-rest claims (`encrypted:`, `hashed:v1:`, `literal:`) and the
+        // `encrypt:` directive each carry a ':', so none of them can form a
+        // scheme token: they are excluded by isSchemeToken, not by a
+        // separate prefix guard that would only drift out of step with it.
+        if (!isSchemeToken(scheme) || EXTERNAL_SCHEMES.contains(scheme)) return Optional.empty();
+        return Optional.of(scheme);
+    }
+
+    /// An RFC 3986 scheme token: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
+    /// Anything else before a `://` is not a scheme, it is a secret that
+    /// happens to contain the separator — and must still be encrypted.
+    private static boolean isSchemeToken(String s) {
+        if (s.isEmpty()) return false;
+        for (var i = 0; i < s.length(); i++) {
+            var c = s.charAt(i);
+            var alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            var ok = alpha || (i > 0 && ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'));
+            if (!ok) return false;
+        }
+        return true;
     }
 
     /// The shapes that are safe to persist as they are. [Plain] is not one:

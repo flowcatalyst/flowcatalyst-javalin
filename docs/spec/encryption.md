@@ -31,7 +31,7 @@ Items tagged **[owner?]** are "load-bearing or accident?" questions.
 | Current key | env `FLOWCATALYST_APP_KEY` | `FromEnv` |
 | Previous key | env `FLOWCATALYST_APP_KEY_PREVIOUS`, optional, **at most one** | `FromEnv` wraps it as a one-element list; `WithPreviousKeys` accepts N but nothing calls it with N > 1 |
 | Unset / empty current key | encryption **disabled** — no service; callers refuse to *write* plaintext secrets and fail closed on reads | `FromEnv` → `nil, nil`; `token.go:281` `verifyClientSecret` → false; `oidc.go:196` error; `mfa` TOTP disabled |
-| Malformed current or previous key | boot error | `wire_services.go:92` returns the error (fatal); `wire_routes.go:214` and `cmd/fcdev` discard it **[owner?]** accident — Java treats a malformed configured key as fatal everywhere (a key that cannot decrypt is worse than no key) |
+| Malformed current or previous key | boot error | `wire_services.go:92` returns the error (fatal); two sites discarded it. **Ruled 2026-09-08: fatal everywhere** — a key that cannot decrypt is worse than no key, and silently continuing gives a process that fails closed on every read with nothing naming the bad key. Java was already fatal everywhere; Go's two sites are fixed in `docs/go-mirror/2026-09-08-encryption-rulings.patch` (`wire_routes.go` now reuses the service `wire_services` already validated; `serviceaccount.NewRepository` uses the new `encryption.MustFromEnv`). `cmd/fcdev` already handled it. An *unset* key is still the documented disabled state, not an error. |
 | Whitespace | Go trims the previous key, not the current one (Go's base64 decoder silently skips `\n`, so a trailing newline still works, a trailing space does not) | `FromEnv`, `decrypt-check/main.go:33` warns about it |
 | `GenerateKey()` | 32 random bytes → padded standard base64 | `encryption.go:176` |
 
@@ -89,11 +89,15 @@ Minimum length 29 bytes (n = 0 is legal: the empty string encrypts).
 Minimum length 28 bytes.
 
 Decoders choose the layout by the **first byte**: `0x01` → v1, anything
-else → v0 (`encryption.go:118-129`). **[owner?]** A v0 envelope whose random
-nonce starts with `0x01` (1 in 256) is misread as v1 by Go and fails to
-decrypt. GCM authentication makes a v0 re-try safe (no false positive is
-possible), so Java **falls back to the v0 reading when the v1 reading fails
-with every key** — a strict superset; keep, or mirror Go exactly?
+else → v0 (`encryption.go:118-129`). A v0 envelope whose random nonce starts
+with `0x01` (1 in 256) is misread as v1 and fails to decrypt. GCM
+authentication makes a v0 re-try safe (no false positive is possible), so
+Java **falls back to the v0 reading when the v1 reading fails with every
+key**. **Ruled 2026-09-08: keep Java's fallback, and Go takes it too** — the
+alternative is permanent, silent loss of 1 in 256 legacy v0 rows. Mirrored in
+`docs/go-mirror/2026-09-08-encryption-rulings.patch`; a test pins that
+undecryptable data is still rejected after the retry, so the fallback cannot
+manufacture a false positive.
 
 Go's own minimum-length checks are `≥ 14` (v1) / `≥ 13` (v0) bytes, with GCM
 then rejecting anything shorter than a tag; Java reports the real minimum
@@ -134,9 +138,22 @@ stripping surrounding whitespace:
 | anything else | `Plain(value)` | plaintext |
 
 Rules:
-- The external scheme list is **closed**: an unknown `foo://x` is `Plain`
-  and gets encrypted. **[owner?]** intended (fail safe) or should any
-  `scheme://` be treated as external?
+- The external scheme list is **closed**, and an unknown scheme is
+  **rejected on write** (**ruled 2026-09-08**): `aws-smm://prod/db` is a
+  typo, and sealing it would store a secret-manager *reference* as though it
+  were the secret. `encryptSecretRef` throws (Go: `ErrUnsupportedScheme`) with
+  a message naming the supported schemes.
+  - The check is **write-side only**. `parse` still reads such a value as
+    `Plain` and `decrypt` answers exactly what it did before, so a row already
+    stored under an unknown scheme is not orphaned by the ruling.
+  - "Scheme" means an RFC 3986 token (`ALPHA *( ALPHA / DIGIT / "+" / "-" /
+    "." )`). A secret that merely contains `://` — `p@ss://word` — is not a
+    scheme and is encrypted normally.
+  - `encrypt:` is the **override** for a genuine secret shaped like a URL. It
+    needs no special case in the check: every at-rest claim (`encrypted:`,
+    `hashed:v1:`, `literal:`) and the directive itself carry a `:`, so none of
+    them can form a scheme token. A prefix guard restating that would only
+    drift out of step with the token rule.
 - `encrypted:` whose payload is not base64 is not a `SecretRef` at all —
   `parse` throws `IllegalArgumentException`; `decrypt` reports it
   *malformed*. Go's `EncryptSecretRef` would store such a value untouched
@@ -253,7 +270,7 @@ Returns the sealed `Decryption`, never throws for bad data:
 | `Plain` that is not base64 / too short | `Failed(NOT_ENCRYPTED)` |
 | `None` | `Failed(EMPTY)` (Go: "empty ciphertext") |
 | `External` | `External(ref)` — the caller resolves it elsewhere (Go `Decrypt` errors "invalid base64"; the intent is plainly "not inline") |
-| `Literal` | `Plaintext(value)` **[owner?]** Go's `Decrypt` rejects it (only `secrets.Service.Resolve` honours `literal:`); Java honours it because that is what the shape means. Keep, or make it `Failed(NOT_ENCRYPTED)`? |
+| `Literal` | `Plaintext(value)`. **Ruled 2026-09-08: keep Java's** — one shape, one meaning, wherever it is read. Go's `Decrypt` rejected it (only `secrets.Service.Resolve` honoured `literal:`), an artefact of where the prefix was introduced; mirrored in `docs/go-mirror/2026-09-08-encryption-rulings.patch`. |
 | `Hashed` | `Failed(HASHED)` — one-way by design; there is no plaintext to recover. Verify it with `verifySecret` (§3.1) instead |
 
 Key order: current first, then previous. Plaintext is UTF-8. Whitespace

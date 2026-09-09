@@ -1,0 +1,368 @@
+diff --git a/internal/platform/serviceaccount/repository.go b/internal/platform/serviceaccount/repository.go
+index b4ab49f..9e1949d 100644
+--- a/internal/platform/serviceaccount/repository.go
++++ b/internal/platform/serviceaccount/repository.go
+@@ -43,7 +43,10 @@ type Repository struct {
+ func NewRepository(pool *pgxpool.Pool) *Repository {
+ 	// Same lazy resolution the OAuth client-secret path uses; an unset key is
+ 	// not an error here, only at the point a secret would have to be written.
+-	enc, _ := encryption.FromEnv()
++	// A *malformed* key is fatal, though (owner ruling 2026-09-08): this ran
++	// at boot and discarded the error, leaving a process that refused every
++	// credential write with nothing naming the bad key.
++	enc := encryption.MustFromEnv()
+ 	return &Repository{q: dbq.New(pool), pool: pool, enc: enc}
+ }
+ 
+diff --git a/internal/platform/shared/encryption/encryption.go b/internal/platform/shared/encryption/encryption.go
+index 157de05..deac4f3 100644
+--- a/internal/platform/shared/encryption/encryption.go
++++ b/internal/platform/shared/encryption/encryption.go
+@@ -53,6 +53,9 @@ const currentVersion byte = 1
+ // checked by VerifySecret's hash branch, never decrypted.
+ const hashPrefix = "hashed:v1:"
+ 
++// literalPrefix marks a dev-bypass value that is its own plaintext.
++const literalPrefix = "literal:"
++
+ // Service performs field-level encryption with optional key rotation.
+ type Service struct {
+ 	current  cipher.AEAD
+@@ -130,6 +133,20 @@ func FromEnv() (*Service, error) {
+ 	return WithPreviousKeys(current, prevKeys)
+ }
+ 
++// MustFromEnv is FromEnv for the startup paths that have no error to return.
++// A *malformed* key is a boot-time misconfiguration and is fatal (owner ruling
++// 2026-09-08): carrying on with encryption silently disabled means the process
++// comes up, fails closed on every read and refuses every secret write, with
++// nothing pointing at the fat-fingered key. An unset key is still not an
++// error — that is the documented "encryption disabled" state and returns nil.
++func MustFromEnv() *Service {
++	svc, err := FromEnv()
++	if err != nil {
++		panic(fmt.Sprintf("encryption init: %v", err))
++	}
++	return svc
++}
++
+ // Encrypt returns the base64-encoded versioned envelope for plaintext.
+ func (s *Service) Encrypt(plaintext string) (string, error) {
+ 	nonce := make([]byte, s.current.NonceSize())
+@@ -149,6 +166,13 @@ func (s *Service) Encrypt(plaintext string) (string, error) {
+ // byte), and TypeScript-style "encrypted:" prefixed values. It tries
+ // the current key first then each previous key.
+ func (s *Service) Decrypt(encrypted string) (string, error) {
++	// "literal:<value>" means the value IS the plaintext (owner ruling
++	// 2026-09-08). One shape, one meaning, wherever it is read: previously
++	// only secrets.Service.Resolve honoured it and Decrypt reported it as
++	// invalid base64.
++	if lit := strings.TrimSpace(encrypted); strings.HasPrefix(lit, literalPrefix) {
++		return strings.TrimPrefix(lit, literalPrefix), nil
++	}
+ 	raw := strings.TrimPrefix(encrypted, "encrypted:")
+ 	data, err := base64.StdEncoding.DecodeString(raw)
+ 	if err != nil {
+@@ -161,10 +185,15 @@ func (s *Service) Decrypt(encrypted string) (string, error) {
+ 	nonceSize := s.current.NonceSize()
+ 	if data[0] == currentVersion {
+ 		// v1: version(1) || nonce(12) || ciphertext
+-		if len(data) < 1+nonceSize+1 {
+-			return "", errors.New("encryption: ciphertext too short (v1)")
++		if len(data) >= 1+nonceSize+1 {
++			if pt, err := s.tryDecrypt(data[1:1+nonceSize], data[1+nonceSize:]); err == nil {
++				return pt, nil
++			}
+ 		}
+-		return s.tryDecrypt(data[1:1+nonceSize], data[1+nonceSize:])
++		// A v0 envelope whose random nonce happens to begin 0x01 (1 in 256)
++		// reads as v1 and fails under every key. Retrying the v0 layout is
++		// safe because GCM authenticates: a wrong layout cannot yield a false
++		// positive, only a failure (owner ruling 2026-09-08). Falls through.
+ 	}
+ 	// v0 legacy: nonce(12) || ciphertext
+ 	if len(data) < nonceSize+1 {
+diff --git a/internal/platform/shared/encryption/owner_rulings_2026_09_08_test.go b/internal/platform/shared/encryption/owner_rulings_2026_09_08_test.go
+new file mode 100644
+index 0000000..d63ee17
+--- /dev/null
++++ b/internal/platform/shared/encryption/owner_rulings_2026_09_08_test.go
+@@ -0,0 +1,169 @@
++package encryption
++
++import (
++	"encoding/base64"
++	"errors"
++	"strings"
++	"testing"
++)
++
++// Owner rulings of 2026-09-08, mirrored from the Java port
++// (docs/spec/encryption.md §1, §2, §3, §4).
++
++func newService(t *testing.T) *Service {
++	t.Helper()
++	key, err := GenerateKey()
++	if err != nil {
++		t.Fatal(err)
++	}
++	enc, err := New(key)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return enc
++}
++
++// ── §3 the external-scheme list is closed, and rejects ───────────────────────
++
++func TestUnknownSchemeIsRejectedNotSealedAsThoughItWereTheSecret(t *testing.T) {
++	enc := newService(t)
++	for _, ref := range []string{"aws-smm://prod/db-password", "vaultt://secret/x", "gcp://x"} {
++		out, err := EncryptSecretRef(enc, ptr(ref))
++		if err == nil {
++			t.Fatalf("%q: want rejection, got stored %q", ref, *out)
++		}
++		if !errors.Is(err, ErrUnsupportedScheme) {
++			t.Fatalf("%q: want ErrUnsupportedScheme, got %v", ref, err)
++		}
++		if out != nil {
++			t.Fatalf("%q: a rejected write must store nothing, got %q", ref, *out)
++		}
++		// The message has to be actionable: what was wrong, what is allowed,
++		// and the way out.
++		for _, want := range []string{"aws-sm://", "encrypt:"} {
++			if !strings.Contains(err.Error(), want) {
++				t.Fatalf("%q: message %q does not mention %q", ref, err.Error(), want)
++			}
++		}
++	}
++}
++
++func TestEverySupportedSchemeStillPassesThroughVerbatim(t *testing.T) {
++	enc := newService(t)
++	for _, scheme := range []string{"aws-sm", "aws-ps", "gcp-sm", "vault", "env"} {
++		ref := scheme + "://prod/db-password"
++		out, err := EncryptSecretRef(enc, ptr(ref))
++		if err != nil {
++			t.Fatalf("%s: %v", scheme, err)
++		}
++		if *out != ref {
++			t.Fatalf("%s: want %q stored verbatim, got %q", scheme, ref, *out)
++		}
++	}
++}
++
++func TestEncryptDirectiveIsTheOverrideForASecretShapedLikeAUrl(t *testing.T) {
++	enc := newService(t)
++	out, err := EncryptSecretRef(enc, ptr("encrypt:foo://bar"))
++	if err != nil {
++		t.Fatalf("the explicit directive must win: %v", err)
++	}
++	if !strings.HasPrefix(*out, "encrypted:") {
++		t.Fatalf("want an envelope, got %q", *out)
++	}
++	pt, err := enc.Decrypt(*out)
++	if err != nil || pt != "foo://bar" {
++		t.Fatalf("want round-trip to foo://bar, got (%q,%v)", pt, err)
++	}
++}
++
++func TestASecretThatMerelyContainsTheSeparatorIsNotASchemeAndIsEncrypted(t *testing.T) {
++	enc := newService(t)
++	// "p@ss" is not an RFC 3986 scheme token, so this is a password.
++	out, err := EncryptSecretRef(enc, ptr("p@ss://word"))
++	if err != nil {
++		t.Fatalf("a password containing :// must still be encrypted, got %v", err)
++	}
++	if !strings.HasPrefix(*out, "encrypted:") {
++		t.Fatalf("want an envelope, got %q", *out)
++	}
++	pt, err := enc.Decrypt(*out)
++	if err != nil || pt != "p@ss://word" {
++		t.Fatalf("want round-trip, got (%q,%v)", pt, err)
++	}
++}
++
++func TestSchemeRejectionIsWriteSideOnlySoStoredRowsKeepReading(t *testing.T) {
++	enc := newService(t)
++	// Decrypt is untouched: an unknown scheme reads exactly as it did before
++	// the ruling, so a row already stored under one is not orphaned.
++	if _, err := enc.Decrypt("foo://bar"); err == nil {
++		t.Fatal("want the pre-existing read failure, got success")
++	} else if !strings.Contains(err.Error(), "invalid base64") {
++		t.Fatalf("read behaviour changed: %v", err)
++	}
++}
++
++// ── §4 literal: means the value IS the plaintext ─────────────────────────────
++
++func TestDecryptHonoursLiteral(t *testing.T) {
++	enc := newService(t)
++	pt, err := enc.Decrypt("literal:hunter2")
++	if err != nil || pt != "hunter2" {
++		t.Fatalf("want (hunter2,nil), got (%q,%v)", pt, err)
++	}
++	// An empty literal is still a literal, not an "empty ciphertext" error.
++	if pt, err := enc.Decrypt("literal:"); err != nil || pt != "" {
++		t.Fatalf("want empty plaintext, got (%q,%v)", pt, err)
++	}
++}
++
++// ── §2 a v0 nonce may begin with the v1 version byte ─────────────────────────
++
++func TestV0EnvelopeWhoseNonceBeginsWithTheVersionByteStillDecrypts(t *testing.T) {
++	enc := newService(t)
++	const secret = "legacy v0 secret"
++	nonce := make([]byte, enc.current.NonceSize())
++	nonce[0] = currentVersion // the 1-in-256 collision
++	ct := enc.current.Seal(nil, nonce, []byte(secret), nil)
++	v0 := base64.StdEncoding.EncodeToString(append(append([]byte{}, nonce...), ct...))
++
++	pt, err := enc.Decrypt(v0)
++	if err != nil {
++		t.Fatalf("a v0 row is unreadable whenever its nonce starts 0x01: %v", err)
++	}
++	if pt != secret {
++		t.Fatalf("want %q, got %q", secret, pt)
++	}
++}
++
++func TestGarbageIsStillRejectedAfterTheV0Retry(t *testing.T) {
++	enc := newService(t)
++	// The fallback must not turn "cannot decrypt" into a false positive.
++	junk := make([]byte, 40)
++	junk[0] = currentVersion
++	if _, err := enc.Decrypt(base64.StdEncoding.EncodeToString(junk)); err == nil {
++		t.Fatal("want failure for undecryptable data, got success")
++	}
++}
++
++// ── §1 a malformed key is fatal, an absent one is not ────────────────────────
++
++func TestMustFromEnvPanicsOnAMalformedKey(t *testing.T) {
++	t.Setenv("FLOWCATALYST_APP_KEY", "not-a-key")
++	defer func() {
++		if recover() == nil {
++			t.Fatal("a malformed key must be fatal, not silently encryption-disabled")
++		}
++	}()
++	MustFromEnv()
++}
++
++func TestMustFromEnvReturnsNilWhenTheKeyIsUnset(t *testing.T) {
++	t.Setenv("FLOWCATALYST_APP_KEY", "")
++	if svc := MustFromEnv(); svc != nil {
++		t.Fatalf("an unset key is the documented disabled state, got %v", svc)
++	}
++}
++
++func ptr(s string) *string { return &s }
+diff --git a/internal/platform/shared/encryption/secretref.go b/internal/platform/shared/encryption/secretref.go
+index d583c83..0c59813 100644
+--- a/internal/platform/shared/encryption/secretref.go
++++ b/internal/platform/shared/encryption/secretref.go
+@@ -2,6 +2,7 @@ package encryption
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"strings"
+ )
+ 
+@@ -14,6 +15,57 @@ var ErrNotConfigured = errors.New("encryption not configured: FLOWCATALYST_APP_K
+ // verbatim and resolved at read time — never encrypted inline.
+ var externalSecretSchemes = []string{"aws-sm://", "aws-ps://", "gcp-sm://", "vault://", "env://", "literal:"}
+ 
++// ErrUnsupportedScheme is returned by EncryptSecretRef for a "<scheme>://…"
++// value whose scheme is not in externalSecretSchemes. Callers map it to a
++// user-facing validation error (400, not 500 — it is the caller's input).
++var ErrUnsupportedScheme = errors.New("unsupported secret-manager scheme")
++
++// unsupportedScheme returns the scheme of a "<scheme>://…" value that claims a
++// secret-manager reference we do not support, or "" when there is nothing to
++// reject (owner ruling 2026-09-08: the list is closed and an unknown scheme is
++// *rejected*, never encrypted — silently sealing a mistyped "aws-smm://…"
++// stores a reference as though it were the secret itself).
++//
++// Write-side only: Decrypt and every read path still treat such a value
++// exactly as before, so rows already stored under an unknown scheme keep
++// working. The "encrypt:" directive is the override for a genuine secret
++// shaped like a URL — it carries a ':', so it can never form a scheme token
++// and never reaches the rejection.
++func unsupportedScheme(v string) string {
++	i := strings.Index(v, "://")
++	if i <= 0 {
++		return ""
++	}
++	scheme := v[:i]
++	if !isSchemeToken(scheme) {
++		return "" // not a scheme: a secret that merely contains "://"
++	}
++	for _, known := range externalSecretSchemes {
++		if scheme+"://" == known {
++			return ""
++		}
++	}
++	return scheme
++}
++
++// isSchemeToken reports whether s is an RFC 3986 scheme:
++// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
++func isSchemeToken(s string) bool {
++	if s == "" {
++		return false
++	}
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		switch {
++		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
++		case i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
++		default:
++			return false
++		}
++	}
++	return true
++}
++
+ // EncryptSecretRef converts an incoming secret reference into its at-rest form.
+ //
+ // A plaintext value — optionally carrying the SecretRefInput "encrypt:"
+@@ -42,6 +94,10 @@ func EncryptSecretRef(enc *Service, ref *string) (*string, error) {
+ 			return &v, nil // external reference, resolved at read time
+ 		}
+ 	}
++	if scheme := unsupportedScheme(v); scheme != "" {
++		return nil, fmt.Errorf("%w %q://; supported: %s (prefix the value with \"encrypt:\" to store it as an encrypted plaintext secret instead)",
++			ErrUnsupportedScheme, scheme, strings.Join(externalSecretSchemes, ", "))
++	}
+ 	plaintext := strings.TrimPrefix(v, "encrypt:")
+ 	if enc == nil {
+ 		return nil, ErrNotConfigured
+diff --git a/internal/server/wire_routes.go b/internal/server/wire_routes.go
+index b23f4a5..452d277 100644
+--- a/internal/server/wire_routes.go
++++ b/internal/server/wire_routes.go
+@@ -45,7 +45,6 @@ import (
+ 	serviceaccountapi "github.com/flowcatalyst/flowcatalyst-go/internal/platform/serviceaccount/api"
+ 	"github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/apiroute"
+ 	bff "github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/bff"
+-	"github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/encryption"
+ 	"github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/httpcompat"
+ 	meapi "github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/me"
+ 	platformmw "github.com/flowcatalyst/flowcatalyst-go/internal/platform/shared/middleware"
+@@ -204,9 +203,12 @@ func registerPlatformAPI(r chi.Router, cfg EnvCfg, pool *pgxpool.Pool, uow *usec
+ 		// session.
+ 		// Field-level encryption (FLOWCATALYST_APP_KEY) — nil-safe; the
+ 		// bridge will surface a clear error if a confidential OIDC config
+-		// needs a secret and the key isn't set.
+-		appEnc, _ := encryption.FromEnv()
+-		bridgeClient := bridge.NewBridge(repos.edmRepo, repos.idpRepo, appEnc)
++		// needs a secret and the key isn't set. Reuse the service wired in
++		// wire_services rather than re-reading the environment: that read is
++		// fatal on a malformed key, and this one silently discarded the error
++		// (owner ruling 2026-09-08 — a key that cannot decrypt is worse than
++		// no key, so it must never be swallowed).
++		bridgeClient := bridge.NewBridge(repos.edmRepo, repos.idpRepo, svcs.encSvc)
+ 		loginStateRepo := bridge.NewLoginStateRepo(pool)
+ 		bridgeLoginEP := bridge.NewLoginEndpoint(bridgeClient, loginStateRepo, repos.principalRepo, repos.edmRepo,
+ 			repos.roleRepo, repos.authRepo.IdpRoleMappings, uow, repos.authRepo.OAuthClients)

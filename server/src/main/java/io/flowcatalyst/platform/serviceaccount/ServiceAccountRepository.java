@@ -189,6 +189,9 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
     ///
     /// @throws UseCaseException internal `SECRET` when a plaintext credential
     ///                          is given but no app key is configured
+    /// @throws UseCaseException validation `INVALID_SECRET_REF` when the value
+    ///                          claims a secret-manager scheme that is not supported,
+    ///                          or is an `encrypted:` claim that is not base64
     private String encryptedRef(String plaintext) {
         if (plaintext == null) {
             return null;
@@ -197,7 +200,13 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
             throw UseCaseException.internal("SECRET",
                     "FLOWCATALYST_APP_KEY not configured; cannot encrypt webhook credential", null);
         }
-        return encryption.get().encryptSecretRef(plaintext);
+        try {
+            return encryption.get().encryptSecretRef(plaintext);
+        } catch (IllegalArgumentException e) {
+            // A malformed `encrypted:` claim or an unknown `<scheme>://` is the
+            // caller's input, not a server fault: 400, not 500.
+            throw UseCaseException.validation("INVALID_SECRET_REF", e.getMessage());
+        }
     }
 
     /// Only an `encrypted:`-prefixed value is decrypted; anything else is

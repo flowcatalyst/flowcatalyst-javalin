@@ -186,7 +186,21 @@ public final class Encryption {
     /// values pass through, so the operation is idempotent. An `encrypted:`
     /// value whose payload is not base64 is rejected ([IllegalArgumentException])
     /// rather than stored.
+    ///
+    /// A `<scheme>://…` value whose scheme is not one of
+    /// [SecretRef#EXTERNAL_SCHEMES] is **rejected** rather than encrypted
+    /// (owner ruling 2026-09-08): the list is closed, and silently sealing a
+    /// mistyped `aws-smm://…` would store a secret-manager *reference* as
+    /// though it were the secret. `encrypt:` overrides, for the rare secret
+    /// that genuinely looks like a URL.
     public String encryptSecretRef(String incoming) {
+        var unsupported = SecretRef.unsupportedScheme(incoming);
+        if (unsupported.isPresent()) {
+            throw new IllegalArgumentException("unsupported secret-manager scheme \"" + unsupported.get()
+                    + "://\"; supported: " + String.join(", ", SecretRef.EXTERNAL_SCHEMES)
+                    + " (prefix the value with \"" + SecretRef.ENCRYPT_DIRECTIVE
+                    + "\" to store it as an encrypted plaintext secret instead)");
+        }
         return switch (SecretRef.parse(incoming)) {
             case SecretRef.None _ -> incoming;
             case SecretRef.AtRest r -> r.stored();

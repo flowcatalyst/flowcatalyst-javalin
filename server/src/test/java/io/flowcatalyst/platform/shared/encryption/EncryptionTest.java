@@ -383,4 +383,48 @@ class EncryptionTest {
     void plaintextOutcomeDoesNotPrintTheSecret() {
         assertThat(new Plaintext("hunter2").toString()).doesNotContain("hunter2");
     }
+
+    // ── §3 the external-scheme list is closed, and rejects (ruling 2026-09-08) ──
+
+    @Test
+    void anUnknownSchemeIsRejectedOnWriteNotSealedAsThoughItWereTheSecret() {
+        assertThatThrownBy(() -> GO.encryptSecretRef("aws-smm://prod/db-password"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("aws-smm://")
+                .hasMessageContaining("aws-sm")   // names what IS supported
+                .hasMessageContaining("encrypt:"); // and the override
+        // The point of the ruling: it must NOT come back as an envelope.
+        assertThatThrownBy(() -> GO.encryptSecretRef("vaultt://secret/x"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"aws-sm", "aws-ps", "gcp-sm", "vault", "env"})
+    void everySupportedSchemeStillPassesThroughVerbatim(String scheme) {
+        var ref = scheme + "://prod/db-password";
+        assertThat(GO.encryptSecretRef(ref)).isEqualTo(ref);
+    }
+
+    @Test
+    void theEncryptDirectiveIsTheOverrideForASecretThatLooksLikeAUrl() {
+        var stored = GO.encryptSecretRef("encrypt:foo://bar");
+        assertThat(stored).startsWith("encrypted:");
+        assertThat(GO.decrypt(stored)).isEqualTo(new Plaintext("foo://bar"));
+    }
+
+    @Test
+    void aSecretThatMerelyContainsTheSeparatorIsNotASchemeAndIsEncrypted() {
+        // "p@ss" is not an RFC 3986 scheme token, so this is a password, not a reference.
+        var stored = GO.encryptSecretRef("p@ss://word");
+        assertThat(stored).startsWith("encrypted:");
+        assertThat(GO.decrypt(stored)).isEqualTo(new Plaintext("p@ss://word"));
+    }
+
+    @Test
+    void theRejectionIsWriteSideOnlySoRowsAlreadyStoredKeepReading() {
+        // parse() is unchanged: an unknown scheme is still Plain on the read path...
+        assertThat(SecretRef.parse("foo://bar")).isEqualTo(new SecretRef.Plain("foo://bar"));
+        // ...and decrypt answers exactly what it did before the ruling.
+        assertThat(GO.decrypt("foo://bar")).isEqualTo(new Failed(Reason.NOT_ENCRYPTED));
+    }
 }

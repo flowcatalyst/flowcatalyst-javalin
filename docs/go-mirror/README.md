@@ -10,6 +10,34 @@ diffing back. Apply from the Go repo root:
 git apply /Users/andrewgraaff/Developer/flowcatalyst-javalin/docs/go-mirror/<file>.patch
 ```
 
+## 2026-09-08-encryption-rulings.patch
+
+Four owner rulings on `docs/spec/encryption.md`, taken 2026-09-08. In each,
+Java already did the stricter thing and Go was the looser side; the ruling
+kept Java's behaviour, so this patch brings Go up to it. The one exception is
+the closed-scheme rejection, which is new on **both** sides.
+
+Verified: `go build ./...`, `go vet` clean; `gofmt` clean;
+`go test ./internal/platform/... ./internal/server/... ./internal/secrets/...`
+green (116 packages, 0 failures); `git apply --check` clean against Go
+`64b8170` on `feat/owner-rulings` (with the owner's uncommitted frontend work
+in the tree). Every new test was mutation-checked — each change was reverted
+in turn and the matching test observed to fail.
+
+| Ruling | Change |
+|---|---|
+| §1 malformed key is fatal **everywhere** | new `encryption.MustFromEnv` (panics on a malformed key, still returns `nil` for an unset one); `serviceaccount.NewRepository` uses it instead of `enc, _ := FromEnv()`; `wire_routes.go` drops its second `FromEnv()` read and reuses `svcs.encSvc`, which `wire_services` already validated fatally |
+| §2 v0 fallback | `Decrypt` retries the v0 layout when the v1 reading fails under every key, recovering the 1-in-256 legacy rows whose nonce begins `0x01`. GCM authenticates, so the retry cannot yield a false positive — pinned by a test that undecryptable data is still rejected |
+| §3 closed scheme list **rejects** | `EncryptSecretRef` returns `ErrUnsupportedScheme` for a `<scheme>://…` whose scheme is not supported, instead of sealing it as though it were the secret. Write-side only — `Decrypt` and every read path are untouched, so stored rows keep working. `encrypt:` is the override; an RFC 3986 token test keeps a password containing `://` out of it |
+| §4 `literal:` on decrypt | `Decrypt` honours `literal:<value>` and returns the value, as Java does; previously only `secrets.Service.Resolve` understood the prefix |
+
+**Note on `MustFromEnv`.** Making `NewRepository` return an error instead would
+ripple through `buildRepos` → `StartScheduledJobScheduler` → their callers,
+none of which return one today. Every caller of `NewRepository` runs at
+startup, so a panic there is a boot failure — which is what "fatal" means —
+and it is the same idiom as `regexp.MustCompile`. Say the word if you would
+rather take the signature change.
+
 ## 2026-09-05-auth-rulings.patch
 
 Verified: builds; `go test ./internal/platform/auth/... ./internal/platform/notify/... ./internal/platform/mfa/...` green; `git apply --check` clean against the Go working tree at the time of writing (Go HEAD `cfe1237` plus the owner's uncommitted work).
