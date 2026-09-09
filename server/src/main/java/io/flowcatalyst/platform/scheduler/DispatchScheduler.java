@@ -93,8 +93,10 @@ public final class DispatchScheduler implements AutoCloseable {
         var stale = new StaleQueuedJobPoller(repository, leader);
         var scheduler = new DispatchScheduler(poller, stale);
         scheduler.startLoops();
-        LOG.info("dispatch scheduler started poll_interval={} stale_after={}",
-                POLL_INTERVAL, StaleQueuedJobPoller.STALE_AFTER);
+        LOG.atInfo().setMessage("dispatch scheduler started")
+                .addKeyValue("interval", POLL_INTERVAL)
+                .addKeyValue("stale_after", StaleQueuedJobPoller.STALE_AFTER)
+                .log();
         return scheduler;
     }
 

@@ -278,7 +278,9 @@ public final class OutboxProcessor implements AutoCloseable {
         }
         int recovered = repository.recoverStuck(config.recoveryThreshold());
         if (recovered > 0) {
-            LOG.info("outbox: recovered {} stuck item(s)", recovered);
+            LOG.atInfo().setMessage("outbox: recovered stuck item(s)")
+                    .addKeyValue("count", recovered)
+                    .log();
         }
     }
 

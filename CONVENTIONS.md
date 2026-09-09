@@ -419,3 +419,42 @@ Rules promoted from audits (recurring findings become rules here):
 - [ ] Operations test (TestPg) + API test (TestHttp)
 - [ ] `LockfileCoverageTest` shows the new routes, no drift
 - [ ] Pass 2 idiom review done (§8)
+
+## 10. Logging
+
+`io.flowcatalyst.server.Logging` is the whole configuration — no `logback.xml`.
+It writes JSON to stderr by default and a readable pattern when stderr is a
+terminal or `FC_LOG_FORMAT=text`.
+
+- **An operational log carries its values as fields, not in the message.**
+
+  ```java
+  // no — the group is inside one opaque string, so a pipeline can only regex prose
+  LOG.warn("dispatch failed for group {}", group, e);
+
+  // yes — group is a field you can filter and aggregate on
+  LOG.atWarn().setMessage("dispatch failed")
+          .addKeyValue("group", group)
+          .setCause(e)
+          .log();
+  ```
+
+  `StructuredLoggingTest` enforces this over `src/main`: an `info`/`warn`/`error`
+  whose message literal contains `{}` fails the build.
+- **`debug` and `trace` are exempt** — development prose, off in production,
+  and the fluent builder is not free.
+- **The message is a stable event name**, not a sentence with a hole in it. It
+  must still say what happened once the values are removed: `"stopping
+  embedded postgres: {}"` becomes `"stopping embedded postgres failed"`, never
+  `"stopping embedded postgres"` — a WARN that reads like progress.
+- **An exception goes through `setCause(e)`**, never a key-value; it has its own
+  field. There is no `err` / `error` / `exception` key. (Go names it `err` on
+  the slog side; the field is equivalent, the spelling is per-language.)
+- **Field names come from the Go platform's vocabulary** so both codebases
+  aggregate on the same keys: `id`, `principal`, `job_id`, `message_id`,
+  `count`, `queue`, `status`, `pool`, `group`, `reason`, `attempt`, `addr`,
+  `target`, `scope`, `instance_id`, `batch_size`, `code`, `oauth_client_id`,
+  `event_type`, `backoff`, `retry_after`. Otherwise `lower_snake_case` naming
+  what the value *is*. The four MDC keys are `Logging.MdcKeys`.
+- **Never log a secret** — no token, password, key, client secret, PIN or
+  `Authorization` value, as a field or in the message.

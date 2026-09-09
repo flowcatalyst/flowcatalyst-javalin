@@ -48,7 +48,11 @@ public final class Notifications implements Notifier, TwoFactorNotifier {
         try {
             mail.send(new Mail(to, subject, body));
         } catch (RuntimeException e) {
-            LOG.warn("security notification not delivered to={} subject={}", to, subject, e);
+            LOG.atWarn().setMessage("security notification not delivered")
+                    .addKeyValue("to", to)
+                    .addKeyValue("subject", subject)
+                    .setCause(e)
+                    .log();
         }
     }
 

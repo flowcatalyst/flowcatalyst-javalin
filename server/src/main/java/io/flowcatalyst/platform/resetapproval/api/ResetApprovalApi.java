@@ -81,7 +81,10 @@ public final class ResetApprovalApi {
         try {
             s.links().sendResetEmail(p, request.reset2fa());
         } catch (RuntimeException e) {
-            LOG.warn("reset approval email not sent principal={}", p.id(), e);
+            LOG.atWarn().setMessage("reset approval email not sent")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
         ctx.json(Map.of("message", "Reset approved — the user has been emailed a link"));
     }

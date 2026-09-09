@@ -215,8 +215,11 @@ public final class PostgresQueue implements Consumer, Publisher {
     /// visibility and is retried later — the same message arriving twice is
     /// far better than a poll that dies and takes the whole batch with it.
     private void moveToFailed(String id, Exception cause) {
-        log.error("queue {}: message {} has a malformed payload; moving it to queue_messages_failed",
-                queueName, id, cause);
+        log.atError().setMessage("queue: message has a malformed payload; moving it to queue_messages_failed")
+                .addKeyValue("queue", queueName)
+                .addKeyValue("message_id", id)
+                .setCause(cause)
+                .log();
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(MOVE_TO_FAILED_SQL)) {
             ps.setString(1, queueName);
@@ -225,7 +228,11 @@ public final class PostgresQueue implements Consumer, Publisher {
             ps.setString(4, truncate(cause.getMessage()));
             ps.executeUpdate();
         } catch (Exception e) {
-            log.warn("queue {}: could not move message {} to the failed table", queueName, id, e);
+            log.atWarn().setMessage("queue: could not move message to the failed table")
+                    .addKeyValue("queue", queueName)
+                    .addKeyValue("message_id", id)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -315,13 +322,20 @@ public final class PostgresQueue implements Consumer, Publisher {
             ps.setString(2, queueName);
             int rows = ps.executeUpdate();
             if (rows == 0) {
-                log.warn("ack: receipt handle not found on queue {}: {}", queueName, message.receiptHandle());
+                log.atWarn().setMessage("ack: receipt handle not found")
+                        .addKeyValue("queue", queueName)
+                        .addKeyValue("receipt", message.receiptHandle())
+                        .log();
                 return false;
             }
             acked.incrementAndGet();
             return true;
         } catch (Exception e) {
-            log.warn("ack failed on queue {} for receipt {}", queueName, message.receiptHandle(), e);
+            log.atWarn().setMessage("ack failed")
+                    .addKeyValue("queue", queueName)
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .setCause(e)
+                    .log();
             return false;
         }
     }
@@ -343,7 +357,11 @@ public final class PostgresQueue implements Consumer, Publisher {
             ps.executeUpdate();
             nacked.incrementAndGet();
         } catch (Exception e) {
-            log.warn("nack failed on queue {} for receipt {}", queueName, message.receiptHandle(), e);
+            log.atWarn().setMessage("nack failed")
+                    .addKeyValue("queue", queueName)
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -403,7 +421,10 @@ public final class PostgresQueue implements Consumer, Publisher {
                 return Optional.of(new QueueMetrics(pending, inFlight, polled.get(), acked.get(), nacked.get()));
             }
         } catch (SQLException e) {
-            log.warn("metrics query failed for queue {}", queueName, e);
+            log.atWarn().setMessage("metrics query failed")
+                    .addKeyValue("queue", queueName)
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
     }
@@ -419,7 +440,10 @@ public final class PostgresQueue implements Consumer, Publisher {
             try {
                 ownedPool.close();
             } catch (Exception e) {
-                log.warn("closing queue {}'s own pool failed", queueName, e);
+                log.atWarn().setMessage("closing queue's own pool failed")
+                        .addKeyValue("queue", queueName)
+                        .setCause(e)
+                        .log();
             }
         }
     }

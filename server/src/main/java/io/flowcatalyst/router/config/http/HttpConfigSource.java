@@ -79,7 +79,9 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// Reported to `slog` only, never the operator warning store — matches
     /// Go's `mergeConfigs`, which treats a conflicting duplicate as a
     /// config-authoring problem rather than a runtime condition (§8.1).
-    private final RouterConfig.ConflictReporter conflictReporter = message -> log.warn("config merge: {}", message);
+    private final RouterConfig.ConflictReporter conflictReporter = message -> log.atWarn().setMessage("config merge conflict")
+            .addKeyValue("conflict", message)
+            .log();
 
     /// Each URL's last successfully fetched configuration, held so a source
     /// that starts failing keeps driving the traffic it was already driving
@@ -90,6 +92,11 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// once on entry rather than on every failed poll (§5.6: "raise... while
     /// a source is failing/stale").
     private final Set<String> failing = ConcurrentHashMap.newKeySet();
+
+    /// URLs whose failure cause has already been logged for the current
+    /// streak, so the stack trace lands once per outage rather than once per
+    /// retry. Cleared on success, like [#failing].
+    private final Set<String> causeLogged = ConcurrentHashMap.newKeySet();
 
     private record CachedFetch(RouterConfig config, Instant fetchedAt) {
     }
@@ -186,15 +193,34 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         }
 
         if (effective.isEmpty()) {
-            log.error("config fetch: all {} url(s) failed with no last-known-good configuration to fall back to",
-                    urls.size());
+            log.atError().setMessage("config fetch: all urls failed with no last-known-good configuration to fall back to")
+                    .addKeyValue("count", urls.size())
+                    .log();
             return Optional.empty();
         }
         if (droppedCount > 0) {
-            log.warn("config fetch: {} of {} url(s) failed with no last-known-good configuration; dropped",
-                    droppedCount, urls.size());
+            log.atWarn().setMessage("config fetch: urls failed with no last-known-good configuration; dropped")
+                    .addKeyValue("dropped", droppedCount)
+                    .addKeyValue("count", urls.size())
+                    .log();
         }
         return Optional.of(RouterConfig.merge(effective, conflictReporter));
+    }
+
+    /// The cause on the first failure of a URL's streak, its `toString`
+    /// afterwards: a source that stays broken is retried every
+    /// [#DEFAULT_RETRY_INTERVAL], and a stack trace per attempt is volume
+    /// rather than information.
+    ///
+    /// Deliberately **not** the `failing` set: that one is only entered when
+    /// there is a last-known-good to fall back on, so a URL that has never
+    /// once succeeded — the misconfigured-URL case, which never recovers on
+    /// its own — would never be in it and would log a trace every retry
+    /// forever. [#causeLogged] tracks the streak on its own terms and is
+    /// cleared by [#recordSuccess] alongside it.
+    private org.slf4j.spi.LoggingEventBuilder firstOfStreak(
+            org.slf4j.spi.LoggingEventBuilder event, String url, Throwable e) {
+        return causeLogged.add(url) ? event.setCause(e) : event.addKeyValue("reason", String.valueOf(e));
     }
 
     /// Caches `config` as `url`'s last-known-good and, if `url` was in a
@@ -204,6 +230,7 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     ///         above rather than needing a separate statement per URL
     private RouterConfig recordSuccess(String url, RouterConfig config) {
         lastKnownGood.put(url, new CachedFetch(config, Instant.now()));
+        causeLogged.remove(url);
         if (failing.remove(url)) {
             warnings.raise(Warnings.Severity.INFO, "CONFIGURATION", "config source " + url + " recovered");
         }
@@ -260,7 +287,10 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         return switch (subtask.state()) {
             case SUCCESS -> subtask.get();
             case FAILED -> {
-                log.warn("config fetch: {} failed unexpectedly", url, subtask.exception());
+                log.atWarn().setMessage("config fetch: failed unexpectedly")
+                        .addKeyValue("url", url)
+                        .setCause(subtask.exception())
+                        .log();
                 yield new FetchOutcome.Failure(url);
             }
             case UNAVAILABLE -> new FetchOutcome.Failure(url);
@@ -278,7 +308,10 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                 Thread.sleep(retryInterval);
             }
         }
-        log.warn("config fetch: {} failed after {} attempt(s)", url, maxAttempts);
+        log.atWarn().setMessage("config fetch: failed")
+                .addKeyValue("url", url)
+                .addKeyValue("max_attempts", maxAttempts)
+                .log();
         return new FetchOutcome.Failure(url);
     }
 
@@ -297,7 +330,10 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                     .timeout(requestTimeout)
                     .build();
         } catch (RuntimeException e) {
-            log.warn("config fetch: malformed url {}", url, e);
+            log.atWarn().setMessage("config fetch: malformed")
+                    .addKeyValue("url", url)
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
 
@@ -305,19 +341,24 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         try {
             response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
         } catch (IOException e) {
-            log.warn("config fetch attempt failed for {}: {}", url, e.toString());
+            firstOfStreak(log.atWarn().setMessage("config fetch attempt failed")
+                    .addKeyValue("url", url), url, e).log();
             return Optional.empty();
         }
 
         if (response.statusCode() >= 300) {
-            log.warn("config fetch attempt failed for {}: status {}", url, response.statusCode());
+            log.atWarn().setMessage("config fetch attempt failed")
+                    .addKeyValue("url", url)
+                    .addKeyValue("status", response.statusCode())
+                    .log();
             return Optional.empty();
         }
 
         try {
             return Optional.of(Json.MAPPER.readValue(response.body(), RouterConfig.class));
         } catch (JacksonException e) {
-            log.warn("config fetch attempt failed for {}: invalid JSON: {}", url, e.toString());
+            firstOfStreak(log.atWarn().setMessage("config fetch attempt failed: invalid JSON")
+                    .addKeyValue("url", url), url, e).log();
             return Optional.empty();
         }
     }

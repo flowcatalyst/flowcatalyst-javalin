@@ -65,7 +65,7 @@ class LoginMfaGateTest {
     private static final EmailDomainMappingRepository MAPPINGS = new EmailDomainMappingRepository(DS);
     private static final IdentityProviderRepository IDPS = new IdentityProviderRepository(DS);
     private static final MfaRepository REPO = new MfaRepository(DS);
-    private static final Mfa MFA = new Mfa(REPO, Optional.of(ENC), MailSender.logging(), Mfa.Config.DEFAULT, Clock.systemUTC());
+    private static final Mfa MFA = new Mfa(REPO, Optional.of(ENC), MailSender.logging(false), Mfa.Config.DEFAULT, Clock.systemUTC());
     private static final MfaToken TOKENS = new MfaToken(KEYS.privateKey(), "http://localhost:8080");
 
     private static final String STRICT = "strict-" + RUN + ".example";     // requires TOTP only, remember on

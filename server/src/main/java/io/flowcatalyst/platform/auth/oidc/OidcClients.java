@@ -209,7 +209,10 @@ public final class OidcClients {
         if (!multiTenant && !issuer.equals(issuerUrl) && !issuer.equals(base) && !(issuer + "/").equals(issuerUrl)) {
             throw new ResolutionException("OIDC discovery issuer " + issuer + " does not match the configured " + issuerUrl);
         }
-        LOG.info("oidc client discovered issuer={} token_endpoint={}", issuer, token);
+        LOG.atInfo().setMessage("oidc client discovered")
+                .addKeyValue("issuer", issuer)
+                .addKeyValue("token_endpoint", token)
+                .log();
         return new OidcProvider.Endpoints(issuer, authz, token, jwks);
     }
 

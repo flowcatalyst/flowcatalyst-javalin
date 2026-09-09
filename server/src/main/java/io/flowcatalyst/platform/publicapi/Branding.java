@@ -50,7 +50,9 @@ public final class Branding {
         Optional<String> stored = value(LOGIN_THEME).filter(v -> !v.isBlank());
         if (stored.isEmpty()) return LoginTheme.EMPTY;
         return LoginTheme.parse(stored.get()).orElseGet(() -> {
-            LOG.warn("branding: stored login theme at {} is not a JSON object; using defaults", LOGIN_THEME.path());
+            LOG.atWarn().setMessage("branding: stored login theme is not a JSON object; using defaults")
+                    .addKeyValue("path", LOGIN_THEME.path())
+                    .log();
             return LoginTheme.EMPTY;
         });
     }
@@ -68,7 +70,10 @@ public final class Branding {
         try {
             return configs.findByCoordinate(c).map(PlatformConfig::value);
         } catch (DataAccessException e) {
-            LOG.warn("branding: lookup of {} failed; using defaults", c.path(), e);
+            LOG.atWarn().setMessage("branding: lookup failed; using defaults")
+                    .addKeyValue("path", c.path())
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
     }

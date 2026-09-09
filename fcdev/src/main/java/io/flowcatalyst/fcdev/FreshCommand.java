@@ -123,13 +123,17 @@ public final class FreshCommand implements Callable<Integer> {
             // and TRUNCATE would 42P01.
             DevBootstrap.migrate(pool);
             truncate(pool);
-            LOG.info("FlowCatalyst tables truncated table_count={}", FRESH_TABLES.size());
+            LOG.atInfo().setMessage("FlowCatalyst tables truncated")
+                    .addKeyValue("table_count", FRESH_TABLES.size())
+                    .log();
 
             // Re-seed so the next sign-in works without restarting, with start's defaults.
             var dev = env.mutable();
             DevBootstrap.seedAdminDefaults(dev);
             DevBootstrap.seed(pool, dev.freeze());
-            LOG.info("FlowCatalyst reseeded — sign in with the bootstrap admin email={}", DevBootstrap.DEV_ADMIN_EMAIL);
+            LOG.atInfo().setMessage("FlowCatalyst reseeded — sign in with the bootstrap admin")
+                    .addKeyValue("email", DevBootstrap.DEV_ADMIN_EMAIL)
+                    .log();
         }
         return 0;
     }
@@ -138,7 +142,10 @@ public final class FreshCommand implements Callable<Integer> {
         Path dataPath = Path.of(embeddedDbPath);
         EmbeddedPg.assertCompatible(dataPath);
         EmbeddedPg pg = EmbeddedPg.start(dataPath, embeddedDbPort, paths.embeddedPgCacheDir());
-        LOG.info("embedded postgres started for fresh port={} path={}", pg.port(), dataPath);
+        LOG.atInfo().setMessage("embedded postgres started for fresh")
+                .addKeyValue("port", pg.port())
+                .addKeyValue("path", dataPath)
+                .log();
         return pg;
     }
 

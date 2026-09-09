@@ -95,11 +95,12 @@ public final class FcDev implements Callable<Integer> {
         // Runtime failures (port in use, DB unreachable) shouldn't trigger a usage dump —
         // that noise hides the real error line. Log + exit 1, as the Go main does.
         cl.setExecutionExceptionHandler((ex, _, _) -> {
-            if (LOG.isDebugEnabled()) {
-                LOG.error("fcdev exited with error err={}", ex.toString(), ex);
-            } else {
-                LOG.error("fcdev exited with error err={}", ex.getMessage() == null ? ex.toString() : ex.getMessage());
-            }
+            // One call, cause always attached: the debug-gated branch this
+            // replaced meant an ordinary `fcdev` failure logged a message and
+            // no stack trace at all (docs/backlog.md 2026-09-08).
+            LOG.atError().setMessage("fcdev exited with error")
+                    .setCause(ex)
+                    .log();
             return 1;
         });
         return cl;

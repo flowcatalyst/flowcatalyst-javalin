@@ -1,11 +1,14 @@
 package io.flowcatalyst.router.queue.sqs;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer.PollResult;
 import io.flowcatalyst.router.queue.Consumer.PollResult.Delivered;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
@@ -291,6 +294,63 @@ class SqsQueueTest {
 
         assertThat(client.deleteRequests()).hasSize(1);
         assertThat(sqs.metrics()).get().extracting(QueueMetrics::acked).isEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("a delete outage logs one stack trace per streak, and a fresh streak logs its own")
+    void deleteFailuresLogTheCauseOncePerStreak() throws InterruptedException {
+        // An outage fails the delete for every message in flight. A stack
+        // trace each time is volume, not information — but every failure must
+        // still be logged, must still name the error, and a *new* outage must
+        // not be silent about its cause.
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "r-1", "{\"id\":\"msg-1\"}"),
+                        sqsMessage("mid-2", "r-2", "{\"id\":\"msg-2\"}"),
+                        sqsMessage("mid-3", "r-3", "{\"id\":\"msg-3\"}"),
+                        sqsMessage("mid-4", "r-4", "{\"id\":\"msg-4\"}"),
+                        sqsMessage("mid-5", "r-5", "{\"id\":\"msg-5\"}"))
+                .build());
+        SqsQueue sqs = queue();
+        var msgs = delivered(sqs.poll(10));
+
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var log = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(SqsQueue.class);
+        log.addAppender(captured);
+        try {
+            client.failDeleteWith(SdkClientException.create("boom"));
+            sqs.ack(msgs.get(0));
+            sqs.ack(msgs.get(1));
+            sqs.ack(msgs.get(2));
+
+            assertThat(deleteFailures(captured)).as("every failure is still logged").hasSize(3);
+            assertThat(tracesIn(captured)).as("one trace for the streak").hasSize(1);
+            assertThat(deleteFailures(captured).getFirst().getThrowableProxy()).as("and it is the first").isNotNull();
+            assertThat(deleteFailures(captured).get(1).getKeyValuePairs())
+                    .as("the later ones still name the error")
+                    .anySatisfy(kv -> assertThat(String.valueOf(kv.value)).contains("boom"));
+
+            // A delete that succeeds ends the streak...
+            client.failDeleteWith(null);
+            sqs.ack(msgs.get(3));
+
+            // ...so the next outage is a new streak and gets its own trace.
+            client.failDeleteWith(SdkClientException.create("boom again"));
+            sqs.ack(msgs.get(4));
+            assertThat(tracesIn(captured))
+                    .as("a fresh outage must not be silent about its cause")
+                    .hasSize(2);
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    private static List<ILoggingEvent> deleteFailures(ListAppender<ILoggingEvent> captured) {
+        return captured.list.stream().filter(e -> e.getFormattedMessage().contains("DeleteMessage failed")).toList();
+    }
+
+    private static List<ILoggingEvent> tracesIn(ListAppender<ILoggingEvent> captured) {
+        return deleteFailures(captured).stream().filter(e -> e.getThrowableProxy() != null).toList();
     }
 
     // --- nack -----------------------------------------------------------------

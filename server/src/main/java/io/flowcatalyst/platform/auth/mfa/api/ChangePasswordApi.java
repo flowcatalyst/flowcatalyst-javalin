@@ -110,7 +110,10 @@ public final class ChangePasswordApi {
         try {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
-            LOG.error("change-password: MFA status load failed principal={}", p.id(), e);
+            LOG.atError().setMessage("change-password: MFA status load failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status");
             return;
         }
@@ -138,13 +141,19 @@ public final class ChangePasswordApi {
         try {
             s.mfa().revokeAllTrustedDevices(p.id());
         } catch (RuntimeException e) {
-            LOG.warn("revoke trusted devices after password change failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("revoke trusted devices after password change failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
         s.deviceCookie().clear(ctx);
         try {
             s.grantStore().revokeAllForPrincipal(p.id());
         } catch (RuntimeException e) {
-            LOG.warn("revoke refresh tokens after password change failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("revoke refresh tokens after password change failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
         s.notifier().passwordChanged(p.email());
         ctx.json(Map.of("message", "Your password has been changed."));
@@ -198,7 +207,10 @@ public final class ChangePasswordApi {
             }
             return true;
         } catch (RuntimeException | SQLException e) {
-            LOG.error("password change persist failed principal={}", p.id(), e);
+            LOG.atError().setMessage("password change persist failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             return false;
         }
     }
@@ -215,7 +227,10 @@ public final class ChangePasswordApi {
         try {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
-            LOG.error("change-password send-email-code: MFA status load failed principal={}", p.id(), e);
+            LOG.atError().setMessage("change-password send-email-code: MFA status load failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "MFA_STATUS_FAILED", "could not check two-factor status");
             return;
         }
@@ -235,7 +250,10 @@ public final class ChangePasswordApi {
         try {
             s.mfa().sendLoginEmailPin(p.id(), email);
         } catch (RuntimeException e) {
-            LOG.error("change-password send-email-code failed principal={}", p.id(), e);
+            LOG.atError().setMessage("change-password send-email-code failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "SEND_FAILED", "could not send the code");
             return;
         }

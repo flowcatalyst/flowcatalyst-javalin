@@ -75,7 +75,10 @@ public final class WarningNotifier implements Warnings, AutoCloseable {
                     .connectTimeout(Duration.ofSeconds(5)).build(),
                     DEFAULT_BATCH_SIZE, DEFAULT_INTERVAL, minSeverity, clock);
         } catch (java.net.URISyntaxException e) {
-            log.error("FC_NOTIFY_WEBHOOK_URL is not a valid URI; warnings will not be delivered: {}", url, e);
+            log.atError().setMessage("FC_NOTIFY_WEBHOOK_URL is not a valid URI; warnings will not be delivered")
+                    .addKeyValue("url", url)
+                    .setCause(e)
+                    .log();
             return Warnings.NO_OP;
         }
     }
@@ -131,8 +134,10 @@ public final class WarningNotifier implements Warnings, AutoCloseable {
                             .build(),
                     HttpResponse.BodyHandlers.discarding());
             if (response.statusCode() >= 300) {
-                log.warn("warning webhook answered {}; {} notice(s) not delivered",
-                        response.statusCode(), batch.size());
+                log.atWarn().setMessage("warning webhook answered; notice(s) not delivered")
+                        .addKeyValue("status", response.statusCode())
+                        .addKeyValue("count", batch.size())
+                        .log();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -141,7 +146,10 @@ public final class WarningNotifier implements Warnings, AutoCloseable {
             // a queue of undelivered notices that outlives the incident is
             // worse than silence, because it arrives as history claiming to
             // be news.
-            log.warn("could not deliver {} warning notice(s)", batch.size(), e);
+            log.atWarn().setMessage("could not deliver warning notice(s)")
+                    .addKeyValue("count", batch.size())
+                    .setCause(e)
+                    .log();
         }
     }
 

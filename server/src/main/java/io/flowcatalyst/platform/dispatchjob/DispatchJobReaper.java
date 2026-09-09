@@ -83,7 +83,9 @@ public final class DispatchJobReaper implements AutoCloseable {
         try {
             List<String> reset = sweepOnce();
             if (!reset.isEmpty()) {
-                LOG.info("dispatch job reaper: reset {} stranded sibling(s)", reset.size());
+                LOG.atInfo().setMessage("dispatch job reaper: reset stranded sibling(s)")
+                        .addKeyValue("count", reset.size())
+                        .log();
             }
         } catch (RuntimeException e) {
             LOG.error("dispatch job reaper sweep failed; will retry next tick", e);

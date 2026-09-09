@@ -105,7 +105,10 @@ public final class BrokerStatsCache {
                     recordUnreachable(queueId);
                 }
             } catch (RuntimeException e) {
-                log.warn("could not read broker metrics for queue {}", queueId, e);
+                log.atWarn().setMessage("could not read broker metrics")
+                        .addKeyValue("queue", queueId)
+                        .setCause(e)
+                        .log();
                 recordUnreachable(queueId);
             }
         });

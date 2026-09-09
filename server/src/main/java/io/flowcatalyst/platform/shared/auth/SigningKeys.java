@@ -174,7 +174,9 @@ public record SigningKeys(
                 var pem = Files.readString(Path.of(path), StandardCharsets.UTF_8);
                 return fromPem(pem, env.jwtPreviousPublicKey());
             } catch (IOException e) {
-                LOG.warn("FC_JWT_SIGNING_KEY_PATH unreadable, falling back: {}", e.toString());
+                LOG.atWarn().setMessage("FC_JWT_SIGNING_KEY_PATH unreadable, falling back")
+                        .setCause(e)
+                        .log();
             }
         }
         // FLOWCATALYST_JWT_PRIVATE_KEY first: it's the deployed signing key, so reading it
@@ -437,7 +439,9 @@ public record SigningKeys(
         if (posix(path)) {
             Files.setPosixFilePermissions(path, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
         }
-        LOG.info("generated persistent JWT signing key at {}", path);
+        LOG.atInfo().setMessage("generated persistent JWT signing key")
+                .addKeyValue("path", path)
+                .log();
         return path;
     }
 

@@ -99,7 +99,9 @@ public final class SettledApi {
             String token = job.token() == null ? "" : job.token().trim();
             if (id.isEmpty() || token.isEmpty()) continue;
             if (!s.verifier().verify(id, token)) {
-                LOG.warn("dispatch settled: bad auth token, job_id={}", id);
+                LOG.atWarn().setMessage("dispatch settled: bad auth token")
+                        .addKeyValue("job_id", id)
+                        .log();
                 continue;
             }
             ids.add(id);
@@ -114,7 +116,10 @@ public final class SettledApi {
 
         List<String> settled = s.repo().settleAcked(ids, reason);
         if (!settled.isEmpty()) {
-            LOG.info("dispatch settled: {} siblings marked PENDING, reason={}", settled.size(), reason);
+            LOG.atInfo().setMessage("dispatch settled: siblings marked PENDING")
+                    .addKeyValue("count", settled.size())
+                    .addKeyValue("reason", reason)
+                    .log();
         }
         ctx.status(200).json(new SettledResponse(settled.size(), settled.isEmpty() ? null : settled));
     }

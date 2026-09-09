@@ -73,7 +73,10 @@ public final class Projector implements Runnable {
                     n = step.step(config.batchSize());
                 } catch (Exception e) {
                     errored = true;
-                    LOG.warn("projector step error name={}", name, e);
+                    LOG.atWarn().setMessage("projector step error")
+                            .addKeyValue("name", name)
+                            .setCause(e)
+                            .log();
                     health.recordError();
                 }
                 if (n > 0) {
@@ -84,7 +87,9 @@ public final class Projector implements Runnable {
             }
         } finally {
             health.setRunning(false);
-            LOG.info("projector stopped name={}", name);
+            LOG.atInfo().setMessage("projector stopped")
+                    .addKeyValue("name", name)
+                    .log();
         }
     }
 

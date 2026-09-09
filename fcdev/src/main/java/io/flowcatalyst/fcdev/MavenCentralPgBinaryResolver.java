@@ -85,7 +85,9 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
     @Override
     public InputStream getPgBinary(String system, String machineHardware) throws IOException {
         if (offlineOverride != null) {
-            LOG.info("using --embedded-db-binary override instead of a bundled/downloaded postgres binary path={}", offlineOverride);
+            LOG.atInfo().setMessage("using --embedded-db-binary override instead of a bundled/downloaded postgres binary")
+                    .addKeyValue("path", offlineOverride)
+                    .log();
             return Files.newInputStream(offlineOverride);
         }
 
@@ -143,7 +145,11 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
         String jarUrl = repoBaseUrl + "/io/zonky/test/postgres/" + artifact + "/" + version + "/" + artifact + "-" + version + ".jar";
         String sha1Url = jarUrl + ".sha1";
 
-        LOG.info("downloading embedded PostgreSQL binary artifact={} version={} url={}", artifact, version, jarUrl);
+        LOG.atInfo().setMessage("downloading embedded PostgreSQL binary")
+                .addKeyValue("artifact", artifact)
+                .addKeyValue("version", version)
+                .addKeyValue("url", jarUrl)
+                .log();
         Instant start = Instant.now();
 
         Path tmp = Files.createTempFile(downloads, artifact, ".jar.tmp");
@@ -156,7 +162,11 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
             }
             Files.move(tmp, dest, StandardCopyOption.ATOMIC_MOVE);
             Duration elapsed = Duration.between(start, Instant.now());
-            LOG.info("downloaded embedded PostgreSQL binary artifact={} bytes={} seconds={}", artifact, bytes, elapsed.toSeconds());
+            LOG.atInfo().setMessage("downloaded embedded PostgreSQL binary")
+                    .addKeyValue("artifact", artifact)
+                    .addKeyValue("bytes", bytes)
+                    .addKeyValue("seconds", elapsed.toSeconds())
+                    .log();
         } finally {
             // No-op once the move above has succeeded; removes the partial file on any failure.
             Files.deleteIfExists(tmp);

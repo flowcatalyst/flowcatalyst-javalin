@@ -57,7 +57,9 @@ public final class StaleQueuedJobPoller {
         Instant cutoff = clock.instant().minus(staleAfter);
         List<String> reverted = repository.reclaimStaleQueued(cutoff);
         if (!reverted.isEmpty()) {
-            LOG.info("stale-queued recovery reverted {} job(s) QUEUED→PENDING", reverted.size());
+            LOG.atInfo().setMessage("stale-queued recovery reverted job(s) QUEUED→PENDING")
+                    .addKeyValue("count", reverted.size())
+                    .log();
         }
         return reverted;
     }

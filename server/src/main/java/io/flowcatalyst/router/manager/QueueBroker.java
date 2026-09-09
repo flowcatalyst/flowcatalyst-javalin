@@ -83,8 +83,10 @@ public final class QueueBroker implements Broker {
             // The queue was deregistered by a reconfigure while the message
             // was in flight. There is nothing to ack it on; it will redeliver
             // on whichever consumer replaces it, if any.
-            log.warn("ack skipped: queue {} is no longer registered (message {})",
-                    message.queueId(), message.id());
+            log.atWarn().setMessage("ack skipped: queue is no longer registered")
+                    .addKeyValue("queue", message.queueId())
+                    .addKeyValue("message_id", message.id())
+                    .log();
             settled(message, "ack", reason, Duration.ZERO, false);
             return;
         }
@@ -94,8 +96,10 @@ public final class QueueBroker implements Broker {
             // Not fatal — the message is finished with here either way — but
             // it means the broker may redeliver it, and a silent redelivery
             // is harder to explain later than a logged one.
-            log.warn("broker did not confirm ack of {} on queue {}; it may redeliver",
-                    message.id(), message.queueId());
+            log.atWarn().setMessage("broker did not confirm ack; it may redeliver")
+                    .addKeyValue("message_id", message.id())
+                    .addKeyValue("queue", message.queueId())
+                    .log();
         }
     }
 
@@ -109,8 +113,10 @@ public final class QueueBroker implements Broker {
         var consumer = consumers.apply(message.queueId());
         tracker.remove(message.id());
         if (consumer == null) {
-            log.warn("nack skipped: queue {} is no longer registered (message {})",
-                    message.queueId(), message.id());
+            log.atWarn().setMessage("nack skipped: queue is no longer registered")
+                    .addKeyValue("queue", message.queueId())
+                    .addKeyValue("message_id", message.id())
+                    .log();
             settled(message, "nack", reason, delay, false);
             return;
         }

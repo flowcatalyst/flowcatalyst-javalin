@@ -92,12 +92,19 @@ public final class AlbTraffic implements Traffic {
             registered.set(true);
             lastChange.set(clock.instant());
             lastError.set(null);
-            log.info("registered {}:{} for traffic", config.targetId(), config.port());
+            log.atInfo().setMessage("registered for traffic")
+                    .addKeyValue("target", config.targetId())
+                    .addKeyValue("port", config.port())
+                    .log();
         } catch (RuntimeException e) {
             // Recorded, not thrown: an instance that cannot take HTTP traffic
             // can still drain its queues, and that is the more important job.
             lastError.set(e.toString());
-            log.warn("could not register {}:{} for traffic", config.targetId(), config.port(), e);
+            log.atWarn().setMessage("could not register for traffic")
+                    .addKeyValue("target", config.targetId())
+                    .addKeyValue("port", config.port())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -116,7 +123,11 @@ public final class AlbTraffic implements Traffic {
             // when the balancer still has us in is the dangerous direction:
             // it would let a shutdown proceed while requests still arrive.
             lastError.set(e.toString());
-            log.warn("could not deregister {}:{} from traffic", config.targetId(), config.port(), e);
+            log.atWarn().setMessage("could not deregister from traffic")
+                    .addKeyValue("target", config.targetId())
+                    .addKeyValue("port", config.port())
+                    .setCause(e)
+                    .log();
             return;
         }
         awaitDrain();
@@ -129,7 +140,10 @@ public final class AlbTraffic implements Traffic {
         while (clock.instant().isBefore(deadline)) {
             try {
                 if (!targetGroup.draining(config.targetId(), config.port())) {
-                    log.info("traffic drained from {}:{}", config.targetId(), config.port());
+                    log.atInfo().setMessage("traffic drained")
+                            .addKeyValue("target", config.targetId())
+                            .addKeyValue("port", config.port())
+                            .log();
                     return;
                 }
             } catch (RuntimeException e) {
@@ -138,8 +152,11 @@ public final class AlbTraffic implements Traffic {
                 // balancer we cannot query will not answer differently in
                 // five seconds.
                 lastError.set(e.toString());
-                log.warn("could not check drain state of {}:{}; continuing",
-                        config.targetId(), config.port(), e);
+                log.atWarn().setMessage("could not check drain state; continuing")
+                        .addKeyValue("target", config.targetId())
+                        .addKeyValue("port", config.port())
+                        .setCause(e)
+                        .log();
                 return;
             }
             try {
@@ -149,8 +166,11 @@ public final class AlbTraffic implements Traffic {
                 return;
             }
         }
-        log.warn("gave up waiting for {}:{} to drain after {}",
-                config.targetId(), config.port(), config.drainTimeout());
+        log.atWarn().setMessage("gave up waiting to drain")
+                .addKeyValue("target", config.targetId())
+                .addKeyValue("port", config.port())
+                .addKeyValue("drain_timeout", config.drainTimeout())
+                .log();
     }
 
     /// Closes the target group if it holds anything. Deregistration is a

@@ -115,7 +115,9 @@ public final class McpServer {
             cfg.routes.get("/health", ctx -> ctx.status(200));
         });
         app.start(host, port);
-        LOG.info("mcp server listening addr={}:{}", host, port);
+        LOG.atInfo().setMessage("mcp server listening")
+                .addKeyValue("addr", host + ":" + port)
+                .log();
         return new Running(app, mcpServer);
     }
 }

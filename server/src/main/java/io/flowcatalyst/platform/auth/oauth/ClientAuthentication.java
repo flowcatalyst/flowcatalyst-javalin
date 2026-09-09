@@ -88,7 +88,10 @@ public final class ClientAuthentication {
         try {
             found = s.oauthClients().findByClientId(clientId);
         } catch (RuntimeException e) {
-            LOG.error("oauth client lookup failed client_id={}", clientId, e);
+            LOG.atError().setMessage("oauth client lookup failed")
+                    .addKeyValue("oauth_client_id", clientId)
+                    .setCause(e)
+                    .log();
             return Result.fail(OAuthError.serverError(""));
         }
         if (found.isEmpty()) {
@@ -145,9 +148,15 @@ public final class ClientAuthentication {
     private static void notePreviousSecretUsed(OAuthState s, OAuthClient client, Instant now) {
         try {
             s.oauthClients().touchPreviousSecretUsed(client.id(), now, now.minusSeconds(60));
-            LOG.info("client authenticated with its superseded secret oauth_client_id={} at={}", client.id(), now);
+            LOG.atInfo().setMessage("client authenticated with its superseded secret")
+                    .addKeyValue("oauth_client_id", client.id())
+                    .addKeyValue("authenticated_at", now)
+                    .log();
         } catch (RuntimeException e) {
-            LOG.warn("could not record previous-secret use oauth_client_id={}", client.id(), e);
+            LOG.atWarn().setMessage("could not record previous-secret use")
+                    .addKeyValue("oauth_client_id", client.id())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -156,7 +165,10 @@ public final class ClientAuthentication {
             String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
             s.oauthClients().rewriteSecretRef(client.id(), client.secretRef(), newRef);
         } catch (RuntimeException e) {
-            LOG.warn("could not migrate oauth client secret to the hashed form oauth_client_id={}", client.id(), e);
+            LOG.atWarn().setMessage("could not migrate oauth client secret to the hashed form")
+                    .addKeyValue("oauth_client_id", client.id())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -165,7 +177,10 @@ public final class ClientAuthentication {
             String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
             s.oauthClients().rewritePreviousSecretRef(client.id(), oldRef, newRef);
         } catch (RuntimeException e) {
-            LOG.warn("could not migrate oauth client previous secret to the hashed form oauth_client_id={}", client.id(), e);
+            LOG.atWarn().setMessage("could not migrate oauth client previous secret to the hashed form")
+                    .addKeyValue("oauth_client_id", client.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

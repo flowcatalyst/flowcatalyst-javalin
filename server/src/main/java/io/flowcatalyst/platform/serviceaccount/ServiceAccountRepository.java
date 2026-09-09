@@ -179,7 +179,10 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
         try {
             dsl.update(T).set(T.LAST_USED_AT, utc(Instant.now())).where(T.ID.eq(id)).execute();
         } catch (RuntimeException e) {
-            LOG.warn("failed to stamp last_used_at for service account {}", id, e);
+            LOG.atWarn().setMessage("failed to stamp last_used_at for service account")
+                    .addKeyValue("id", id)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -256,7 +259,11 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
         try {
             blob = SecretRef.ENCRYPTED_PREFIX + encryption.get().encrypt(stored);
         } catch (RuntimeException e) {
-            LOG.warn("failed to encrypt legacy service account secret for {}.{}", id, column.getName(), e);
+            LOG.atWarn().setMessage("failed to encrypt legacy service account secret")
+                    .addKeyValue("id", id)
+                    .addKeyValue("column", column.getName())
+                    .setCause(e)
+                    .log();
             return;
         }
         try {
@@ -264,7 +271,11 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
             // plaintext this read saw, so a racing rotation's new secret survives.
             dsl.update(T).set(column, blob).where(T.ID.eq(id).and(column.eq(stored))).execute();
         } catch (RuntimeException e) {
-            LOG.warn("failed to upgrade legacy service account secret for {}.{}", id, column.getName(), e);
+            LOG.atWarn().setMessage("failed to upgrade legacy service account secret")
+                    .addKeyValue("id", id)
+                    .addKeyValue("column", column.getName())
+                    .setCause(e)
+                    .log();
         }
     }
 

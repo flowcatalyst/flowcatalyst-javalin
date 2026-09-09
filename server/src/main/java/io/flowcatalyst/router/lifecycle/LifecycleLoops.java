@@ -75,7 +75,9 @@ public final class LifecycleLoops implements AutoCloseable {
     public void start(List<Task> tasks) {
         tasks.forEach(task -> threads.add(
                 Thread.ofVirtual().name("router-" + task.name()).start(() -> run(task))));
-        log.info("router housekeeping started: {}", tasks.stream().map(Task::name).toList());
+        log.atInfo().setMessage("router housekeeping started")
+                .addKeyValue("tasks", tasks.stream().map(Task::name).toList())
+                .log();
     }
 
     private void run(Task task) {
@@ -91,7 +93,10 @@ public final class LifecycleLoops implements AutoCloseable {
             } catch (RuntimeException e) {
                 // Logged and survived: one bad tick must not silence
                 // housekeeping for the life of the process.
-                log.warn("router housekeeping task {} failed; continuing", task.name(), e);
+                log.atWarn().setMessage("router housekeeping task failed; continuing")
+                        .addKeyValue("name", task.name())
+                        .setCause(e)
+                        .log();
             }
         }
     }
@@ -137,7 +142,10 @@ public final class LifecycleLoops implements AutoCloseable {
     static void reap(InFlightTracker tracker, Warnings warnings) {
         int reaped = tracker.reapIdle(REAP_MAX_AGE);
         if (reaped > 0) {
-            log.warn("reaped {} in-flight entries idle for over {}", reaped, REAP_MAX_AGE);
+            log.atWarn().setMessage("reaped idle in-flight entries")
+                    .addKeyValue("count", reaped)
+                    .addKeyValue("max_age", REAP_MAX_AGE)
+                    .log();
         }
         int size = tracker.size();
         if (size >= IN_FLIGHT_WARN_THRESHOLD) {

@@ -54,8 +54,10 @@ public final class SyncPlatformRoles {
                         if (existing.isPresent()) {
                             Role current = existing.get();
                             if (current.source() != RoleSource.CODE) {
-                                LOG.warn("role exists with non-CODE source; skipping platform-role sync role={} source={}",
-                                        def.name(), current.source());
+                                LOG.atWarn().setMessage("role exists with non-CODE source; skipping platform-role sync")
+                                        .addKeyValue("role", def.name())
+                                        .addKeyValue("source", current.source())
+                                        .log();
                                 continue;
                             }
                             Role role = current.syncedFromCatalogue(def.displayName(), def.description(), def.permissions());
@@ -79,8 +81,10 @@ public final class SyncPlatformRoles {
                         }
                         long held = repo.countAssignments(stale.name());
                         if (held > 0) {
-                            LOG.warn("stale CODE role still assigned to principals; refusing to remove role={} assignments={}",
-                                    stale.name(), held);
+                            LOG.atWarn().setMessage("stale CODE role still assigned to principals; refusing to remove")
+                                    .addKeyValue("role", stale.name())
+                                    .addKeyValue("assignments", held)
+                                    .log();
                             continue;
                         }
                         deletes.add(new SyncDelete<>(stale, RoleDeleted.of(ec, stale)));

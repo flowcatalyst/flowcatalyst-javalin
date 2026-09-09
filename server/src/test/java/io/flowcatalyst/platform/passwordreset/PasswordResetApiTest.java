@@ -94,7 +94,7 @@ class PasswordResetApiTest {
     private static final EmailDomainMappingRepository MAPPINGS = new EmailDomainMappingRepository(DS);
     private static final IdentityProviderRepository IDPS = new IdentityProviderRepository(DS);
     private static final MfaRepository MFA_REPO = new MfaRepository(DS);
-    private static final Mfa MFA = new Mfa(MFA_REPO, Optional.of(ENC), MailSender.logging(), Mfa.Config.DEFAULT, Clock.systemUTC());
+    private static final Mfa MFA = new Mfa(MFA_REPO, Optional.of(ENC), MailSender.logging(false), Mfa.Config.DEFAULT, Clock.systemUTC());
     private static final GrantStore GRANTS = new GrantStore(DS);
     private static final ResetLinks LINKS = new ResetLinks(TOKENS, SENT::add, () -> EmailTheme.defaults("Acme"), BASE, MOVABLE);
     private static final Notifications NOTICES = new Notifications(SENT::add, () -> "Acme");

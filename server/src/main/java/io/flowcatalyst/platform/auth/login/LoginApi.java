@@ -236,7 +236,10 @@ public final class LoginApi {
             challenge = s.mfa().evaluate(p, ctx);
         } catch (RuntimeException e) {
             // Fail closed: an evaluation error denies rather than bypassing 2FA.
-            LOG.error("MFA evaluation failed for principal {}", p.id(), e);
+            LOG.atError().setMessage("MFA evaluation failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "MFA_EVAL_FAILED", "could not evaluate second factor");
             return;
         }
@@ -263,7 +266,10 @@ public final class LoginApi {
         } catch (RuntimeException e) {
             // The credentials verified; a mint failure is a server-side
             // fault, reported as such with the cause kept off the wire.
-            LOG.error("session token mint failed for principal {}", p.id(), e);
+            LOG.atError().setMessage("session token mint failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "MINT_FAILED", "failed to mint session token", Map.of());
             return;
         }
@@ -349,7 +355,10 @@ public final class LoginApi {
         } catch (RuntimeException e) {
             // Signed in, but the authority could not be loaded: an empty
             // list, not a 500 — the user can refresh.
-            LOG.warn("claims resolution failed after login for principal {}", p.id(), e);
+            LOG.atWarn().setMessage("claims resolution failed after login")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             permissions = List.of();
         }
         List<String> codes = recoveryCodes == null || recoveryCodes.isEmpty() ? null : recoveryCodes;
@@ -406,7 +415,10 @@ public final class LoginApi {
             return s.mappings().findByEmailDomain(domain)
                     .flatMap(m -> s.identityProviders().findById(m.identityProviderId()));
         } catch (RuntimeException e) {
-            LOG.warn("domain lookup failed domain={}", domain, e);
+            LOG.atWarn().setMessage("domain lookup failed")
+                    .addKeyValue("domain", domain)
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
     }
@@ -422,7 +434,11 @@ public final class LoginApi {
             s.attempts().recordAttempt(LoginAttempt.attempt(AttemptType.USER_LOGIN, outcome, reason, identifier, principalId,
                     ip == null || ip.isBlank() ? null : ip, null));
         } catch (RuntimeException e) {
-            LOG.warn("recording login attempt failed identifier={} outcome={}", identifier, outcome, e);
+            LOG.atWarn().setMessage("recording login attempt failed")
+                    .addKeyValue("identifier", identifier)
+                    .addKeyValue("outcome", outcome)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -445,7 +461,10 @@ public final class LoginApi {
                 conn.setAutoCommit(true);
             }
         } catch (RuntimeException | SQLException e) {
-            LOG.warn("password rehash persist failed; login continues principal={}", p.id(), e);
+            LOG.atWarn().setMessage("password rehash persist failed; login continues")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

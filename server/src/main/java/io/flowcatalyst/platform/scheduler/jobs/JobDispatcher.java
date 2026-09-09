@@ -86,9 +86,15 @@ public final class JobDispatcher {
             try {
                 instances.markDeliveryFailed(instance.id(), ORPHAN, true);
                 recordFired(instance.id(), instance.jobCode(), 0, "ORPHAN", true, 0, false);
-                LOG.warn("delivery exhausted retries instance={} message={}", instance.id(), ORPHAN);
+                LOG.atWarn().setMessage("delivery exhausted retries")
+                        .addKeyValue("instance_id", instance.id())
+                        .addKeyValue("reason", ORPHAN)
+                        .log();
             } catch (RuntimeException e) {
-                LOG.warn("failed to mark orphan instance {} DELIVERY_FAILED; left for next tick", instance.id(), e);
+                LOG.atWarn().setMessage("failed to mark orphan instance DELIVERY_FAILED; left for next tick")
+                        .addKeyValue("instance_id", instance.id())
+                        .setCause(e)
+                        .log();
             }
             return;
         }
@@ -97,7 +103,10 @@ public final class JobDispatcher {
         try {
             attemptsAfter = instances.markInFlight(instance.id());
         } catch (RuntimeException e) {
-            LOG.warn("markInFlight failed for scheduled job instance {}; left for next tick", instance.id(), e);
+            LOG.atWarn().setMessage("markInFlight failed for scheduled job instance; left for next tick")
+                    .addKeyValue("instance_id", instance.id())
+                    .setCause(e)
+                    .log();
             return;
         }
         if (j.targetUrl() == null || j.targetUrl().isBlank()) {
@@ -142,7 +151,10 @@ public final class JobDispatcher {
             try {
                 instances.markDelivered(instance.id());
             } catch (RuntimeException e) {
-                LOG.warn("markDelivered failed for scheduled job instance {}; left for next tick", instance.id(), e);
+                LOG.atWarn().setMessage("markDelivered failed for scheduled job instance; left for next tick")
+                        .addKeyValue("instance_id", instance.id())
+                        .setCause(e)
+                        .log();
                 return;
             }
             recordFired(instance.id(), instance.jobCode(), attemptsAfter, "DELIVERED", true, status, signed);
@@ -164,12 +176,18 @@ public final class JobDispatcher {
         try {
             instances.markDeliveryFailed(instanceId, message, terminal);
         } catch (RuntimeException e) {
-            LOG.warn("markDeliveryFailed failed for scheduled job instance {}; left for next tick", instanceId, e);
+            LOG.atWarn().setMessage("markDeliveryFailed failed for scheduled job instance; left for next tick")
+                    .addKeyValue("instance_id", instanceId)
+                    .setCause(e)
+                    .log();
             return;
         }
         recordFired(instanceId, jobCode, attemptsAfter, "FAILED", terminal, statusCode, signed);
         if (terminal) {
-            LOG.warn("delivery exhausted retries instance={} message={}", instanceId, message);
+            LOG.atWarn().setMessage("delivery exhausted retries")
+                    .addKeyValue("instance_id", instanceId)
+                    .addKeyValue("reason", message)
+                    .log();
         }
     }
 
@@ -201,29 +219,39 @@ public final class JobDispatcher {
     private boolean applyCredentials(HttpRequest.Builder builder, ScheduledJob job, byte[] body) {
         String applicationId = job.applicationId();
         if (applicationId == null || applicationId.isBlank()) {
-            LOG.warn("scheduled job {} has no application linkage; delivering unsigned — "
-                    + "re-sync the job from its application", job.code());
+            LOG.atWarn().setMessage("scheduled job has no application linkage; delivering unsigned — "
+                            + "re-sync the job from its application")
+                    .addKeyValue("code", job.code())
+                    .log();
             return false;
         }
         Optional<OutboundCredentials> resolved;
         try {
             resolved = credentials.apply(applicationId);
         } catch (RuntimeException e) {
-            LOG.warn("outbound credentials lookup failed for scheduled job {}; delivering unsigned", job.code(), e);
+            LOG.atWarn().setMessage("outbound credentials lookup failed for scheduled job; delivering unsigned")
+                    .addKeyValue("code", job.code())
+                    .setCause(e)
+                    .log();
             return false;
         }
         if (resolved.isEmpty()) {
-            LOG.warn("scheduled job {} has no active service account credentials; delivering unsigned", job.code());
+            LOG.atWarn().setMessage("scheduled job has no active service account credentials; delivering unsigned")
+                    .addKeyValue("code", job.code())
+                    .log();
             return false;
         }
         OutboundCredentials creds = resolved.get();
         boolean hasToken = creds.token() != null && !creds.token().isEmpty();
         boolean hasSecret = creds.signingSecret() != null && !creds.signingSecret().isEmpty();
         if (hasSecret && !hasToken) {
-            LOG.warn("scheduled job {} has a signing secret but no bearer token; delivering with signature only",
-                    job.code());
+            LOG.atWarn().setMessage("scheduled job has a signing secret but no bearer token; delivering with signature only")
+                    .addKeyValue("code", job.code())
+                    .log();
         } else if (hasToken && !hasSecret) {
-            LOG.warn("scheduled job {} has a bearer token but no signing secret; delivering unsigned", job.code());
+            LOG.atWarn().setMessage("scheduled job has a bearer token but no signing secret; delivering unsigned")
+                    .addKeyValue("code", job.code())
+                    .log();
         }
         if (hasToken) {
             builder.header("Authorization", "Bearer " + creds.token());

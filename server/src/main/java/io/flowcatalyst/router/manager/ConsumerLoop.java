@@ -199,7 +199,9 @@ public final class ConsumerLoop implements Runnable {
 
     @Override
     public void run() {
-        log.info("consumer loop started for queue {}", queueId());
+        log.atInfo().setMessage("consumer loop started")
+                .addKeyValue("queue", queueId())
+                .log();
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 if (!awaitCapacity()) {
@@ -213,7 +215,9 @@ public final class ConsumerLoop implements Runnable {
             Thread.currentThread().interrupt();
         } finally {
             pausedForCapacity = false;
-            log.info("consumer loop stopped for queue {}", queueId());
+            log.atInfo().setMessage("consumer loop stopped")
+                    .addKeyValue("queue", queueId())
+                    .log();
         }
     }
 
@@ -229,7 +233,9 @@ public final class ConsumerLoop implements Runnable {
         var generation = gate.generation();
         if (hasRoom()) {
             if (pausedForCapacity) {
-                log.info("capacity returned; resuming queue {}", queueId());
+                log.atInfo().setMessage("capacity returned; resuming")
+                        .addKeyValue("queue", queueId())
+                        .log();
                 pausedForCapacity = false;
             }
             return true;
@@ -280,9 +286,18 @@ public final class ConsumerLoop implements Runnable {
         } catch (RuntimeException e) {
             // No heartbeat: a queue whose polls are failing is not alive, and
             // recording one here would hide it from the stall detector.
-            log.warn("poll failed on queue {}", queueId(), e);
-            if (!pollFailing) {
+            // One stack trace per outage, not one per poll. An unreachable
+            // broker fails every iteration for as long as it is down, and a
+            // trace each time is volume rather than information — the first
+            // carries the cause, the rest carry its `toString`. `pollFailing`
+            // already dates the streak: it is set here and cleared by the
+            // first poll that succeeds.
+            var event = log.atWarn().setMessage("poll failed").addKeyValue("queue", queueId());
+            if (pollFailing) {
+                event.addKeyValue("reason", String.valueOf(e)).log();
+            } else {
                 pollFailing = true;
+                event.setCause(e).log();
                 warnings.raise(Warnings.Severity.WARNING, "CONNECTION",
                         "poll failed on queue " + queueId() + ": " + e.getMessage());
             }
@@ -296,7 +311,9 @@ public final class ConsumerLoop implements Runnable {
             case Consumer.PollResult.Stopped ignored -> {
                 // Terminal. The restart watchdog rebuilds the consumer; this
                 // loop does not try to resurrect itself.
-                log.info("queue {} reported stopped; ending its loop", queueId());
+                log.atInfo().setMessage("queue reported stopped; ending its loop")
+                        .addKeyValue("queue", queueId())
+                        .log();
                 yield false;
             }
             case Consumer.PollResult.Delivered delivered -> {

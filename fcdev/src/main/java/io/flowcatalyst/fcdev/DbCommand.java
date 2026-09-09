@@ -94,11 +94,15 @@ public final class DbCommand implements Callable<Integer> {
             var have = EmbeddedPg.dataMajor(dataPath);
             String target = EmbeddedPg.pinnedMajor();
             if (have.isEmpty()) {
-                LOG.info("no embedded cluster yet — nothing to upgrade; 'fcdev start' will initialise it target=PG{}", target);
+                LOG.atInfo().setMessage("no embedded cluster yet — nothing to upgrade; 'fcdev start' will initialise it")
+                        .addKeyValue("target", "PG" + target)
+                        .log();
                 return 0;
             }
             if (have.get().equals(target)) {
-                LOG.info("embedded Postgres already on the target major — nothing to do version=PG{}", target);
+                LOG.atInfo().setMessage("embedded Postgres already on the target major — nothing to do")
+                        .addKeyValue("version", "PG" + target)
+                        .log();
                 return 0;
             }
 
@@ -122,12 +126,16 @@ public final class DbCommand implements Callable<Integer> {
             } else {
                 Path backup = backupPath(dataDir, have.get(), LocalDateTime.now());
                 Files.move(dataDir, backup);
-                LOG.info("old cluster backed up path={}", backup);
+                LOG.atInfo().setMessage("old cluster backed up")
+                        .addKeyValue("path", backup)
+                        .log();
             }
 
             // 2 + 3. Fresh cluster on the target major, then migrate + seed.
             initEmbeddedAndSeed(dataPath);
-            LOG.info("embedded Postgres upgraded version=PG{}", target);
+            LOG.atInfo().setMessage("embedded Postgres upgraded")
+                    .addKeyValue("version", "PG" + target)
+                    .log();
             out.printf("Done — now on PG%s. Sign in with the bootstrap admin (%s).%n", target, DevBootstrap.DEV_ADMIN_EMAIL);
             out.flush();
             return 0;

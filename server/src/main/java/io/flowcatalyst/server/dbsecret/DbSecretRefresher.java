@@ -74,7 +74,10 @@ public final class DbSecretRefresher implements AutoCloseable {
             apply(DbSecretFetcher.fetch(source, arn));
             recordRefresh(true, null);
         } catch (RuntimeException e) {
-            LOG.warn("DB secret refresh failed; keeping current credentials arn={}", arn, e);
+            LOG.atWarn().setMessage("DB secret refresh failed; keeping current credentials")
+                    .addKeyValue("arn", arn)
+                    .setCause(e)
+                    .log();
             recordRefresh(false, e.getClass().getName() + ": " + e.getMessage());
         }
     }

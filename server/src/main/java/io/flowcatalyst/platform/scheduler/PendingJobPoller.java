@@ -103,7 +103,10 @@ public final class PendingJobPoller {
             publisher.publish(batch);
         } catch (DispatchPublisher.PublishException e) {
             List<String> ids = claimed.toPublish().stream().map(DispatchJobRepository.ClaimRow::id).toList();
-            LOG.warn("batch publish failed; reverting {} job(s) QUEUED→PENDING", ids.size(), e);
+            LOG.atWarn().setMessage("batch publish failed; reverting job(s) QUEUED→PENDING")
+                    .addKeyValue("count", ids.size())
+                    .setCause(e)
+                    .log();
             repository.revertQueuedToPending(ids);
         }
     }

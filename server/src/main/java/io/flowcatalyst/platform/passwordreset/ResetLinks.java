@@ -51,7 +51,9 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
     @Override
     public void sendResetEmail(Principal p, boolean reset2fa) {
         if (p.email() == null || p.email().isBlank()) {
-            LOG.info("password reset skipped: principal {} has no email", p.id());
+            LOG.atInfo().setMessage("password reset skipped: principal has no email")
+                    .addKeyValue("principal", p.id())
+                    .log();
             return;
         }
         String raw = mint(p.id(), ResetToken.Purpose.RESET, reset2fa, false, null);
@@ -65,7 +67,9 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
 
     public void sendInviteRedirect(Principal p, String redirectUri) {
         if (p.email() == null || p.email().isBlank()) {
-            LOG.info("invite skipped: principal {} has no email", p.id());
+            LOG.atInfo().setMessage("invite skipped: principal has no email")
+                    .addKeyValue("principal", p.id())
+                    .log();
             return;
         }
         String raw = mint(p.id(), ResetToken.Purpose.INVITE, false, false, redirectUri);

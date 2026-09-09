@@ -756,7 +756,10 @@ public final class PrincipalApi {
                 s.notifier().accountCreated(email);
             }
         } catch (RuntimeException e) {
-            LOG.warn("new-user notification failed for principal {}", p.id(), e);
+            LOG.atWarn().setMessage("new-user notification failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

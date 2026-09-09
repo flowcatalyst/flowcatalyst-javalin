@@ -44,7 +44,10 @@ public final class DevBootstrap {
     /// `migrate.Run`.
     public static void migrate(DataSource pool) {
         var result = Migrator.migrate(pool);
-        LOG.info("migrations applied count={} schema_version={}", result.migrationsExecuted, result.targetSchemaVersion);
+        LOG.atInfo().setMessage("migrations applied")
+                .addKeyValue("count", result.migrationsExecuted)
+                .addKeyValue("schema_version", result.targetSchemaVersion)
+                .log();
     }
 
     /// The three `setEnvDefault` calls: a usable bootstrap admin unless the
@@ -66,7 +69,9 @@ public final class DevBootstrap {
             var resolved = SigningKeys.ensureSigningKeyFile(keyPath);
             env.set(ENV_JWT_SIGNING_KEY_PATH, resolved.toString());
         } catch (IOException | RuntimeException e) {
-            LOG.warn("unable to persist JWT signing key — falling back to ephemeral err={}", e.toString());
+            LOG.atWarn().setMessage("unable to persist JWT signing key — falling back to ephemeral")
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -79,7 +84,9 @@ public final class DevBootstrap {
         try {
             env.set(ENV_APP_KEY, ensureAppKeyFile(keyPath));
         } catch (IOException e) {
-            LOG.warn("unable to persist app encryption key — OAuth client secrets won't survive restart err={}", e.toString());
+            LOG.atWarn().setMessage("unable to persist app encryption key — OAuth client secrets won't survive restart")
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -101,7 +108,9 @@ public final class DevBootstrap {
     /// bootstrap admin.
     public static void seed(DataSource pool, DevEnv env) {
         new Seeder(pool, new EnvReader(env.vars())).run();
-        LOG.info("seed complete bootstrap_admin={}", env.get(ENV_BOOTSTRAP_EMAIL));
+        LOG.atInfo().setMessage("seed complete")
+                .addKeyValue("bootstrap_admin", env.get(ENV_BOOTSTRAP_EMAIL))
+                .log();
     }
 
     /// `bootstrapMCPCredentials`: provision the local MCP OAuth client and
@@ -110,8 +119,10 @@ public final class DevBootstrap {
         // TODO(port): needs the auth / principal / service-account repositories and the
         //   encryption helper; writes {client_id, client_secret, base_url} (0600) to
         //   paths.mcpCredentialsPath(). Until then `fcdev mcp` has nothing to read.
-        LOG.info("MCP credential bootstrap not yet ported; skipping (would write {} for {})",
-                paths.mcpCredentialsPath(), baseUrl);
+        LOG.atInfo().setMessage("MCP credential bootstrap not yet ported; skipping (would write)")
+                .addKeyValue("path", paths.mcpCredentialsPath())
+                .addKeyValue("platform_url", baseUrl)
+                .log();
     }
 
     /// The directory the persistent key files live in: the parent of the

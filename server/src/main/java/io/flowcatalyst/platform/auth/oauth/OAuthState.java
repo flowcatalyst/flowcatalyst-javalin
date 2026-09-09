@@ -116,7 +116,11 @@ public record OAuthState(
         try {
             attempts.recordAttempt(LoginAttempt.attempt(type, outcome, reason, identifier, principalId, null, null));
         } catch (RuntimeException e) {
-            LOG.warn("recording {} attempt failed identifier={}", type, identifier, e);
+            LOG.atWarn().setMessage("recording attempt failed")
+                    .addKeyValue("type", type)
+                    .addKeyValue("identifier", identifier)
+                    .setCause(e)
+                    .log();
         }
     }
 }

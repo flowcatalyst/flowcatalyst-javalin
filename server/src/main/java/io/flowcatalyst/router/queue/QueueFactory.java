@@ -72,8 +72,11 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
                 case POSTGRES -> createPostgres(config);
                 case NATS -> Optional.of(new NatsQueue(config.queueUri()));
                 default -> {
-                    log.error("queue {} uses a scheme with no registered consumer: \"{}\" ({})",
-                            config.queueName(), scheme, config.queueUri());
+                    log.atError().setMessage("queue uses a scheme with no registered consumer")
+                            .addKeyValue("queue", config.queueName())
+                            .addKeyValue("scheme", scheme)
+                            .addKeyValue("url", config.queueUri())
+                            .log();
                     yield Optional.empty();
                 }
             };
@@ -81,7 +84,10 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
             // Client construction, stream/consumer provisioning (NATS) or a
             // malformed URI can all throw here — none of it may propagate,
             // per the ConsumerFactory contract.
-            log.error("could not build consumer for queue {}", config.queueName(), e);
+            log.atError().setMessage("could not build consumer")
+                    .addKeyValue("queue", config.queueName())
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
     }
@@ -111,7 +117,9 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
         var ownConnection = connectionUrl(config.queueUri());
         if (ownConnection.isEmpty() || sameConnection(ownConnection.get(), sharedDatabaseUrl)) {
             if (dataSource == null) {
-                log.error("queue {} needs postgres but no database is configured", config.queueName());
+                log.atError().setMessage("queue needs postgres but no database is configured")
+                        .addKeyValue("queue", config.queueName())
+                        .log();
                 return Optional.empty();
             }
             return Optional.of(new PostgresQueue(dataSource, config.queueName(),

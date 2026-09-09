@@ -210,7 +210,10 @@ public final class PortalAuthApi {
         try {
             s.identities().touchLastLogin(identity.get().id());
         } catch (RuntimeException e) {
-            LOG.warn("touchLastLogin failed for portal identity {}", identity.get().id(), e);
+            LOG.atWarn().setMessage("touchLastLogin failed")
+                    .addKeyValue("identity", identity.get().id())
+                    .setCause(e)
+                    .log();
         }
 
         String sep = consumed.redirectUri().contains("?") ? "&" : "?";

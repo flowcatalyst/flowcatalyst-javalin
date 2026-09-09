@@ -58,7 +58,10 @@ public final class ResetApprovalQueue implements ApprovalQueue {
                     .run(uow, new QueueCommand(principal.id(), principal.clientId()), ExecutionContext.of(SYSTEM_ACTOR));
             notifyClientAdmins(principal.clientId(), event.requestId());
         } catch (RuntimeException e) {
-            LOG.warn("reset approval queueing failed principal={}", principal.id(), e);
+            LOG.atWarn().setMessage("reset approval queueing failed")
+                    .addKeyValue("principal", principal.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

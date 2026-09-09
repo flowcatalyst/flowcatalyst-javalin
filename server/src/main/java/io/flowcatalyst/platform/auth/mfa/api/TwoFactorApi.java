@@ -151,7 +151,10 @@ public final class TwoFactorApi {
                 default -> s.mfa().verifyRecoveryCode(p.id(), req.code());
             };
         } catch (RuntimeException e) {
-            LOG.error("2FA verify failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA verify failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "VERIFY_FAILED", "could not verify code");
             return;
         }
@@ -189,7 +192,10 @@ public final class TwoFactorApi {
         try {
             raw = s.mfa().issueTrustedDevice(p.id(), label, ttl);
         } catch (RuntimeException e) {
-            LOG.warn("issue trusted device failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("issue trusted device failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             return;
         }
         s.deviceCookie().set(ctx, raw, ttl);
@@ -228,7 +234,10 @@ public final class TwoFactorApi {
         try {
             s.mfa().sendLoginEmailPin(p.id(), email);
         } catch (RuntimeException e) {
-            LOG.error("send login email pin failed principal={}", p.id(), e);
+            LOG.atError().setMessage("send login email pin failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 502, "EMAIL_SEND_FAILED", "could not send code");
             return;
         }
@@ -367,7 +376,10 @@ public final class TwoFactorApi {
         try {
             codes = s.mfa().ensureRecoveryCodes(p.id());
         } catch (RuntimeException e) {
-            LOG.error("recovery code generation failed principal={}", p.id(), e);
+            LOG.atError().setMessage("recovery code generation failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             return List.of();
         }
         if (!codes.isEmpty()) {
@@ -392,7 +404,10 @@ public final class TwoFactorApi {
         try {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
-            LOG.error("2FA status load failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA status load failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "STATUS_FAILED", "could not load 2FA status");
             return;
         }
@@ -407,7 +422,11 @@ public final class TwoFactorApi {
         try {
             return sup.getAsInt();
         } catch (RuntimeException e) {
-            LOG.warn("{} failed principal={}", what, principalId, e);
+            LOG.atWarn().setMessage("operation failed")
+                    .addKeyValue("operation", what)
+                    .addKeyValue("principal", principalId)
+                    .setCause(e)
+                    .log();
             return 0;
         }
     }
@@ -523,7 +542,10 @@ public final class TwoFactorApi {
         try {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
-            LOG.error("2FA remove-method load failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA remove-method load failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "REMOVE_FAILED", "could not load methods");
             return;
         }
@@ -540,7 +562,10 @@ public final class TwoFactorApi {
         try {
             removed = s.mfa().removeMethod(p.id(), method);
         } catch (RuntimeException e) {
-            LOG.error("2FA remove-method failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA remove-method failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "REMOVE_FAILED", "could not remove method");
             return;
         }
@@ -570,7 +595,10 @@ public final class TwoFactorApi {
         try {
             confirmed = s.mfa().confirmed(p.id());
         } catch (RuntimeException e) {
-            LOG.error("2FA recovery-code regen: load methods failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA recovery-code regen: load methods failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "REGEN_FAILED", "could not load methods");
             return;
         }
@@ -582,7 +610,10 @@ public final class TwoFactorApi {
         try {
             codes = s.mfa().generateRecoveryCodes(p.id());
         } catch (RuntimeException e) {
-            LOG.error("2FA recovery-code regen failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA recovery-code regen failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "REGEN_FAILED", "could not generate recovery codes");
             return;
         }
@@ -610,7 +641,10 @@ public final class TwoFactorApi {
         try {
             devices = s.mfa().listTrustedDevices(p.id());
         } catch (RuntimeException e) {
-            LOG.error("2FA trusted-device list failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA trusted-device list failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "LIST_FAILED", "could not list devices");
             return;
         }
@@ -628,7 +662,10 @@ public final class TwoFactorApi {
         try {
             revoked = s.mfa().revokeTrustedDevice(p.id(), id);
         } catch (RuntimeException e) {
-            LOG.error("2FA trusted-device revoke failed principal={}", p.id(), e);
+            LOG.atError().setMessage("2FA trusted-device revoke failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             HttpError.writeLoginSurface(ctx, 500, "REVOKE_FAILED", "could not revoke device");
             return;
         }
@@ -686,7 +723,11 @@ public final class TwoFactorApi {
             s.login().attempts().recordAttempt(LoginAttempt.attempt(AttemptType.USER_LOGIN, outcome, reason, identifier,
                     principalId, ip == null || ip.isBlank() ? null : ip, null));
         } catch (RuntimeException e) {
-            LOG.warn("recording 2FA attempt failed identifier={} outcome={}", identifier, outcome, e);
+            LOG.atWarn().setMessage("recording 2FA attempt failed")
+                    .addKeyValue("identifier", identifier)
+                    .addKeyValue("outcome", outcome)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -695,7 +736,11 @@ public final class TwoFactorApi {
             s.auditLog().insertBatch(List.of(new AuditLog(EntityType.AUDIT_LOG.generate(), "PRINCIPAL", p.id(), operation,
                     null, p.id(), p.name(), null, null, s.login().clock().instant())));
         } catch (RuntimeException e) {
-            LOG.warn("2FA audit insert failed op={} principal={}", operation, p.id(), e);
+            LOG.atWarn().setMessage("2FA audit insert failed")
+                    .addKeyValue("op", operation)
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

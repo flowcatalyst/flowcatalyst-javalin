@@ -66,7 +66,11 @@ public final class Elbv2TargetGroup implements TargetGroup, AutoCloseable {
                 .targetGroupArn(targetGroupArn)
                 .targets(target(targetId, port))
                 .build());
-        log.info("traffic: registered {}:{} with target group {}", targetId, port, targetGroupArn);
+        log.atInfo().setMessage("traffic: registered")
+                .addKeyValue("target", targetId)
+                .addKeyValue("port", port)
+                .addKeyValue("target_group_arn", targetGroupArn)
+                .log();
     }
 
     @Override
@@ -75,7 +79,11 @@ public final class Elbv2TargetGroup implements TargetGroup, AutoCloseable {
                 .targetGroupArn(targetGroupArn)
                 .targets(target(targetId, port))
                 .build());
-        log.info("traffic: deregistered {}:{} from target group {}", targetId, port, targetGroupArn);
+        log.atInfo().setMessage("traffic: deregistered")
+                .addKeyValue("target", targetId)
+                .addKeyValue("port", port)
+                .addKeyValue("target_group_arn", targetGroupArn)
+                .log();
     }
 
     @Override

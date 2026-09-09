@@ -130,19 +130,27 @@ public final class StallDetector {
     private boolean forceBack(InFlightMessage entry) {
         var queue = queues.apply(entry.queueIdentifier());
         if (queue == null) {
-            log.warn("cannot release stalled message {}: queue {} is no longer registered",
-                    entry.messageId(), entry.queueIdentifier());
+            log.atWarn().setMessage("cannot release stalled message: queue is no longer registered")
+                    .addKeyValue("message_id", entry.messageId())
+                    .addKeyValue("queue", entry.queueIdentifier())
+                    .log();
             return false;
         }
         try {
             queue.nack(toQueued(entry), FORCE_NACK_DELAY);
         } catch (RuntimeException e) {
             // Keep the entry; the next sweep tries again.
-            log.warn("could not release stalled message {}", entry.messageId(), e);
+            log.atWarn().setMessage("could not release stalled message")
+                    .addKeyValue("message_id", entry.messageId())
+                    .setCause(e)
+                    .log();
             return false;
         }
         tracker.remove(entry.messageId());
-        log.info("released stalled message {} back to queue {}", entry.messageId(), entry.queueIdentifier());
+        log.atInfo().setMessage("released stalled message back to queue")
+                .addKeyValue("message_id", entry.messageId())
+                .addKeyValue("queue", entry.queueIdentifier())
+                .log();
         return true;
     }
 

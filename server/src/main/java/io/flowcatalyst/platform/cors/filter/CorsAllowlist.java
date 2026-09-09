@@ -124,7 +124,9 @@ public final class CorsAllowlist {
         if (!m.matches()) {
             // Unreachable via Origin.parse (which this entry already passed to be
             // stored), but a matcher must not throw on a row it cannot parse.
-            LOG.warn("CORS allowlist entry does not match the expected shape; treating as exact: {}", origin);
+            LOG.atWarn().setMessage("CORS allowlist entry does not match the expected shape; treating as exact")
+                    .addKeyValue("origin", origin)
+                    .log();
             return new Exact(origin);
         }
         var sb = new StringBuilder("^").append(Pattern.quote(m.group(1)));

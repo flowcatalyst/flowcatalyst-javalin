@@ -138,7 +138,10 @@ public final class OidcBridgeApi {
             try {
                 r = s.clients().resolveByProviderId(providerId);
             } catch (OidcClients.ResolutionException e) {
-                LOG.warn("oidc resolve by provider failed provider_id={}: {}", providerId, e.getMessage());
+                LOG.atWarn().setMessage("oidc resolve by provider failed")
+                        .addKeyValue("provider_id", providerId)
+                        .setCause(e)
+                        .log();
                 HttpError.write(ctx, 500, "OIDC_RESOLVE_FAILED", "OIDC could not be initialised for this provider", Map.of());
                 return;
             }
@@ -149,7 +152,10 @@ public final class OidcBridgeApi {
             try {
                 r = s.clients().resolveForEmail("x@" + domain);
             } catch (OidcClients.ResolutionException e) {
-                LOG.warn("oidc resolve by domain failed domain={}: {}", domain, e.getMessage());
+                LOG.atWarn().setMessage("oidc resolve by domain failed")
+                        .addKeyValue("domain", domain)
+                        .setCause(e)
+                        .log();
                 HttpError.write(ctx, 500, "OIDC_RESOLVE_FAILED", "OIDC could not be initialised for this domain", Map.of());
                 return;
             }
@@ -202,7 +208,10 @@ public final class OidcBridgeApi {
             try {
                 r = s.clients().resolveByProviderId(state.identityProviderId());
             } catch (OidcClients.ResolutionException e) {
-                LOG.warn("oidc re-resolve by provider failed provider_id={}: {}", state.identityProviderId(), e.getMessage());
+                LOG.atWarn().setMessage("oidc re-resolve by provider failed")
+                        .addKeyValue("provider_id", state.identityProviderId())
+                        .setCause(e)
+                        .log();
                 HttpError.write(ctx, 500, "OIDC_RESOLVE_FAILED", "OIDC could not be initialised for this provider", Map.of());
                 return;
             }
@@ -213,7 +222,10 @@ public final class OidcBridgeApi {
             try {
                 r = s.clients().resolveForEmail("x@" + state.emailDomain());
             } catch (OidcClients.ResolutionException e) {
-                LOG.warn("oidc re-resolve by domain failed domain={}: {}", state.emailDomain(), e.getMessage());
+                LOG.atWarn().setMessage("oidc re-resolve by domain failed")
+                        .addKeyValue("domain", state.emailDomain())
+                        .setCause(e)
+                        .log();
                 HttpError.write(ctx, 500, "OIDC_RESOLVE_FAILED", "OIDC could not be initialised for this domain", Map.of());
                 return;
             }
@@ -230,7 +242,10 @@ public final class OidcBridgeApi {
         try {
             idToken = provider.exchange(code, state.codeVerifier(), callbackUrl(ctx, s));
         } catch (OidcProvider.ExchangeException e) {
-            LOG.warn("oidc code exchange failed issuer={}: {}", provider.config().issuerUrl(), e.getMessage());
+            LOG.atWarn().setMessage("oidc code exchange failed")
+                    .addKeyValue("issuer", provider.config().issuerUrl())
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "OIDC_EXCHANGE", "code exchange failed", Map.of());
             return;
         }
@@ -242,7 +257,10 @@ public final class OidcBridgeApi {
         switch (provider.verifyIdToken(idToken.get())) {
             case OidcProvider.Rejected rej -> {
                 // Ruling Q3: the reason is for the log, not the browser.
-                LOG.warn("oidc id_token rejected issuer={}: {}", provider.config().issuerUrl(), rej.reason());
+                LOG.atWarn().setMessage("oidc id_token rejected")
+                        .addKeyValue("issuer", provider.config().issuerUrl())
+                        .addKeyValue("reason", rej.reason())
+                        .log();
                 HttpError.write(ctx, 403, "OIDC_VERIFY", "id_token verification failed", Map.of());
                 return;
             }
@@ -295,7 +313,10 @@ public final class OidcBridgeApi {
         try {
             existing = s.principals().findByEmail(email);
         } catch (RuntimeException e) {
-            LOG.error("principal lookup failed email={}", email, e);
+            LOG.atError().setMessage("principal lookup failed")
+                    .addKeyValue("email", email)
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "REPO", "principal lookup failed", Map.of());
             return;
         }
@@ -323,7 +344,10 @@ public final class OidcBridgeApi {
             token = s.issuer().sessionToken(principal.id(), principal.email());
         } catch (RuntimeException e) {
             // Ruling Q5: the envelope, a fixed message, the cause in the log.
-            LOG.error("session token mint failed for principal {}", principal.id(), e);
+            LOG.atError().setMessage("session token mint failed")
+                    .addKeyValue("principal", principal.id())
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "SESSION_MINT_FAILED", "session mint failed", Map.of());
             return;
         }
@@ -339,7 +363,10 @@ public final class OidcBridgeApi {
         try {
             mapping = s.mappings().findById(state.emailDomainMappingId());
         } catch (RuntimeException e) {
-            LOG.error("email_domain_mapping lookup failed id={}", state.emailDomainMappingId(), e);
+            LOG.atError().setMessage("email_domain_mapping lookup failed")
+                    .addKeyValue("id", state.emailDomainMappingId())
+                    .setCause(e)
+                    .log();
             throw new ProvisioningException(500, "REPO", "email_domain_mapping lookup failed");
         }
         if (mapping.isEmpty()) {
@@ -364,7 +391,10 @@ public final class OidcBridgeApi {
         try {
             p = s.principals().findById(id);
         } catch (RuntimeException e) {
-            LOG.error("post-create principal lookup failed id={}", id, e);
+            LOG.atError().setMessage("post-create principal lookup failed")
+                    .addKeyValue("id", id)
+                    .setCause(e)
+                    .log();
             throw new ProvisioningException(500, "REPO", "post-create principal lookup failed");
         }
         return p.orElseThrow(() -> new ProvisioningException(500, "REPO", "post-create principal missing"));
@@ -393,7 +423,10 @@ public final class OidcBridgeApi {
                 return null;
             });
         } catch (RuntimeException e) {
-            LOG.warn("lower-casing principal email failed id={}", p.id(), e);
+            LOG.atWarn().setMessage("lower-casing principal email failed")
+                    .addKeyValue("id", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -418,7 +451,10 @@ public final class OidcBridgeApi {
             SyncIdpRoles.of(s.principals(), s.roles()).run(s.uow(), new SyncIdpRolesCommand(p.id(), platformRoles),
                     ExecutionContext.of(SYSTEM_ACTOR));
         } catch (RuntimeException e) {
-            LOG.warn("idp role sync failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("idp role sync failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -431,13 +467,18 @@ public final class OidcBridgeApi {
         Set<String> allowed = new HashSet<>();
         for (String roleId : idp.allowedRoleIds()) {
             s.roles().findById(roleId).ifPresentOrElse(r -> allowed.add(r.name()),
-                    () -> LOG.warn("idp allowed role id {} does not exist; skipped", roleId));
+                    () -> LOG.atWarn().setMessage("idp allowed role does not exist; skipped")
+                            .addKeyValue("role_id", roleId)
+                            .log());
         }
         Set<String> out = new LinkedHashSet<>();
         for (String claim : claimRoles) {
             String platform = byIdpRole.get(claim);
             if (platform == null) {
-                LOG.warn("REJECTED unauthorized IDP role: not found in idp_role_mappings principalId={} idpRole={}", principalId, claim);
+                LOG.atWarn().setMessage("REJECTED unauthorized IDP role: not found in idp_role_mappings")
+                        .addKeyValue("principal", principalId)
+                        .addKeyValue("idp_role", claim)
+                        .log();
                 continue;
             }
             if (hasAllowList && !allowed.contains(platform)) {
@@ -488,7 +529,10 @@ public final class OidcBridgeApi {
         try {
             client = s.oauthClients().findByClientId(clientId);
         } catch (RuntimeException e) {
-            LOG.error("oauth client lookup failed client_id={}", clientId, e);
+            LOG.atError().setMessage("oauth client lookup failed")
+                    .addKeyValue("oauth_client_id", clientId)
+                    .setCause(e)
+                    .log();
             OAuthError.invalidRequest("Invalid post_logout_redirect_uri: internal error verifying client").writePlain(ctx);
             return;
         }

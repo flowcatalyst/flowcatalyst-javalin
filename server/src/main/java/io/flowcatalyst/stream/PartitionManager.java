@@ -128,7 +128,10 @@ public final class PartitionManager implements Runnable {
                     processed += ensureForward(conn, parent, now);
                     processed += dropOld(conn, parent, now);
                 } catch (SQLException e) {
-                    LOG.warn("partition manager: pass failed for parent={}", parent, e);
+                    LOG.atWarn().setMessage("partition manager: pass failed")
+                            .addKeyValue("parent", parent)
+                            .setCause(e)
+                            .log();
                     health.recordError();
                 }
             }

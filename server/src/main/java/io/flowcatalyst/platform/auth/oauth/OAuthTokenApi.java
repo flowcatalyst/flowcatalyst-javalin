@@ -136,7 +136,10 @@ public final class OAuthTokenApi {
         try {
             found = s.oauthClients().findByClientId(req.clientId());
         } catch (RuntimeException e) {
-            LOG.error("oauth client lookup failed client_id={}", req.clientId(), e);
+            LOG.atError().setMessage("oauth client lookup failed")
+                    .addKeyValue("oauth_client_id", req.clientId())
+                    .setCause(e)
+                    .log();
             OAuthError.serverError("").write(ctx);
             return;
         }
@@ -238,7 +241,10 @@ public final class OAuthTokenApi {
             String newRef = s.encryption().orElseThrow().hashSecretRef(provided);
             s.principals().rewriteDevClientSecretRef(principalId, oldRef, newRef);
         } catch (RuntimeException e) {
-            LOG.warn("could not migrate developer client secret to the hashed form principal_id={}", principalId, e);
+            LOG.atWarn().setMessage("could not migrate developer client secret to the hashed form")
+                    .addKeyValue("principal", principalId)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -256,7 +262,10 @@ public final class OAuthTokenApi {
             try {
                 s.serviceAccounts().touchLastUsed(p.serviceAccountId());
             } catch (RuntimeException e) {
-                LOG.warn("service account last-used stamp failed id={}", p.serviceAccountId(), e);
+                LOG.atWarn().setMessage("service account last-used stamp failed")
+                        .addKeyValue("id", p.serviceAccountId())
+                        .setCause(e)
+                        .log();
             }
         }
         writeToken(ctx, s, accessToken, null, null, granted.claim());
@@ -336,7 +345,10 @@ public final class OAuthTokenApi {
         try {
             found = s.portalSubjects().findSubject(code.principalId());
         } catch (RuntimeException e) {
-            LOG.error("portal identity lookup failed id={}", code.principalId(), e);
+            LOG.atError().setMessage("portal identity lookup failed")
+                    .addKeyValue("id", code.principalId())
+                    .setCause(e)
+                    .log();
             OAuthError.serverError("").write(ctx);
             return;
         }
@@ -407,7 +419,10 @@ public final class OAuthTokenApi {
             try {
                 idToken = InteractiveMint.idToken(s, p, stored.oauthClientId(), refreshClient, null, stored.authTime());
             } catch (RuntimeException e) {
-                LOG.warn("id_token mint on refresh failed principal={}", p.id(), e); // non-fatal
+                LOG.atWarn().setMessage("id_token mint on refresh failed") // non-fatal
+                        .addKeyValue("principal", p.id())
+                        .setCause(e)
+                        .log();
             }
         }
         writeToken(ctx, s, accessToken, result.newRaw().orElse(null), idToken, scope.isEmpty() ? null : scope);

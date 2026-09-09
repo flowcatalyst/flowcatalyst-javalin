@@ -162,12 +162,17 @@ public final class LeaderElection implements AutoCloseable {
             if (!held && leader.get()) {
                 // Lost it — most likely this instance stalled long enough for
                 // the TTL to lapse and another to take over.
-                log.warn("lost leadership of {}", config.lockKey());
+                log.atWarn().setMessage("lost leadership")
+                        .addKeyValue("lock_key", config.lockKey())
+                        .log();
             }
             setLeader(held);
         } catch (RuntimeException e) {
             // Fail-safe: we cannot prove we are leader, so we are not.
-            log.warn("leader election failed against {}; demoting", config.lockKey(), e);
+            log.atWarn().setMessage("leader election failed; demoting")
+                    .addKeyValue("lock_key", config.lockKey())
+                    .setCause(e)
+                    .log();
             setLeader(false);
         }
     }
@@ -177,7 +182,9 @@ public final class LeaderElection implements AutoCloseable {
             return;
         }
         var change = new Change(now, clock.instant());
-        log.info("leadership {}", now ? "gained" : "lost");
+        log.atInfo().setMessage("leadership changed")
+                .addKeyValue("status", now ? "gained" : "lost")
+                .log();
         listeners.forEach(listener -> {
             try {
                 listener.accept(change);
@@ -203,7 +210,10 @@ public final class LeaderElection implements AutoCloseable {
             } catch (RuntimeException e) {
                 // The TTL will clear it; a failed release costs a slower
                 // failover, not correctness.
-                log.warn("could not release leadership of {}", config.lockKey(), e);
+                log.atWarn().setMessage("could not release leadership")
+                        .addKeyValue("lock_key", config.lockKey())
+                        .setCause(e)
+                        .log();
             }
         }
         setLeader(false);

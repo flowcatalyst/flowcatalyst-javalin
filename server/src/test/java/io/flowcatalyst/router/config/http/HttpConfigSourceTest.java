@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.config.http;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -10,9 +12,11 @@ import io.flowcatalyst.router.observability.Warnings;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.time.Instant;
@@ -65,6 +69,15 @@ class HttpConfigSourceTest {
 
     private static void respondOk(HttpExchange exchange, RouterConfig config) throws IOException {
         byte[] body = Json.MAPPER.writeValueAsBytes(config);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, body.length);
+        try (var os = exchange.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    private static void respondInvalidJson(HttpExchange exchange) throws IOException {
+        byte[] body = "not json".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, body.length);
         try (var os = exchange.getResponseBody()) {
@@ -215,6 +228,76 @@ class HttpConfigSourceTest {
         var src = source(List.of(urlOf(s1), urlOf(s2)), 2, Duration.ofMillis(10), Duration.ofSeconds(5));
 
         assertThat(src.fetch()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a source that recovers and breaks again logs a stack trace for the new streak")
+    void recoveryResetsTheCauseLatch() {
+        // Without the reset, "one trace per streak" degrades into "one trace
+        // ever": a source that comes back and then fails for a *different*
+        // reason would be diagnosed with no cause at all.
+        var attempt = new AtomicInteger();
+        var server = startServer(exchange -> {
+            if (attempt.incrementAndGet() == 2) {
+                respondOk(exchange, configWithQueue("postgres://ok/db", 1));
+            } else {
+                respondInvalidJson(exchange);
+            }
+        });
+        var src = source(List.of(urlOf(server)), 4, Duration.ofMillis(10), Duration.ofSeconds(2));
+
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var log = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(HttpConfigSource.class);
+        log.addAppender(captured);
+        try {
+            assertThat(src.fetch()).as("attempt 1 bad JSON, attempt 2 recovers").isPresent();
+            src.fetch();   // attempts 3+ are a fresh streak
+
+            var traces = captured.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("invalid JSON"))
+                    .filter(e -> e.getThrowableProxy() != null)
+                    .toList();
+            assertThat(traces).as("one trace per streak, and the recovery started a new one").hasSize(2);
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
+    @DisplayName("a URL that never succeeds logs one stack trace for the streak, not one per retry")
+    void neverSucceededUrlLogsTheCauseOnce() throws IOException {
+        // The case a latch keyed on the `failing` set would miss entirely:
+        // nothing has ever succeeded here, so there is no last-known-good and
+        // the URL never enters that set — yet it is retried every
+        // DEFAULT_RETRY_INTERVAL forever, which is exactly the misconfigured
+        // config URL that never recovers on its own.
+        int deadPort;
+        try (var s = new ServerSocket(0)) {
+            deadPort = s.getLocalPort();
+        }
+        var url = "http://127.0.0.1:" + deadPort + "/config";
+
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var log = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(HttpConfigSource.class);
+        log.addAppender(captured);
+        try {
+            source(List.of(url), 4, Duration.ofMillis(10), Duration.ofSeconds(2)).fetch();
+
+            var attempts = captured.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("config fetch attempt failed"))
+                    .toList();
+            assertThat(attempts).as("every attempt is still logged").hasSizeGreaterThanOrEqualTo(2);
+            assertThat(attempts.stream().filter(e -> e.getThrowableProxy() != null).toList())
+                    .as("exactly one stack trace for the streak")
+                    .hasSize(1);
+            assertThat(attempts.getLast().getKeyValuePairs())
+                    .as("the later attempts still name the error")
+                    .anySatisfy(kv -> assertThat(kv.key).isEqualTo("reason"));
+        } finally {
+            log.detachAppender(captured);
+        }
     }
 
     @Test

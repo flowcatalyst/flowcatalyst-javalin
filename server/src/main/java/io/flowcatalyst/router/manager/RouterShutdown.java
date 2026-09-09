@@ -95,7 +95,9 @@ public final class RouterShutdown {
     private Result stop(Collection<Thread> loops, Collection<Consumer> consumers, Collection<Pool> pools,
                         java.util.function.Consumer<Pool> poolAction, String poolActionName) {
         int inFlightAtStart = tracker.size();
-        log.info("router shutting down with {} messages in flight", inFlightAtStart);
+        log.atInfo().setMessage("router shutting down")
+                .addKeyValue("count", inFlightAtStart)
+                .log();
 
         // 1. Stop the sources. Interruption unwinds every poll loop and every
         //    blocking point beneath it; from here the in-flight set can only
@@ -124,7 +126,9 @@ public final class RouterShutdown {
 
         int remaining = tracker.size();
         if (!drained) {
-            log.warn("drain timed out with {} messages still in flight; they will be redelivered", remaining);
+            log.atWarn().setMessage("drain timed out with messages still in flight; they will be redelivered")
+                    .addKeyValue("count", remaining)
+                    .log();
         }
         return new Result(inFlightAtStart, remaining, drained);
     }
@@ -156,7 +160,10 @@ public final class RouterShutdown {
             consumer.close();
         } catch (RuntimeException e) {
             // One uncooperative backend must not stop the others closing.
-            log.warn("failed to close consumer {}", consumer.identifier(), e);
+            log.atWarn().setMessage("failed to close consumer")
+                    .addKeyValue("consumer", consumer.identifier())
+                    .setCause(e)
+                    .log();
         }
     }
 

@@ -323,7 +323,10 @@ public final class RouterManager implements AutoCloseable {
         try {
             consumer.close();
         } catch (RuntimeException e) {
-            log.warn("closing lingering consumer {} failed", consumer.identifier(), e);
+            log.atWarn().setMessage("closing lingering consumer failed")
+                    .addKeyValue("consumer", consumer.identifier())
+                    .setCause(e)
+                    .log();
         }
     }
 

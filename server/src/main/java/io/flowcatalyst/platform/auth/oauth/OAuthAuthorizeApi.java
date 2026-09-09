@@ -71,7 +71,10 @@ public final class OAuthAuthorizeApi {
         try {
             found = s.oauthClients().findByClientId(clientId);
         } catch (RuntimeException e) {
-            LOG.error("oauth client lookup failed client_id={}", clientId, e);
+            LOG.atError().setMessage("oauth client lookup failed")
+                    .addKeyValue("oauth_client_id", clientId)
+                    .setCause(e)
+                    .log();
             OAuthError.serverError("Internal error").write(ctx);
             return;
         }

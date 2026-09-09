@@ -145,7 +145,11 @@ public final class OutboxCommand implements Callable<Integer> {
             // Standalone: no leader election — this process is always "the" poller.
             var processor = new OutboxProcessor(repository, dispatcher, config, () -> true);
             processor.start();
-            LOG.info("fcdev outbox started source={} target={} auth={}", maskCredentials(sourceUrl), target, authMode);
+            LOG.atInfo().setMessage("fcdev outbox started")
+                    .addKeyValue("source", maskCredentials(sourceUrl))
+                    .addKeyValue("target", target)
+                    .addKeyValue("auth_mode", authMode)
+                    .log();
             return new Started(pool, repository, processor);
         } catch (RuntimeException e) {
             pool.close();

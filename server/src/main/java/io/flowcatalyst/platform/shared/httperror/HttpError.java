@@ -101,7 +101,11 @@ public record HttpError(
         var status = status(error);
         if (status >= 500) {
             var cause = error instanceof UseCaseError.Internal internal ? internal.cause() : null;
-            LOG.error("internal error response code={} message={}", env.code(), env.message(), cause);
+            LOG.atError().setMessage("internal error response")
+                    .addKeyValue("code", env.code())
+                    .addKeyValue("reason", env.message())
+                    .setCause(cause)
+                    .log();
         }
         writeRaw(ctx, status, env);
     }
@@ -265,7 +269,13 @@ public record HttpError(
         routes.exception(UseCaseException.class, (e, ctx) -> write(ctx, e.error()));
         routes.exception(LoginSurfaceException.class, (e, ctx) -> writeLoginSurface(ctx, e.status(), e.code(), e.getMessage()));
         routes.exception(CorruptRowException.class, (e, ctx) -> {
-            LOG.error("corrupt row on {} {}: entity={} rowId={}", ctx.method(), ctx.path(), e.entity(), e.rowId(), e);
+            LOG.atError().setMessage("corrupt row")
+                    .addKeyValue("method", ctx.method())
+                    .addKeyValue("path", ctx.path())
+                    .addKeyValue("entity", e.entity())
+                    .addKeyValue("row_id", e.rowId())
+                    .setCause(e)
+                    .log();
             writeRaw(ctx, 500, new HttpError("CORRUPT_ROW", e.getMessage()));
         });
         routes.exception(HttpException.class, (e, ctx) -> {
@@ -278,11 +288,19 @@ public record HttpError(
                 case 409 -> "CONFLICT";
                 default -> "INTERNAL";
             };
-            if (status >= 500) LOG.error("internal error response code={} message={}", code, e.getMessage(), e);
+            if (status >= 500) LOG.atError().setMessage("internal error response")
+                    .addKeyValue("code", code)
+                    .addKeyValue("reason", e.getMessage())
+                    .setCause(e)
+                    .log();
             writeRaw(ctx, status, new HttpError(code, e.getMessage() == null ? "" : e.getMessage()));
         });
         routes.exception(Exception.class, (e, ctx) -> {
-            LOG.error("unhandled exception on {} {}", ctx.method(), ctx.path(), e);
+            LOG.atError().setMessage("unhandled exception")
+                    .addKeyValue("method", ctx.method())
+                    .addKeyValue("path", ctx.path())
+                    .setCause(e)
+                    .log();
             writeRaw(ctx, 500, INTERNAL);
         });
     }

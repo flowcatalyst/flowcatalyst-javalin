@@ -27,9 +27,17 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         Logging.init();
         Env env = Env.load();
-        LOG.info("starting fc-server platform={} router={} scheduler={} stream={} outbox={} mcp={} standby={} api_port={} metrics_port={}",
-                env.platformEnabled(), env.routerEnabled(), env.schedulerEnabled(), env.streamEnabled(),
-                env.outboxEnabled(), env.mcpEnabled(), env.standbyEnabled(), env.apiPort(), env.metricsPort());
+        LOG.atInfo().setMessage("starting fc-server")
+                .addKeyValue("platform", env.platformEnabled())
+                .addKeyValue("router", env.routerEnabled())
+                .addKeyValue("scheduler", env.schedulerEnabled())
+                .addKeyValue("stream", env.streamEnabled())
+                .addKeyValue("outbox", env.outboxEnabled())
+                .addKeyValue("mcp", env.mcpEnabled())
+                .addKeyValue("standby", env.standbyEnabled())
+                .addKeyValue("api_port", env.apiPort())
+                .addKeyValue("metrics_port", env.metricsPort())
+                .log();
 
         // The platform database is needed by any subsystem that reads/writes
         // Postgres — including a router-only instance running the built-in
@@ -96,8 +104,10 @@ public final class Main {
                     : needsMigrateAndSeed ? new Mode.Worker(pool)
                     : Mode.routerOnly(pool);
         } else {
-            LOG.info("no database-backed subsystem enabled; skipping postgres connect/migrate/seed router={} mcp={}",
-                    env.routerEnabled(), env.mcpEnabled());
+            LOG.atInfo().setMessage("no database-backed subsystem enabled; skipping postgres connect/migrate/seed")
+                    .addKeyValue("router", env.routerEnabled())
+                    .addKeyValue("mcp", env.mcpEnabled())
+                    .log();
             mode = Mode.routerOnly();
         }
 

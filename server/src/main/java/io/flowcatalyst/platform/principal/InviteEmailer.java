@@ -14,6 +14,8 @@ public interface InviteEmailer {
     /// No mailer wired: logs the invite that would have been sent.
     static InviteEmailer logging() {
         Logger log = LoggerFactory.getLogger(InviteEmailer.class);
-        return p -> log.info("invite emailer not configured; no invite sent to principal {}", p.id());
+        return p -> log.atInfo().setMessage("invite emailer not configured; no invite sent to principal")
+                .addKeyValue("principal", p.id())
+                .log();
     }
 }

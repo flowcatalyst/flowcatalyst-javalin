@@ -48,7 +48,11 @@ public final class Concurrently {
                     try {
                         action.accept(item);
                     } catch (RuntimeException e) {
-                        log.warn("{} failed for {}", what, item, e);
+                        log.atWarn().setMessage("concurrent task failed")
+                                .addKeyValue("what", what)
+                                .addKeyValue("item", item)
+                                .setCause(e)
+                                .log();
                     }
                     return null;
                 });
@@ -58,7 +62,10 @@ public final class Concurrently {
         } catch (StructuredTaskScope.TimeoutException e) {
             // The scope cancels whatever is still running as it closes, so
             // nothing is left behind — we simply stop waiting for it.
-            log.warn("{} did not finish within {}; continuing without it", what, timeout);
+            log.atWarn().setMessage("concurrent task did not finish; continuing without it")
+                    .addKeyValue("what", what)
+                    .addKeyValue("timeout", timeout)
+                    .log();
             return false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

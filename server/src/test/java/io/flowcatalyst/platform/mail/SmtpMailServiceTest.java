@@ -1,7 +1,10 @@
 package io.flowcatalyst.platform.mail;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.server.EnvReader;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -148,7 +151,70 @@ class SmtpMailServiceTest {
             free = s.getLocalPort();
         }
         assertThatThrownBy(() -> service(free, "").send(new Mail("to@example.com", "Hello", "x"))).isInstanceOf(MailException.class);
-        MailService.logging().send(new Mail("to@example.com", "Hello", "x"));
+        MailService.logging(false).send(new Mail("to@example.com", "Hello", "x"));
+    }
+
+    /// The dev transport logs the message body, which carries the one-time
+    /// PIN and the reset link. That is deliberate with no mail server — and
+    /// must not happen anywhere else: a deployment that merely forgot its
+    /// SMTP settings would otherwise write live PINs into the log pipeline
+    /// (docs/backlog.md, owner ruling 2026-09-08).
+    @Test
+    void theBodyIsLoggedOnlyInDevModeAndTheRecipientAlways() {
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var log = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(MailService.class);
+        log.addAppender(captured);
+        try {
+            var secret = "your code is 123456";
+
+            MailService.logging(false).send(new Mail("to@example.com", "Your code", secret));
+            MailService.logging(true).send(new Mail("to@example.com", "Your code", secret));
+
+            var withheld = captured.list.get(0);
+            var included = captured.list.get(1);
+
+            // Neither may ever put the body in the message text itself.
+            assertThat(withheld.getFormattedMessage()).doesNotContain(secret);
+            assertThat(included.getFormattedMessage()).doesNotContain(secret);
+
+            assertThat(keys(withheld)).containsExactlyInAnyOrder("to", "subject");
+            assertThat(values(withheld)).doesNotContain(secret);
+            assertThat(keys(included)).containsExactlyInAnyOrder("to", "subject", "body");
+            assertThat(values(included)).contains(secret);
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    /// `fromEnv` is what production actually calls, so the gate has to be
+    /// wired there, not merely available on the factory.
+    @Test
+    void fromEnvWithholdsTheBodyUnlessDevModeIsSet() {
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var log = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(MailService.class);
+        log.addAppender(captured);
+        try {
+            var secret = "your code is 654321";
+            MailService.fromEnv(new EnvReader(Map.of())).send(new Mail("a@b.c", "s", secret));
+            MailService.fromEnv(new EnvReader(Map.of("FLOWCATALYST_DEV_MODE", "true"))).send(new Mail("a@b.c", "s", secret));
+
+            var sent = captured.list.stream().filter(e -> keys(e).contains("to")).toList();
+            assertThat(values(sent.get(0))).as("default deployment").doesNotContain(secret);
+            assertThat(values(sent.get(1))).as("dev mode").contains(secret);
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    private static List<String> keys(ILoggingEvent e) {
+        return e.getKeyValuePairs() == null ? List.of() : e.getKeyValuePairs().stream().map(kv -> kv.key).toList();
+    }
+
+    private static List<String> values(ILoggingEvent e) {
+        return e.getKeyValuePairs() == null ? List.of()
+                : e.getKeyValuePairs().stream().map(kv -> String.valueOf(kv.value)).toList();
     }
 
     @Test

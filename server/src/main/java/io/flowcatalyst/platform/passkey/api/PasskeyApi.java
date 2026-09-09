@@ -198,7 +198,10 @@ public final class PasskeyApi {
         try {
             creds = s.credentials().findByPrincipal(p.id());
         } catch (RuntimeException e) {
-            LOG.warn("passkey list failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("passkey list failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             creds = List.of();
         }
         if (creds.isEmpty()) {
@@ -255,7 +258,10 @@ public final class PasskeyApi {
         try {
             asserted = s.service().finishAssertion(consumed.get().session(), credentialJson(req.credential()));
         } catch (PasskeyService.InvalidCredential e) {
-            LOG.info("passkey assertion rejected principal={}: {}", p.id(), e.getMessage());
+            LOG.atInfo().setMessage("passkey assertion rejected")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
             recordAttempt(s, p, AttemptOutcome.FAILURE, "Invalid passkey", ip, userAgent);
             invalidCredentials(ctx);
             return;
@@ -264,7 +270,10 @@ public final class PasskeyApi {
         }
         if (!asserted.counterValid()) {
             // Ruling I-Q13: a counter that went backwards is a cloned authenticator.
-            LOG.warn("passkey signature counter went backwards principal={} credential={}", p.id(), asserted.credential().id());
+            LOG.atWarn().setMessage("passkey signature counter went backwards")
+                    .addKeyValue("principal", p.id())
+                    .addKeyValue("credential", asserted.credential().id())
+                    .log();
             recordAttempt(s, p, AttemptOutcome.FAILURE, "Invalid passkey", ip, userAgent);
             invalidCredentials(ctx);
             return;
@@ -330,7 +339,10 @@ public final class PasskeyApi {
                     p.email().trim().toLowerCase(Locale.ROOT), p.id(), ip == null || ip.isBlank() ? null : ip,
                     userAgent == null || userAgent.isBlank() ? null : userAgent));
         } catch (RuntimeException e) {
-            LOG.warn("recording passkey attempt failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("recording passkey attempt failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
     }
 

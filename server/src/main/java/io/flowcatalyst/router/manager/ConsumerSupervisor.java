@@ -99,7 +99,9 @@ public final class ConsumerSupervisor {
     /// zero rather than inheriting an old count.
     public void recovered(String queueName) {
         if (attempts.remove(queueName) != null) {
-            log.info("consumer {} is polling again; restart count cleared", queueName);
+            log.atInfo().setMessage("consumer is polling again; restart count cleared")
+                    .addKeyValue("queue", queueName)
+                    .log();
         }
     }
 
@@ -149,11 +151,16 @@ public final class ConsumerSupervisor {
                 : "Consumer " + queueName + " is stalled and cannot be rebuilt (attempt " + attempt + ")");
 
         if (replacement.isEmpty()) {
-            log.warn("could not rebuild consumer {} (attempt {}); will try again on the next tick",
-                    queueName, attempt);
+            log.atWarn().setMessage("could not rebuild consumer; will try again on the next tick")
+                    .addKeyValue("queue", queueName)
+                    .addKeyValue("attempt", attempt)
+                    .log();
             return Optional.empty();
         }
-        log.info("consumer {} rebuilt (attempt {})", queueName, attempt);
+        log.atInfo().setMessage("consumer rebuilt")
+                .addKeyValue("queue", queueName)
+                .addKeyValue("attempt", attempt)
+                .log();
         return replacement;
     }
 

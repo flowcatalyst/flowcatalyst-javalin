@@ -120,7 +120,9 @@ public final class ProcessingApi {
             // The one deliberate NACK: a forged callback must not be able to
             // trigger a delivery, and the router (which always carries a
             // valid token) never hits this branch.
-            LOG.warn("dispatch process: bad auth token, job_id={}", jobId);
+            LOG.atWarn().setMessage("dispatch process: bad auth token")
+                    .addKeyValue("job_id", jobId)
+                    .log();
             ack(ctx, 401, false, "unauthorized");
             return;
         }
@@ -130,7 +132,10 @@ public final class ProcessingApi {
             job = s.repo().findById(jobId).orElse(null);
         } catch (RuntimeException e) {
             // Transient DB error — NACK so the queue redelivers.
-            LOG.error("dispatch process: load job failed, job_id={}", jobId, e);
+            LOG.atError().setMessage("dispatch process: load job failed")
+                    .addKeyValue("job_id", jobId)
+                    .setCause(e)
+                    .log();
             ack(ctx, 500, false, "load failed");
             return;
         }
@@ -183,7 +188,10 @@ public final class ProcessingApi {
         try {
             blocked = s.repo().groupHeldBefore(job);
         } catch (RuntimeException e) {
-            LOG.error("dispatch process: blocked-group check failed, job_id={}", job.id(), e);
+            LOG.atError().setMessage("dispatch process: blocked-group check failed")
+                    .addKeyValue("job_id", job.id())
+                    .setCause(e)
+                    .log();
             return new GroupHoldOutcome.CheckFailed();
         }
         if (!blocked) {
@@ -197,7 +205,10 @@ public final class ProcessingApi {
             // Revert failed: NACK, not ack, or the job would sit QUEUED with
             // no queue message until stale recovery (spec §5, §9's first
             // invariant).
-            LOG.error("dispatch process: blocked-group revert failed, job_id={}", job.id(), e);
+            LOG.atError().setMessage("dispatch process: blocked-group revert failed")
+                    .addKeyValue("job_id", job.id())
+                    .setCause(e)
+                    .log();
             return new GroupHoldOutcome.RevertFailed();
         }
         return new GroupHoldOutcome.Blocked();
@@ -216,7 +227,10 @@ public final class ProcessingApi {
             // NOT best-effort any more: a failed claim leaves ownership
             // unknown, and delivering anyway is exactly the duplicate this
             // guard exists to prevent. NACK and let the queue redeliver.
-            LOG.error("dispatch process: claim failed, job_id={}", job.id(), e);
+            LOG.atError().setMessage("dispatch process: claim failed")
+                    .addKeyValue("job_id", job.id())
+                    .setCause(e)
+                    .log();
             ack(ctx, 500, false, "claim failed");
             return;
         }
@@ -247,7 +261,10 @@ public final class ProcessingApi {
         } catch (RuntimeException e) {
             // Resolver failure degrades to bare delivery with a warning, not
             // a hard failure (spec §5).
-            LOG.warn("dispatch process: delivery-creds lookup failed; delivering unsigned, job_id={}", job.id(), e);
+            LOG.atWarn().setMessage("dispatch process: delivery-creds lookup failed; delivering unsigned")
+                    .addKeyValue("job_id", job.id())
+                    .setCause(e)
+                    .log();
             return DeliveryCredentials.Resolved.NONE;
         }
     }
@@ -266,7 +283,10 @@ public final class ProcessingApi {
         } catch (RuntimeException e) {
             // Best-effort, same as MarkInProgress above — a recording
             // failure must not change the delivery decision (spec §5).
-            LOG.warn("dispatch process: record attempt failed, job_id={}", jobId, e);
+            LOG.atWarn().setMessage("dispatch process: record attempt failed")
+                    .addKeyValue("job_id", jobId)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -277,7 +297,10 @@ public final class ProcessingApi {
                 try {
                     s.repo().markCompleted(job.id(), job.createdAt(), Instant.now(s.clock()), durationMillis);
                 } catch (RuntimeException e) {
-                    LOG.warn("dispatch process: mark completed failed, job_id={}", job.id(), e);
+                    LOG.atWarn().setMessage("dispatch process: mark completed failed")
+                            .addKeyValue("job_id", job.id())
+                            .setCause(e)
+                            .log();
                 }
             }
             case DeliveryResult.Deferred deferred -> {
@@ -287,7 +310,10 @@ public final class ProcessingApi {
                     s.repo().reschedule(job.id(), job.createdAt(),
                             Instant.now(s.clock()).plusSeconds(deferred.delaySeconds()));
                 } catch (RuntimeException e) {
-                    LOG.warn("dispatch process: reschedule failed, job_id={}", job.id(), e);
+                    LOG.atWarn().setMessage("dispatch process: reschedule failed")
+                            .addKeyValue("job_id", job.id())
+                            .setCause(e)
+                            .log();
                 }
             }
             case DeliveryResult.Failed failed -> {
@@ -295,14 +321,20 @@ public final class ProcessingApi {
                     try {
                         s.repo().markFailed(job.id(), job.createdAt(), failed.message());
                     } catch (RuntimeException e) {
-                        LOG.warn("dispatch process: mark failed failed, job_id={}", job.id(), e);
+                        LOG.atWarn().setMessage("dispatch process: mark failed failed")
+                                .addKeyValue("job_id", job.id())
+                                .setCause(e)
+                                .log();
                     }
                 } else {
                     Instant scheduledFor = Instant.now(s.clock()).plusSeconds(backoffFor(attemptNumber));
                     try {
                         s.repo().scheduleRetry(job.id(), job.createdAt(), scheduledFor, attemptNumber, failed.message());
                     } catch (RuntimeException e) {
-                        LOG.warn("dispatch process: schedule retry failed, job_id={}", job.id(), e);
+                        LOG.atWarn().setMessage("dispatch process: schedule retry failed")
+                                .addKeyValue("job_id", job.id())
+                                .setCause(e)
+                                .log();
                     }
                 }
             }

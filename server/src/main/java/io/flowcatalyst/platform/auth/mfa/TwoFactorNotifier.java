@@ -30,12 +30,16 @@ public interface TwoFactorNotifier {
         return new TwoFactorNotifier() {
             @Override
             public void twoFactorEnrolled(String email, MfaMethod method) {
-                log.info("notifier not configured; two-factor-enrolled notice not sent method={}", method);
+                log.atInfo().setMessage("notifier not configured; two-factor-enrolled notice not sent")
+                        .addKeyValue("method", method)
+                        .log();
             }
 
             @Override
             public void twoFactorMethodRemoved(String email, MfaMethod method) {
-                log.info("notifier not configured; two-factor-method-removed notice not sent method={}", method);
+                log.atInfo().setMessage("notifier not configured; two-factor-method-removed notice not sent")
+                        .addKeyValue("method", method)
+                        .log();
             }
 
             @Override
@@ -50,7 +54,9 @@ public interface TwoFactorNotifier {
 
             @Override
             public void newTrustedDevice(String email, String label) {
-                log.info("notifier not configured; new-trusted-device notice not sent label={}", label);
+                log.atInfo().setMessage("notifier not configured; new-trusted-device notice not sent")
+                        .addKeyValue("label", label)
+                        .log();
             }
 
             @Override

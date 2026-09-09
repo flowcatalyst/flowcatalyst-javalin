@@ -114,7 +114,10 @@ public final class ScheduledJobScheduler implements AutoCloseable {
             try {
                 tick.run();
             } catch (RuntimeException e) {
-                LOG.warn("{} tick failed; will retry next tick", name, e);
+                LOG.atWarn().setMessage("tick failed; will retry next tick")
+                        .addKeyValue("name", name)
+                        .setCause(e)
+                        .log();
             }
             if (!sleep(interval)) return;
         }

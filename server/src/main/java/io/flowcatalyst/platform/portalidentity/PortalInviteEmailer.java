@@ -34,19 +34,26 @@ public interface PortalInviteEmailer {
         return new PortalInviteEmailer() {
             @Override
             public void sendPortalInvite(PortalIdentity identity, String target) {
-                log.info("portal invite emailer not configured; no invite sent to portal identity {} (target={})",
-                        identity.id(), target);
+                log.atInfo().setMessage("portal invite emailer not configured; no invite sent to portal identity")
+                        .addKeyValue("identity", identity.id())
+                        .addKeyValue("target", target)
+                        .log();
             }
 
             @Override
             public void sendPortalSsoInvite(String email, String target) {
-                log.info("portal invite emailer not configured; no SSO invite sent to {} (target={})", email, target);
+                log.atInfo().setMessage("portal invite emailer not configured; no SSO invite sent")
+                        .addKeyValue("email", email)
+                        .addKeyValue("target", target)
+                        .log();
             }
 
             @Override
             public void sendPortalReset(String identityId, String email, String origin) {
-                log.info("portal invite emailer not configured; no reset email sent to portal identity {} (origin={})",
-                        identityId, origin);
+                log.atInfo().setMessage("portal invite emailer not configured; no reset email sent to portal identity")
+                        .addKeyValue("identity", identityId)
+                        .addKeyValue("origin", origin)
+                        .log();
             }
 
             @Override

@@ -87,7 +87,10 @@ public final class PasswordResetApi {
         try {
             tryIssueToken(s, email);
         } catch (RuntimeException e) {
-            LOG.warn("password reset request suppressed error domain={}", domainOf(email), e);
+            LOG.atWarn().setMessage("password reset request suppressed error")
+                    .addKeyValue("domain", domainOf(email))
+                    .setCause(e)
+                    .log();
         }
         ctx.status(200).json(Map.of("message", "If an account exists, a reset email has been sent."));
     }
@@ -101,7 +104,9 @@ public final class PasswordResetApi {
         }
         Optional<Principal> found = s.principals().findByEmail(email);
         if (found.isEmpty()) {
-            LOG.warn("password reset requested for an unknown address domain={}", domainOf(email));
+            LOG.atWarn().setMessage("password reset requested for an unknown address")
+                    .addKeyValue("domain", domainOf(email))
+                    .log();
             return;
         }
         Principal p = found.get();
@@ -117,7 +122,10 @@ public final class PasswordResetApi {
         try {
             s.links().sendResetLink(p.email(), s.links().resetLink(raw), s.links().platformTheme());
         } catch (RuntimeException e) {
-            LOG.warn("password reset mail not sent principal={}", p.id(), e); // the token still exists
+            LOG.atWarn().setMessage("password reset mail not sent")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log(); // the token still exists
         }
     }
 
@@ -195,7 +203,10 @@ public final class PasswordResetApi {
             try {
                 ok = s.mfa().verifyTotp(token.principalId(), factorCode);
             } catch (RuntimeException e) {
-                LOG.error("factor verification failed principal={}", token.principalId(), e);
+                LOG.atError().setMessage("factor verification failed")
+                        .addKeyValue("principal", token.principalId())
+                        .setCause(e)
+                        .log();
                 HttpError.write(ctx, 500, "MFA", "factor verification failed", Map.of());
                 return;
             }
@@ -220,9 +231,14 @@ public final class PasswordResetApi {
         try {
             s.tokens().deleteByPrincipal(token.principalId());
         } catch (RuntimeException e) {
-            LOG.warn("reset token cleanup failed principal={}", token.principalId(), e);
+            LOG.atWarn().setMessage("reset token cleanup failed")
+                    .addKeyValue("principal", token.principalId())
+                    .setCause(e)
+                    .log();
         }
-        LOG.info("password reset completed principal={}", token.principalId());
+        LOG.atInfo().setMessage("password reset completed")
+                .addKeyValue("principal", token.principalId())
+                .log();
         ctx.status(200).json(postResetTwoFactor(s, token));
     }
 
@@ -246,7 +262,10 @@ public final class PasswordResetApi {
         try {
             s.grants().revokeAllForPrincipal(p.id());
         } catch (RuntimeException e) {
-            LOG.warn("refresh token revocation failed principal={}", p.id(), e);
+            LOG.atWarn().setMessage("refresh token revocation failed")
+                    .addKeyValue("principal", p.id())
+                    .setCause(e)
+                    .log();
         }
         s.notices().passwordChanged(p.email());
         DomainPolicy dp = s.policy().evaluate(p.email());
@@ -272,7 +291,10 @@ public final class PasswordResetApi {
         try {
             found = s.portal().find(token.principalId());
         } catch (RuntimeException e) {
-            LOG.error("portal identity lookup failed id={}", token.principalId(), e);
+            LOG.atError().setMessage("portal identity lookup failed")
+                    .addKeyValue("id", token.principalId())
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "REPO", "identity lookup failed", Map.of());
             return;
         }
@@ -297,7 +319,10 @@ public final class PasswordResetApi {
         try {
             updated = s.portal().setPasswordHash(identity.id(), hash);
         } catch (RuntimeException e) {
-            LOG.error("portal password update failed id={}", identity.id(), e);
+            LOG.atError().setMessage("portal password update failed")
+                    .addKeyValue("id", identity.id())
+                    .setCause(e)
+                    .log();
             updated = false;
         }
         if (!updated) {

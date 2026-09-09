@@ -124,7 +124,10 @@ public final class Purger implements AutoCloseable {
             }
             recordStep(name, true, null);
         } catch (RuntimeException e) {
-            LOG.warn("purger step failed name={}", name, e);
+            LOG.atWarn().setMessage("purger step failed")
+                    .addKeyValue("name", name)
+                    .setCause(e)
+                    .log();
             recordStep(name, false, e.getClass().getName() + ": " + e.getMessage());
         }
     }

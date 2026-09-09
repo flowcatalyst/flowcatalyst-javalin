@@ -177,11 +177,15 @@ public final class Seeder {
                         .onConflictDoNothing()
                         .execute();
             }
-            LOG.info("seeded built-in role role={}", r.name());
+            LOG.atInfo().setMessage("seeded built-in role")
+                    .addKeyValue("role", r.name())
+                    .log();
             inserted++;
         }
         if (inserted > 0) {
-            LOG.info("built-in role seeding complete count={}", inserted);
+            LOG.atInfo().setMessage("built-in role seeding complete")
+                    .addKeyValue("count", inserted)
+                    .log();
         }
     }
 
@@ -257,7 +261,10 @@ public final class Seeder {
                     .execute();
         }
         if (inserted > 0) {
-            LOG.info("seeded platform event types inserted={} total={}", inserted, PlatformEventTypes.all().size());
+            LOG.atInfo().setMessage("seeded platform event types")
+                    .addKeyValue("inserted", inserted)
+                    .addKeyValue("total", PlatformEventTypes.all().size())
+                    .log();
         }
     }
 
@@ -287,7 +294,9 @@ public final class Seeder {
                 .set(MSG_PROCESSES.UPDATED_AT, now)
                 .onConflict(MSG_PROCESSES.CODE).doNothing()
                 .execute();
-        LOG.info("seeded example on-demand fulfilment process code={}", DefaultProcesses.EXAMPLE_CODE);
+        LOG.atInfo().setMessage("seeded example on-demand fulfilment process")
+                .addKeyValue("code", DefaultProcesses.EXAMPLE_CODE)
+                .log();
     }
 
     // ── bootstrap admin ──────────────────────────────────────────────────
@@ -318,7 +327,9 @@ public final class Seeder {
         }
         int at = email.indexOf('@');
         if (at < 0 || at == email.length() - 1) {
-            LOG.warn("invalid bootstrap email format; skipping email={}", email);
+            LOG.atWarn().setMessage("invalid bootstrap email format; skipping")
+                    .addKeyValue("email", email)
+                    .log();
             return;
         }
         String name = env.or(ENV_BOOTSTRAP_NAME, BOOTSTRAP_DEFAULT_NAME);
@@ -347,7 +358,10 @@ public final class Seeder {
             throw new IllegalStateException("bootstrap admin transaction: " + e.getMessage(), e);
         }
         if (created) {
-            LOG.info("bootstrap admin created email={} role={} scope=ANCHOR", email, BOOTSTRAP_ROLE_SUPER_ADMIN);
+            LOG.atInfo().setMessage("bootstrap admin created scope=ANCHOR")
+                    .addKeyValue("email", email)
+                    .addKeyValue("role", BOOTSTRAP_ROLE_SUPER_ADMIN)
+                    .log();
         }
     }
 
@@ -357,7 +371,9 @@ public final class Seeder {
         // Idempotency: someone may have created this user via SQL before
         // bootstrap ran. Skip with a log if so.
         if (tx.fetchExists(IAM_PRINCIPALS, IAM_PRINCIPALS.EMAIL.eq(email))) {
-            LOG.info("bootstrap admin already present; skipping email={}", email);
+            LOG.atInfo().setMessage("bootstrap admin already present; skipping")
+                    .addKeyValue("email", email)
+                    .log();
             return false;
         }
 

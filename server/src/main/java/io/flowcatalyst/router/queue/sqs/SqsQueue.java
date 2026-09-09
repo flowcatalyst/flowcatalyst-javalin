@@ -7,6 +7,7 @@ import io.flowcatalyst.router.queue.Consumer;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
+import org.slf4j.spi.LoggingEventBuilder;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
@@ -88,6 +89,12 @@ public final class SqsQueue implements Consumer {
     /// it is read-mostly and the single writer only ever transitions
     /// false -> true.
     private volatile boolean stopped = false;
+
+    /// True while SQS calls are failing, so a stack trace is logged once per
+    /// streak instead of once per message: an outage fails the delete for
+    /// every message in flight, and a trace each time is volume rather than
+    /// information. Cleared by the next delete that succeeds.
+    private volatile boolean sqsFailing = false;
 
     private final AtomicLong polled = new AtomicLong();
     private final AtomicLong acked = new AtomicLong();
@@ -247,7 +254,10 @@ public final class SqsQueue implements Consumer {
                 // No token to ever acknowledge this delivery with — nothing
                 // safe to do but drop it; it will be redelivered and this
                 // consumer will try again once SQS supplies a handle.
-                log.warn("sqs message {} on queue {} had no receipt handle; dropping", messageId, identifier);
+                log.atWarn().setMessage("sqs message had no receipt handle; dropping")
+                        .addKeyValue("message_id", messageId)
+                        .addKeyValue("queue", identifier)
+                        .log();
                 continue;
             }
 
@@ -272,7 +282,13 @@ public final class SqsQueue implements Consumer {
         try {
             return Json.MAPPER.readValue(body, Message.class);
         } catch (JacksonException e) {
-            log.warn("sqs malformed message body on queue {}: {}", identifier, e.getMessage());
+            // No cause: a Jackson parse failure's trace is the same frames
+            // every time, and this fires once per bad message. The message —
+            // what failed and where — is the whole of the information.
+            log.atWarn().setMessage("sqs malformed message body")
+                    .addKeyValue("queue", identifier)
+                    .addKeyValue("reason", e.getMessage())
+                    .log();
             return null;
         }
     }
@@ -295,7 +311,7 @@ public final class SqsQueue implements Consumer {
         } catch (RuntimeException e) {
             // Ack must never throw (Consumer#ack) — a broker hiccup here
             // cannot be allowed to fail a delivery that already succeeded.
-            log.warn("sqs ack failed for queue {} message {}: {}", identifier, message.id(), e.toString());
+            transportFailure("sqs ack failed", e).addKeyValue("message_id", message.id()).log();
             return false;
         }
     }
@@ -368,7 +384,7 @@ public final class SqsQueue implements Consumer {
                     .receiptHandle(receiptHandle)
                     .build());
         } catch (RuntimeException e) {
-            log.warn("sqs DeleteMessage (redelivery cleanup) failed for queue {}: {}", identifier, e.toString());
+            transportFailure("sqs DeleteMessage (redelivery cleanup) failed", e).log();
         }
     }
 
@@ -382,8 +398,9 @@ public final class SqsQueue implements Consumer {
                     .receiptHandle(receiptHandle)
                     .build());
             acked.incrementAndGet();
+            sqsFailing = false;
         } catch (RuntimeException e) {
-            log.warn("sqs DeleteMessage failed for queue {}: {}", identifier, e.toString());
+            transportFailure("sqs DeleteMessage failed", e).log();
         }
     }
 
@@ -427,7 +444,18 @@ public final class SqsQueue implements Consumer {
     /// [InterruptedException] directly — the SDK's HTTP layer wraps it. This
     /// walks the cause chain so cancellation-by-interruption (CONVENTIONS §8)
     /// still works for a call that has no checked exception of its own.
-    private static boolean causedByInterruption(Throwable e) {
+/// A transport failure: the cause on the first of a streak, its `toString`
+    /// afterwards. Callers add their own fields and call `log()`.
+    private LoggingEventBuilder transportFailure(String message, Throwable e) {
+        var event = log.atWarn().setMessage(message).addKeyValue("queue", identifier);
+        if (sqsFailing) {
+            return event.addKeyValue("reason", String.valueOf(e));
+        }
+        sqsFailing = true;
+        return event.setCause(e);
+    }
+
+        private static boolean causedByInterruption(Throwable e) {
         for (Throwable t = e; t != null; t = t.getCause()) {
             if (t instanceof InterruptedException || t instanceof InterruptedIOException) {
                 return true;

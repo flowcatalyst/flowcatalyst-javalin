@@ -159,8 +159,11 @@ public final class MailSender implements AutoCloseable {
                 repository.markFailed(c.id(), attempts, nextAttemptAt, error);
             }
         } catch (RuntimeException markFailure) {
-            LOG.error("mail sender: failed to record delivery failure for id={}; the claim lease expiring "
-                    + "is what re-queues it", c.id(), markFailure);
+            LOG.atError().setMessage("mail sender: failed to record delivery failure; the claim lease expiring "
+                            + "is what re-queues it")
+                    .addKeyValue("id", c.id())
+                    .setCause(markFailure)
+                    .log();
         }
     }
 

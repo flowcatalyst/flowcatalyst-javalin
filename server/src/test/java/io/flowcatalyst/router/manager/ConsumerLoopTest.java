@@ -1,6 +1,9 @@
 package io.flowcatalyst.router.manager;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.router.observability.Warnings;
+import org.slf4j.LoggerFactory;
 
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.Broker;
@@ -182,6 +185,41 @@ class ConsumerLoopTest {
         assertThat(warnings.raised).hasSize(1);
         assertThat(warnings.raised.getFirst())
                 .contains("WARNING").contains("CONNECTION").contains("queue-1").contains("broker unreachable");
+    }
+
+    @Test
+    @DisplayName("§7.3: a run of failing polls logs one stack trace, not one per attempt")
+    void failingPollStreakLogsTheCauseOnce() {
+        // Same transition rule as the CONNECTION warning above, applied to the
+        // log record: the stack trace marks *entering* the failing state. An
+        // unreachable broker fails every poll for as long as it is down, and a
+        // trace per poll is volume, not information — but every attempt must
+        // still be logged, and must still say what failed.
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        var loopLog = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ConsumerLoop.class);
+        loopLog.addAppender(captured);
+        try {
+            consumer.failAlwaysWith(new IllegalStateException("broker unreachable"));
+            start(manager());
+
+            await(() -> consumer.polls.get() >= 3);
+
+            var failures = captured.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("poll failed"))
+                    .toList();
+            assertThat(failures).as("every failing poll is still logged").hasSizeGreaterThanOrEqualTo(3);
+            assertThat(failures.stream().filter(e -> e.getThrowableProxy() != null).toList())
+                    .as("exactly one stack trace for the streak")
+                    .hasSize(1);
+            assertThat(failures.getFirst().getThrowableProxy()).as("and it is the first").isNotNull();
+            assertThat(failures.stream().skip(1).toList())
+                    .as("the rest still name the failure, without the trace")
+                    .allSatisfy(e -> assertThat(e.getKeyValuePairs().stream().map(kv -> String.valueOf(kv.value)).toList())
+                            .anySatisfy(v -> assertThat(v).contains("broker unreachable")));
+        } finally {
+            loopLog.detachAppender(captured);
+        }
     }
 
     @Test

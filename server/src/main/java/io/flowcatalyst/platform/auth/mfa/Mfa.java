@@ -131,14 +131,21 @@ public final class Mfa implements MfaService {
     public void resetAllByAdmin(String principalId, String adminId, String adminName) {
         resetAll(principalId);
         if (audit == null) {
-            LOG.warn("2FA_RESET_BY_ADMIN not audited: no audit repository wired (principal={} admin={})", principalId, adminId);
+            LOG.atWarn().setMessage("2FA_RESET_BY_ADMIN not audited: no audit repository wired")
+                    .addKeyValue("principal", principalId)
+                    .addKeyValue("admin_id", adminId)
+                    .log();
             return;
         }
         try {
             audit.insertBatch(List.of(new AuditLog(EntityType.AUDIT_LOG.generate(), "PRINCIPAL", principalId, "2FA_RESET_BY_ADMIN",
                     null, adminId, adminName, null, null, clock.instant())));
         } catch (RuntimeException e) {
-            LOG.warn("2FA_RESET_BY_ADMIN audit insert failed principal={} admin={}", principalId, adminId, e);
+            LOG.atWarn().setMessage("2FA_RESET_BY_ADMIN audit insert failed")
+                    .addKeyValue("principal", principalId)
+                    .addKeyValue("admin_id", adminId)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -371,7 +378,10 @@ public final class Mfa implements MfaService {
         int pins = repo.deleteExpiredPins(before);
         int devices = repo.deleteExpiredTrustedDevices(before);
         if (pins + devices > 0) {
-            LOG.info("mfa purge: {} expired pins, {} expired trusted devices", pins, devices);
+            LOG.atInfo().setMessage("mfa purge completed")
+                    .addKeyValue("expired_pins", pins)
+                    .addKeyValue("expired_trusted_devices", devices)
+                    .log();
         }
         return pins + devices;
     }

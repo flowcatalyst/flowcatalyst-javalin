@@ -290,8 +290,12 @@ public final class Router implements AutoCloseable {
         housekeeping.start(housekeepingTasks);
 
         server.start();
-        LOG.info("router started leader={} prefix={} standby={} alb={}",
-                server.leader(), env.routerHttpPrefix(), env.standbyEnabled(), env.albEnabled());
+        LOG.atInfo().setMessage("router started")
+                .addKeyValue("leader", server.leader())
+                .addKeyValue("prefix", env.routerHttpPrefix())
+                .addKeyValue("standby", env.standbyEnabled())
+                .addKeyValue("alb", env.albEnabled())
+                .log();
         return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
                 redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics, vertxMediationClient);
     }
@@ -305,7 +309,9 @@ public final class Router implements AutoCloseable {
             LOG.info("BLOCK_ON_ERROR siblings: released to the broker (no FC_ROUTER_PLATFORM_URL)");
             return new BlockedSiblings.Release();
         }
-        LOG.info("BLOCK_ON_ERROR siblings: settled via {}", env.routerPlatformUrl());
+        LOG.atInfo().setMessage("BLOCK_ON_ERROR siblings: settled")
+                .addKeyValue("platform_url", env.routerPlatformUrl())
+                .log();
         return new BlockedSiblings.Settle(new HttpSettledReporter(env.routerPlatformUrl()));
     }
 
@@ -432,7 +438,9 @@ public final class Router implements AutoCloseable {
     /// creates it — is disabled on this instance.
     static RouterServer.ConfigSource configSource(Env env, DataSource dataSource, Warnings warnings) {
         if (!env.routerConfigUrl().isBlank()) {
-            LOG.info("router configuration from {}", env.routerConfigUrl());
+            LOG.atInfo().setMessage("router configuration source selected")
+                    .addKeyValue("url", env.routerConfigUrl())
+                    .log();
             return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings);
         }
         if (!DEFAULT_BROKER_POSTGRES.equals(env.defaultBroker())) {
@@ -443,7 +451,9 @@ public final class Router implements AutoCloseable {
         if (dataSource != null) {
             io.flowcatalyst.router.queue.postgres.PostgresQueue.initSchema(dataSource);
         }
-        LOG.info("router using the default broker queue={}", queue.queueName());
+        LOG.atInfo().setMessage("router using the default broker")
+                .addKeyValue("queue", queue.queueName())
+                .log();
         return RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(queue)));
     }
 

@@ -62,7 +62,10 @@ public final class PasskeyRepository implements Persist<Passkey> {
             Passkey p = toEntity(r.getId(), r.getPrincipalId(), r.getCredentialId(), r.getPasskeyData(), r.getName(),
                     r.getCreatedAt(), r.getLastUsedAt());
             if (p == null) {
-                LOG.warn("skipping legacy webauthn passkey credential={} principal={}", r.getId(), principalId);
+                LOG.atWarn().setMessage("skipping legacy webauthn passkey")
+                        .addKeyValue("credential", r.getId())
+                        .addKeyValue("principal", principalId)
+                        .log();
                 continue;
             }
             out.add(p);

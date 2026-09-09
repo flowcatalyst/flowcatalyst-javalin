@@ -499,7 +499,10 @@ public final class NatsQueue implements Consumer {
         try {
             msg.term();
         } catch (Exception e) {
-            log.warn("nats: term failed on queue {}", identifier, e);
+            log.atWarn().setMessage("nats: term failed")
+                    .addKeyValue("queue", identifier)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -510,7 +513,10 @@ public final class NatsQueue implements Consumer {
     public boolean ack(QueuedMessage message) {
         io.nats.client.Message msg = pending.remove(message.receiptHandle());
         if (msg == null) {
-            log.warn("nats: no pending message for receipt {} on queue {}", message.receiptHandle(), identifier);
+            log.atWarn().setMessage("nats: no pending message")
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .addKeyValue("queue", identifier)
+                    .log();
             return false;
         }
         try {
@@ -518,7 +524,11 @@ public final class NatsQueue implements Consumer {
             acked.incrementAndGet();
             return true;
         } catch (Exception e) {
-            log.warn("nats: ack failed on queue {} for receipt {}", identifier, message.receiptHandle(), e);
+            log.atWarn().setMessage("nats: ack failed")
+                    .addKeyValue("queue", identifier)
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .setCause(e)
+                    .log();
             return false;
         }
     }
@@ -534,7 +544,10 @@ public final class NatsQueue implements Consumer {
     public void nack(QueuedMessage message, Duration delay) {
         io.nats.client.Message msg = pending.remove(message.receiptHandle());
         if (msg == null) {
-            log.warn("nats: no pending message for receipt {} on queue {}", message.receiptHandle(), identifier);
+            log.atWarn().setMessage("nats: no pending message")
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .addKeyValue("queue", identifier)
+                    .log();
             return;
         }
         try {
@@ -545,7 +558,11 @@ public final class NatsQueue implements Consumer {
             }
             nacked.incrementAndGet();
         } catch (Exception e) {
-            log.warn("nats: nack failed on queue {} for receipt {}", identifier, message.receiptHandle(), e);
+            log.atWarn().setMessage("nats: nack failed")
+                    .addKeyValue("queue", identifier)
+                    .addKeyValue("receipt", message.receiptHandle())
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -562,7 +579,10 @@ public final class NatsQueue implements Consumer {
             return Optional.of(new QueueMetrics(
                     info.getNumPending(), info.getNumAckPending(), polled.get(), acked.get(), nacked.get()));
         } catch (Exception e) {
-            log.warn("nats: metrics query failed on queue {}", identifier, e);
+            log.atWarn().setMessage("nats: metrics query failed")
+                    .addKeyValue("queue", identifier)
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
     }
@@ -604,7 +624,10 @@ public final class NatsQueue implements Consumer {
             try {
                 consumer.close();
             } catch (Exception e) {
-                log.warn("nats: error closing consumer for queue {}", identifier, e);
+                log.atWarn().setMessage("nats: error closing consumer")
+                        .addKeyValue("queue", identifier)
+                        .setCause(e)
+                        .log();
             }
         }
         if (connection != null) {
@@ -613,7 +636,10 @@ public final class NatsQueue implements Consumer {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
-                log.warn("nats: error closing connection for queue {}", identifier, e);
+                log.atWarn().setMessage("nats: error closing connection")
+                        .addKeyValue("queue", identifier)
+                        .setCause(e)
+                        .log();
             }
         }
     }

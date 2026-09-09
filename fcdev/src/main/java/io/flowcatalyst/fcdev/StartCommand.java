@@ -102,7 +102,10 @@ public final class StartCommand implements Callable<Integer> {
             PidFile.write(pidFile, pid);
             ownsPid = true;
         } catch (IOException e) {
-            LOG.warn("could not write pid file — `fcdev stop` won't find this instance path={} err={}", pidFile, e.toString());
+            LOG.atWarn().setMessage("could not write pid file — `fcdev stop` won't find this instance")
+                    .addKeyValue("path", pidFile)
+                    .setCause(e)
+                    .log();
         }
 
         EmbeddedPg pg = null;
@@ -116,14 +119,20 @@ public final class StartCommand implements Callable<Integer> {
                 }
                 Path dataPath = Path.of(opts.embeddedDbPath());
                 if (opts.embeddedDbReset()) {
-                    LOG.warn("wiping embedded Postgres data directory path={}", dataPath);
+                    LOG.atWarn().setMessage("wiping embedded Postgres data directory")
+                            .addKeyValue("path", dataPath)
+                            .log();
                     EmbeddedPg.deleteTree(dataPath);
                 }
                 EmbeddedPg.assertCompatible(dataPath);
                 Path embeddedDbBinary = opts.embeddedDbBinary().isEmpty() ? null : Path.of(opts.embeddedDbBinary());
                 pg = EmbeddedPg.start(dataPath, opts.embeddedDbPort(), paths.embeddedPgCacheDir(), embeddedDbBinary);
                 databaseUrl = pg.url();
-                LOG.info("embedded postgres started port={} path={} version=PG{}", pg.port(), dataPath, EmbeddedPg.pinnedMajor());
+                LOG.atInfo().setMessage("embedded postgres started")
+                        .addKeyValue("port", pg.port())
+                        .addKeyValue("path", dataPath)
+                        .addKeyValue("version", "PG" + EmbeddedPg.pinnedMajor())
+                        .log();
             }
 
             // ── connect + migrate + seed ──────────────────────────────────
@@ -161,9 +170,17 @@ public final class StartCommand implements Callable<Integer> {
     /// `banner`: the startup summary.
     private void banner() {
         LOG.info("=== FlowCatalyst Dev Monolith ===");
-        LOG.info("subsystem configuration api_port={} embedded_db={} embedded_db_port={} scheduler={} scheduled_job={} stream={} outbox={} router={} mcp={}",
-                opts.apiPort(), opts.embeddedDb(), opts.embeddedDbPort(), opts.scheduler(), opts.scheduledJob(),
-                opts.stream(), opts.outbox(), opts.router(), opts.mcp());
+        LOG.atInfo().setMessage("subsystem configuration")
+                .addKeyValue("api_port", opts.apiPort())
+                .addKeyValue("embedded_db", opts.embeddedDb())
+                .addKeyValue("embedded_db_port", opts.embeddedDbPort())
+                .addKeyValue("scheduler", opts.scheduler())
+                .addKeyValue("scheduled_job", opts.scheduledJob())
+                .addKeyValue("stream", opts.stream())
+                .addKeyValue("outbox", opts.outbox())
+                .addKeyValue("router", opts.router())
+                .addKeyValue("mcp", opts.mcp())
+                .log();
     }
 
     /// `devEnvCfg`: start from the (extended) environment so explicit `FC_*`

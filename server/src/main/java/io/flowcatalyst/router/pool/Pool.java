@@ -833,7 +833,9 @@ public final class Pool implements AutoCloseable {
             // silently ignored (spec §4.5): a target setting flushGroup on an
             // ungrouped message is telling us something we cannot act on, and
             // silence there is indistinguishable from the feature working.
-            log.warn("flushGroup ignored: message {} has no group", message.id());
+            log.atWarn().setMessage("flushGroup ignored: message has no group")
+                    .addKeyValue("message_id", message.id())
+                    .log();
             return;
         }
         flushes.flush(group, Duration.ofSeconds(delaySeconds));
@@ -985,7 +987,9 @@ public final class Pool implements AutoCloseable {
                 // catch block, hence the far shorter grace.
                 workers.shutdownNow();
                 if (!workers.awaitTermination(2, TimeUnit.SECONDS)) {
-                    log.warn("pool {} still had workers running after shutdown", config.code());
+                    log.atWarn().setMessage("pool still had workers running after shutdown")
+                            .addKeyValue("pool", config.code())
+                            .log();
                 }
             }
         } catch (InterruptedException e) {

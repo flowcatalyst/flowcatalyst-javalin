@@ -85,7 +85,10 @@ public final class PublishedDocs {
         } catch (IOException | URISyntaxException | UncheckedIOException
                  | FileSystemNotFoundException | ProviderNotFoundException e) {
             // The last two: a class-loader scheme NIO cannot mount (spec §2 — unreadable ⇒ empty, never a failed boot).
-            LOG.warn("published docs under {} are unreadable; serving none", root, e);
+            LOG.atWarn().setMessage("published docs unreadable; serving none")
+                    .addKeyValue("path", root)
+                    .setCause(e)
+                    .log();
             pages.clear();
         }
         return new PublishedDocs(loader, pages);

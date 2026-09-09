@@ -54,7 +54,10 @@ public final class DbClaimsResolver implements ClaimsResolver {
         } catch (RuntimeException e) {
             // A lookup failure is a logout, not a 500 (Go: the middleware
             // treats any BuildClaims error as unauthenticated).
-            LOG.warn("session principal lookup failed principal={}", principalId, e);
+            LOG.atWarn().setMessage("session principal lookup failed")
+                    .addKeyValue("principal", principalId)
+                    .setCause(e)
+                    .log();
             return Optional.empty();
         }
         if (found.isEmpty() || !found.get().active()) {

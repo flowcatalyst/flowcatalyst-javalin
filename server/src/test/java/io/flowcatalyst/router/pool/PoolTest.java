@@ -595,7 +595,14 @@ class PoolTest {
                     .as("an ungrouped flushGroup must be logged, not silently dropped")
                     .anySatisfy(event -> {
                         assertThat(event.getLevel()).isEqualTo(Level.WARN);
-                        assertThat(event.getFormattedMessage()).contains("flushGroup ignored").contains("m1");
+                        assertThat(event.getFormattedMessage()).contains("flushGroup ignored");
+                        // The id is a queryable field now, not text inside the
+                        // message (CONVENTIONS §10) — assert it where it lives.
+                        assertThat(event.getKeyValuePairs())
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("message_id");
+                                    assertThat(kv.value).isEqualTo("m1");
+                                });
                     });
         } finally {
             log.detachAppender(captured);

@@ -105,7 +105,10 @@ public final class GroupDistributor implements AutoCloseable {
             try {
                 mayContinue = task.dispatch();
             } catch (RuntimeException e) {
-                LOG.warn("outbox dispatch task failed for group {}", group, e);
+                LOG.atWarn().setMessage("outbox dispatch task failed")
+                        .addKeyValue("group", group)
+                        .setCause(e)
+                        .log();
                 mayContinue = false;
             }
             if (!mayContinue && blockOnError) {
@@ -147,7 +150,10 @@ public final class GroupDistributor implements AutoCloseable {
             try {
                 task.onAbort();
             } catch (RuntimeException e) {
-                LOG.warn("outbox onAbort failed for group {}", group, e);
+                LOG.atWarn().setMessage("outbox onAbort failed")
+                        .addKeyValue("group", group)
+                        .setCause(e)
+                        .log();
             }
         }
     }

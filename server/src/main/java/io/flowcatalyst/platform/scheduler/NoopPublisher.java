@@ -21,9 +21,10 @@ public final class NoopPublisher implements DispatchPublisher {
     @Override
     public void publish(List<PublishedMessage> batch) {
         if (batch.isEmpty()) return;
-        LOG.warn("scheduler NOOP publisher: {} dispatch job(s) claimed but NOT delivered; "
+        LOG.atWarn().setMessage("scheduler NOOP publisher: dispatch job(s) claimed but NOT delivered; "
                         + "set FC_DEFAULT_BROKER=postgres (with a database URL) or wire a real publisher "
-                        + "before enabling FC_SCHEDULER_ENABLED in production",
-                batch.size());
+                        + "before enabling FC_SCHEDULER_ENABLED in production")
+                .addKeyValue("count", batch.size())
+                .log();
     }
 }

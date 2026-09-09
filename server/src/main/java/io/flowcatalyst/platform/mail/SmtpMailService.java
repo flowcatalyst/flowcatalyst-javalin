@@ -40,7 +40,12 @@ public final class SmtpMailService implements MailService {
                 default -> false;
             };
             var c = new Config(host, port, username, password, from, secure);
-            LOG.info("SMTP email service configured host={} port={} from={} secure={}", host, port, from, secure);
+            LOG.atInfo().setMessage("SMTP email service configured")
+                    .addKeyValue("host", host)
+                    .addKeyValue("port", port)
+                    .addKeyValue("from", from)
+                    .addKeyValue("secure", secure)
+                    .log();
             return Optional.of(c);
         }
     }

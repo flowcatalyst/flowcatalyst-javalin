@@ -16,10 +16,20 @@ public interface MailSender {
     }
 
     /// Go's `LogService`: the development transport that logs the message
-    /// body — the PIN included — instead of sending it. Never for
-    /// production; the SMTP transport lands with the mail unit.
-    static MailSender logging() {
+    /// instead of sending it. `includeBody` logs the rendered HTML — the PIN
+    /// included — and is only ever true in dev (`FLOWCATALYST_DEV_MODE`);
+    /// see [io.flowcatalyst.platform.mail.MailService#logging(boolean)],
+    /// which is what production actually resolves.
+    static MailSender logging(boolean includeBody) {
         Logger log = LoggerFactory.getLogger(MailSender.class);
-        return (to, subject, html) -> log.info("mail transport not configured; would send to={} subject={} body={}", to, subject, html);
+        return (to, subject, html) -> {
+            var event = log.atInfo().setMessage("mail transport not configured; message logged instead of sent")
+                    .addKeyValue("to", to)
+                    .addKeyValue("subject", subject);
+            if (includeBody) {
+                event = event.addKeyValue("body", html);
+            }
+            event.log();
+        };
     }
 }

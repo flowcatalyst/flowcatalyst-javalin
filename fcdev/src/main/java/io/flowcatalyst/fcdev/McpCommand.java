@@ -91,7 +91,9 @@ public final class McpCommand implements Callable<Integer> {
             // Warn (to stderr — stdout is reserved for JSON-RPC in stdio mode)
             // but proceed: a localhost platform may not require auth, and the
             // platform will reject the call if it does (Go `runMCP`).
-            LOG.warn("starting MCP server without credentials: {}", e.getMessage());
+            LOG.atWarn().setMessage("starting MCP server without credentials")
+                    .setCause(e)
+                    .log();
         }
         var tokenManager = config.hasCredentials()
                 ? new TokenManager(config.baseUrl(), config.clientId(), config.clientSecret())
@@ -136,7 +138,9 @@ public final class McpCommand implements Callable<Integer> {
     /// nothing in this method may write to [System#out] — stdout is the
     /// JSON-RPC channel the moment the transport starts reading.
     StdioRunning startStdio(PlatformClient platform, String platformBaseUrl) {
-        LOG.info("fcdev mcp serving over stdio platform_url={}", platformBaseUrl);
+        LOG.atInfo().setMessage("fcdev mcp serving over stdio")
+                .addKeyValue("platform_url", platformBaseUrl)
+                .log();
         var mapper = McpJsonDefaults.getMapper();
         var transport = new StdioServerTransportProvider(mapper, stdioIn, stdioOut);
         var server = io.modelcontextprotocol.server.McpServer.sync(transport)

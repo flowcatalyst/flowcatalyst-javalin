@@ -92,7 +92,10 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         try {
             r = s.oidcClients().resolveByProviderId(providerId);
         } catch (OidcClients.ResolutionException e) {
-            LOG.warn("portal sso resolve by provider failed provider_id={}: {}", providerId, e.getMessage());
+            LOG.atWarn().setMessage("portal sso resolve by provider failed")
+                    .addKeyValue("provider_id", providerId)
+                    .setCause(e)
+                    .log();
             HttpError.write(ctx, 500, "OIDC_RESOLVE_FAILED", "OIDC could not be initialised for this provider", Map.of());
             return;
         }
@@ -166,7 +169,10 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         try {
             s.identities().touchLastLogin(identity.id());
         } catch (RuntimeException e) {
-            LOG.warn("touchLastLogin failed for portal identity {}", identity.id(), e);
+            LOG.atWarn().setMessage("touchLastLogin failed")
+                    .addKeyValue("identity", identity.id())
+                    .setCause(e)
+                    .log();
         }
         ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?") + "code=" + enc(code.code())
                 + "&state=" + enc(o.state()), 302);

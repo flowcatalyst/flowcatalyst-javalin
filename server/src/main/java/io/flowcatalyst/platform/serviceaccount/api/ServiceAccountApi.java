@@ -244,7 +244,10 @@ public final class ServiceAccountApi {
             s.uow().emitEvent(ServiceAccountTokenMinted.of(ec, id, principalIdOf(s, id), result.expiresInSeconds(),
                     result.permissions()), new MintServiceAccountTokenCommand(id));
         } catch (RuntimeException e) {
-            LOG.warn("service-account token mint for {} was not audited: {}", id, e.toString());
+            LOG.atWarn().setMessage("service-account token mint was not audited")
+                    .addKeyValue("id", id)
+                    .setCause(e)
+                    .log();
         }
         String scope = result.permissions().isEmpty() ? null : String.join(" ", result.permissions());
         ctx.json(new ServiceAccountTokenResponse(result.accessToken(), "Bearer", result.expiresInSeconds(), scope));

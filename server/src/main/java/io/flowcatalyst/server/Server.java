@@ -369,11 +369,16 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 outboxProcessor = new OutboxProcessor(repository, dispatcher, config, leaderGate.isLeader());
                 outboxProcessor.start();
                 outboxLeaderResource = leaderGate.resource();
-                LOG.info("outbox processor started platform_url={} poll_interval={} admin_port={}",
-                        env.outboxPlatformUrl(), config.pollInterval(), env.outboxAdminPort());
+                LOG.atInfo().setMessage("outbox processor started")
+                        .addKeyValue("platform_url", env.outboxPlatformUrl())
+                        .addKeyValue("poll_interval", config.pollInterval())
+                        .addKeyValue("admin_port", env.outboxAdminPort())
+                        .log();
                 if (env.outboxAdminPort() > 0) {
                     outboxAdminApi = OutboxAdminApi.start(outboxProcessor, env.outboxAdminPort());
-                    LOG.info("outbox admin api listening addr=127.0.0.1:{}", env.outboxAdminPort());
+                    LOG.atInfo().setMessage("outbox admin api listening")
+                            .addKeyValue("addr", "127.0.0.1:" + env.outboxAdminPort())
+                            .log();
                 }
             }
         }
@@ -436,9 +441,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
         // ── listeners ───────────────────────────────────────────────────────
         var metrics = new Metrics(env, registry).start();
-        LOG.info("metrics server listening addr=:{}", env.metricsPort());
+        LOG.atInfo().setMessage("metrics server listening")
+                .addKeyValue("addr", ":" + env.metricsPort())
+                .log();
         ApiListener api = built.starter().start(env.apiPort());
-        LOG.info("api server listening addr=:{}", env.apiPort());
+        LOG.atInfo().setMessage("api server listening")
+                .addKeyValue("addr", ":" + env.apiPort())
+                .log();
         return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
@@ -469,7 +478,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         if ("postgres".equals(env.defaultBroker()) && !env.databaseUrl().isBlank()) {
             String queueName = defaultQueueUri(env);
             PostgresQueue.initSchema(pool);
-            LOG.info("scheduler: dispatch jobs published to the built-in postgres broker queue={}", queueName);
+            LOG.atInfo().setMessage("scheduler: dispatch jobs published to the built-in postgres broker")
+                    .addKeyValue("queue", queueName)
+                    .log();
             return new PostgresQueuePublisher(pool, queueName);
         }
         LOG.warn("scheduler running with a NOOP publisher: dispatch jobs will be claimed but NOT delivered; "

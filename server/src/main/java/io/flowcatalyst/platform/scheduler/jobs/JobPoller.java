@@ -59,15 +59,22 @@ public final class JobPoller {
         try {
             instances.insert(instance);
         } catch (RuntimeException e) {
-            LOG.warn("failed to insert CRON instance for scheduled job {}; slot {} will be retried next tick",
-                    job.id(), slot.get(), e);
+            LOG.atWarn().setMessage("failed to insert CRON instance for scheduled job; slot will be retried next tick")
+                    .addKeyValue("job_id", job.id())
+                    .addKeyValue("slot", slot.get())
+                    .setCause(e)
+                    .log();
             return;
         }
         try {
             jobs.markFired(job.id(), slot.get());
         } catch (RuntimeException e) {
-            LOG.warn("markFired failed for scheduled job {} slot {}; last_fired_at is now behind — "
-                    + "the same slot will fire again next tick (spec D1)", job.id(), slot.get(), e);
+            LOG.atWarn().setMessage("markFired failed for scheduled job; last_fired_at is now behind — "
+                            + "the same slot will fire again next tick (spec D1)")
+                    .addKeyValue("job_id", job.id())
+                    .addKeyValue("slot", slot.get())
+                    .setCause(e)
+                    .log();
         }
     }
 }

@@ -156,9 +156,15 @@ public final class EmbeddedPg implements AutoCloseable {
             if (donor.isEmpty()) return;
 
             var copied = PgExtensions.mirror(donor.get(), pkglibdir, extensionDir);
-            LOG.info("provisioned {} PostGIS file(s) into {} from {}", copied.size(), sharedir, donor.get().extensions());
+            LOG.atInfo().setMessage("provisioned PostGIS file(s)")
+                    .addKeyValue("count", copied.size())
+                    .addKeyValue("path", sharedir)
+                    .addKeyValue("source", donor.get().extensions())
+                    .log();
         } catch (Exception e) {
-            LOG.warn("provisioning PostGIS into the embedded Postgres tree: {}", e.toString());
+            LOG.atWarn().setMessage("provisioning PostGIS into the embedded Postgres tree failed")
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -222,7 +228,9 @@ public final class EmbeddedPg implements AutoCloseable {
                 // Matches the Go distribution's credentials; local auth is `trust`, so this
                 // only matters for tools that insist on sending a password.
                 st.execute("ALTER ROLE " + USER + " WITH PASSWORD '" + PASSWORD + "'");
-                LOG.info("created embedded database {}", DATABASE);
+                LOG.atInfo().setMessage("created embedded database")
+                        .addKeyValue("name", DATABASE)
+                        .log();
             }
         }
     }
@@ -253,7 +261,9 @@ public final class EmbeddedPg implements AutoCloseable {
         try {
             pg.close();
         } catch (IOException e) {
-            LOG.warn("stopping embedded postgres: {}", e.toString());
+            LOG.atWarn().setMessage("stopping embedded postgres failed")
+                    .setCause(e)
+                    .log();
         }
     }
 
