@@ -162,11 +162,36 @@ class AuditLogRepositoryTest {
     @Test
     void facetsAreDistinctNonNullAscending() {
         var types = repo.distinctValues(Facet.ENTITY_TYPE, 1000);
-        assertThat(types).contains(TYPE).doesNotHaveDuplicates().doesNotContainNull().isSorted();
+        assertThat(types).contains(TYPE).doesNotHaveDuplicates().doesNotContainNull();
+        assertThat(types).isEqualTo(asTheDatabaseOrdersThem(types));
         var ops = repo.distinctValues(Facet.OPERATION, 1000);
-        assertThat(ops).contains("SeedCommand", "OtherCommand").doesNotHaveDuplicates().isSorted();
-        assertThat(repo.distinctValues(Facet.APPLICATION_ID, 1000)).doesNotContainNull().isSorted();
-        assertThat(repo.distinctValues(Facet.CLIENT_ID, 1000)).doesNotContainNull().isSorted();
+        assertThat(ops).contains("SeedCommand", "OtherCommand").doesNotHaveDuplicates();
+        assertThat(ops).isEqualTo(asTheDatabaseOrdersThem(ops));
+        var apps = repo.distinctValues(Facet.APPLICATION_ID, 1000);
+        assertThat(apps).doesNotContainNull();
+        assertThat(apps).isEqualTo(asTheDatabaseOrdersThem(apps));
+        var clients = repo.distinctValues(Facet.CLIENT_ID, 1000);
+        assertThat(clients).doesNotContainNull();
+        assertThat(clients).isEqualTo(asTheDatabaseOrdersThem(clients));
+    }
+
+    /// These exact values, ordered the way the database orders them.
+    ///
+    /// `distinctValues` is `ORDER BY <column>`, so the contract is Postgres'
+    /// collation — not the JVM's. AssertJ's `isSorted()` compares by code
+    /// point, where `'R'` (0x52) precedes `'f'` (0x66); Postgres puts
+    /// `fanout` before `Raw`. Asserting `isSorted()` therefore held only
+    /// while every row in the table happened to share a case, and failed the
+    /// moment another test seeded a capitalised one — a full-suite failure
+    /// that passed in isolation.
+    ///
+    /// Re-ordering the *returned* values rather than re-running the query
+    /// keeps this independent of what `distinctValues` selects or filters: it
+    /// still fails outright if the `ORDER BY` is dropped.
+    private static List<String> asTheDatabaseOrdersThem(List<String> values) {
+        return DB.fetch("select v from unnest(?::text[]) as t(v) order by v",
+                        (Object) values.toArray(String[]::new))
+                .map(r -> r.get(0, String.class));
     }
 
     // ── JSON column: pin the read ──────────────────────────────────────────

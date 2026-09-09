@@ -137,7 +137,7 @@ item names its origin; items marked **owner** need Andrew's call.
   fallback, closed external-scheme list, `encrypted:<non-base64>` rejection,
   `literal:` on decrypt, `needsReEncryption` on junk, `reEncrypt` shape.
 
-## OAuth client secrets are reversibly encrypted, not hashed (2026-09-08, **owner**)
+## OAuth client secrets are reversibly encrypted, not hashed (2026-09-08, **owner**) **Ruled and DONE 2026-09-08: hash them.** Java `5d0972f`, Go `64b8170`. Verify-only secrets are `hashed:v1:<base64 HMAC-SHA256>`; webhook/OIDC/TOTP secrets stay encrypted because the platform uses them. Migration is invisible: verification accepts any legacy shape and rewrites the row *after* authentication has already succeeded, so a failed write never costs a login. The text below is kept as the reasoning.
 
 Found doing a hashing/encryption inventory of the codebase. `ClientAuthentication.acceptClientSecret`
 / `verifySecretRef` (`platform/auth/oauth/ClientAuthentication.java`) only ever
@@ -165,12 +165,9 @@ every outbound delivery, or attaches the bearer token/API key as a live
 `Authorization` header when calling the subscriber's endpoint. Nothing to
 change there.
 
-**Owner to rule:** hash OAuth client secrets instead of encrypting them
-(a migration: existing `client_secret_ref` rows would need re-issuing or a
-one-time encrypt→hash backfill on next successful auth), or leave as-is if
-there's a reason to keep them recoverable (e.g. a redisplay-the-secret admin
-UI — itself arguably a separate anti-pattern, secrets are conventionally
-shown once at creation only).
+**Ruled 2026-09-08: hash them**, with the lazy encrypt→hash rewrite on next
+successful auth (no backfill job, no re-issuing). Landed both sides the same
+day. Nothing redisplays a client secret, so nothing needed the plaintext.
 
 ## From the identityprovider audit
 - `identityprovider/operations/DomainRouting.moveTo` restates the mapping
@@ -632,6 +629,20 @@ later decision.
 
 - ~~Two `DispatchMode` enums~~ — merged into
   `platform.shared.dispatch.DispatchMode` (X-01) on 2026-09-02.
+- **`ConsumerLoopTest.resumesPromptlyWhenCapacityReturns` is load-sensitive too**
+  (2026-09-08). Failed once on a full uncontended `mvn clean test` ("condition
+  not met within 10s"), then passed on an immediate re-run of the same suite
+  and in isolation (16/16 both times). Suspected but *not* confirmed as the
+  `setCause` sweep touching this file's poll-failure path — that path logs
+  only on a poll exception and this test never takes it, and the re-run
+  carried the same change. Measured over six post-sweep full-suite runs:
+  **three failures, six passes**, every failure landing immediately after
+  heavy back-to-back Maven work on the machine while deliberately idle runs
+  passed (it also produced one false "mutation killed" reading, so treat it
+  with suspicion when it appears in a mutation run). Same family as the `PoolTest` entry below: a 10 s await on a
+  concurrency handoff, load-sensitive rather than wrong. If it recurs, the
+  deadline (not the logging) is the thing to look at — the path it exercises
+  never logs a failure at all.
 - **`PoolTest.rateLimitWarnsOnceForARun` is load-sensitive.** It failed twice
   while a second Maven build ran on the machine and could not be reproduced
   idle (4/4 green, also with 32 carriers); the throttle path was made one
@@ -954,7 +965,180 @@ API key, outbound basic-auth password) genuinely need reversibility — the plat
 outbound call — and stay encrypted. Ruling to take: store OAuth client secrets as a keyed hash
 (HMAC-SHA256 with the app key as pepper is enough for 32 random bytes; Argon2id is unnecessary for
 non-human secrets), migrate existing rows on next use or by a one-off rotation, and mirror the change
-in Go (`docs/go-mirror/`). Not started.
+in Go (`docs/go-mirror/`). **Done 2026-09-08 — Java `5d0972f`, Go `64b8170`.**
+Duplicate of the entry above; kept because it states the webhook-credentials
+contrast (those genuinely need reversibility and stay encrypted).
+
+## The dev mail transports log the login/2FA PIN (2026-09-08, **owner**) **Ruled and DONE 2026-09-08: body only in dev.**
+
+Found during the structured-logging conversion. Two "no SMTP configured"
+fallbacks log the whole rendered mail body, which contains the one-time PIN
+and the password-reset link:
+
+- `platform/auth/mfa/MailSender.java:23` — `log.info("mail transport not
+  configured; would send to={} subject={} body={}", to, subject, html)`
+- `platform/mail/MailService.java:16` — the same at `warn`.
+
+Both say so in their own doc comments, so it is deliberate: with no mail
+server, reading the PIN out of the log is how a developer completes a login.
+The risk is that it is not *conditional on being a developer* — a production
+deploy that simply has no SMTP settings will write live 2FA PINs and reset
+links to the log at info/warn, where they are shipped to whatever aggregates
+them.
+
+**Ruled 2026-09-08: gate the body on dev.** Both transports now take
+`includeBody`, and `MailService.fromEnv` — the one production actually
+resolves — passes `FLOWCATALYST_DEV_MODE` (the flag that already existed, so
+no new knob). Recipient and subject are still logged either way, so "was the
+mail attempted?" stays answerable; only the rendered HTML is withheld.
+`SmtpMailServiceTest` pins both halves, including that the body never appears
+in the message text under either setting. Both files are off the
+`StructuredLoggingTest` allowlist now — nothing is interpolated any more.
+
+## Failures are logged as strings, so the stack trace is thrown away (2026-09-08) **DONE 2026-09-08.**
+
+Also from the structured-logging conversion, and reported independently by
+three of the four agents. A recurring pattern passes `e.getMessage()` or
+`e.toString()` as a message argument instead of the `Throwable`:
+
+- `platform/portalauth/PortalSso.java`, `platform/serviceaccount/api/ServiceAccountApi.java`,
+  `platform/shared/auth/SigningKeys.java`, most of `platform/auth/oidc/OidcBridgeApi.java`,
+  several `router/queue/sqs` and `router/config/http` sites, and
+  `fcdev/DevBootstrap`, `McpCommand`, `EmbeddedPg`, `StartCommand`.
+
+The conversion preserved the behaviour exactly (these became a `reason`
+key-value, not `setCause`), because promoting them to a real cause would
+change what is logged and that was outside its scope. But the effect is that
+none of these failures has a `throwable` field: no stack trace, no cause
+chain, just a flattened string. For a failure path that is the interesting
+half of the record.
+
+Related: `fcdev/FcDev.java` attaches the cause **only** when debug logging is
+on; with the default level an unhandled top-level fcdev failure logs a
+message and no stack trace at all.
+
+**Swept 2026-09-08** (owner approved): 21 sites across 11 files now
+`setCause(e)` instead of a stringified `reason`, so each carries a real
+`throwable` field with its cause chain. The compiler is the check that every
+one of them was genuinely a `Throwable`. `HttpError` was left alone — it
+already attached the cause, and its short `reason` is a queryable summary
+beside it, not a replacement.
+
+`fcdev/FcDev.java`'s two branches are collapsed into one call that always
+attaches the cause; the debug-gated version meant an ordinary `fcdev` failure
+logged a message and no stack trace at all.
+
+## Attaching causes made the repeating failure paths noisier (2026-09-08) **DONE 2026-09-09: one trace per streak.**
+
+Consequence of the `setCause` sweep above, worth a decision rather than a
+silent revert. Several of the 21 sites sit on per-message or per-attempt
+paths, so a *sustained* failure now emits a full stack trace per occurrence
+where it previously emitted one line:
+
+| Site | Fires once per |
+|---|---|
+| `router/manager/ConsumerLoop.java` "poll failed" | poll iteration, for as long as the broker is unreachable |
+| `router/queue/sqs/SqsQueue.java` ack / DeleteMessage failed | message, so every message during an AWS outage |
+| `router/queue/sqs/SqsQueue.java` "sqs malformed message body" | bad message, so a whole batch from a broken producer |
+| `router/config/http/HttpConfigSource.java` "config fetch attempt failed" | retry against a bad config URL |
+
+The stack trace is worth most on the *first* occurrence and is nearly pure
+volume after that. `ConsumerLoop` already keeps a `pollFailing` latch for
+exactly this reason (it gates `warnings.raise`), so gating the cause on the
+same latch there is close to free; the SQS and config-source sites would each
+need one.
+
+**Ruled 2026-09-09: option (b)** — the cause on the first failure of a
+streak, the exception's `toString` afterwards. Every attempt is still logged
+and still names the error; only the repeated stack trace goes. Each site
+rides state that already existed rather than adding a parallel flag:
+
+| Site | Latch |
+|---|---|
+| `ConsumerLoop` "poll failed" | the existing `pollFailing`, set on the first failure and cleared by the first poll that succeeds |
+| `HttpConfigSource` fetch / invalid JSON | a new per-URL `causeLogged` set, cleared by `recordSuccess` |
+| `SqsQueue` ack + both DeleteMessage paths | a new `sqsFailing`, cleared by the next delete that succeeds |
+
+`HttpConfigSource` deliberately does **not** ride its existing `failing`
+set, which was the first attempt: that set is only entered when there is a
+last-known-good to fall back on, so a URL that has never once succeeded — the
+misconfigured-URL case, retried every 5 s and never recovering on its own —
+would never be in it and would log a trace on every retry forever. Caught by
+writing the test for it; `causeLogged` tracks the streak on its own terms.
+
+`sqs malformed message body` deliberately keeps **no** cause: it fires once
+per bad message and a Jackson parse failure's trace is the same frames every
+time, so the message — what failed and where — is the whole of the
+information.
+
+Both halves are pinned and mutation-checked: `ConsumerLoopTest` asserts one
+trace across a failing streak with every poll still logged, and
+`SqsQueueTest` asserts the same *and* that a delete which succeeds ends the
+streak, so a fresh outage gets its own trace. Removing the latch, or removing
+its reset, each fails a test.
+
+## `Seeder`'s bootstrap-admin warning cannot be mechanically converted (2026-09-08)
+
+`platform/seed/Seeder.java:324` reads `"no bootstrap admin configured — set {}
++ {} to create one email_set={} password_set={}"`. The first two placeholders
+are joined mid-sentence by a literal `+`, so removing them leaves "set  +  to
+create one". It needs a rewrite (the two env var names are constants and
+belong in the message text, the two booleans are fields), not a mechanical
+conversion. On the `StructuredLoggingTest` allowlist until then.
+
+## The full `mvn clean test` suite is red on two collation assertions (2026-09-08) **FIXED 2026-09-09.**
+
+Found by a control run on a clean tree (no local changes), so this is on
+`main` as it stands, not something a change introduced:
+
+| Test | Assertion |
+|---|---|
+| `AuditLogRepositoryTest.facetsAreDistinctNonNullAscending` | `"it.97e1cd70.skipped.…"` is not ≤ `"Oauthclient"` |
+| `SubscriptionApiTest.createThenReadByIdAndInList` | `"fanout-wildcard-…"` is not ≤ `"Raw-2e2a7a"` |
+
+Both pass **in isolation** and fail in the full suite, and in both the
+offending pair is one row of the test's own plus one seeded by a *different*
+test. The cause is not ordering flakiness: the rows come back in Postgres'
+collation order (case-insensitive: `fanout` < `Raw`) and the test asserts
+Java's natural `String` order (case-sensitive: `'R'` 0x52 < `'f'` 0x66). With
+only its own lower-case rows present the two orders agree, which is why
+isolation hides it.
+
+So the assertion was testing the JVM's collation against the database's.
+
+**Fixed 2026-09-09 in the tests, not the SQL.** `COLLATE "C"` was considered
+and rejected: Go issues the same `ORDER BY` against the same database, which
+is why the parity corpus runs 0 DIFF on these routes, so changing Java's
+ordering would *introduce* a parity difference. The database's collation is
+the contract.
+
+Both tests now hand their returned values back to Postgres
+(`select v from unnest(?::text[]) order by v`) and assert the repository had
+already returned them in that order. That is locale-independent, stays
+correct if the deployment's collation differs, and is independent of what the
+query selects or filters — dropping the `ORDER BY` in either repository still
+fails its test (mutation-checked both ways).
+
+No production defect was behind this: nothing re-sorts in Java on either
+path, and the audit cursor uses a SQL-side `row(performed_at, id)`
+comparison, so the keyset-pagination-under-a-different-collation bug this
+resembles is not present.
+
+## Go's `EncryptSecretRef` is not idempotent over a `hashed:` ref (2026-09-08, Go-side)
+
+Noticed while mirroring the encryption rulings. Go's `EncryptSecretRef`
+passes through `encrypted:` and the external schemes, then encrypts whatever
+is left — so an incoming `hashed:v1:<mac>` is **sealed as though it were
+plaintext**, giving `encrypted:<sealed "hashed:v1:…">`. Java's parse treats
+`hashed:` as an at-rest claim and passes it through (and rejects a payload
+that is not exactly 32 base64 bytes).
+
+Reachable by POSTing `hashed:v1:…` as `oidcClientSecretRef` or a
+service-account credential. Consequence is mild — the stored value simply
+never verifies — but it is the same class as the closed-prefix ruling of
+2026-09-08. Deliberately **not** in
+`docs/go-mirror/2026-09-08-encryption-rulings.patch`, which is scoped to the
+four rulings you gave; a one-line prefix check fixes it whenever you want it.
 
 ## The per-queue Postgres pool is sized from the wrong quantity (2026-09-08, measured)
 

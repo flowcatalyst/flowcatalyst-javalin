@@ -13,6 +13,9 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
+import java.util.List;
+import org.jooq.impl.DSL;
+import org.jooq.SQLDialect;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -74,6 +77,22 @@ class SubscriptionApiTest {
         } catch (Exception e) {
             throw new IllegalStateException("not JSON: " + r.body(), e);
         }
+    }
+
+    /// These exact codes, ordered the way the database orders them.
+    ///
+    /// The list route is `ORDER BY code`, so the contract is Postgres'
+    /// collation — not the JVM's. AssertJ's `isSorted()` compares by code
+    /// point, where `'R'` (0x52) precedes `'f'` (0x66); Postgres puts
+    /// `fanout-…` before `Raw-…`. Asserting `isSorted()` therefore held only
+    /// while every subscription in the table happened to share a case, and
+    /// failed the moment another test seeded a capitalised code — a
+    /// full-suite failure that passed in isolation.
+    private static List<String> asTheDatabaseOrdersThem(List<String> values) {
+        return DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES)
+                .fetch("select v from unnest(?::text[]) as t(v) order by v",
+                        (Object) values.toArray(String[]::new))
+                .map(r -> r.get(0, String.class));
     }
 
     private static String code(String tag) {
@@ -168,7 +187,8 @@ class SubscriptionApiTest {
         assertThat(body.propertyNames()).containsExactly("subscriptions", "total");
         assertThat(body.get("total").asInt()).isEqualTo(body.get("subscriptions").size());
         assertThat(body.get("subscriptions")).extracting(n -> n.get("code").asText()).contains(code, code("plain"));
-        assertThat(body.get("subscriptions").findValuesAsString("code")).isSorted();
+        var codes = body.get("subscriptions").findValuesAsString("code");
+        assertThat(codes).isEqualTo(asTheDatabaseOrdersThem(codes));
 
         // A viewer (CLIENT scope, view permission) sees platform-wide subscriptions too.
         var viewerList = http.get("/api/subscriptions", VIEWER);
