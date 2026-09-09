@@ -118,6 +118,20 @@ public final class EmbeddedPg implements AutoCloseable {
                 .setRegisterShutdownHook(false)      // fcdev owns the stop ordering (server → pool → pg)
                 .setOverrideWorkingDirectory(cacheDir.toFile())
                 .setPort(port)
+                // Every connection zonky makes itself — the startup readiness
+                // check, ensureDatabase, the extension check — goes through a
+                // PGSimpleDataSource built from this connectConfig. Without a
+                // password they are sent unauthenticated, which is fine on a
+                // cluster this binary initialised (`initdb -A trust`) and fails
+                // on one initialised by the **Go** fcdev, whose pg_hba.conf is
+                // `password` for every host and local line. The two binaries
+                // deliberately share one cluster (DevPaths), so adopting Go's
+                // is the normal case, not the exotic one: Postgres came up and
+                // reported "ready to accept connections", then zonky's own
+                // readiness probe was refused and it gave up after 60s. Go
+                // passes the same pair (`cmd/fcdev/embedded.go`: Username
+                // "postgres", Password "postgres"); a trust cluster ignores it.
+                .setConnectConfig("password", PASSWORD)
                 .setPGStartupWait(START_TIMEOUT)
                 .setPgBinaryResolver(new MavenCentralPgBinaryResolver(cacheDir, Version.embeddedPgVersion(), offlineBinaryOverride))
                 .start();
@@ -225,8 +239,10 @@ public final class EmbeddedPg implements AutoCloseable {
             }
             if (!exists) {
                 st.execute("CREATE DATABASE " + DATABASE);
-                // Matches the Go distribution's credentials; local auth is `trust`, so this
-                // only matters for tools that insist on sending a password.
+                // Matches the Go distribution's credentials. On a cluster this
+                // binary initialised the auth is `trust` and this only matters
+                // for tools that insist on sending a password; on an adopted
+                // Go cluster the hba is `password` and it is load-bearing.
                 st.execute("ALTER ROLE " + USER + " WITH PASSWORD '" + PASSWORD + "'");
                 LOG.atInfo().setMessage("created embedded database")
                         .addKeyValue("name", DATABASE)
