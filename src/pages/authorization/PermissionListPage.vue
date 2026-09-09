@@ -27,6 +27,17 @@ const createForm = ref({
 
 // Each segment must be a lowercase token so the assembled code is well-formed.
 const segmentPattern = /^[a-z0-9-]+$/;
+
+// Coerce natural input ("Approve Invoice") into a valid segment on blur,
+// rather than leaving Create silently disabled with no explanation.
+function slugifySegment(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/\s+/g, "-")
+		.replace(/[^a-z0-9-]/g, "")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
 const newPermString = computed(() => {
 	const { application, context, aggregate, action } = createForm.value;
 	return `${application}:${context.trim()}:${aggregate.trim()}:${action.trim()}`;
@@ -321,15 +332,30 @@ function getActionSeverity(action: string) {
         <div class="segments-row">
           <div class="form-field">
             <label>Context <span class="required">*</span></label>
-            <InputText v-model="createForm.context" placeholder="e.g. billing" class="seg-input" />
+            <InputText
+              v-model="createForm.context"
+              placeholder="e.g. billing"
+              class="seg-input"
+              @blur="createForm.context = slugifySegment(createForm.context)"
+            />
           </div>
           <div class="form-field">
             <label>Aggregate <span class="required">*</span></label>
-            <InputText v-model="createForm.aggregate" placeholder="e.g. invoice" class="seg-input" />
+            <InputText
+              v-model="createForm.aggregate"
+              placeholder="e.g. invoice"
+              class="seg-input"
+              @blur="createForm.aggregate = slugifySegment(createForm.aggregate)"
+            />
           </div>
           <div class="form-field">
             <label>Action <span class="required">*</span></label>
-            <InputText v-model="createForm.action" placeholder="e.g. approve" class="seg-input" />
+            <InputText
+              v-model="createForm.action"
+              placeholder="e.g. approve"
+              class="seg-input"
+              @blur="createForm.action = slugifySegment(createForm.action)"
+            />
           </div>
         </div>
 
@@ -347,7 +373,7 @@ function getActionSeverity(action: string) {
           This permission already exists.
         </small>
         <small v-else class="hint">
-          Lowercase letters, numbers and hyphens for each segment.
+          Each segment is auto-formatted to lowercase letters, numbers and hyphens.
         </small>
 
         <Message v-if="createError" severity="error" class="error-message">

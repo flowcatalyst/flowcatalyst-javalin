@@ -70,6 +70,17 @@ const newPermString = computed(() => {
 // Each segment must be a non-empty lowercase token (no colons/spaces) so the
 // result is a well-formed 4-segment permission the backend can parse.
 const segmentPattern = /^[a-z0-9-]+$/;
+
+// Coerce natural input ("Approve Invoice") into a valid segment on blur,
+// rather than leaving Add silently disabled with no explanation.
+function slugifySegment(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/\s+/g, "-")
+		.replace(/[^a-z0-9-]/g, "")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
 const canAddPermission = computed(() =>
 	[newPerm.value.context, newPerm.value.aggregate, newPerm.value.action].every(
 		(s) => segmentPattern.test(s.trim()),
@@ -321,11 +332,26 @@ function getActionSeverity(action: string) {
           <div class="add-permission-row">
             <Tag :value="role.applicationCode" severity="secondary" />
             <span class="separator">:</span>
-            <InputText v-model="newPerm.context" placeholder="context" class="seg-input" />
+            <InputText
+              v-model="newPerm.context"
+              placeholder="context"
+              class="seg-input"
+              @blur="newPerm.context = slugifySegment(newPerm.context)"
+            />
             <span class="separator">:</span>
-            <InputText v-model="newPerm.aggregate" placeholder="aggregate" class="seg-input" />
+            <InputText
+              v-model="newPerm.aggregate"
+              placeholder="aggregate"
+              class="seg-input"
+              @blur="newPerm.aggregate = slugifySegment(newPerm.aggregate)"
+            />
             <span class="separator">:</span>
-            <InputText v-model="newPerm.action" placeholder="action" class="seg-input" />
+            <InputText
+              v-model="newPerm.action"
+              placeholder="action"
+              class="seg-input"
+              @blur="newPerm.action = slugifySegment(newPerm.action)"
+            />
             <Button
               label="Add"
               icon="pi pi-plus"
@@ -338,7 +364,7 @@ function getActionSeverity(action: string) {
             <code>{{ newPermString }}</code> already exists
           </small>
           <small v-else class="add-permission-hint">
-            Lowercase letters, numbers and hyphens. Saved onto this role.
+            Auto-formatted to lowercase letters, numbers and hyphens. Saved onto this role.
           </small>
         </div>
 
