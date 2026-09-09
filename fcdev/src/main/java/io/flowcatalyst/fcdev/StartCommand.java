@@ -199,6 +199,14 @@ public final class StartCommand implements Callable<Integer> {
                 .set("FC_OUTBOX_ENABLED", Boolean.toString(opts.outbox()))
                 .set("FC_ROUTER_ENABLED", Boolean.toString(opts.router()))
                 .set("FC_MCP_ENABLED", Boolean.toString(opts.mcp()))
+                // fcdev is the local-development binary by definition, so the
+                // dev-only behaviour it gates is on unless explicitly refused:
+                // with no SMTP host the mail transport logs the message body,
+                // which is how a developer reads the login/2FA PIN. fc-server
+                // still defaults this off, so a deployment that merely forgot
+                // its SMTP settings never writes live PINs to its log.
+                // setDefault, not set: FLOWCATALYST_DEV_MODE=false still wins.
+                .setDefault("FLOWCATALYST_DEV_MODE", "true")
                 .setDefault("FC_DEFAULT_BROKER", "postgres");
         return Env.load(dev.toMap());
     }
