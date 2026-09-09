@@ -155,6 +155,17 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .fetch(DispatchJobRepository::toEntity);
     }
 
+    /// The most recent `limit` write-side rows, newest first, with their
+    /// `payload` and `metadata` (spec §6, mirrors `EventRepository#findRecentRaw`).
+    /// Powers the debug raw-job view (`GET /bff/debug/dispatch-jobs`), which
+    /// needs the un-projected envelope the read projection drops.
+    public List<DispatchJob> findRecentRaw(int limit) {
+        return dsl.selectFrom(T)
+                .orderBy(T.CREATED_AT.desc())
+                .limit(guard(limit, LIST_MAX_LIMIT, LIST_DEFAULT_LIMIT))
+                .fetch(DispatchJobRepository::toEntity);
+    }
+
     // ── Reads: projection ──────────────────────────────────────────────────
 
     /// Projection rows matching every filter plus the caller's [Visibility] (spec §4),

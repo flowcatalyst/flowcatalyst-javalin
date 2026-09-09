@@ -58,6 +58,7 @@ import io.flowcatalyst.platform.auth.login.BackoffPolicy;
 import io.flowcatalyst.platform.auth.login.BackoffCheck;
 import io.flowcatalyst.platform.bff.DashboardRepository;
 import io.flowcatalyst.platform.bff.api.DashboardBff;
+import io.flowcatalyst.platform.bff.api.DebugBff;
 import io.flowcatalyst.platform.bff.api.DeveloperBff;
 import io.flowcatalyst.platform.bff.api.EventTypesBff;
 import io.flowcatalyst.platform.bff.api.FilterOptionsBff;
@@ -521,6 +522,7 @@ public final class Platform {
         IngestApi.registerEventsBatchAt(routes, "/bff/events/batch", ingestState);
         DispatchJobApi.registerAt(routes, "/bff/dispatch-jobs", new DispatchJobApi.State(dispatchJobRepo, uow));
         ProcessApi.registerAt(routes, "/bff/processes", new ProcessApi.State(processRepo, uow));
+        DebugBff.register(routes, new DebugBff.State(eventRepo, dispatchJobRepo));
 
         LOG.info("platform API wired");
         return dispatchJobReaper;
