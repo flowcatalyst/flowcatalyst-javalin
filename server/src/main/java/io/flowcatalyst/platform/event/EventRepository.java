@@ -155,6 +155,19 @@ public final class EventRepository {
                 .fetch(EventRepository::toEntity);
     }
 
+    /// One write-side row by id, with its `context_data` and no projection —
+    /// the detail counterpart of [#findRecentRaw] (`GET /bff/debug/events/{id}`).
+    /// Unlike [#findById] (the projected, `msg_events_read` lookup) this is
+    /// NOT client-scoped: the debug list this mirrors already hands every raw
+    /// row to any holder of `event:view-raw`, so scoping only the detail would
+    /// be inconsistent without adding any real protection.
+    public Optional<Event> findRawById(String id) {
+        return dsl.selectFrom(W)
+                .where(W.ID.eq(id))
+                .fetchOptional()
+                .map(EventRepository::toEntity);
+    }
+
     /// Out-of-range limits are corrected, not rejected (spec §7).
     private static int guard(int limit, int max, int fallback) {
         return limit <= 0 || limit > max ? fallback : limit;

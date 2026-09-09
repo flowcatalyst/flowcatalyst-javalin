@@ -116,6 +116,14 @@ class DebugBffTest {
         return body;
     }
 
+    private static JsonNode okObject(HttpResponse<String> r) {
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(r.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
+        var body = json(r);
+        assertThat(body.isObject()).as("a single JSON object, not an array").isTrue();
+        return body;
+    }
+
     private static List<String> ids(JsonNode array) {
         return array.valueStream().map(n -> n.get("id").asText()).toList();
     }
@@ -210,6 +218,62 @@ class DebugBffTest {
         var order = ids(body);
         assertThat(order.indexOf(fullEvent)).as("fullEvent (newest) must precede minimalEvent (30s older)")
                 .isGreaterThanOrEqualTo(0).isLessThan(order.indexOf(minimalEvent));
+    }
+
+    // ── Event detail: same permission, same mapper, 404, no tenant scoping ─
+
+    /// Pins the 200 shape end to end: not just "some JSON came back" but the
+    /// exact fields the list already proves, at the detail route.
+    @Test
+    void eventDetailReturnsTheFullShapeById() {
+        var row = okObject(http.get("/bff/debug/events/" + fullEvent, ANCHOR));
+        assertThat(row.propertyNames()).containsExactly(
+                "id", "specVersion", "eventType", "source", "subject", "time", "data",
+                "messageGroup", "correlationId", "causationId", "deduplicationId", "contextData", "clientId");
+        assertThat(row.get("id").asText()).isEqualTo(fullEvent);
+        assertThat(row.get("eventType").asText()).isEqualTo(EVENT_TYPE);
+    }
+
+    /// Would fail if the detail handler read the projected table, dropped a
+    /// field the list mapper keeps, or mapped a different entity by mistake
+    /// — a weaker "the id matches" assertion would miss all three.
+    @Test
+    void eventDetailIsByteIdenticalToTheSameRowInTheList() {
+        var listRow = find(ok(http.get("/bff/debug/events?size=1000", ANCHOR)), fullEvent);
+        var detailRow = okObject(http.get("/bff/debug/events/" + fullEvent, ANCHOR));
+        assertThat(detailRow).isEqualTo(listRow);
+    }
+
+    /// 404, not an empty/omitted body — pins that an unknown id is a real
+    /// miss, not a silently-empty success.
+    @Test
+    void eventDetailIsNotFoundForAnUnknownId() {
+        String missing = Tsid.generate();
+        var r = http.get("/bff/debug/events/" + missing, ANCHOR);
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(r.body()).isEqualTo("{\"error\":\"Event_NOT_FOUND\",\"message\":\"Event not found: " + missing + "\"}\n");
+    }
+
+    /// Same gate as the list (`event:view-raw`), not the regular `event:view`
+    /// — a principal with only `event:view` must still be forbidden here.
+    @Test
+    void eventDetailRequiresTheRawPermissionNotTheRegularOne() {
+        assertThat(http.get("/bff/debug/events/" + fullEvent, NO_RAW_PERMISSION).statusCode()).isEqualTo(403);
+        assertThat(http.get("/bff/debug/events/" + fullEvent, EVENT_RAW_VIEWER).statusCode()).isEqualTo(200);
+    }
+
+    /// No tenant scoping (deliberate, see [DebugBff] javadoc): a principal
+    /// scoped to a different client still reads a row belonging to another
+    /// client, exactly as the list already does.
+    @Test
+    void eventDetailIsNotClientScoped() {
+        String[] otherClientViewer = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "cli_" + EventFixture.RUN + "9other9",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:event:view-raw"};
+        var row = okObject(http.get("/bff/debug/events/" + fullEvent, otherClientViewer));
+        assertThat(row.get("id").asText()).isEqualTo(fullEvent);
+        assertThat(row.get("clientId").asText()).isEqualTo("cli_" + EventFixture.RUN + "0debug1");
     }
 
     // ── Dispatch jobs: shape, payloadLength (UTF-8 bytes), attemptHistoryCount, ordering ──

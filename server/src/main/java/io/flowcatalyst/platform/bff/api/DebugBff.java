@@ -9,6 +9,7 @@ import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.api.EventApi.ContextEntryDTO;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
 
@@ -36,7 +37,14 @@ import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_VIEW_RAW;
 /// | Method | Path | Gate | Status |
 /// |---|---|---|---|
 /// | GET | `/bff/debug/events` | `event:view-raw` | 200 bare array of [RawEventResponse] |
+/// | GET | `/bff/debug/events/{id}` | `event:view-raw` | 200 [RawEventResponse], 404 unknown id |
 /// | GET | `/bff/debug/dispatch-jobs` | `dispatch-job:view-raw` | 200 bare array of [RawDispatchJobResponse] |
+///
+/// `/bff/debug/events/{id}` is gated by `event:view-raw` — the SAME gate as
+/// the list above, NOT the regular `event:view` — and, like the list, is NOT
+/// client-scoped: the list already hands every raw row to any holder of
+/// `view-raw`, so scoping only the detail would be inconsistent without
+/// adding any real protection. Deliberate; see [EventRepository#findRawById].
 public final class DebugBff {
 
     /// `size` absent or `<= 0` → this default (Go `listDebugRaw`); the
@@ -58,6 +66,7 @@ public final class DebugBff {
 
     public static void register(Routes routes, State s) {
         routes.get("/bff/debug/events", Auth.scoped(ctx -> listEvents(ctx, s)));
+        routes.get("/bff/debug/events/{id}", Auth.scoped(ctx -> getEvent(ctx, s)));
         routes.get("/bff/debug/dispatch-jobs", Auth.scoped(ctx -> listDispatchJobs(ctx, s)));
     }
 
@@ -67,6 +76,16 @@ public final class DebugBff {
         Checks.require(Auth.current(), EVENT_VIEW_RAW);
         int limit = size(ctx);
         ctx.json(s.events().findRecentRaw(limit).stream().map(RawEventResponse::from).toList());
+    }
+
+    /// The list's detail counterpart: same gate, same mapper, no tenant
+    /// scoping (deliberate — see the class javadoc and
+    /// [EventRepository#findRawById]).
+    private static void getEvent(Exchange ctx, State s) {
+        Checks.require(Auth.current(), EVENT_VIEW_RAW);
+        String id = ctx.pathParam("id");
+        Event event = s.events().findRawById(id).orElseThrow(() -> HttpError.notFound("Event", id));
+        ctx.json(RawEventResponse.from(event));
     }
 
     private static void listDispatchJobs(Exchange ctx, State s) {
