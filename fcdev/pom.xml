@@ -308,6 +308,11 @@
               </metadataRepository>
               <buildArgs>
                 <buildArg>--no-fallback</buildArg>
+                <!-- Without this java.net.URL cannot parse an http(s) URL in the
+                     image: yubico's RelyingParty does `new URL(origin)` and falls
+                     back to exact string matching for WebAuthn origins. Outbound
+                     HTTP is java.net.http.HttpClient and unaffected. -->
+                <buildArg>--enable-url-protocols=http,https</buildArg>
                 <buildArg>--enable-preview</buildArg>
                 <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
                 <!-- Same discipline as server/pom.xml: name exactly our runtime resources,

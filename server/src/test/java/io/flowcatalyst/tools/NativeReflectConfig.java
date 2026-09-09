@@ -41,7 +41,7 @@ public final class NativeReflectConfig {
     public static void main(String[] args) throws IOException {
         Path out = Path.of(args[0]);
         List<String> entries = new ArrayList<>();
-        int records = 0, enums = 0, jackson = 0, jooq = 0;
+        int records = 0, enums = 0, jackson = 0, jooq = 0, arrays = 0;
         for (int i = 1; i < args.length; i++) {
             Path dir = Path.of(args[i]);
             if (!Files.isDirectory(dir)) continue;
@@ -53,11 +53,14 @@ public final class NativeReflectConfig {
                     String dotted = name.replace('/', '.');
                     String superName = cm.superclass().map(c -> c.asInternalName()).orElse("");
                     if (superName.equals("java/lang/Record")) {
-                        entries.add(entry(dotted, RECORD)); records++;
+                        entries.add(entry(dotted, RECORD));
+                        entries.add(arrayEntry(dotted)); records++; arrays++;
                     } else if (cm.flags().has(AccessFlag.ENUM)) {
-                        entries.add(entry(dotted, ENUM)); enums++;
+                        entries.add(entry(dotted, ENUM));
+                        entries.add(arrayEntry(dotted)); enums++; arrays++;
                     } else if (hasJacksonAnnotation(cm)) {
-                        entries.add(entry(dotted, FULL)); jackson++;
+                        entries.add(entry(dotted, FULL));
+                        entries.add(arrayEntry(dotted)); jackson++; arrays++;
                     } else if (name.startsWith("io/flowcatalyst/db/generated/tables/records/")) {
                         entries.add(entry(dotted, CONSTRUCT)); jooq++;
                     }
@@ -67,8 +70,8 @@ public final class NativeReflectConfig {
         entries.sort(null);
         Files.createDirectories(out.getParent());
         Files.writeString(out, "[\n" + String.join(",\n", entries) + "\n]\n");
-        System.out.printf("wrote %d reflection entries to %s (records=%d enums=%d jackson=%d jooq-records=%d)%n",
-                entries.size(), out, records, enums, jackson, jooq);
+        System.out.printf("wrote %d reflection entries to %s (records=%d enums=%d jackson=%d jooq-records=%d arrays=%d)%n",
+                entries.size(), out, records, enums, jackson, jooq, arrays);
     }
 
     private static boolean hasJacksonAnnotation(ClassModel cm) {
@@ -80,5 +83,20 @@ public final class NativeReflectConfig {
 
     private static String entry(String name, String flags) {
         return "  {\"name\":\"" + name + "\"," + flags + "}";
+    }
+
+    /// The `T[]` companion of a registered type, with no member flags — an
+    /// array class has no members of its own, only a hub to instantiate.
+    ///
+    /// Jackson needs it. Resolving a property whose type is a DTO takes
+    /// `TypeFactory._fromArrayType`, which instantiates the array class to
+    /// obtain it, so serialising `List<RoleResponse>` fails at runtime with
+    /// `MissingReflectionRegistrationError: Cannot reflectively instantiate
+    /// the array class '…RoleResponse[]'` even though `RoleResponse` itself
+    /// is registered. Every list endpoint in the native image 500s on this,
+    /// and only in the native image — which is why the JVM suites and a
+    /// `/health` probe both miss it.
+    private static String arrayEntry(String name) {
+        return "  {\"name\":\"" + name + "[]\"}";
     }
 }

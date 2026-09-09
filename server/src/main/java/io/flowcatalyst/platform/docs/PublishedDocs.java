@@ -122,11 +122,28 @@ public final class PublishedDocs {
         URL url = loader.getResource(root);
         if (url == null) return List.of();
         URI uri = url.toURI();
-        if ("jar".equals(uri.getScheme())) {
-            // The jar may already be mounted (tests, a second index) — reuse it, never close it under others.
-            try (FileSystem fs = FileSystems.newFileSystem(uri, Map.of())) {
-                return names(fs.provider().getPath(uri));
+        String scheme = uri.getScheme();
+        // `jar:` in the shaded jar, `resource:` in a native image — both need a
+        // FileSystem mounted before a Path exists; only an exploded `file:`
+        // target/classes can go straight to Path.of. Native image throws
+        // FileSystemNotFoundException there, which the caller caught and turned
+        // into "published docs unreadable; serving none" — so the binary served
+        // zero of the five pages compiled into it, and only the binary did.
+        if ("jar".equals(scheme) || "resource".equals(scheme)) {
+            try {
+                FileSystem fs = FileSystems.newFileSystem(uri, Map.of());
+                try {
+                    return names(fs.provider().getPath(uri));
+                } finally {
+                    // A jar we mounted is ours to close; the image's resource
+                    // filesystem is process-wide and closing it would break
+                    // every later reader.
+                    if ("jar".equals(scheme)) {
+                        fs.close();
+                    }
+                }
             } catch (FileSystemAlreadyExistsException _) {
+                // Already mounted (tests, a second index) — reuse, never close it under others.
                 return names(FileSystems.getFileSystem(uri).provider().getPath(uri));
             }
         }
