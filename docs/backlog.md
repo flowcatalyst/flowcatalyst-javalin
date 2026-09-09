@@ -629,6 +629,32 @@ later decision.
 
 - ~~Two `DispatchMode` enums~~ — merged into
   `platform.shared.dispatch.DispatchMode` (X-01) on 2026-09-02.
+- **`PoolTest.blockOnErrorSettlesSiblingsWhenGateIsOn` failed once, unexplained
+  (2026-09-09) — treat as a possible real defect, not a flake.** One failure in
+  ~15 full runs; 3/3 green in isolation afterwards. It is *not* the
+  `rateLimitWarnsOnceForARun` entry below, and unlike the other two entries
+  here it asserts a **correctness guarantee**, not a timing one:
+
+  ```
+  Expecting ["rejected-group-blocked", "delivered", "delivered", "delivered"]
+  to contain only ["rejected-group-blocked"]
+  ```
+
+  Those are `broker.ackReasons`: m1/m2/m3 were **actually delivered** when
+  `BLOCK_ON_ERROR` says a blocked group's untried siblings must be ACKed
+  without ever being tried (ruling of 2026-08-25 — "breaking the guarantee the
+  mode is named for"). If this can happen in production, a failing head lets
+  its siblings through to the target, which is the exact failure the mode
+  exists to prevent, and it would land in the subscriber's data.
+
+  A group is serialised by `groups.claimDrainer(group)` (`Pool.java:357`), so
+  on a quick read one drainer should take m0 first, fail it, block the group,
+  and ACK the rest — no window for a sibling to be delivered. That the read
+  and the observed behaviour disagree is the reason to look properly rather
+  than to re-run until it passes. Worth reproducing under artificial CPU load
+  and, if it reproduces, checking whether two drainers can hold the same group
+  or whether the block is published after the next sibling is claimed.
+
 - **`ConsumerLoopTest.resumesPromptlyWhenCapacityReturns` is load-sensitive too**
   (2026-09-08). Failed once on a full uncontended `mvn clean test` ("condition
   not met within 10s"), then passed on an immediate re-run of the same suite

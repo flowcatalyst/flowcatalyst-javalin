@@ -1,6 +1,8 @@
 package io.flowcatalyst.server;
 
 import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.joran.JoranConfigurator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -21,7 +23,29 @@ class LoggingTest {
     void restore() {
         System.setErr(originalErr);
         MDC.clear();
-        Logging.init(Level.INFO, Logging.Format.TEXT);
+        reloadTestLoggingConfig();
+    }
+
+    /// Puts `logback-test.xml` back, rather than calling [Logging#init] again.
+    ///
+    /// `init` resets the Logback context and installs the **production**
+    /// appender, so "restoring" with it left every test that ran after this
+    /// class in the same JVM logging through the production pattern — with
+    /// unbounded `%ex`. Once the failure paths began attaching real causes
+    /// (CONVENTIONS §10) that meant 2,755 stack-frame lines in a server run,
+    /// which buried surefire's own summary. The class under test reconfigures
+    /// global state; the teardown has to hand back the state the suite
+    /// expects, not a third one.
+    private static void reloadTestLoggingConfig() {
+        var context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        context.reset();
+        var configurator = new JoranConfigurator();
+        configurator.setContext(context);
+        try (var in = LoggingTest.class.getResourceAsStream("/logback-test.xml")) {
+            configurator.doConfigure(in);
+        } catch (Exception e) {
+            throw new IllegalStateException("could not restore logback-test.xml", e);
+        }
     }
 
     @Test

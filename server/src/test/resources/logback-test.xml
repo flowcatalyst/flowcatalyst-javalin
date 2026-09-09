@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Test logging: keep Jetty/Javalin/Hikari/Flyway quiet; our own code at INFO. -->
+<!-- Test logging: keep Jetty/Javalin/Hikari/Flyway quiet; our own code at INFO.
+
+     `%ex{short}` bounds the exception to its first line. Most exceptions a
+     test logs are the ones it is deliberately provoking, and since failure
+     paths started attaching the real cause (CONVENTIONS §10) their full
+     traces drowned the run: 912 of 1035 lines in a router run were stack
+     frames, which buried surefire's own summary. A genuinely failing test is
+     unaffected — surefire prints its assertion error and stack trace itself,
+     through a different channel. Use -Dtest.stacktraces=full to get them
+     back while debugging. -->
 <configuration>
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg %kvp%n</pattern>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg %kvp%n%ex{${test.stacktraces:-short}}</pattern>
     </encoder>
   </appender>
   <logger name="io.flowcatalyst" level="INFO"/>
