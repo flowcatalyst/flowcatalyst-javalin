@@ -1,12 +1,24 @@
 <script setup lang="ts">
-// Portal Users — per-client management of the portal identity plane
+// Portal Users — per-client administration of the portal identity plane
 // (docs/portal-identity-plan.md Phase 2.5 v2). Visible to platform admins
 // (any client, via the picker) and to client administrators holding the
 // platform:portal-administrator role (their own client(s)).
+//
+// There is deliberately no invite here: invites are initiated by the
+// portal app itself (POST /api/portal-users with its portalAppCode), which
+// owns the relationship with its users. This page searches, suspends,
+// reactivates, revokes per-app access, and offboards.
 import { ref, computed, onMounted, watch } from "vue";
 import { useConfirm } from "primevue/useconfirm";
+import type { DataTablePageEvent } from "primevue/datatable";
 import { toast } from "@/utils/errorBus";
-import { portalUsersApi, type PortalUser } from "@/api/portal-users";
+import {
+	portalUsersApi,
+	type PortalUser,
+	type PortalUserApp,
+	type PortalUserState,
+} from "@/api/portal-users";
+import { portalAppsApi, type PortalApp } from "@/api/portal-apps";
 import { clientsApi, type Client } from "@/api/clients";
 import { useAuthStore } from "@/stores/auth";
 import { getErrorMessage } from "@/utils/errors";
@@ -16,7 +28,13 @@ const authStore = useAuthStore();
 
 const clients = ref<Client[]>([]);
 const selectedClientId = ref<string>("");
+const apps = ref<PortalApp[]>([]);
+const selectedAppCode = ref<string>("");
+const search = ref("");
 const portalUsers = ref<PortalUser[]>([]);
+const total = ref(0);
+const page = ref(0);
+const pageSize = ref(25);
 const loading = ref(false);
 
 const isAnchor = computed(() => !authStore.user?.clientId);
@@ -31,11 +49,16 @@ const clientOptions = computed(() => {
 	}));
 });
 
+const appOptions = computed(() =>
+	apps.value.map((a) => ({ label: `${a.name} (${a.code})`, value: a.code })),
+);
+
 onMounted(async () => {
 	try {
 		const response = await clientsApi.list();
 		clients.value = response.clients || [];
 	} catch {
+		// Client admins may not list clients; the picker falls back to ids.
 	}
 	// Client admins land on their own client; anchors pick one.
 	if (!isAnchor.value) {
@@ -46,21 +69,65 @@ onMounted(async () => {
 	}
 });
 
-watch(selectedClientId, () => {
-	if (selectedClientId.value) void loadPortalUsers();
+watch(selectedClientId, async () => {
+	selectedAppCode.value = "";
+	apps.value = [];
+	page.value = 0;
+	if (!selectedClientId.value) return;
+	try {
+		apps.value = (await portalAppsApi.list(selectedClientId.value)).portalApps;
+	} catch (e: unknown) {
+		toast.error("Error", getErrorMessage(e, "Failed to load portal apps"));
+	}
+	void loadPortalUsers();
 });
+
+watch(selectedAppCode, () => {
+	page.value = 0;
+	void loadPortalUsers();
+});
+
+// Server-side prefix search (TERM% on email and name), debounced.
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+watch(search, () => {
+	clearTimeout(searchTimer);
+	searchTimer = setTimeout(() => {
+		page.value = 0;
+		void loadPortalUsers();
+	}, 300);
+});
+
+// Drop out-of-order responses (a slow search landing after a newer one).
+let requestSeq = 0;
 
 async function loadPortalUsers() {
 	if (!selectedClientId.value) return;
+	const seq = ++requestSeq;
 	loading.value = true;
 	try {
-		const response = await portalUsersApi.list(selectedClientId.value);
+		const response = await portalUsersApi.list({
+			clientId: selectedClientId.value,
+			q: search.value.trim() || undefined,
+			portalAppCode: selectedAppCode.value || undefined,
+			page: page.value,
+			size: pageSize.value,
+		});
+		if (seq !== requestSeq) return;
 		portalUsers.value = response.portalUsers;
+		total.value = response.total;
 	} catch (e: unknown) {
-		toast.error("Error", getErrorMessage(e, "Failed to load portal users"));
+		if (seq === requestSeq) {
+			toast.error("Error", getErrorMessage(e, "Failed to load portal users"));
+		}
 	} finally {
-		loading.value = false;
+		if (seq === requestSeq) loading.value = false;
 	}
+}
+
+function onPage(event: DataTablePageEvent) {
+	page.value = event.page;
+	pageSize.value = event.rows;
+	void loadPortalUsers();
 }
 
 function formatDate(dateStr: string | undefined | null) {
@@ -68,63 +135,40 @@ function formatDate(dateStr: string | undefined | null) {
 	return new Date(dateStr).toLocaleString();
 }
 
-// ── Invite ───────────────────────────────────────────────────────────────
+const STATE_LABEL: Record<PortalUserState, string> = {
+	INVITED: "Invited",
+	INVITE_EXPIRED: "Invite expired",
+	ACTIVE: "Active",
+	SUSPENDED: "Suspended",
+};
 
-const showInviteDialog = ref(false);
-const inviteEmail = ref("");
-const inviteName = ref("");
-const inviting = ref(false);
-const inviteEmailValid = computed(() => /.+@.+\..+/.test(inviteEmail.value.trim()));
+const STATE_SEVERITY: Record<PortalUserState, string> = {
+	INVITED: "info",
+	INVITE_EXPIRED: "warn",
+	ACTIVE: "success",
+	SUSPENDED: "danger",
+};
 
-function openInviteDialog() {
-	inviteEmail.value = "";
-	inviteName.value = "";
-	showInviteDialog.value = true;
+function stateLabel(state: string) {
+	return STATE_LABEL[state as PortalUserState] ?? state;
 }
 
-// Honest outcome copy: a re-ensure of an identity that already holds a
-// password deliberately sends nothing (the account is live) — say so
-// instead of implying an invite went out.
-function inviteOutcomeMessage(result: {
-	created: boolean;
-	invited: boolean;
-	ssoManaged?: boolean;
-	hasPassword: boolean;
-}): string {
-	if (result.created) {
-		if (result.invited) return "Portal user created and invited";
-		if (result.ssoManaged)
-			return "Portal user created — their organisation signs them in (no invite mail configured)";
-		return "Portal user created (no mailer configured — invite not sent)";
-	}
-	if (result.invited) return "Portal user already existed; invite re-sent";
-	if (result.hasPassword)
-		return "Portal user already has a password — nothing sent. They can sign in, or use Forgot password on the portal sign-in page.";
-	if (result.ssoManaged)
-		return "Portal user already existed — their organisation signs them in";
-	return "Portal user already existed";
+function stateSeverity(state: string) {
+	return STATE_SEVERITY[state as PortalUserState] ?? "secondary";
 }
 
-async function sendInvite() {
-	if (!inviteEmailValid.value || inviting.value) return;
-	inviting.value = true;
-	try {
-		const result = await portalUsersApi.ensure({
-			clientId: selectedClientId.value,
-			email: inviteEmail.value.trim(),
-			name: inviteName.value.trim() || undefined,
-		});
-		toast.success(
-			"Success",
-			inviteOutcomeMessage(result),
-		);
-		showInviteDialog.value = false;
-		await loadPortalUsers();
-	} catch (e: unknown) {
-		toast.error("Error", getErrorMessage(e, "Failed to invite portal user"));
-	} finally {
-		inviting.value = false;
+// Hover detail for the state tag: when the invite went out / lapses.
+function stateTitle(user: PortalUser) {
+	if (user.state === "INVITED" && user.inviteExpiresAt) {
+		return `Invite expires ${formatDate(user.inviteExpiresAt)}`;
 	}
+	if (user.state === "INVITE_EXPIRED" && user.inviteExpiresAt) {
+		return `Invite expired ${formatDate(user.inviteExpiresAt)} — the portal can re-send it`;
+	}
+	if (user.state === "INVITED" && user.invitedAt) {
+		return `Invited ${formatDate(user.invitedAt)}`;
+	}
+	return "";
 }
 
 // ── Row actions ──────────────────────────────────────────────────────────
@@ -145,9 +189,28 @@ async function toggleStatus(user: PortalUser) {
 	}
 }
 
+function confirmRevoke(user: PortalUser, app: PortalUserApp) {
+	confirm.require({
+		message: `Remove ${user.email}'s access to "${app.name}"? Their access to this client's other portals is unaffected.`,
+		header: "Remove portal access",
+		icon: "pi pi-exclamation-triangle",
+		acceptClass: "p-button-danger",
+		acceptLabel: "Remove",
+		accept: async () => {
+			try {
+				await portalUsersApi.revokeApp(user.identityId, selectedClientId.value, app.code);
+				toast.success("Success", `${user.email} no longer has access to ${app.name}`);
+				await loadPortalUsers();
+			} catch (e: unknown) {
+				toast.error("Error", getErrorMessage(e, "Failed to remove access"));
+			}
+		},
+	});
+}
+
 function confirmDelete(user: PortalUser) {
 	confirm.require({
-		message: `Delete portal user "${user.email}"? They will no longer be able to sign in to this client's portal. This cannot be undone.`,
+		message: `Delete portal user "${user.email}"? They will no longer be able to sign in to ANY of this client's portals. This cannot be undone.`,
 		header: "Delete portal user",
 		icon: "pi pi-exclamation-triangle",
 		acceptClass: "p-button-danger",
@@ -171,16 +234,10 @@ function confirmDelete(user: PortalUser) {
       <div>
         <h1>Portal Users</h1>
         <p class="page-subtitle">
-          The portal end-user population for a client — separate identities
-          from platform users, managed per client.
+          The end users of a client's portals — separate identities from
+          platform users. Portals invite their own users; manage access here.
         </p>
       </div>
-      <Button
-        label="Invite Portal User"
-        icon="pi pi-user-plus"
-        :disabled="!selectedClientId"
-        @click="openInviteDialog"
-      />
     </div>
 
     <div class="toolbar">
@@ -193,51 +250,81 @@ function confirmDelete(user: PortalUser) {
         filter
         class="client-select"
       />
+      <Select
+        v-model="selectedAppCode"
+        :options="appOptions"
+        optionLabel="label"
+        optionValue="value"
+        placeholder="All portal apps"
+        showClear
+        :disabled="!selectedClientId || apps.length === 0"
+        class="app-select"
+      />
+      <IconField class="search-field">
+        <InputIcon class="pi pi-search" />
+        <InputText
+          v-model="search"
+          placeholder="Search email or name (starts with)"
+          :disabled="!selectedClientId"
+          class="w-full"
+        />
+      </IconField>
     </div>
 
     <DataTable
       :value="portalUsers"
       :loading="loading"
       dataKey="identityId"
+      lazy
       paginator
-      :rows="25"
+      :first="page * pageSize"
+      :rows="pageSize"
+      :totalRecords="total"
       :rowsPerPageOptions="[25, 50, 100]"
+      @page="onPage"
     >
       <template #empty>
         <span v-if="!selectedClientId">Select a client to view its portal users.</span>
+        <span v-else-if="search || selectedAppCode">No portal users match.</span>
         <span v-else>No portal users for this client yet.</span>
       </template>
-      <Column field="email" header="Email" sortable />
-      <Column field="name" header="Name" sortable>
+      <Column field="email" header="Email" />
+      <Column field="name" header="Name">
         <template #body="{ data }">{{ data.name || "—" }}</template>
       </Column>
-      <Column field="status" header="Status" sortable>
+      <Column field="state" header="Status">
         <template #body="{ data }">
           <Tag
-            :value="data.status"
-            :severity="data.status === 'ACTIVE' ? 'success' : 'warn'"
+            :value="stateLabel(data.state)"
+            :severity="stateSeverity(data.state)"
+            :title="stateTitle(data)"
           />
         </template>
       </Column>
-      <Column field="source" header="Source" sortable>
+      <Column header="Portal Apps">
         <template #body="{ data }">
-          <Tag
-            :value="data.source === 'JIT' ? 'SSO' : 'Invited'"
-            severity="info"
-          />
+          <div v-if="data.apps.length > 0" class="app-chips">
+            <Chip
+              v-for="app in data.apps"
+              :key="app.id"
+              :label="app.name"
+              :title="`${app.code} · granted ${formatDate(app.grantedAt)} (${app.source})`"
+              removable
+              @remove="confirmRevoke(data, app)"
+            />
+          </div>
+          <span v-else class="text-muted">—</span>
         </template>
       </Column>
-      <Column field="hasPassword" header="Password">
+      <Column field="source" header="Source">
         <template #body="{ data }">
-          <i
-            :class="data.hasPassword ? 'pi pi-check text-green-500' : 'pi pi-minus text-muted'"
-          />
+          <span class="text-muted">{{ data.source === "JIT" ? "SSO sign-in" : "Invite" }}</span>
         </template>
       </Column>
-      <Column field="lastLoginAt" header="Last Login" sortable>
+      <Column field="lastLoginAt" header="Last Login">
         <template #body="{ data }">{{ formatDate(data.lastLoginAt) }}</template>
       </Column>
-      <Column field="createdAt" header="Created" sortable>
+      <Column field="createdAt" header="Created">
         <template #body="{ data }">{{ formatDate(data.createdAt) }}</template>
       </Column>
       <Column header="" :style="{ width: '8rem' }">
@@ -262,35 +349,6 @@ function confirmDelete(user: PortalUser) {
         </template>
       </Column>
     </DataTable>
-
-    <Dialog
-      v-model:visible="showInviteDialog"
-      header="Invite Portal User"
-      modal
-      :style="{ width: '28rem' }"
-    >
-      <div class="field">
-        <label for="inviteEmail">Email</label>
-        <InputText id="inviteEmail" v-model="inviteEmail" type="email" class="w-full" autofocus />
-      </div>
-      <div class="field">
-        <label for="inviteName">Name (optional)</label>
-        <InputText id="inviteName" v-model="inviteName" class="w-full" />
-      </div>
-      <small class="field-help">
-        Creates the portal identity for this client and sends a set-password
-        invite. Safe to repeat — a lost invite is re-sent.
-      </small>
-      <template #footer>
-        <Button label="Cancel" text :disabled="inviting" @click="showInviteDialog = false" />
-        <Button
-          label="Send Invite"
-          :loading="inviting"
-          :disabled="!inviteEmailValid"
-          @click="sendInvite"
-        />
-      </template>
-    </Dialog>
   </div>
 </template>
 
@@ -315,19 +373,24 @@ function confirmDelete(user: PortalUser) {
 	font-size: 0.9rem;
 }
 .toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
 	margin-bottom: 1rem;
 }
 .client-select {
-	min-width: 20rem;
+	min-width: 16rem;
 }
-.field {
-	margin-bottom: 1rem;
+.app-select {
+	min-width: 14rem;
+}
+.search-field {
+	flex: 1 1 18rem;
+}
+.app-chips {
 	display: flex;
-	flex-direction: column;
-	gap: 0.35rem;
-}
-.field-help {
-	color: var(--p-text-muted-color);
+	flex-wrap: wrap;
+	gap: 0.25rem;
 }
 .row-actions {
 	display: flex;

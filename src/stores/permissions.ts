@@ -186,6 +186,10 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
 	// Events (messaging events)
 	"/events": "platform:messaging:event:view",
 
+	// Portal plane (client-delegable via platform:portal-administrator)
+	"/identity/portal-users": "platform:iam:portal-user:view",
+	"/identity/portal-apps": "platform:iam:portal-user:view",
+
 	// Platform admin + debug pages (anchor-only on the backend; platform
 	// admins bypass via the role check in the route guard, everyone else is
 	// blocked — matching how /clients is handled).
@@ -249,13 +253,32 @@ function permissionMatches(held: string, required: string): boolean {
  * what "accessible" means.
  */
 export function canAccessPath(
-	user: { permissions?: string[] } | null | undefined,
+	user: { permissions?: string[]; roles?: string[] } | null | undefined,
 	path: string,
 ): boolean {
+	// A user with no platform role sees nothing but their profile (the
+	// backend enforces the same rule — 403 NO_PLATFORM_ROLE), so even
+	// unmapped routes are closed to them.
+	if (isRoleless(user)) return path === "/profile";
 	const required = getRoutePermission(path);
 	if (!required) return true;
 	const perms = user?.permissions ?? [];
 	return perms.some((p) => permissionMatches(p, required));
+}
+
+/**
+ * A signed-in user holding no platform role and no permission — e.g. an SSO
+ * user provisioned on first login but never granted access. They may only
+ * reach their own profile.
+ */
+export function isRoleless(
+	user: { permissions?: string[]; roles?: string[] } | null | undefined,
+): boolean {
+	return (
+		!!user &&
+		(user.roles ?? []).length === 0 &&
+		(user.permissions ?? []).length === 0
+	);
 }
 
 /**

@@ -4,6 +4,7 @@ import { ref, computed, onMounted } from "vue";
 import { oauthClientsApi, type ClientType } from "@/api/oauth-clients";
 import { applicationsApi, type Application } from "@/api/applications";
 import { clientsApi, type Client } from "@/api/clients";
+import { portalAppsApi, type PortalApp } from "@/api/portal-apps";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -29,8 +30,23 @@ const form = ref({
 	pkceRequired: true,
 	applicationIds: [] as string[],
 	portalClientId: "" as string,
+	portalAppId: "" as string,
 	apiAccess: false,
 });
+
+// Portal apps, for the "Portal app" picker (scoped to the chosen owner client).
+const portalApps = ref<PortalApp[]>([]);
+function portalAppsFor(clientId: string) {
+	return portalApps.value.filter((a) => a.clientId === clientId);
+}
+async function loadPortalApps() {
+	try {
+		portalApps.value = (await portalAppsApi.list()).portalApps;
+	} catch {
+		// Optional enrichment — the picker just stays empty.
+	}
+}
+
 
 const newRedirectUri = ref("");
 const newPostLogoutRedirectUri = ref("");
@@ -104,6 +120,7 @@ onMounted(async () => {
 
 async function loadClients() {
 	try {
+		void loadPortalApps();
 		const response = await clientsApi.list();
 		clients.value = response.clients || [];
 	} catch (e: unknown) {
@@ -213,6 +230,8 @@ async function createClient() {
 					? form.value.applicationIds
 					: undefined,
 			portalClientId: form.value.portalClientId || undefined,
+			portalAppId:
+				(form.value.portalClientId && form.value.portalAppId) || undefined,
 			apiAccess: form.value.apiAccess || undefined,
 		});
 
@@ -476,6 +495,27 @@ function closeSecretDialog() {
         <small class="field-help">
           Marks this OAuth client as a portal entry point for the selected client: only that
           client's ACTIVE portal users can authenticate through it.
+        </small>
+      </div>
+
+      <div v-if="form.portalClientId" class="field">
+        <label for="portalApp">Portal app</label>
+        <Select
+          id="portalApp"
+          v-model="form.portalAppId"
+          :options="portalAppsFor(form.portalClientId)"
+          optionLabel="name"
+          optionValue="id"
+          placeholder="Legacy: whole client (no app)"
+          showClear
+          class="w-full"
+        >
+          <template #option="{ option }">{{ option.name }} <code>({{ option.code }})</code></template>
+        </Select>
+        <small class="field-help">
+          Which of the client's portals this OAuth client fronts. Users need a grant for the
+          app to sign in, and the id_token carries its <code>portal_app_code</code>. Manage apps
+          under Portal → Portal Apps.
         </small>
       </div>
 

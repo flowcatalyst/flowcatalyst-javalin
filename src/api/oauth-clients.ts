@@ -34,6 +34,8 @@ export interface CreateOAuthClientRequest {
 	applicationIds?: string[];
 	// Marks the client as a portal entry point owned by this tenant client.
 	portalClientId?: string;
+	// Links the portal client to one of that client's portal apps.
+	portalAppId?: string;
 	// Trusted first-party opt-in: interactive logins mint authority-bearing
 	// access tokens narrowed to the client's applications.
 	apiAccess?: boolean;
@@ -50,6 +52,8 @@ export interface UpdateOAuthClientRequest {
 	applicationIds?: string[];
 	// Empty string clears the portal flag; omitted keeps it.
 	portalClientId?: string;
+	// Empty string unlinks the portal app; omitted keeps it.
+	portalAppId?: string;
 	apiAccess?: boolean;
 }
 

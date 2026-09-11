@@ -92,14 +92,26 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 				scope: "client",
 			},
 			{
-				label: "Portal Users",
-				icon: "pi pi-globe",
-				route: "/identity/portal-users",
-			},
-			{
 				label: "Reset Approvals",
 				icon: "pi pi-shield",
 				route: "/authentication/reset-approvals",
+			},
+		],
+	},
+	{
+		// The portal plane: the portals each client runs for its customers,
+		// and those portals' end users (separate from platform users).
+		label: "Portal",
+		items: [
+			{
+				label: "Portal Apps",
+				icon: "pi pi-window-maximize",
+				route: "/identity/portal-apps",
+			},
+			{
+				label: "Portal Users",
+				icon: "pi pi-globe",
+				route: "/identity/portal-users",
 			},
 		],
 	},

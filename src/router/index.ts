@@ -201,6 +201,14 @@ const router = createRouter({
 					component: () =>
 						import("@/pages/portal/PortalUsersPage.vue"),
 				},
+				// Portal Apps — the named portals a client runs; OAuth clients
+				// link to one and portal users are granted per app.
+				{
+					path: "identity/portal-apps",
+					name: "portal-apps",
+					component: () =>
+						import("@/pages/portal/PortalAppsPage.vue"),
+				},
 				// Developer Users — designate existing users as developers and
 				// manage their self-service API credentials. Granting the role is
 				// anchor-only (it's a platform role); matches User Management/Roles.
