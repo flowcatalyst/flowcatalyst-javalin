@@ -528,6 +528,31 @@ class PortalUserApiTest {
         assertThat(ref.name()).as("falls back to the app id").isEqualTo("pta_missing00000000");
     }
 
+    // ── unassigned filter (spec §4.2, §3.2a, §9 scenario 9) ──────────────────
+
+    /// §9 scenario 9's filter half: two users with no app (one suspended)
+    /// and one holding app B ⇒ `unassigned=true` finds exactly the two, and
+    /// combining it with `portalAppCode` is `FILTER_CONFLICT`.
+    @Test
+    void unassignedFilterFindsIdentitiesWithNoGrantRegardlessOfStatusAndConflictsWithPortalAppCode() {
+        String clientId = testClient("unassigned");
+        PortalApp appB = testApp(clientId, "unassigned-b");
+        String noApp = ensureUser(clientId, "unassigned-1-" + RUN + "@example.com");
+        String noAppSuspended = ensureUser(clientId, "unassigned-2-" + RUN + "@example.com");
+        http.post("/api/portal-users/" + noAppSuspended + "/deactivate", "{\"clientId\":\"" + clientId + "\"}", ANCHOR);
+        String onAppB = ensureUser(clientId, "unassigned-3-" + RUN + "@example.com");
+        http.post("/api/portal-users/" + onAppB + "/apps", "{\"clientId\":\"" + clientId + "\",\"portalAppCode\":\"" + appB.code() + "\"}", ANCHOR);
+
+        var filtered = json(http.get("/api/portal-users?clientId=" + clientId + "&unassigned=true", ANCHOR));
+        assertThat(filtered.get("portalUsers")).extracting(n -> n.get("identityId").asText())
+                .containsExactlyInAnyOrder(noApp, noAppSuspended);
+        assertThat(filtered.get("total").asLong()).isEqualTo(2);
+
+        var conflict = http.get("/api/portal-users?clientId=" + clientId + "&unassigned=true&portalAppCode=" + appB.code(), ANCHOR);
+        assertThat(conflict.statusCode()).isEqualTo(400);
+        assertThat(json(conflict).get("error").asText()).isEqualTo("FILTER_CONFLICT");
+    }
+
     // ── Grant / revoke (spec §4.3) ───────────────────────────────────────────
 
     @Test

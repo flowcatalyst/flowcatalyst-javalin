@@ -14,10 +14,11 @@ class LockfileTest {
         // +4 paths / +6 operations since the 2fe6bf0 re-vendor (spec `portal-apps.md`):
         // grantPortalUserApp/revokePortalUserApp, listPortalApps, createPortalApp,
         // updatePortalApp, deletePortalApp — ensurePortalUser/listPortalUsers extended
-        // in place, no new path.
-        assertThat(lock.pathCount()).isEqualTo(185);
+        // in place, no new path. +1 path / +1 operation at the 13e80c9 re-vendor:
+        // assignUnassignedPortalUsers (`POST /api/portal-apps/{id}/assign-unassigned`).
+        assertThat(lock.pathCount()).isEqualTo(186);
         var ops = lock.operations();
-        assertThat(ops).hasSize(252);
+        assertThat(ops).hasSize(253);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");

@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.portalidentity.PortalAppGrantSource;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityStatus;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -71,7 +72,7 @@ class PortalAppApiTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before("/api/*", auth);
-            PortalAppApi.register(routes, new PortalAppApi.State(portalAppRepo, oauthClientRepo, clientRepo, uow, ENCRYPTION));
+            PortalAppApi.register(routes, new PortalAppApi.State(portalAppRepo, oauthClientRepo, clientRepo, portalIdentityRepo, uow, ENCRYPTION));
         });
     }
 
@@ -373,5 +374,104 @@ class PortalAppApiTest {
         var r = http.delete("/api/portal-apps/pta_doesnotexist1?clientId=" + clientId, ANCHOR);
         assertThat(r.statusCode()).isEqualTo(404);
         assertThat(json(r).get("error").asText()).isEqualTo("PortalApp_NOT_FOUND");
+    }
+
+    // ── assign-unassigned / unassignedUsers (spec §3.2a, §4.4, §9 scenario 9) ─
+
+    private static void persistIdentity(PortalIdentity pi) {
+        uow.inTransaction(tx -> {
+            portalIdentityRepo.persist(pi, tx.dbTx());
+            return null;
+        });
+    }
+
+    /// §9 scenario 9 exactly: two users with no app (one suspended) and one
+    /// holding app B; `unassignedUsers = 2`; assigning A grants the two (the
+    /// suspended one stays suspended, the B user is untouched); a second run
+    /// assigns 0; `unassignedUsers` becomes 0; an inactive app is rejected.
+    @Test
+    void assignUnassignedGrantsEveryUnassignedIdentityAndUpdatesTheUnassignedCount() {
+        String clientId = testClient("assign9");
+        var appA = create(clientId, "assign9-a-" + RUN, "");
+        var appB = create(clientId, "assign9-b-" + RUN, "");
+        String appAId = appA.get("portalApp").get("id").asText();
+        String appACode = appA.get("portalApp").get("code").asText();
+        String appBId = appB.get("portalApp").get("id").asText();
+
+        PortalIdentity noApp = PortalIdentity.create(clientId, "assign9-1-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
+        persistIdentity(noApp);
+        PortalIdentity noAppSuspended = PortalIdentity.create(clientId, "assign9-2-" + RUN + "@example.com", null, PortalIdentitySource.INVITE)
+                .deactivate();
+        persistIdentity(noAppSuspended);
+        PortalIdentity onB = PortalIdentity.create(clientId, "assign9-3-" + RUN + "@example.com", null, PortalIdentitySource.INVITE)
+                .grant(appBId, PortalAppGrantSource.INVITE);
+        persistIdentity(onB);
+
+        var beforeList = json(http.get("/api/portal-apps?clientId=" + clientId, ANCHOR));
+        assertThat(beforeList.get("unassignedUsers").asInt()).isEqualTo(2);
+
+        var assigned = http.post("/api/portal-apps/" + appAId + "/assign-unassigned", "{\"clientId\":\"" + clientId + "\"}", ANCHOR);
+        assertThat(assigned.statusCode()).as(assigned.body()).isEqualTo(200);
+        var assignedBody = json(assigned);
+        assertThat(assignedBody.get("portalAppCode").asText()).isEqualTo(appACode);
+        assertThat(assignedBody.get("assigned").asInt()).isEqualTo(2);
+
+        assertThat(portalIdentityRepo.findById(noApp.id()).orElseThrow().hasApp(appAId)).isTrue();
+        PortalIdentity reloadedSuspended = portalIdentityRepo.findById(noAppSuspended.id()).orElseThrow();
+        assertThat(reloadedSuspended.hasApp(appAId)).isTrue();
+        assertThat(reloadedSuspended.status()).as("status untouched by assign-unassigned").isEqualTo(PortalIdentityStatus.DISABLED);
+        assertThat(portalIdentityRepo.findById(onB.id()).orElseThrow().hasApp(appAId))
+                .as("the B user is untouched — already had a grant").isFalse();
+
+        var afterList = json(http.get("/api/portal-apps?clientId=" + clientId, ANCHOR));
+        assertThat(afterList.get("unassignedUsers").asInt()).as("nobody left unassigned").isZero();
+
+        var second = json(http.post("/api/portal-apps/" + appAId + "/assign-unassigned", "{\"clientId\":\"" + clientId + "\"}", ANCHOR));
+        assertThat(second.get("assigned").asInt()).as("a second run assigns nobody").isZero();
+
+        // An inactive app is rejected outright.
+        var inactiveApp = create(clientId, "assign9-inactive-" + RUN, "");
+        String inactiveId = inactiveApp.get("portalApp").get("id").asText();
+        http.put("/api/portal-apps/" + inactiveId, "{\"clientId\":\"" + clientId + "\",\"active\":false}", ANCHOR);
+        var inactiveResult = http.post("/api/portal-apps/" + inactiveId + "/assign-unassigned", "{\"clientId\":\"" + clientId + "\"}", ANCHOR);
+        assertThat(inactiveResult.statusCode()).isEqualTo(400);
+        assertThat(json(inactiveResult).get("error").asText()).isEqualTo("PORTAL_APP_INACTIVE");
+    }
+
+    @Test
+    void assignUnassignedRequiresManageAndClientId() {
+        String clientId = testClient("assign9-auth");
+        var app = create(clientId, "assign9-auth-" + RUN, "");
+        String appId = app.get("portalApp").get("id").asText();
+
+        var forbidden = http.post("/api/portal-apps/" + appId + "/assign-unassigned", "{\"clientId\":\"" + clientId + "\"}", viewOnly(clientId));
+        assertThat(forbidden.statusCode()).isEqualTo(403);
+
+        var noClientId = http.post("/api/portal-apps/" + appId + "/assign-unassigned", "{\"clientId\":\"\"}", ANCHOR);
+        assertThat(noClientId.statusCode()).isEqualTo(400);
+        assertThat(json(noClientId).get("error").asText()).isEqualTo("CLIENT_ID_REQUIRED");
+    }
+
+    /// Mutant: `countUnassigned` drops the `clientId` filter and counts
+    /// across every client. Two DIFFERENT clients each get one unassigned
+    /// identity; client A's `unassignedUsers` must read 1, not 2 — a
+    /// cross-client leak would be invisible to a test that only checks one
+    /// client in isolation.
+    @Test
+    void unassignedUsersCountIsScopedToTheGivenClient() {
+        String clientA = testClient("scope-a");
+        String clientB = testClient("scope-b");
+        persistIdentity(PortalIdentity.create(clientA, "scope-a-" + RUN + "@example.com", null, PortalIdentitySource.INVITE));
+        persistIdentity(PortalIdentity.create(clientB, "scope-b-" + RUN + "@example.com", null, PortalIdentitySource.INVITE));
+
+        var listA = json(http.get("/api/portal-apps?clientId=" + clientA, ANCHOR));
+        assertThat(listA.get("unassignedUsers").asInt()).as("only client A's own unassigned identity").isEqualTo(1);
+    }
+
+    /// `unassignedUsers` is present only when `clientId` is given (spec §4.4).
+    @Test
+    void unassignedUsersIsAbsentWhenClientIdIsOmitted() {
+        var anchorList = json(http.get("/api/portal-apps", ANCHOR));
+        assertThat(anchorList.has("unassignedUsers")).as("no clientId ⇒ the field is absent, not null or zero").isFalse();
     }
 }

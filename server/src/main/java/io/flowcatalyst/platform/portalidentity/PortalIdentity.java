@@ -5,9 +5,11 @@ import io.flowcatalyst.sdk.usecase.HasId;
 
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 
 /// The portal identity aggregate root (spec `auth-identity.md` §3.3, §5.7,
 /// §11.8; `portal-apps.md` §2.2, §2.3): one row per (client, email) in the
@@ -36,6 +38,10 @@ import java.util.Objects;
 /// @param source            `INVITE` \| `JIT`
 /// @param apps              this identity's per-app grants (`portal-apps.md` §2.2); immutable, never
 ///                          null, ordered by [PortalAppGrant#grantedAt]
+/// @param revokedAppIds     app ids revoked since load, not yet persisted (`portal-apps.md` §2.2,
+///                          errata P6); immutable, never null, empty on every load and on [#create] —
+///                          this is in-memory bookkeeping for [PortalIdentityRepository#persist], never
+///                          itself stored
 /// @param lastLoginAt       stamped best-effort on password and SSO login; `null` before the first
 /// @param invitedAt         when the current invite was issued; `null` before any invite (`portal-apps.md` §2.2)
 /// @param inviteExpiresAt   when the invite lapses; `null` = no expiry (an SSO invite) or never invited
@@ -50,6 +56,7 @@ public record PortalIdentity(
         PortalIdentityStatus status,
         PortalIdentitySource source,
         List<PortalAppGrant> apps,
+        Set<String> revokedAppIds,
         Instant lastLoginAt,
         Instant invitedAt,
         Instant inviteExpiresAt,
@@ -66,6 +73,7 @@ public record PortalIdentity(
         Objects.requireNonNull(source, "source");
         apps = apps == null ? List.of()
                 : apps.stream().sorted(Comparator.comparing(PortalAppGrant::grantedAt)).toList();
+        revokedAppIds = revokedAppIds == null ? Set.of() : Set.copyOf(revokedAppIds);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }
@@ -78,7 +86,7 @@ public record PortalIdentity(
         Objects.requireNonNull(source, "source");
         Instant now = Instant.now();
         return new PortalIdentity(EntityType.PORTAL_USER.generate(), clientId, normalizeEmail(email), name,
-                null, PortalIdentityStatus.ACTIVE, source, List.of(), null, null, null, now, now);
+                null, PortalIdentityStatus.ACTIVE, source, List.of(), Set.of(), null, null, null, now, now);
     }
 
     /// Lower-cased + trimmed, the one normal form every lookup and every
@@ -103,19 +111,19 @@ public record PortalIdentity(
     public PortalIdentity ensureActive(String candidateName) {
         String newName = candidateName != null && !candidateName.isBlank() ? candidateName.trim() : name;
         return new PortalIdentity(id, clientId, email, newName, passwordHash,
-                PortalIdentityStatus.ACTIVE, source, apps, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
+                PortalIdentityStatus.ACTIVE, source, apps, revokedAppIds, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
     }
 
     /// Idempotent, no error either way (spec §11.8): password login 401,
     /// SSO `access_denied`, token redeem `invalid_grant`.
     public PortalIdentity activate() {
         return new PortalIdentity(id, clientId, email, name, passwordHash,
-                PortalIdentityStatus.ACTIVE, source, apps, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
+                PortalIdentityStatus.ACTIVE, source, apps, revokedAppIds, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
     }
 
     public PortalIdentity deactivate() {
         return new PortalIdentity(id, clientId, email, name, passwordHash,
-                PortalIdentityStatus.DISABLED, source, apps, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
+                PortalIdentityStatus.DISABLED, source, apps, revokedAppIds, lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
     }
 
     // ── Per-app grants (spec `portal-apps.md` §2.2) ───────────────────────────
@@ -126,7 +134,11 @@ public record PortalIdentity(
 
     /// Idempotent — returns `this` (same instance, `updatedAt` untouched)
     /// when the app is already held, so a repeated grant never re-stamps
-    /// `grantedAt` or the identity's `updatedAt`.
+    /// `grantedAt` or the identity's `updatedAt`. Un-records a pending
+    /// revoke of the same app (`portal-apps.md` §2.2, errata P6): granting
+    /// an app revoked earlier in the same in-memory session cancels the
+    /// pending deletion rather than leaving it to race the insert at
+    /// `persist`.
     public PortalIdentity grant(String appId, PortalAppGrantSource source) {
         Objects.requireNonNull(appId, "appId");
         Objects.requireNonNull(source, "source");
@@ -134,18 +146,24 @@ public record PortalIdentity(
             return this;
         }
         List<PortalAppGrant> updated = concat(apps, new PortalAppGrant(appId, source, Instant.now()));
-        return new PortalIdentity(id, clientId, email, name, passwordHash, status, this.source, updated,
+        Set<String> updatedRevoked = withoutRevoked(appId);
+        return new PortalIdentity(id, clientId, email, name, passwordHash, status, this.source, updated, updatedRevoked,
                 lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
     }
 
     /// Idempotent — returns `this` unchanged when the app is not held.
+    /// Records the app id as a pending deletion so [PortalIdentityRepository#persist]
+    /// deletes only what was actually revoked since load (`portal-apps.md`
+    /// §2.2, errata P6) rather than "whatever isn't in the loaded set" — the
+    /// latter loses a grant another request added concurrently.
     public PortalIdentity revoke(String appId) {
         Objects.requireNonNull(appId, "appId");
         if (!hasApp(appId)) {
             return this;
         }
         List<PortalAppGrant> updated = apps.stream().filter(g -> !g.appId().equals(appId)).toList();
-        return new PortalIdentity(id, clientId, email, name, passwordHash, status, source, updated,
+        Set<String> updatedRevoked = withRevoked(appId);
+        return new PortalIdentity(id, clientId, email, name, passwordHash, status, source, updated, updatedRevoked,
                 lastLoginAt, invitedAt, inviteExpiresAt, createdAt, Instant.now());
     }
 
@@ -153,6 +171,21 @@ public record PortalIdentity(
         var merged = new java.util.ArrayList<>(existing);
         merged.add(added);
         return List.copyOf(merged);
+    }
+
+    private Set<String> withRevoked(String appId) {
+        var merged = new LinkedHashSet<>(revokedAppIds);
+        merged.add(appId);
+        return Set.copyOf(merged);
+    }
+
+    private Set<String> withoutRevoked(String appId) {
+        if (!revokedAppIds.contains(appId)) {
+            return revokedAppIds;
+        }
+        var remaining = new LinkedHashSet<>(revokedAppIds);
+        remaining.remove(appId);
+        return Set.copyOf(remaining);
     }
 
     // ── Derived state (spec `portal-apps.md` §2.3, Part A J3): never stored ──

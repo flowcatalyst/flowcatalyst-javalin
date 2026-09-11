@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,7 +97,7 @@ class PortalIdentityRepositoryTest {
         PortalIdentity second = PortalIdentity.create(clientId, "b-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
         persist(second);
 
-        var page = repo.search(new PortalIdentityRepository.SearchFilter(clientId, null, null, 0, 100));
+        var page = repo.search(new PortalIdentityRepository.SearchFilter(clientId, null, null, false, 0, 100));
         assertThat(page.items()).extracting(PortalIdentity::id).containsExactly(second.id(), first.id());
         assertThat(page.total()).isEqualTo(2);
     }
@@ -124,7 +125,7 @@ class PortalIdentityRepositoryTest {
         // id/source/passwordHash/createdAt — exactly what a buggy upsert
         // would let through.
         PortalIdentity impostor = new PortalIdentity(EntityType.PORTAL_USER.generate(), clientId, email, "New Name",
-                "hash-impostor", PortalIdentityStatus.DISABLED, PortalIdentitySource.JIT, List.of(), null,
+                "hash-impostor", PortalIdentityStatus.DISABLED, PortalIdentitySource.JIT, List.of(), Set.of(), null,
                 null, null, Instant.now().plusSeconds(999), Instant.now());
         persist(impostor);
 
@@ -215,6 +216,47 @@ class PortalIdentityRepositoryTest {
         persist(revoked);
 
         assertThat(grantRowCount(granted.id())).as("the row is gone from portal_identity_apps").isEqualTo(0);
+    }
+
+    /// §9 scenario 10 / errata P6 (spec `portal-apps.md` §2.2, §11): two REAL
+    /// loads of the same row, so the second load's grant is invisible to the
+    /// first copy's in-memory `apps()` — exactly the race the old "delete
+    /// whatever isn't in the loaded set" sync lost. Copy X loads holding
+    /// {A}; a second load Y grants B and persists (table now {A, B}); X
+    /// (which still only knows about A) grants C and revokes A, then
+    /// persists. Mutant: revert `persist`/`syncGrants` to delete every
+    /// `portal_identity_apps` row not in the loaded `apps` — X's `apps()` at
+    /// that point is `{C}` (B was never loaded into X), so the old sync
+    /// would delete B too and this test's `containsExactlyInAnyOrder(B, C)`
+    /// would fail (the table would hold only {C}).
+    @Test
+    void aGrantAddedConcurrentlyThroughAnotherLoadedCopySurvivesARevokeAndPersistOnTheFirst() {
+        String clientId = testClient("concurrent");
+        PortalApp appA = testApp(clientId, "concurrent-a");
+        PortalApp appB = testApp(clientId, "concurrent-b");
+        PortalApp appC = testApp(clientId, "concurrent-c");
+        PortalIdentity seed = PortalIdentity.create(clientId, "concurrent-" + RUN + "@example.com", null, PortalIdentitySource.INVITE)
+                .grant(appA.id(), PortalAppGrantSource.INVITE);
+        persist(seed);
+
+        // Copy X: loaded holding {A}.
+        PortalIdentity x = repo.findById(seed.id()).orElseThrow();
+        assertThat(x.apps()).extracting(PortalAppGrant::appId).containsExactly(appA.id());
+
+        // A second, independent load grants B and persists — X never sees this.
+        PortalIdentity y = repo.findById(seed.id()).orElseThrow().grant(appB.id(), PortalAppGrantSource.ADMIN);
+        persist(y);
+        assertThat(grantRowCount(seed.id())).isEqualTo(2);
+
+        // X grants C and revokes A, from its stale view holding only {A}.
+        PortalIdentity xUpdated = x.grant(appC.id(), PortalAppGrantSource.ADMIN).revoke(appA.id());
+        assertThat(xUpdated.apps()).as("X's own in-memory view never learned about B")
+                .extracting(PortalAppGrant::appId).containsExactly(appC.id());
+        persist(xUpdated);
+
+        PortalIdentity reloaded = repo.findById(seed.id()).orElseThrow();
+        assertThat(reloaded.apps()).as("B (added concurrently) and C (added by X) both survive; A (revoked by X) is gone")
+                .extracting(PortalAppGrant::appId).containsExactlyInAnyOrder(appB.id(), appC.id());
     }
 
     /// Mutant: the grant sync keys on the in-memory aggregate's own `id()`
@@ -345,6 +387,6 @@ class PortalIdentityRepositoryTest {
     }
 
     private static PortalIdentityRepository.SearchPage search(String clientId, String q, String portalAppId, int page, int size) {
-        return repo.search(new PortalIdentityRepository.SearchFilter(clientId, q, portalAppId, page, size));
+        return repo.search(new PortalIdentityRepository.SearchFilter(clientId, q, portalAppId, false, page, size));
     }
 }

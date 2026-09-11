@@ -90,7 +90,9 @@ public final class PortalUserApi {
 
     /// §4.2: search over `PortalIdentityRepository.search`. `page` (negative
     /// ⇒ 0) and `size` (default 100, ≤0 ⇒ 100, cap 1000) are clamped here —
-    /// the repository trusts the values it is given.
+    /// the repository trusts the values it is given. `unassigned=true`
+    /// combined with a non-blank `portalAppCode` is `FILTER_CONFLICT`,
+    /// checked before the app code is resolved (spec §4.2).
     private static void list(Exchange ctx, State s) {
         String clientId = ctx.queryParam("clientId");
         if (clientId == null || clientId.isBlank()) {
@@ -98,9 +100,15 @@ public final class PortalUserApi {
         }
         Checks.requirePortalUserView(Auth.current(), clientId);
 
-        String portalAppId = null;
+        boolean unassigned = Boolean.parseBoolean(ctx.queryParam("unassigned"));
         String rawAppCode = ctx.queryParam("portalAppCode");
-        if (rawAppCode != null && !rawAppCode.isBlank()) {
+        boolean hasAppCode = rawAppCode != null && !rawAppCode.isBlank();
+        if (unassigned && hasAppCode) {
+            throw UseCaseException.validation("FILTER_CONFLICT", "unassigned and portalAppCode cannot be combined");
+        }
+
+        String portalAppId = null;
+        if (hasAppCode) {
             portalAppId = resolveApp(s, clientId, rawAppCode).id();
         }
 
@@ -108,7 +116,7 @@ public final class PortalUserApi {
         int rawSize = intParam(ctx, "size");
         int size = rawSize <= 0 ? 100 : Math.min(rawSize, 1000);
 
-        var found = s.repo().search(new PortalIdentityRepository.SearchFilter(clientId, ctx.queryParam("q"), portalAppId, page, size));
+        var found = s.repo().search(new PortalIdentityRepository.SearchFilter(clientId, ctx.queryParam("q"), portalAppId, unassigned, page, size));
 
         var appIds = found.items().stream().flatMap(pi -> pi.apps().stream()).map(PortalAppGrant::appId).collect(toSet());
         Map<String, PortalApp> apps = s.portalApps().findByIds(appIds);

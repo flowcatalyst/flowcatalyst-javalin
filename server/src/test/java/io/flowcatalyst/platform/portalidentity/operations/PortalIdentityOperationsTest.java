@@ -8,6 +8,7 @@ import io.flowcatalyst.platform.portalapp.PortalApp;
 import io.flowcatalyst.platform.portalapp.PortalAppCode;
 import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.portalidentity.PortalAppGrant;
+import io.flowcatalyst.platform.portalidentity.PortalAppGrantSource;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
@@ -30,6 +31,7 @@ import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.sdk.usecase.op.Operation;
+import io.flowcatalyst.sdk.usecase.op.TxOperation;
 import io.flowcatalyst.testpg.TestPg;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.jooq.DSLContext;
@@ -71,6 +73,10 @@ class PortalIdentityOperationsTest {
     // ── Fixture ────────────────────────────────────────────────────────────
 
     private static <C, E extends DomainEvent> E runAsAnchor(Operation<C, E> op, C cmd) {
+        return Auth.runAs(ANCHOR, () -> op.run(uow, cmd, EC));
+    }
+
+    private static <C, R> R runTxAsAnchor(TxOperation<C, R> op, C cmd) {
         return Auth.runAs(ANCHOR, () -> op.run(uow, cmd, EC));
     }
 
@@ -521,5 +527,109 @@ class PortalIdentityOperationsTest {
         assertThat(grantsFor(identity.identityId())).isEmpty();
         assertThat(eventsFor(identity.identityId(), PortalIdentityEvents.APP_REVOKED))
                 .as("the event still fired on the no-op").hasSize(1);
+    }
+
+    // ── AssignUnassignedToApp (spec `portal-apps.md` §3.2a, §9 scenario 9) ────
+
+    private static void persistIdentity(PortalIdentity pi) {
+        uow.inTransaction(tx -> {
+            repo.persist(pi, tx.dbTx());
+            return null;
+        });
+    }
+
+    /// One `app-granted` `msg_events` row AND one `aud_logs` row per
+    /// assigned identity, none for the identity that already held a grant
+    /// (spec §3.2a; CLAUDE.md testing policy: assert the actual rows, not
+    /// just the aggregate response).
+    @Test
+    void assignsEveryUnassignedIdentityAndWritesOneEventAndAuditRowEach() {
+        String clientId = testClient("assign");
+        PortalApp appA = testApp(clientId, "assign-a");
+        PortalApp appB = testApp(clientId, "assign-b");
+
+        PortalIdentity unassigned1 = PortalIdentity.create(clientId, "assign-1-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
+        persistIdentity(unassigned1);
+        PortalIdentity unassigned2Suspended = PortalIdentity.create(clientId, "assign-2-" + RUN + "@example.com", null, PortalIdentitySource.INVITE)
+                .deactivate();
+        persistIdentity(unassigned2Suspended);
+        PortalIdentity alreadyOnB = PortalIdentity.create(clientId, "assign-3-" + RUN + "@example.com", null, PortalIdentitySource.INVITE)
+                .grant(appB.id(), PortalAppGrantSource.INVITE);
+        persistIdentity(alreadyOnB);
+
+        var result = runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo),
+                new AssignUnassignedToAppCommand(clientId, appA.id()));
+
+        assertThat(result.appId()).isEqualTo(appA.id());
+        assertThat(result.appCode()).isEqualTo(appA.code());
+        assertThat(result.identityIds()).as("load order created_at, id")
+                .containsExactly(unassigned1.id(), unassigned2Suspended.id());
+
+        assertThat(repo.findById(unassigned1.id()).orElseThrow().hasApp(appA.id())).isTrue();
+        PortalIdentity reloadedSuspended = repo.findById(unassigned2Suspended.id()).orElseThrow();
+        assertThat(reloadedSuspended.hasApp(appA.id())).isTrue();
+        assertThat(reloadedSuspended.status()).as("status untouched — still suspended").isEqualTo(PortalIdentityStatus.DISABLED);
+        assertThat(repo.findById(alreadyOnB.id()).orElseThrow().hasApp(appA.id()))
+                .as("already-assigned identity is left alone").isFalse();
+
+        assertThat(eventsFor(unassigned1.id(), PortalIdentityEvents.APP_GRANTED)).hasSize(1);
+        assertThat(eventsFor(unassigned2Suspended.id(), PortalIdentityEvents.APP_GRANTED)).hasSize(1);
+        assertThat(eventsFor(alreadyOnB.id(), PortalIdentityEvents.APP_GRANTED))
+                .as("no event for an identity that was never touched").isEmpty();
+
+        assertThat(auditsFor(unassigned1.id(), "AssignUnassignedToAppCommand")).hasSize(1);
+        assertThat(auditsFor(unassigned2Suspended.id(), "AssignUnassignedToAppCommand")).hasSize(1);
+        assertThat(auditsFor(alreadyOnB.id(), "AssignUnassignedToAppCommand")).isEmpty();
+    }
+
+    /// A second run finds no unassigned identities left — mutant: dropping
+    /// the `NOT EXISTS` load (assigning everyone) would instead re-grant the
+    /// B user and report a non-empty result here.
+    @Test
+    void aSecondRunAssignsNobody() {
+        String clientId = testClient("assign-twice");
+        PortalApp app = testApp(clientId, "assign-twice");
+        PortalIdentity unassigned = PortalIdentity.create(clientId, "assign-twice-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
+        persistIdentity(unassigned);
+
+        var first = runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo), new AssignUnassignedToAppCommand(clientId, app.id()));
+        assertThat(first.identityIds()).containsExactly(unassigned.id());
+
+        var second = runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo), new AssignUnassignedToAppCommand(clientId, app.id()));
+        assertThat(second.identityIds()).as("nobody left unassigned").isEmpty();
+    }
+
+    @Test
+    void assignRejectsAnInactiveAppAndGrantsNobody() {
+        String clientId = testClient("assign-inactive");
+        PortalApp app = testApp(clientId, "assign-inactive").update(null, null, false);
+        uow.inTransaction(tx -> {
+            portalAppRepo.persist(app, tx.dbTx());
+            return null;
+        });
+        PortalIdentity unassigned = PortalIdentity.create(clientId, "assign-inactive-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
+        persistIdentity(unassigned);
+
+        assertUseCaseError(() -> runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo),
+                        new AssignUnassignedToAppCommand(clientId, app.id())),
+                UseCaseError.Validation.class, "PORTAL_APP_INACTIVE");
+        assertThat(repo.findById(unassigned.id()).orElseThrow().hasApp(app.id())).isFalse();
+    }
+
+    @Test
+    void assignRejectsAnUnknownOrCrossClientAppAndBlankTargets() {
+        String clientId = testClient("assign-404");
+        String otherClient = testClient("assign-404-other");
+        PortalApp otherApp = testApp(otherClient, "assign-404-other");
+
+        assertUseCaseError(() -> runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo),
+                        new AssignUnassignedToAppCommand(clientId, "pta_doesnotexist1")),
+                UseCaseError.NotFound.class, "PortalApp_NOT_FOUND");
+        assertUseCaseError(() -> runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo),
+                        new AssignUnassignedToAppCommand(clientId, otherApp.id())),
+                UseCaseError.NotFound.class, "PortalApp_NOT_FOUND");
+        assertUseCaseError(() -> runTxAsAnchor(AssignUnassignedToApp.of(repo, portalAppRepo),
+                        new AssignUnassignedToAppCommand("", "pta_x")),
+                UseCaseError.Validation.class, "TARGET_REQUIRED");
     }
 }

@@ -442,7 +442,7 @@ public final class Platform {
         portalPasswordsHolder.set(portalAccess);
         PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
                 identityProviderRepo, portalAppRepo, uow, new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
-        PortalAppApi.register(routes, new PortalAppApi.State(portalAppRepo, oauthClientRepo, clientRepo, uow,
+        PortalAppApi.register(routes, new PortalAppApi.State(portalAppRepo, oauthClientRepo, clientRepo, portalIdentityRepo, uow,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
         PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,

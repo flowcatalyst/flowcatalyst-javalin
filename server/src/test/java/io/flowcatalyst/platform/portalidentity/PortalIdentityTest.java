@@ -65,7 +65,7 @@ class PortalIdentityTest {
     /// must not depend on the repository.
     private static PortalIdentity withHash(PortalIdentity p, String hash) {
         return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), hash, p.status(), p.source(), p.apps(),
-                p.lastLoginAt(), p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
+                p.revokedAppIds(), p.lastLoginAt(), p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
     }
 
     /// A test-only helper poking `invitedAt` / `inviteExpiresAt` directly —
@@ -73,12 +73,12 @@ class PortalIdentityTest {
     /// repository writes them outside the upsert, via `markInvited`).
     private static PortalIdentity withInvite(PortalIdentity p, Instant invitedAt, Instant expiresAtOrNull) {
         return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), p.passwordHash(), p.status(), p.source(),
-                p.apps(), p.lastLoginAt(), invitedAt, expiresAtOrNull, p.createdAt(), Instant.now());
+                p.apps(), p.revokedAppIds(), p.lastLoginAt(), invitedAt, expiresAtOrNull, p.createdAt(), Instant.now());
     }
 
     private static PortalIdentity withLastLogin(PortalIdentity p, Instant at) {
         return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), p.passwordHash(), p.status(), p.source(),
-                p.apps(), at, p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
+                p.apps(), p.revokedAppIds(), at, p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
     }
 
     // ── Derived state (spec `portal-apps.md` §2.3, §9.1) ──────────────────────
@@ -187,5 +187,49 @@ class PortalIdentityTest {
         assertThat(revokedAgain).as("idempotent: no-op on an app that is not held").isSameAs(revoked);
 
         assertThat(p.revoke("pta_doesnotexist")).as("revoking a never-held app is a no-op").isSameAs(p);
+    }
+
+    // ── revokedAppIds bookkeeping (spec `portal-apps.md` §2.2, errata P6) ─────
+
+    @Test
+    void createAndAFreshLoadStartWithNoPendingRevokes() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE);
+        assertThat(p.revokedAppIds()).isEmpty();
+    }
+
+    @Test
+    void revokeRecordsThePendingDeletion() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE)
+                .grant("pta_1", PortalAppGrantSource.INVITE)
+                .revoke("pta_1");
+        assertThat(p.revokedAppIds()).as("persist must delete exactly this id").containsExactly("pta_1");
+    }
+
+    /// Mutant: `grant` fails to un-record a pending revoke of the same app.
+    /// If it didn't, `persist` would still delete the row this `grant` just
+    /// re-added, because `revokedAppIds` still names it — the grant would be
+    /// silently lost on the very next save.
+    @Test
+    void grantingAPendingRevokeCancelsItAndTheAppIsHeldAgain() {
+        var revoked = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE)
+                .grant("pta_1", PortalAppGrantSource.INVITE)
+                .revoke("pta_1");
+        assertThat(revoked.revokedAppIds()).containsExactly("pta_1");
+
+        var reGranted = revoked.grant("pta_1", PortalAppGrantSource.ADMIN);
+        assertThat(reGranted.hasApp("pta_1")).isTrue();
+        assertThat(reGranted.revokedAppIds()).as("the pending revoke is cancelled, not carried into persist").isEmpty();
+    }
+
+    /// Revoking a DIFFERENT app than a pending revoke accumulates both —
+    /// `withRevoked` must not overwrite the set.
+    @Test
+    void revokingTwoDifferentAppsRecordsBoth() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE)
+                .grant("pta_1", PortalAppGrantSource.INVITE)
+                .grant("pta_2", PortalAppGrantSource.INVITE)
+                .revoke("pta_1")
+                .revoke("pta_2");
+        assertThat(p.revokedAppIds()).containsExactlyInAnyOrder("pta_1", "pta_2");
     }
 }

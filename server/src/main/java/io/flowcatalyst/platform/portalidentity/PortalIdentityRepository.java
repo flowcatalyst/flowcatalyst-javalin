@@ -26,7 +26,6 @@ import static io.flowcatalyst.db.generated.Tables.PORTAL_IDENTITY_APPS;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toSet;
 
 /// `portal_identities` (+ its `portal_identity_apps` grants, spec
 /// `portal-apps.md` §2.2) via jOOQ (spec `auth-identity.md` §3.3). Pure
@@ -75,7 +74,11 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
 
     // ── Search (spec `portal-apps.md` §4.2, §9.3, Part A J10) ────────────────
 
-    public record SearchFilter(String clientId, String q, String portalAppId, int page, int size) {
+    /// `unassigned` restricts to identities holding no portal app — the
+    /// [#unassignedCondition] `NOT EXISTS` (spec §4.2, §3.2a). Combining it
+    /// with a non-blank `portalAppId` is the API's `FILTER_CONFLICT` to
+    /// reject before it ever reaches this filter, not this repository's job.
+    public record SearchFilter(String clientId, String q, String portalAppId, boolean unassigned, int page, int size) {
         public SearchFilter {
             Objects.requireNonNull(clientId, "clientId");
         }
@@ -103,6 +106,9 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
                     .where(PORTAL_IDENTITY_APPS.IDENTITY_ID.eq(T.ID))
                     .and(PORTAL_IDENTITY_APPS.PORTAL_APP_ID.eq(filter.portalAppId()))));
         }
+        if (filter.unassigned()) {
+            where = where.and(unassignedCondition());
+        }
         long total = dsl.selectCount().from(T).where(where).fetchOne(0, long.class);
         var rows = dsl.selectFrom(T).where(where)
                 .orderBy(T.CREATED_AT.desc(), T.ID.desc())
@@ -119,6 +125,36 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
         return input.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
+    // ── Unassigned (spec `portal-apps.md` §3.2a, §4.2, §4.4) ──────────────────
+
+    /// `NOT EXISTS` on `portal_identity_apps` — the one condition both the
+    /// `unassigned` search filter and [#findUnassigned] / [#countUnassigned]
+    /// share, so the definition of "unassigned" can never drift between them.
+    private Condition unassignedCondition() {
+        return DSL.notExists(dsl.selectOne().from(PORTAL_IDENTITY_APPS)
+                .where(PORTAL_IDENTITY_APPS.IDENTITY_ID.eq(T.ID)));
+    }
+
+    /// The client's identities holding no portal app, `ORDER BY created_at,
+    /// id` (spec §3.2a step 2) — `AssignUnassignedToApp`'s load. Every
+    /// matching row has no grants by construction, so no per-row grant
+    /// lookup is needed.
+    public List<PortalIdentity> findUnassigned(String clientId) {
+        Objects.requireNonNull(clientId, "clientId");
+        var rows = dsl.selectFrom(T).where(T.CLIENT_ID.eq(clientId).and(unassignedCondition()))
+                .orderBy(T.CREATED_AT.asc(), T.ID.asc())
+                .fetch();
+        return rows.map(row -> toEntity(row, List.of()));
+    }
+
+    /// Count of the client's identities holding no portal app (spec §4.4
+    /// `unassignedUsers`).
+    public long countUnassigned(String clientId) {
+        Objects.requireNonNull(clientId, "clientId");
+        return dsl.selectCount().from(T).where(T.CLIENT_ID.eq(clientId).and(unassignedCondition()))
+                .fetchOne(0, long.class);
+    }
+
     // ── Writes (inside the unit of work's transaction only) ────────────────
 
     /// Upsert `ON CONFLICT (client_id, email) DO UPDATE SET name, status,
@@ -127,9 +163,10 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
     /// `invite_expires_at` **at the SQL level** — those columns are simply
     /// absent from the `SET` list, so the invariant holds regardless of
     /// what the in-memory aggregate happened to carry for them. The grant
-    /// set is then synced to exactly [PortalIdentity#apps], keyed by the
-    /// `RETURNING id` — the row a racing `Ensure` actually resolved to,
-    /// which may differ from `pi.id()` (`portal-apps.md` §2.2).
+    /// set is then synced against [PortalIdentity#revokedAppIds] (never
+    /// "delete whatever isn't in the loaded set" — errata P6, spec §2.2),
+    /// keyed by the `RETURNING id` — the row a racing `Ensure` actually
+    /// resolved to, which may differ from `pi.id()`.
     @Override
     public void persist(PortalIdentity pi, DbTx tx) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
@@ -150,18 +187,21 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
                 .set(T.UPDATED_AT, utc(pi.updatedAt()))
                 .returning(T.ID)
                 .fetchOne(T.ID);
-        syncGrants(txDsl, resolvedId, pi.apps());
+        syncGrants(txDsl, resolvedId, pi.apps(), pi.revokedAppIds());
     }
 
-    /// Deletes every `portal_identity_apps` row for `identityId` not in
-    /// `apps`, then inserts whatever is missing (`ON CONFLICT DO NOTHING`) —
-    /// exactly [PortalIdentity#apps], no more, no less.
-    private void syncGrants(DSLContext txDsl, String identityId, List<PortalAppGrant> apps) {
-        Set<String> keep = apps.stream().map(PortalAppGrant::appId).collect(toSet());
-        var deleteWhere = PORTAL_IDENTITY_APPS.IDENTITY_ID.eq(identityId);
-        txDsl.deleteFrom(PORTAL_IDENTITY_APPS)
-                .where(keep.isEmpty() ? deleteWhere : deleteWhere.and(PORTAL_IDENTITY_APPS.PORTAL_APP_ID.notIn(keep)))
-                .execute();
+    /// Deletes only the `portal_identity_apps` rows explicitly revoked since
+    /// load ([PortalIdentity#revokedAppIds]), then inserts every grant in
+    /// `apps` (`ON CONFLICT DO NOTHING`) — never "delete whatever isn't in
+    /// the loaded set", which would silently lose a grant another request
+    /// added concurrently (spec §2.2, errata P6).
+    private void syncGrants(DSLContext txDsl, String identityId, List<PortalAppGrant> apps, Set<String> revokedAppIds) {
+        if (!revokedAppIds.isEmpty()) {
+            txDsl.deleteFrom(PORTAL_IDENTITY_APPS)
+                    .where(PORTAL_IDENTITY_APPS.IDENTITY_ID.eq(identityId)
+                            .and(PORTAL_IDENTITY_APPS.PORTAL_APP_ID.in(revokedAppIds)))
+                    .execute();
+        }
         for (PortalAppGrant g : apps) {
             txDsl.insertInto(PORTAL_IDENTITY_APPS)
                     .set(PORTAL_IDENTITY_APPS.IDENTITY_ID, identityId)
@@ -221,6 +261,7 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
                 PortalIdentityStatus.parse(row.getStatus()),
                 parseSource(row.getSource()),
                 grants,
+                Set.of(), // revokedAppIds is in-memory bookkeeping only (portal-apps.md §2.2) — empty on every load
                 instantOrNull(row.getLastLoginAt()),
                 instantOrNull(row.getInvitedAt()),
                 instantOrNull(row.getInviteExpiresAt()),

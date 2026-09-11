@@ -10,6 +10,9 @@ import io.flowcatalyst.platform.portalapp.operations.DeletePortalApp;
 import io.flowcatalyst.platform.portalapp.operations.DeletePortalAppCommand;
 import io.flowcatalyst.platform.portalapp.operations.UpdatePortalApp;
 import io.flowcatalyst.platform.portalapp.operations.UpdatePortalAppCommand;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
+import io.flowcatalyst.platform.portalidentity.operations.AssignUnassignedToApp;
+import io.flowcatalyst.platform.portalidentity.operations.AssignUnassignedToAppCommand;
 import io.flowcatalyst.platform.shared.apicommon.StatusChangeResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -40,17 +43,19 @@ import java.util.stream.Collectors;
 /// | POST | `/api/portal-apps` | 201 [CreatePortalAppResponse] |
 /// | PUT | `/api/portal-apps/{id}` | 200 [PortalAppResponse] |
 /// | DELETE | `/api/portal-apps/{id}` | 200 [StatusChangeResponse] |
+/// | POST | `/api/portal-apps/{id}/assign-unassigned` | 200 [AssignUnassignedResponse] |
 public final class PortalAppApi {
 
     private PortalAppApi() {
     }
 
     public record State(PortalAppRepository repo, OAuthClientRepository oauthClients, ClientRepository clients,
-                        UnitOfWork uow, Optional<Encryption> encryption) {
+                        PortalIdentityRepository portalIdentities, UnitOfWork uow, Optional<Encryption> encryption) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(clients, "clients");
+            Objects.requireNonNull(portalIdentities, "portalIdentities");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(encryption, "encryption");
         }
@@ -61,6 +66,7 @@ public final class PortalAppApi {
         routes.post("/api/portal-apps", Auth.scoped(ctx -> create(ctx, s)));
         routes.put("/api/portal-apps/{id}", Auth.scoped(ctx -> update(ctx, s)));
         routes.delete("/api/portal-apps/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        routes.post("/api/portal-apps/{id}/assign-unassigned", Auth.scoped(ctx -> assignUnassigned(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
@@ -80,7 +86,21 @@ public final class PortalAppApi {
         }
         Checks.requirePortalUserView(ac, blank ? null : clientId);
         List<PortalApp> apps = blank ? s.repo().findAll() : s.repo().findByClient(clientId);
-        ctx.json(new PortalAppListResponse(toResponses(s, apps)));
+        // unassignedUsers is present only when clientId is given (spec §4.4).
+        Long unassignedUsers = blank ? null : s.portalIdentities().countUnassigned(clientId);
+        ctx.json(new PortalAppListResponse(toResponses(s, apps), unassignedUsers));
+    }
+
+    /// `POST /api/portal-apps/{id}/assign-unassigned` — `assignUnassignedPortalUsers`
+    /// (spec §3.2a, §4.4): runs `AssignUnassignedToApp` in one transaction.
+    private static void assignUnassigned(Exchange ctx, State s) {
+        var body = ctx.bodyAsClass(AssignUnassignedBody.class);
+        requireClientId(body.clientId());
+        Checks.requirePortalUserManage(Auth.current(), body.clientId());
+
+        var result = AssignUnassignedToApp.of(s.portalIdentities(), s.repo())
+                .run(s.uow(), new AssignUnassignedToAppCommand(body.clientId(), ctx.pathParam("id")), Auth.executionContext());
+        ctx.json(new AssignUnassignedResponse(result.appCode(), (long) result.identityIds().size()));
     }
 
     private static void create(Exchange ctx, State s) {
@@ -193,7 +213,10 @@ public final class PortalAppApi {
         }
     }
 
-    public record PortalAppListResponse(List<PortalAppResponse> portalApps) {
+    /// `unassignedUsers` (count of the client's identities with no grant) is
+    /// present only when `clientId` is given — `null` here is omitted from
+    /// the wire (`Json.MAPPER`'s `NON_ABSENT`, spec §4.4).
+    public record PortalAppListResponse(List<PortalAppResponse> portalApps, Long unassignedUsers) {
         public PortalAppListResponse {
             portalApps = portalApps == null ? List.of() : List.copyOf(portalApps);
         }
@@ -202,5 +225,12 @@ public final class PortalAppApi {
     /// `clientSecret` present only for a `CONFIDENTIAL` client, once (spec §4.4).
     public record CreatePortalAppResponse(
             PortalAppResponse portalApp, String oauthClientId, String oauthClientRowId, String clientType, String clientSecret) {
+    }
+
+    /// Body of `POST /api/portal-apps/{id}/assign-unassigned` (spec §4.4).
+    public record AssignUnassignedBody(String clientId) {
+    }
+
+    public record AssignUnassignedResponse(String portalAppCode, long assigned) {
     }
 }
