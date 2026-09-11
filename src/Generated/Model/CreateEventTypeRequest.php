@@ -25,6 +25,12 @@ class CreateEventTypeRequest extends \ArrayObject
      */
     protected $clientId;
     /**
+     * Events of this type are per-client
+     *
+     * @var bool|null
+     */
+    protected $clientScoped;
+    /**
      * Event type code in application:subdomain:aggregate:event format
      *
      * @var string|null
@@ -88,6 +94,28 @@ class CreateEventTypeRequest extends \ArrayObject
     {
         $this->initialized['clientId'] = true;
         $this->clientId = $clientId;
+        return $this;
+    }
+    /**
+     * Events of this type are per-client
+     *
+     * @return bool|null
+     */
+    public function getClientScoped(): ?bool
+    {
+        return $this->clientScoped;
+    }
+    /**
+     * Events of this type are per-client
+     *
+     * @param bool|null $clientScoped
+     *
+     * @return self
+     */
+    public function setClientScoped(?bool $clientScoped): self
+    {
+        $this->initialized['clientScoped'] = true;
+        $this->clientScoped = $clientScoped;
         return $this;
     }
     /**

@@ -85,11 +85,23 @@ class PortalUserResponseNormalizer implements DenormalizerInterface, NormalizerI
         elseif (\array_key_exists('invited', $data) && $data['invited'] === null) {
             $object->setInvited(null);
         }
+        if (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] !== null) {
+            $object->setPortalAppCode($data['portalAppCode']);
+        }
+        elseif (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] === null) {
+            $object->setPortalAppCode(null);
+        }
         if (\array_key_exists('ssoManaged', $data) && $data['ssoManaged'] !== null) {
             $object->setSsoManaged($data['ssoManaged']);
         }
         elseif (\array_key_exists('ssoManaged', $data) && $data['ssoManaged'] === null) {
             $object->setSsoManaged(null);
+        }
+        if (\array_key_exists('state', $data) && $data['state'] !== null) {
+            $object->setState($data['state']);
+        }
+        elseif (\array_key_exists('state', $data) && $data['state'] === null) {
+            $object->setState(null);
         }
         return $object;
     }
@@ -103,9 +115,13 @@ class PortalUserResponseNormalizer implements DenormalizerInterface, NormalizerI
             $dataArray['inviteUrl'] = $data->getInviteUrl();
         }
         $dataArray['invited'] = $data->getInvited();
+        if ($data->isInitialized('portalAppCode') && null !== $data->getPortalAppCode()) {
+            $dataArray['portalAppCode'] = $data->getPortalAppCode();
+        }
         if ($data->isInitialized('ssoManaged') && null !== $data->getSsoManaged()) {
             $dataArray['ssoManaged'] = $data->getSsoManaged();
         }
+        $dataArray['state'] = $data->getState();
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array

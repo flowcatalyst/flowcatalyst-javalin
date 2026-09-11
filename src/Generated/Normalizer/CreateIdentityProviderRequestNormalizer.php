@@ -180,7 +180,9 @@ class CreateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
         if ($data->isInitialized('oidcIssuerUrl') && null !== $data->getOidcIssuerUrl()) {
             $dataArray['oidcIssuerUrl'] = $data->getOidcIssuerUrl();
         }
-        $dataArray['oidcMultiTenant'] = $data->getOidcMultiTenant();
+        if ($data->isInitialized('oidcMultiTenant') && null !== $data->getOidcMultiTenant()) {
+            $dataArray['oidcMultiTenant'] = $data->getOidcMultiTenant();
+        }
         if ($data->isInitialized('primaryClientId') && null !== $data->getPrimaryClientId()) {
             $dataArray['primaryClientId'] = $data->getPrimaryClientId();
         }

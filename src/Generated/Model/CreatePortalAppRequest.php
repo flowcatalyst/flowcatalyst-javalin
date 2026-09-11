@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class PortalUserRequest extends \ArrayObject
+class CreatePortalAppRequest extends \ArrayObject
 {
     /**
      * @var array
@@ -25,23 +25,23 @@ class PortalUserRequest extends \ArrayObject
     /**
      * @var string|null
      */
-    protected $email;
+    protected $clientType;
+    /**
+     * @var string|null
+     */
+    protected $code;
+    /**
+     * @var string|null
+     */
+    protected $description;
     /**
      * @var string|null
      */
     protected $name;
     /**
-     * @var string|null
+     * @var list<string>|null
      */
-    protected $portalAppCode;
-    /**
-     * @var string|null
-     */
-    protected $redirectUri;
-    /**
-     * @var bool|null
-     */
-    protected $returnInviteLink;
+    protected $redirectUris;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -85,19 +85,55 @@ class PortalUserRequest extends \ArrayObject
     /**
      * @return string|null
      */
-    public function getEmail(): ?string
+    public function getClientType(): ?string
     {
-        return $this->email;
+        return $this->clientType;
     }
     /**
-     * @param string|null $email
+     * @param string|null $clientType
      *
      * @return self
      */
-    public function setEmail(?string $email): self
+    public function setClientType(?string $clientType): self
     {
-        $this->initialized['email'] = true;
-        $this->email = $email;
+        $this->initialized['clientType'] = true;
+        $this->clientType = $clientType;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getCode(): ?string
+    {
+        return $this->code;
+    }
+    /**
+     * @param string|null $code
+     *
+     * @return self
+     */
+    public function setCode(?string $code): self
+    {
+        $this->initialized['code'] = true;
+        $this->code = $code;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getDescription(): ?string
+    {
+        return $this->description;
+    }
+    /**
+     * @param string|null $description
+     *
+     * @return self
+     */
+    public function setDescription(?string $description): self
+    {
+        $this->initialized['description'] = true;
+        $this->description = $description;
         return $this;
     }
     /**
@@ -119,57 +155,21 @@ class PortalUserRequest extends \ArrayObject
         return $this;
     }
     /**
-     * @return string|null
+     * @return list<string>|null
      */
-    public function getPortalAppCode(): ?string
+    public function getRedirectUris(): ?array
     {
-        return $this->portalAppCode;
+        return $this->redirectUris;
     }
     /**
-     * @param string|null $portalAppCode
+     * @param list<string>|null $redirectUris
      *
      * @return self
      */
-    public function setPortalAppCode(?string $portalAppCode): self
+    public function setRedirectUris(?array $redirectUris): self
     {
-        $this->initialized['portalAppCode'] = true;
-        $this->portalAppCode = $portalAppCode;
-        return $this;
-    }
-    /**
-     * @return string|null
-     */
-    public function getRedirectUri(): ?string
-    {
-        return $this->redirectUri;
-    }
-    /**
-     * @param string|null $redirectUri
-     *
-     * @return self
-     */
-    public function setRedirectUri(?string $redirectUri): self
-    {
-        $this->initialized['redirectUri'] = true;
-        $this->redirectUri = $redirectUri;
-        return $this;
-    }
-    /**
-     * @return bool|null
-     */
-    public function getReturnInviteLink(): ?bool
-    {
-        return $this->returnInviteLink;
-    }
-    /**
-     * @param bool|null $returnInviteLink
-     *
-     * @return self
-     */
-    public function setReturnInviteLink(?bool $returnInviteLink): self
-    {
-        $this->initialized['returnInviteLink'] = true;
-        $this->returnInviteLink = $returnInviteLink;
+        $this->initialized['redirectUris'] = true;
+        $this->redirectUris = $redirectUris;
         return $this;
     }
 }

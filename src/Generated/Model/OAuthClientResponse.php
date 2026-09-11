@@ -73,11 +73,23 @@ class OAuthClientResponse
     /**
      * @var string|null
      */
+    protected $portalAppId;
+    /**
+     * @var string|null
+     */
     protected $portalClientId;
     /**
      * @var list<string>|null
      */
     protected $postLogoutRedirectUris;
+    /**
+     * @var \DateTime|null
+     */
+    protected $previousSecretExpiresAt;
+    /**
+     * @var \DateTime|null
+     */
+    protected $previousSecretLastUsedAt;
     /**
      * @var list<string>|null
      */
@@ -349,6 +361,24 @@ class OAuthClientResponse
     /**
      * @return string|null
      */
+    public function getPortalAppId(): ?string
+    {
+        return $this->portalAppId;
+    }
+    /**
+     * @param string|null $portalAppId
+     *
+     * @return self
+     */
+    public function setPortalAppId(?string $portalAppId): self
+    {
+        $this->initialized['portalAppId'] = true;
+        $this->portalAppId = $portalAppId;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
     public function getPortalClientId(): ?string
     {
         return $this->portalClientId;
@@ -380,6 +410,42 @@ class OAuthClientResponse
     {
         $this->initialized['postLogoutRedirectUris'] = true;
         $this->postLogoutRedirectUris = $postLogoutRedirectUris;
+        return $this;
+    }
+    /**
+     * @return \DateTime|null
+     */
+    public function getPreviousSecretExpiresAt(): ?\DateTime
+    {
+        return $this->previousSecretExpiresAt;
+    }
+    /**
+     * @param \DateTime|null $previousSecretExpiresAt
+     *
+     * @return self
+     */
+    public function setPreviousSecretExpiresAt(?\DateTime $previousSecretExpiresAt): self
+    {
+        $this->initialized['previousSecretExpiresAt'] = true;
+        $this->previousSecretExpiresAt = $previousSecretExpiresAt;
+        return $this;
+    }
+    /**
+     * @return \DateTime|null
+     */
+    public function getPreviousSecretLastUsedAt(): ?\DateTime
+    {
+        return $this->previousSecretLastUsedAt;
+    }
+    /**
+     * @param \DateTime|null $previousSecretLastUsedAt
+     *
+     * @return self
+     */
+    public function setPreviousSecretLastUsedAt(?\DateTime $previousSecretLastUsedAt): self
+    {
+        $this->initialized['previousSecretLastUsedAt'] = true;
+        $this->previousSecretLastUsedAt = $previousSecretLastUsedAt;
         return $this;
     }
     /**

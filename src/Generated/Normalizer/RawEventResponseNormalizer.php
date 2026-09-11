@@ -37,6 +37,12 @@ class RawEventResponseNormalizer implements DenormalizerInterface, NormalizerInt
         if (isset($data['$recursiveRef'])) {
             return new Reference($data['$recursiveRef'], $context['document-origin']);
         }
+        if (\array_key_exists('$schema', $data) && $data['$schema'] !== null) {
+            $object->setDollarSchema($data['$schema']);
+        }
+        elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
+            $object->setDollarSchema(null);
+        }
         if (\array_key_exists('causationId', $data) && $data['causationId'] !== null) {
             $object->setCausationId($data['causationId']);
         }

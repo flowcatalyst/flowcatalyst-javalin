@@ -11,7 +11,7 @@ use Symfony\Component\Serializer\Normalizer\DenormalizerInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareTrait;
 use Symfony\Component\Serializer\Normalizer\NormalizerInterface;
-class PortalUserListResponseNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
+class PortalAppListResponseNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
 {
     use DenormalizerAwareTrait;
     use NormalizerAwareTrait;
@@ -19,15 +19,15 @@ class PortalUserListResponseNormalizer implements DenormalizerInterface, Normali
     use ValidatorTrait;
     public function supportsDenormalization(mixed $data, string $type, ?string $format = null, array $context = []): bool
     {
-        return $type === \FlowCatalyst\Generated\Model\PortalUserListResponse::class;
+        return $type === \FlowCatalyst\Generated\Model\PortalAppListResponse::class;
     }
     public function supportsNormalization(mixed $data, ?string $format = null, array $context = []): bool
     {
-        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\PortalUserListResponse::class;
+        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\PortalAppListResponse::class;
     }
     public function denormalize(mixed $data, string $type, ?string $format = null, array $context = []): mixed
     {
-        $object = new \FlowCatalyst\Generated\Model\PortalUserListResponse();
+        $object = new \FlowCatalyst\Generated\Model\PortalAppListResponse();
         if (null === $data || false === \is_array($data)) {
             return $object;
         }
@@ -43,51 +43,30 @@ class PortalUserListResponseNormalizer implements DenormalizerInterface, Normali
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
-        if (\array_key_exists('page', $data) && $data['page'] !== null) {
-            $object->setPage($data['page']);
-        }
-        elseif (\array_key_exists('page', $data) && $data['page'] === null) {
-            $object->setPage(null);
-        }
-        if (\array_key_exists('portalUsers', $data) && $data['portalUsers'] !== null) {
+        if (\array_key_exists('portalApps', $data) && $data['portalApps'] !== null) {
             $values = [];
-            foreach ($data['portalUsers'] as $value) {
-                $values[] = $this->denormalizer->denormalize($value, \FlowCatalyst\Generated\Model\PortalUserListItem::class, 'json', $context);
+            foreach ($data['portalApps'] as $value) {
+                $values[] = $this->denormalizer->denormalize($value, \FlowCatalyst\Generated\Model\PortalAppResponse::class, 'json', $context);
             }
-            $object->setPortalUsers($values);
+            $object->setPortalApps($values);
         }
-        elseif (\array_key_exists('portalUsers', $data) && $data['portalUsers'] === null) {
-            $object->setPortalUsers(null);
-        }
-        if (\array_key_exists('size', $data) && $data['size'] !== null) {
-            $object->setSize($data['size']);
-        }
-        elseif (\array_key_exists('size', $data) && $data['size'] === null) {
-            $object->setSize(null);
-        }
-        if (\array_key_exists('total', $data) && $data['total'] !== null) {
-            $object->setTotal($data['total']);
-        }
-        elseif (\array_key_exists('total', $data) && $data['total'] === null) {
-            $object->setTotal(null);
+        elseif (\array_key_exists('portalApps', $data) && $data['portalApps'] === null) {
+            $object->setPortalApps(null);
         }
         return $object;
     }
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
-        $dataArray['page'] = $data->getPage();
         $values = [];
-        foreach ($data->getPortalUsers() as $value) {
+        foreach ($data->getPortalApps() as $value) {
             $values[] = $this->normalizer->normalize($value, 'json', $context);
         }
-        $dataArray['portalUsers'] = $values;
-        $dataArray['size'] = $data->getSize();
-        $dataArray['total'] = $data->getTotal();
+        $dataArray['portalApps'] = $values;
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array
     {
-        return [\FlowCatalyst\Generated\Model\PortalUserListResponse::class => false];
+        return [\FlowCatalyst\Generated\Model\PortalAppListResponse::class => false];
     }
 }

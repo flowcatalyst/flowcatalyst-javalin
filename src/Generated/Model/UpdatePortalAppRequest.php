@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class PortalUserListResponse
+class UpdatePortalAppRequest extends \ArrayObject
 {
     /**
      * @var array
@@ -19,21 +19,21 @@ class PortalUserListResponse
      */
     protected $dollarSchema;
     /**
-     * @var int|null
+     * @var bool|null
      */
-    protected $page;
+    protected $active;
     /**
-     * @var list<PortalUserListItem>|null
+     * @var string|null
      */
-    protected $portalUsers;
+    protected $clientId;
     /**
-     * @var int|null
+     * @var string|null
      */
-    protected $size;
+    protected $description;
     /**
-     * @var int|null
+     * @var string|null
      */
-    protected $total;
+    protected $name;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -57,75 +57,75 @@ class PortalUserListResponse
         return $this;
     }
     /**
-     * @return int|null
+     * @return bool|null
      */
-    public function getPage(): ?int
+    public function getActive(): ?bool
     {
-        return $this->page;
+        return $this->active;
     }
     /**
-     * @param int|null $page
+     * @param bool|null $active
      *
      * @return self
      */
-    public function setPage(?int $page): self
+    public function setActive(?bool $active): self
     {
-        $this->initialized['page'] = true;
-        $this->page = $page;
+        $this->initialized['active'] = true;
+        $this->active = $active;
         return $this;
     }
     /**
-     * @return list<PortalUserListItem>|null
+     * @return string|null
      */
-    public function getPortalUsers(): ?array
+    public function getClientId(): ?string
     {
-        return $this->portalUsers;
+        return $this->clientId;
     }
     /**
-     * @param list<PortalUserListItem>|null $portalUsers
+     * @param string|null $clientId
      *
      * @return self
      */
-    public function setPortalUsers(?array $portalUsers): self
+    public function setClientId(?string $clientId): self
     {
-        $this->initialized['portalUsers'] = true;
-        $this->portalUsers = $portalUsers;
+        $this->initialized['clientId'] = true;
+        $this->clientId = $clientId;
         return $this;
     }
     /**
-     * @return int|null
+     * @return string|null
      */
-    public function getSize(): ?int
+    public function getDescription(): ?string
     {
-        return $this->size;
+        return $this->description;
     }
     /**
-     * @param int|null $size
+     * @param string|null $description
      *
      * @return self
      */
-    public function setSize(?int $size): self
+    public function setDescription(?string $description): self
     {
-        $this->initialized['size'] = true;
-        $this->size = $size;
+        $this->initialized['description'] = true;
+        $this->description = $description;
         return $this;
     }
     /**
-     * @return int|null
+     * @return string|null
      */
-    public function getTotal(): ?int
+    public function getName(): ?string
     {
-        return $this->total;
+        return $this->name;
     }
     /**
-     * @param int|null $total
+     * @param string|null $name
      *
      * @return self
      */
-    public function setTotal(?int $total): self
+    public function setName(?string $name): self
     {
-        $this->initialized['total'] = true;
-        $this->total = $total;
+        $this->initialized['name'] = true;
+        $this->name = $name;
         return $this;
     }
 }

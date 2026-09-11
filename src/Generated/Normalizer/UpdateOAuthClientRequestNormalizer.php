@@ -115,6 +115,13 @@ class UpdateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
         elseif (\array_key_exists('pkceRequired', $data) && $data['pkceRequired'] === null) {
             $object->setPkceRequired(null);
         }
+        if (\array_key_exists('portalAppId', $data) && $data['portalAppId'] !== null) {
+            $object->setPortalAppId($data['portalAppId']);
+            unset($data['portalAppId']);
+        }
+        elseif (\array_key_exists('portalAppId', $data) && $data['portalAppId'] === null) {
+            $object->setPortalAppId(null);
+        }
         if (\array_key_exists('portalClientId', $data) && $data['portalClientId'] !== null) {
             $object->setPortalClientId($data['portalClientId']);
             unset($data['portalClientId']);
@@ -190,6 +197,9 @@ class UpdateOAuthClientRequestNormalizer implements DenormalizerInterface, Norma
         }
         if ($data->isInitialized('pkceRequired') && null !== $data->getPkceRequired()) {
             $dataArray['pkceRequired'] = $data->getPkceRequired();
+        }
+        if ($data->isInitialized('portalAppId') && null !== $data->getPortalAppId()) {
+            $dataArray['portalAppId'] = $data->getPortalAppId();
         }
         if ($data->isInitialized('portalClientId') && null !== $data->getPortalClientId()) {
             $dataArray['portalClientId'] = $data->getPortalClientId();

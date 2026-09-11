@@ -19,6 +19,12 @@ class UpdateEventTypeRequest extends \ArrayObject
      */
     protected $dollarSchema;
     /**
+     * Events of this type are per-client; absent leaves it unchanged
+     *
+     * @var bool|null
+     */
+    protected $clientScoped;
+    /**
      * @var string|null
      */
     protected $description;
@@ -46,6 +52,28 @@ class UpdateEventTypeRequest extends \ArrayObject
     {
         $this->initialized['dollarSchema'] = true;
         $this->dollarSchema = $dollarSchema;
+        return $this;
+    }
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     *
+     * @return bool|null
+     */
+    public function getClientScoped(): ?bool
+    {
+        return $this->clientScoped;
+    }
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     *
+     * @param bool|null $clientScoped
+     *
+     * @return self
+     */
+    public function setClientScoped(?bool $clientScoped): self
+    {
+        $this->initialized['clientScoped'] = true;
+        $this->clientScoped = $clientScoped;
         return $this;
     }
     /**

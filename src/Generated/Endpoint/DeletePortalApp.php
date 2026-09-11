@@ -2,29 +2,28 @@
 
 namespace FlowCatalyst\Generated\Endpoint;
 
-class ListPortalUsers extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoint implements \FlowCatalyst\Generated\Runtime\Client\Endpoint
+class DeletePortalApp extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoint implements \FlowCatalyst\Generated\Runtime\Client\Endpoint
 {
+    protected $id;
     /**
+     * @param string $id
      * @param array{
-     *    "clientId"?: string, //Tenant client whose portal identities to list
-     *    "q"?: string, //Prefix (TERM%) matched case-insensitively against email and name
-     *    "portalAppCode"?: string, //Only identities granted this portal app
-     *    "page"?: int, //0-based page index (default 0)
-     *    "size"?: int, //Page size (default 100, max 1000)
+     *    "clientId"?: string, //Tenant client that owns the portal app
      * } $queryParameters
      */
-    public function __construct(array $queryParameters = [])
+    public function __construct(string $id, array $queryParameters = [])
     {
+        $this->id = $id;
         $this->queryParameters = $queryParameters;
     }
     use \FlowCatalyst\Generated\Runtime\Client\EndpointTrait;
     public function getMethod(): string
     {
-        return 'GET';
+        return 'DELETE';
     }
     public function getUri(): string
     {
-        return '/api/portal-users';
+        return str_replace(['{id}'], [$this->id], '/api/portal-apps/{id}');
     }
     public function getBody(\Symfony\Component\Serializer\SerializerInterface $serializer, $streamFactory = null): array
     {
@@ -37,28 +36,24 @@ class ListPortalUsers extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoin
     protected function getQueryOptionsResolver(): \Symfony\Component\OptionsResolver\OptionsResolver
     {
         $optionsResolver = parent::getQueryOptionsResolver();
-        $optionsResolver->setDefined(['clientId', 'q', 'portalAppCode', 'page', 'size']);
+        $optionsResolver->setDefined(['clientId']);
         $optionsResolver->setRequired([]);
         $optionsResolver->setDefaults([]);
         $optionsResolver->addAllowedTypes('clientId', ['string']);
-        $optionsResolver->addAllowedTypes('q', ['string']);
-        $optionsResolver->addAllowedTypes('portalAppCode', ['string']);
-        $optionsResolver->addAllowedTypes('page', ['int']);
-        $optionsResolver->addAllowedTypes('size', ['int']);
         return $optionsResolver;
     }
     /**
      * {@inheritdoc}
      *
      *
-     * @return null|\FlowCatalyst\Generated\Model\PortalUserListResponse|\FlowCatalyst\Generated\Model\ErrorModel
+     * @return null|\FlowCatalyst\Generated\Model\StatusChangeResponse|\FlowCatalyst\Generated\Model\ErrorModel
      */
     protected function transformResponseBody(\Psr\Http\Message\ResponseInterface $response, \Symfony\Component\Serializer\SerializerInterface $serializer, ?string $contentType = null)
     {
         $status = $response->getStatusCode();
         $body = (string) $response->getBody();
         if (is_null($contentType) === false && (200 === $status && mb_strpos(strtolower($contentType), 'application/json') !== false)) {
-            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\PortalUserListResponse', 'json');
+            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\StatusChangeResponse', 'json');
         }
         if (mb_strpos(strtolower($contentType), 'application/json') !== false) {
             return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\ErrorModel', 'json');

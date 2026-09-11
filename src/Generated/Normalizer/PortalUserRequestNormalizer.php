@@ -68,6 +68,13 @@ class PortalUserRequestNormalizer implements DenormalizerInterface, NormalizerIn
         elseif (\array_key_exists('name', $data) && $data['name'] === null) {
             $object->setName(null);
         }
+        if (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] !== null) {
+            $object->setPortalAppCode($data['portalAppCode']);
+            unset($data['portalAppCode']);
+        }
+        elseif (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] === null) {
+            $object->setPortalAppCode(null);
+        }
         if (\array_key_exists('redirectUri', $data) && $data['redirectUri'] !== null) {
             $object->setRedirectUri($data['redirectUri']);
             unset($data['redirectUri']);
@@ -96,6 +103,9 @@ class PortalUserRequestNormalizer implements DenormalizerInterface, NormalizerIn
         $dataArray['email'] = $data->getEmail();
         if ($data->isInitialized('name') && null !== $data->getName()) {
             $dataArray['name'] = $data->getName();
+        }
+        if ($data->isInitialized('portalAppCode') && null !== $data->getPortalAppCode()) {
+            $dataArray['portalAppCode'] = $data->getPortalAppCode();
         }
         if ($data->isInitialized('redirectUri') && null !== $data->getRedirectUri()) {
             $dataArray['redirectUri'] = $data->getRedirectUri();

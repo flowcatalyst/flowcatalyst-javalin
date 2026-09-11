@@ -114,6 +114,37 @@ final readonly class FlowCatalystUser
     }
 
     /**
+     * Portal-plane logins: the code of the portal app the user signed in to
+     * (the `portal_app_code` ID-token claim), or null for non-portal logins
+     * and legacy portal OAuth clients not linked to a portal app. It matches
+     * the `portalAppCode` your backend sends to /api/portal-users.
+     */
+    public function getPortalAppCode(): ?string
+    {
+        $code = $this->claims['portal_app_code'] ?? null;
+        return is_string($code) && $code !== '' ? $code : null;
+    }
+
+    /**
+     * Portal-plane logins: the portal app's id (`portal_app_id` claim).
+     */
+    public function getPortalAppId(): ?string
+    {
+        $id = $this->claims['portal_app_id'] ?? null;
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
+     * Portal-plane logins: the tenant client whose portal identity signed in
+     * (`portal_client_id` claim).
+     */
+    public function getPortalClientId(): ?string
+    {
+        $id = $this->claims['portal_client_id'] ?? null;
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
      * Get the raw clients claim entries.
      * Format is "id:identifier" or "*" for full access.
      *

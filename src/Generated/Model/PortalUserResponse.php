@@ -39,9 +39,17 @@ class PortalUserResponse
      */
     protected $invited;
     /**
+     * @var string|null
+     */
+    protected $portalAppCode;
+    /**
      * @var bool|null
      */
     protected $ssoManaged;
+    /**
+     * @var string|null
+     */
+    protected $state;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -155,6 +163,24 @@ class PortalUserResponse
         return $this;
     }
     /**
+     * @return string|null
+     */
+    public function getPortalAppCode(): ?string
+    {
+        return $this->portalAppCode;
+    }
+    /**
+     * @param string|null $portalAppCode
+     *
+     * @return self
+     */
+    public function setPortalAppCode(?string $portalAppCode): self
+    {
+        $this->initialized['portalAppCode'] = true;
+        $this->portalAppCode = $portalAppCode;
+        return $this;
+    }
+    /**
      * @return bool|null
      */
     public function getSsoManaged(): ?bool
@@ -170,6 +196,24 @@ class PortalUserResponse
     {
         $this->initialized['ssoManaged'] = true;
         $this->ssoManaged = $ssoManaged;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getState(): ?string
+    {
+        return $this->state;
+    }
+    /**
+     * @param string|null $state
+     *
+     * @return self
+     */
+    public function setState(?string $state): self
+    {
+        $this->initialized['state'] = true;
+        $this->state = $state;
         return $this;
     }
 }

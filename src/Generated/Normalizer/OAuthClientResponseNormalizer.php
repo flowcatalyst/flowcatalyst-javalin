@@ -150,6 +150,12 @@ class OAuthClientResponseNormalizer implements DenormalizerInterface, Normalizer
         elseif (\array_key_exists('pkceRequired', $data) && $data['pkceRequired'] === null) {
             $object->setPkceRequired(null);
         }
+        if (\array_key_exists('portalAppId', $data) && $data['portalAppId'] !== null) {
+            $object->setPortalAppId($data['portalAppId']);
+        }
+        elseif (\array_key_exists('portalAppId', $data) && $data['portalAppId'] === null) {
+            $object->setPortalAppId(null);
+        }
         if (\array_key_exists('portalClientId', $data) && $data['portalClientId'] !== null) {
             $object->setPortalClientId($data['portalClientId']);
         }
@@ -165,6 +171,18 @@ class OAuthClientResponseNormalizer implements DenormalizerInterface, Normalizer
         }
         elseif (\array_key_exists('postLogoutRedirectUris', $data) && $data['postLogoutRedirectUris'] === null) {
             $object->setPostLogoutRedirectUris(null);
+        }
+        if (\array_key_exists('previousSecretExpiresAt', $data) && $data['previousSecretExpiresAt'] !== null) {
+            $object->setPreviousSecretExpiresAt(\DateTime::createFromFormat('Y-m-d\TH:i:sP', $data['previousSecretExpiresAt']));
+        }
+        elseif (\array_key_exists('previousSecretExpiresAt', $data) && $data['previousSecretExpiresAt'] === null) {
+            $object->setPreviousSecretExpiresAt(null);
+        }
+        if (\array_key_exists('previousSecretLastUsedAt', $data) && $data['previousSecretLastUsedAt'] !== null) {
+            $object->setPreviousSecretLastUsedAt(\DateTime::createFromFormat('Y-m-d\TH:i:sP', $data['previousSecretLastUsedAt']));
+        }
+        elseif (\array_key_exists('previousSecretLastUsedAt', $data) && $data['previousSecretLastUsedAt'] === null) {
+            $object->setPreviousSecretLastUsedAt(null);
         }
         if (\array_key_exists('redirectUris', $data) && $data['redirectUris'] !== null) {
             $values_6 = [];
@@ -226,6 +244,9 @@ class OAuthClientResponseNormalizer implements DenormalizerInterface, Normalizer
         $dataArray['grantTypes'] = $values_4;
         $dataArray['id'] = $data->getId();
         $dataArray['pkceRequired'] = $data->getPkceRequired();
+        if ($data->isInitialized('portalAppId') && null !== $data->getPortalAppId()) {
+            $dataArray['portalAppId'] = $data->getPortalAppId();
+        }
         if ($data->isInitialized('portalClientId') && null !== $data->getPortalClientId()) {
             $dataArray['portalClientId'] = $data->getPortalClientId();
         }
@@ -234,6 +255,12 @@ class OAuthClientResponseNormalizer implements DenormalizerInterface, Normalizer
             $values_5[] = $value_5;
         }
         $dataArray['postLogoutRedirectUris'] = $values_5;
+        if ($data->isInitialized('previousSecretExpiresAt') && null !== $data->getPreviousSecretExpiresAt()) {
+            $dataArray['previousSecretExpiresAt'] = $data->getPreviousSecretExpiresAt()->format('Y-m-d\TH:i:sP');
+        }
+        if ($data->isInitialized('previousSecretLastUsedAt') && null !== $data->getPreviousSecretLastUsedAt()) {
+            $dataArray['previousSecretLastUsedAt'] = $data->getPreviousSecretLastUsedAt()->format('Y-m-d\TH:i:sP');
+        }
         $values_6 = [];
         foreach ($data->getRedirectUris() as $value_6) {
             $values_6[] = $value_6;

@@ -915,6 +915,26 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
      *
      * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\DispatchJobResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
      */
+    public function cancelDispatchJob(string $id, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\CancelDispatchJob($id), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\DispatchJobResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function completeDispatchJob(string $id, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\CompleteDispatchJob($id), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\DispatchJobResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
     public function getDispatchJobRaw(string $id, string $fetch = self::FETCH_OBJECT)
     {
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\GetDispatchJobRaw($id), $fetch);
@@ -1626,7 +1646,57 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     }
     /**
      * @param array{
+     *    "clientId"?: string, //Tenant client whose portal apps to list (anchors may omit it for every client's)
+     * } $queryParameters
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\PortalAppListResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function listPortalApps(array $queryParameters = [], string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\ListPortalApps($queryParameters), $fetch);
+    }
+    /**
+     * @param null|\FlowCatalyst\Generated\Model\CreatePortalAppRequest $requestBody
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\CreatePortalAppResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function createPortalApp(?\FlowCatalyst\Generated\Model\CreatePortalAppRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\CreatePortalApp($requestBody), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param array{
+     *    "clientId"?: string, //Tenant client that owns the portal app
+     * } $queryParameters
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\StatusChangeResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function deletePortalApp(string $id, array $queryParameters = [], string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\DeletePortalApp($id, $queryParameters), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\UpdatePortalAppRequest $requestBody
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\PortalAppResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function updatePortalApp(string $id, ?\FlowCatalyst\Generated\Model\UpdatePortalAppRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\UpdatePortalApp($id, $requestBody), $fetch);
+    }
+    /**
+     * @param array{
      *    "clientId"?: string, //Tenant client whose portal identities to list
+     *    "q"?: string, //Prefix (TERM%) matched case-insensitively against email and name
+     *    "portalAppCode"?: string, //Only identities granted this portal app
+     *    "page"?: int, //0-based page index (default 0)
+     *    "size"?: int, //Page size (default 100, max 1000)
      * } $queryParameters
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
@@ -1669,6 +1739,31 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     public function activatePortalUser(string $id, ?\FlowCatalyst\Generated\Model\PortalUserClientBody $requestBody = null, string $fetch = self::FETCH_OBJECT)
     {
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\ActivatePortalUser($id, $requestBody), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\PortalUserAppGrantBody $requestBody
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\StatusChangeResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function grantPortalUserApp(string $id, ?\FlowCatalyst\Generated\Model\PortalUserAppGrantBody $requestBody = null, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\GrantPortalUserApp($id, $requestBody), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param string $portalAppCode
+     * @param array{
+     *    "clientId"?: string, //Tenant client that owns the portal identity and app
+     * } $queryParameters
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\StatusChangeResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function revokePortalUserApp(string $id, string $portalAppCode, array $queryParameters = [], string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RevokePortalUserApp($id, $portalAppCode, $queryParameters), $fetch);
     }
     /**
      * @param string $id

@@ -172,6 +172,10 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\CreateOAuthClientResponse::class => \FlowCatalyst\Generated\Normalizer\CreateOAuthClientResponseNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\CreatePortalAppRequest::class => \FlowCatalyst\Generated\Normalizer\CreatePortalAppRequestNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\CreatePortalAppResponse::class => \FlowCatalyst\Generated\Normalizer\CreatePortalAppResponseNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\CreatePrincipalRequest::class => \FlowCatalyst\Generated\Normalizer\CreatePrincipalRequestNormalizer::class,
         
         \FlowCatalyst\Generated\Model\CreateProcessRequest::class => \FlowCatalyst\Generated\Normalizer\CreateProcessRequestNormalizer::class,
@@ -244,6 +248,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\IdpRoleMappingResponse::class => \FlowCatalyst\Generated\Normalizer\IdpRoleMappingResponseNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\LinkedOAuthClient::class => \FlowCatalyst\Generated\Normalizer\LinkedOAuthClientNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\ListOutputBody::class => \FlowCatalyst\Generated\Normalizer\ListOutputBodyNormalizer::class,
         
         \FlowCatalyst\Generated\Model\LoginAttemptListResponse::class => \FlowCatalyst\Generated\Normalizer\LoginAttemptListResponseNormalizer::class,
@@ -275,6 +281,14 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         \FlowCatalyst\Generated\Model\PermissionListResponse::class => \FlowCatalyst\Generated\Normalizer\PermissionListResponseNormalizer::class,
         
         \FlowCatalyst\Generated\Model\PermissionResponse::class => \FlowCatalyst\Generated\Normalizer\PermissionResponseNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\PortalAppListResponse::class => \FlowCatalyst\Generated\Normalizer\PortalAppListResponseNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\PortalAppResponse::class => \FlowCatalyst\Generated\Normalizer\PortalAppResponseNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\PortalUserAppGrantBody::class => \FlowCatalyst\Generated\Normalizer\PortalUserAppGrantBodyNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\PortalUserAppRef::class => \FlowCatalyst\Generated\Normalizer\PortalUserAppRefNormalizer::class,
         
         \FlowCatalyst\Generated\Model\PortalUserClientBody::class => \FlowCatalyst\Generated\Normalizer\PortalUserClientBodyNormalizer::class,
         
@@ -462,6 +476,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\UpdateOAuthClientRequest::class => \FlowCatalyst\Generated\Normalizer\UpdateOAuthClientRequestNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\UpdatePortalAppRequest::class => \FlowCatalyst\Generated\Normalizer\UpdatePortalAppRequestNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\UpdatePrincipalRequest::class => \FlowCatalyst\Generated\Normalizer\UpdatePrincipalRequestNormalizer::class,
         
         \FlowCatalyst\Generated\Model\UpdateProcessRequest::class => \FlowCatalyst\Generated\Normalizer\UpdateProcessRequestNormalizer::class,
@@ -597,6 +613,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\CreateMappingRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateOAuthClientRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateOAuthClientResponse::class => false,
+            \FlowCatalyst\Generated\Model\CreatePortalAppRequest::class => false,
+            \FlowCatalyst\Generated\Model\CreatePortalAppResponse::class => false,
             \FlowCatalyst\Generated\Model\CreatePrincipalRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateProcessRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateRoleRequest::class => false,
@@ -633,6 +651,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\IdentityProviderResponse::class => false,
             \FlowCatalyst\Generated\Model\IdpRoleMappingListResponse::class => false,
             \FlowCatalyst\Generated\Model\IdpRoleMappingResponse::class => false,
+            \FlowCatalyst\Generated\Model\LinkedOAuthClient::class => false,
             \FlowCatalyst\Generated\Model\ListOutputBody::class => false,
             \FlowCatalyst\Generated\Model\LoginAttemptListResponse::class => false,
             \FlowCatalyst\Generated\Model\LoginAttemptResponse::class => false,
@@ -649,6 +668,10 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\OffsetPageScheduledJobResponse::class => false,
             \FlowCatalyst\Generated\Model\PermissionListResponse::class => false,
             \FlowCatalyst\Generated\Model\PermissionResponse::class => false,
+            \FlowCatalyst\Generated\Model\PortalAppListResponse::class => false,
+            \FlowCatalyst\Generated\Model\PortalAppResponse::class => false,
+            \FlowCatalyst\Generated\Model\PortalUserAppGrantBody::class => false,
+            \FlowCatalyst\Generated\Model\PortalUserAppRef::class => false,
             \FlowCatalyst\Generated\Model\PortalUserClientBody::class => false,
             \FlowCatalyst\Generated\Model\PortalUserListItem::class => false,
             \FlowCatalyst\Generated\Model\PortalUserListResponse::class => false,
@@ -742,6 +765,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\UpdateIdentityProviderRequest::class => false,
             \FlowCatalyst\Generated\Model\UpdateMappingRequest::class => false,
             \FlowCatalyst\Generated\Model\UpdateOAuthClientRequest::class => false,
+            \FlowCatalyst\Generated\Model\UpdatePortalAppRequest::class => false,
             \FlowCatalyst\Generated\Model\UpdatePrincipalRequest::class => false,
             \FlowCatalyst\Generated\Model\UpdateProcessRequest::class => false,
             \FlowCatalyst\Generated\Model\UpdateRoleRequest::class => false,

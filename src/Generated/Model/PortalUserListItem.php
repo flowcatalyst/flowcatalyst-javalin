@@ -13,6 +13,10 @@ class PortalUserListItem
         return array_key_exists($property, $this->initialized);
     }
     /**
+     * @var list<PortalUserAppRef>|null
+     */
+    protected $apps;
+    /**
      * @var \DateTime|null
      */
     protected $createdAt;
@@ -31,6 +35,14 @@ class PortalUserListItem
     /**
      * @var \DateTime|null
      */
+    protected $inviteExpiresAt;
+    /**
+     * @var \DateTime|null
+     */
+    protected $invitedAt;
+    /**
+     * @var \DateTime|null
+     */
     protected $lastLoginAt;
     /**
      * @var string|null
@@ -43,11 +55,33 @@ class PortalUserListItem
     /**
      * @var string|null
      */
+    protected $state;
+    /**
+     * @var string|null
+     */
     protected $status;
     /**
      * @var \DateTime|null
      */
     protected $updatedAt;
+    /**
+     * @return list<PortalUserAppRef>|null
+     */
+    public function getApps(): ?array
+    {
+        return $this->apps;
+    }
+    /**
+     * @param list<PortalUserAppRef>|null $apps
+     *
+     * @return self
+     */
+    public function setApps(?array $apps): self
+    {
+        $this->initialized['apps'] = true;
+        $this->apps = $apps;
+        return $this;
+    }
     /**
      * @return \DateTime|null
      */
@@ -123,6 +157,42 @@ class PortalUserListItem
     /**
      * @return \DateTime|null
      */
+    public function getInviteExpiresAt(): ?\DateTime
+    {
+        return $this->inviteExpiresAt;
+    }
+    /**
+     * @param \DateTime|null $inviteExpiresAt
+     *
+     * @return self
+     */
+    public function setInviteExpiresAt(?\DateTime $inviteExpiresAt): self
+    {
+        $this->initialized['inviteExpiresAt'] = true;
+        $this->inviteExpiresAt = $inviteExpiresAt;
+        return $this;
+    }
+    /**
+     * @return \DateTime|null
+     */
+    public function getInvitedAt(): ?\DateTime
+    {
+        return $this->invitedAt;
+    }
+    /**
+     * @param \DateTime|null $invitedAt
+     *
+     * @return self
+     */
+    public function setInvitedAt(?\DateTime $invitedAt): self
+    {
+        $this->initialized['invitedAt'] = true;
+        $this->invitedAt = $invitedAt;
+        return $this;
+    }
+    /**
+     * @return \DateTime|null
+     */
     public function getLastLoginAt(): ?\DateTime
     {
         return $this->lastLoginAt;
@@ -172,6 +242,24 @@ class PortalUserListItem
     {
         $this->initialized['source'] = true;
         $this->source = $source;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getState(): ?string
+    {
+        return $this->state;
+    }
+    /**
+     * @param string|null $state
+     *
+     * @return self
+     */
+    public function setState(?string $state): self
+    {
+        $this->initialized['state'] = true;
+        $this->state = $state;
         return $this;
     }
     /**
