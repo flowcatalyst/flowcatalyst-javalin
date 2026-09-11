@@ -110,7 +110,7 @@ class EncryptionTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"hunter2", "oIC8Q~263EHzIfRlOtV8MQTZnLdHdrb4I~~Jydv2", "abcd", "QUJDRA==", "encrypt:QUJDRA=="})
+    @ValueSource(strings = {"hunter2", "oICxQ~FakeClientSecretForTestsOnly00000", "abcd", "QUJDRA==", "encrypt:QUJDRA=="})
     void plaintextThatIsNotAnEnvelopeIsNotEncrypted(String stored) {
         assertThat(GO.decrypt(stored)).isEqualTo(new Failed(Reason.NOT_ENCRYPTED));
     }
@@ -146,7 +146,7 @@ class EncryptionTest {
 
     @Test
     void plaintextBecomesAPrefixedEnvelopeThatRoundTrips() {
-        var secret = "oIC8Q~263EHzIfRlOtV8MQTZnLdHdrb4I~~Jydv2";
+        var secret = "oICxQ~FakeClientSecretForTestsOnly00000";
         var stored = GO.encryptSecretRef(secret);
         assertThat(stored).startsWith("encrypted:");
         assertThat(GO.decrypt(stored)).isEqualTo(new Plaintext(secret));

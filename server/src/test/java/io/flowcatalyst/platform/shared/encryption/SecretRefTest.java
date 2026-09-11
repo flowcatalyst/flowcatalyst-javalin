@@ -144,7 +144,7 @@ class SecretRefTest {
 
     @Test
     void bareStringsArePlainEvenWhenTheyLookLikeBase64() {
-        assertThat(SecretRef.parse("oIC8Q~263EHzIfRlOtV8MQTZnLdHdrb4I~~Jydv2")).isEqualTo(new Plain("oIC8Q~263EHzIfRlOtV8MQTZnLdHdrb4I~~Jydv2"));
+        assertThat(SecretRef.parse("oICxQ~FakeClientSecretForTestsOnly00000")).isEqualTo(new Plain("oICxQ~FakeClientSecretForTestsOnly00000"));
         assertThat(SecretRef.parse(B64)).isEqualTo(new Plain(B64));
         assertThat(SecretRef.parse("  spaced  ")).isEqualTo(new Plain("spaced"));
     }
