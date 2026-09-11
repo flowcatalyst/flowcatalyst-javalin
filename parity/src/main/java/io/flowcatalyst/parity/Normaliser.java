@@ -25,7 +25,9 @@ public final class Normaliser {
     private static final Pattern RFC3339 = Pattern.compile(
             "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$");
 
-    private static final List<String> JWT_TIME_CLAIMS = List.of("iat", "exp", "nbf", "auth_time");
+    // `updated_at` is a row timestamp each side stamps on its own clock — the
+    // numeric twin of the RFC 3339 `updatedAt` rule 3 already masks in bodies.
+    private static final List<String> JWT_TIME_CLAIMS = List.of("iat", "exp", "nbf", "auth_time", "updated_at");
 
     /// Rule 1's substring form applies only to captured values at least this
     /// long — shorter ones (a status word, a short code) would mask by accident.

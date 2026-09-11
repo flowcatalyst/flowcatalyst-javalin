@@ -89,7 +89,7 @@ class NormaliserTest {
     void rule4DecodesAJwsIntoStructuredHeaderAndClaims() {
         Vars vars = vars();
         String jwt = fakeJwt("{\"alg\":\"RS256\",\"kid\":\"k1\"}",
-                "{\"sub\":\"admin-1\",\"iat\":1000,\"exp\":2000,\"jti\":\"abc\"}");
+                "{\"sub\":\"admin-1\",\"iat\":1000,\"exp\":2000,\"updated_at\":900,\"jti\":\"abc\"}");
         ObjectNode body = obj();
         body.put("accessToken", jwt);
 
@@ -100,6 +100,7 @@ class NormaliserTest {
         JsonNode claims = token.get("«jwt»").get("claims");
         assertThat(claims.get("iat").asString()).isEqualTo("«time»");
         assertThat(claims.get("exp").asString()).isEqualTo("«time»");
+        assertThat(claims.get("updated_at").asString()).as("a row timestamp on each side's own clock").isEqualTo("«time»");
         assertThat(claims.get("jti").asString()).isEqualTo("«id»");
     }
 

@@ -216,15 +216,19 @@ the report.
 2. **Own base URL → `«base»`** (issuer, discovery document, redirect
    targets, JWKS `jku`).
 3. **RFC 3339 timestamps → `«time»`**, whole-string match only, and a
-   *numeric* member named `iat`, `exp`, `nbf` or `auth_time` (epoch
-   seconds — introspection echoes them) likewise. `null`, absent and
+   *numeric* member named `iat`, `exp`, `nbf`, `auth_time` or `updated_at`
+   (epoch seconds — introspection and userinfo echo them) likewise.
+   `updated_at` joined 2026-09-11: it is a row timestamp each side stamps
+   on its own clock (a portal identity created by the scenario lands a
+   second apart on the two sides), exactly like the RFC 3339 `updatedAt`
+   this rule already masks in bodies. `null`, absent and
    `«time»` stay three different things.
 4. **JWS strings** (three base64url segments with a JSON header; on any
    one string this rule is tried *before* rule 1, otherwise a token that
    was also captured — the session cookie — would collapse to its capture
    name and never be compared as a structure) →
    `{"«jwt»": {"header": …, "claims": …}}` with `iat`, `exp`, `nbf`,
-   `auth_time` → `«time»`, `jti` → `«id»`, `iss` through rule 2, and any
+   `auth_time`, `updated_at` → `«time»`, `jti` → `«id»`, `iss` through rule 2, and any
    claim equal to a captured value through rule 1. Token *structure* is
    compared on every step that carries a token; this is where the C-Q1 /
    userinfo class of defect lives, and an opaque `«token»` would hide it.

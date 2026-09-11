@@ -40,7 +40,8 @@ public final class GoSide implements Side {
     /// Starts `fcServerBinary` with `env` overlaid onto the harness process's
     /// own environment (`putAll`, not a replacement — a Go binary still needs
     /// its normal runtime environment, `PATH`/`HOME`/`TMPDIR`, none of which
-    /// the harness's `env` map carries), a freshly-picked `FC_API_PORT`, and
+    /// the harness's `env` map carries), a freshly-picked `FC_API_PORT`, an
+    /// ephemeral `FC_METRICS_PORT`, and
     /// `FC_JWT_ISSUER` / `FC_EXTERNAL_BASE_URL` / `FC_WEBAUTHN_ORIGINS` set to
     /// this side's own base URL (spec §2: "each side's own", "origin differs
     /// per side"). Blocks until `/health` answers 200 or [#HEALTH_BUDGET]
@@ -53,6 +54,10 @@ public final class GoSide implements Side {
 
         Map<String, String> merged = new LinkedHashMap<>(env);
         merged.put("FC_API_PORT", String.valueOf(port));
+        // An ephemeral metrics listener, as JavaSide has: Go's default :9090
+        // collides with any fcdev/fc-server already running on the machine,
+        // and fc-server exits when a listener fails to bind.
+        merged.put("FC_METRICS_PORT", "0");
         merged.put("FC_JWT_ISSUER", baseUrl);
         merged.put("FC_EXTERNAL_BASE_URL", baseUrl);
         merged.put("FC_WEBAUTHN_ORIGINS", baseUrl);
