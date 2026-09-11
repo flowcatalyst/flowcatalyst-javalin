@@ -40,16 +40,16 @@ client-bound identity token uses `GenerateIdentityAccessTokenFor(p, clientID)`
 and so carries `azp`. Java stamps it (spec J11). Fix: use the `…For` variant
 with `client.ClientID`.
 
-## P4 — the unsupported-scheme message renders `"ref"://` (server)
+## P4 — the unsupported-scheme message renders `"ref"://` (server) — **fixed in Go's working tree, 2026-09-11**
 
-`internal/platform/shared/encryption/secretref.go:97` formats
-`%w %q://` — the scheme is quoted *before* `://` is appended, giving
-`unsupported secret-manager scheme "ref"://; supported: …, literal: …`. It
-also lists `literal:` among the secret-manager schemes, which it is not (it is
-the dev bypass). Java answers the same code (`UNSUPPORTED_SECRET_SCHEME`) with
-`oidcClientSecretRef: unsupported secret-manager scheme "ref://"; supported:
-aws-sm, aws-ps, gcp-sm, vault, env (…)` (spec J12). Fix: `%q` over
-`scheme+"://"`, and drop `literal:` from the list.
+`secretref.go` formatted `%w %q://`, quoting the scheme before `://` was
+appended (`"ref"://`), and listed `literal:` among the secret-manager schemes.
+The owner's fix quotes `scheme+"://"` and lists `aws-sm://, aws-ps://,
+gcp-sm://, vault://, env://` — the `://` form is required by the 2026-09-08
+ruling's test, so a typo like `aws-smm://` reads against the right spelling.
+Java follows that wording exactly (it had printed the bare names). The one
+difference left, by the owner's choice: Java prefixes the field name
+(`oidcClientSecretRef: …`), Go does not (spec J12).
 
 ## P5 — a portal id_token's `updated_at` is the mint time (server)
 

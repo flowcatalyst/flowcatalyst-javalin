@@ -297,7 +297,9 @@ class IdentityProviderApiTest {
         var typo = http.post("/api/identity-providers", oidcBody(code("api-key-scheme"), "\"aws-smm://prod/idp\"", ""), ANCHOR);
         assertThat(typo.statusCode()).isEqualTo(400);
         assertThat(json(typo).get("error").asText()).isEqualTo("UNSUPPORTED_SECRET_SCHEME");
-        assertThat(json(typo).get("message").asText()).contains("\"aws-smm://\"").contains("encrypt:");
+        // Go's message behind the field name (the one difference kept, J12).
+        assertThat(json(typo).get("message").asText())
+                .startsWith("oidcClientSecretRef: unsupported secret-manager scheme \"aws-smm://\"; supported: aws-sm://, ");
 
         var malformed = http.post("/api/identity-providers", oidcBody(code("api-key-bad2"), "\"encrypted:not*base64\"", ""), ANCHOR);
         assertThat(json(malformed).get("error").asText()).as("other malformed refs keep their code")

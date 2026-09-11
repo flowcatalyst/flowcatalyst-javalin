@@ -451,8 +451,8 @@
   "scenario": "auth-configs*",
   "step": "update-untouched-fields",
   "pointer": "/message",
-  "reason": "same code (UNSUPPORTED_SECRET_SCHEME, Go f0c3eae) and same content; Java names the field (oidcClientSecretRef:) and quotes the scheme as \"ref://\" where Go renders \"ref\":// (a %q-then-append formatting slip) and lists literal: among the secret-manager schemes it is not",
-  "ruling": "portal-apps.md J12 (Go message defect, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
+  "reason": "same code (UNSUPPORTED_SECRET_SCHEME) and, since Go's 2026-09-11 fix, the same message; Java prefixes the field name (oidcClientSecretRef: ...), Go does not — kept by the owner. Against Go 2783ff9 (before that fix) the list also differs: Go still renders \"ref\":// and lists literal:",
+  "ruling": "portal-apps.md J12 (owner 2026-09-11: field-name prefix kept)"
  },
  {
   "scenario": "portal*",

@@ -34,7 +34,7 @@ out of memory on `e2e:both`). Server + fcdev suites green.
 P1 the "New Portal App" button never renders (the permissions store is never
 filled), P2 a cold page load skips the SPA route guard (a role-less user is
 not bounced to `/profile`; the server still refuses every call), P3 portal
-access token without `azp`, P4 the `"ref"://` message, P5 portal id_token
+access token without `azp`, P4 the `"ref"://` message (fixed in Go since; Java now matches its `aws-sm://` list, field-name prefix kept), P5 portal id_token
 `updated_at` = mint time. Not built: the SDK portal-claim accessors (J7 — our
 SDK has no ID-token principal).
 

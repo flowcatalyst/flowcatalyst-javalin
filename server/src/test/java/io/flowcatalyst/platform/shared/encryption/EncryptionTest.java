@@ -388,11 +388,14 @@ class EncryptionTest {
 
     @Test
     void anUnknownSchemeIsRejectedOnWriteNotSealedAsThoughItWereTheSecret() {
+        // The whole message, as Go writes it: the list names each scheme in its
+        // "aws-sm://" form so a typo like "aws-smm://" reads against the right
+        // spelling (a contains-"aws-sm" check passed on the typo itself).
         assertThatThrownBy(() -> GO.encryptSecretRef("aws-smm://prod/db-password"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("aws-smm://")
-                .hasMessageContaining("aws-sm")   // names what IS supported
-                .hasMessageContaining("encrypt:"); // and the override
+                .isInstanceOf(Encryption.UnsupportedSchemeException.class)
+                .hasMessage("unsupported secret-manager scheme \"aws-smm://\"; supported: aws-sm://, aws-ps://, "
+                        + "gcp-sm://, vault://, env:// (prefix the value with \"encrypt:\" to store it as an "
+                        + "encrypted plaintext secret instead)");
         // The point of the ruling: it must NOT come back as an envelope.
         assertThatThrownBy(() -> GO.encryptSecretRef("vaultt://secret/x"))
                 .isInstanceOf(IllegalArgumentException.class);

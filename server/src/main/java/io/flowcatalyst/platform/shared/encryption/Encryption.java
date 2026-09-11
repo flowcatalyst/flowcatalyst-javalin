@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -206,7 +207,7 @@ public final class Encryption {
         var unsupported = SecretRef.unsupportedScheme(incoming);
         if (unsupported.isPresent()) {
             throw new UnsupportedSchemeException("unsupported secret-manager scheme \"" + unsupported.get()
-                    + "://\"; supported: " + String.join(", ", SecretRef.EXTERNAL_SCHEMES)
+                    + "://\"; supported: " + SecretRef.EXTERNAL_SCHEMES.stream().map(scheme -> scheme + "://").collect(Collectors.joining(", "))
                     + " (prefix the value with \"" + SecretRef.ENCRYPT_DIRECTIVE
                     + "\" to store it as an encrypted plaintext secret instead)");
         }
