@@ -68,6 +68,19 @@ public final class PortalAppRepository implements Persist<PortalApp> {
         return dsl.selectFrom(T).orderBy(T.NAME.asc()).fetch().map(PortalAppRepository::toEntity);
     }
 
+    /// Every app named by `ids`, one query — the batch resolution `listPortalUsers`
+    /// (spec §4.2) needs for a page's grants: never one lookup per row. An id
+    /// with no matching row is simply absent from the map.
+    public Map<String, PortalApp> findByIds(Collection<String> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, PortalApp> byId = new HashMap<>();
+        dsl.selectFrom(T).where(T.ID.in(ids)).fetch()
+                .forEach(row -> byId.put(row.getId(), toEntity(row)));
+        return byId;
+    }
+
     /// Grant-row count per app id, one query (spec §4.4 `userCount`); an id
     /// with no grants is absent from the map (callers default to 0).
     public Map<String, Integer> userCounts(Collection<String> appIds) {
