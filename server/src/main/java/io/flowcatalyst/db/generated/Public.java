@@ -61,7 +61,9 @@ import io.flowcatalyst.db.generated.tables.OauthIdentityProviders;
 import io.flowcatalyst.db.generated.tables.OauthIdpRoleMappings;
 import io.flowcatalyst.db.generated.tables.OauthOidcLoginStates;
 import io.flowcatalyst.db.generated.tables.OauthOidcPayloads;
+import io.flowcatalyst.db.generated.tables.PortalApps;
 import io.flowcatalyst.db.generated.tables.PortalIdentities;
+import io.flowcatalyst.db.generated.tables.PortalIdentityApps;
 import io.flowcatalyst.db.generated.tables.PortalLoginFlows;
 import io.flowcatalyst.db.generated.tables.TntAnchorDomains;
 import io.flowcatalyst.db.generated.tables.TntClientAuthConfigs;
@@ -382,9 +384,19 @@ public class Public extends SchemaImpl {
     public final OauthOidcPayloads OAUTH_OIDC_PAYLOADS = OauthOidcPayloads.OAUTH_OIDC_PAYLOADS;
 
     /**
+     * The table <code>public.portal_apps</code>.
+     */
+    public final PortalApps PORTAL_APPS = PortalApps.PORTAL_APPS;
+
+    /**
      * The table <code>public.portal_identities</code>.
      */
     public final PortalIdentities PORTAL_IDENTITIES = PortalIdentities.PORTAL_IDENTITIES;
+
+    /**
+     * The table <code>public.portal_identity_apps</code>.
+     */
+    public final PortalIdentityApps PORTAL_IDENTITY_APPS = PortalIdentityApps.PORTAL_IDENTITY_APPS;
 
     /**
      * The table <code>public.portal_login_flows</code>.
@@ -515,7 +527,9 @@ public class Public extends SchemaImpl {
             OauthIdpRoleMappings.OAUTH_IDP_ROLE_MAPPINGS,
             OauthOidcLoginStates.OAUTH_OIDC_LOGIN_STATES,
             OauthOidcPayloads.OAUTH_OIDC_PAYLOADS,
+            PortalApps.PORTAL_APPS,
             PortalIdentities.PORTAL_IDENTITIES,
+            PortalIdentityApps.PORTAL_IDENTITY_APPS,
             PortalLoginFlows.PORTAL_LOGIN_FLOWS,
             TntAnchorDomains.TNT_ANCHOR_DOMAINS,
             TntClientAuthConfigs.TNT_CLIENT_AUTH_CONFIGS,

@@ -61,7 +61,9 @@ import io.flowcatalyst.db.generated.tables.OauthIdentityProviders;
 import io.flowcatalyst.db.generated.tables.OauthIdpRoleMappings;
 import io.flowcatalyst.db.generated.tables.OauthOidcLoginStates;
 import io.flowcatalyst.db.generated.tables.OauthOidcPayloads;
+import io.flowcatalyst.db.generated.tables.PortalApps;
 import io.flowcatalyst.db.generated.tables.PortalIdentities;
+import io.flowcatalyst.db.generated.tables.PortalIdentityApps;
 import io.flowcatalyst.db.generated.tables.PortalLoginFlows;
 import io.flowcatalyst.db.generated.tables.TntAnchorDomains;
 import io.flowcatalyst.db.generated.tables.TntClientAuthConfigs;
@@ -367,9 +369,19 @@ public class Tables {
     public static final OauthOidcPayloads OAUTH_OIDC_PAYLOADS = OauthOidcPayloads.OAUTH_OIDC_PAYLOADS;
 
     /**
+     * The table <code>public.portal_apps</code>.
+     */
+    public static final PortalApps PORTAL_APPS = PortalApps.PORTAL_APPS;
+
+    /**
      * The table <code>public.portal_identities</code>.
      */
     public static final PortalIdentities PORTAL_IDENTITIES = PortalIdentities.PORTAL_IDENTITIES;
+
+    /**
+     * The table <code>public.portal_identity_apps</code>.
+     */
+    public static final PortalIdentityApps PORTAL_IDENTITY_APPS = PortalIdentityApps.PORTAL_IDENTITY_APPS;
 
     /**
      * The table <code>public.portal_login_flows</code>.

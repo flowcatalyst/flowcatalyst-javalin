@@ -7,6 +7,8 @@ package io.flowcatalyst.db.generated.tables;
 import io.flowcatalyst.db.generated.Indexes;
 import io.flowcatalyst.db.generated.Keys;
 import io.flowcatalyst.db.generated.Public;
+import io.flowcatalyst.db.generated.tables.PortalApps.PortalAppsPath;
+import io.flowcatalyst.db.generated.tables.PortalIdentityApps.PortalIdentityAppsPath;
 import io.flowcatalyst.db.generated.tables.records.PortalIdentitiesRecord;
 
 import java.time.OffsetDateTime;
@@ -16,10 +18,14 @@ import java.util.List;
 
 import org.jooq.Condition;
 import org.jooq.Field;
+import org.jooq.ForeignKey;
 import org.jooq.Index;
+import org.jooq.InverseForeignKey;
 import org.jooq.Name;
+import org.jooq.Path;
 import org.jooq.PlainSQL;
 import org.jooq.QueryPart;
+import org.jooq.Record;
 import org.jooq.SQL;
 import org.jooq.Schema;
 import org.jooq.Stringly;
@@ -105,6 +111,16 @@ public class PortalIdentities extends TableImpl<PortalIdentitiesRecord> {
      */
     public final TableField<PortalIdentitiesRecord, OffsetDateTime> UPDATED_AT = createField(DSL.name("updated_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
 
+    /**
+     * The column <code>public.portal_identities.invited_at</code>.
+     */
+    public final TableField<PortalIdentitiesRecord, OffsetDateTime> INVITED_AT = createField(DSL.name("invited_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
+
+    /**
+     * The column <code>public.portal_identities.invite_expires_at</code>.
+     */
+    public final TableField<PortalIdentitiesRecord, OffsetDateTime> INVITE_EXPIRES_AT = createField(DSL.name("invite_expires_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
+
     private PortalIdentities(Name alias, Table<PortalIdentitiesRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }
@@ -134,6 +150,39 @@ public class PortalIdentities extends TableImpl<PortalIdentitiesRecord> {
         this(DSL.name("portal_identities"), null);
     }
 
+    public <O extends Record> PortalIdentities(Table<O> path, ForeignKey<O, PortalIdentitiesRecord> childPath, InverseForeignKey<O, PortalIdentitiesRecord> parentPath) {
+        super(path, childPath, parentPath, PORTAL_IDENTITIES);
+    }
+
+    /**
+     * A subtype implementing {@link Path} for simplified path-based joins.
+     */
+    public static class PortalIdentitiesPath extends PortalIdentities implements Path<PortalIdentitiesRecord> {
+
+        private static final long serialVersionUID = 1L;
+        public <O extends Record> PortalIdentitiesPath(Table<O> path, ForeignKey<O, PortalIdentitiesRecord> childPath, InverseForeignKey<O, PortalIdentitiesRecord> parentPath) {
+            super(path, childPath, parentPath);
+        }
+        private PortalIdentitiesPath(Name alias, Table<PortalIdentitiesRecord> aliased) {
+            super(alias, aliased);
+        }
+
+        @Override
+        public PortalIdentitiesPath as(String alias) {
+            return new PortalIdentitiesPath(DSL.name(alias), this);
+        }
+
+        @Override
+        public PortalIdentitiesPath as(Name alias) {
+            return new PortalIdentitiesPath(alias, this);
+        }
+
+        @Override
+        public PortalIdentitiesPath as(Table<?> alias) {
+            return new PortalIdentitiesPath(alias.getQualifiedName(), this);
+        }
+    }
+
     @Override
     public Schema getSchema() {
         return aliased() ? null : Public.PUBLIC;
@@ -141,7 +190,7 @@ public class PortalIdentities extends TableImpl<PortalIdentitiesRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_PORTAL_IDENTITIES_EMAIL);
+        return Arrays.asList(Indexes.IDX_PORTAL_IDENTITIES_CLIENT_EMAIL_PREFIX, Indexes.IDX_PORTAL_IDENTITIES_EMAIL);
     }
 
     @Override
@@ -152,6 +201,27 @@ public class PortalIdentities extends TableImpl<PortalIdentitiesRecord> {
     @Override
     public List<UniqueKey<PortalIdentitiesRecord>> getUniqueKeys() {
         return Arrays.asList(Keys.UQ_PORTAL_IDENTITIES_CLIENT_EMAIL);
+    }
+
+    private transient PortalIdentityAppsPath _portalIdentityApps;
+
+    /**
+     * Get the implicit to-many join path to the
+     * <code>public.portal_identity_apps</code> table
+     */
+    public PortalIdentityAppsPath portalIdentityApps() {
+        if (_portalIdentityApps == null)
+            _portalIdentityApps = new PortalIdentityAppsPath(this, null, Keys.PORTAL_IDENTITY_APPS__PORTAL_IDENTITY_APPS_IDENTITY_ID_FKEY.getInverseKey());
+
+        return _portalIdentityApps;
+    }
+
+    /**
+     * Get the implicit many-to-many join path to the
+     * <code>public.portal_apps</code> table
+     */
+    public PortalAppsPath portalApps() {
+        return portalIdentityApps().portalApps();
     }
 
     @Override

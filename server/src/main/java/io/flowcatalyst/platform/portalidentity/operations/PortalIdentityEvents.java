@@ -1,10 +1,12 @@
 package io.flowcatalyst.platform.portalidentity.operations;
 
+import io.flowcatalyst.platform.portalapp.PortalApp;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventConventions;
 import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
+
 
 /// The portal-identity aggregate's domain events (spec `auth-identity.md`
 /// §5.7): source `platform:portal`, subject
@@ -46,20 +48,25 @@ public final class PortalIdentityEvents {
     /// still calls its field `source` (spec §5.7's JSON key) — that is a
     /// *different* record ([Data]), so no shadowing there.
     public record PortalIdentityEnsured(
-            EventMetadata metadata, String identityId, String clientId, String email, boolean created, String identitySource)
+            EventMetadata metadata, String identityId, String clientId, String email, boolean created,
+            String identitySource, String portalAppId, String portalAppCode)
             implements DomainEvent {
 
-        public static PortalIdentityEnsured of(ExecutionContext ec, PortalIdentity pi, boolean created) {
+        /// `app` `null` ⇒ `portalAppId` / `portalAppCode` are both `null` and
+        /// therefore absent from the wire payload (`Json.MAPPER`'s global
+        /// `NON_ABSENT` inclusion, CONVENTIONS §1) — `portal-apps.md` §3.1.
+        public static PortalIdentityEnsured of(ExecutionContext ec, PortalIdentity pi, boolean created, PortalApp app) {
             return new PortalIdentityEnsured(metadataFor(ec, ENSURED, pi.id()), pi.id(), pi.clientId(), pi.email(),
-                    created, pi.source().name());
+                    created, pi.source().name(), app == null ? null : app.id(), app == null ? null : app.code());
         }
 
         @Override
         public Object data() {
-            return new Data(identityId, clientId, email, created, identitySource);
+            return new Data(identityId, clientId, email, created, identitySource, portalAppId, portalAppCode);
         }
 
-        private record Data(String identityId, String clientId, String email, boolean created, String source) {
+        private record Data(String identityId, String clientId, String email, boolean created, String source,
+                             String portalAppId, String portalAppCode) {
         }
     }
 

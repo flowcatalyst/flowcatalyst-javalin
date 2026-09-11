@@ -6,3 +6,4 @@ V5__partition_login_attempts.sql
 V6__x06_enum_check_constraints.sql
 V7__x06_dispatch_job_enum_check_constraints.sql
 V8__mail_outbox.sql
+V9__portal_apps.sql

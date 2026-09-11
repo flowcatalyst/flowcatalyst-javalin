@@ -8,6 +8,7 @@ import io.flowcatalyst.platform.auth.oidc.LoginStateRepository;
 import io.flowcatalyst.platform.auth.oidc.OidcBridgeApi;
 import io.flowcatalyst.platform.auth.oidc.OidcClients;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityStatus;
@@ -43,12 +44,13 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
     private static final Logger LOG = LoggerFactory.getLogger(PortalSso.class);
 
     public record State(PortalLoginFlowRepository flows, PortalIdentityRepository identities, ClientRepository clients,
-                        UnitOfWork uow, GrantStore grants, OidcClients oidcClients, LoginStateRepository states,
-                        OidcBridgeApi.State bridge, Clock clock) {
+                        PortalAppRepository portalApps, UnitOfWork uow, GrantStore grants, OidcClients oidcClients,
+                        LoginStateRepository states, OidcBridgeApi.State bridge, Clock clock) {
         public State {
             Objects.requireNonNull(flows, "flows");
             Objects.requireNonNull(identities, "identities");
             Objects.requireNonNull(clients, "clients");
+            Objects.requireNonNull(portalApps, "portalApps");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(grants, "grants");
             Objects.requireNonNull(oidcClients, "oidcClients");
@@ -135,8 +137,9 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         if (found.isEmpty()) {
             String name = claims.name() == null || claims.name().isBlank() ? null : claims.name().trim();
             try {
-                var event = EnsurePortalIdentity.of(s.identities(), s.clients()).run(s.uow(),
-                        new EnsureCommand(state.portalClientId(), email, name, "JIT"), ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
+                // portalAppId wiring is unit C's (spec `portal-apps.md` §5.2); null for now.
+                var event = EnsurePortalIdentity.of(s.identities(), s.clients(), s.portalApps()).run(s.uow(),
+                        new EnsureCommand(state.portalClientId(), email, name, "JIT", null), ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
                 identity = s.identities().findById(event.identityId()).orElse(null);
             } catch (UseCaseException e) {
                 HttpError.write(ctx, e.error());

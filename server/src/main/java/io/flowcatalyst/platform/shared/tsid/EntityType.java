@@ -51,6 +51,7 @@ public enum EntityType {
     MFA_TRUSTED_DEVICE("mtd"),
     RESET_APPROVAL_REQUEST("rar"),
     PORTAL_USER("ptu"),
+    PORTAL_APP("pta"),
     APP_DOC("doc");
 
     private final String prefix;

@@ -2524,6 +2524,9 @@
           "pkceRequired": {
             "type": "boolean"
           },
+          "portalAppId": {
+            "type": "string"
+          },
           "portalClientId": {
             "type": "string"
           },
@@ -2570,6 +2573,87 @@
         },
         "required": [
           "client"
+        ],
+        "type": "object"
+      },
+      "CreatePortalAppRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/CreatePortalAppRequest.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "clientType": {
+            "enum": [
+              "CONFIDENTIAL",
+              "PUBLIC"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "redirectUris": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "clientId",
+          "code",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreatePortalAppResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/CreatePortalAppResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "clientSecret": {
+            "type": "string"
+          },
+          "clientType": {
+            "type": "string"
+          },
+          "oauthClientId": {
+            "type": "string"
+          },
+          "oauthClientRowId": {
+            "type": "string"
+          },
+          "portalApp": {
+            "$ref": "#/components/schemas/PortalAppResponse"
+          }
+        },
+        "required": [
+          "portalApp",
+          "oauthClientId",
+          "oauthClientRowId",
+          "clientType"
         ],
         "type": "object"
       },
@@ -4178,6 +4262,26 @@
         ],
         "type": "object"
       },
+      "LinkedOAuthClient": {
+        "additionalProperties": false,
+        "properties": {
+          "clientId": {
+            "type": "string"
+          },
+          "clientName": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "clientId",
+          "clientName"
+        ],
+        "type": "object"
+      },
       "ListOutputBody": {
         "additionalProperties": false,
         "properties": {
@@ -4613,6 +4717,9 @@
           "pkceRequired": {
             "type": "boolean"
           },
+          "portalAppId": {
+            "type": "string"
+          },
           "portalClientId": {
             "type": "string"
           },
@@ -4812,6 +4919,146 @@
         ],
         "type": "object"
       },
+      "PortalAppListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/PortalAppListResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "portalApps": {
+            "items": {
+              "$ref": "#/components/schemas/PortalAppResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "portalApps"
+        ],
+        "type": "object"
+      },
+      "PortalAppResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/PortalAppResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "oauthClients": {
+            "items": {
+              "$ref": "#/components/schemas/LinkedOAuthClient"
+            },
+            "type": "array"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "userCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "clientId",
+          "code",
+          "name",
+          "active",
+          "oauthClients",
+          "userCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "PortalUserAppGrantBody": {
+        "additionalProperties": true,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/PortalUserAppGrantBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "portalAppCode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientId",
+          "portalAppCode"
+        ],
+        "type": "object"
+      },
+      "PortalUserAppRef": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "grantedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "source",
+          "grantedAt"
+        ],
+        "type": "object"
+      },
       "PortalUserClientBody": {
         "additionalProperties": true,
         "properties": {
@@ -4836,6 +5083,12 @@
       "PortalUserListItem": {
         "additionalProperties": false,
         "properties": {
+          "apps": {
+            "items": {
+              "$ref": "#/components/schemas/PortalUserAppRef"
+            },
+            "type": "array"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -4849,6 +5102,14 @@
           "identityId": {
             "type": "string"
           },
+          "inviteExpiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "invitedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
           "lastLoginAt": {
             "format": "date-time",
             "type": "string"
@@ -4857,6 +5118,15 @@
             "type": "string"
           },
           "source": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "INVITED",
+              "INVITE_EXPIRED",
+              "ACTIVE",
+              "SUSPENDED"
+            ],
             "type": "string"
           },
           "status": {
@@ -4872,8 +5142,10 @@
           "email",
           "name",
           "status",
+          "state",
           "source",
           "hasPassword",
+          "apps",
           "createdAt",
           "updatedAt"
         ],
@@ -4891,15 +5163,30 @@
             "readOnly": true,
             "type": "string"
           },
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
           "portalUsers": {
             "items": {
               "$ref": "#/components/schemas/PortalUserListItem"
             },
             "type": "array"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
-          "portalUsers"
+          "portalUsers",
+          "total",
+          "page",
+          "size"
         ],
         "type": "object"
       },
@@ -4922,6 +5209,9 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "portalAppCode": {
             "type": "string"
           },
           "redirectUri": {
@@ -4964,15 +5254,28 @@
           "invited": {
             "type": "boolean"
           },
+          "portalAppCode": {
+            "type": "string"
+          },
           "ssoManaged": {
             "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "INVITED",
+              "INVITE_EXPIRED",
+              "ACTIVE",
+              "SUSPENDED"
+            ],
+            "type": "string"
           }
         },
         "required": [
           "identityId",
           "created",
           "invited",
-          "hasPassword"
+          "hasPassword",
+          "state"
         ],
         "type": "object"
       },
@@ -5503,6 +5806,15 @@
       "RawEventResponse": {
         "additionalProperties": false,
         "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/RawEventResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
           "causationId": {
             "type": "string"
           },
@@ -8013,6 +8325,9 @@
           "pkceRequired": {
             "type": "boolean"
           },
+          "portalAppId": {
+            "type": "string"
+          },
           "portalClientId": {
             "type": "string"
           },
@@ -8029,6 +8344,36 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "UpdatePortalAppRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/UpdatePortalAppRequest.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientId"
+        ],
         "type": "object"
       },
       "UpdatePrincipalRequest": {
@@ -15525,6 +15870,188 @@
         ]
       }
     },
+    "/api/portal-apps": {
+      "get": {
+        "operationId": "listPortalApps",
+        "parameters": [
+          {
+            "description": "Tenant client whose portal apps to list (anchors may omit it for every client's)",
+            "explode": false,
+            "in": "query",
+            "name": "clientId",
+            "schema": {
+              "description": "Tenant client whose portal apps to list (anchors may omit it for every client's)",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalAppListResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List portal apps (a client's, or every client's for anchors)",
+        "tags": [
+          "portal-apps"
+        ]
+      },
+      "post": {
+        "operationId": "createPortalApp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePortalAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePortalAppResponse"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Register a portal app for a client and provision its portal OAuth client",
+        "tags": [
+          "portal-apps"
+        ]
+      }
+    },
+    "/api/portal-apps/{id}": {
+      "delete": {
+        "operationId": "deletePortalApp",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Tenant client that owns the portal app",
+            "explode": false,
+            "in": "query",
+            "name": "clientId",
+            "schema": {
+              "description": "Tenant client that owns the portal app",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChangeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Delete a portal app together with its portal OAuth clients",
+        "tags": [
+          "portal-apps"
+        ]
+      },
+      "put": {
+        "operationId": "updatePortalApp",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePortalAppRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalAppResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Update a portal app's name, description, or active flag",
+        "tags": [
+          "portal-apps"
+        ]
+      }
+    },
     "/api/portal-users": {
       "get": {
         "operationId": "listPortalUsers",
@@ -15537,6 +16064,48 @@
             "schema": {
               "description": "Tenant client whose portal identities to list",
               "type": "string"
+            }
+          },
+          {
+            "description": "Prefix (TERM%) matched case-insensitively against email and name",
+            "explode": false,
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "description": "Prefix (TERM%) matched case-insensitively against email and name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only identities granted this portal app",
+            "explode": false,
+            "in": "query",
+            "name": "portalAppCode",
+            "schema": {
+              "description": "Only identities granted this portal app",
+              "type": "string"
+            }
+          },
+          {
+            "description": "0-based page index (default 0)",
+            "explode": false,
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "description": "0-based page index (default 0)",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size (default 100, max 1000)",
+            "explode": false,
+            "in": "query",
+            "name": "size",
+            "schema": {
+              "description": "Page size (default 100, max 1000)",
+              "format": "int64",
+              "type": "integer"
             }
           }
         ],
@@ -15562,7 +16131,7 @@
             "description": "Error"
           }
         },
-        "summary": "List a client's portal identities",
+        "summary": "Search a client's portal identities (prefix match on email and name)",
         "tags": [
           "portal-users"
         ]
@@ -15601,7 +16170,7 @@
             "description": "Error"
           }
         },
-        "summary": "Ensure a portal identity exists for (client, email) and deliver a set-password invite",
+        "summary": "Ensure a portal identity exists for (client, email), grant a portal app, and deliver a set-password invite",
         "tags": [
           "portal-users"
         ]
@@ -15652,7 +16221,7 @@
             "description": "Error"
           }
         },
-        "summary": "Delete a portal identity (offboarding)",
+        "summary": "Delete a portal identity (offboarding from every portal of the client)",
         "tags": [
           "portal-users"
         ]
@@ -15704,6 +16273,116 @@
           }
         },
         "summary": "Reactivate a suspended portal identity",
+        "tags": [
+          "portal-users"
+        ]
+      }
+    },
+    "/api/portal-users/{id}/apps": {
+      "post": {
+        "operationId": "grantPortalUserApp",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalUserAppGrantBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChangeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Grant a portal identity access to one of the client's portal apps",
+        "tags": [
+          "portal-users"
+        ]
+      }
+    },
+    "/api/portal-users/{id}/apps/{portalAppCode}": {
+      "delete": {
+        "operationId": "revokePortalUserApp",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "portalAppCode",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Tenant client that owns the portal identity and app",
+            "explode": false,
+            "in": "query",
+            "name": "clientId",
+            "schema": {
+              "description": "Tenant client that owns the portal identity and app",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChangeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Revoke a portal identity's access to one portal app (the identity stays)",
         "tags": [
           "portal-users"
         ]

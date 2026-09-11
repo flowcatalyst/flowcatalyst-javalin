@@ -4,6 +4,10 @@ import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalApp;
+import io.flowcatalyst.platform.portalapp.PortalAppCode;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
+import io.flowcatalyst.platform.portalidentity.PortalAppGrant;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
@@ -53,6 +57,7 @@ class PortalIdentityOperationsTest {
     private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
     private static final PortalIdentityRepository repo = new PortalIdentityRepository(DS);
     private static final ClientRepository clientRepo = new ClientRepository(DS);
+    private static final PortalAppRepository portalAppRepo = new PortalAppRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
@@ -74,6 +79,15 @@ class PortalIdentityOperationsTest {
             return null;
         });
         return c.id();
+    }
+
+    private static PortalApp testApp(String clientId, String tag) {
+        PortalApp a = PortalApp.create(clientId, PortalAppCode.parse(tag + "-" + RUN), "App " + tag, null);
+        uow.inTransaction(tx -> {
+            portalAppRepo.persist(a, tx.dbTx());
+            return null;
+        });
+        return a;
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {
@@ -110,7 +124,7 @@ class PortalIdentityOperationsTest {
     void ensureOnANewRowCreatesActiveWithNoPasswordAndWritesTheEventAndAudit() {
         String clientId = testClient("ensure-new");
         String email = "  Ensure.New@Example.COM  ";
-        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand(clientId, email, "  ", null));
+        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand(clientId, email, "  ", null, null));
 
         assertThat(ev.identityId()).startsWith("ptu_");
         assertThat(ev.created()).isTrue();
@@ -151,8 +165,8 @@ class PortalIdentityOperationsTest {
     @Test
     void ensureWithJitSourceIsRecordedAsJit() {
         String clientId = testClient("ensure-jit");
-        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo),
-                new EnsureCommand(clientId, "jit-" + RUN + "@example.com", null, "JIT"));
+        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "jit-" + RUN + "@example.com", null, "JIT", null));
         assertThat(ev.identitySource()).isEqualTo("JIT");
         assertThat(repo.findById(ev.identityId()).orElseThrow().source()).isEqualTo(PortalIdentitySource.JIT);
     }
@@ -161,19 +175,19 @@ class PortalIdentityOperationsTest {
     void ensureOnAnExistingRowReactivatesAndOverridesNameOnlyWhenNonBlank() {
         String clientId = testClient("ensure-re");
         String email = "reensure-" + RUN + "@example.com";
-        var first = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand(clientId, email, "First", "INVITE"));
+        var first = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand(clientId, email, "First", "INVITE", null));
         // Disable it, as an admin would, before the person re-registers / is re-invited.
         runAsAnchor(SetPortalIdentityStatus.of(repo), new SetStatusCommand(first.identityId(), clientId, null, "DISABLED"));
         assertThat(repo.findById(first.identityId()).orElseThrow().status()).isEqualTo(PortalIdentityStatus.DISABLED);
 
-        var reEnsuredBlank = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand(clientId, email, "  ", "INVITE"));
+        var reEnsuredBlank = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand(clientId, email, "  ", "INVITE", null));
         assertThat(reEnsuredBlank.identityId()).as("same row, not a new one").isEqualTo(first.identityId());
         assertThat(reEnsuredBlank.created()).isFalse();
         PortalIdentity afterBlank = repo.findById(first.identityId()).orElseThrow();
         assertThat(afterBlank.status()).as("re-ensure reactivates").isEqualTo(PortalIdentityStatus.ACTIVE);
         assertThat(afterBlank.name()).as("blank candidate name keeps the existing name").isEqualTo("First");
 
-        runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand(clientId, email, "Second", "INVITE"));
+        runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand(clientId, email, "Second", "INVITE", null));
         assertThat(repo.findById(first.identityId()).orElseThrow().name()).isEqualTo("Second");
 
         assertThat(eventsFor(first.identityId(), PortalIdentityEvents.ENSURED)).hasSize(3);
@@ -181,16 +195,110 @@ class PortalIdentityOperationsTest {
 
     @Test
     void ensureRejectsMissingOrMalformedFieldsAndAnUnknownClient() {
-        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand("", "a@b.com", null, null)),
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand("", "a@b.com", null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand("clt_x", "", null, null)),
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand("clt_x", "", null, null, null)),
                 UseCaseError.Validation.class, "EMAIL_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand("clt_x", "@nolocalpart.com", null, null)),
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand("clt_x", "@nolocalpart.com", null, null, null)),
                 UseCaseError.Validation.class, "EMAIL_INVALID");
-        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand("clt_x", "trailing@", null, null)),
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand("clt_x", "trailing@", null, null, null)),
                 UseCaseError.Validation.class, "EMAIL_INVALID");
-        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo), new EnsureCommand("clt_doesnotexist1", "a@b.com", null, null)),
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo), new EnsureCommand("clt_doesnotexist1", "a@b.com", null, null, null)),
                 UseCaseError.NotFound.class, "Client_NOT_FOUND");
+    }
+
+    // ── Ensure with a portal app (spec `portal-apps.md` §3.1) ────────────────
+
+    private static Result<Record> grantsFor(String identityId) {
+        return DB.fetch("SELECT identity_id, portal_app_id, source FROM portal_identity_apps WHERE identity_id = ?", identityId);
+    }
+
+    @Test
+    void ensureWithAnAppGrantsItAndTheEventCarriesAppIdAndCode() {
+        String clientId = testClient("ensure-app");
+        PortalApp app = testApp(clientId, "ensure-app");
+        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "ensure-app-" + RUN + "@example.com", null, "INVITE", app.id()));
+
+        var grants = grantsFor(ev.identityId());
+        assertThat(grants).hasSize(1);
+        assertThat(grants.getFirst().get("portal_app_id")).isEqualTo(app.id());
+        assertThat(grants.getFirst().get("source")).isEqualTo("INVITE");
+
+        var events = eventsFor(ev.identityId(), PortalIdentityEvents.ENSURED);
+        var data = json(events.getFirst().get("data", String.class));
+        assertThat(data.get("portalAppId").asText()).isEqualTo(app.id());
+        assertThat(data.get("portalAppCode").asText()).isEqualTo(app.code());
+    }
+
+    @Test
+    void ensureWithJitSourceAndAnAppGrantsItWithJitSource() {
+        String clientId = testClient("ensure-app-jit");
+        PortalApp app = testApp(clientId, "ensure-app-jit");
+        var ev = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "ensure-app-jit-" + RUN + "@example.com", null, "JIT", app.id()));
+
+        var grants = grantsFor(ev.identityId());
+        assertThat(grants).hasSize(1);
+        assertThat(grants.getFirst().get("source")).isEqualTo("JIT");
+    }
+
+    /// Mutant: the client-ownership check on `portalAppId` is dropped (any
+    /// app found by id is accepted regardless of `clientId`). Asserts BOTH
+    /// the 404 AND that no identity row was created — a mutant that throws
+    /// for a different reason but still creates the row would slip past an
+    /// assertion that only checks the exception.
+    @Test
+    void ensureWithAnotherClientsAppIsNotFoundAndCreatesNoIdentity() {
+        String owner = testClient("ensure-app-owner");
+        String intruder = testClient("ensure-app-intruder");
+        PortalApp app = testApp(owner, "ensure-app-cross");
+        String email = "ensure-app-cross-" + RUN + "@example.com";
+
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                        new EnsureCommand(intruder, email, null, "INVITE", app.id())),
+                UseCaseError.NotFound.class, "PortalApp_NOT_FOUND");
+
+        assertThat(repo.findByClientAndEmail(intruder, email)).as("no identity row created").isEmpty();
+    }
+
+    @Test
+    void ensureWithAnInactiveAppIsRejectedAndCreatesNoIdentity() {
+        String clientId = testClient("ensure-app-inactive");
+        PortalApp app = testApp(clientId, "ensure-app-inactive").update(null, null, false);
+        uow.inTransaction(tx -> {
+            portalAppRepo.persist(app, tx.dbTx());
+            return null;
+        });
+        String email = "ensure-app-inactive-" + RUN + "@example.com";
+
+        assertUseCaseError(() -> runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                        new EnsureCommand(clientId, email, null, "INVITE", app.id())),
+                UseCaseError.Validation.class, "PORTAL_APP_INACTIVE");
+        assertThat(repo.findByClientAndEmail(clientId, email)).as("no identity row created").isEmpty();
+    }
+
+    /// Mutant: `EnsurePortalIdentity` never calls `identity.grant(...)`.
+    /// `ensureWithAnAppGrantsItAndTheEventCarriesAppIdAndCode` already kills
+    /// the single-grant case (an empty `grantsFor` would fail its
+    /// `hasSize(1)`); this pins the second grant is ADDED rather than
+    /// replacing the first — a mutant that resets `apps` to a
+    /// single-element list before granting would still pass a test that
+    /// only checked the newest app.
+    @Test
+    void ensuringAnExistingIdentityWithASecondAppKeepsTheFirstGrant() {
+        String clientId = testClient("ensure-app-second");
+        PortalApp appA = testApp(clientId, "ensure-app-second-a");
+        PortalApp appB = testApp(clientId, "ensure-app-second-b");
+        String email = "ensure-app-second-" + RUN + "@example.com";
+
+        var first = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, email, null, "INVITE", appA.id()));
+        runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, email, null, "INVITE", appB.id()));
+
+        assertThat(repo.findById(first.identityId()).orElseThrow().apps())
+                .extracting(PortalAppGrant::appId).containsExactlyInAnyOrder(appA.id(), appB.id());
     }
 
     // ── SetStatus ──────────────────────────────────────────────────────────
@@ -198,8 +306,8 @@ class PortalIdentityOperationsTest {
     @Test
     void setStatusActivatesAndDeactivatesEmittingTheEvent() {
         String clientId = testClient("status");
-        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo),
-                new EnsureCommand(clientId, "status-" + RUN + "@example.com", null, "INVITE"));
+        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "status-" + RUN + "@example.com", null, "INVITE", null));
 
         var deactivated = runAsAnchor(SetPortalIdentityStatus.of(repo),
                 new SetStatusCommand(created.identityId(), clientId, null, "DISABLED"));
@@ -221,8 +329,8 @@ class PortalIdentityOperationsTest {
     void setStatusTreatsAClientIdMismatchAsNotFoundAndChangesNothing() {
         String owner = testClient("cross-owner");
         String intruder = testClient("cross-intruder");
-        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo),
-                new EnsureCommand(owner, "cross-" + RUN + "@example.com", null, "INVITE"));
+        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(owner, "cross-" + RUN + "@example.com", null, "INVITE", null));
         assertThat(repo.findById(created.identityId()).orElseThrow().status()).isEqualTo(PortalIdentityStatus.ACTIVE);
 
         assertUseCaseError(() -> runAsAnchor(SetPortalIdentityStatus.of(repo),
@@ -249,8 +357,8 @@ class PortalIdentityOperationsTest {
     @Test
     void deleteRemovesTheRowAndWritesTheEvent() {
         String clientId = testClient("delete");
-        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo),
-                new EnsureCommand(clientId, "delete-" + RUN + "@example.com", null, "INVITE"));
+        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "delete-" + RUN + "@example.com", null, "INVITE", null));
 
         PortalIdentityDeleted ev = runAsAnchor(DeletePortalIdentity.of(repo), new DeleteCommand(clientId, created.identityId()));
         assertThat(ev.identityId()).isEqualTo(created.identityId());
@@ -263,8 +371,8 @@ class PortalIdentityOperationsTest {
     void deleteTreatsAClientIdMismatchAsNotFoundAndKeepsTheRow() {
         String owner = testClient("del-cross-owner");
         String intruder = testClient("del-cross-intruder");
-        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo),
-                new EnsureCommand(owner, "delcross-" + RUN + "@example.com", null, "INVITE"));
+        var created = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(owner, "delcross-" + RUN + "@example.com", null, "INVITE", null));
 
         assertUseCaseError(() -> runAsAnchor(DeletePortalIdentity.of(repo), new DeleteCommand(intruder, created.identityId())),
                 UseCaseError.NotFound.class, "PortalIdentity_NOT_FOUND");

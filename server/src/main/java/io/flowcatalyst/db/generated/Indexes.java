@@ -62,6 +62,7 @@ import io.flowcatalyst.db.generated.tables.OauthIdpRoleMappings;
 import io.flowcatalyst.db.generated.tables.OauthOidcLoginStates;
 import io.flowcatalyst.db.generated.tables.OauthOidcPayloads;
 import io.flowcatalyst.db.generated.tables.PortalIdentities;
+import io.flowcatalyst.db.generated.tables.PortalIdentityApps;
 import io.flowcatalyst.db.generated.tables.TntAnchorDomains;
 import io.flowcatalyst.db.generated.tables.TntClientAuthConfigs;
 import io.flowcatalyst.db.generated.tables.TntClients;
@@ -246,7 +247,9 @@ public class Indexes {
     public static final Index IDX_OAUTH_IDP_ALLOWED_ROLES_IDP = Internal.createIndex(DSL.name("idx_oauth_idp_allowed_roles_idp"), OauthIdentityProviderAllowedRoles.OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES, new OrderField[] { OauthIdentityProviderAllowedRoles.OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES.IDENTITY_PROVIDER_ID }, false);
     public static final Index IDX_OAUTH_IDP_ROLE_MAPPINGS_IDP_ROLE_NAME = Internal.createIndex(DSL.name("idx_oauth_idp_role_mappings_idp_role_name"), OauthIdpRoleMappings.OAUTH_IDP_ROLE_MAPPINGS, new OrderField[] { OauthIdpRoleMappings.OAUTH_IDP_ROLE_MAPPINGS.IDP_ROLE_NAME }, true);
     public static final Index IDX_OAUTH_OIDC_LOGIN_STATES_EXPIRES = Internal.createIndex(DSL.name("idx_oauth_oidc_login_states_expires"), OauthOidcLoginStates.OAUTH_OIDC_LOGIN_STATES, new OrderField[] { OauthOidcLoginStates.OAUTH_OIDC_LOGIN_STATES.EXPIRES_AT }, false);
+    public static final Index IDX_PORTAL_IDENTITIES_CLIENT_EMAIL_PREFIX = Internal.createIndex(DSL.name("idx_portal_identities_client_email_prefix"), PortalIdentities.PORTAL_IDENTITIES, new OrderField[] { PortalIdentities.PORTAL_IDENTITIES.CLIENT_ID, PortalIdentities.PORTAL_IDENTITIES.EMAIL }, false);
     public static final Index IDX_PORTAL_IDENTITIES_EMAIL = Internal.createIndex(DSL.name("idx_portal_identities_email"), PortalIdentities.PORTAL_IDENTITIES, new OrderField[] { PortalIdentities.PORTAL_IDENTITIES.EMAIL }, false);
+    public static final Index IDX_PORTAL_IDENTITY_APPS_APP = Internal.createIndex(DSL.name("idx_portal_identity_apps_app"), PortalIdentityApps.PORTAL_IDENTITY_APPS, new OrderField[] { PortalIdentityApps.PORTAL_IDENTITY_APPS.PORTAL_APP_ID }, false);
     public static final Index IDX_TNT_CLIENTS_IDENTIFIER = Internal.createIndex(DSL.name("idx_tnt_clients_identifier"), TntClients.TNT_CLIENTS, new OrderField[] { TntClients.TNT_CLIENTS.IDENTIFIER }, false);
     public static final Index IDX_TNT_CLIENTS_STATUS = Internal.createIndex(DSL.name("idx_tnt_clients_status"), TntClients.TNT_CLIENTS, new OrderField[] { TntClients.TNT_CLIENTS.STATUS }, false);
     public static final Index IDX_TNT_EDM_2FA_METHODS_MAPPING = Internal.createIndex(DSL.name("idx_tnt_edm_2fa_methods_mapping"), TntEmailDomainMapping_2faMethods.TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS, new OrderField[] { TntEmailDomainMapping_2faMethods.TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS.EMAIL_DOMAIN_MAPPING_ID }, false);

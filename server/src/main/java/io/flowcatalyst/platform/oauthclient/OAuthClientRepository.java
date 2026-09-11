@@ -168,6 +168,7 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
         row.put(T.SERVICE_ACCOUNT_PRINCIPAL_ID, c.principalId());
         row.put(T.ACTIVE, c.active());
         row.put(T.PORTAL_CLIENT_ID, c.portalClientId());
+        row.put(T.PORTAL_APP_ID, c.portalAppId());
         row.put(T.API_ACCESS, c.apiAccess());
         row.put(T.UPDATED_AT, now);
         txDsl.insertInto(T)
@@ -313,6 +314,7 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
                 Boolean.TRUE.equals(row.getActive()),
                 row.getServiceAccountPrincipalId(),
                 row.getPortalClientId(),
+                row.getPortalAppId(),
                 Boolean.TRUE.equals(row.getApiAccess()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());

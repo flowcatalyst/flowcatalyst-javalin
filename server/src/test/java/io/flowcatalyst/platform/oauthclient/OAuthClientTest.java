@@ -101,6 +101,30 @@ class OAuthClientTest {
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
     }
 
+    /// `portal-apps.md` §1, Part A J4: `portalAppId` has no wire setter yet
+    /// (unit B's job) — a linked client is built directly, exactly as an
+    /// aggregate with an app link would look once that setter lands. Mutant:
+    /// `withPortalAndApiAccess` drops the `portalAppId != null` check —
+    /// killed by this test throwing where it otherwise would silently clear
+    /// `portalClientId` and orphan the app link.
+    @Test
+    void updateEnforcesThePortalAppRequiresPortalClientInvariant() {
+        var base = OAuthClient.create("cli_1", "X", ClientType.PUBLIC).withPortalAndApiAccess("cli_owner", false);
+        var linked = new OAuthClient(base.id(), base.clientId(), base.clientName(), base.clientType(),
+                base.secretRef(), base.previousSecretRef(), base.previousSecretExpiresAt(), base.previousSecretLastUsedAt(),
+                base.redirectUris(), base.postLogoutRedirectUris(), base.grantTypes(), base.defaultScopes(),
+                base.allowedOrigins(), base.applicationIds(), base.pkceRequired(), base.active(), base.principalId(),
+                base.portalClientId(), "pta_1", base.apiAccess(), base.createdAt(), base.updatedAt());
+
+        assertUseCaseError(() -> linked.update(new OAuthClient.Changes(
+                        null, null, null, null, null, null, null, null, "", null)),
+                UseCaseError.Validation.class, "PORTAL_APP_REQUIRES_PORTAL_CLIENT");
+
+        // Clearing portalClientId when no app is linked still works (existing behaviour).
+        assertThat(base.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, "", null)).isPortal())
+                .isFalse();
+    }
+
     @Test
     void updateAppliesOnlyNonNullFieldsAndClearsPortalOnBlank() {
         var c = OAuthClient.create("cli_1", "Before", ClientType.PUBLIC)
@@ -296,8 +320,8 @@ class OAuthClientTest {
         var rotated = new OAuthClient(c.id(), c.clientId(), c.clientName(), c.clientType(),
                 enc.hashSecretRef("new-secret"), enc.encryptSecretRef("old-secret"), t0.plusSeconds(3600), null,
                 c.redirectUris(), c.postLogoutRedirectUris(), c.grantTypes(), c.defaultScopes(), c.allowedOrigins(),
-                c.applicationIds(), c.pkceRequired(), c.active(), c.principalId(), c.portalClientId(), c.apiAccess(),
-                c.createdAt(), c.updatedAt());
+                c.applicationIds(), c.pkceRequired(), c.active(), c.principalId(), c.portalClientId(), c.portalAppId(),
+                c.apiAccess(), c.createdAt(), c.updatedAt());
 
         BiPredicate<String, String> matches = (ref, provided) ->
                 enc.verifySecret(ref, provided) instanceof Encryption.SecretVerification.Matched;

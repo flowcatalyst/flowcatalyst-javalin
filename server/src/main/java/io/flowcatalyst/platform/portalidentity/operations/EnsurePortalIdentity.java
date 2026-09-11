@@ -1,6 +1,9 @@
 package io.flowcatalyst.platform.portalidentity.operations;
 
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalApp;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
+import io.flowcatalyst.platform.portalidentity.PortalAppGrantSource;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
@@ -12,16 +15,18 @@ import io.flowcatalyst.sdk.usecase.op.Plan;
 import java.util.Optional;
 
 /// Creates or re-activates a portal identity for (clientId, email) (spec
-/// `auth-identity.md` §5.7, §11.8). `Authorize: Public` (the spec's own
-/// words) — this operation is reached from several differently-gated entry
-/// points (the admin API, and later the portal-SSO callback sink running as
-/// the system actor), each of which gates itself before calling in.
+/// `auth-identity.md` §5.7, §11.8; `portal-apps.md` §3.1). `Authorize:
+/// Public` (the spec's own words) — this operation is reached from several
+/// differently-gated entry points (the admin API, and the portal-SSO
+/// callback sink running as the system actor), each of which gates itself
+/// before calling in.
 public final class EnsurePortalIdentity {
 
     private EnsurePortalIdentity() {
     }
 
-    public static Operation<EnsureCommand, PortalIdentityEnsured> of(PortalIdentityRepository repo, ClientRepository clients) {
+    public static Operation<EnsureCommand, PortalIdentityEnsured> of(
+            PortalIdentityRepository repo, ClientRepository clients, PortalAppRepository apps) {
         return Operation.<EnsureCommand, PortalIdentityEnsured>named("EnsurePortalIdentity")
                 .validate(cmd -> {
                     UseCaseException.requireNonBlank(cmd.clientId(), "CLIENT_ID_REQUIRED", "clientId is required");
@@ -35,6 +40,17 @@ public final class EnsurePortalIdentity {
                     clients.findById(cmd.clientId())
                             .orElseThrow(() -> UseCaseException.resourceNotFound("Client", cmd.clientId()));
 
+                    PortalApp app = null;
+                    if (cmd.portalAppId() != null && !cmd.portalAppId().isBlank()) {
+                        app = apps.findById(cmd.portalAppId())
+                                .filter(a -> a.clientId().equals(cmd.clientId()))
+                                .orElseThrow(() -> UseCaseException.resourceNotFound("PortalApp", cmd.portalAppId()));
+                        if (!app.active()) {
+                            throw UseCaseException.validation("PORTAL_APP_INACTIVE",
+                                    "portal app '" + app.code() + "' is inactive");
+                        }
+                    }
+
                     String email = PortalIdentity.normalizeEmail(cmd.email());
                     PortalIdentitySource source = "JIT".equals(cmd.source()) ? PortalIdentitySource.JIT : PortalIdentitySource.INVITE;
 
@@ -44,7 +60,13 @@ public final class EnsurePortalIdentity {
                             .map(pi -> pi.ensureActive(cmd.name()))
                             .orElseGet(() -> PortalIdentity.create(cmd.clientId(), email, cmd.name(), source));
 
-                    return Plan.save(identity, repo, PortalIdentityEnsured.of(ec, identity, created));
+                    if (app != null) {
+                        PortalAppGrantSource grantSource = source == PortalIdentitySource.JIT
+                                ? PortalAppGrantSource.JIT : PortalAppGrantSource.INVITE;
+                        identity = identity.grant(app.id(), grantSource);
+                    }
+
+                    return Plan.save(identity, repo, PortalIdentityEnsured.of(ec, identity, created, app));
                 });
     }
 

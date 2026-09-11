@@ -160,6 +160,34 @@ public class PortalIdentitiesRecord extends UpdatableRecordImpl<PortalIdentities
         return (OffsetDateTime) get(9);
     }
 
+    /**
+     * Setter for <code>public.portal_identities.invited_at</code>.
+     */
+    public void setInvitedAt(OffsetDateTime value) {
+        set(10, value);
+    }
+
+    /**
+     * Getter for <code>public.portal_identities.invited_at</code>.
+     */
+    public OffsetDateTime getInvitedAt() {
+        return (OffsetDateTime) get(10);
+    }
+
+    /**
+     * Setter for <code>public.portal_identities.invite_expires_at</code>.
+     */
+    public void setInviteExpiresAt(OffsetDateTime value) {
+        set(11, value);
+    }
+
+    /**
+     * Getter for <code>public.portal_identities.invite_expires_at</code>.
+     */
+    public OffsetDateTime getInviteExpiresAt() {
+        return (OffsetDateTime) get(11);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -183,7 +211,7 @@ public class PortalIdentitiesRecord extends UpdatableRecordImpl<PortalIdentities
     /**
      * Create a detached, initialised PortalIdentitiesRecord
      */
-    public PortalIdentitiesRecord(String id, String clientId, String email, String name, String passwordHash, String status, String source, OffsetDateTime lastLoginAt, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+    public PortalIdentitiesRecord(String id, String clientId, String email, String name, String passwordHash, String status, String source, OffsetDateTime lastLoginAt, OffsetDateTime createdAt, OffsetDateTime updatedAt, OffsetDateTime invitedAt, OffsetDateTime inviteExpiresAt) {
         super(PortalIdentities.PORTAL_IDENTITIES);
 
         setId(id);
@@ -196,6 +224,8 @@ public class PortalIdentitiesRecord extends UpdatableRecordImpl<PortalIdentities
         setLastLoginAt(lastLoginAt);
         setCreatedAt(createdAt);
         setUpdatedAt(updatedAt);
+        setInvitedAt(invitedAt);
+        setInviteExpiresAt(inviteExpiresAt);
         resetTouchedOnNotNull();
     }
 }

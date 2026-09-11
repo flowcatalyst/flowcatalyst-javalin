@@ -148,6 +148,11 @@ public class OauthClients extends TableImpl<OauthClientsRecord> {
      */
     public final TableField<OauthClientsRecord, OffsetDateTime> PREVIOUS_SECRET_LAST_USED_AT = createField(DSL.name("previous_secret_last_used_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
 
+    /**
+     * The column <code>public.oauth_clients.portal_app_id</code>.
+     */
+    public final TableField<OauthClientsRecord, String> PORTAL_APP_ID = createField(DSL.name("portal_app_id"), SQLDataType.VARCHAR(17), this, "");
+
     private OauthClients(Name alias, Table<OauthClientsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }

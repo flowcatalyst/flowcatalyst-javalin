@@ -64,7 +64,128 @@ class PortalIdentityTest {
     /// the record directly, since `PortalIdentityTest` is pure-entity and
     /// must not depend on the repository.
     private static PortalIdentity withHash(PortalIdentity p, String hash) {
-        return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), hash, p.status(), p.source(),
-                p.lastLoginAt(), p.createdAt(), Instant.now());
+        return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), hash, p.status(), p.source(), p.apps(),
+                p.lastLoginAt(), p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
+    }
+
+    /// A test-only helper poking `invitedAt` / `inviteExpiresAt` directly —
+    /// the aggregate has no transition for them (`portal-apps.md` §2.2: the
+    /// repository writes them outside the upsert, via `markInvited`).
+    private static PortalIdentity withInvite(PortalIdentity p, Instant invitedAt, Instant expiresAtOrNull) {
+        return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), p.passwordHash(), p.status(), p.source(),
+                p.apps(), p.lastLoginAt(), invitedAt, expiresAtOrNull, p.createdAt(), Instant.now());
+    }
+
+    private static PortalIdentity withLastLogin(PortalIdentity p, Instant at) {
+        return new PortalIdentity(p.id(), p.clientId(), p.email(), p.name(), p.passwordHash(), p.status(), p.source(),
+                p.apps(), at, p.invitedAt(), p.inviteExpiresAt(), p.createdAt(), Instant.now());
+    }
+
+    // ── Derived state (spec `portal-apps.md` §2.3, §9.1) ──────────────────────
+
+    private static final Instant NOW = Instant.parse("2026-06-15T12:00:00Z");
+
+    @Test
+    void liveInviteIsInvited() {
+        var p = withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE),
+                NOW.minusSeconds(3600), NOW.plusSeconds(3600));
+        assertThat(p.state(NOW)).isEqualTo(PortalUserState.INVITED);
+    }
+
+    @Test
+    void lapsedInviteIsInviteExpired() {
+        var p = withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE),
+                NOW.minusSeconds(7200), NOW.minusSeconds(3600));
+        assertThat(p.state(NOW)).isEqualTo(PortalUserState.INVITE_EXPIRED);
+    }
+
+    @Test
+    void expiryExactlyAtNowCountsAsExpired() {
+        var p = withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE),
+                NOW.minusSeconds(3600), NOW);
+        assertThat(p.state(NOW)).as("now >= inviteExpiresAt ⇒ expired, not the boundary held open").isEqualTo(PortalUserState.INVITE_EXPIRED);
+    }
+
+    @Test
+    void passwordSetEvenAfterTheLinkExpiredIsActive() {
+        var p = withHash(withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE),
+                NOW.minusSeconds(7200), NOW.minusSeconds(3600)), "a-hash");
+        assertThat(p.state(NOW)).as("a password beats a lapsed invite").isEqualTo(PortalUserState.ACTIVE);
+    }
+
+    @Test
+    void ssoInviteWithNoExpiryNeverExpires() {
+        var p = withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE),
+                NOW.minusSeconds(999_999_999), null);
+        assertThat(p.state(NOW)).as("invitedAt set, inviteExpiresAt null ⇒ no expiry").isEqualTo(PortalUserState.INVITED);
+    }
+
+    @Test
+    void firstSsoSignInIsActive() {
+        var p = withLastLogin(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE), NOW.minusSeconds(1));
+        assertThat(p.state(NOW)).isEqualTo(PortalUserState.ACTIVE);
+    }
+
+    @Test
+    void jitSourceIsActiveEvenWithNoPasswordOrLogin() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.JIT);
+        assertThat(p.state(NOW)).isEqualTo(PortalUserState.ACTIVE);
+    }
+
+    @Test
+    void disabledBeatsEverything() {
+        var p = withHash(withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.JIT),
+                NOW.minusSeconds(3600), NOW.plusSeconds(3600)), "a-hash").deactivate();
+        assertThat(p.state(NOW)).as("DISABLED overrides an active password, JIT source and a live invite")
+                .isEqualTo(PortalUserState.SUSPENDED);
+    }
+
+    @Test
+    void neverInvitedAtAllIsInvited() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE);
+        assertThat(p.state(NOW)).isEqualTo(PortalUserState.INVITED);
+    }
+
+    /// Rule 2 (a password/login/JIT ⇒ ACTIVE) must be checked before rule 3
+    /// (lapsed invite ⇒ INVITE_EXPIRED) — mutant: swap them. A JIT identity
+    /// with a lapsed invite would then read INVITE_EXPIRED instead of ACTIVE.
+    @Test
+    void rule2BeatsRule3WhenBothWouldMatch() {
+        var p = withInvite(PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.JIT),
+                NOW.minusSeconds(7200), NOW.minusSeconds(3600));
+        assertThat(p.state(NOW)).as("JIT (rule 2) must win over the lapsed invite (rule 3)").isEqualTo(PortalUserState.ACTIVE);
+    }
+
+    // ── Per-app grants (spec `portal-apps.md` §2.2) ────────────────────────────
+
+    @Test
+    void grantIsIdempotentAndOrdersByGrantedAt() throws InterruptedException {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE);
+        assertThat(p.hasApp("pta_1")).isFalse();
+
+        var granted = p.grant("pta_1", PortalAppGrantSource.INVITE);
+        assertThat(granted.hasApp("pta_1")).isTrue();
+        assertThat(granted.apps()).extracting(PortalAppGrant::appId).containsExactly("pta_1");
+
+        Thread.sleep(5);
+        var grantedTwice = granted.grant("pta_1", PortalAppGrantSource.ADMIN);
+        assertThat(grantedTwice).as("idempotent: same instance, second call ignored entirely").isSameAs(granted);
+
+        Thread.sleep(5);
+        var second = grantedTwice.grant("pta_2", PortalAppGrantSource.JIT);
+        assertThat(second.apps()).extracting(PortalAppGrant::appId).containsExactly("pta_1", "pta_2");
+    }
+
+    @Test
+    void revokeIsIdempotent() {
+        var p = PortalIdentity.create("clt_1", "a@x.com", null, PortalIdentitySource.INVITE)
+                .grant("pta_1", PortalAppGrantSource.INVITE);
+        var revoked = p.revoke("pta_1");
+        assertThat(revoked.hasApp("pta_1")).isFalse();
+
+        var revokedAgain = revoked.revoke("pta_1");
+        assertThat(revokedAgain).as("idempotent: no-op on an app that is not held").isSameAs(revoked);
+
+        assertThat(p.revoke("pta_doesnotexist")).as("revoking a never-held app is a no-op").isSameAs(p);
     }
 }

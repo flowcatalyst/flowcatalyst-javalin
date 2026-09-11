@@ -57,6 +57,8 @@ class PortalUserApiTest {
     private static final IdentityProviderRepository identityProviderRepo = new IdentityProviderRepository(TestPg.dataSource());
     private static final EmailDomainMappingRepository emailDomainMappingRepo = new EmailDomainMappingRepository(TestPg.dataSource());
     private static final PortalIdentityRepository portalIdentityRepo = new PortalIdentityRepository(TestPg.dataSource());
+    private static final io.flowcatalyst.platform.portalapp.PortalAppRepository portalAppRepo =
+            new io.flowcatalyst.platform.portalapp.PortalAppRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     /// Records every call instead of just logging, so a test can assert
@@ -104,7 +106,7 @@ class PortalUserApiTest {
             HttpError.install(routes);
             routes.before("/api/*", auth);
             PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
-                    identityProviderRepo, uow, EMAILER));
+                    identityProviderRepo, portalAppRepo, uow, EMAILER));
         });
     }
 

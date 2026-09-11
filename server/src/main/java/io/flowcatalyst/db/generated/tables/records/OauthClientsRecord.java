@@ -248,6 +248,20 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
         return (OffsetDateTime) get(15);
     }
 
+    /**
+     * Setter for <code>public.oauth_clients.portal_app_id</code>.
+     */
+    public void setPortalAppId(String value) {
+        set(16, value);
+    }
+
+    /**
+     * Getter for <code>public.oauth_clients.portal_app_id</code>.
+     */
+    public String getPortalAppId() {
+        return (String) get(16);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -271,7 +285,7 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
     /**
      * Create a detached, initialised OauthClientsRecord
      */
-    public OauthClientsRecord(String id, String clientId, String clientName, String clientType, String clientSecretRef, String defaultScopes, Boolean pkceRequired, String serviceAccountPrincipalId, Boolean active, OffsetDateTime createdAt, OffsetDateTime updatedAt, String portalClientId, Boolean apiAccess, String previousSecretRef, OffsetDateTime previousSecretExpiresAt, OffsetDateTime previousSecretLastUsedAt) {
+    public OauthClientsRecord(String id, String clientId, String clientName, String clientType, String clientSecretRef, String defaultScopes, Boolean pkceRequired, String serviceAccountPrincipalId, Boolean active, OffsetDateTime createdAt, OffsetDateTime updatedAt, String portalClientId, Boolean apiAccess, String previousSecretRef, OffsetDateTime previousSecretExpiresAt, OffsetDateTime previousSecretLastUsedAt, String portalAppId) {
         super(OauthClients.OAUTH_CLIENTS);
 
         setId(id);
@@ -290,6 +304,7 @@ public class OauthClientsRecord extends UpdatableRecordImpl<OauthClientsRecord> 
         setPreviousSecretRef(previousSecretRef);
         setPreviousSecretExpiresAt(previousSecretExpiresAt);
         setPreviousSecretLastUsedAt(previousSecretLastUsedAt);
+        setPortalAppId(portalAppId);
         resetTouchedOnNotNull();
     }
 }

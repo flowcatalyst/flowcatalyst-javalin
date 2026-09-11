@@ -427,10 +427,11 @@ public final class Platform {
         // are wired against these same repository instances by a later unit.
         var portalEnvReader = env.reader();
         var portalIdentityRepo = new PortalIdentityRepository(pool);
+        var portalAppRepo = new io.flowcatalyst.platform.portalapp.PortalAppRepository(pool);
         var portalAccess = new PortalIdentityAccess(portalIdentityRepo, uow);
         portalPasswordsHolder.set(portalAccess);
         PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
-                identityProviderRepo, uow, new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
+                identityProviderRepo, portalAppRepo, uow, new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
         PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,
                 identityProviderRepo, grantStore, RateLimitStores.build(portalEnvReader, pool),
@@ -477,7 +478,7 @@ public final class Platform {
                 tokenIssuer, new SessionCookie(cookiesSecure),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), env.jwtIssuer(), Clock.systemUTC());
         OidcBridgeApi.register(routes, bridgeState);
-        var portalSso = new PortalSso(new PortalSso.State(portalLoginFlowRepo, portalIdentityRepo, clientRepo, uow, grantStore,
+        var portalSso = new PortalSso(new PortalSso.State(portalLoginFlowRepo, portalIdentityRepo, clientRepo, portalAppRepo, uow, grantStore,
                 oidcClients, loginStateRepo, bridgeState, Clock.systemUTC()));
         sinkHolder.set(portalSso);
         portalSso.register(routes);

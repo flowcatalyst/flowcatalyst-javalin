@@ -12,10 +12,11 @@ import java.util.Optional;
 import java.util.function.BiPredicate;
 
 /// The OAuth-client aggregate root (spec: `docs/spec/auth-core.md` §3.6,
-/// §6.3, §8.5; grace-window ruling A-22, `docs/improvements.md`). A
-/// registered client of the platform's OAuth 2.0 provider. Platform-level —
-/// no client dimension — so every by-id write is `Authorize.publicAccess()`
-/// and the anchor-only gate lives in the handler (spec §6.3).
+/// §6.3, §8.5; grace-window ruling A-22, `docs/improvements.md`;
+/// `docs/spec/portal-apps.md` §1, §2.4, §4.5, Part A J4). A registered
+/// client of the platform's OAuth 2.0 provider. Platform-level — no client
+/// dimension — so every by-id write is `Authorize.publicAccess()` and the
+/// anchor-only gate lives in the handler (spec §6.3).
 ///
 /// Immutable record: each transition returns a copy (or a small nested
 /// result record when the transition has a side result) and throws
@@ -45,6 +46,10 @@ import java.util.function.BiPredicate;
 /// @param active                   `Active` / `Inactive` via activate/deactivate; idempotent, no error either way
 /// @param principalId              the `SERVICE` principal `client_credentials` mints for; `null` until attached
 /// @param portalClientId           non-blank ⇒ portal plane; mutually exclusive with [#apiAccess]
+/// @param portalAppId              non-blank ⇒ this client fronts one named [io.flowcatalyst.platform.portalapp.PortalApp]
+///                                 of `portalClientId` (`null` ⇔ blank); `null` on a portal client = legacy
+///                                 client-wide portal (`portal-apps.md` §2.4). Not yet wire-settable — this
+///                                 unit carries the field and its invariant; unit B adds the DTO/setter.
 /// @param apiAccess                authority-bearing interactive tokens; mutually exclusive with a portal client
 /// @param createdAt                creation time
 /// @param updatedAt                last change
@@ -67,6 +72,7 @@ public record OAuthClient(
         boolean active,
         String principalId,
         String portalClientId,
+        String portalAppId,
         boolean apiAccess,
         Instant createdAt,
         Instant updatedAt) implements HasId {
@@ -82,6 +88,7 @@ public record OAuthClient(
         defaultScopes = defaultScopes == null ? List.of() : List.copyOf(defaultScopes);
         allowedOrigins = allowedOrigins == null ? List.of() : List.copyOf(allowedOrigins);
         applicationIds = applicationIds == null ? List.of() : List.copyOf(applicationIds);
+        portalAppId = portalAppId == null || portalAppId.isBlank() ? null : portalAppId;
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }
@@ -98,7 +105,7 @@ public record OAuthClient(
         return new OAuthClient(EntityType.OAUTH_CLIENT.generate(), clientId, clientName, clientType,
                 null, null, null, null,
                 List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-                true, true, null, null, false, now, now);
+                true, true, null, null, null, false, now, now);
     }
 
     // ── Grant / plane rules ──────────────────────────────────────────────────
@@ -121,14 +128,14 @@ public record OAuthClient(
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, true, principalId, portalClientId,
-                apiAccess, createdAt, Instant.now());
+                portalAppId, apiAccess, createdAt, Instant.now());
     }
 
     public OAuthClient deactivate() {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, false, principalId, portalClientId,
-                apiAccess, createdAt, Instant.now());
+                portalAppId, apiAccess, createdAt, Instant.now());
     }
 
     // ── Secret at rest (A-22, `docs/improvements.md`) ────────────────────────
@@ -141,7 +148,7 @@ public record OAuthClient(
         Objects.requireNonNull(ref, "ref");
         return new OAuthClient(id, clientId, clientName, clientType, ref, null, null, null,
                 redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes, allowedOrigins, applicationIds,
-                pkceRequired, active, principalId, portalClientId, apiAccess, createdAt, Instant.now());
+                pkceRequired, active, principalId, portalClientId, portalAppId, apiAccess, createdAt, Instant.now());
     }
 
     /// Installs `ref` as the current secret and keeps the outgoing one
@@ -164,7 +171,7 @@ public record OAuthClient(
         OAuthClient updated = new OAuthClient(id, clientId, clientName, clientType, ref, secretRef, expires,
                 null, // a fresh overlap starts unused
                 redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes, allowedOrigins, applicationIds,
-                pkceRequired, active, principalId, portalClientId, apiAccess, createdAt, now);
+                pkceRequired, active, principalId, portalClientId, portalAppId, apiAccess, createdAt, now);
         return new RotateResult(updated, expires);
     }
 
@@ -185,7 +192,7 @@ public record OAuthClient(
         }
         OAuthClient updated = new OAuthClient(id, clientId, clientName, clientType, secretRef, null, null, null,
                 redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes, allowedOrigins, applicationIds,
-                pkceRequired, active, principalId, portalClientId, apiAccess, createdAt, Instant.now());
+                pkceRequired, active, principalId, portalClientId, portalAppId, apiAccess, createdAt, Instant.now());
         return new RevokeResult(updated, true);
     }
 
@@ -239,82 +246,91 @@ public record OAuthClient(
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, uris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withPostLogoutRedirectUris(List<String> uris) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, uris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withGrantTypes(List<String> types) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, types,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withDefaultScopes(List<String> scopes) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 scopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withAllowedOrigins(List<String> origins) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, origins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withApplicationIds(List<String> ids) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, ids, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withPrincipalId(String newPrincipalId) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, newPrincipalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withPkceRequired(boolean required) {
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, required, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     public OAuthClient withClientName(String name) {
         return new OAuthClient(id, clientId, name, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
-                apiAccess, createdAt, updatedAt);
+                portalAppId, apiAccess, createdAt, updatedAt);
     }
 
     /// Sets both plane flags together, since they are mutually exclusive: a
     /// portal identity never carries platform authority. `newPortalClientId`
     /// is normalised here — blank clears it, otherwise it is trimmed — the
-    /// single place either flag changes, so the invariant cannot be
-    /// bypassed by setting them one at a time.
+    /// single place either flag changes, so the `PORTAL_API_ACCESS_CONFLICT`
+    /// invariant cannot be bypassed by setting them one at a time. This is
+    /// also the one place `portalClientId` can be cleared, so it is where
+    /// `PORTAL_APP_REQUIRES_PORTAL_CLIENT` is enforced (`portal-apps.md`
+    /// §1, Part A J4): [#portalAppId] is carried through unchanged by every
+    /// transition, so clearing `portalClientId` while an app link is still
+    /// held would otherwise silently orphan it.
     ///
-    /// @throws UseCaseException validation `PORTAL_API_ACCESS_CONFLICT`
+    /// @throws UseCaseException validation `PORTAL_API_ACCESS_CONFLICT` \| `PORTAL_APP_REQUIRES_PORTAL_CLIENT`
     public OAuthClient withPortalAndApiAccess(String newPortalClientId, boolean newApiAccess) {
         String normalised = newPortalClientId == null || newPortalClientId.isBlank() ? null : newPortalClientId.trim();
         if (newApiAccess && normalised != null) {
             throw UseCaseException.validation("PORTAL_API_ACCESS_CONFLICT",
                     "a portal client cannot have apiAccess — portal identities never carry platform authority");
         }
+        if (portalAppId != null && normalised == null) {
+            throw UseCaseException.validation("PORTAL_APP_REQUIRES_PORTAL_CLIENT",
+                    "a portal app can only be linked to a portal client (portalClientId)");
+        }
         return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
                 previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
                 defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, normalised,
-                newApiAccess, createdAt, updatedAt);
+                portalAppId, newApiAccess, createdAt, updatedAt);
     }
 
     // ── Update (CONVENTIONS §2: one update(Changes) transition) ──────────────
@@ -349,7 +365,7 @@ public record OAuthClient(
 
     /// Applies every non-null field of `c` and re-stamps `updatedAt`.
     ///
-    /// @throws UseCaseException validation `PORTAL_API_ACCESS_CONFLICT`
+    /// @throws UseCaseException validation `PORTAL_API_ACCESS_CONFLICT` \| `PORTAL_APP_REQUIRES_PORTAL_CLIENT`
     public OAuthClient update(Changes c) {
         OAuthClient intermediate = new OAuthClient(id, clientId,
                 c.clientName() != null ? c.clientName().trim() : clientName,
@@ -361,7 +377,7 @@ public record OAuthClient(
                 c.allowedOrigins() != null ? c.allowedOrigins() : allowedOrigins,
                 c.applicationIds() != null ? c.applicationIds() : applicationIds,
                 c.pkceRequired() != null ? c.pkceRequired() : pkceRequired,
-                active, principalId, portalClientId, apiAccess, createdAt, Instant.now());
+                active, principalId, portalClientId, portalAppId, apiAccess, createdAt, Instant.now());
         String portalInput = c.portalClientId() != null ? c.portalClientId() : intermediate.portalClientId;
         boolean apiAccessInput = c.apiAccess() != null ? c.apiAccess() : intermediate.apiAccess;
         return intermediate.withPortalAndApiAccess(portalInput, apiAccessInput);

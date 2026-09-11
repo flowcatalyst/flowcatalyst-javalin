@@ -143,3 +143,14 @@ entity's id instead of the `RETURNING` id.
 
 Files touched; the migration/fixture procedure you used; test counts;
 the mutation table; anything in the spec you found ambiguous or wrong.
+
+## 8. Added mid-flight — Ensure §3.1 (so unit C can call it)
+
+`EnsureCommand` gains a trailing `portalAppId`; `EnsurePortalIdentity.of(repo,
+clients, apps)` checks the app exists, belongs to the client
+(`PortalApp_NOT_FOUND`) and is active (`PORTAL_APP_INACTIVE`), then grants it
+with the ensure's source; `PortalIdentityEnsured` carries
+`portalAppId`/`portalAppCode` when an app was given. Call sites pass `null`
+until units A and C wire them. Tests: grant row + event data, JIT source,
+foreign app ⇒ 404 with no identity row, inactive ⇒ 400, a second app keeps
+the first grant; mutants on the ownership check and the grant call.

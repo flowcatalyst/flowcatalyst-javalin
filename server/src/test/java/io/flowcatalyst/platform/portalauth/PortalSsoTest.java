@@ -113,6 +113,8 @@ class PortalSsoTest {
     private static final OAuthClientRepository OAUTH_CLIENTS = new OAuthClientRepository(DS, new ApplicationRepository(DS));
     private static final PortalIdentityRepository IDENTITIES = new PortalIdentityRepository(DS);
     private static final PortalLoginFlowRepository FLOWS = new PortalLoginFlowRepository(DS);
+    private static final io.flowcatalyst.platform.portalapp.PortalAppRepository PORTAL_APPS =
+            new io.flowcatalyst.platform.portalapp.PortalAppRepository(DS);
     private static final GrantStore GRANTS = new GrantStore(DS);
     private static final TokenIssuer TOKEN_ISSUER = new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER));
     private static final JwtVerifier VERIFIER = new JwtVerifier(new JwtVerifier.Config(ISSUER, new JwtVerifier.RsaKeys(KEYS.publicKey())));
@@ -172,7 +174,7 @@ class PortalSsoTest {
         var bridge = new OidcBridgeApi.State(oidcClients, states, PRINCIPALS, MAPPINGS, IDPS, new IdpRoleMappingRepository(DS),
                 new RoleRepository(DS), OAUTH_CLIENTS, UOW, TOKEN_ISSUER, new SessionCookie(false),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), ISSUER, Clock.systemUTC());
-        var sso = new PortalSso(new PortalSso.State(FLOWS, IDENTITIES, new ClientRepository(DS), UOW, GRANTS, oidcClients, states,
+        var sso = new PortalSso(new PortalSso.State(FLOWS, IDENTITIES, new ClientRepository(DS), PORTAL_APPS, UOW, GRANTS, oidcClients, states,
                 bridge, Clock.systemUTC()));
         sinkHolder.set(sso);
         var access = new PortalIdentityAccess(IDENTITIES, UOW);

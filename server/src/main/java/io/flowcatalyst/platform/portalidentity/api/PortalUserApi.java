@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalInviteEmailer;
@@ -48,12 +49,14 @@ public final class PortalUserApi {
     }
 
     public record State(PortalIdentityRepository repo, ClientRepository clients, OAuthClientRepository oauthClients,
-                        IdentityProviderRepository identityProviders, UnitOfWork uow, PortalInviteEmailer emailer) {
+                        IdentityProviderRepository identityProviders, PortalAppRepository portalApps, UnitOfWork uow,
+                        PortalInviteEmailer emailer) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(identityProviders, "identityProviders");
+            Objects.requireNonNull(portalApps, "portalApps");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(emailer, "emailer");
         }
@@ -99,8 +102,9 @@ public final class PortalUserApi {
             target = defaultPortalRedirect(portalRedirectUris);
         }
 
-        var cmd = new EnsureCommand(req.clientId(), req.email(), req.name(), "INVITE");
-        var event = EnsurePortalIdentity.of(s.repo(), s.clients()).run(s.uow(), cmd, Auth.executionContext());
+        // portalAppId wiring is unit B's (spec `portal-apps.md` §4.1 step 1); null for now.
+        var cmd = new EnsureCommand(req.clientId(), req.email(), req.name(), "INVITE", null);
+        var event = EnsurePortalIdentity.of(s.repo(), s.clients(), s.portalApps()).run(s.uow(), cmd, Auth.executionContext());
         PortalIdentity identity = s.repo().findById(event.identityId())
                 .orElseThrow(() -> HttpError.internal("REPO", "portal identity ensured but row not found", null));
 

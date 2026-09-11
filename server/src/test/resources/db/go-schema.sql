@@ -2224,6 +2224,7 @@ CREATE TABLE public.oauth_clients (
     previous_secret_ref text,
     previous_secret_expires_at timestamp with time zone,
     previous_secret_last_used_at timestamp with time zone,
+    portal_app_id character varying(17),
     CONSTRAINT chk_oauth_clients_client_type CHECK (((client_type)::text = ANY ((ARRAY['PUBLIC'::character varying, 'CONFIDENTIAL'::character varying])::text[])))
 );
 
@@ -2369,6 +2370,22 @@ CREATE TABLE public.oauth_oidc_payloads (
 
 
 --
+-- Name: portal_apps; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.portal_apps (
+    id character varying(17) NOT NULL,
+    client_id character varying(17) NOT NULL,
+    code character varying(100) NOT NULL,
+    name character varying(255) NOT NULL,
+    description character varying(1000),
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: portal_identities; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2382,7 +2399,21 @@ CREATE TABLE public.portal_identities (
     source character varying(20) NOT NULL,
     last_login_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    invited_at timestamp with time zone,
+    invite_expires_at timestamp with time zone
+);
+
+
+--
+-- Name: portal_identity_apps; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.portal_identity_apps (
+    identity_id character varying(17) NOT NULL,
+    portal_app_id character varying(17) NOT NULL,
+    source character varying(20) NOT NULL,
+    granted_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -3825,11 +3856,27 @@ ALTER TABLE ONLY public.oauth_oidc_payloads
 
 
 --
+-- Name: portal_apps portal_apps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_apps
+    ADD CONSTRAINT portal_apps_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: portal_identities portal_identities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.portal_identities
     ADD CONSTRAINT portal_identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: portal_identity_apps portal_identity_apps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_identity_apps
+    ADD CONSTRAINT portal_identity_apps_pkey PRIMARY KEY (identity_id, portal_app_id);
 
 
 --
@@ -3942,6 +3989,14 @@ ALTER TABLE ONLY public.tnt_email_domain_mapping_granted_clients
 
 ALTER TABLE ONLY public.tnt_email_domain_mappings
     ADD CONSTRAINT tnt_email_domain_mappings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: portal_apps uq_portal_apps_client_code; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_apps
+    ADD CONSTRAINT uq_portal_apps_client_code UNIQUE (client_id, code);
 
 
 --
@@ -8127,6 +8182,27 @@ ALTER INDEX public.idx_msg_scheduled_job_instances_job ATTACH PARTITION public.m
 
 
 --
+-- Name: idx_portal_identity_apps_app; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identity_apps_app ON public.portal_identity_apps USING btree (portal_app_id);
+
+
+--
+-- Name: idx_portal_identities_client_email_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identities_client_email_prefix ON public.portal_identities USING btree (client_id, email text_pattern_ops);
+
+
+--
+-- Name: idx_portal_identities_client_name_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identities_client_name_prefix ON public.portal_identities USING btree (client_id, lower((name)::text) text_pattern_ops);
+
+
+--
 -- Name: app_application_openapi_specs app_application_openapi_specs_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8252,6 +8328,22 @@ ALTER TABLE ONLY public.oauth_clients
 
 ALTER TABLE ONLY public.webauthn_credentials
     ADD CONSTRAINT webauthn_credentials_principal_id_fkey FOREIGN KEY (principal_id) REFERENCES public.iam_principals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: portal_identity_apps portal_identity_apps_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_identity_apps
+    ADD CONSTRAINT portal_identity_apps_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.portal_identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: portal_identity_apps portal_identity_apps_portal_app_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_identity_apps
+    ADD CONSTRAINT portal_identity_apps_portal_app_id_fkey FOREIGN KEY (portal_app_id) REFERENCES public.portal_apps(id) ON DELETE CASCADE;
 
 
 --
