@@ -267,6 +267,18 @@ export function canAccessPath(
 }
 
 /**
+ * Does the user hold a permission (wildcards included)? Reads the session
+ * user's own permission list — the same source canAccessPath uses. (The
+ * store's hasPermission reads userPermissions, which nothing populates.)
+ */
+export function userHasPermission(
+	user: { permissions?: string[] } | null | undefined,
+	permission: string,
+): boolean {
+	return (user?.permissions ?? []).some((p) => permissionMatches(p, permission));
+}
+
+/**
  * A signed-in user holding no platform role and no permission — e.g. an SSO
  * user provisioned on first login but never granted access. They may only
  * reach their own profile.

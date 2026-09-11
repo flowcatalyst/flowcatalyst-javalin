@@ -17,12 +17,11 @@ import {
 } from "@/api/portal-apps";
 import { clientsApi, type Client } from "@/api/clients";
 import { useAuthStore } from "@/stores/auth";
-import { usePermissionsStore } from "@/stores/permissions";
+import { userHasPermission } from "@/stores/permissions";
 import { getErrorMessage } from "@/utils/errors";
 
 const confirm = useConfirm();
 const authStore = useAuthStore();
-const permissionsStore = usePermissionsStore();
 
 const clients = ref<Client[]>([]);
 const selectedClientId = ref<string>("");
@@ -31,7 +30,7 @@ const loading = ref(false);
 
 const isAnchor = computed(() => !authStore.user?.clientId);
 const canManage = computed(() =>
-	permissionsStore.hasPermission("platform:iam:portal-user:manage"),
+	userHasPermission(authStore.user, "platform:iam:portal-user:manage"),
 );
 
 const clientOptions = computed(() => {

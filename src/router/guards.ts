@@ -162,15 +162,25 @@ export function permissionGuard(requiredPermission: string) {
  * This should be registered as a global beforeEach guard.
  */
 export function createRoutePermissionGuard() {
-	return (
+	return async (
 		to: RouteLocationNormalized,
 		from: RouteLocationNormalized,
 		next: NavigationGuardNext,
-	): void => {
+	): Promise<void> => {
 		const authStore = useAuthStore();
 		const permissionsStore = usePermissionsStore();
 
-		// Skip for unauthenticated users (authGuard will handle)
+		// A cold page load reaches this global guard BEFORE the route's
+		// authGuard has hydrated the session, so isAuthenticated is still
+		// false. Settle the session first on authenticated routes — otherwise
+		// the permission checks below never run for the very navigation a
+		// role-less user types in (e.g. /dashboard would stay put instead of
+		// landing on /profile). authGuard then finds the session ready.
+		if (!authStore.isAuthenticated && authStore.isLoading && requiresAuth(to)) {
+			await checkSession();
+		}
+
+		// Unauthenticated users pass through — authGuard redirects to login.
 		if (!authStore.isAuthenticated) {
 			next();
 			return;
@@ -226,4 +236,12 @@ export function createRoutePermissionGuard() {
 		// Direct the user to their profile — somewhere they can always access.
 		next({ path: "/profile", replace: true });
 	};
+}
+
+/** Whether any matched route record is guarded by authGuard. */
+function requiresAuth(to: RouteLocationNormalized): boolean {
+	return to.matched.some((record) => {
+		const guard = record.beforeEnter;
+		return guard === authGuard || (Array.isArray(guard) && guard.includes(authGuard));
+	});
 }
