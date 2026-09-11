@@ -293,6 +293,18 @@ class IdentityProviderApiTest {
     }
 
     @Test
+    void withAKeyAnUnknownSecretManagerSchemeIsItsOwn400NotTheGenericMalformedRef() {
+        var typo = http.post("/api/identity-providers", oidcBody(code("api-key-scheme"), "\"aws-smm://prod/idp\"", ""), ANCHOR);
+        assertThat(typo.statusCode()).isEqualTo(400);
+        assertThat(json(typo).get("error").asText()).isEqualTo("UNSUPPORTED_SECRET_SCHEME");
+        assertThat(json(typo).get("message").asText()).contains("\"aws-smm://\"").contains("encrypt:");
+
+        var malformed = http.post("/api/identity-providers", oidcBody(code("api-key-bad2"), "\"encrypted:not*base64\"", ""), ANCHOR);
+        assertThat(json(malformed).get("error").asText()).as("other malformed refs keep their code")
+                .isEqualTo("INVALID_SECRET_REF");
+    }
+
+    @Test
     void withAKeyAMalformedEncryptedClaimIsRefusedAndAnEncryptedOneIsKeptVerbatim() {
         var malformed = http.post("/api/identity-providers", oidcBody(code("api-key-bad"), "\"encrypted:not*base64\"", ""), ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);

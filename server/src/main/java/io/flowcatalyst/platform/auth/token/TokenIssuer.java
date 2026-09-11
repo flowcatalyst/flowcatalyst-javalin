@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
+import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.tsid.Tsid;
 
 import java.time.Clock;
@@ -125,6 +126,8 @@ public final class TokenIssuer {
         }
     }
 
+    private static final String PORTAL_SUBJECT_PREFIX = EntityType.PORTAL_USER.prefix() + "_";
+
     private final SigningKeys keys;
     private final Config config;
     private final Clock clock;
@@ -208,7 +211,7 @@ public final class TokenIssuer {
                 .claim("updated_at", updatedAt.getEpochSecond())
                 .claim("azp", in.clientId())
                 .claim("type", p.type().name())
-                .claim("tier", p.scope().name())
+                .claim("tier", tier(p))
                 .claim("roles", in.roles())
                 .claim("applications", in.applications())
                 .claim("all_applications", in.allApplications())
@@ -273,13 +276,23 @@ public final class TokenIssuer {
                 .jwtID(Tsid.generate())
                 .audience(config.audience())
                 .claim("type", p.type().name())
-                .claim("tier", p.scope().name())
+                .claim("tier", tier(p))
                 .claim("name", p.name());
         String email = p.type() == PrincipalType.SERVICE ? null : p.email();
         if (email != null && !email.isBlank()) {
             b.claim("email", email);
         }
         return b;
+    }
+
+    /// The `tier` claim: the principal's tenancy tier, except for a portal
+    /// identity (`ptu_` subject), which is not a platform principal and has
+    /// no tier — `""`, on the access token and the id_token alike (ruling
+    /// `44e5633`, `auth-core.md`). `Principal.portalSubject` has to carry
+    /// *some* scope to be a `Principal`; this keeps that placeholder off the
+    /// wire, where a relying party would branch on it.
+    private static String tier(Principal p) {
+        return p.id().startsWith(PORTAL_SUBJECT_PREFIX) ? "" : p.scope().name();
     }
 
     /// RS256 under the current private key; `kid` stamped only where Go

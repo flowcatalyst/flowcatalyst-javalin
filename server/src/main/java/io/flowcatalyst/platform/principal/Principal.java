@@ -92,11 +92,15 @@ public record Principal(
     /// auth-identity §5.8): never persisted — a USER shape carrying the
     /// identity's id, e-mail and name so the identity token and id token
     /// mint the same way as for a principal, with nothing else attached.
-    public static Principal portalSubject(String identityId, String email, String name) {
-        Instant now = Instant.now();
+    /// `updatedAt` is the identity's own, so the id_token's `updated_at`
+    /// reports its real last modification rather than the mint time (the
+    /// same rule as for principals: an RP watching it must not see a change
+    /// on every login).
+    public static Principal portalSubject(String identityId, String email, String name, Instant updatedAt) {
+        Instant at = updatedAt == null ? Instant.now() : updatedAt;
         return new Principal(Objects.requireNonNull(identityId, "identityId"), PrincipalType.USER, UserScope.CLIENT, null, null,
                 name == null ? "" : name, true, email == null ? null : UserIdentity.of(email), null, List.of(), List.of(), List.of(),
-                false, null, now, now);
+                false, null, at, at);
     }
 
     /// A portal identity: a USER the platform can authenticate but that is

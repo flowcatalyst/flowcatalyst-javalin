@@ -42,6 +42,6 @@ public final class PortalIdentityAccess implements PortalPasswords, PortalSubjec
     public Optional<PortalSubjects.Subject> findSubject(String identityId) {
         return repo.findById(identityId).map(pi -> new PortalSubjects.Subject(pi.id(), pi.email(), pi.name(),
                 pi.status() == PortalIdentityStatus.ACTIVE, pi.clientId(),
-                pi.apps().stream().map(PortalAppGrant::appId).toList()));
+                pi.apps().stream().map(PortalAppGrant::appId).toList(), pi.updatedAt()));
     }
 }

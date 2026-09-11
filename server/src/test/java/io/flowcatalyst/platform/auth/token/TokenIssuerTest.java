@@ -197,6 +197,23 @@ class TokenIssuerTest {
     }
 
     @Test
+    void aPortalIdentityHasNoTierOnEitherTokenWhileAClientScopedUserKeepsItsOwn() {
+        var portal = Principal.portalSubject("ptu_1", "pat@example.com", "Pat", NOW.minusSeconds(86_400));
+        var input = new TokenIssuer.IdTokenInput("oac_rp", null, null, List.of(), List.of(), false, List.of(),
+                "clt_home", null, null);
+        assertThat(raw(ISSUER_UNDER_TEST.identityAccessToken(portal, "oac_rp")).get("tier"))
+                .as("ruling 44e5633: a portal identity is not a platform principal").isEqualTo("");
+        var idToken = raw(ISSUER_UNDER_TEST.idToken(portal, input));
+        assertThat(idToken.get("tier")).isEqualTo("");
+        assertThat(idToken.get("updated_at")).as("the identity's own last change, not the mint time")
+                .isEqualTo(NOW.minusSeconds(86_400).getEpochSecond());
+
+        // The same CLIENT placeholder scope on an ordinary principal is real and stays.
+        var clientUser = Principal.portalSubject("prn_1", "ann@example.com", "Ann", NOW);
+        assertThat(raw(ISSUER_UNDER_TEST.identityAccessToken(clientUser, "oac_rp")).get("tier")).isEqualTo("CLIENT");
+    }
+
+    @Test
     void sessionTokenIsIdentityOnlyWithNoAudienceAndNoKid() {
         String token = ISSUER_UNDER_TEST.sessionToken("prn_user", "ann@example.com");
         var r = raw(token);

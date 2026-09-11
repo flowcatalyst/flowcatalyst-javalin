@@ -369,7 +369,7 @@ public final class OAuthTokenApi {
             return;
         }
 
-        Principal synth = Principal.portalSubject(subject.id(), subject.email(), subject.name());
+        Principal synth = Principal.portalSubject(subject.id(), subject.email(), subject.name(), subject.updatedAt());
         String accessToken = s.issuer().identityAccessToken(synth, client.clientId());
         String scope = code.scope() == null ? "" : code.scope();
         String idToken = null;

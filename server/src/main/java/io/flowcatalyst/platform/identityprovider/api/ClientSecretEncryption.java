@@ -44,6 +44,8 @@ public sealed interface ClientSecretEncryption permits ClientSecretEncryption.En
             if (incoming == null) return null;
             try {
                 return encryption.encryptSecretRef(incoming);
+            } catch (Encryption.UnsupportedSchemeException e) {
+                throw HttpError.badRequest("UNSUPPORTED_SECRET_SCHEME", "oidcClientSecretRef: " + e.getMessage());
             } catch (IllegalArgumentException e) {
                 throw HttpError.badRequest("INVALID_SECRET_REF", "oidcClientSecretRef: " + e.getMessage());
             }

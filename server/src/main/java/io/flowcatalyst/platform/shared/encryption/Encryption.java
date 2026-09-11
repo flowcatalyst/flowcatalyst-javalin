@@ -180,6 +180,15 @@ public final class Encryption {
         return Base64Strict.encode(seal(keys.current(), nonce, plaintext));
     }
 
+    /// The caller named a `<scheme>://` outside the closed list — their input,
+    /// distinguished from the other malformed-ref rejections so the API can
+    /// answer it with its own code (`UNSUPPORTED_SECRET_SCHEME`, Go `f0c3eae`).
+    public static final class UnsupportedSchemeException extends IllegalArgumentException {
+        UnsupportedSchemeException(String message) {
+            super(message);
+        }
+    }
+
     /// The at-rest form of an incoming secret-ref field (`docs/spec/encryption.md`
     /// §5): plaintext (with or without the `encrypt:` directive) becomes
     /// `encrypted:<v1 envelope>`; blank, `encrypted:`, external and `literal:`
@@ -196,7 +205,7 @@ public final class Encryption {
     public String encryptSecretRef(String incoming) {
         var unsupported = SecretRef.unsupportedScheme(incoming);
         if (unsupported.isPresent()) {
-            throw new IllegalArgumentException("unsupported secret-manager scheme \"" + unsupported.get()
+            throw new UnsupportedSchemeException("unsupported secret-manager scheme \"" + unsupported.get()
                     + "://\"; supported: " + String.join(", ", SecretRef.EXTERNAL_SCHEMES)
                     + " (prefix the value with \"" + SecretRef.ENCRYPT_DIRECTIVE
                     + "\" to store it as an encrypted plaintext secret instead)");

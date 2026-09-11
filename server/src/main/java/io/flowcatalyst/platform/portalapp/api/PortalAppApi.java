@@ -76,7 +76,7 @@ public final class PortalAppApi {
         String clientId = ctx.queryParam("clientId");
         boolean blank = clientId == null || clientId.isBlank();
         if (blank && ac != null && !ac.isAnchor()) {
-            throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId is required");
+            throw UseCaseException.validation("CLIENT_ID_REQUIRED", "clientId query param is required");
         }
         Checks.requirePortalUserView(ac, blank ? null : clientId);
         List<PortalApp> apps = blank ? s.repo().findAll() : s.repo().findByClient(clientId);
