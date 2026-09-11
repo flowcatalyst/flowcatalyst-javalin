@@ -147,14 +147,14 @@ class OAuthClientRepositoryTest {
 
         // null redirectUris in Changes ⇒ untouched.
         OAuthClient afterNullChange = created.update(new OAuthClient.Changes(
-                null, null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null, null));
         persist(afterNullChange);
         assertThat(repo.findById(created.id()).orElseThrow().redirectUris())
                 .as("null in Changes leaves the stored junction alone").containsExactly("https://keep.example");
 
         // empty grantTypes in Changes ⇒ explicit clear.
         OAuthClient afterEmptyChange = afterNullChange.update(new OAuthClient.Changes(
-                null, null, null, List.of(), null, null, null, null, null, null));
+                null, null, null, List.of(), null, null, null, null, null, null, null));
         persist(afterEmptyChange);
         OAuthClient reloaded = repo.findById(created.id()).orElseThrow();
         assertThat(reloaded.grantTypes()).as("empty list in Changes clears the junction").isEmpty();

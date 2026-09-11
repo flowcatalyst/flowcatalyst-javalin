@@ -211,7 +211,7 @@ public final class ApplicationApi {
         var secret = new AtomicReference<String>();
         var cmd = new io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand(null, app.name() + " Login", clientType,
                 body.redirectUris(), null, List.of("authorization_code", "refresh_token"),
-                List.of("openid", "profile", "email"), body.allowedOrigins(), List.of(app.id()), null, null, null, null);
+                List.of("openid", "profile", "email"), body.allowedOrigins(), List.of(app.id()), null, null, null, null, null);
         OAuthClientCreated event = CreateOAuthClient.of(s.oauthClients(), s.encryption(), secret::set)
                 .run(s.uow(), cmd, Auth.executionContext());
 

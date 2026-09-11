@@ -31,7 +31,7 @@ public final class UpdateOAuthClient {
                     OAuthClient updated = c.update(new OAuthClient.Changes(
                             cmd.clientName(), cmd.redirectUris(), cmd.postLogoutRedirectUris(), cmd.grantTypes(),
                             cmd.defaultScopes(), cmd.allowedOrigins(), cmd.applicationIds(), cmd.pkceRequired(),
-                            cmd.portalClientId(), cmd.apiAccess()));
+                            cmd.portalClientId(), cmd.portalAppId(), cmd.apiAccess()));
                     return Plan.save(updated, repo, OAuthClientUpdated.of(ec, updated));
                 });
     }

@@ -99,6 +99,8 @@ import io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption;
 import io.flowcatalyst.platform.identityprovider.api.IdentityProviderApi;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.api.OAuthClientApi;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
+import io.flowcatalyst.platform.portalapp.api.PortalAppApi;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlowRepository;
 import io.flowcatalyst.platform.portalauth.PortalSso;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityAccess;
@@ -416,27 +418,32 @@ public final class Platform {
                 new OAuthClientRepository(pool, applicationRepo), Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
                 serviceAccountTokenMinter, flattenServiceAccountPermissions));
 
-        // oauthclient (docs/spec/auth-core.md §3.6, §6.3; A-22 secret-rotation grace):
-        // client secrets are encrypted at rest under the same app key as the developer
-        // and service-account secrets above. Registered in Go's wire_routes.go order —
-        // right after serviceaccount, ahead of the /oauth/* token routes that do not
-        // exist yet (Phase 3, still TODO above).
+        // oauthclient (docs/spec/auth-core.md §3.6, §6.3; A-22 secret-rotation grace;
+        // portal-apps.md §4.5 portalAppId): client secrets are encrypted at rest under
+        // the same app key as the developer and service-account secrets above. portalAppRepo
+        // is built here (ahead of its own portal-identity wiring below) purely to resolve
+        // portalAppId on OAuth-client create/update — read-only from this surface's view.
+        // Registered in Go's wire_routes.go order — right after serviceaccount, ahead of
+        // the /oauth/* token routes that do not exist yet (Phase 3, still TODO above).
         var oauthClientRepo = new OAuthClientRepository(pool, applicationRepo);
+        var portalAppRepo = new PortalAppRepository(pool);
         OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
-                Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), portalAppRepo));
 
-        // portal identity + portal auth (auth-identity spec §3.2, §3.3, §5.1-§5.5, §5.7,
-        // §11.2, §11.8): the admin API (`/api/portal-users*`, inside the authenticator)
-        // and the portal plane's own public auth surface (`/portal/*`, isPublicPath below).
-        // The portal SSO start/callback (§5.6) and the `/oauth/token` `ptu_` branch (§5.8)
+        // portal identity + portal apps + portal auth (auth-identity spec §3.2, §3.3,
+        // §5.1-§5.5, §5.7, §11.2, §11.8; portal-apps.md §3, §4.4): the admin APIs
+        // (`/api/portal-users*`, `/api/portal-apps*`, inside the authenticator) and the
+        // portal plane's own public auth surface (`/portal/*`, isPublicPath below). The
+        // portal SSO start/callback (§5.6) and the `/oauth/token` `ptu_` branch (§5.8)
         // are wired against these same repository instances by a later unit.
         var portalEnvReader = env.reader();
         var portalIdentityRepo = new PortalIdentityRepository(pool);
-        var portalAppRepo = new io.flowcatalyst.platform.portalapp.PortalAppRepository(pool);
         var portalAccess = new PortalIdentityAccess(portalIdentityRepo, uow);
         portalPasswordsHolder.set(portalAccess);
         PortalUserApi.register(routes, new PortalUserApi.State(portalIdentityRepo, clientRepo, oauthClientRepo,
                 identityProviderRepo, portalAppRepo, uow, new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
+        PortalAppApi.register(routes, new PortalAppApi.State(portalAppRepo, oauthClientRepo, clientRepo, uow,
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
         PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,
                 identityProviderRepo, grantStore, RateLimitStores.build(portalEnvReader, pool),
