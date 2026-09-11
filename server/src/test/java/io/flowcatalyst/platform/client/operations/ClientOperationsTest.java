@@ -332,8 +332,14 @@ class ClientOperationsTest {
         assertThat(stored.isArray()).isTrue();
         assertThat(stored.get(0).propertyNames()).containsExactlyInAnyOrder("category", "text", "addedBy", "addedAt");
 
-        var data = json(eventsFor(seeded.clientId(), ClientEvents.NOTE_ADDED).getFirst().get("data", String.class));
-        assertThat(data.get("category").asText()).isEqualTo("billing");
+        // Two NOTE_ADDED events, and eventsFor has no ORDER BY (msg_events is
+        // partitioned; Postgres promises no row order) — so find the billing
+        // one by content rather than assuming it comes back first.
+        var events = eventsFor(seeded.clientId(), ClientEvents.NOTE_ADDED);
+        assertThat(events).hasSize(2);
+        var data = events.stream().map(r -> json(r.get("data", String.class)))
+                .filter(d -> "billing".equals(d.get("category").asText()))
+                .findFirst().orElseThrow(() -> new AssertionError("no billing NOTE_ADDED event"));
         assertThat(data.get("text").asText()).isEqualTo("switched to annual plan");
         assertThat(auditsFor(seeded.clientId(), "AddNoteCommand")).hasSize(2);
     }
