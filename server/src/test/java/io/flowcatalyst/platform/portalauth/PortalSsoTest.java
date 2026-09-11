@@ -181,7 +181,8 @@ class PortalSsoTest {
         var oauth = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
                 TOKEN_ISSUER, new AccessTokenReader(VERIFIER), new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS)),
                 ClaimLabels.none(), Optional.of(ENC), null, null,
-                RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), null, KEYS, ISSUER, Clock.systemUTC(), access);
+                RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), null, KEYS, ISSUER, Clock.systemUTC(), access,
+                PORTAL_APPS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             OidcBridgeApi.register(routes, bridge);
@@ -198,7 +199,11 @@ class PortalSsoTest {
         DB.deleteFrom(PORTAL_IDENTITIES).where(PORTAL_IDENTITIES.CLIENT_ID.eq(clientId)).execute();
         DB.deleteFrom(PORTAL_LOGIN_FLOWS).where(PORTAL_LOGIN_FLOWS.PORTAL_CLIENT_ID.eq(clientId)).execute();
         DB.deleteFrom(OAUTH_OIDC_LOGIN_STATES).where(OAUTH_OIDC_LOGIN_STATES.IDENTITY_PROVIDER_ID.eq(idpId)).execute();
-        UOW.inTransaction(tx -> { OAUTH_CLIENTS.delete(portalClient, tx.dbTx()); return null; });
+        // Covers portalClient plus every app-linked OAuth client the §5.2/§5.3 tests created.
+        var oauthClientsTable = io.flowcatalyst.db.generated.Tables.OAUTH_CLIENTS;
+        DB.deleteFrom(oauthClientsTable).where(oauthClientsTable.PORTAL_CLIENT_ID.eq(clientId)).execute();
+        var portalAppsTable = io.flowcatalyst.db.generated.Tables.PORTAL_APPS;
+        DB.deleteFrom(portalAppsTable).where(portalAppsTable.CLIENT_ID.eq(clientId)).execute();
         DB.deleteFrom(TNT_EMAIL_DOMAIN_MAPPINGS).where(TNT_EMAIL_DOMAIN_MAPPINGS.ID.eq(mappingId)).execute();
         DB.deleteFrom(OAUTH_IDENTITY_PROVIDERS).where(OAUTH_IDENTITY_PROVIDERS.ID.eq(idpId)).execute();
         DB.deleteFrom(TNT_CLIENTS).where(TNT_CLIENTS.ID.eq(clientId)).execute();
@@ -310,7 +315,147 @@ class PortalSsoTest {
         assertThat(access.findSubject(pi.id()).orElseThrow().email()).isEqualTo("seam-" + RUN + "@" + domain);
     }
 
+    // ── App-linked SSO gate (portal-apps.md §5.2, §5.3, §5.4) ───────────────
+
+    /// §5.2 step 2 first bullet ("first login grants it") + §5.4 (the
+    /// id_token's three portal claims) + §5.3 (revoke, then a fresh code is
+    /// `invalid_grant`). One flow, because the grant from step 1 is exactly
+    /// what step 3 then revokes.
+    @Test
+    void firstSsoLoginJitGrantsTheLinkedAppAndTheIdTokenCarriesItsClaimsThenARevokedGrantIsRefusedAtRedemption() throws Exception {
+        var app = io.flowcatalyst.platform.portalapp.PortalApp.create(clientId,
+                io.flowcatalyst.platform.portalapp.PortalAppCode.parse("linked-" + RUN), "Linked App", null);
+        UOW.inTransaction(tx -> { PORTAL_APPS.persist(app, tx.dbTx()); return null; });
+        String redirect = "https://portal-app-" + RUN + ".example/cb";
+        OAuthClient appClient = appLinkedClient("first", redirect, app.id());
+
+        String email = "applinked-" + RUN + "@" + domain;
+        var cb = ssoLogin(appClient, redirect, "st-app1-" + RUN, "n-app1-" + RUN, email, "App Linked");
+        assertThat(cb.statusCode()).as(cb.body()).isEqualTo(302);
+        Map<String, String> back = query(location(cb));
+        assertThat(location(cb)).startsWith(redirect + "?code=");
+
+        PortalIdentity identity = IDENTITIES.findByClientAndEmail(clientId, email).orElseThrow();
+        assertThat(identity.source()).isEqualTo(PortalIdentitySource.JIT);
+        assertThat(identity.hasApp(app.id())).as("first login grants the linked app").isTrue();
+
+        var t = http.post("/oauth/token", "grant_type=authorization_code&code=" + enc(back.get("code")) + "&redirect_uri=" + enc(redirect)
+                + "&client_id=" + appClient.clientId(), "Content-Type", "application/x-www-form-urlencoded");
+        assertThat(t.statusCode()).as(t.body()).isEqualTo(200);
+        var id = SignedJWT.parse(json(t).get("id_token").asString()).getPayload().toJSONObject();
+        assertThat(id.get("portal_client_id")).isEqualTo(clientId);
+        assertThat(id.get("portal_app_code")).isEqualTo(app.code());
+        assertThat(id.get("portal_app_id")).isEqualTo(app.id());
+
+        // §5.3: revoke, then a fresh code for the same identity is invalid_grant.
+        UOW.inTransaction(tx -> { IDENTITIES.persist(identity.revoke(app.id()), tx.dbTx()); return null; });
+        var freshCode = io.flowcatalyst.platform.auth.grant.AuthorizationCode.issue(appClient.clientId(), identity.id(), redirect, Instant.now());
+        GRANTS.insert(freshCode);
+        var refused = http.post("/oauth/token", "grant_type=authorization_code&code=" + enc(freshCode.code()) + "&redirect_uri=" + enc(redirect)
+                + "&client_id=" + appClient.clientId(), "Content-Type", "application/x-www-form-urlencoded");
+        assertThat(refused.statusCode()).isEqualTo(400);
+        assertThat(json(refused).get("error").asString()).isEqualTo("invalid_grant");
+        assertThat(json(refused).get("error_description").asString()).isEqualTo("Portal identity has no access to this portal");
+    }
+
+    /// §5.2 step 2 last bullet: an EXISTING identity that lacks the app's
+    /// grant is refused outright — no JIT grant is added for it.
+    @Test
+    void anExistingIdentityWithoutTheGrantIsRefusedAndGetsNoJitGrant() throws Exception {
+        var app = io.flowcatalyst.platform.portalapp.PortalApp.create(clientId,
+                io.flowcatalyst.platform.portalapp.PortalAppCode.parse("existing-" + RUN), "Existing App", null);
+        UOW.inTransaction(tx -> { PORTAL_APPS.persist(app, tx.dbTx()); return null; });
+        String redirect = "https://portal-app-existing-" + RUN + ".example/cb";
+        OAuthClient appClient = appLinkedClient("existing", redirect, app.id());
+
+        String email = "ungranted-" + RUN + "@" + domain;
+        PortalIdentity pre = PortalIdentity.create(clientId, email, "Pre Existing", PortalIdentitySource.JIT);
+        UOW.inTransaction(tx -> { IDENTITIES.persist(pre, tx.dbTx()); return null; });
+
+        var cb = ssoLogin(appClient, redirect, "st-existing-" + RUN, "n-existing-" + RUN, email, null);
+        assertThat(cb.statusCode()).isEqualTo(302);
+        Map<String, String> back = query(location(cb));
+        assertThat(back.get("error")).isEqualTo("access_denied");
+        assertThat(back.get("error_description")).isEqualTo("You don't have access to this portal");
+
+        assertThat(IDENTITIES.findById(pre.id()).orElseThrow().hasApp(app.id()))
+                .as("an existing identity is never JIT-granted by the gate refusal").isFalse();
+    }
+
+    /// §5.2 step 1: an inactive linked app is refused before the identity is
+    /// even looked up — no identity row appears for a brand-new email.
+    @Test
+    void anInactiveLinkedAppIsRefusedBeforeAnyIdentityLookup() throws Exception {
+        var app = io.flowcatalyst.platform.portalapp.PortalApp.create(clientId,
+                io.flowcatalyst.platform.portalapp.PortalAppCode.parse("inactive-" + RUN), "Inactive App", null);
+        UOW.inTransaction(tx -> { PORTAL_APPS.persist(app.update(null, null, false), tx.dbTx()); return null; });
+        String redirect = "https://portal-app-inactive-" + RUN + ".example/cb";
+        OAuthClient appClient = appLinkedClient("inactive", redirect, app.id());
+
+        String email = "neverseen-" + RUN + "@" + domain;
+        var cb = ssoLogin(appClient, redirect, "st-inactive-" + RUN, "n-inactive-" + RUN, email, null);
+        assertThat(cb.statusCode()).isEqualTo(302);
+        Map<String, String> back = query(location(cb));
+        assertThat(back.get("error")).isEqualTo("access_denied");
+        assertThat(back.get("error_description")).isEqualTo("This portal is not currently available");
+        assertThat(IDENTITIES.findByClientAndEmail(clientId, email)).as("refused before any identity lookup").isEmpty();
+    }
+
+    /// A legacy client-wide portal client (`portalClient`, no app link) is
+    /// never gated — the existing happy-path test above already proves the
+    /// grant and claims for it; this pins the id_token's absent app claims.
+    @Test
+    void legacyClientWideLoginsCarryOnlyThePortalClientIdClaim() throws Exception {
+        String redirect = "https://portal-" + RUN + ".example/cb";
+        String email = "legacyclaims-" + RUN + "@" + domain;
+        var cb = ssoLogin(portalClient, redirect, "st-legacy-" + RUN, "n-legacy-" + RUN, email, "Legacy Claims");
+        assertThat(cb.statusCode()).as(cb.body()).isEqualTo(302);
+        Map<String, String> back = query(location(cb));
+
+        var t = http.post("/oauth/token", "grant_type=authorization_code&code=" + enc(back.get("code")) + "&redirect_uri=" + enc(redirect)
+                + "&client_id=" + portalClient.clientId(), "Content-Type", "application/x-www-form-urlencoded");
+        assertThat(t.statusCode()).as(t.body()).isEqualTo(200);
+        var id = SignedJWT.parse(json(t).get("id_token").asString()).getPayload().toJSONObject();
+        assertThat(id.get("portal_client_id")).isEqualTo(clientId);
+        assertThat(id).doesNotContainKey("portal_app_code").doesNotContainKey("portal_app_id");
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
+
+    /// Parks a flow against `oc`, drives the fake IdP round trip and lands
+    /// on the sink's callback — the raw response, so callers can inspect
+    /// either a success redirect (`code=…`) or an `access_denied` one.
+    private static HttpResponse<String> ssoLogin(OAuthClient oc, String redirect, String state, String nonce, String email, String name) {
+        PortalLoginFlow flow = PortalLoginFlow.start(oc.clientId(), clientId, redirect, "openid", state, nonce, null, null, Instant.now());
+        FLOWS.insert(flow);
+        Map<String, String> q = query(location(http.get("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId)));
+        var claims = new JWTClaimsSet.Builder().issuer(idpBase).audience(CLIENT_ID).subject("sub-" + RUN)
+                .issueTime(Date.from(Instant.now())).expirationTime(Date.from(Instant.now().plusSeconds(300)))
+                .claim("nonce", q.get("nonce")).claim("email", email);
+        if (name != null) {
+            claims.claim("name", name);
+        }
+        NEXT_CLAIMS.set(claims);
+        return http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+    }
+
+    /// A portal-flagged, active OAuth client linked to `appId` — the
+    /// wire-level setter is unit B's (spec `portal-apps.md` §4.5); this test
+    /// only needs the stored row `PortalAppRepository#findByOAuthClientId`
+    /// resolves.
+    private static OAuthClient appLinkedClient(String tag, String redirect, String appId) {
+        OAuthClient oc = OAuthClient.create("portal-app-" + tag + "-" + RUN, "Portal App " + tag, ClientType.PUBLIC)
+                .withRedirectUris(List.of(redirect))
+                .withGrantTypes(List.of("authorization_code"))
+                .withPortalAndApiAccess(clientId, false);
+        OAuthClient linked = new OAuthClient(oc.id(), oc.clientId(), oc.clientName(), oc.clientType(), oc.secretRef(),
+                oc.previousSecretRef(), oc.previousSecretExpiresAt(), oc.previousSecretLastUsedAt(), oc.redirectUris(),
+                oc.postLogoutRedirectUris(), oc.grantTypes(), oc.defaultScopes(), oc.allowedOrigins(), oc.applicationIds(),
+                oc.pkceRequired(), oc.active(), oc.principalId(), oc.portalClientId(), appId, oc.apiAccess(),
+                oc.createdAt(), oc.updatedAt());
+        UOW.inTransaction(tx -> { OAUTH_CLIENTS.persist(linked, tx.dbTx()); return null; });
+        return linked;
+    }
 
     private static String location(HttpResponse<String> r) {
         return r.headers().firstValue("Location").orElseThrow(() -> new AssertionError("no Location: " + r.statusCode() + " " + r.body()));

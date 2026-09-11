@@ -87,6 +87,8 @@ class OAuthProviderTest {
 
     private static final PrincipalRepository PRINCIPALS = new PrincipalRepository(DS);
     private static final OAuthClientRepository CLIENTS = new OAuthClientRepository(DS, new ApplicationRepository(DS));
+    private static final io.flowcatalyst.platform.portalapp.PortalAppRepository PORTAL_APPS =
+            new io.flowcatalyst.platform.portalapp.PortalAppRepository(DS);
     private static final LoginAttemptRepository ATTEMPTS = new LoginAttemptRepository(DS);
     private static final GrantStore GRANTS = new GrantStore(DS);
     private static final TokenIssuer ISSUER_UNDER_TEST = new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER));
@@ -193,7 +195,7 @@ class OAuthProviderTest {
                 new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
                 RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.of(ENC),
                 ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
-                governor, KEYS, ISSUER, Clock.systemUTC(), null);
+                governor, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
     }
 
     @AfterAll
@@ -726,7 +728,7 @@ class OAuthProviderTest {
                     new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
                     RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.empty(),
                     ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
-                    new Governor(new Governor.Config(60, 1000)), KEYS, ISSUER, Clock.systemUTC(), null);
+                    new Governor(new Governor.Config(60, 1000)), KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
             try (var h = TestHttp.routes(routes -> {
                 HttpError.install(routes);
                 OAuthTokenApi.register(routes, noEnc);
@@ -804,7 +806,7 @@ class OAuthProviderTest {
             HttpError.install(routes);
             OAuthState s = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
                     ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER), RESOLVER, ClaimLabels.none(), Optional.of(ENC), null,
-                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null);
+                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
             OAuthTokenApi.register(routes, s);
         })) {
             String form = "grant_type=client_credentials";

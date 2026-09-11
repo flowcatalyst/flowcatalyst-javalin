@@ -166,6 +166,36 @@ class TokenIssuerTest {
         assertThat(r.get("roles")).isEqualTo(List.of());
     }
 
+    /// `docs/spec/portal-apps.md` §5.4: `portal_client_id` always for a
+    /// portal id_token, `portal_app_code`/`portal_app_id` only when the
+    /// redeeming client is app-linked, and the ordinary 7-arg constructor
+    /// (every non-portal caller) never carries any of the three.
+    @Test
+    void idTokenCarriesPortalClaimsOnlyWhenGivenAndOmitsThemOtherwise() {
+        var appLinked = new TokenIssuer.IdTokenInput("oac_rp", null, null, List.of(), List.of(), false, List.of(),
+                "clt_home", "customer-portal", "pta_1");
+        var r = raw(ISSUER_UNDER_TEST.idToken(user(), appLinked));
+        assertThat(r.get("portal_client_id")).isEqualTo("clt_home");
+        assertThat(r.get("portal_app_code")).isEqualTo("customer-portal");
+        assertThat(r.get("portal_app_id")).isEqualTo("pta_1");
+
+        // A portal login through a legacy client-wide client: portal_client_id
+        // present, but no app claims — never null, plain key absence.
+        var legacy = new TokenIssuer.IdTokenInput("oac_rp", null, null, List.of(), List.of(), false, List.of(),
+                "clt_home", null, null);
+        var rLegacy = raw(ISSUER_UNDER_TEST.idToken(user(), legacy));
+        assertThat(rLegacy.get("portal_client_id")).isEqualTo("clt_home");
+        assertThat(rLegacy).doesNotContainKey("portal_app_code").doesNotContainKey("portal_app_id");
+
+        // The 7-arg constructor every non-portal caller (InteractiveMint) uses
+        // must never carry these keys at all — a mutant that defaults them to
+        // non-null here would leak portal claims onto every ordinary id_token.
+        var nonPortal = new TokenIssuer.IdTokenInput("oac_rp", null, null, List.of(), List.of(), false, List.of());
+        var rNonPortal = raw(ISSUER_UNDER_TEST.idToken(user(), nonPortal));
+        assertThat(rNonPortal).doesNotContainKey("portal_client_id").doesNotContainKey("portal_app_code")
+                .doesNotContainKey("portal_app_id");
+    }
+
     @Test
     void sessionTokenIsIdentityOnlyWithNoAudienceAndNoKid() {
         String token = ISSUER_UNDER_TEST.sessionToken("prn_user", "ann@example.com");

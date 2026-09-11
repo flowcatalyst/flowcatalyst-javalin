@@ -58,6 +58,12 @@ class AuthenticatorTest {
                         : "client=" + ac.canAccessClient(ctx.queryParam("clientId"))
                                 + ",app=" + ac.canAccessApplication(ctx.queryParam("applicationId")));
             });
+            // `docs/spec/portal-apps.md` §6, Part A J6: what principal type the
+            // context actually carries, not just whether one is bound.
+            routes.get("/api/principal-type", ctx -> {
+                var ac = Auth.from(ctx);
+                ctx.result(ac == null ? "anon" : String.valueOf(ac.principalType()));
+            });
         });
     }
 
@@ -214,5 +220,37 @@ class AuthenticatorTest {
         var known = mint(keys, Map.of("sub", "prn_cookie"));
         var r = strict.get("/api/whoami", "Authorization", "Basic abc", "Cookie", "fc_session=" + known);
         assertThat(r.body()).isEqualTo("anon");
+    }
+
+    // ── Principal type (docs/spec/portal-apps.md §6, Part A J6) ─────────────
+
+    @Test
+    @DisplayName("a session-cookie context always carries PrincipalType.USER, not whatever the resolver left it as")
+    void sessionCookieContextCarriesPrincipalTypeUser() throws Exception {
+        // Mutant: the Authenticator leaves the resolver's context untouched
+        // (session contexts left null-typed) — RESOLVER above never sets a
+        // principalType, so this fails unless the Authenticator itself stamps it.
+        var known = mint(keys, Map.of("sub", "prn_cookie"));
+        assertThat(strict.get("/api/principal-type", "Cookie", "fc_session=" + known).body()).isEqualTo("USER");
+    }
+
+    @Test
+    @DisplayName("a bearer token's own type claim is preserved verbatim")
+    void bearerTokenPreservesItsOwnPrincipalTypeClaim() throws Exception {
+        var userToken = mint(keys, Map.of("type", "USER"));
+        assertThat(strict.get("/api/principal-type", "Authorization", "Bearer " + userToken).body()).isEqualTo("USER");
+        var serviceToken = mint(keys, Map.of("type", "SERVICE"));
+        assertThat(strict.get("/api/principal-type", "Authorization", "Bearer " + serviceToken).body()).isEqualTo("SERVICE");
+    }
+
+    @Test
+    @DisplayName("a test-header context takes its type only from X-FC-Test-Principal-Type, absent otherwise")
+    void testHeaderContextTakesPrincipalTypeOnlyFromItsOwnHeader() {
+        var noType = permissive.get("/api/principal-type", "X-FC-Test-Principal", "prn_test");
+        assertThat(noType.body()).as("absent header -> null -> exempt from the profile-only gate").isEqualTo("null");
+
+        var withType = permissive.get("/api/principal-type", "X-FC-Test-Principal", "prn_test",
+                "X-FC-Test-Principal-Type", "USER");
+        assertThat(withType.body()).isEqualTo("USER");
     }
 }

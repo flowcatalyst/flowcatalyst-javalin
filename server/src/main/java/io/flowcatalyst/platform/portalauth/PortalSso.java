@@ -124,6 +124,25 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             HttpError.write(ctx, 400, "PORTAL_STATE_INVALID", "portal login state is missing its OAuth chain", Map.of());
             return;
         }
+
+        // The app for the flow's OAuth client (`docs/spec/portal-apps.md` §2.4,
+        // §5.2). An inactive app is refused before the identity is even looked
+        // up; a null app means a legacy client-wide portal — no gate at all.
+        io.flowcatalyst.platform.portalapp.PortalApp app;
+        try {
+            app = s.portalApps().findByOAuthClientId(o.clientId()).orElse(null);
+        } catch (RuntimeException e) {
+            LOG.error("portal app lookup failed", e);
+            HttpError.write(ctx, 500, "PORTAL_APP", "portal app lookup failed", Map.of());
+            return;
+        }
+        if (app != null && !app.active()) {
+            ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?")
+                    + "error=access_denied&error_description=" + enc("This portal is not currently available")
+                    + "&state=" + enc(o.state()), 302);
+            return;
+        }
+
         String email = claims.identifier().trim().toLowerCase(java.util.Locale.ROOT);
         Optional<PortalIdentity> found;
         try {
@@ -137,9 +156,10 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         if (found.isEmpty()) {
             String name = claims.name() == null || claims.name().isBlank() ? null : claims.name().trim();
             try {
-                // portalAppId wiring is unit C's (spec `portal-apps.md` §5.2); null for now.
+                // First login grants the app, when one is linked (§5.2 step 2).
                 var event = EnsurePortalIdentity.of(s.identities(), s.clients(), s.portalApps()).run(s.uow(),
-                        new EnsureCommand(state.portalClientId(), email, name, "JIT", null), ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
+                        new EnsureCommand(state.portalClientId(), email, name, "JIT", app == null ? null : app.id()),
+                        ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
                 identity = s.identities().findById(event.identityId()).orElse(null);
             } catch (UseCaseException e) {
                 HttpError.write(ctx, e.error());
@@ -156,6 +176,15 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             // SSO never self-reactivates a suspended account.
             ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?")
                     + "error=access_denied&error_description=" + enc("This account is suspended for this portal")
+                    + "&state=" + enc(o.state()), 302);
+            return;
+        }
+        // An EXISTING identity never gets a JIT grant here — only a brand-new
+        // one (just above) does. A pre-existing identity lacking the app's
+        // grant is refused outright (§5.2 step 2, last bullet).
+        if (app != null && !identity.hasApp(app.id())) {
+            ctx.redirect(o.redirectUri() + (o.redirectUri().contains("?") ? "&" : "?")
+                    + "error=access_denied&error_description=" + enc("You don't have access to this portal")
                     + "&state=" + enc(o.state()), 302);
             return;
         }

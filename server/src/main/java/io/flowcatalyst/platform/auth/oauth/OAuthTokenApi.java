@@ -335,7 +335,12 @@ public final class OAuthTokenApi {
 
     /// §5.8: the identity must exist and be ACTIVE; the access token is
     /// identity-only, the id_token (iff openid) carries empty roles, and
-    /// there is never a refresh token.
+    /// there is never a refresh token. §5.3 (`portal-apps.md`): once the
+    /// identity is known good, the app for the REDEEMING client (`client`,
+    /// already authenticated and bound to this code — never the flow's own
+    /// client, though the two cannot in fact differ, since the earlier
+    /// `client.clientId().equals(code.clientId())` check already enforced
+    /// it) gates on activity and the grant.
     private static void redeemPortalCode(Exchange ctx, OAuthState s, AuthorizationCode code, OAuthClient client) {
         if (s.portalSubjects() == null) {
             OAuthError.invalidGrant("Portal subjects are not supported").write(ctx);
@@ -357,13 +362,22 @@ public final class OAuthTokenApi {
             return;
         }
         PortalSubjects.Subject subject = found.get();
+
+        var app = s.portalApps().findByOAuthClientId(client.clientId());
+        if (app.isPresent() && (!app.get().active() || !subject.appIds().contains(app.get().id()))) {
+            OAuthError.invalidGrant("Portal identity has no access to this portal").write(ctx);
+            return;
+        }
+
         Principal synth = Principal.portalSubject(subject.id(), subject.email(), subject.name());
         String accessToken = s.issuer().identityAccessToken(synth, client.clientId());
         String scope = code.scope() == null ? "" : code.scope();
         String idToken = null;
         if (scopeHas(scope, "openid")) {
+            String portalAppCode = app.map(io.flowcatalyst.platform.portalapp.PortalApp::code).orElse(null);
+            String portalAppId = app.map(io.flowcatalyst.platform.portalapp.PortalApp::id).orElse(null);
             idToken = s.issuer().idToken(synth, new TokenIssuer.IdTokenInput(code.clientId(), code.nonce(), code.authTime(),
-                    List.of(), List.of(), false, List.of()));
+                    List.of(), List.of(), false, List.of(), subject.clientId(), portalAppCode, portalAppId));
         }
         writeToken(ctx, s, accessToken, null, idToken, code.scope());
     }

@@ -60,6 +60,9 @@ public final class Authenticator implements Handler {
     public static final String TEST_EMAIL = "X-FC-Test-Email";
     public static final String TEST_APPLICATIONS = "X-FC-Test-Applications";
     public static final String TEST_ALL_APPLICATIONS = "X-FC-Test-All-Applications";
+    /// `docs/spec/portal-apps.md` §6, Part A J6: the profile-only gate needs a
+    /// principal type from dev/test contexts too; absent ⇒ `null` ⇒ exempt.
+    public static final String TEST_PRINCIPAL_TYPE = "X-FC-Test-Principal-Type";
 
     /// Go's `errIdentityTokenNotAPICredential`, verbatim.
     public static final String IDENTITY_TOKEN_REJECTED =
@@ -167,7 +170,12 @@ public final class Authenticator implements Handler {
     }
 
     private Outcome session(TokenClaims claims) {
+        // Session-cookie authentication always carries PrincipalType.USER
+        // (`docs/spec/portal-apps.md` §6, Part A J6) — stamped here, not left
+        // to whichever ClaimsResolver produced the context, so the invariant
+        // holds for every implementation (including test stubs).
         return resolver.resolveSession(claims.subject())
+                .map(ac -> ac.withPrincipalType(PrincipalType.USER))
                 .<Outcome>map(Authenticated::new)
                 .orElseGet(Anonymous::new);
     }
@@ -213,15 +221,22 @@ public final class Authenticator implements Handler {
         var apps = splitCsv(header(ctx, TEST_APPLICATIONS));
         var allAppsHeader = header(ctx, TEST_ALL_APPLICATIONS);
         var allApps = allAppsHeader.isEmpty() ? apps.isEmpty() : allAppsHeader.equals("true");
+        // Only X-FC-Test-Principal-Type carries a type here (absent ⇒ null ⇒
+        // exempt from the profile-only gate) — dev/test contexts are not
+        // bearer tokens, so there is no `type` claim to fall back to.
+        var principalType = PrincipalType.parse(header(ctx, TEST_PRINCIPAL_TYPE));
         return new AuthContext(
                 header(ctx, TEST_PRINCIPAL),
+                principalType,
                 scope,
                 header(ctx, TEST_EMAIL),
+                null,
                 splitCsv(header(ctx, TEST_CLIENTS)),
                 splitCsv(header(ctx, TEST_ROLES)),
                 apps,
                 allApps,
-                splitCsv(header(ctx, TEST_PERMISSIONS)));
+                splitCsv(header(ctx, TEST_PERMISSIONS)),
+                null);
     }
 
     private static String header(Exchange ctx, String name) {
