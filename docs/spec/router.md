@@ -1288,6 +1288,43 @@ in the tree**.
 | Metrics | `GetQueueAttributes(ApproximateNumberOfMessages, ApproximateNumberOfMessagesNotVisible)` + counters |
 | Stop | flag only (no client close) |
 
+**A queue that does not exist yet — a deliberate Java/Go difference (owner
+ruling 2026-09-11).** Integral's control plane lists every subscription's SQS
+queue in its config, but creates each queue lazily on its own first send —
+so a listed-but-absent queue is a normal, transient state, not a
+misconfiguration. Go polls it anyway, every second, forever: each
+`ReceiveMessage` fails with `QueueDoesNotExistException`, logs a WARN, and
+(via the ordinary poll-failure path) raises a `CONNECTION` warning once per
+restart. Java instead treats "does not exist" as a third, non-failure build
+outcome (`ConsumerBuild.Missing`, `RouterManager.ConsumerFactory`):
+
+- **Build time**: `SqsQueue#createChecked` calls `GetQueueAttributes` before
+  adopting the queue. Missing ⇒ no consumer is built, no `CONNECTION` (or
+  any other) warning, one INFO line ("queue does not exist yet; not
+  consuming it; rechecked at the next config sync") on the transition into
+  the missing streak, silent on every recheck that still finds it missing.
+  The existence check's own failure for any *other* reason (network,
+  throttling, auth) is not treated as missing — the consumer is built as if
+  no check had been made, so a transient AWS error can never silently stop
+  consumption.
+- **While running**: if the queue is deleted after a consumer already
+  started polling it, `ReceiveMessage` answers `QueueDoesNotExistException`
+  and `SqsQueue#poll` returns `Consumer.PollResult.QueueMissing` — a sealed
+  outcome, not an exception — instead of falling into the generic
+  poll-failure branch. `ConsumerLoop` logs the same one INFO line, detaches
+  the consumer via `RouterManager#detachMissingConsumer` (the same treatment
+  `stopConsumer` gives a queue a reconfigure removes), and ends its loop; the
+  next config sync rechecks the queue from cold.
+- **Health**: a missing queue never has a consumer or a poll loop, so it
+  never marks the router unhealthy, never trips the stall detector
+  (`RouterServer#stalledConsumers` also skips a loop whose consumer has
+  already been detached, closing the narrow window between the mid-poll case
+  above and the next config sync), and is never counted in
+  `ReconfigureResult#failedQueues`.
+
+Postgres and NATS queues are always treated as existing — this ruling is SQS-
+specific, matching where Integral's lazy-creation behaviour actually lives.
+
 ### 7.3 Postgres — `queue/postgres/postgres.go`
 
 The Java backend now connects from the queue URI like Go's `pgxpool.New(ctx,

@@ -23,7 +23,6 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.logging.Logger;
 
@@ -31,12 +30,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// [QueueFactory] against the scheme-resolution rules of `docs/spec/router.md`
-/// §7.1. No network, broker or database is contacted: [SqsQueue#create] and
-/// `new NatsQueue(uri)` are exercised for real, but only their *construction*
-/// path — an SQS client is never asked to make a call, and a NATS connection
-/// attempt against an address nothing listens on is expected to fail fast and
-/// be swallowed as [Optional#empty()], which is itself the behaviour under
-/// test (CONVENTIONS §6: assert behaviour, not code existence).
+/// §7.1. `new NatsQueue(uri)` is exercised for real, but only its
+/// *construction* path — a NATS connection attempt against an address
+/// nothing listens on is expected to fail fast and be swallowed as
+/// [ConsumerBuild.Failed], which is itself the behaviour under test
+/// (CONVENTIONS §6: assert behaviour, not code existence). `SqsQueue#createChecked`
+/// (owner ruling 2026-09-11, `docs/spec/router.md` §7.2) DOES now reach out
+/// for `GetQueueAttributes` before adopting an SQS queue — see
+/// [#buildsSqsConsumer]'s own doc.
 ///
 /// The exception: a `postgres://` URI that carries its own connection now
 /// opens a real dedicated pool (`createPostgres` mirrors Go's
@@ -129,11 +130,10 @@ class QueueFactoryTest {
         // rather than dereferencing the URI as a connection string.
         var config = new QueueConfig("postgres:///db", "my-pg-queue", 1, 30);
 
-        var consumer = factory.create(config);
+        var consumer = built(factory.create(config));
 
-        assertThat(consumer).isPresent();
-        assertThat(consumer.get()).isInstanceOf(PostgresQueue.class);
-        assertThat(consumer.get().identifier()).isEqualTo("my-pg-queue");
+        assertThat(consumer).isInstanceOf(PostgresQueue.class);
+        assertThat(consumer.identifier()).isEqualTo("my-pg-queue");
     }
 
     @Test
@@ -142,7 +142,16 @@ class QueueFactoryTest {
         var factory = new QueueFactory(null);
         var config = QueueConfig.of("postgres:///db");
 
-        assertThat(factory.create(config)).isEmpty();
+        assertThat(factory.create(config)).isInstanceOf(ConsumerBuild.Failed.class);
+    }
+
+    /// The consumer out of a [ConsumerBuild] this suite expects to be
+    /// [ConsumerBuild.Built] — fails loudly (not silently, the way an
+    /// unchecked cast would) if the factory answered [ConsumerBuild.Failed]
+    /// or [ConsumerBuild.Missing] instead.
+    private static Consumer built(ConsumerBuild build) {
+        assertThat(build).as("expected the queue to build").isInstanceOf(ConsumerBuild.Built.class);
+        return ((ConsumerBuild.Built) build).consumer();
     }
 
     // ---- createPostgres: connects from the queue URI like Go (§7.3) --------------
@@ -163,9 +172,9 @@ class QueueFactoryTest {
         var factory = new QueueFactory(null); // no shared pool at all
         var config = new QueueConfig(testPgUri(), queueName, 1, 30);
 
-        var consumer = factory.create(config);
-        assertThat(consumer).as("a URI with its own host must not need a shared data source").isPresent();
-        assertThat(consumer.get()).isInstanceOf(PostgresQueue.class);
+        var consumer = built(factory.create(config));
+        assertThat(consumer).as("a URI with its own host must not need a shared data source")
+                .isInstanceOf(PostgresQueue.class);
 
         try {
             // Inserted through TestPg's OWN connection, not the consumer's —
@@ -174,12 +183,12 @@ class QueueFactoryTest {
             // merely stored the URI.
             insertRow(queueName, "msg-1");
 
-            Consumer.PollResult result = consumer.get().poll(10);
+            Consumer.PollResult result = consumer.poll(10);
             assertThat(result).isInstanceOf(Consumer.PollResult.Delivered.class);
             var delivered = (Consumer.PollResult.Delivered) result;
             assertThat(delivered.messages()).extracting(QueuedMessage::id).containsExactly("msg-1");
         } finally {
-            consumer.get().close();
+            consumer.close();
         }
     }
 
@@ -194,9 +203,7 @@ class QueueFactoryTest {
         // pool instead of the Go-parity max(4, NumCPU) this test pins.
         var config = new QueueConfig(testPgUri(), queueName, 1, 30);
 
-        var consumer = factory.create(config);
-        assertThat(consumer).isPresent();
-        var postgresQueue = (PostgresQueue) consumer.get();
+        var postgresQueue = (PostgresQueue) built(factory.create(config));
         try {
             // The observable effect that would still hold either way is "a
             // pool exists" — the load-bearing assertion is its actual
@@ -221,13 +228,12 @@ class QueueFactoryTest {
         var factory = new QueueFactory(UNUSED_DATA_SOURCE, testPgUri());
         var config = new QueueConfig(testPgUri(), "shared-pool-queue", 1, 30);
 
-        var consumer = factory.create(config);
+        var consumer = built(factory.create(config));
 
-        assertThat(consumer).isPresent();
         // UNUSED_DATA_SOURCE throws on getConnection() — if the factory had
         // opened its own pool instead of reusing the shared one, the poll
         // below would throw rather than merely finding nothing.
-        assertThatThrownBy(() -> consumer.get().poll(10))
+        assertThatThrownBy(() -> consumer.poll(10))
                 .as("this consumer must be backed by the (stub) shared data source, not a real pool")
                 .isInstanceOf(UnsupportedOperationException.class);
     }
@@ -254,38 +260,45 @@ class QueueFactoryTest {
     }
 
     @Test
-    @DisplayName("builds an SqsQueue for an https SQS endpoint without contacting AWS")
+    @DisplayName("builds an SqsQueue for an https SQS endpoint, via the checked (existence-checking) path (owner ruling 2026-09-11)")
     void buildsSqsConsumer() {
+        // SqsQueue#createChecked — not the network-free #create — is what
+        // QueueFactory now calls for every SQS queue (`docs/spec/router.md`
+        // §7.2), so this DOES reach out for GetQueueAttributes. There is no
+        // reachable AWS account behind this URL in the test sandbox, so per
+        // ruling 4 ("unknown ⇒ start as today") the existence-check failure
+        // is swallowed and the consumer is still built — this test pins
+        // QueueFactory's dispatch to SqsQueue, not that the queue provably
+        // exists on a real account.
         var factory = new QueueFactory(null);
         var config = new QueueConfig(
                 "https://sqs.us-east-1.amazonaws.com/123456789012/my-sqs-queue", "my-sqs-queue", 1, 30);
 
-        var consumer = factory.create(config);
+        var consumer = built(factory.create(config));
 
-        assertThat(consumer).isPresent();
-        assertThat(consumer.get()).isInstanceOf(SqsQueue.class);
-        assertThat(consumer.get().identifier()).isEqualTo("my-sqs-queue");
+        assertThat(consumer).isInstanceOf(SqsQueue.class);
+        assertThat(consumer.identifier()).isEqualTo("my-sqs-queue");
     }
 
     @Test
-    @DisplayName("returns empty rather than throwing when a nats:// queue cannot connect")
-    void returnsEmptyForUnreachableNats() {
+    @DisplayName("returns Failed rather than throwing when a nats:// queue cannot connect")
+    void returnsFailedForUnreachableNats() {
         var factory = new QueueFactory(null);
         // Port 1 is a privileged port nothing listens on in a test sandbox;
         // NatsQueue's constructor connects eagerly and must fail fast.
         var config = QueueConfig.of("nats://127.0.0.1:1?stream=test&consumer=test");
 
-        Optional<Consumer> consumer = factory.create(config);
+        var consumer = factory.create(config);
 
-        assertThat(consumer).isEmpty();
+        assertThat(consumer).isInstanceOf(ConsumerBuild.Failed.class);
     }
 
     @Test
-    @DisplayName("returns empty for a queue whose scheme has no registered consumer, without throwing")
-    void returnsEmptyForUnknownScheme() {
+    @DisplayName("returns Failed for a queue whose scheme has no registered consumer, without throwing")
+    void returnsFailedForUnknownScheme() {
         var factory = new QueueFactory(UNUSED_DATA_SOURCE);
         var config = QueueConfig.of("amqp://host/my-queue");
 
-        assertThat(factory.create(config)).isEmpty();
+        assertThat(factory.create(config)).isInstanceOf(ConsumerBuild.Failed.class);
     }
 }

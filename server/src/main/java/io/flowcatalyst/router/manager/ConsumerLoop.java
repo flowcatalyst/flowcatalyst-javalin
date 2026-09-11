@@ -316,6 +316,17 @@ public final class ConsumerLoop implements Runnable {
                         .log();
                 yield false;
             }
+            case Consumer.PollResult.QueueMissing ignored -> {
+                // Not a connection failure and not a warning: Integral creates
+                // queues on first send, so a listed-but-absent queue is normal
+                // (owner ruling 2026-09-11). One INFO, then the manager
+                // detaches it and the next config apply rechecks it.
+                log.atInfo().setMessage(RouterManager.MISSING_QUEUE_MESSAGE)
+                        .addKeyValue("queue", queueId())
+                        .log();
+                manager.detachMissingConsumer(queueId());
+                yield false;
+            }
             case Consumer.PollResult.Delivered delivered -> {
                 lastPoll.set(clock.instant());
                 if (pollFailing) {

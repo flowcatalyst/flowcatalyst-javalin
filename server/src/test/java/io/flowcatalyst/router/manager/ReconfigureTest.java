@@ -12,6 +12,7 @@ import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.PoolMetrics;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
@@ -47,11 +48,11 @@ class ReconfigureTest {
 
     private final RouterManager.ConsumerFactory consumerFactory = queue -> {
         if (unbuildable.contains(queue.queueName())) {
-            return Optional.empty();
+            return ConsumerBuild.FAILED;
         }
         var consumer = new FakeConsumer(queue.queueName());
         consumersBuilt.add(consumer);
-        return Optional.of(consumer);
+        return ConsumerBuild.of(consumer);
     };
 
     @AfterEach
@@ -289,6 +290,25 @@ class ReconfigureTest {
         assertThat(result.failedQueues()).containsExactly("broken");
         assertThat(result.complete()).isFalse();
         assertThat(manager.consumer("q://3")).as("a later queue still starts").isPresent();
+    }
+
+    @Test
+    @DisplayName("owner ruling 2026-09-11: a queue that does not exist yet is NOT a failed queue")
+    void missingQueueIsNotReportedAsFailed() {
+        // Mutant: fold ConsumerBuild.Missing into the Failed branch of
+        // RouterManager#applyConsumers → this test fails, because the queue
+        // would show up in failedQueues() exactly as a genuine build failure
+        // does, and RouterServer#apply would raise the CONFIGURATION ERROR
+        // warning "running without 1 configured queue(s)" for it.
+        RouterManager.ConsumerFactory missingFactory = queue -> ConsumerBuild.MISSING;
+
+        var result = manager.reconfigure(
+                new RouterConfig(List.of(), List.of(QueueConfig.of("q://missing"))), missingFactory);
+
+        assertThat(result.failedQueues()).as("missing is a third outcome, not a failure").isEmpty();
+        assertThat(result.consumersStarted()).isZero();
+        assertThat(result.complete()).as("a missing queue must not make the reconfigure incomplete").isTrue();
+        assertThat(manager.consumer("q://missing")).isEmpty();
     }
 
     @Test

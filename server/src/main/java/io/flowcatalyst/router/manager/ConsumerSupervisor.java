@@ -4,6 +4,7 @@ import io.flowcatalyst.router.observability.Warnings;
 
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -142,7 +143,18 @@ public final class ConsumerSupervisor {
 
         Thread.sleep(restartDelay);
 
-        var replacement = factory.create(config);
+        // A rebuild that answers Missing (the queue existed when this
+        // consumer stalled but has since been deleted — a narrow race, since
+        // an ordinary disappearance is caught by ConsumerLoop's own
+        // QueueMissing poll result well before the stall threshold) is
+        // treated the same as Failed here: this method's contract is
+        // "rebuilt or not", and a queue that is not there to rebuild against
+        // is not rebuilt, without inventing a third meaning for a signal
+        // this call site has no use for.
+        var built = factory.create(config);
+        Optional<Consumer> replacement = built instanceof ConsumerBuild.Built b
+                ? Optional.of(b.consumer())
+                : Optional.empty();
         // The two outcomes point at different causes and so read differently:
         // a rebuild that keeps succeeding suggests broker or network health,
         // one that cannot rebuild at all suggests configuration.

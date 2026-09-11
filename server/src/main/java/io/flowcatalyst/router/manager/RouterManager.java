@@ -11,6 +11,7 @@ import io.flowcatalyst.router.config.PoolSpec;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.Publisher;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
@@ -124,6 +125,23 @@ public final class RouterManager implements AutoCloseable {
     /// can be detected without asking the consumer to describe itself.
     private final Map<String, QueueConfig> queueConfigs = new ConcurrentHashMap<>();
 
+    /// Queue (config) names currently in a missing-streak — [ConsumerBuild.Missing]
+    /// answered on the most recent build attempt (owner ruling 2026-09-11,
+    /// `docs/spec/router.md` §7.2). Logged once, on the transition into the
+    /// streak, and cleared the moment the queue is built successfully or the
+    /// configuration stops naming it — so the same queue disappearing and
+    /// reappearing later logs its own "does not exist yet" INFO again,
+    /// rather than staying silently suppressed by a streak from a previous
+    /// life.
+    private final Set<String> missingQueues = ConcurrentHashMap.newKeySet();
+
+    /// The one INFO line a missing queue gets — reused verbatim by
+    /// [ConsumerLoop] when a previously-running queue disappears mid-poll,
+    /// so an operator sees identical wording for the same fact regardless of
+    /// which path noticed it.
+    static final String MISSING_QUEUE_MESSAGE =
+            "queue does not exist yet; not consuming it; rechecked at the next config sync";
+
     /// When a message was last routed to each pool — the clock
     /// [#evictIdleSynthesisedPools] ages a synthesised pool against (R-59).
     /// Kept for every pool, not just synthesised ones, because it costs
@@ -168,12 +186,17 @@ public final class RouterManager implements AutoCloseable {
         Pool create(Pool.Config config);
     }
 
-    /// Builds a consumer for a configured queue. Returning empty means the
-    /// queue could not be built — an unknown URI scheme, an unreachable
-    /// broker — and the reconfigure carries on with the rest.
+    /// Builds a consumer for a configured queue — a sealed three-way outcome
+    /// (`docs/spec/router.md` §7.1/§7.2, owner ruling 2026-09-11):
+    /// [ConsumerBuild.Failed] means the queue could not be built — an
+    /// unknown URI scheme, an unreachable broker — and the reconfigure
+    /// carries on with the rest; [ConsumerBuild.Missing] means the queue is
+    /// simply not there YET (an SQS queue Integral's control plane lists but
+    /// has not created), which is not a failure and must never be treated as
+    /// one.
     @FunctionalInterface
     public interface ConsumerFactory {
-        Optional<Consumer> create(QueueConfig config);
+        ConsumerBuild create(QueueConfig config);
     }
 
     public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory) {
@@ -780,6 +803,9 @@ public final class RouterManager implements AutoCloseable {
     private ConsumerChanges applyConsumers(RouterConfig config, ConsumerFactory factory) {
         Map<String, QueueConfig> wanted = new LinkedHashMap<>();
         config.queues().forEach(queue -> wanted.put(queue.queueName(), queue));
+        // A missing-streak is forgotten once the config stops naming the
+        // queue (owner ruling 2026-09-11) — see #missingQueues.
+        missingQueues.retainAll(wanted.keySet());
 
         var stopped = 0;
         var replaced = new ArrayList<String>();
@@ -813,15 +839,31 @@ public final class RouterManager implements AutoCloseable {
         var failed = new ConcurrentLinkedQueue<String>();
         var started = new AtomicInteger();
         Concurrently.forEach(toBuild, entry -> {
-            var built = factory.create(entry.getValue());
-            if (built.isEmpty()) {
-                failed.add(entry.getKey());
-                return;
+            switch (factory.create(entry.getValue())) {
+                case ConsumerBuild.Built built -> {
+                    var consumer = built.consumer();
+                    consumers.put(entry.getKey(), consumer);
+                    consumersByIdentifier.put(consumer.identifier(), consumer);
+                    queueConfigs.put(entry.getKey(), entry.getValue());
+                    // Built after having been missing: the streak is over,
+                    // so the NEXT disappearance logs its own INFO rather than
+                    // finding the queue already marked missing.
+                    missingQueues.remove(entry.getKey());
+                    started.incrementAndGet();
+                }
+                case ConsumerBuild.Failed ignored -> failed.add(entry.getKey());
+                case ConsumerBuild.Missing ignored -> {
+                    // Not a failure (owner ruling 2026-09-11): no consumer,
+                    // no warning — one INFO per missing streak, keyed by the
+                    // config queue name so a recheck that still finds it
+                    // missing stays silent.
+                    if (missingQueues.add(entry.getKey())) {
+                        log.atInfo().setMessage(MISSING_QUEUE_MESSAGE)
+                                .addKeyValue("queue", entry.getKey())
+                                .log();
+                    }
+                }
             }
-            consumers.put(entry.getKey(), built.get());
-            consumersByIdentifier.put(built.get().identifier(), built.get());
-            queueConfigs.put(entry.getKey(), entry.getValue());
-            started.incrementAndGet();
         }, CONSUMER_BUILD_TIMEOUT, "consumer build");
 
         // Stable order regardless of which finished first, so the same
@@ -847,6 +889,27 @@ public final class RouterManager implements AutoCloseable {
             consumersByIdentifier.remove(consumer.identifier(), consumer);
             linger(queueName, consumer);
         }
+    }
+
+    /// [#stopConsumer]'s treatment, driven bottom-up: [ConsumerLoop] calls
+    /// this when a poll answers [Consumer.PollResult.QueueMissing] — the
+    /// queue backing `identifier` has disappeared (owner ruling 2026-09-11,
+    /// `docs/spec/router.md` §7.2) — rather than top-down by a reconfigure.
+    /// Detaches to the lingering set exactly as [#stopConsumer] does (never
+    /// closes: an in-flight delivery it still holds must still be able to
+    /// ack/nack), which also drops it from [#queueConfigs] so the next
+    /// config apply's `toBuild` set includes it again and rechecks the
+    /// queue.
+    ///
+    /// A no-op if `identifier` no longer resolves to a currently active
+    /// consumer — a race with a reconfigure that already replaced or removed
+    /// it first.
+    void detachMissingConsumer(String identifier) {
+        consumers.entrySet().stream()
+                .filter(entry -> entry.getValue().identifier().equals(identifier))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .ifPresent(this::stopConsumer);
     }
 
     private record ConsumerChanges(int started, int stopped, List<String> failed, List<String> replaced) {

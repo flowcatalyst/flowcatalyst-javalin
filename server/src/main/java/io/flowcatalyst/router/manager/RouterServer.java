@@ -194,6 +194,15 @@ public final class RouterServer implements AutoCloseable {
     public List<String> stalledConsumers() {
         var now = clock.instant();
         return loops.entrySet().stream()
+                // A loop whose consumer is no longer the manager's active one
+                // for this queue is not silently stuck, it is already on its
+                // way out — a reconfigure mid-flight, or (owner ruling
+                // 2026-09-11) a loop that just detached itself after its
+                // queue answered QueueMissing and is waiting for the next
+                // config sync to be swept from #loops by syncLoops. Judging
+                // it here would fail readiness over a queue that is not a
+                // health problem at all (`docs/spec/router.md` §7.2).
+                .filter(entry -> manager.activeConsumer(entry.getKey()).isPresent())
                 .filter(entry -> Duration.between(entry.getValue().consumerLoop().startedAt(), now)
                         .compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
                 .filter(entry -> entry.getValue().consumerLoop().lastAlive()

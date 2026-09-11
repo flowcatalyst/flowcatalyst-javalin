@@ -23,6 +23,7 @@ import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.PoolMetrics;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
@@ -247,7 +248,7 @@ class RouterApiTest {
                 cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
         var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
         var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
-                q -> Optional.of(new AlwaysFailingConsumer(q.queueName())),
+                q -> ConsumerBuild.of(new AlwaysFailingConsumer(q.queueName())),
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://stall")))),
                 Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
         routerServer.start();
@@ -276,7 +277,7 @@ class RouterApiTest {
                 cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
         var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
         var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
-                q -> Optional.of(new AlwaysFailingConsumer(q.queueName())),
+                q -> ConsumerBuild.of(new AlwaysFailingConsumer(q.queueName())),
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://young")))),
                 Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
         routerServer.start();
@@ -306,7 +307,7 @@ class RouterApiTest {
                 cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
         var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
         var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
-                q -> Optional.of(new AlwaysEmptyConsumer(q.queueName())),
+                q -> ConsumerBuild.of(new AlwaysEmptyConsumer(q.queueName())),
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://healthy")))),
                 Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
         routerServer.start();
@@ -368,7 +369,7 @@ class RouterApiTest {
         var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
                 q -> {
                     built.incrementAndGet();
-                    return Optional.empty();
+                    return ConsumerBuild.FAILED;
                 },
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://never")))),
                 Warnings.NO_OP, CLOCK, Duration.ofSeconds(1));
@@ -396,7 +397,7 @@ class RouterApiTest {
         var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), CLOCK);
         var config = new RouterConfig(List.of(new PoolSpec("RELOAD-POOL", 3, 0)), List.of());
         var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
-                q -> Optional.empty(), RouterServer.ConfigSource.fixed(config),
+                q -> ConsumerBuild.FAILED, RouterServer.ConfigSource.fixed(config),
                 Warnings.NO_OP, CLOCK, Duration.ofSeconds(1));
         routerServer.start(); // already applies the configuration once, as leader from the outset
         try {
@@ -1153,7 +1154,7 @@ class RouterApiTest {
                     new io.flowcatalyst.router.config.RouterConfig(
                             java.util.List.of(new io.flowcatalyst.router.config.PoolSpec("DRAIN-POOL", 2, 0)),
                             java.util.List.of()),
-                    q -> Optional.empty());
+                    q -> ConsumerBuild.FAILED);
             drainPool = isolatedManager.pools().get("DRAIN-POOL");
             drainPool.submit(ordered("g", "head"));
             drainPool.submit(ordered("g", "sibling"));
@@ -1162,7 +1163,7 @@ class RouterApiTest {
             // Removed from config: leaves routing at once but keeps draining.
             isolatedManager.reconfigure(
                     new io.flowcatalyst.router.config.RouterConfig(java.util.List.of(), java.util.List.of()),
-                    q -> Optional.empty());
+                    q -> ConsumerBuild.FAILED);
             assertThat(isolatedManager.pools()).doesNotContainKey("DRAIN-POOL");
 
             var body = json(isolatedHttp.get("/router/monitoring/blocked-groups"));

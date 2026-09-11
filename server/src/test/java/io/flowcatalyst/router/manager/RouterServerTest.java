@@ -14,6 +14,7 @@ import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.PoolMetrics;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.LockStore;
@@ -108,9 +109,9 @@ class RouterServerTest {
 
     private LeaderElection election;
 
-    private Optional<Consumer> build(QueueConfig queue) {
+    private ConsumerBuild build(QueueConfig queue) {
         if (unbuildable.contains(queue.queueName())) {
-            return Optional.empty();
+            return ConsumerBuild.FAILED;
         }
         int delay = buildDelayMillis.get();
         if (delay > 0) {
@@ -118,12 +119,12 @@ class RouterServerTest {
                 Thread.sleep(Duration.ofMillis(delay));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return Optional.empty();
+                return ConsumerBuild.FAILED;
             }
         }
         var consumer = new FakeConsumer(queue.queueName());
         built.add(consumer);
-        return Optional.of(consumer);
+        return ConsumerBuild.of(consumer);
     }
 
     @Test
@@ -278,6 +279,40 @@ class RouterServerTest {
     }
 
     @Test
+    @DisplayName("owner ruling 2026-09-11: a queue that does not exist yet raises no warning and never counts as stalled, past the stall threshold")
+    void missingQueueIsNotAHealthProblem() {
+        // Mutant: fold ConsumerBuild.Missing into applyConsumers' Failed
+        // branch → the CONFIGURATION warning below reappears. Mutant: drop
+        // this from RouterServer#stalledConsumers → irrelevant here since no
+        // loop is ever started for a missing queue in the first place, but
+        // the assertion still pins "never marks the router unhealthy".
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var localManager = new RouterManager(isolatedTracker, warnings, mutableClock, cfg ->
+                new Pool(cfg, (msg, recordFailure) -> MediationOutcome.Success.of(200),
+                        NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        RouterManager.ConsumerFactory alwaysMissing = q -> ConsumerBuild.MISSING;
+        var election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
+        var localServer = new RouterServer(localManager, isolatedTracker, election, alwaysMissing,
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://phantom")))),
+                warnings, mutableClock, Duration.ofSeconds(1));
+        try {
+            localServer.start();
+
+            assertThat(localServer.activeLoops()).as("no consumer to poll it with").isZero();
+            assertThat(warnings.raised).as("a missing queue is not a build failure").isEmpty();
+
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+            localServer.restartStalledLoops(); // the housekeeping tick a real deployment runs every 60s
+
+            assertThat(localServer.stalledConsumers()).as("nothing to be stalled").isEmpty();
+            assertThat(warnings.raised).as("still nothing, well past the stall threshold").isEmpty();
+        } finally {
+            localServer.close();
+        }
+    }
+
+    @Test
     @DisplayName("A-10: a second applyConfiguration() call raises a live pool's concurrency, not just its config record")
     void secondApplyConfigurationAdjustsLivePoolConcurrency() throws InterruptedException {
         // The config-poll task (Router.java, RouterServer.parseConfigPollInterval) exists to
@@ -408,7 +443,7 @@ class RouterServerTest {
         });
         var oneShot = new OneShotThenEmptyConsumer("q://cap");
         election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
-        var localServer = new RouterServer(localManager, isolatedTracker, election, q -> Optional.of(oneShot),
+        var localServer = new RouterServer(localManager, isolatedTracker, election, q -> ConsumerBuild.of(oneShot),
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 1, 0)),
                         List.of(QueueConfig.of("q://cap")))),
                 warnings, mutableClock, Duration.ofSeconds(1));
@@ -500,7 +535,10 @@ class RouterServerTest {
         var original = new FakeConsumer("orders");
         var toHandOut = new java.util.concurrent.ConcurrentLinkedQueue<Consumer>();
         toHandOut.add(original);
-        RouterManager.ConsumerFactory factory = q -> Optional.ofNullable(toHandOut.poll());
+        RouterManager.ConsumerFactory factory = q -> {
+            var next = toHandOut.poll();
+            return next == null ? ConsumerBuild.FAILED : ConsumerBuild.of(next);
+        };
 
         election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
         var fastSupervisor = new ConsumerSupervisor(warnings, mutableClock, Duration.ofMillis(1));
@@ -554,7 +592,10 @@ class RouterServerTest {
         var original = new FakeConsumer("orders");
         var toHandOut = new java.util.concurrent.ConcurrentLinkedQueue<Consumer>();
         toHandOut.add(original);
-        RouterManager.ConsumerFactory factory = q -> Optional.ofNullable(toHandOut.poll());
+        RouterManager.ConsumerFactory factory = q -> {
+            var next = toHandOut.poll();
+            return next == null ? ConsumerBuild.FAILED : ConsumerBuild.of(next);
+        };
 
         election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
         var fastSupervisor = new ConsumerSupervisor(warnings, mutableClock, Duration.ofMillis(1));

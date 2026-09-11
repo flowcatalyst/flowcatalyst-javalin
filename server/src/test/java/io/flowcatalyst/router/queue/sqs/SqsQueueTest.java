@@ -5,13 +5,17 @@ import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer.PollResult;
 import io.flowcatalyst.router.queue.Consumer.PollResult.Delivered;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.SqsException;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -368,6 +372,93 @@ class SqsQueueTest {
 
         assertThat(client.deleteRequests()).isEmpty();
         assertThat(sqs.metrics()).get().extracting(QueueMetrics::nacked).isEqualTo(1L);
+    }
+
+    // --- a queue that does not exist yet (owner ruling 2026-09-11) --------
+
+    @Test
+    @DisplayName("checkedAdopt answers Missing, and closes the client, when the queue does not exist")
+    void checkedAdoptAnswersMissingForANonExistentQueue() {
+        client.failAttributesWith(() -> QueueDoesNotExistException.builder()
+                .message("The specified queue does not exist.").build());
+
+        ConsumerBuild result = SqsQueue.checkedAdopt(client, QUEUE_URL, null, 30);
+
+        assertThat(result).isInstanceOf(ConsumerBuild.Missing.class);
+        assertThat(client.closed).as("nothing holds this client once the queue is missing").isTrue();
+        assertThat(client.receiveRequests()).as("no poll ever issued for a queue that was never adopted").isEmpty();
+    }
+
+    @Test
+    @DisplayName("checkedAdopt checks existence before adopting a queue that IS there")
+    void checkedAdoptBuildsWhenTheQueueExists() {
+        // No attributesError configured: getQueueAttributes succeeds, exactly
+        // as it would for a queue that exists.
+        ConsumerBuild result = SqsQueue.checkedAdopt(client, QUEUE_URL, "orders", 30);
+
+        assertThat(result).isInstanceOf(ConsumerBuild.Built.class);
+        assertThat(((ConsumerBuild.Built) result).consumer().identifier()).isEqualTo("orders");
+        assertThat(client.attributesRequests())
+                .as("the existence check actually asked the broker").hasSize(1);
+        assertThat(client.closed).isFalse();
+    }
+
+    @Test
+    @DisplayName("checkedAdopt builds the consumer anyway when the existence check fails for a reason OTHER than 'does not exist'")
+    void checkedAdoptBuildsOnAnUnrelatedExistenceCheckFailure() {
+        // A transient AWS error (network, throttling, auth) must never
+        // silently stop consumption — the ordinary poll-failure path (and
+        // its CONNECTION warning) covers a genuine outage once polling
+        // starts.
+        client.failAttributesWith(SdkClientException.create("throttled"));
+
+        ConsumerBuild result = SqsQueue.checkedAdopt(client, QUEUE_URL, "orders", 30);
+
+        assertThat(result).as("an unknown existence-check failure must not stop the consumer starting")
+                .isInstanceOf(ConsumerBuild.Built.class);
+        assertThat(client.closed).isFalse();
+    }
+
+    @Test
+    @DisplayName("a poll that finds the queue gone returns QueueMissing, not an exception, and raises nothing")
+    void pollReturnsQueueMissingWhenTheQueueIsDeleted() throws InterruptedException {
+        client.failNextReceiveWith(() -> QueueDoesNotExistException.builder()
+                .message("The specified queue does not exist.").build());
+
+        PollResult result = queue().poll(10);
+
+        assertThat(result).isEqualTo(PollResult.QUEUE_MISSING);
+    }
+
+    /// The code the staging router actually logged (2026-09-04), as a plain
+    /// SqsException rather than the SDK's typed subclass — so recognising
+    /// absence does not depend on the SDK mapping every spelling.
+    private static SqsException legacyNonExistentQueue() {
+        return (SqsException) SqsException.builder()
+                .message("The specified queue does not exist.")
+                .awsErrorDetails(AwsErrorDetails.builder()
+                        .errorCode("AWS.SimpleQueueService.NonExistentQueue").build())
+                .build();
+    }
+
+    @Test
+    @DisplayName("the legacy NonExistentQueue error code also counts as missing, at build and at poll")
+    void legacyNonExistentQueueCodeIsMissingToo() throws InterruptedException {
+        client.failAttributesWith(() -> legacyNonExistentQueue());
+        assertThat(SqsQueue.checkedAdopt(client, QUEUE_URL, null, 30)).isInstanceOf(ConsumerBuild.Missing.class);
+
+        var fresh = new FakeSqsClient();
+        fresh.failNextReceiveWith(() -> legacyNonExistentQueue());
+        assertThat(SqsQueue.adopt(fresh, QUEUE_URL, "orders", 30).poll(10)).isEqualTo(PollResult.QUEUE_MISSING);
+    }
+
+    @Test
+    @DisplayName("any other SqsException from a poll still propagates as a failure")
+    void otherSqsErrorsStillPropagate() {
+        client.failNextReceiveWith(() -> (SqsException) SqsException.builder().message("denied")
+                .awsErrorDetails(AwsErrorDetails.builder().errorCode("AccessDenied").build()).build());
+
+        assertThatThrownBy(() -> queue().poll(10)).isInstanceOf(SqsException.class);
     }
 
     // --- close / stopped -------------------------------------------------------

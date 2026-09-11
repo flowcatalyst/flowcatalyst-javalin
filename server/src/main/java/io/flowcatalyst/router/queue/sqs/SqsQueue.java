@@ -4,6 +4,7 @@ import tools.jackson.core.JacksonException;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
@@ -16,8 +17,10 @@ import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
 import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.SqsException;
 
 import java.io.InterruptedIOException;
 import java.net.URI;
@@ -147,6 +150,83 @@ public final class SqsQueue implements Consumer {
         }
     }
 
+    /// The production [io.flowcatalyst.router.manager.RouterManager.ConsumerFactory]
+    /// entry point for SQS (owner ruling 2026-09-11, `docs/spec/router.md`
+    /// §7.2): builds its own region-aware client, exactly like [#create],
+    /// then checks the queue exists before adopting it.
+    public static ConsumerBuild createChecked(String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
+        var builder = SqsClient.builder();
+        regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
+        return checkedAdopt(builder.build(), queueUrl, configuredName, visibilityTimeoutSeconds);
+    }
+
+    /// As [#createChecked], but over an already-built client — the hook
+    /// [io.flowcatalyst.router.queue.sqs.SqsQueueTest] uses with a scripted
+    /// fake client, since there is no SQS in the test environment and
+    /// CONVENTIONS §7 rules out a mocking library.
+    ///
+    /// Building a consumer for an SQS queue first checks the queue exists
+    /// (`GetQueueAttributes` on its URL — [#exists]). Missing ⇒ no consumer
+    /// is built at all: [ConsumerBuild.Missing], a third outcome distinct
+    /// from built and failed, never a warning-raising failure.
+    ///
+    /// A non-"does not exist" failure of the existence check itself
+    /// (network, throttling, auth) is deliberately **not** treated as
+    /// missing: the consumer is adopted exactly as if no check had been
+    /// made, so a transient AWS error can never silently stop consumption —
+    /// the ordinary poll-failure path (and its CONNECTION warning) covers a
+    /// genuine outage once polling starts.
+    static ConsumerBuild checkedAdopt(SqsClient client, String queueUrl, String configuredName,
+                                      int visibilityTimeoutSeconds) {
+        try {
+            if (!exists(client, queueUrl)) {
+                client.close();
+                return ConsumerBuild.MISSING;
+            }
+        } catch (RuntimeException e) {
+            log.atDebug().setMessage("sqs queue-existence check failed; building the consumer anyway")
+                    .addKeyValue("url", queueUrl)
+                    .addKeyValue("reason", e.toString())
+                    .log();
+        }
+        return ConsumerBuild.of(adopt(client, queueUrl, configuredName, visibilityTimeoutSeconds));
+    }
+
+    /// Whether `queueUrl` currently exists on the broker. `GetQueueAttributes`
+    /// is the cheapest call that both confirms existence and reaches the
+    /// broker at all — `QueueDoesNotExistException` is the SDK's own signal
+    /// for "no such queue" and is the only outcome this treats as absence;
+    /// every other exception propagates for the caller to judge.
+    static boolean exists(SqsClient client, String queueUrl) {
+        try {
+            client.getQueueAttributes(GetQueueAttributesRequest.builder()
+                    .queueUrl(queueUrl)
+                    .attributeNames(QueueAttributeName.QUEUE_ARN)
+                    .build());
+            return true;
+        } catch (SqsException e) {
+            if (isQueueMissing(e)) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    /// Both spellings AWS uses for "no such queue": the JSON protocol's
+    /// `QueueDoesNotExist` (which the SDK maps to [QueueDoesNotExistException])
+    /// and the legacy query-protocol `AWS.SimpleQueueService.NonExistentQueue`,
+    /// the code the staging router actually logged (2026-09-04). Matching the
+    /// raw code too means a gap in the SDK's mapping cannot turn an expected
+    /// absence back into a paging CONNECTION warning.
+    static boolean isQueueMissing(SqsException e) {
+        if (e instanceof QueueDoesNotExistException) {
+            return true;
+        }
+        var details = e.awsErrorDetails();
+        var code = details == null ? null : details.errorCode();
+        return "QueueDoesNotExist".equals(code) || "AWS.SimpleQueueService.NonExistentQueue".equals(code);
+    }
+
     /// Extracts the AWS region from an SQS queue URL whose host is
     /// `sqs.<region>.amazonaws.com` (or `sqs-fips.<region>.amazonaws.com[.cn]`).
     /// Empty when `uri` isn't a recognisable SQS endpoint (e.g. a non-AWS
@@ -208,6 +288,14 @@ public final class SqsQueue implements Consumer {
             if (causedByInterruption(e)) {
                 Thread.currentThread().interrupt();
                 throw new InterruptedException("sqs ReceiveMessage interrupted");
+            }
+            if (e instanceof SqsException sqs && isQueueMissing(sqs)) {
+                // The queue was deleted after this consumer started polling it
+                // (owner ruling 2026-09-11, `docs/spec/router.md` §7.2): an
+                // expected outcome, not a broker failure — no CONNECTION
+                // warning. ConsumerLoop ends its loop and detaches this consumer
+                // so the next config sync rechecks the queue.
+                return PollResult.QUEUE_MISSING;
             }
             throw e;
         }

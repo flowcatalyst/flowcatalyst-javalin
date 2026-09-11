@@ -4,6 +4,7 @@ import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Acknowledger;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
@@ -130,7 +131,7 @@ class QueueBrokerTest {
             manager.reconfigure(
                     new io.flowcatalyst.router.config.RouterConfig(java.util.List.of(),
                             java.util.List.of(io.flowcatalyst.router.config.QueueConfig.of("queue-1"))),
-                    queue -> java.util.Optional.of(fakeConsumer));
+                    queue -> ConsumerBuild.of(fakeConsumer));
 
             var localBroker = new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker, clock);
             var message = message("m1", "b1");
@@ -138,7 +139,7 @@ class QueueBrokerTest {
 
             // The queue disappears from config: the OLD consumer must not be
             // torn down while the tracker still references it.
-            manager.reconfigure(io.flowcatalyst.router.config.RouterConfig.EMPTY, queue -> java.util.Optional.empty());
+            manager.reconfigure(io.flowcatalyst.router.config.RouterConfig.EMPTY, queue -> ConsumerBuild.FAILED);
 
             assertThat(manager.consumer("queue-1")).as("still resolvable while lingering").isPresent();
             assertThat(fakeConsumer.closed).as("not closed while the tracker still references it").isFalse();

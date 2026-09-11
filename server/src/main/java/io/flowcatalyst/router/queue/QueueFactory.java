@@ -22,7 +22,10 @@ import java.util.Optional;
 /// A [RouterManager.ConsumerFactory]: [#create] never throws. One queue whose
 /// backend cannot be built — an unknown scheme, an unreachable broker, a
 /// malformed URI — must not stop the others from starting, so every failure
-/// is reported as [Optional#empty()] and left for the reconfigure to surface.
+/// is reported as [ConsumerBuild.Failed] and left for the reconfigure to
+/// surface. An SQS queue the control plane names but the broker does not
+/// have yet is a distinct, non-failure outcome — [ConsumerBuild.Missing],
+/// owner ruling 2026-09-11, `docs/spec/router.md` §7.2.
 public final class QueueFactory implements RouterManager.ConsumerFactory {
 
     private static final Logger log = LoggerFactory.getLogger(QueueFactory.class);
@@ -63,21 +66,24 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
     }
 
     @Override
-    public Optional<Consumer> create(QueueConfig config) {
+    public ConsumerBuild create(QueueConfig config) {
         var scheme = resolveScheme(config.queueUri());
         try {
             return switch (scheme) {
-                case SQS -> Optional.of(SqsQueue.create(
-                        config.queueUri(), config.queueName(), config.visibilityTimeout()));
+                // SqsQueue#createChecked is the owner-ruling third outcome
+                // (`docs/spec/router.md` §7.2): a queue the control plane
+                // lists but SQS does not have yet answers
+                // ConsumerBuild.Missing, never Failed.
+                case SQS -> SqsQueue.createChecked(config.queueUri(), config.queueName(), config.visibilityTimeout());
                 case POSTGRES -> createPostgres(config);
-                case NATS -> Optional.of(new NatsQueue(config.queueUri()));
+                case NATS -> ConsumerBuild.of(new NatsQueue(config.queueUri()));
                 default -> {
                     log.atError().setMessage("queue uses a scheme with no registered consumer")
                             .addKeyValue("queue", config.queueName())
                             .addKeyValue("scheme", scheme)
                             .addKeyValue("url", config.queueUri())
                             .log();
-                    yield Optional.empty();
+                    yield ConsumerBuild.FAILED;
                 }
             };
         } catch (RuntimeException e) {
@@ -88,7 +94,7 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
                     .addKeyValue("queue", config.queueName())
                     .setCause(e)
                     .log();
-            return Optional.empty();
+            return ConsumerBuild.FAILED;
         }
     }
 
@@ -113,16 +119,16 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
     /// a bare scheme sentinel, or a URI that does not even parse) has
     /// nothing of its own to connect with and falls back to [#dataSource],
     /// matching the pre-existing behaviour when a database was configured.
-    private Optional<Consumer> createPostgres(QueueConfig config) {
+    private ConsumerBuild createPostgres(QueueConfig config) {
         var ownConnection = connectionUrl(config.queueUri());
         if (ownConnection.isEmpty() || sameConnection(ownConnection.get(), sharedDatabaseUrl)) {
             if (dataSource == null) {
                 log.atError().setMessage("queue needs postgres but no database is configured")
                         .addKeyValue("queue", config.queueName())
                         .log();
-                return Optional.empty();
+                return ConsumerBuild.FAILED;
             }
-            return Optional.of(new PostgresQueue(dataSource, config.queueName(),
+            return ConsumerBuild.of(new PostgresQueue(dataSource, config.queueName(),
                     Duration.ofSeconds(config.visibilityTimeout())));
         }
 
@@ -152,7 +158,7 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
         // reintroduces the serialisation this fix removes, on a pool
         // nothing else ever contends for. `ownPool` itself is still passed
         // as the owned resource so it gets closed with the consumer.
-        return Optional.of(new PostgresQueue(ownPool.hikari(), config.queueName(),
+        return ConsumerBuild.of(new PostgresQueue(ownPool.hikari(), config.queueName(),
                 Duration.ofSeconds(config.visibilityTimeout()), ownPool));
     }
 

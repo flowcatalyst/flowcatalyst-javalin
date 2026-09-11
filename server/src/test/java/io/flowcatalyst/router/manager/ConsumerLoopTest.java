@@ -251,6 +251,27 @@ class ConsumerLoopTest {
     }
 
     @Test
+    @DisplayName("owner ruling 2026-09-11: a poll answering QueueMissing ends the loop, detaches the consumer, and raises no CONNECTION warning")
+    void queueMissingEndsTheLoopAndDetachesWithoutWarning() {
+        // Mutant: make ConsumerLoop treat QueueMissing like an ordinary poll
+        // failure (or fall into `default` and keep looping) → either this
+        // loop never stops, or `warnings.raised` gains a CONNECTION entry —
+        // both fail the assertions below.
+        consumer.answerQueueMissingOnNextPoll();
+        var manager = manager();
+        start(manager);
+
+        await(() -> !loopThread.isAlive());
+
+        assertThat(warnings.raised).as("a missing queue is not a connection failure").isEmpty();
+        assertThat(manager.activeConsumer("queue-1"))
+                .as("detached exactly as a reconfigure's stopConsumer would do").isEmpty();
+        // Still resolvable for ack/nack via the lingering set — the same
+        // treatment stopConsumer gives a queue a reconfigure removes.
+        assertThat(manager.consumer("queue-1")).isPresent();
+    }
+
+    @Test
     @DisplayName("the loop stops on interruption and restores the flag")
     void interruptionStopsTheLoop() {
         consumer.deliver(List.of());
@@ -668,6 +689,7 @@ class ConsumerLoopTest {
         private final AtomicBoolean stopped = new AtomicBoolean();
         private volatile RuntimeException failure;
         private volatile boolean failForever;
+        private volatile boolean answerQueueMissingNext;
         final AtomicInteger polls = new AtomicInteger();
 
         ScriptedConsumer(String id) {
@@ -678,6 +700,12 @@ class ConsumerLoopTest {
             synchronized (batches) {
                 batches.addLast(batch);
             }
+        }
+
+        /// The next [#poll] answers [PollResult.QueueMissing] instead of
+        /// consulting the script (owner ruling 2026-09-11).
+        void answerQueueMissingOnNextPoll() {
+            answerQueueMissingNext = true;
         }
 
         /// Fails this poll and every poll after it.
@@ -706,6 +734,10 @@ class ConsumerLoopTest {
             polls.incrementAndGet();
             if (stopped.get()) {
                 return PollResult.STOPPED;
+            }
+            if (answerQueueMissingNext) {
+                answerQueueMissingNext = false;
+                return PollResult.QUEUE_MISSING;
             }
             var thrown = failure;
             if (thrown != null) {

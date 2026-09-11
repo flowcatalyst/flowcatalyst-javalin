@@ -5,6 +5,7 @@ import io.flowcatalyst.router.observability.Warnings;
 import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -71,7 +72,7 @@ class ConsumerSupervisorTest {
         var replacement = supervisor.restart("q://1", config, stalled, queue -> {
             var fresh = new FakeConsumer(queue.queueName());
             built.add(fresh);
-            return Optional.of(fresh);
+            return ConsumerBuild.of(fresh);
         });
 
         assertThat(replacement).isPresent();
@@ -92,7 +93,7 @@ class ConsumerSupervisorTest {
         // some point that is not a warning any more.
         for (int i = 0; i < ConsumerSupervisor.CRITICAL_AFTER_ATTEMPTS + 1; i++) {
             supervisor.restart("q://1", config, new FakeConsumer("q://1"),
-                    queue -> Optional.of(new FakeConsumer(queue.queueName())));
+                    queue -> ConsumerBuild.of(new FakeConsumer(queue.queueName())));
         }
 
         assertThat(warnings.raised).hasSize(ConsumerSupervisor.CRITICAL_AFTER_ATTEMPTS + 1);
@@ -121,16 +122,30 @@ class ConsumerSupervisorTest {
         // A rebuild that keeps succeeding points at broker or network health;
         // one that cannot rebuild at all points at configuration.
         supervisor.restart("q://1", config, new FakeConsumer("q://1"),
-                queue -> Optional.of(new FakeConsumer(queue.queueName())));
+                queue -> ConsumerBuild.of(new FakeConsumer(queue.queueName())));
         restartFailing();
 
         assertThat(warnings.raised.getFirst()).contains("has been rebuilt");
         assertThat(warnings.raised.getLast()).contains("cannot be rebuilt");
     }
 
+    @Test
+    @DisplayName("a rebuild that answers Missing is treated as not rebuilt, same as Failed")
+    void missingBuildOutcomeIsTreatedAsNotRebuilt() throws Exception {
+        // Narrow edge case: the queue existed when this consumer stalled but
+        // has since been deleted. ConsumerSupervisor#restart's contract is
+        // "rebuilt or not" — it has no CONSUMER_HEALTH-missing warning of its
+        // own, so Missing collapses into the same "cannot be rebuilt" outcome
+        // Failed does, without inventing a meaning this call site never uses.
+        var replacement = supervisor.restart("q://1", config, new FakeConsumer("q://1"), queue -> ConsumerBuild.MISSING);
+
+        assertThat(replacement).isEmpty();
+        assertThat(warnings.raised.getFirst()).contains("cannot be rebuilt");
+    }
+
     private void restartFailing() {
         try {
-            supervisor.restart("q://1", config, new FakeConsumer("q://1"), queue -> Optional.empty());
+            supervisor.restart("q://1", config, new FakeConsumer("q://1"), queue -> ConsumerBuild.FAILED);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -140,7 +155,7 @@ class ConsumerSupervisorTest {
     @DisplayName("recovery clears the count, so the next stall starts from zero")
     void recoveryClearsTheCount() throws Exception {
         supervisor.restart("q://1", config, new FakeConsumer("q://1"),
-                queue -> Optional.of(new FakeConsumer(queue.queueName())));
+                queue -> ConsumerBuild.of(new FakeConsumer(queue.queueName())));
         assertThat(supervisor.restartAttempts("q://1")).isOne();
 
         supervisor.recovered("q://1");
@@ -152,7 +167,7 @@ class ConsumerSupervisorTest {
     @DisplayName("queues escalate independently of one another")
     void queuesAreIndependent() throws Exception {
         supervisor.restart("q://1", config, new FakeConsumer("q://1"),
-                queue -> Optional.of(new FakeConsumer(queue.queueName())));
+                queue -> ConsumerBuild.of(new FakeConsumer(queue.queueName())));
 
         assertThat(supervisor.restartAttempts("q://1")).isOne();
         assertThat(supervisor.restartAttempts("q://2")).isZero();

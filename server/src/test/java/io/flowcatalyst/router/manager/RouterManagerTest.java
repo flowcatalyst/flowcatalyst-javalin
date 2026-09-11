@@ -13,6 +13,7 @@ import io.flowcatalyst.router.pool.Pool;
 import io.flowcatalyst.router.pool.PoolMetrics;
 import io.flowcatalyst.router.pool.QueuedMessage;
 import io.flowcatalyst.router.queue.Consumer;
+import io.flowcatalyst.router.queue.ConsumerBuild;
 import io.flowcatalyst.router.queue.QueueMetrics;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationOutcome;
@@ -147,7 +148,7 @@ class RouterManagerTest {
             localManager.reconfigure(
                     new RouterConfig(List.of(), List.of(new QueueConfig("nats://host?stream=S1&consumer=router",
                             "BENCH-1", 0, 30))),
-                    queue -> Optional.of(natsLike));
+                    queue -> ConsumerBuild.of(natsLike));
 
             // A poll stamps QueueIdentifier from Identifier() (§7.1), never
             // the config queue name.
@@ -169,7 +170,7 @@ class RouterManagerTest {
 
             // After a reconfigure drops the queue, the identifier index no
             // longer resolves it once nothing lingers on the tracker's behalf.
-            localManager.reconfigure(RouterConfig.EMPTY, queue -> Optional.empty());
+            localManager.reconfigure(RouterConfig.EMPTY, queue -> ConsumerBuild.FAILED);
             localManager.retireLingeringConsumers();
             assertThat(localManager.consumer("S1/router"))
                     .as("gone from the identifier index once retired").isEmpty();
@@ -474,7 +475,7 @@ class RouterManagerTest {
         // configuredPoolCodes; the synthesis path in poolFor() never runs
         // for a code the configuration already names.
         eviction.reconfigure(new RouterConfig(List.of(new PoolSpec("acme-DEFAULT-POOL", 4, 0)), List.of()),
-                q -> Optional.empty());
+                q -> ConsumerBuild.FAILED);
 
         eviction.route(List.of(message("m1", "b1", "acme-DEFAULT-POOL")), consumer);
         await(() -> eviction.pools().get("acme-DEFAULT-POOL").queueSize() == 0);

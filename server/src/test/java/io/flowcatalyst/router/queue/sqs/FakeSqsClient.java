@@ -26,11 +26,12 @@ final class FakeSqsClient implements SqsClient {
     private final Deque<ReceiveMessageResponse> receiveResponses = new ArrayDeque<>();
     private final List<ReceiveMessageRequest> receiveRequests = new ArrayList<>();
     private final List<DeleteMessageRequest> deleteRequests = new ArrayList<>();
+    private final List<GetQueueAttributesRequest> attributesRequests = new ArrayList<>();
 
     private Supplier<RuntimeException> receiveError;
     private RuntimeException deleteError;
     private Map<QueueAttributeName, String> attributes;
-    private RuntimeException attributesError;
+    private Supplier<RuntimeException> attributesError;
 
     void enqueueReceive(ReceiveMessageResponse response) {
         receiveResponses.addLast(response);
@@ -48,8 +49,23 @@ final class FakeSqsClient implements SqsClient {
         this.attributes = attributes;
     }
 
-    void failAttributesWith(RuntimeException error) {
+    /// Every call to `getQueueAttributes` (not just the next one) fails with
+    /// a fresh instance from `error` — the existence-check tests recheck
+    /// repeatedly and each attempt needs its own exception, not one thrown
+    /// once and then a `null` NPE on the second call.
+    void failAttributesWith(Supplier<RuntimeException> error) {
         this.attributesError = error;
+    }
+
+    void failAttributesWith(RuntimeException error) {
+        this.attributesError = () -> error;
+    }
+
+    /// Undoes [#failAttributesWith] — the existence-check tests that watch a
+    /// queue transition from missing to present need this rather than a
+    /// second [FakeSqsClient].
+    void clearAttributesError() {
+        this.attributesError = null;
     }
 
     List<ReceiveMessageRequest> receiveRequests() {
@@ -58,6 +74,10 @@ final class FakeSqsClient implements SqsClient {
 
     List<DeleteMessageRequest> deleteRequests() {
         return deleteRequests;
+    }
+
+    List<GetQueueAttributesRequest> attributesRequests() {
+        return attributesRequests;
     }
 
     @Override
@@ -83,8 +103,9 @@ final class FakeSqsClient implements SqsClient {
 
     @Override
     public GetQueueAttributesResponse getQueueAttributes(GetQueueAttributesRequest request) {
+        attributesRequests.add(request);
         if (attributesError != null) {
-            throw attributesError;
+            throw attributesError.get();
         }
         return GetQueueAttributesResponse.builder()
                 .attributes(attributes == null ? Map.of() : attributes)

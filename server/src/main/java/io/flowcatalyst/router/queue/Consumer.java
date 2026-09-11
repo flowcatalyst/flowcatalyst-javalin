@@ -109,7 +109,21 @@ public interface Consumer extends Acknowledger, AutoCloseable {
         record Stopped() implements PollResult {
         }
 
+        /// The queue itself no longer exists on the broker (owner ruling
+        /// 2026-09-11, `docs/spec/router-env.md`): Integral's control plane
+        /// creates an SQS queue lazily on its first send, so a queue it still
+        /// lists can be deleted and reappear later under the same name.
+        /// Distinct from [Stopped] — the *consumer* was not asked to stop,
+        /// the *queue* is gone — and distinct from an ordinary poll failure:
+        /// this is an expected outcome, not a broker error, so it must never
+        /// raise the CONNECTION warning a genuine connection failure does.
+        /// [io.flowcatalyst.router.manager.ConsumerLoop] ends its loop and
+        /// detaches the consumer so the next config sync rechecks the queue.
+        record QueueMissing() implements PollResult {
+        }
+
         PollResult STOPPED = new Stopped();
+        PollResult QUEUE_MISSING = new QueueMissing();
 
         static PollResult of(List<QueuedMessage> messages) {
             return new Delivered(messages);
