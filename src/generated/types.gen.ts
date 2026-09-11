@@ -839,6 +839,10 @@ export type CreateEventTypeRequest = {
      */
     clientId?: string;
     /**
+     * Events of this type are per-client
+     */
+    clientScoped?: boolean;
+    /**
      * Event type code in application:subdomain:aggregate:event format
      */
     code: string;
@@ -851,7 +855,7 @@ export type CreateEventTypeRequest = {
      * Optional JSON Schema for the initial spec version
      */
     schema?: unknown;
-    [key: string]: unknown | string | undefined;
+    [key: string]: unknown | string | boolean | undefined;
 };
 
 export type CreateIdentityProviderRequest = {
@@ -879,7 +883,7 @@ export type CreateIdentityProviderRequest = {
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
-    oidcMultiTenant: boolean;
+    oidcMultiTenant?: boolean;
     /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
@@ -950,6 +954,7 @@ export type CreateOAuthClientRequest = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
@@ -964,6 +969,32 @@ export type CreateOAuthClientResponse = {
     readonly $schema?: string;
     client: OAuthClientResponse;
     clientSecret?: string;
+};
+
+export type CreatePortalAppRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId: string;
+    clientType?: 'CONFIDENTIAL' | 'PUBLIC';
+    code: string;
+    description?: string;
+    name: string;
+    redirectUris?: Array<string>;
+    [key: string]: unknown | string | 'CONFIDENTIAL' | 'PUBLIC' | Array<string> | undefined;
+};
+
+export type CreatePortalAppResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientSecret?: string;
+    clientType: string;
+    oauthClientId: string;
+    oauthClientRowId: string;
+    portalApp: PortalAppResponse;
 };
 
 export type CreatePrincipalRequest = {
@@ -1103,7 +1134,7 @@ export type CreateSubscriptionRequest = {
     maxAgeSeconds?: number;
     maxRetries?: number;
     /**
-     * Dispatch mode (IMMEDIATE, NEXT_ON_ERROR, BLOCK_ON_ERROR)
+     * Dispatch mode. Omitted means NEXT_ON_ERROR: a message group is delivered in sequence, one at a time, moving on past a failure. BLOCK_ON_ERROR stops the group at a failure instead; IMMEDIATE opts out of ordering entirely. Ordering applies only to messages that carry a message group.
      */
     mode?: string;
     name: string;
@@ -1496,6 +1527,12 @@ export type IdpRoleMappingResponse = {
     updatedAt: string;
 };
 
+export type LinkedOAuthClient = {
+    clientId: string;
+    clientName: string;
+    id: string;
+};
+
 export type ListOutputBody = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1627,8 +1664,11 @@ export type OAuthClientResponse = {
     grantTypes: Array<string>;
     id: string;
     pkceRequired: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
+    previousSecretExpiresAt?: string;
+    previousSecretLastUsedAt?: string;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
     updatedAt: string;
@@ -1678,6 +1718,49 @@ export type PermissionResponse = {
     permission: string;
 };
 
+export type PortalAppListResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    portalApps: Array<PortalAppResponse>;
+};
+
+export type PortalAppResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    active: boolean;
+    clientId: string;
+    code: string;
+    createdAt: string;
+    description?: string;
+    id: string;
+    name: string;
+    oauthClients: Array<LinkedOAuthClient>;
+    updatedAt: string;
+    userCount: number;
+};
+
+export type PortalUserAppGrantBody = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId: string;
+    portalAppCode: string;
+    [key: string]: unknown | string | undefined;
+};
+
+export type PortalUserAppRef = {
+    code: string;
+    grantedAt: string;
+    id: string;
+    name: string;
+    source: string;
+};
+
 export type PortalUserClientBody = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1688,13 +1771,17 @@ export type PortalUserClientBody = {
 };
 
 export type PortalUserListItem = {
+    apps: Array<PortalUserAppRef>;
     createdAt: string;
     email: string;
     hasPassword: boolean;
     identityId: string;
+    inviteExpiresAt?: string;
+    invitedAt?: string;
     lastLoginAt?: string;
     name: string;
     source: string;
+    state: 'INVITED' | 'INVITE_EXPIRED' | 'ACTIVE' | 'SUSPENDED';
     status: string;
     updatedAt: string;
 };
@@ -1704,7 +1791,10 @@ export type PortalUserListResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    page: number;
     portalUsers: Array<PortalUserListItem>;
+    size: number;
+    total: number;
 };
 
 export type PortalUserRequest = {
@@ -1715,6 +1805,7 @@ export type PortalUserRequest = {
     clientId: string;
     email: string;
     name?: string;
+    portalAppCode?: string;
     redirectUri?: string;
     returnInviteLink?: boolean;
     [key: string]: unknown | string | boolean | undefined;
@@ -1730,7 +1821,9 @@ export type PortalUserResponse = {
     identityId: string;
     inviteUrl?: string;
     invited: boolean;
+    portalAppCode?: string;
     ssoManaged?: boolean;
+    state: 'INVITED' | 'INVITE_EXPIRED' | 'ACTIVE' | 'SUSPENDED';
 };
 
 export type PrincipalAvailableApplication = {
@@ -1889,6 +1982,10 @@ export type RawDispatchJobResponse = {
 };
 
 export type RawEventResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
     causationId?: string;
     clientId?: string;
     contextData?: Array<ContextEntryDto>;
@@ -2723,9 +2820,13 @@ export type UpdateEventTypeRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     */
+    clientScoped?: boolean;
     description?: string;
     name: string;
-    [key: string]: unknown | string | undefined;
+    [key: string]: unknown | string | boolean | undefined;
 };
 
 export type UpdateIdentityProviderRequest = {
@@ -2780,10 +2881,23 @@ export type UpdateOAuthClientRequest = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
     [key: string]: unknown | string | Array<string> | boolean | Array<string> | Array<string> | Array<string> | Array<string> | Array<string> | undefined;
+};
+
+export type UpdatePortalAppRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    active?: boolean;
+    clientId: string;
+    description?: string;
+    name?: string;
+    [key: string]: unknown | string | boolean | undefined;
 };
 
 export type UpdatePrincipalRequest = {
@@ -3396,6 +3510,10 @@ export type CreateEventTypeRequestWritable = {
      */
     clientId?: string;
     /**
+     * Events of this type are per-client
+     */
+    clientScoped?: boolean;
+    /**
      * Event type code in application:subdomain:aggregate:event format
      */
     code: string;
@@ -3408,7 +3526,7 @@ export type CreateEventTypeRequestWritable = {
      * Optional JSON Schema for the initial spec version
      */
     schema?: unknown;
-    [key: string]: unknown | string | undefined;
+    [key: string]: unknown | string | boolean | undefined;
 };
 
 export type CreateIdentityProviderRequestWritable = {
@@ -3432,7 +3550,7 @@ export type CreateIdentityProviderRequestWritable = {
     oidcClientSecretRef?: string;
     oidcIssuerPattern?: string;
     oidcIssuerUrl?: string;
-    oidcMultiTenant: boolean;
+    oidcMultiTenant?: boolean;
     /**
      * Client to link on mappings that are new or not yet linked to a primary client
      */
@@ -3491,6 +3609,7 @@ export type CreateOAuthClientRequestWritable = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     principalId?: string;
@@ -3501,6 +3620,24 @@ export type CreateOAuthClientRequestWritable = {
 export type CreateOAuthClientResponseWritable = {
     client: OAuthClientResponseWritable;
     clientSecret?: string;
+};
+
+export type CreatePortalAppRequestWritable = {
+    clientId: string;
+    clientType?: 'CONFIDENTIAL' | 'PUBLIC';
+    code: string;
+    description?: string;
+    name: string;
+    redirectUris?: Array<string>;
+    [key: string]: unknown | string | 'CONFIDENTIAL' | 'PUBLIC' | Array<string> | undefined;
+};
+
+export type CreatePortalAppResponseWritable = {
+    clientSecret?: string;
+    clientType: string;
+    oauthClientId: string;
+    oauthClientRowId: string;
+    portalApp: PortalAppResponseWritable;
 };
 
 export type CreatePrincipalRequestWritable = {
@@ -3612,7 +3749,7 @@ export type CreateSubscriptionRequestWritable = {
     maxAgeSeconds?: number;
     maxRetries?: number;
     /**
-     * Dispatch mode (IMMEDIATE, NEXT_ON_ERROR, BLOCK_ON_ERROR)
+     * Dispatch mode. Omitted means NEXT_ON_ERROR: a message group is delivered in sequence, one at a time, moving on past a failure. BLOCK_ON_ERROR stops the group at a failure instead; IMMEDIATE opts out of ordering entirely. Ordering applies only to messages that carry a message group.
      */
     mode?: string;
     name: string;
@@ -3902,8 +4039,11 @@ export type OAuthClientResponseWritable = {
     grantTypes: Array<string>;
     id: string;
     pkceRequired: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris: Array<string>;
+    previousSecretExpiresAt?: string;
+    previousSecretLastUsedAt?: string;
     redirectUris: Array<string>;
     serviceAccountPrincipalId?: string;
     updatedAt: string;
@@ -3937,19 +4077,46 @@ export type PermissionResponseWritable = {
     permission: string;
 };
 
+export type PortalAppListResponseWritable = {
+    portalApps: Array<PortalAppResponseWritable>;
+};
+
+export type PortalAppResponseWritable = {
+    active: boolean;
+    clientId: string;
+    code: string;
+    createdAt: string;
+    description?: string;
+    id: string;
+    name: string;
+    oauthClients: Array<LinkedOAuthClient>;
+    updatedAt: string;
+    userCount: number;
+};
+
+export type PortalUserAppGrantBodyWritable = {
+    clientId: string;
+    portalAppCode: string;
+    [key: string]: unknown | string;
+};
+
 export type PortalUserClientBodyWritable = {
     clientId: string;
     [key: string]: unknown | string;
 };
 
 export type PortalUserListResponseWritable = {
+    page: number;
     portalUsers: Array<PortalUserListItem>;
+    size: number;
+    total: number;
 };
 
 export type PortalUserRequestWritable = {
     clientId: string;
     email: string;
     name?: string;
+    portalAppCode?: string;
     redirectUri?: string;
     returnInviteLink?: boolean;
     [key: string]: unknown | string | boolean | undefined;
@@ -3961,7 +4128,9 @@ export type PortalUserResponseWritable = {
     identityId: string;
     inviteUrl?: string;
     invited: boolean;
+    portalAppCode?: string;
     ssoManaged?: boolean;
+    state: 'INVITED' | 'INVITE_EXPIRED' | 'ACTIVE' | 'SUSPENDED';
 };
 
 export type PrincipalAvailableApplicationsResponseWritable = {
@@ -4034,6 +4203,22 @@ export type ProvisionLoginClientRequestWritable = {
 
 export type PublicAllowedResponseWritable = {
     origins: Array<string>;
+};
+
+export type RawEventResponseWritable = {
+    causationId?: string;
+    clientId?: string;
+    contextData?: Array<ContextEntryDto>;
+    correlationId?: string;
+    data?: unknown;
+    deduplicationId?: string;
+    eventType: string;
+    id: string;
+    messageGroup?: string;
+    source: string;
+    specVersion: string;
+    subject?: string;
+    time: string;
 };
 
 export type RegenerateAuthTokenResponseWritable = {
@@ -4448,9 +4633,13 @@ export type UpdateDispatchPoolRequestWritable = {
 };
 
 export type UpdateEventTypeRequestWritable = {
+    /**
+     * Events of this type are per-client; absent leaves it unchanged
+     */
+    clientScoped?: boolean;
     description?: string;
     name: string;
-    [key: string]: unknown | string | undefined;
+    [key: string]: unknown | boolean | string | undefined;
 };
 
 export type UpdateIdentityProviderRequestWritable = {
@@ -4493,10 +4682,19 @@ export type UpdateOAuthClientRequestWritable = {
     defaultScopes?: Array<string>;
     grantTypes?: Array<string>;
     pkceRequired?: boolean;
+    portalAppId?: string;
     portalClientId?: string;
     postLogoutRedirectUris?: Array<string>;
     redirectUris?: Array<string>;
     [key: string]: unknown | Array<string> | boolean | Array<string> | string | Array<string> | Array<string> | Array<string> | Array<string> | undefined;
+};
+
+export type UpdatePortalAppRequestWritable = {
+    active?: boolean;
+    clientId: string;
+    description?: string;
+    name?: string;
+    [key: string]: unknown | boolean | string | undefined;
 };
 
 export type UpdatePrincipalRequestWritable = {
@@ -6898,6 +7096,60 @@ export type ListDispatchJobAttemptsResponses = {
 
 export type ListDispatchJobAttemptsResponse = ListDispatchJobAttemptsResponses[keyof ListDispatchJobAttemptsResponses];
 
+export type CancelDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/cancel';
+};
+
+export type CancelDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CancelDispatchJobError = CancelDispatchJobErrors[keyof CancelDispatchJobErrors];
+
+export type CancelDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DispatchJobResponse;
+};
+
+export type CancelDispatchJobResponse = CancelDispatchJobResponses[keyof CancelDispatchJobResponses];
+
+export type CompleteDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/complete';
+};
+
+export type CompleteDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CompleteDispatchJobError = CompleteDispatchJobErrors[keyof CompleteDispatchJobErrors];
+
+export type CompleteDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DispatchJobResponse;
+};
+
+export type CompleteDispatchJobResponse = CompleteDispatchJobResponses[keyof CompleteDispatchJobResponses];
+
 export type GetDispatchJobRawData = {
     body?: never;
     path: {
@@ -8753,6 +9005,120 @@ export type GetCorsOriginResponses = {
 
 export type GetCorsOriginResponse = GetCorsOriginResponses[keyof GetCorsOriginResponses];
 
+export type ListPortalAppsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Tenant client whose portal apps to list (anchors may omit it for every client's)
+         */
+        clientId?: string;
+    };
+    url: '/api/portal-apps';
+};
+
+export type ListPortalAppsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type ListPortalAppsError = ListPortalAppsErrors[keyof ListPortalAppsErrors];
+
+export type ListPortalAppsResponses = {
+    /**
+     * OK
+     */
+    200: PortalAppListResponse;
+};
+
+export type ListPortalAppsResponse = ListPortalAppsResponses[keyof ListPortalAppsResponses];
+
+export type CreatePortalAppData = {
+    body: CreatePortalAppRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/portal-apps';
+};
+
+export type CreatePortalAppErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type CreatePortalAppError = CreatePortalAppErrors[keyof CreatePortalAppErrors];
+
+export type CreatePortalAppResponses = {
+    /**
+     * Created
+     */
+    201: CreatePortalAppResponse;
+};
+
+export type CreatePortalAppResponse2 = CreatePortalAppResponses[keyof CreatePortalAppResponses];
+
+export type DeletePortalAppData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: {
+        /**
+         * Tenant client that owns the portal app
+         */
+        clientId?: string;
+    };
+    url: '/api/portal-apps/{id}';
+};
+
+export type DeletePortalAppErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type DeletePortalAppError = DeletePortalAppErrors[keyof DeletePortalAppErrors];
+
+export type DeletePortalAppResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type DeletePortalAppResponse = DeletePortalAppResponses[keyof DeletePortalAppResponses];
+
+export type UpdatePortalAppData = {
+    body: UpdatePortalAppRequestWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/portal-apps/{id}';
+};
+
+export type UpdatePortalAppErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type UpdatePortalAppError = UpdatePortalAppErrors[keyof UpdatePortalAppErrors];
+
+export type UpdatePortalAppResponses = {
+    /**
+     * OK
+     */
+    200: PortalAppResponse;
+};
+
+export type UpdatePortalAppResponse = UpdatePortalAppResponses[keyof UpdatePortalAppResponses];
+
 export type ListPortalUsersData = {
     body?: never;
     path?: never;
@@ -8761,6 +9127,22 @@ export type ListPortalUsersData = {
          * Tenant client whose portal identities to list
          */
         clientId?: string;
+        /**
+         * Prefix (TERM%) matched case-insensitively against email and name
+         */
+        q?: string;
+        /**
+         * Only identities granted this portal app
+         */
+        portalAppCode?: string;
+        /**
+         * 0-based page index (default 0)
+         */
+        page?: number;
+        /**
+         * Page size (default 100, max 1000)
+         */
+        size?: number;
     };
     url: '/api/portal-users';
 };
@@ -8866,6 +9248,66 @@ export type ActivatePortalUserResponses = {
 };
 
 export type ActivatePortalUserResponse = ActivatePortalUserResponses[keyof ActivatePortalUserResponses];
+
+export type GrantPortalUserAppData = {
+    body: PortalUserAppGrantBodyWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/portal-users/{id}/apps';
+};
+
+export type GrantPortalUserAppErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GrantPortalUserAppError = GrantPortalUserAppErrors[keyof GrantPortalUserAppErrors];
+
+export type GrantPortalUserAppResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type GrantPortalUserAppResponse = GrantPortalUserAppResponses[keyof GrantPortalUserAppResponses];
+
+export type RevokePortalUserAppData = {
+    body?: never;
+    path: {
+        id: string;
+        portalAppCode: string;
+    };
+    query?: {
+        /**
+         * Tenant client that owns the portal identity and app
+         */
+        clientId?: string;
+    };
+    url: '/api/portal-users/{id}/apps/{portalAppCode}';
+};
+
+export type RevokePortalUserAppErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type RevokePortalUserAppError = RevokePortalUserAppErrors[keyof RevokePortalUserAppErrors];
+
+export type RevokePortalUserAppResponses = {
+    /**
+     * OK
+     */
+    200: StatusChangeResponse;
+};
+
+export type RevokePortalUserAppResponse = RevokePortalUserAppResponses[keyof RevokePortalUserAppResponses];
 
 export type DeactivatePortalUserData = {
     body: PortalUserClientBodyWritable;

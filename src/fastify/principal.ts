@@ -15,6 +15,13 @@ export type PrincipalType = "USER" | "SERVICE";
 export type PrincipalScope = "anchor" | "partner" | "client";
 export type AuthMechanism = "session" | "bearer";
 
+export interface PortalContext {
+	clientId: string;
+	/** The portal app's code (`portal_app_code`); absent for legacy client-wide portals. */
+	appCode?: string;
+	appId?: string;
+}
+
 export interface PrincipalSnapshot<TData = Record<string, unknown>> {
 	id: string;
 	type: PrincipalType;
@@ -37,6 +44,12 @@ export interface PrincipalSnapshot<TData = Record<string, unknown>> {
 	 * restriction and is empty.
 	 */
 	allApplications: boolean;
+	/**
+	 * Present only for portal-plane logins (`id` is then a `ptu_…` portal
+	 * identity): the tenant client, and — for an app-linked portal OAuth
+	 * client — which of its portal apps the user signed in to.
+	 */
+	portal?: PortalContext;
 	mechanism: AuthMechanism;
 	sessionData: TData;
 }

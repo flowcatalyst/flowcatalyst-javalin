@@ -49,3 +49,24 @@ test("legacy scope-as-tier still maps", () => {
 	);
 	assert.equal(snap.scope, "partner");
 });
+
+// Portal-plane logins: the id_token's portal claims survive the merge onto
+// the identity access token and surface as principal.portal.
+test("portal claims surface as principal.portal", async () => {
+	const { mergeIdTokenAuthority } = await import("../../src/fastify/oidc/claims.js");
+	const merged = mergeIdTokenAuthority(
+		{ ...base, sub: "ptu_1" } as FcAccessTokenClaims,
+		{
+			...base,
+			sub: "ptu_1",
+			portal_client_id: "clt_1",
+			portal_app_code: "customer-portal",
+			portal_app_id: "pta_1",
+		},
+	);
+	const snap = claimsToSnapshot(merged, "session");
+	assert.deepEqual(snap.portal, { clientId: "clt_1", appCode: "customer-portal", appId: "pta_1" });
+
+	const platform = claimsToSnapshot({ ...base } as FcAccessTokenClaims, "session");
+	assert.equal(platform.portal, undefined, "non-portal logins carry no portal block");
+});

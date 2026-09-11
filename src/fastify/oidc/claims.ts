@@ -58,6 +58,10 @@ export interface FcAccessTokenClaims extends JWTPayload {
 	 * removed in a future platform release.
 	 */
 	all_applications?: boolean;
+	/** Copied from the ID token on portal-plane logins (see FcIdTokenClaims). */
+	portal_client_id?: string;
+	portal_app_code?: string;
+	portal_app_id?: string;
 }
 
 /**
@@ -90,6 +94,18 @@ export interface FcIdTokenClaims extends JWTPayload {
 	nonce?: string;
 	/** When the user actually signed in (not when the token was minted). */
 	auth_time?: number;
+	/**
+	 * Portal-plane logins: the tenant client whose portal identity signed in
+	 * (`sub` is then a `ptu_…` portal identity).
+	 */
+	portal_client_id?: string;
+	/**
+	 * Portal-plane logins through an app-linked portal OAuth client: the
+	 * portal app's code (the `portalAppCode` your backend sends to
+	 * `/api/portal-users`) and id.
+	 */
+	portal_app_code?: string;
+	portal_app_id?: string;
 }
 
 /**
@@ -124,6 +140,9 @@ export function mergeIdTokenAuthority(
 		roles: id.roles ?? access.roles,
 		applications: id.applications ?? access.applications,
 		all_applications: id.all_applications ?? access.all_applications,
+		...(id.portal_client_id ? { portal_client_id: id.portal_client_id } : {}),
+		...(id.portal_app_code ? { portal_app_code: id.portal_app_code } : {}),
+		...(id.portal_app_id ? { portal_app_id: id.portal_app_id } : {}),
 	};
 }
 
@@ -156,6 +175,15 @@ export function claimsToSnapshot(
 		clients: claims.clients ?? [],
 		roles: claims.roles ?? [],
 		...parseApplicationsClaim(claims.applications, claims.all_applications),
+		...(claims.portal_client_id
+			? {
+					portal: {
+						clientId: claims.portal_client_id,
+						...(claims.portal_app_code ? { appCode: claims.portal_app_code } : {}),
+						...(claims.portal_app_id ? { appId: claims.portal_app_id } : {}),
+					},
+				}
+			: {}),
 		mechanism,
 	};
 }
