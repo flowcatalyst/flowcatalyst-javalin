@@ -230,6 +230,24 @@ export type AssignRolesRequest = {
     [key: string]: unknown | string | Array<string> | undefined;
 };
 
+export type AssignUnassignedBody = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId: string;
+    [key: string]: unknown | string | undefined;
+};
+
+export type AssignUnassignedResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    assigned: number;
+    portalAppCode: string;
+};
+
 export type AttachServiceAccountRequest = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1724,6 +1742,7 @@ export type PortalAppListResponse = {
      */
     readonly $schema?: string;
     portalApps: Array<PortalAppResponse>;
+    unassignedUsers?: number;
 };
 
 export type PortalAppResponse = {
@@ -3147,6 +3166,16 @@ export type AssignRolesRequestWritable = {
     [key: string]: unknown | Array<string>;
 };
 
+export type AssignUnassignedBodyWritable = {
+    clientId: string;
+    [key: string]: unknown | string;
+};
+
+export type AssignUnassignedResponseWritable = {
+    assigned: number;
+    portalAppCode: string;
+};
+
 export type AttachServiceAccountRequestWritable = {
     serviceAccountCode: string;
     serviceAccountId: string;
@@ -4079,6 +4108,7 @@ export type PermissionResponseWritable = {
 
 export type PortalAppListResponseWritable = {
     portalApps: Array<PortalAppResponseWritable>;
+    unassignedUsers?: number;
 };
 
 export type PortalAppResponseWritable = {
@@ -9119,6 +9149,33 @@ export type UpdatePortalAppResponses = {
 
 export type UpdatePortalAppResponse = UpdatePortalAppResponses[keyof UpdatePortalAppResponses];
 
+export type AssignUnassignedPortalUsersData = {
+    body: AssignUnassignedBodyWritable;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/portal-apps/{id}/assign-unassigned';
+};
+
+export type AssignUnassignedPortalUsersErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type AssignUnassignedPortalUsersError = AssignUnassignedPortalUsersErrors[keyof AssignUnassignedPortalUsersErrors];
+
+export type AssignUnassignedPortalUsersResponses = {
+    /**
+     * OK
+     */
+    200: AssignUnassignedResponse;
+};
+
+export type AssignUnassignedPortalUsersResponse = AssignUnassignedPortalUsersResponses[keyof AssignUnassignedPortalUsersResponses];
+
 export type ListPortalUsersData = {
     body?: never;
     path?: never;
@@ -9135,6 +9192,10 @@ export type ListPortalUsersData = {
          * Only identities granted this portal app
          */
         portalAppCode?: string;
+        /**
+         * Only identities granted no portal app (cannot be combined with portalAppCode)
+         */
+        unassigned?: boolean;
         /**
          * 0-based page index (default 0)
          */
