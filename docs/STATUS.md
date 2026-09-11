@@ -13,6 +13,24 @@ observability → router sequence harness → non-HTTP subsystems → shadow run
 cutover rehearsal. Owner smoke test of the UI (portal users) on 2026-09-11:
 fine. Last synced Go commit: `466dc11`.
 
+Progress, 2026-09-11 evening:
+- **Phase 0 done.** `docs/deployments.md`, taken from `../inhance/iac`, covers
+  3 ECS services × np/prod.
+- **Router merged.**
+  - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
+  - The router honours the Rust/Go task definition, including Teams Adaptive
+    Cards (`db7c1bb`).
+- **Owner decision needed:** `docs/spec/deployed-dispatch.md`. Neither Go nor
+  Java has a real dispatch publisher outside `fcdev`; the choice is between
+  options A, B and C, with A recommended.
+- **Next unit (rulings recorded in that spec, §4):**
+  - Honour `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`.
+  - Honour `OIDC_SESSION_TTL`, `OIDC_ACCESS_TOKEN_TTL` and
+    `OIDC_REFRESH_TOKEN_TTL`.
+  - Patch Go to match, via `docs/go-mirror/`.
+  - List `FLOWCATALYST_JWT_PUBLIC_KEY`, `FC_WEBAUTHN_RP_NAME` and
+    `FC_STATIC_DIR` for removal from the IaC.
+
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 
 Go moved four functional commits past our last sync (`1215ad5`):
