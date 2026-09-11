@@ -89,15 +89,16 @@ class PortalIdentityRepositoryTest {
     }
 
     @Test
-    void findByClientReturnsNewestFirst() {
+    void searchWithNoFiltersReturnsTheClientsIdentitiesNewestFirst() {
         String clientId = testClient("list");
         PortalIdentity first = PortalIdentity.create(clientId, "a-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
         persist(first);
         PortalIdentity second = PortalIdentity.create(clientId, "b-" + RUN + "@example.com", null, PortalIdentitySource.INVITE);
         persist(second);
 
-        List<PortalIdentity> listed = repo.findByClient(clientId);
-        assertThat(listed).extracting(PortalIdentity::id).containsExactly(second.id(), first.id());
+        var page = repo.search(new PortalIdentityRepository.SearchFilter(clientId, null, null, 0, 100));
+        assertThat(page.items()).extracting(PortalIdentity::id).containsExactly(second.id(), first.id());
+        assertThat(page.total()).isEqualTo(2);
     }
 
     /// Mutant: the upsert's `ON CONFLICT … DO UPDATE SET` gains `source` /

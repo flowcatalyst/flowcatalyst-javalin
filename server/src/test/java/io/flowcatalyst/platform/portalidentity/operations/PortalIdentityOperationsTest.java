@@ -15,6 +15,8 @@ import io.flowcatalyst.platform.portalidentity.PortalIdentityStatus;
 import io.flowcatalyst.platform.portalidentity.operations.PortalIdentityEvents.PortalIdentityDeleted;
 import io.flowcatalyst.platform.portalidentity.operations.PortalIdentityEvents.PortalIdentityEnsured;
 import io.flowcatalyst.platform.portalidentity.operations.PortalIdentityEvents.PortalIdentityStatusSet;
+import io.flowcatalyst.platform.portalidentity.operations.PortalIdentityEvents.PortalIdentityAppGranted;
+import io.flowcatalyst.platform.portalidentity.operations.PortalIdentityEvents.PortalIdentityAppRevoked;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -385,5 +387,139 @@ class PortalIdentityOperationsTest {
                 UseCaseError.Validation.class, "ID_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(DeletePortalIdentity.of(repo), new DeleteCommand(null, "ptu_doesnotexist1")),
                 UseCaseError.NotFound.class, "PortalIdentity_NOT_FOUND");
+    }
+
+    // ── GrantApp / RevokeApp (spec `portal-apps.md` §3.2) ─────────────────────
+
+    @Test
+    void grantAddsTheAppWithAdminSourceAndWritesTheEventAndAudit() {
+        String clientId = testClient("grant");
+        PortalApp app = testApp(clientId, "grant");
+        var identity = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "grant-" + RUN + "@example.com", null, "INVITE", null));
+
+        var ev = runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                new GrantPortalIdentityAppCommand(clientId, identity.identityId(), app.id()));
+        assertThat(ev.eventType()).isEqualTo(PortalIdentityEvents.APP_GRANTED);
+        assertThat(ev.subject()).isEqualTo("platform.portal-identity." + identity.identityId());
+        assertThat(ev.messageGroup()).isEqualTo("platform:portal-identity:" + identity.identityId());
+        assertThat(ev.portalAppId()).isEqualTo(app.id());
+        assertThat(ev.portalAppCode()).isEqualTo(app.code());
+        assertThat(ev.grantSource()).isEqualTo("ADMIN");
+
+        var grants = grantsFor(identity.identityId());
+        assertThat(grants).hasSize(1);
+        assertThat(grants.getFirst().get("source")).isEqualTo("ADMIN");
+
+        var events = eventsFor(identity.identityId(), PortalIdentityEvents.APP_GRANTED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("subject")).isEqualTo("platform.portal-identity." + identity.identityId());
+        assertThat(events.getFirst().get("message_group")).isEqualTo("platform:portal-identity:" + identity.identityId());
+        var data = json(events.getFirst().get("data", String.class));
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("identityId", "clientId", "portalAppId", "portalAppCode", "source");
+        assertThat(data.get("portalAppId").asText()).isEqualTo(app.id());
+        assertThat(data.get("portalAppCode").asText()).isEqualTo(app.code());
+        assertThat(data.get("source").asText()).as("the wire field is `source`, not `grantSource`").isEqualTo("ADMIN");
+
+        assertThat(auditsFor(identity.identityId(), "GrantPortalIdentityAppCommand")).hasSize(1);
+    }
+
+    /// Mutant: the operation skips `Plan.save`/event emission when the grant
+    /// is already held. Asserts BOTH that a second grant leaves exactly one
+    /// row (the aggregate-level idempotency) AND that a second event was
+    /// still written (the spec's "always persist and emit") — a mutant that
+    /// short-circuits on an already-held grant would pass a test that only
+    /// checked the row count.
+    @Test
+    void grantIsIdempotentAtTheRowLevelButAlwaysPersistsAndEmits() {
+        String clientId = testClient("grant-idem");
+        PortalApp app = testApp(clientId, "grant-idem");
+        var identity = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "grant-idem-" + RUN + "@example.com", null, "INVITE", null));
+
+        runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                new GrantPortalIdentityAppCommand(clientId, identity.identityId(), app.id()));
+        runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                new GrantPortalIdentityAppCommand(clientId, identity.identityId(), app.id()));
+
+        assertThat(grantsFor(identity.identityId())).as("still exactly one grant row").hasSize(1);
+        assertThat(eventsFor(identity.identityId(), PortalIdentityEvents.APP_GRANTED))
+                .as("but the event fired twice").hasSize(2);
+    }
+
+    @Test
+    void grantRejectsAnUnknownIdentityAnUnknownAppAndACrossClientApp() {
+        String clientId = testClient("grant-404");
+        String otherClient = testClient("grant-404-other");
+        PortalApp app = testApp(clientId, "grant-404");
+        PortalApp otherApp = testApp(otherClient, "grant-404-other");
+        var identity = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "grant-404-" + RUN + "@example.com", null, "INVITE", null));
+
+        assertUseCaseError(() -> runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                        new GrantPortalIdentityAppCommand(clientId, "ptu_doesnotexist1", app.id())),
+                UseCaseError.NotFound.class, "PortalIdentity_NOT_FOUND");
+        assertUseCaseError(() -> runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                        new GrantPortalIdentityAppCommand(clientId, identity.identityId(), "pta_doesnotexist1")),
+                UseCaseError.NotFound.class, "PortalApp_NOT_FOUND");
+        assertUseCaseError(() -> runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                        new GrantPortalIdentityAppCommand(clientId, identity.identityId(), otherApp.id())),
+                UseCaseError.NotFound.class, "PortalApp_NOT_FOUND");
+        assertThat(grantsFor(identity.identityId())).as("none of the rejected calls granted anything").isEmpty();
+    }
+
+    @Test
+    void grantAndRevokeRejectBlankTargets() {
+        assertUseCaseError(() -> runAsAnchor(GrantPortalIdentityApp.of(repo, portalAppRepo),
+                        new GrantPortalIdentityAppCommand("", "ptu_x", "pta_x")),
+                UseCaseError.Validation.class, "TARGET_REQUIRED");
+        assertUseCaseError(() -> runAsAnchor(RevokePortalIdentityApp.of(repo, portalAppRepo),
+                        new RevokePortalIdentityAppCommand("clt_x", "", "pta_x")),
+                UseCaseError.Validation.class, "TARGET_REQUIRED");
+    }
+
+    @Test
+    void revokeRemovesTheGrantAndWritesTheEvent() {
+        String clientId = testClient("revoke");
+        PortalApp app = testApp(clientId, "revoke");
+        var identity = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "revoke-" + RUN + "@example.com", null, "INVITE", app.id()));
+        assertThat(grantsFor(identity.identityId())).hasSize(1);
+
+        var ev = runAsAnchor(RevokePortalIdentityApp.of(repo, portalAppRepo),
+                new RevokePortalIdentityAppCommand(clientId, identity.identityId(), app.id()));
+        assertThat(ev.eventType()).isEqualTo(PortalIdentityEvents.APP_REVOKED);
+        assertThat(ev.subject()).isEqualTo("platform.portal-identity." + identity.identityId());
+        assertThat(ev.messageGroup()).isEqualTo("platform:portal-identity:" + identity.identityId());
+        assertThat(ev.portalAppId()).isEqualTo(app.id());
+        assertThat(ev.portalAppCode()).isEqualTo(app.code());
+
+        assertThat(grantsFor(identity.identityId())).as("grant row is gone").isEmpty();
+        var events = eventsFor(identity.identityId(), PortalIdentityEvents.APP_REVOKED);
+        assertThat(events).hasSize(1);
+        var data = json(events.getFirst().get("data", String.class));
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder("identityId", "clientId", "portalAppId", "portalAppCode");
+        assertThat(data.get("portalAppId").asText()).isEqualTo(app.id());
+        assertThat(data.get("portalAppCode").asText()).isEqualTo(app.code());
+        assertThat(auditsFor(identity.identityId(), "RevokePortalIdentityAppCommand")).hasSize(1);
+    }
+
+    /// Mutant: revoke short-circuits (no event, no persist) when the app was
+    /// never granted. Asserts the event still fired even though nothing was
+    /// removed.
+    @Test
+    void revokeOfAnUngrantedAppStillPersistsAndEmits() {
+        String clientId = testClient("revoke-noop");
+        PortalApp app = testApp(clientId, "revoke-noop");
+        var identity = runAsAnchor(EnsurePortalIdentity.of(repo, clientRepo, portalAppRepo),
+                new EnsureCommand(clientId, "revoke-noop-" + RUN + "@example.com", null, "INVITE", null));
+        assertThat(grantsFor(identity.identityId())).isEmpty();
+
+        runAsAnchor(RevokePortalIdentityApp.of(repo, portalAppRepo),
+                new RevokePortalIdentityAppCommand(clientId, identity.identityId(), app.id()));
+
+        assertThat(grantsFor(identity.identityId())).isEmpty();
+        assertThat(eventsFor(identity.identityId(), PortalIdentityEvents.APP_REVOKED))
+                .as("the event still fired on the no-op").hasSize(1);
     }
 }

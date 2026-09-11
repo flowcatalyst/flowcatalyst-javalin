@@ -55,13 +55,6 @@ public final class PortalIdentityRepository implements Persist<PortalIdentity> {
         return findOne(T.CLIENT_ID.eq(clientId).and(T.EMAIL.eq(PortalIdentity.normalizeEmail(email))));
     }
 
-    /// Every identity of one client, newest first (spec §5.7 list route).
-    public List<PortalIdentity> findByClient(String clientId) {
-        var rows = dsl.selectFrom(T).where(T.CLIENT_ID.eq(clientId)).orderBy(T.CREATED_AT.desc()).fetch();
-        Map<String, List<PortalAppGrant>> grants = grantsFor(rows.getValues(T.ID));
-        return rows.map(row -> toEntity(row, grants.getOrDefault(row.getId(), List.of())));
-    }
-
     /// One hydration path: every single-row lookup goes through this, the
     /// condition is the only thing that varies (CONVENTIONS §8).
     private Optional<PortalIdentity> findOne(Condition where) {

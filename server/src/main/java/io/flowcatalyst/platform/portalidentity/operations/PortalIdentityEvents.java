@@ -22,6 +22,8 @@ public final class PortalIdentityEvents {
     public static final String ENSURED = "platform:portal:identity:ensured";
     public static final String STATUS_SET = "platform:portal:identity:status-set";
     public static final String DELETED = "platform:portal:identity:deleted";
+    public static final String APP_GRANTED = "platform:portal:identity:app-granted";
+    public static final String APP_REVOKED = "platform:portal:identity:app-revoked";
 
     private PortalIdentityEvents() {
     }
@@ -100,6 +102,47 @@ public final class PortalIdentityEvents {
         }
 
         private record Data(String identityId, String clientId, String email) {
+        }
+    }
+
+    /// `portal-apps.md` §3, §3.2: `GrantApp`'s event — always emitted, even
+    /// when [PortalIdentity#grant] found the grant already held (§3.2:
+    /// "both always persist and emit").
+    public record PortalIdentityAppGranted(EventMetadata metadata, String identityId, String clientId,
+                                            String portalAppId, String portalAppCode, String grantSource)
+            implements DomainEvent {
+
+        public static PortalIdentityAppGranted of(ExecutionContext ec, PortalIdentity pi, PortalApp app, String grantSource) {
+            return new PortalIdentityAppGranted(metadataFor(ec, APP_GRANTED, pi.id()), pi.id(), pi.clientId(),
+                    app.id(), app.code(), grantSource);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(identityId, clientId, portalAppId, portalAppCode, grantSource);
+        }
+
+        private record Data(String identityId, String clientId, String portalAppId, String portalAppCode, String source) {
+        }
+    }
+
+    /// `portal-apps.md` §3, §3.2: `RevokeApp`'s event — always emitted, even
+    /// when the identity did not hold the grant.
+    public record PortalIdentityAppRevoked(EventMetadata metadata, String identityId, String clientId,
+                                            String portalAppId, String portalAppCode)
+            implements DomainEvent {
+
+        public static PortalIdentityAppRevoked of(ExecutionContext ec, PortalIdentity pi, PortalApp app) {
+            return new PortalIdentityAppRevoked(metadataFor(ec, APP_REVOKED, pi.id()), pi.id(), pi.clientId(),
+                    app.id(), app.code());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(identityId, clientId, portalAppId, portalAppCode);
+        }
+
+        private record Data(String identityId, String clientId, String portalAppId, String portalAppCode) {
         }
     }
 }
