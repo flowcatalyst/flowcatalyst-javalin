@@ -185,7 +185,9 @@ class LifecycleLoopsTest {
     void configPollTaskIsScheduledAndFires() {
         // Router.java composes RouterServer#applyConfiguration into the same
         // housekeeping set as standard(), named "config-poll" and scheduled
-        // at RouterServer.CONFIG_POLL_INTERVAL. LifecycleLoops has no
+        // at RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw())
+        // (2026-09-11: env-tunable, default RouterServer.CONFIG_POLL_INTERVAL_DEFAULT).
+        // LifecycleLoops has no
         // special knowledge of that task — it is just another Task in the
         // List — so what is worth pinning here is that the generic
         // scheduling mechanism this composition depends on actually ticks a

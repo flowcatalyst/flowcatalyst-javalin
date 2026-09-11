@@ -37,7 +37,9 @@ import java.util.Map;
 /// [io.flowcatalyst.stream.StreamProcessor.Settings#fromEnv] takes an [Env].
 public record Env(
         // ── listeners ──────────────────────────────────────────────────────
-        // `FC_API_PORT` (alias `PORT`), default 8080: the unified API listener.
+        // `FC_API_PORT`, then `API_PORT`, then `PORT`, default 8080: the
+        // unified API listener (the Rust `fc-router` drop-in reads the same
+        // two-name chain plus this Java-only `FC_API_PORT` canonical first).
         int apiPort,
         // `FC_METRICS_PORT`, default 9090: Prometheus listener.
         int metricsPort,
@@ -171,15 +173,32 @@ public record Env(
         // ── router ─────────────────────────────────────────────────────────
         // `FLOWCATALYST_CONFIG_URL`, no default.
         String routerConfigUrl,
+        // `FC_ROUTER_CONFIG_INTERVAL_SECONDS` (alias `FLOWCATALYST_CONFIG_INTERVAL`),
+        // seconds, no default here — `""` when unset. Carried as the raw string
+        // per `CONVENTIONS.md` §8; the composition root parses it with
+        // [io.flowcatalyst.router.manager.RouterServer#parseConfigPollInterval],
+        // which owns the 300s default and the set-but-invalid WARN.
+        String routerConfigIntervalRaw,
         // `FLOWCATALYST_DEV_MODE`, default false.
         boolean routerDevMode,
-        // `FC_NOTIFY_WEBHOOK_URL`, no default (log-only).
+        // `FC_NOTIFY_WEBHOOK_URL` (alias `NOTIFICATION_TEAMS_WEBHOOK_URL`), no default.
         String routerNotifyWebhookUrl,
+        // Raw `NOTIFICATION_TEAMS_ENABLED` (`""` when unset). Rust: a non-empty
+        // webhook alone means notify, and this flag can only ever widen that —
+        // an explicit `false` is ignored once a URL is configured. Java
+        // deliberately deviates: an explicit `false` always disables, even with
+        // a URL set — see [io.flowcatalyst.router.observability.WarningNotifier#create].
+        String routerNotifyTeamsEnabledRaw,
         // `FC_NOTIFY_MIN_SEVERITY` (alias `NOTIFICATION_MIN_SEVERITY`), default `WARNING`
         // (X-04). Carried here as the raw string per `CONVENTIONS.md` §8; the composition
         // root parses it with `Warnings.parseMinSeverity`, which also owns the
-        // invalid-value fallback and its WARN log.
+        // invalid-value fallback and its WARN log, and accepts `WARN` as well as
+        // `WARNING` (Rust accepts both).
         String routerNotifyMinSeverity,
+        // `FC_NOTIFY_BATCH_INTERVAL_SECONDS` (alias `NOTIFICATION_BATCH_INTERVAL`),
+        // default 300 (Rust's `NotificationConfig::default`); `0` means no
+        // batching — every notice is sent immediately as its own card.
+        int routerNotifyBatchIntervalSeconds,
         // `FC_DRAIN_TIMEOUT_SECONDS`, default 60.
         int routerDrainTimeoutSec,
         // `FC_ROUTER_STRICT_ROUTING`, default false (R-13/R-16, §2.3): a
@@ -221,12 +240,29 @@ public record Env(
         int albDeregDelaySec,
 
         // ── standby / HA ───────────────────────────────────────────────────
-        // `FC_STANDBY_ENABLED` (alias `STANDBY_ENABLED`), default false.
+        // `FC_STANDBY_ENABLED`, then `FLOWCATALYST_STANDBY_ENABLED`, then
+        // `STANDBY_ENABLED`, default false.
         boolean standbyEnabled,
-        // `FC_STANDBY_REDIS_URL` (alias `REDIS_URL`), default `redis://127.0.0.1:6379`.
+        // `FC_STANDBY_REDIS_URL`, then `FLOWCATALYST_STANDBY_REDIS_URL`, then
+        // `FLOWCATALYST_REDIS_URL`, then `REDIS_URL`, default `redis://127.0.0.1:6379`.
         String standbyRedisUrl,
-        // `FC_STANDBY_LOCK_KEY`, default `fc:server:leader`.
+        // `FC_STANDBY_LOCK_KEY`, then `FLOWCATALYST_STANDBY_LOCK_KEY`, default
+        // `fc:router:leader` (owner ruling 2026-09-11: overrides the drop-in
+        // brief's original "leave it fc:server:leader" call — Go still
+        // defaults to `fc:server:leader`, so a mixed Go/Java fleet running
+        // standby must set this explicitly on one side; see
+        // `docs/spec/router-env.md`).
         String standbyLockKey,
+        // `FC_STANDBY_LOCK_TTL_SECONDS`, then `FLOWCATALYST_STANDBY_LOCK_TTL`,
+        // default 30 (today's `LeaderElection.LOCK_TTL`).
+        int standbyLockTtlSeconds,
+        // `FC_STANDBY_HEARTBEAT_SECONDS`, then `FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL`,
+        // default 10 (today's `LeaderElection.HEARTBEAT`).
+        int standbyHeartbeatSeconds,
+        // `FC_INSTANCE_ID`, then `FLOWCATALYST_INSTANCE_ID`, then `HOSTNAME`,
+        // default `""` — blank means [io.flowcatalyst.server.Router] derives one
+        // itself (a random UUID), same as today when none is set.
+        String standbyInstanceId,
 
         // ── JWT signing ────────────────────────────────────────────────────
         // `FC_JWT_SIGNING_KEY_PATH`, no default.
@@ -296,7 +332,7 @@ public record Env(
     }
 
     public static Env load(EnvReader e) {
-        var apiPort = e.integerAlias("FC_API_PORT", "PORT", 8080);
+        var apiPort = e.integerAlias("FC_API_PORT", "API_PORT", "PORT", 8080);
         var dispatch = e.or("FC_DISPATCH_PROCESSING_ENDPOINT", "");
         if (dispatch.isEmpty()) {
             // Default the dispatch callback to the local API listener: the router
@@ -375,9 +411,12 @@ public record Env(
                 e.or("FC_OUTBOX_MONGO_DB", "flowcatalyst"),
 
                 e.get("FLOWCATALYST_CONFIG_URL"),
+                e.firstSet("FC_ROUTER_CONFIG_INTERVAL_SECONDS", "FLOWCATALYST_CONFIG_INTERVAL").orElse(""),
                 e.bool("FLOWCATALYST_DEV_MODE", false),
-                e.get("FC_NOTIFY_WEBHOOK_URL"),
+                e.firstSet("FC_NOTIFY_WEBHOOK_URL", "NOTIFICATION_TEAMS_WEBHOOK_URL").orElse(""),
+                e.get("NOTIFICATION_TEAMS_ENABLED"),
                 e.firstSet("FC_NOTIFY_MIN_SEVERITY", "NOTIFICATION_MIN_SEVERITY").orElse("WARNING"),
+                e.integerAlias("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "NOTIFICATION_BATCH_INTERVAL", 300),
                 e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60),
                 e.bool("FC_ROUTER_STRICT_ROUTING", false),
                 e.integer("FC_ROUTER_SYNTH_POOL_IDLE_SECS", 0),
@@ -393,9 +432,14 @@ public record Env(
                 e.get("FC_ALB_REGION"),
                 e.integer("FC_ALB_DEREGISTRATION_DELAY_SECONDS", 0),
 
-                e.boolAlias("FC_STANDBY_ENABLED", "STANDBY_ENABLED", false),
-                e.firstSet("FC_STANDBY_REDIS_URL", "REDIS_URL").orElse("redis://127.0.0.1:6379"),
-                e.or("FC_STANDBY_LOCK_KEY", "fc:server:leader"),
+                e.boolAlias("FC_STANDBY_ENABLED", "FLOWCATALYST_STANDBY_ENABLED", "STANDBY_ENABLED", false),
+                e.firstSet("FC_STANDBY_REDIS_URL", "FLOWCATALYST_STANDBY_REDIS_URL", "FLOWCATALYST_REDIS_URL", "REDIS_URL")
+                        .orElse("redis://127.0.0.1:6379"),
+                // owner ruling 2026-09-11: fc:router:leader; Go still defaults to fc:server:leader.
+                e.firstSet("FC_STANDBY_LOCK_KEY", "FLOWCATALYST_STANDBY_LOCK_KEY").orElse("fc:router:leader"),
+                e.integerAlias("FC_STANDBY_LOCK_TTL_SECONDS", "FLOWCATALYST_STANDBY_LOCK_TTL", 30),
+                e.integerAlias("FC_STANDBY_HEARTBEAT_SECONDS", "FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL", 10),
+                e.firstSet("FC_INSTANCE_ID", "FLOWCATALYST_INSTANCE_ID", "HOSTNAME").orElse(""),
 
                 e.get("FC_JWT_SIGNING_KEY_PATH"),
                 normalizedPreviousPublicKey(e),

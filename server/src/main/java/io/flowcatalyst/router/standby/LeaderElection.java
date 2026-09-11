@@ -51,7 +51,12 @@ public final class LeaderElection implements AutoCloseable {
                          Duration lockTtl, Duration heartbeat) {
 
         public static Config disabled() {
-            return new Config(false, "fc:server:leader", UUID.randomUUID().toString(), LOCK_TTL, HEARTBEAT);
+            // owner ruling 2026-09-11: fc:router:leader; Go still defaults to
+            // fc:server:leader (docs/spec/router-env.md §3). Cosmetic here —
+            // a disabled election never contacts the store — but kept in
+            // step with Env's own default so nothing in this class disagrees
+            // with it.
+            return new Config(false, "fc:router:leader", UUID.randomUUID().toString(), LOCK_TTL, HEARTBEAT);
         }
 
         public static Config of(String lockKey) {

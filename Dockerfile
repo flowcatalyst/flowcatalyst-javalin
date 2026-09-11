@@ -9,6 +9,9 @@
 #
 # Build:  docker build -t flowcatalyst-java .
 # Run:    docker run -p 8080:8080 -e FC_DATABASE_URL=... -e FC_PLATFORM_ENABLED=true flowcatalyst-java
+#         (the API port defaults to 8080 in code; pass API_PORT/PORT — or the
+#         canonical FC_API_PORT — to run on another port; see the HEALTHCHECK
+#         below, which probes whichever one actually applies)
 #
 # The platform API is on by default and every other subsystem is off; the
 # same image is the API tier, the router tier or a worker depending on
@@ -49,14 +52,22 @@ RUN apk add --no-cache ca-certificates wget \
 COPY --from=build /jre /opt/jre
 COPY --from=build /fc-server.jar /usr/local/lib/fc-server.jar
 USER flowcatalyst
-ENV FC_API_PORT=8080 \
-    JAVA_HOME=/opt/jre \
+ENV JAVA_HOME=/opt/jre \
     PATH=/opt/jre/bin:$PATH
+# No FC_API_PORT here on purpose: an image-level FC_API_PORT would silently
+# beat a task definition's own API_PORT (Env's alias order is FC_API_PORT,
+# then API_PORT, then PORT — see docs/spec/router-env.md §1), and the code
+# default is already 8080, so this ENV line added nothing but a footgun for
+# a drop-in deployment that only ever set API_PORT.
 # 8080 = API (+ embedded SPA), 9090 = Prometheus metrics.
 EXPOSE 8080 9090
-# GET (not --spider/HEAD): the /health route is GET-only, so a HEAD probe 405s.
+# GET (not --spider/HEAD): the /health route is GET-only, so a HEAD probe
+# 405s. Probes whichever port Env actually resolves to (FC_API_PORT, then
+# API_PORT, then PORT, then the 8080 code default) rather than a hardcoded
+# 8080, so a task definition that overrides the port still gets a working
+# healthcheck instead of one probing a port nothing is listening on.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1
+  CMD sh -c 'wget -q -O /dev/null "http://127.0.0.1:${FC_API_PORT:-${API_PORT:-${PORT:-8080}}}/health" || exit 1'
 # --enable-preview: the build compiles with preview features on (CONVENTIONS §8).
 # --enable-native-access: the HTTP/3 connector's quiche binding uses the FFM API
 # (docs/spec/http-transport.md); without the flag the JDK warns that restricted

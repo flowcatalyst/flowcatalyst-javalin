@@ -423,6 +423,32 @@ class HttpConfigSourceTest {
         assertThat(warnings.raised.get(2)).contains("WARNING").contains("CONFIGURATION");
     }
 
+    @Test
+    @DisplayName("a source that has never answered warns once per streak, then reports its recovery")
+    void neverSucceededSourceWarnsOnceThenRecovers() {
+        var isFailing = new AtomicBoolean(true);
+        var server = startServer(exchange -> {
+            if (isFailing.get()) {
+                respondStatus(exchange, 500);
+            } else {
+                respondOk(exchange, configWithQueue("postgres://a/db", 1));
+            }
+        });
+        var warnings = new RecordingWarnings();
+        var src = sourceWithWarnings(List.of(urlOf(server)), 2, Duration.ofMillis(10), Duration.ofSeconds(5), warnings);
+
+        assertThat(src.fetch()).as("nothing to fall back to").isEmpty();
+        src.fetch();
+        assertThat(warnings.raised).as("the operator hears about it — once, not per poll").hasSize(1);
+        assertThat(warnings.raised.getFirst())
+                .contains("WARNING").contains("CONFIGURATION").contains(urlOf(server)).contains("never supplied");
+
+        isFailing.set(false);
+        assertThat(src.fetch()).isPresent();
+        assertThat(warnings.raised).hasSize(2);
+        assertThat(warnings.raised.get(1)).contains("INFO").contains("recovered");
+    }
+
     // ---- URL-order collection (first-definition-wins, independent of completion order) --
 
     @Test

@@ -54,9 +54,10 @@ import java.util.concurrent.StructuredTaskScope;
 /// merge, with a `CONFIGURATION` warning naming the URL and when that
 /// configuration was fetched — a transient bad fetch from one source must
 /// not stop the traffic that source was driving. A URL that has never once
-/// succeeded has nothing to fall back to and is dropped, logged only, same
-/// as before. Only when **every** URL contributes nothing — fresh or
-/// cached — does [#fetch] answer [Optional#empty()], the contract's
+/// succeeded has nothing to fall back to and is dropped, with a
+/// once-per-streak `CONFIGURATION` warning of its own (and the same INFO
+/// notice when it recovers). Only when **every** URL contributes nothing —
+/// fresh or cached — does [#fetch] answer [Optional#empty()], the contract's
 /// definition of "genuinely unavailable".
 public final class HttpConfigSource implements RouterServer.ConfigSource {
 
@@ -187,6 +188,16 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                         effective.add(stale.get());
                     } else {
                         droppedCount++;
+                        // Never once succeeded: nothing to fall back to, and until now
+                        // nothing told an operator either — a router whose only config
+                        // URL is unreachable ran with no queues in silence. Once per
+                        // failure streak, like the stale case (the Rust router raises
+                        // "Config sync failed" as a WARN on every failed sync).
+                        if (failing.add(url)) {
+                            warnings.raise(Warnings.Severity.WARNING, "CONFIGURATION",
+                                    "config source " + url + " is failing and has never supplied a configuration;"
+                                            + " it contributes nothing until it answers");
+                        }
                     }
                 }
             }

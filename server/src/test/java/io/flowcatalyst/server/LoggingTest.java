@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.joran.JoranConfigurator;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -57,6 +58,60 @@ class LoggingTest {
         assertThat(Logging.levelOf("WARNING")).isEqualTo(Level.WARN);
         assertThat(Logging.levelOf("error")).isEqualTo(Level.ERROR);
         assertThat(Logging.levelOf("verbose")).isEqualTo(Level.INFO);
+    }
+
+    @Test
+    @DisplayName("RUST_LOG: a bare level sets the root; fc_router=<level> sets the router package; other targets are ignored")
+    void rustLogParsing() {
+        var basic = Logging.parseRustLog("info");
+        assertThat(basic.root()).isEqualTo(Level.INFO);
+        assertThat(basic.routerLevel()).isNull();
+        assertThat(basic.ignoredTargets()).isEmpty();
+
+        var full = Logging.parseRustLog("info,fc_router=debug,tower_http=warn");
+        assertThat(full.root()).isEqualTo(Level.INFO);
+        assertThat(full.routerLevel()).isEqualTo(Level.DEBUG);
+        // Kills the "RUST_LOG fc_router= directive ignored" mutant: a
+        // regression that dropped the target=level branch entirely would
+        // leave routerLevel null here too.
+        assertThat(full.ignoredTargets()).containsExactly("tower_http=warn");
+    }
+
+    @Test
+    void rustLogUnknownLevelWordsBehaveLikeAnUnknownFcLogLevel() {
+        assertThat(Logging.parseRustLog("verbose").root()).isEqualTo(Level.INFO);
+        assertThat(Logging.parseRustLog("fc_router=verbose").routerLevel()).isEqualTo(Level.INFO);
+    }
+
+    @Test
+    void rustLogBlankOrUnsetIsInfoWithNoRouterOverride() {
+        assertThat(Logging.parseRustLog(null).root()).isEqualTo(Level.INFO);
+        assertThat(Logging.parseRustLog(null).routerLevel()).isNull();
+        assertThat(Logging.parseRustLog("").root()).isEqualTo(Level.INFO);
+        assertThat(Logging.parseRustLog("  ").root()).isEqualTo(Level.INFO);
+    }
+
+    @Test
+    @DisplayName("FC_LOG_LEVEL set wins outright — RUST_LOG (including any fc_router= directive) is not consulted at all")
+    void fcLogLevelWinsOverRustLogEntirely() {
+        var resolution = Logging.resolveLevels(new EnvReader(Map.of(
+                "FC_LOG_LEVEL", "error",
+                "RUST_LOG", "info,fc_router=debug")));
+
+        assertThat(resolution.root()).isEqualTo(Level.ERROR);
+        assertThat(resolution.routerLevel()).as("RUST_LOG is not consulted when FC_LOG_LEVEL is set").isNull();
+        assertThat(resolution.ignoredTargets()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("RUST_LOG sets io.flowcatalyst.router's own level when FC_LOG_LEVEL is unset")
+    void rustLogActuallySetsTheRouterLoggerLevel() {
+        Logging.init(Map.of("RUST_LOG", "info,fc_router=debug"));
+
+        var routerLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger("io.flowcatalyst.router.Anything");
+        var rootLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger("some.other.package");
+        assertThat(routerLogger.getEffectiveLevel()).isEqualTo(Level.DEBUG);
+        assertThat(rootLogger.getEffectiveLevel()).isEqualTo(Level.INFO);
     }
 
     @Test

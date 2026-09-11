@@ -52,7 +52,7 @@ not that a field was set).
 |---|---|---|
 | enabled | `FC_STANDBY_ENABLED`, `FLOWCATALYST_STANDBY_ENABLED`, `STANDBY_ENABLED` | false |
 | Redis URL | `FC_STANDBY_REDIS_URL`, `FLOWCATALYST_STANDBY_REDIS_URL`, `FLOWCATALYST_REDIS_URL`, `REDIS_URL` | `redis://127.0.0.1:6379` |
-| lock key | `FC_STANDBY_LOCK_KEY`, `FLOWCATALYST_STANDBY_LOCK_KEY` | `fc:server:leader` (unchanged — do **not** switch to Rust's `fc:router:leader`; the orchestrator raises that with the owner) |
+| lock key | `FC_STANDBY_LOCK_KEY`, `FLOWCATALYST_STANDBY_LOCK_KEY` | **`fc:router:leader`** (owner ruling 2026-09-11, sent mid-flight; Go still defaults to `fc:server:leader`) |
 | lock TTL (s) | `FC_STANDBY_LOCK_TTL_SECONDS`, `FLOWCATALYST_STANDBY_LOCK_TTL` | 30 (today's `LeaderElection.LOCK_TTL`) |
 | heartbeat (s) | `FC_STANDBY_HEARTBEAT_SECONDS`, `FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL` | 10 (today's `HEARTBEAT`) |
 | instance id | `FC_INSTANCE_ID`, `FLOWCATALYST_INSTANCE_ID`, `HOSTNAME` | whatever Java derives today when none is set |

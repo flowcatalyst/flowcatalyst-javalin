@@ -64,9 +64,12 @@ class EnvTest {
         assertThat(env.outboxMongoDb()).isEqualTo("flowcatalyst");
 
         assertThat(env.routerConfigUrl()).isEmpty();
+        assertThat(env.routerConfigIntervalRaw()).isEmpty();
         assertThat(env.routerDevMode()).isFalse();
         assertThat(env.routerNotifyWebhookUrl()).isEmpty();
+        assertThat(env.routerNotifyTeamsEnabledRaw()).isEmpty();
         assertThat(env.routerNotifyMinSeverity()).isEqualTo("WARNING");
+        assertThat(env.routerNotifyBatchIntervalSeconds()).as("Rust's NotificationConfig::default").isEqualTo(300);
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
         assertThat(env.routerStrictRouting()).as("R-13/R-16: off until every producer is confirmed compliant").isFalse();
         assertThat(env.routerSynthPoolIdleSecs()).as("0 means \"use the implementation default\", not \"never evict\"").isZero();
@@ -88,7 +91,12 @@ class EnvTest {
 
         assertThat(env.standbyEnabled()).isFalse();
         assertThat(env.standbyRedisUrl()).isEqualTo("redis://127.0.0.1:6379");
-        assertThat(env.standbyLockKey()).isEqualTo("fc:server:leader");
+        // owner ruling 2026-09-11: fc:router:leader; Go still defaults to
+        // fc:server:leader (docs/spec/router-env.md §3).
+        assertThat(env.standbyLockKey()).isEqualTo("fc:router:leader");
+        assertThat(env.standbyLockTtlSeconds()).isEqualTo(30);
+        assertThat(env.standbyHeartbeatSeconds()).isEqualTo(10);
+        assertThat(env.standbyInstanceId()).isEmpty();
 
         assertThat(env.jwtSigningKeyPath()).isEmpty();
         assertThat(env.jwtPreviousPublicKey()).isEmpty();
@@ -210,6 +218,91 @@ class EnvTest {
 
         assertThat(env.routerStrictRouting()).isTrue();
         assertThat(env.routerSynthPoolIdleSecs()).isEqualTo(1800);
+    }
+
+    /// The Rust `fc-router` drop-in brief (2026-09-11): `apiPort` is a
+    /// three-name chain, `FC_API_PORT` then `API_PORT` then `PORT` — pins the
+    /// order explicitly (an alias-order-reversed mutant would swap `API_PORT`
+    /// and `PORT` and still pass every other test here, since they never
+    /// disagree elsewhere in this file).
+    @Test
+    void apiPortThreeWayAliasPrecedence() {
+        assertThat(load("FC_API_PORT", "3000", "API_PORT", "4000", "PORT", "5000").apiPort()).isEqualTo(3000);
+        assertThat(load("API_PORT", "4000", "PORT", "5000").apiPort())
+                .as("API_PORT must win over PORT when FC_API_PORT is unset").isEqualTo(4000);
+        assertThat(load("PORT", "5000").apiPort()).isEqualTo(5000);
+        assertThat(load().apiPort()).isEqualTo(8080);
+        assertThat(load("FC_API_PORT", "not-a-number", "API_PORT", "4000").apiPort())
+                .as("an unparseable FC_API_PORT falls through to API_PORT").isEqualTo(4000);
+        assertThat(load("FC_API_PORT", "not-a-number", "PORT", "5000").apiPort())
+                .as("an unparseable FC_API_PORT falls through past an unset API_PORT to PORT").isEqualTo(5000);
+    }
+
+    @Test
+    void routerNotifyWebhookAndTeamsEnabledAndBatchInterval() {
+        assertThat(load("FC_NOTIFY_WEBHOOK_URL", "https://a", "NOTIFICATION_TEAMS_WEBHOOK_URL", "https://b")
+                .routerNotifyWebhookUrl()).isEqualTo("https://a");
+        assertThat(load("NOTIFICATION_TEAMS_WEBHOOK_URL", "https://b").routerNotifyWebhookUrl())
+                .as("legacy Rust name honoured when the canonical one is unset").isEqualTo("https://b");
+
+        assertThat(load().routerNotifyTeamsEnabledRaw()).isEmpty();
+        assertThat(load("NOTIFICATION_TEAMS_ENABLED", "false").routerNotifyTeamsEnabledRaw()).isEqualTo("false");
+
+        assertThat(load().routerNotifyBatchIntervalSeconds()).isEqualTo(300);
+        assertThat(load("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "60", "NOTIFICATION_BATCH_INTERVAL", "90")
+                .routerNotifyBatchIntervalSeconds()).isEqualTo(60);
+        assertThat(load("NOTIFICATION_BATCH_INTERVAL", "90").routerNotifyBatchIntervalSeconds()).isEqualTo(90);
+        assertThat(load("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "0").routerNotifyBatchIntervalSeconds())
+                .as("0 means no batching, not \"unset\"").isZero();
+    }
+
+    @Test
+    void routerConfigIntervalRawCarriesTheUnparsedValue() {
+        // The 300s default and the set-but-invalid WARN both live in
+        // RouterServer.parseConfigPollInterval, not here (CONVENTIONS §8) —
+        // Env only carries what was actually typed.
+        assertThat(load().routerConfigIntervalRaw()).isEmpty();
+        assertThat(load("FC_ROUTER_CONFIG_INTERVAL_SECONDS", "60", "FLOWCATALYST_CONFIG_INTERVAL", "90")
+                .routerConfigIntervalRaw()).isEqualTo("60");
+        assertThat(load("FLOWCATALYST_CONFIG_INTERVAL", "90").routerConfigIntervalRaw()).isEqualTo("90");
+    }
+
+    @Test
+    void standbyAliasesAndPrecedence() {
+        // enabled: FC_STANDBY_ENABLED, then FLOWCATALYST_STANDBY_ENABLED, then STANDBY_ENABLED
+        assertThat(load("FC_STANDBY_ENABLED", "false", "FLOWCATALYST_STANDBY_ENABLED", "true").standbyEnabled()).isFalse();
+        assertThat(load("FLOWCATALYST_STANDBY_ENABLED", "true", "STANDBY_ENABLED", "false").standbyEnabled()).isTrue();
+        assertThat(load("STANDBY_ENABLED", "true").standbyEnabled()).isTrue();
+
+        // redis URL: FC_STANDBY_REDIS_URL, FLOWCATALYST_STANDBY_REDIS_URL, FLOWCATALYST_REDIS_URL, REDIS_URL
+        assertThat(load("FC_STANDBY_REDIS_URL", "redis://a", "REDIS_URL", "redis://d").standbyRedisUrl())
+                .isEqualTo("redis://a");
+        assertThat(load("FLOWCATALYST_STANDBY_REDIS_URL", "redis://b", "REDIS_URL", "redis://d").standbyRedisUrl())
+                .isEqualTo("redis://b");
+        assertThat(load("FLOWCATALYST_REDIS_URL", "redis://c", "REDIS_URL", "redis://d").standbyRedisUrl())
+                .isEqualTo("redis://c");
+        assertThat(load("REDIS_URL", "redis://d").standbyRedisUrl()).isEqualTo("redis://d");
+
+        // lock key: FC_STANDBY_LOCK_KEY, then FLOWCATALYST_STANDBY_LOCK_KEY
+        assertThat(load("FC_STANDBY_LOCK_KEY", "k1", "FLOWCATALYST_STANDBY_LOCK_KEY", "k2").standbyLockKey())
+                .isEqualTo("k1");
+        assertThat(load("FLOWCATALYST_STANDBY_LOCK_KEY", "k2").standbyLockKey()).isEqualTo("k2");
+
+        // lock TTL: FC_STANDBY_LOCK_TTL_SECONDS, then FLOWCATALYST_STANDBY_LOCK_TTL
+        assertThat(load("FC_STANDBY_LOCK_TTL_SECONDS", "45", "FLOWCATALYST_STANDBY_LOCK_TTL", "99")
+                .standbyLockTtlSeconds()).isEqualTo(45);
+        assertThat(load("FLOWCATALYST_STANDBY_LOCK_TTL", "99").standbyLockTtlSeconds()).isEqualTo(99);
+
+        // heartbeat: FC_STANDBY_HEARTBEAT_SECONDS, then FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL
+        assertThat(load("FC_STANDBY_HEARTBEAT_SECONDS", "5", "FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL", "20")
+                .standbyHeartbeatSeconds()).isEqualTo(5);
+        assertThat(load("FLOWCATALYST_STANDBY_HEARTBEAT_INTERVAL", "20").standbyHeartbeatSeconds()).isEqualTo(20);
+
+        // instance id: FC_INSTANCE_ID, then FLOWCATALYST_INSTANCE_ID, then HOSTNAME
+        assertThat(load("FC_INSTANCE_ID", "i1", "FLOWCATALYST_INSTANCE_ID", "i2", "HOSTNAME", "i3").standbyInstanceId())
+                .isEqualTo("i1");
+        assertThat(load("FLOWCATALYST_INSTANCE_ID", "i2", "HOSTNAME", "i3").standbyInstanceId()).isEqualTo("i2");
+        assertThat(load("HOSTNAME", "i3").standbyInstanceId()).isEqualTo("i3");
     }
 
     @Test

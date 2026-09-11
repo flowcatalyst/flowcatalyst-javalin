@@ -74,6 +74,19 @@ public record EnvReader(Map<String, String> env) {
         return parseInt(get(alias)).orElse(def);
     }
 
+    /// Three-name precedence chain (e.g. `FC_API_PORT`, `API_PORT`, `PORT`):
+    /// each name is tried in order and is only taken when it both is set and
+    /// parses, exactly like the two-name [#integerAlias(String, String, int)]
+    /// — an unparseable value falls through to the next name rather than
+    /// straight to `def`.
+    public int integerAlias(String key, String alias, String alias2, int def) {
+        var primary = parseInt(get(key));
+        if (primary.isPresent()) return primary.get();
+        var secondary = parseInt(get(alias));
+        if (secondary.isPresent()) return secondary.get();
+        return parseInt(get(alias2)).orElse(def);
+    }
+
     /// `envInt`'s `long` counterpart: parse as a base-10 integer (optional
     /// sign), `def` when unset or unparseable.
     public long longValue(String key, long def) {
@@ -93,6 +106,16 @@ public record EnvReader(Map<String, String> env) {
     public boolean boolAlias(String key, String alias, boolean def) {
         if (!get(key).isEmpty()) return bool(key, def);
         return bool(alias, def);
+    }
+
+    /// Three-name precedence chain, the [#boolAlias(String, String, boolean)]
+    /// rule applied name by name: the first name that is *set* (non-empty)
+    /// alone decides — even an unparseable value yields `def` without
+    /// consulting the next name in the chain.
+    public boolean boolAlias(String key, String alias, String alias2, boolean def) {
+        if (!get(key).isEmpty()) return bool(key, def);
+        if (!get(alias).isEmpty()) return bool(alias, def);
+        return bool(alias2, def);
     }
 
     /// `envutil.Uint32`: parse as an unsigned 32-bit decimal (no sign allowed),

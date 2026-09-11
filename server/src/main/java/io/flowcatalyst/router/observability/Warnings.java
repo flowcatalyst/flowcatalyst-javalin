@@ -25,7 +25,10 @@ public interface Warnings {
     /// silently; a value that is *set* but does not name a [Severity] is an
     /// operator typo worth a WARN naming the bad value, degraded to
     /// `WARNING` rather than refused — an unparseable notifier floor is not
-    /// a reason to fail router startup.
+    /// a reason to fail router startup. `WARN` is accepted as a synonym for
+    /// `WARNING` — the Rust router's own severity vocabulary — so a
+    /// `FC_NOTIFY_MIN_SEVERITY=WARN` dropped in from a Rust task definition
+    /// means what it always meant there.
     ///
     /// Lives here, not on [io.flowcatalyst.server.Env], per `CONVENTIONS.md`
     /// §8 ("subsystem knobs reach the composition root through `Env`"):
@@ -36,8 +39,12 @@ public interface Warnings {
         if (raw == null || raw.isBlank()) {
             return Severity.WARNING;
         }
+        var upper = raw.trim().toUpperCase(Locale.ROOT);
+        if ("WARN".equals(upper)) {
+            return Severity.WARNING;
+        }
         try {
-            return Severity.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+            return Severity.valueOf(upper);
         } catch (IllegalArgumentException e) {
             LoggerFactory.getLogger(Warnings.class)
                     .warn("FC_NOTIFY_MIN_SEVERITY '{}' is not a valid severity; keeping the WARNING floor", raw);

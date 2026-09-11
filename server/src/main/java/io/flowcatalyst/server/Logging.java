@@ -10,6 +10,8 @@ import ch.qos.logback.core.ConsoleAppender;
 import ch.qos.logback.core.encoder.Encoder;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -61,7 +63,69 @@ public final class Logging {
     }
 
     public static void init(EnvReader env) {
-        init(levelOf(env.get("FC_LOG_LEVEL")), formatOf(env.firstSet("FC_LOG_FORMAT", "LOG_FORMAT").orElse("")));
+        var format = formatOf(env.firstSet("FC_LOG_FORMAT", "LOG_FORMAT").orElse(""));
+        var resolution = resolveLevels(env);
+        init(resolution.root(), format);
+        if (resolution.routerLevel() != null) {
+            var routerLogger = (Logger) LoggerFactory.getLogger("io.flowcatalyst.router");
+            routerLogger.setLevel(resolution.routerLevel());
+        }
+        if (!resolution.ignoredTargets().isEmpty()) {
+            LoggerFactory.getLogger(Logging.class)
+                    .info("RUST_LOG target(s) have no Java mapping and were ignored: {}", resolution.ignoredTargets());
+        }
+    }
+
+    /// `FC_LOG_LEVEL`/`RUST_LOG` resolved: the root level, an optional level
+    /// for `io.flowcatalyst.router` (Rust's `fc_router` target — the package
+    /// every router class lives under), and any other `target=level` entries
+    /// `RUST_LOG` named that this binary does not map anywhere.
+    public record LevelResolution(Level root, Level routerLevel, List<String> ignoredTargets) {
+    }
+
+    /// `FC_LOG_LEVEL` wins outright when set — `RUST_LOG` is not consulted at
+    /// all in that case, matching §5 of `docs/spec/router-env.md`. Otherwise
+    /// `RUST_LOG` is parsed as the Rust router's own `tracing` filter: a
+    /// comma-separated entry with no `=` sets the root level (the last bare
+    /// token wins if more than one appears, matching `tracing_subscriber`'s
+    /// own last-wins directive parsing); `fc_router=<level>` sets the router
+    /// package's level; anything else is collected as ignored rather than
+    /// silently dropped, so an operator who set `tower_http=warn` and expected
+    /// something from it sees why nothing changed.
+    static LevelResolution resolveLevels(EnvReader env) {
+        var fcLogLevel = env.get("FC_LOG_LEVEL");
+        if (!fcLogLevel.isBlank()) {
+            return new LevelResolution(levelOf(fcLogLevel), null, List.of());
+        }
+        return parseRustLog(env.get("RUST_LOG"));
+    }
+
+    static LevelResolution parseRustLog(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return new LevelResolution(Level.INFO, null, List.of());
+        }
+        var root = Level.INFO;
+        Level routerLevel = null;
+        var ignored = new ArrayList<String>();
+        for (var rawEntry : raw.split(",")) {
+            var token = rawEntry.trim();
+            if (token.isEmpty()) {
+                continue;
+            }
+            var eq = token.indexOf('=');
+            if (eq < 0) {
+                root = levelOf(token);
+                continue;
+            }
+            var target = token.substring(0, eq).trim();
+            var levelWord = token.substring(eq + 1).trim();
+            if ("fc_router".equals(target)) {
+                routerLevel = levelOf(levelWord);
+            } else {
+                ignored.add(token);
+            }
+        }
+        return new LevelResolution(root, routerLevel, List.copyOf(ignored));
     }
 
     /// Reset the Logback context and install a single stderr appender.

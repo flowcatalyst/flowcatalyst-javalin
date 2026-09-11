@@ -7,6 +7,7 @@ import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightMessage;
 import io.flowcatalyst.router.inflight.InFlightTracker;
+import io.flowcatalyst.router.lifecycle.LifecycleLoops;
 import io.flowcatalyst.router.pool.Broker;
 import io.flowcatalyst.router.pool.Mediator;
 import io.flowcatalyst.router.pool.Pool;
@@ -279,7 +280,7 @@ class RouterServerTest {
     @Test
     @DisplayName("A-10: a second applyConfiguration() call raises a live pool's concurrency, not just its config record")
     void secondApplyConfigurationAdjustsLivePoolConcurrency() throws InterruptedException {
-        // The config-poll task (Router.java, CONFIG_POLL_INTERVAL) exists to
+        // The config-poll task (Router.java, RouterServer.parseConfigPollInterval) exists to
         // reach a pool that is already running: this proves a repeat call
         // actually moves the running pool's admitted concurrency, not merely
         // that RouterManager#reconfigure was invoked again.
@@ -612,6 +613,62 @@ class RouterServerTest {
         } finally {
             localServer.close();
             localPools.forEach(Pool::close);
+        }
+    }
+
+    @Test
+    @DisplayName("FC_ROUTER_CONFIG_INTERVAL_SECONDS: unset/blank silently resolves to the 300s default")
+    void parseConfigPollIntervalDefaultsSilently() {
+        assertThat(RouterServer.parseConfigPollInterval(null)).isEqualTo(Duration.ofSeconds(300));
+        assertThat(RouterServer.parseConfigPollInterval("")).isEqualTo(Duration.ofSeconds(300));
+        assertThat(RouterServer.parseConfigPollInterval("  ")).isEqualTo(Duration.ofSeconds(300));
+    }
+
+    @Test
+    @DisplayName("FC_ROUTER_CONFIG_INTERVAL_SECONDS: a positive integer is honoured verbatim")
+    void parseConfigPollIntervalHonoursAPositiveValue() {
+        assertThat(RouterServer.parseConfigPollInterval("60")).isEqualTo(Duration.ofSeconds(60));
+        assertThat(RouterServer.parseConfigPollInterval("1")).isEqualTo(Duration.ofSeconds(1));
+    }
+
+    @Test
+    @DisplayName("FC_ROUTER_CONFIG_INTERVAL_SECONDS: a set-but-invalid value falls back to 300s (Rust silently defaults; this WARNs)")
+    void parseConfigPollIntervalFallsBackOnGarbage() {
+        assertThat(RouterServer.parseConfigPollInterval("not-a-number")).isEqualTo(Duration.ofSeconds(300));
+        assertThat(RouterServer.parseConfigPollInterval("0")).as("zero is not positive").isEqualTo(Duration.ofSeconds(300));
+        assertThat(RouterServer.parseConfigPollInterval("-5")).isEqualTo(Duration.ofSeconds(300));
+    }
+
+    @Test
+    @DisplayName("A-10/R-31: the config-poll task Router.java composes actually fires at the env-configured interval")
+    void configPollFiresAtTheConfiguredInterval() {
+        // Mirrors exactly how Router.java composes this task:
+        // RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw())
+        // feeding a LifecycleLoops.Task named "config-poll". Kills the
+        // "config interval ignored (constant used)" mutant: a regression
+        // that silently used CONFIG_POLL_INTERVAL_DEFAULT (5 minutes)
+        // instead of the parsed 1s value would never see three fetches
+        // inside the 10s `await` budget below.
+        var fetches = new AtomicInteger();
+        RouterServer.ConfigSource countingSource = () -> {
+            fetches.incrementAndGet();
+            return Optional.of(config("q://1"));
+        };
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, countingSource, warnings, clock,
+                Duration.ofSeconds(1));
+        server.start();
+        await(() -> server.activeLoops() == 1);
+        int fetchesAtStart = fetches.get();
+
+        var loops = new LifecycleLoops();
+        try {
+            loops.start(List.of(new LifecycleLoops.Task("config-poll",
+                    RouterServer.parseConfigPollInterval("1"), server::applyConfiguration)));
+
+            await(() -> fetches.get() >= fetchesAtStart + 3);
+        } finally {
+            loops.close();
         }
     }
 

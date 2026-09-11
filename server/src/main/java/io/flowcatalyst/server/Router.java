@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /// Composition root for the message router — the counterpart to [Platform].
@@ -186,8 +187,9 @@ public final class Router implements AutoCloseable {
         var warnings = new WarningStore(clock);
         // The store is what the dashboard reads; the notifier is what reaches
         // someone who is not looking at the dashboard. Raisers get both.
-        var notifier = WarningNotifier.create(env.routerNotifyWebhookUrl(),
-                Warnings.parseMinSeverity(env.routerNotifyMinSeverity()), clock);
+        var notifier = WarningNotifier.create(env.routerNotifyWebhookUrl(), env.routerNotifyTeamsEnabledRaw(),
+                Warnings.parseMinSeverity(env.routerNotifyMinSeverity()),
+                Duration.ofSeconds(env.routerNotifyBatchIntervalSeconds()), clock);
         if (notifier instanceof WarningNotifier started) {
             started.start();
         }
@@ -279,7 +281,8 @@ public final class Router implements AutoCloseable {
                 () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup,
                 () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl),
                 manager::closeDrainedPools, manager::retireLingeringConsumers));
-        housekeepingTasks.add(new LifecycleLoops.Task("config-poll", RouterServer.CONFIG_POLL_INTERVAL,
+        housekeepingTasks.add(new LifecycleLoops.Task("config-poll",
+                RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw()),
                 server::applyConfiguration));
         // R-26 (`docs/spec/router-completion.md` §2 ruling 5): the stall
         // watchdog was built and tested but never wired until this task
@@ -315,10 +318,33 @@ public final class Router implements AutoCloseable {
         return new BlockedSiblings.Settle(new HttpSettledReporter(env.routerPlatformUrl()));
     }
 
-    private static LeaderElection.Config electionConfig(Env env) {
-        return env.standbyEnabled()
-                ? LeaderElection.Config.of(env.standbyLockKey())
-                : LeaderElection.Config.disabled();
+    /// Builds the standby [LeaderElection.Config] from [Env] (§3 of
+    /// `docs/spec/router-env.md`): lock key, lock TTL, heartbeat and instance
+    /// id each resolve through their own `FC_STANDBY_*`/`FLOWCATALYST_STANDBY_*`
+    /// precedence chain. [LeaderElection.Config]'s own constructor already
+    /// refuses `heartbeat >= lockTtl`, but that generic message names neither
+    /// variable — pre-checked here so a misconfigured pair fails with the two
+    /// env values in the message instead of a stack trace deep in wiring.
+    ///
+    /// Package-private so [io.flowcatalyst.server.RouterElectionConfigTest]
+    /// can assert precedence and the clear-failure message directly, the same
+    /// shape as [#configSource].
+    static LeaderElection.Config electionConfig(Env env) {
+        if (!env.standbyEnabled()) {
+            return LeaderElection.Config.disabled();
+        }
+        var heartbeat = Duration.ofSeconds(env.standbyHeartbeatSeconds());
+        var lockTtl = Duration.ofSeconds(env.standbyLockTtlSeconds());
+        if (heartbeat.compareTo(lockTtl) >= 0) {
+            throw new IllegalStateException(
+                    "FC_STANDBY_HEARTBEAT_SECONDS (" + env.standbyHeartbeatSeconds() + "s) must be shorter than "
+                            + "FC_STANDBY_LOCK_TTL_SECONDS (" + env.standbyLockTtlSeconds() + "s) — "
+                            + "standby leader election cannot start");
+        }
+        var instanceId = env.standbyInstanceId().isBlank()
+                ? UUID.randomUUID().toString()
+                : env.standbyInstanceId();
+        return new LeaderElection.Config(true, env.standbyLockKey(), instanceId, lockTtl, heartbeat);
     }
 
     /// Builds the Redis client for leader election.

@@ -65,6 +65,18 @@ class EnvReaderTest {
     }
 
     @Test
+    void integerAliasThreeWayFallsThroughOnUnparseableOrUnsetNames() {
+        assertThat(of("P", "1", "A", "2", "B", "3").integerAlias("P", "A", "B", 9)).isEqualTo(1);
+        assertThat(of("A", "2", "B", "3").integerAlias("P", "A", "B", 9))
+                .as("unset primary falls through to the first alias").isEqualTo(2);
+        assertThat(of("B", "3").integerAlias("P", "A", "B", 9))
+                .as("unset primary and alias fall through to the second alias").isEqualTo(3);
+        assertThat(of("P", "bad", "B", "3").integerAlias("P", "A", "B", 9))
+                .as("unparseable primary falls through past an unset alias to the second alias").isEqualTo(3);
+        assertThat(of().integerAlias("P", "A", "B", 9)).isEqualTo(9);
+    }
+
+    @Test
     void boolVocabulary() {
         for (var t : new String[]{"1", "true", "TRUE", "True", "yes", "YES", "on", "On", " true ", "\ton\n"}) {
             assertThat(of("B", t).bool("B", false)).as(t).isTrue();
@@ -87,6 +99,18 @@ class EnvReaderTest {
         assertThat(of("P", "false", "A", "true").boolAlias("P", "A", true)).isFalse();
         assertThat(of("P", "", "A", "yes").boolAlias("P", "A", false)).as("empty primary falls through").isTrue();
         assertThat(of().boolAlias("P", "A", true)).isTrue();
+    }
+
+    @Test
+    void boolAliasThreeWaySetNameAloneDecides() {
+        assertThat(of("P", "true", "A", "false", "B", "false").boolAlias("P", "A", "B", false)).isTrue();
+        assertThat(of("A", "true", "B", "false").boolAlias("P", "A", "B", false))
+                .as("unset primary falls through to the first alias").isTrue();
+        assertThat(of("B", "true").boolAlias("P", "A", "B", false))
+                .as("unset primary and alias fall through to the second alias").isTrue();
+        assertThat(of("P", "garbage", "B", "true").boolAlias("P", "A", "B", false))
+                .as("set-but-unparseable primary yields the default without consulting either alias").isFalse();
+        assertThat(of().boolAlias("P", "A", "B", true)).isTrue();
     }
 
     @Test

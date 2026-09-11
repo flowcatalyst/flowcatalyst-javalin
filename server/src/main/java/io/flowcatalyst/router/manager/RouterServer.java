@@ -51,10 +51,36 @@ public final class RouterServer implements AutoCloseable {
 
     /// How often [#applyConfiguration] is re-run while leader, so a
     /// configuration change on the source side reaches a router that never
-    /// lost and regained leadership (A-10). Env-tunability is a separate,
-    /// still-open question (R-31) — this stays a constant until that is
-    /// ruled.
-    public static final Duration CONFIG_POLL_INTERVAL = Duration.ofMinutes(5);
+    /// lost and regained leadership (A-10). The default [#parseConfigPollInterval]
+    /// falls back to — `FC_ROUTER_CONFIG_INTERVAL_SECONDS` / `FLOWCATALYST_CONFIG_INTERVAL`
+    /// (`docs/spec/router-env.md` §2) makes it env-tunable, resolving R-31.
+    public static final Duration CONFIG_POLL_INTERVAL_DEFAULT = Duration.ofMinutes(5);
+
+    /// Parses `FC_ROUTER_CONFIG_INTERVAL_SECONDS` (alias `FLOWCATALYST_CONFIG_INTERVAL`,
+    /// [io.flowcatalyst.server.Env#routerConfigIntervalRaw]) into the interval
+    /// [io.flowcatalyst.server.Router] schedules the config-poll housekeeping
+    /// task at. `raw` blank/unset is the ordinary case and silently resolves
+    /// to [#CONFIG_POLL_INTERVAL_DEFAULT] (300s); a value that is *set* but
+    /// not a positive integer is an operator typo worth a WARN naming it,
+    /// degraded to the same default rather than refused (Rust silently
+    /// defaults instead — a typo here deserves a line).
+    public static Duration parseConfigPollInterval(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return CONFIG_POLL_INTERVAL_DEFAULT;
+        }
+        try {
+            var seconds = Integer.parseInt(raw.trim());
+            if (seconds > 0) {
+                return Duration.ofSeconds(seconds);
+            }
+        } catch (NumberFormatException ignored) {
+            // falls through to the warning below
+        }
+        log.atWarn().setMessage("FC_ROUTER_CONFIG_INTERVAL_SECONDS is not a positive integer; using the 300s default")
+                .addKeyValue("value", raw)
+                .log();
+        return CONFIG_POLL_INTERVAL_DEFAULT;
+    }
 
     private final RouterManager manager;
     private final InFlightTracker tracker;
@@ -223,7 +249,7 @@ public final class RouterServer implements AutoCloseable {
     /// Safe to call repeatedly: [RouterManager#reconfigure] leaves unchanged
     /// queues alone, so a poll that finds nothing new costs nothing — which
     /// is what lets this run both on leadership gain and on a periodic
-    /// schedule ([#CONFIG_POLL_INTERVAL], A-10) without special-casing
+    /// schedule ([#parseConfigPollInterval], A-10) without special-casing
     /// either caller. A follower or a not-yet-running instance is a no-op,
     /// answering empty rather than a zeroed result so a caller (the reload
     /// route, R-33) can tell "nothing to do" from "nothing changed".
