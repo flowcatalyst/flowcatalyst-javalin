@@ -1386,24 +1386,33 @@ which cannot be batched, and at production rates (~200/s) the fetch is not the c
 is connection-hold time on this group against request duration (§11.6) showing the fetch taking a
 meaningful share of a busy group's pool.
 
-## Router: a queue that does not exist is polled every second, forever (2026-09-11)
+## Router: a queue that does not exist yet is polled every second, forever (2026-09-11)
 
-Seen in staging on Go (2026-09-04, `FC-staging-ceramic-release-staging-workers-high.fifo`,
-`AWS.SimpleQueueService.NonExistentQueue`): one WARN line per second per missing
-queue, indefinitely. Java raises a single `CONNECTION` warning (Teams) on the
-first failure and an INFO on recovery, but otherwise behaves like Go:
-`ConsumerLoop` sleeps a fixed `POLL_ERROR_PAUSE` (1 s) and logs a short WARN on
-every failed poll.
+**This is expected, not a fault.** Integral's control plane (`/api/config`,
+`ControlPlaneController`) advertises a queue for every subscription record's
+`FC-{env}-{tenant}-{queue}.fifo`. Integral creates each queue lazily, on its
+first send (`MessageRouterService::sendBatchCreatingQueueIfMissing`). So a
+queue no message has been sent to — e.g. a `…-workers-high` variant
+(`QueueWorkerTypeEnum::HIGH`) for a tenant that has never produced one — is
+listed but does not exist. Confirmed by the owner, 2026-09-11.
+
+Go (staging, 2026-09-04,
+`FC-staging-ceramic-release-staging-workers-high.fifo`) logs `consumer poll
+error … NonExistentQueue` as a WARN every second, indefinitely. Java raises a
+`CONNECTION` warning on the first failure, which **now reaches Teams**: every
+never-used queue would page on every restart or leadership change. That is
+worse than Go's log noise.
 
 Proposal, needing an owner ruling because it deviates from Go:
-- **Recognise it:** classify `NonExistentQueue` as a configuration error, not a
-  transient one. The warning names the queue and says it does not exist.
-- **Back off:** retry failed polls with a growing gap, 1 s doubling to a cap of
-  about 60 s, so a queue created later is still picked up within a minute.
-- **Log less:** one WARN when the streak starts, then one summary per few
-  minutes while it lasts, instead of one line per attempt.
+- **Classify:** treat `NonExistentQueue` as *not yet created*, distinct from
+  connection failures.
+- **No alert:** raise no `CONNECTION` warning for it. Log one INFO line when
+  the queue is first found missing, and one when it appears.
+- **Back off:** retry with a growing gap, 1 s doubling to a cap of about 60 s,
+  so a queue Integral creates is consumed within a minute.
+- **Unchanged:** genuine connection failures keep today's warning.
 
-Test: a scripted consumer failing with that error. Assert the gap between
-attempts grows to the cap, the log lines per minute are bounded, exactly one
-warning is raised, and recovery resumes normal polling.
-
+Test: a scripted consumer returning that error. Assert that no warning is
+raised, that the gap between attempts grows to the cap, that exactly one INFO
+line is logged, and that polling returns to normal once the queue exists.
+Separately, assert a connection error still raises `CONNECTION`.

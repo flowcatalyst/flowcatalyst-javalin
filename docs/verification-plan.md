@@ -85,10 +85,11 @@ Extend `router-env.md`'s method to each role in the inventory:
   alerts raised. Include **a configured queue that does not exist**, a real
   staging case on 2026-09-04: Go's router logged `consumer poll error …
   NonExistentQueue` every second, indefinitely, for
-  `FC-staging-ceramic-release-staging-workers-high.fifo`. Java raises one
-  `CONNECTION` warning (which reaches Teams) but still retries and logs a
-  WARN every second (`ConsumerLoop.POLL_ERROR_PAUSE`). The proposed fix is in
-  `docs/backlog.md` and needs an owner ruling.
+  `FC-staging-ceramic-release-staging-workers-high.fifo`. This is expected: Integral
+  creates queues on first send, and the config lists them before that. Java
+  would alert Teams for each one (`CONNECTION`) and still poll every second.
+  The proposed fix (no alert, back off) is in `docs/backlog.md` and needs an
+  owner ruling.
 
 Exit: a table per role with no unexplained "ignored" rows, and a
 `DeploymentEnvTest` that loads each inventory row's environment into `Env` and
