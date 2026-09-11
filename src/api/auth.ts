@@ -319,7 +319,12 @@ export async function switchClient(clientId: string): Promise<void> {
 	const authStore = useAuthStore();
 
 	try {
-		await authFetch<void>(`/client/${clientId}`, { method: "POST" });
+		// POST /auth/client/switch {clientId} — the backend has no
+		// /auth/client/{id} route (this used to 404/405).
+		await authFetch<void>("/client/switch", {
+			method: "POST",
+			body: JSON.stringify({ clientId }),
+		});
 		authStore.selectClient(clientId);
 	} catch (error: unknown) {
 		authStore.setError(getErrorMessage(error, "Failed to switch client"));
