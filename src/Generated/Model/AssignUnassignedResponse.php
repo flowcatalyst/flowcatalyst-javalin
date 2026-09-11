@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class PortalAppListResponse
+class AssignUnassignedResponse
 {
     /**
      * @var array
@@ -19,13 +19,13 @@ class PortalAppListResponse
      */
     protected $dollarSchema;
     /**
-     * @var list<PortalAppResponse>|null
-     */
-    protected $portalApps;
-    /**
      * @var int|null
      */
-    protected $unassignedUsers;
+    protected $assigned;
+    /**
+     * @var string|null
+     */
+    protected $portalAppCode;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -49,39 +49,39 @@ class PortalAppListResponse
         return $this;
     }
     /**
-     * @return list<PortalAppResponse>|null
+     * @return int|null
      */
-    public function getPortalApps(): ?array
+    public function getAssigned(): ?int
     {
-        return $this->portalApps;
+        return $this->assigned;
     }
     /**
-     * @param list<PortalAppResponse>|null $portalApps
+     * @param int|null $assigned
      *
      * @return self
      */
-    public function setPortalApps(?array $portalApps): self
+    public function setAssigned(?int $assigned): self
     {
-        $this->initialized['portalApps'] = true;
-        $this->portalApps = $portalApps;
+        $this->initialized['assigned'] = true;
+        $this->assigned = $assigned;
         return $this;
     }
     /**
-     * @return int|null
+     * @return string|null
      */
-    public function getUnassignedUsers(): ?int
+    public function getPortalAppCode(): ?string
     {
-        return $this->unassignedUsers;
+        return $this->portalAppCode;
     }
     /**
-     * @param int|null $unassignedUsers
+     * @param string|null $portalAppCode
      *
      * @return self
      */
-    public function setUnassignedUsers(?int $unassignedUsers): self
+    public function setPortalAppCode(?string $portalAppCode): self
     {
-        $this->initialized['unassignedUsers'] = true;
-        $this->unassignedUsers = $unassignedUsers;
+        $this->initialized['portalAppCode'] = true;
+        $this->portalAppCode = $portalAppCode;
         return $this;
     }
 }

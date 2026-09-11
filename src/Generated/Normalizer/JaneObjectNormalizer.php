@@ -66,6 +66,10 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\AssignRolesRequest::class => \FlowCatalyst\Generated\Normalizer\AssignRolesRequestNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\AssignUnassignedBody::class => \FlowCatalyst\Generated\Normalizer\AssignUnassignedBodyNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\AssignUnassignedResponse::class => \FlowCatalyst\Generated\Normalizer\AssignUnassignedResponseNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\AttachServiceAccountRequest::class => \FlowCatalyst\Generated\Normalizer\AttachServiceAccountRequestNormalizer::class,
         
         \FlowCatalyst\Generated\Model\AttemptDTO::class => \FlowCatalyst\Generated\Normalizer\AttemptDTONormalizer::class,
@@ -560,6 +564,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\AssignApplicationAccessRequest::class => false,
             \FlowCatalyst\Generated\Model\AssignPrincipalRolesRequest::class => false,
             \FlowCatalyst\Generated\Model\AssignRolesRequest::class => false,
+            \FlowCatalyst\Generated\Model\AssignUnassignedBody::class => false,
+            \FlowCatalyst\Generated\Model\AssignUnassignedResponse::class => false,
             \FlowCatalyst\Generated\Model\AttachServiceAccountRequest::class => false,
             \FlowCatalyst\Generated\Model\AttemptDTO::class => false,
             \FlowCatalyst\Generated\Model\AuditLogApplicationIDsResponse::class => false,

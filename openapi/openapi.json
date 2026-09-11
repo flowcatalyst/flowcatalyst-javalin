@@ -661,6 +661,53 @@
         ],
         "type": "object"
       },
+      "AssignUnassignedBody": {
+        "additionalProperties": true,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AssignUnassignedBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientId"
+        ],
+        "type": "object"
+      },
+      "AssignUnassignedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AssignUnassignedResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "assigned": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "portalAppCode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "portalAppCode",
+          "assigned"
+        ],
+        "type": "object"
+      },
       "AttachServiceAccountRequest": {
         "additionalProperties": true,
         "properties": {
@@ -4936,6 +4983,10 @@
               "$ref": "#/components/schemas/PortalAppResponse"
             },
             "type": "array"
+          },
+          "unassignedUsers": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
@@ -16052,6 +16103,57 @@
         ]
       }
     },
+    "/api/portal-apps/{id}/assign-unassigned": {
+      "post": {
+        "operationId": "assignUnassignedPortalUsers",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignUnassignedBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignUnassignedResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Grant a portal app to every one of the client's portal users that has no portal app",
+        "tags": [
+          "portal-apps"
+        ]
+      }
+    },
     "/api/portal-users": {
       "get": {
         "operationId": "listPortalUsers",
@@ -16084,6 +16186,16 @@
             "schema": {
               "description": "Only identities granted this portal app",
               "type": "string"
+            }
+          },
+          {
+            "description": "Only identities granted no portal app (cannot be combined with portalAppCode)",
+            "explode": false,
+            "in": "query",
+            "name": "unassigned",
+            "schema": {
+              "description": "Only identities granted no portal app (cannot be combined with portalAppCode)",
+              "type": "boolean"
             }
           },
           {

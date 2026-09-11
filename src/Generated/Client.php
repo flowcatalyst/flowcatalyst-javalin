@@ -1691,10 +1691,22 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\UpdatePortalApp($id, $requestBody), $fetch);
     }
     /**
+     * @param string $id
+     * @param null|\FlowCatalyst\Generated\Model\AssignUnassignedBody $requestBody
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\AssignUnassignedResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function assignUnassignedPortalUsers(string $id, ?\FlowCatalyst\Generated\Model\AssignUnassignedBody $requestBody = null, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\AssignUnassignedPortalUsers($id, $requestBody), $fetch);
+    }
+    /**
      * @param array{
      *    "clientId"?: string, //Tenant client whose portal identities to list
      *    "q"?: string, //Prefix (TERM%) matched case-insensitively against email and name
      *    "portalAppCode"?: string, //Only identities granted this portal app
+     *    "unassigned"?: bool, //Only identities granted no portal app (cannot be combined with portalAppCode)
      *    "page"?: int, //0-based page index (default 0)
      *    "size"?: int, //Page size (default 100, max 1000)
      * } $queryParameters

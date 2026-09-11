@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class PortalAppListResponse
+class AssignUnassignedBody extends \ArrayObject
 {
     /**
      * @var array
@@ -19,13 +19,9 @@ class PortalAppListResponse
      */
     protected $dollarSchema;
     /**
-     * @var list<PortalAppResponse>|null
+     * @var string|null
      */
-    protected $portalApps;
-    /**
-     * @var int|null
-     */
-    protected $unassignedUsers;
+    protected $clientId;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -49,39 +45,21 @@ class PortalAppListResponse
         return $this;
     }
     /**
-     * @return list<PortalAppResponse>|null
+     * @return string|null
      */
-    public function getPortalApps(): ?array
+    public function getClientId(): ?string
     {
-        return $this->portalApps;
+        return $this->clientId;
     }
     /**
-     * @param list<PortalAppResponse>|null $portalApps
+     * @param string|null $clientId
      *
      * @return self
      */
-    public function setPortalApps(?array $portalApps): self
+    public function setClientId(?string $clientId): self
     {
-        $this->initialized['portalApps'] = true;
-        $this->portalApps = $portalApps;
-        return $this;
-    }
-    /**
-     * @return int|null
-     */
-    public function getUnassignedUsers(): ?int
-    {
-        return $this->unassignedUsers;
-    }
-    /**
-     * @param int|null $unassignedUsers
-     *
-     * @return self
-     */
-    public function setUnassignedUsers(?int $unassignedUsers): self
-    {
-        $this->initialized['unassignedUsers'] = true;
-        $this->unassignedUsers = $unassignedUsers;
+        $this->initialized['clientId'] = true;
+        $this->clientId = $clientId;
         return $this;
     }
 }

@@ -9,6 +9,7 @@ class ListPortalUsers extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoin
      *    "clientId"?: string, //Tenant client whose portal identities to list
      *    "q"?: string, //Prefix (TERM%) matched case-insensitively against email and name
      *    "portalAppCode"?: string, //Only identities granted this portal app
+     *    "unassigned"?: bool, //Only identities granted no portal app (cannot be combined with portalAppCode)
      *    "page"?: int, //0-based page index (default 0)
      *    "size"?: int, //Page size (default 100, max 1000)
      * } $queryParameters
@@ -37,12 +38,13 @@ class ListPortalUsers extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoin
     protected function getQueryOptionsResolver(): \Symfony\Component\OptionsResolver\OptionsResolver
     {
         $optionsResolver = parent::getQueryOptionsResolver();
-        $optionsResolver->setDefined(['clientId', 'q', 'portalAppCode', 'page', 'size']);
+        $optionsResolver->setDefined(['clientId', 'q', 'portalAppCode', 'unassigned', 'page', 'size']);
         $optionsResolver->setRequired([]);
         $optionsResolver->setDefaults([]);
         $optionsResolver->addAllowedTypes('clientId', ['string']);
         $optionsResolver->addAllowedTypes('q', ['string']);
         $optionsResolver->addAllowedTypes('portalAppCode', ['string']);
+        $optionsResolver->addAllowedTypes('unassigned', ['bool']);
         $optionsResolver->addAllowedTypes('page', ['int']);
         $optionsResolver->addAllowedTypes('size', ['int']);
         return $optionsResolver;

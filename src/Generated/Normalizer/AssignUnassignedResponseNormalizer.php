@@ -11,7 +11,7 @@ use Symfony\Component\Serializer\Normalizer\DenormalizerInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareTrait;
 use Symfony\Component\Serializer\Normalizer\NormalizerInterface;
-class PortalAppListResponseNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
+class AssignUnassignedResponseNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
 {
     use DenormalizerAwareTrait;
     use NormalizerAwareTrait;
@@ -19,15 +19,15 @@ class PortalAppListResponseNormalizer implements DenormalizerInterface, Normaliz
     use ValidatorTrait;
     public function supportsDenormalization(mixed $data, string $type, ?string $format = null, array $context = []): bool
     {
-        return $type === \FlowCatalyst\Generated\Model\PortalAppListResponse::class;
+        return $type === \FlowCatalyst\Generated\Model\AssignUnassignedResponse::class;
     }
     public function supportsNormalization(mixed $data, ?string $format = null, array $context = []): bool
     {
-        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\PortalAppListResponse::class;
+        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\AssignUnassignedResponse::class;
     }
     public function denormalize(mixed $data, string $type, ?string $format = null, array $context = []): mixed
     {
-        $object = new \FlowCatalyst\Generated\Model\PortalAppListResponse();
+        $object = new \FlowCatalyst\Generated\Model\AssignUnassignedResponse();
         if (null === $data || false === \is_array($data)) {
             return $object;
         }
@@ -43,39 +43,29 @@ class PortalAppListResponseNormalizer implements DenormalizerInterface, Normaliz
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
-        if (\array_key_exists('portalApps', $data) && $data['portalApps'] !== null) {
-            $values = [];
-            foreach ($data['portalApps'] as $value) {
-                $values[] = $this->denormalizer->denormalize($value, \FlowCatalyst\Generated\Model\PortalAppResponse::class, 'json', $context);
-            }
-            $object->setPortalApps($values);
+        if (\array_key_exists('assigned', $data) && $data['assigned'] !== null) {
+            $object->setAssigned($data['assigned']);
         }
-        elseif (\array_key_exists('portalApps', $data) && $data['portalApps'] === null) {
-            $object->setPortalApps(null);
+        elseif (\array_key_exists('assigned', $data) && $data['assigned'] === null) {
+            $object->setAssigned(null);
         }
-        if (\array_key_exists('unassignedUsers', $data) && $data['unassignedUsers'] !== null) {
-            $object->setUnassignedUsers($data['unassignedUsers']);
+        if (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] !== null) {
+            $object->setPortalAppCode($data['portalAppCode']);
         }
-        elseif (\array_key_exists('unassignedUsers', $data) && $data['unassignedUsers'] === null) {
-            $object->setUnassignedUsers(null);
+        elseif (\array_key_exists('portalAppCode', $data) && $data['portalAppCode'] === null) {
+            $object->setPortalAppCode(null);
         }
         return $object;
     }
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
-        $values = [];
-        foreach ($data->getPortalApps() as $value) {
-            $values[] = $this->normalizer->normalize($value, 'json', $context);
-        }
-        $dataArray['portalApps'] = $values;
-        if ($data->isInitialized('unassignedUsers') && null !== $data->getUnassignedUsers()) {
-            $dataArray['unassignedUsers'] = $data->getUnassignedUsers();
-        }
+        $dataArray['assigned'] = $data->getAssigned();
+        $dataArray['portalAppCode'] = $data->getPortalAppCode();
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array
     {
-        return [\FlowCatalyst\Generated\Model\PortalAppListResponse::class => false];
+        return [\FlowCatalyst\Generated\Model\AssignUnassignedResponse::class => false];
     }
 }
