@@ -1385,3 +1385,25 @@ that never inspects payloads. Not to be revisited.
 which cannot be batched, and at production rates (~200/s) the fetch is not the constraint. The trigger
 is connection-hold time on this group against request duration (§11.6) showing the fetch taking a
 meaningful share of a busy group's pool.
+
+## Router: a queue that does not exist is polled every second, forever (2026-09-11)
+
+Seen in staging on Go (2026-09-04, `FC-staging-ceramic-release-staging-workers-high.fifo`,
+`AWS.SimpleQueueService.NonExistentQueue`): one WARN line per second per missing
+queue, indefinitely. Java raises a single `CONNECTION` warning (Teams) on the
+first failure and an INFO on recovery, but otherwise behaves like Go:
+`ConsumerLoop` sleeps a fixed `POLL_ERROR_PAUSE` (1 s) and logs a short WARN on
+every failed poll.
+
+Proposal, needing an owner ruling because it deviates from Go:
+- **Recognise it:** classify `NonExistentQueue` as a configuration error, not a
+  transient one. The warning names the queue and says it does not exist.
+- **Back off:** retry failed polls with a growing gap, 1 s doubling to a cap of
+  about 60 s, so a queue created later is still picked up within a minute.
+- **Log less:** one WARN when the streak starts, then one summary per few
+  minutes while it lasts, instead of one line per attempt.
+
+Test: a scripted consumer failing with that error. Assert the gap between
+attempts grows to the cap, the log lines per minute are bounded, exactly one
+warning is raised, and recovery resumes normal polling.
+

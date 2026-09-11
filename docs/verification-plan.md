@@ -82,7 +82,13 @@ Extend `router-env.md`'s method to each role in the inventory:
   which ports listen, and what `/health` answers.
 - **Dependency failures:** repeat with each dependency down in turn (DB, config
   service, Redis for standby, SQS), comparing health answers, exit codes and
-  alerts raised.
+  alerts raised. Include **a configured queue that does not exist**, a real
+  staging case on 2026-09-04: Go's router logged `consumer poll error …
+  NonExistentQueue` every second, indefinitely, for
+  `FC-staging-ceramic-release-staging-workers-high.fifo`. Java raises one
+  `CONNECTION` warning (which reaches Teams) but still retries and logs a
+  WARN every second (`ConsumerLoop.POLL_ERROR_PAUSE`). The proposed fix is in
+  `docs/backlog.md` and needs an owner ruling.
 
 Exit: a table per role with no unexplained "ignored" rows, and a
 `DeploymentEnvTest` that loads each inventory row's environment into `Env` and
