@@ -14,6 +14,7 @@ import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +83,50 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
 
     public Optional<OAuthClient> findByClientId(String clientId) {
         return findOne(T.CLIENT_ID.eq(clientId));
+    }
+
+    /// Every OAuth client linked to `portalAppId` (`portal_app_id = id`),
+    /// ordered by name — the delete orchestration's read (spec `portal-apps.md`
+    /// §3.6): a full aggregate per row (not the [LinkedRef] projection below)
+    /// because each one is individually deleted and emits its own
+    /// `OAuthClientDeleted`. Same hydration shape as [#findAll], the
+    /// condition is the only thing that varies.
+    public List<OAuthClient> findByPortalAppId(String portalAppId) {
+        var rows = dsl.selectFrom(T).where(T.PORTAL_APP_ID.eq(portalAppId)).orderBy(T.CLIENT_NAME.asc()).fetch();
+        if (rows.isEmpty()) return List.of();
+        var ids = rows.getValues(T.ID);
+        var redirectUris = redirectUrisFor(ids);
+        var postLogoutUris = postLogoutRedirectUrisFor(ids);
+        var grantTypes = grantTypesFor(ids);
+        var allowedOrigins = allowedOriginsFor(ids);
+        var applicationIds = applicationIdsFor(ids);
+        return List.copyOf(rows.map(row -> toEntity(row,
+                redirectUris.getOrDefault(row.getId(), List.of()),
+                postLogoutUris.getOrDefault(row.getId(), List.of()),
+                grantTypes.getOrDefault(row.getId(), List.of()),
+                allowedOrigins.getOrDefault(row.getId(), List.of()),
+                applicationIds.getOrDefault(row.getId(), List.of()))));
+    }
+
+    /// The `{id, clientId, clientName}` a portal app's page needs per linked
+    /// OAuth client (spec §4.4) — a light projection, not the full aggregate,
+    /// batched over every app on the page in one query (no per-app reads).
+    /// Ordered by name within each `portalAppId` group (the caller groups the
+    /// flat list; the underlying `ORDER BY` makes every group's slice ordered
+    /// too).
+    public record LinkedRef(String portalAppId, String id, String clientId, String clientName) {
+    }
+
+    public List<LinkedRef> linkedTo(Collection<String> portalAppIds) {
+        if (portalAppIds.isEmpty()) {
+            return List.of();
+        }
+        return dsl.select(T.PORTAL_APP_ID, T.ID, T.CLIENT_ID, T.CLIENT_NAME)
+                .from(T)
+                .where(T.PORTAL_APP_ID.in(portalAppIds))
+                .orderBy(T.CLIENT_NAME.asc())
+                .fetch()
+                .map(r -> new LinkedRef(r.value1(), r.value2(), r.value3(), r.value4()));
     }
 
     public List<OAuthClient> findAll() {

@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.oauthclient.api;
 
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalApp;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClient;
 import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand;
@@ -72,12 +74,16 @@ public final class OAuthClientApi {
 
     /// The handlers' dependencies. `encryption` is `Optional` at construction
     /// (spec §6.3: a write that carries a secret with no `FLOWCATALYST_APP_KEY`
-    /// configured fails 500 `SECRET`).
-    public record State(OAuthClientRepository repo, UnitOfWork uow, Optional<Encryption> encryption) {
+    /// configured fails 500 `SECRET`). `portalApps` resolves `portalAppId` on
+    /// create/update (spec §4.5) — read-only here, this surface never writes
+    /// a portal app.
+    public record State(OAuthClientRepository repo, UnitOfWork uow, Optional<Encryption> encryption,
+                        PortalAppRepository portalApps) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(encryption, "encryption");
+            Objects.requireNonNull(portalApps, "portalApps");
         }
     }
 
@@ -122,7 +128,9 @@ public final class OAuthClientApi {
 
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        var cmd = ctx.bodyAsClass(CreateOAuthClientRequest.class).toCommand();
+        var req = ctx.bodyAsClass(CreateOAuthClientRequest.class);
+        String resolvedPortalClientId = resolvePortalClientId(s, req.portalAppId(), req.portalClientId());
+        var cmd = req.toCommand(resolvedPortalClientId);
         // Local sink: the plaintext cannot outlive this request, and is only
         // read below, on the success path — a failed commit discloses nothing.
         var secret = new AtomicReference<String>();
@@ -134,9 +142,33 @@ public final class OAuthClientApi {
 
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        var cmd = ctx.bodyAsClass(UpdateOAuthClientRequest.class).toCommand(ctx.pathParam("id"));
+        var req = ctx.bodyAsClass(UpdateOAuthClientRequest.class);
+        String resolvedPortalClientId = resolvePortalClientId(s, req.portalAppId(), req.portalClientId());
+        var cmd = req.toCommand(ctx.pathParam("id"), resolvedPortalClientId);
         UpdateOAuthClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
+    }
+
+    /// The §4.5 controller pre-check, shared by create and update: a
+    /// non-blank `portalAppId` must resolve to a real app (`PortalApp_NOT_FOUND`),
+    /// a non-blank `portalClientId` that names a DIFFERENT client is a 400
+    /// `PORTAL_APP_CLIENT_MISMATCH`, and the app's own client always wins —
+    /// the returned value is what the command's `portalClientId` becomes,
+    /// overriding whatever the request carried (including a blank one: a
+    /// non-blank `portalAppId` always implies its owning client). A blank/`null`
+    /// `portalAppId` passes `portalClientId` through unchanged (`null` =
+    /// untouched, `""` = clear, a value = set — spec §6.3).
+    private static String resolvePortalClientId(State s, String portalAppId, String portalClientId) {
+        if (portalAppId == null || portalAppId.isBlank()) {
+            return portalClientId;
+        }
+        PortalApp app = s.portalApps().findById(portalAppId)
+                .orElseThrow(() -> HttpError.notFound("PortalApp", portalAppId));
+        if (portalClientId != null && !portalClientId.isBlank() && !portalClientId.equals(app.clientId())) {
+            throw HttpError.badRequest("PORTAL_APP_CLIENT_MISMATCH",
+                    "portalAppId belongs to a different client than portalClientId");
+        }
+        return app.clientId();
     }
 
     private static void activate(Exchange ctx, State s) {
@@ -199,16 +231,21 @@ public final class OAuthClientApi {
             List<String> applicationIds,
             String principalId,
             String portalClientId,
+            String portalAppId,
             Boolean apiAccess) {
-        public CreateOAuthClientCommand toCommand() {
+        /// @param resolvedPortalClientId [#resolvePortalClientId]'s answer —
+        ///                               NOT `this.portalClientId` verbatim,
+        ///                               since a non-blank `portalAppId` overrides it (spec §4.5)
+        public CreateOAuthClientCommand toCommand(String resolvedPortalClientId) {
             return new CreateOAuthClientCommand(null, clientName, clientType, redirectUris, postLogoutRedirectUris, grantTypes,
-                    defaultScopes, allowedOrigins, applicationIds, principalId, pkceRequired, portalClientId, apiAccess);
+                    defaultScopes, allowedOrigins, applicationIds, principalId, pkceRequired, resolvedPortalClientId,
+                    portalAppId, apiAccess);
         }
     }
 
     /// Body of `PUT /api/oauth-clients/{id}`. Every field but the path id is
-    /// optional: `null` = untouched, empty list = clear, `portalClientId`
-    /// blank = clear (spec §6.3).
+    /// optional: `null` = untouched, empty list = clear, `portalClientId` /
+    /// `portalAppId` blank = clear (spec §6.3, §4.5).
     public record UpdateOAuthClientRequest(
             String clientName,
             List<String> redirectUris,
@@ -219,10 +256,20 @@ public final class OAuthClientApi {
             List<String> applicationIds,
             Boolean pkceRequired,
             String portalClientId,
+            String portalAppId,
             Boolean apiAccess) {
-        public UpdateOAuthClientCommand toCommand(String id) {
+        /// @param resolvedPortalClientId [#resolvePortalClientId]'s answer
+        /// `portalClientId: ""` clears both the portal flag and the app link
+        /// (spec §4.5) — `effectivePortalAppId` forces `""` whenever the
+        /// resolved client id is an explicit clear, regardless of what this
+        /// request's own `portalAppId` said (a non-blank `portalAppId` never
+        /// reaches here with a clearing `resolvedPortalClientId`: [#resolvePortalClientId]
+        /// always makes the app's own client win first).
+        public UpdateOAuthClientCommand toCommand(String id, String resolvedPortalClientId) {
+            boolean clearingPortalClientId = resolvedPortalClientId != null && resolvedPortalClientId.isBlank();
+            String effectivePortalAppId = clearingPortalClientId ? "" : portalAppId;
             return new UpdateOAuthClientCommand(id, clientName, redirectUris, postLogoutRedirectUris, grantTypes, defaultScopes,
-                    allowedOrigins, applicationIds, pkceRequired, portalClientId, apiAccess);
+                    allowedOrigins, applicationIds, pkceRequired, resolvedPortalClientId, effectivePortalAppId, apiAccess);
         }
     }
 
@@ -262,6 +309,7 @@ public final class OAuthClientApi {
             boolean apiAccess,
             String serviceAccountPrincipalId,
             String portalClientId,
+            String portalAppId,
             Instant previousSecretExpiresAt,
             Instant previousSecretLastUsedAt,
             Instant createdAt,
@@ -272,7 +320,7 @@ public final class OAuthClientApi {
             return new OAuthClientResponse(c.id(), c.clientId(), c.clientName(), c.clientType().name(),
                     c.redirectUris(), c.postLogoutRedirectUris(), c.allowedOrigins(), c.grantTypes(), c.defaultScopes(),
                     c.pkceRequired(), c.applicationIds(), applications, c.active(), c.apiAccess(),
-                    c.principalId(), c.portalClientId(),
+                    c.principalId(), c.portalClientId(), c.portalAppId(),
                     overlapLive ? c.previousSecretExpiresAt() : null,
                     overlapLive ? c.previousSecretLastUsedAt() : null,
                     c.createdAt(), c.updatedAt());

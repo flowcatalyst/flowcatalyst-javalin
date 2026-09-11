@@ -48,8 +48,9 @@ import java.util.function.BiPredicate;
 /// @param portalClientId           non-blank ⇒ portal plane; mutually exclusive with [#apiAccess]
 /// @param portalAppId              non-blank ⇒ this client fronts one named [io.flowcatalyst.platform.portalapp.PortalApp]
 ///                                 of `portalClientId` (`null` ⇔ blank); `null` on a portal client = legacy
-///                                 client-wide portal (`portal-apps.md` §2.4). Not yet wire-settable — this
-///                                 unit carries the field and its invariant; unit B adds the DTO/setter.
+///                                 client-wide portal (`portal-apps.md` §2.4). Wire-settable via
+///                                 [io.flowcatalyst.platform.oauthclient.api.OAuthClientApi]'s create/update
+///                                 DTOs (`portal-apps.md` §4.5) and [#withPortalAppId] / [Changes#portalAppId].
 /// @param apiAccess                authority-bearing interactive tokens; mutually exclusive with a portal client
 /// @param createdAt                creation time
 /// @param updatedAt                last change
@@ -305,6 +306,22 @@ public record OAuthClient(
                 portalAppId, apiAccess, createdAt, updatedAt);
     }
 
+    /// Construction-time copy linking this client to one named
+    /// [io.flowcatalyst.platform.portalapp.PortalApp] (`portal-apps.md`
+    /// §2.4, §3.4). Bypasses the `PORTAL_APP_REQUIRES_PORTAL_CLIENT`
+    /// invariant deliberately — callers that also need
+    /// [#withPortalAndApiAccess]'s check apply this one FIRST so the
+    /// invariant sees the real target `portalAppId` (`CreatePortalAppWithOAuthClient`
+    /// does exactly that: link the app, then set `portalClientId`). Admin
+    /// updates never call this directly — [#update] re-validates the
+    /// invariant on every change via [Changes#portalAppId].
+    public OAuthClient withPortalAppId(String appId) {
+        return new OAuthClient(id, clientId, clientName, clientType, secretRef, previousSecretRef,
+                previousSecretExpiresAt, previousSecretLastUsedAt, redirectUris, postLogoutRedirectUris, grantTypes,
+                defaultScopes, allowedOrigins, applicationIds, pkceRequired, active, principalId, portalClientId,
+                appId, apiAccess, createdAt, updatedAt);
+    }
+
     /// Sets both plane flags together, since they are mutually exclusive: a
     /// portal identity never carries platform authority. `newPortalClientId`
     /// is normalised here — blank clears it, otherwise it is trimmed — the
@@ -352,6 +369,7 @@ public record OAuthClient(
             List<String> applicationIds,
             Boolean pkceRequired,
             String portalClientId,
+            String portalAppId,
             Boolean apiAccess) {
         public Changes {
             redirectUris = redirectUris == null ? null : List.copyOf(redirectUris);
@@ -364,9 +382,17 @@ public record OAuthClient(
     }
 
     /// Applies every non-null field of `c` and re-stamps `updatedAt`.
+    /// `portalAppId` follows the same three-state contract as `portalClientId`
+    /// (`null` = untouched, blank = unlink, non-blank = set — spec
+    /// `portal-apps.md` §4.5); it is applied BEFORE [#withPortalAndApiAccess]
+    /// so `PORTAL_APP_REQUIRES_PORTAL_CLIENT` is checked against the change's
+    /// real target, not the pre-update value.
     ///
     /// @throws UseCaseException validation `PORTAL_API_ACCESS_CONFLICT` \| `PORTAL_APP_REQUIRES_PORTAL_CLIENT`
     public OAuthClient update(Changes c) {
+        String portalAppIdInput = c.portalAppId() != null
+                ? (c.portalAppId().isBlank() ? null : c.portalAppId().trim())
+                : portalAppId;
         OAuthClient intermediate = new OAuthClient(id, clientId,
                 c.clientName() != null ? c.clientName().trim() : clientName,
                 clientType, secretRef, previousSecretRef, previousSecretExpiresAt, previousSecretLastUsedAt,
@@ -377,7 +403,7 @@ public record OAuthClient(
                 c.allowedOrigins() != null ? c.allowedOrigins() : allowedOrigins,
                 c.applicationIds() != null ? c.applicationIds() : applicationIds,
                 c.pkceRequired() != null ? c.pkceRequired() : pkceRequired,
-                active, principalId, portalClientId, portalAppId, apiAccess, createdAt, Instant.now());
+                active, principalId, portalClientId, portalAppIdInput, apiAccess, createdAt, Instant.now());
         String portalInput = c.portalClientId() != null ? c.portalClientId() : intermediate.portalClientId;
         boolean apiAccessInput = c.apiAccess() != null ? c.apiAccess() : intermediate.apiAccess;
         return intermediate.withPortalAndApiAccess(portalInput, apiAccessInput);

@@ -74,7 +74,7 @@ class OAuthClientOperationsTest {
 
     private static OAuthClientCreated createPublic(String tag) {
         return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                new CreateOAuthClientCommand(null, clientName(tag), "PUBLIC", null, null, null, null, null, null, null, null, null, null));
+                new CreateOAuthClientCommand(null, clientName(tag), "PUBLIC", null, null, null, null, null, null, null, null, null, null, null));
     }
 
     private static OAuthClient reload(String id) {
@@ -108,7 +108,7 @@ class OAuthClientOperationsTest {
         var secret = secretSink();
         var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secret::set), new CreateOAuthClientCommand(
                 null, clientName("create"), "CONFIDENTIAL", List.of("https://a.example/cb"), null,
-                List.of("authorization_code"), List.of("read"), null, null, null, null, null, null));
+                List.of("authorization_code"), List.of("read"), null, null, null, null, null, null, null));
 
         assertThat(ev.oauthClientId()).startsWith("oac_");
         assertThat(ev.clientName()).isEqualTo(clientName("create"));
@@ -152,10 +152,10 @@ class OAuthClientOperationsTest {
     @Test
     void createRejectsAMissingNameOrInvalidClientType() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateOAuthClientCommand(null, " ", "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, " ", "PUBLIC", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_NAME_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateOAuthClientCommand(null, clientName("badtype"), "BOGUS", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, clientName("badtype"), "BOGUS", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "INVALID_CLIENT_TYPE");
     }
 
@@ -164,7 +164,7 @@ class OAuthClientOperationsTest {
         var first = createPublic("dupid");
         var got = reload(first.oauthClientId());
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                        new CreateOAuthClientCommand(got.clientId(), clientName("dupid2"), "PUBLIC", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(got.clientId(), clientName("dupid2"), "PUBLIC", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Conflict.class, "CLIENT_ID_EXISTS");
     }
 
@@ -172,15 +172,35 @@ class OAuthClientOperationsTest {
     void createRejectsThePortalApiAccessCombination() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(null, clientName("conflict"), "PUBLIC", null, null, null, null, null, null,
-                                null, null, "cli_portal_owner", true)),
+                                null, null, "cli_portal_owner", null, true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
     }
 
     @Test
     void createFailsWithSecretWhenNoEncryptionIsConfigured() {
         assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, Optional.empty(), secretSink()::set),
-                        new CreateOAuthClientCommand(null, clientName("nokey"), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null)),
+                        new CreateOAuthClientCommand(null, clientName("nokey"), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Internal.class, "SECRET");
+    }
+
+    // ── Create with portalAppId (spec §4.5, wired through the operation layer) ──
+
+    @Test
+    void createLinksAnAppWhenPortalAppIdIsGiven() {
+        var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+                new CreateOAuthClientCommand(null, clientName("applink"), "PUBLIC", null, null, null, null, null, null,
+                        null, null, "cli_owner", "pta_1", null));
+        var got = reload(ev.oauthClientId());
+        assertThat(got.portalAppId()).isEqualTo("pta_1");
+        assertThat(got.portalClientId()).isEqualTo("cli_owner");
+    }
+
+    @Test
+    void createRejectsAnAppLinkWithNoPortalClient() {
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+                        new CreateOAuthClientCommand(null, clientName("orphan"), "PUBLIC", null, null, null, null, null, null,
+                                null, null, null, "pta_1", null)),
+                UseCaseError.Validation.class, "PORTAL_APP_REQUIRES_PORTAL_CLIENT");
     }
 
     // ── Update ─────────────────────────────────────────────────────────────
@@ -189,7 +209,7 @@ class OAuthClientOperationsTest {
     void updateAppliesFieldsAndIsAudited() {
         var seeded = createPublic("update");
         var ev = runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(seeded.oauthClientId(), "Renamed",
-                List.of("https://new.example"), null, null, null, null, null, null, null, null));
+                List.of("https://new.example"), null, null, null, null, null, null, null, null, null));
         assertThat(ev.clientName()).isEqualTo("Renamed");
         assertThat(ev.eventType()).isEqualTo(OAuthClientEvents.UPDATED);
 
@@ -202,13 +222,13 @@ class OAuthClientOperationsTest {
     @Test
     void updateRejectsMissingIdBlankNameOrMissingRow() {
         assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
-                        null, "X", null, null, null, null, null, null, null, null, null)),
+                        null, "X", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "ID_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
-                        "oac_doesnotexist1", " ", null, null, null, null, null, null, null, null, null)),
+                        "oac_doesnotexist1", " ", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_NAME_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
-                        "oac_doesnotexist1", "X", null, null, null, null, null, null, null, null, null)),
+                        "oac_doesnotexist1", "X", null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.NotFound.class, "OAuthClient_NOT_FOUND");
     }
 
@@ -216,8 +236,38 @@ class OAuthClientOperationsTest {
     void updateRejectsThePortalApiAccessCombination() {
         var seeded = createPublic("updconflict");
         assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
-                        seeded.oauthClientId(), null, null, null, null, null, null, null, null, "cli_owner", true)),
+                        seeded.oauthClientId(), null, null, null, null, null, null, null, null, "cli_owner", null, true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
+    }
+
+    // ── Update with portalAppId (spec §4.5) ──────────────────────────────────
+
+    @Test
+    void updateLinksAnAppAndClearingPortalClientIdClearsBothAtTheCommandLevel() {
+        var portalClient = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+                new CreateOAuthClientCommand(null, clientName("updapp"), "PUBLIC", null, null, null, null, null, null,
+                        null, null, "cli_owner", null, null));
+
+        var linked = runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
+                portalClient.oauthClientId(), null, null, null, null, null, null, null, null, null, "pta_1", null));
+        assertThat(linked.eventType()).isEqualTo(OAuthClientEvents.UPDATED);
+        assertThat(reload(portalClient.oauthClientId()).portalAppId()).isEqualTo("pta_1");
+
+        // Deliberately exercises the OPERATION's own three-state contract, not the API's
+        // "clears both" convenience (that lives in OAuthClientApi — see OAuthClientApiTest):
+        // portalClientId="" alone, with portalAppId omitted (null ⇒ untouched, stays "pta_1"),
+        // must still fail the entity invariant when driven directly through the operation.
+        assertUseCaseError(() -> runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
+                        portalClient.oauthClientId(), null, null, null, null, null, null, null, null, "", null, null)),
+                UseCaseError.Validation.class, "PORTAL_APP_REQUIRES_PORTAL_CLIENT");
+
+        // Clearing both explicitly is legal and unlinks.
+        var cleared = runAsAnchor(UpdateOAuthClient.of(repo), new UpdateOAuthClientCommand(
+                portalClient.oauthClientId(), null, null, null, null, null, null, null, null, "", "", null));
+        assertThat(cleared.eventType()).isEqualTo(OAuthClientEvents.UPDATED);
+        var got = reload(portalClient.oauthClientId());
+        assertThat(got.portalAppId()).isNull();
+        assertThat(got.isPortal()).isFalse();
     }
 
     // ── Activate / Deactivate ────────────────────────────────────────────────
@@ -273,7 +323,7 @@ class OAuthClientOperationsTest {
 
     private static OAuthClientCreated createConfidential(String tag) {
         return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
-                new CreateOAuthClientCommand(null, clientName(tag), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null));
+                new CreateOAuthClientCommand(null, clientName(tag), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null, null));
     }
 
     @Test

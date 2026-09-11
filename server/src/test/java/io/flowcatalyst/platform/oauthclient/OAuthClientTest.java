@@ -97,31 +97,34 @@ class OAuthClientTest {
     void updateEnforcesThePlaneConflictToo() {
         var portalClient = OAuthClient.create("cli_1", "X", ClientType.PUBLIC).withPortalAndApiAccess("cli_owner", false);
         assertUseCaseError(() -> portalClient.update(new OAuthClient.Changes(
-                        null, null, null, null, null, null, null, null, null, true)),
+                        null, null, null, null, null, null, null, null, null, null, true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
     }
 
-    /// `portal-apps.md` §1, Part A J4: `portalAppId` has no wire setter yet
-    /// (unit B's job) — a linked client is built directly, exactly as an
-    /// aggregate with an app link would look once that setter lands. Mutant:
-    /// `withPortalAndApiAccess` drops the `portalAppId != null` check —
+    /// `portal-apps.md` §1, Part A J4: `portalAppId` links via [OAuthClient#withPortalAppId].
+    /// Mutant: `withPortalAndApiAccess` drops the `portalAppId != null` check —
     /// killed by this test throwing where it otherwise would silently clear
-    /// `portalClientId` and orphan the app link.
+    /// `portalClientId` and orphan the app link. Mutant: `update` applies
+    /// `Changes#portalAppId` AFTER (rather than before) `withPortalAndApiAccess` —
+    /// killed the same way, since the invariant would then see the stale
+    /// pre-update `portalAppId` instead of the change's real target.
     @Test
     void updateEnforcesThePortalAppRequiresPortalClientInvariant() {
         var base = OAuthClient.create("cli_1", "X", ClientType.PUBLIC).withPortalAndApiAccess("cli_owner", false);
-        var linked = new OAuthClient(base.id(), base.clientId(), base.clientName(), base.clientType(),
-                base.secretRef(), base.previousSecretRef(), base.previousSecretExpiresAt(), base.previousSecretLastUsedAt(),
-                base.redirectUris(), base.postLogoutRedirectUris(), base.grantTypes(), base.defaultScopes(),
-                base.allowedOrigins(), base.applicationIds(), base.pkceRequired(), base.active(), base.principalId(),
-                base.portalClientId(), "pta_1", base.apiAccess(), base.createdAt(), base.updatedAt());
+        var linked = base.withPortalAppId("pta_1");
 
+        // portalAppId omitted (null ⇒ untouched, stays "pta_1") while portalClientId clears.
         assertUseCaseError(() -> linked.update(new OAuthClient.Changes(
-                        null, null, null, null, null, null, null, null, "", null)),
+                        null, null, null, null, null, null, null, null, "", null, null)),
                 UseCaseError.Validation.class, "PORTAL_APP_REQUIRES_PORTAL_CLIENT");
 
+        // Clearing portalAppId in the SAME update avoids the conflict (spec §4.5 "clears both").
+        assertThat(linked.update(new OAuthClient.Changes(
+                        null, null, null, null, null, null, null, null, "", "", null)).isPortal())
+                .as("clearing both together is legal").isFalse();
+
         // Clearing portalClientId when no app is linked still works (existing behaviour).
-        assertThat(base.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, "", null)).isPortal())
+        assertThat(base.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, "", null, null)).isPortal())
                 .isFalse();
     }
 
@@ -132,11 +135,32 @@ class OAuthClientTest {
                 .withPortalAndApiAccess("cli_owner", false);
 
         var updated = c.update(new OAuthClient.Changes("After", null, null, List.of("client_credentials"),
-                null, null, null, null, "", null));
+                null, null, null, null, "", null, null));
         assertThat(updated.clientName()).isEqualTo("After");
         assertThat(updated.redirectUris()).as("untouched (null in Changes)").containsExactly("https://a");
         assertThat(updated.grantTypes()).containsExactly("client_credentials");
         assertThat(updated.isPortal()).as("blank portalClientId clears it").isFalse();
+    }
+
+    /// `Changes#portalAppId` follows the same three-state contract as
+    /// `portalClientId` (spec §4.5): `null` = untouched, blank = unlink,
+    /// non-blank = set. Mutant: `update` reads `portalAppId` straight off
+    /// `Changes` without the null/blank distinction — killed by the middle
+    /// assertion, where an explicit "" must clear a value a `null` just proved
+    /// it leaves alone.
+    @Test
+    void updatePortalAppIdFollowsTheThreeStateContract() {
+        var linked = OAuthClient.create("cli_1", "X", ClientType.PUBLIC)
+                .withPortalAndApiAccess("cli_owner", false).withPortalAppId("pta_1");
+
+        var untouched = linked.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, null, null, null));
+        assertThat(untouched.portalAppId()).as("null Changes.portalAppId leaves it alone").isEqualTo("pta_1");
+
+        var cleared = linked.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, null, "", null));
+        assertThat(cleared.portalAppId()).as("blank Changes.portalAppId unlinks").isNull();
+
+        var relinked = linked.update(new OAuthClient.Changes(null, null, null, null, null, null, null, null, null, "pta_2", null));
+        assertThat(relinked.portalAppId()).as("non-blank Changes.portalAppId sets it").isEqualTo("pta_2");
     }
 
     // ── Secret at rest (A-22) ────────────────────────────────────────────────

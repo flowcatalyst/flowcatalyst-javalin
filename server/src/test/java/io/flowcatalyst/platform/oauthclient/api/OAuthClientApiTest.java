@@ -2,7 +2,13 @@ package io.flowcatalyst.platform.oauthclient.api;
 
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalApp;
+import io.flowcatalyst.platform.portalapp.PortalAppCode;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -49,9 +55,12 @@ class OAuthClientApiTest {
             Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
 
     private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
+    private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
+    private static final ClientRepository CLIENT_REPO = new ClientRepository(TestPg.dataSource());
+    private static final PortalAppRepository PORTAL_APP_REPO = new PortalAppRepository(TestPg.dataSource());
     private static final OAuthClientApi.State state = new OAuthClientApi.State(
             new OAuthClientRepository(TestPg.dataSource(), new ApplicationRepository(TestPg.dataSource())),
-            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)), ENCRYPTION);
+            UOW, ENCRYPTION, PORTAL_APP_REPO);
     private static TestHttp http;
 
     @BeforeAll
@@ -90,6 +99,18 @@ class OAuthClientApiTest {
                 "{\"clientName\":\"" + name(tag) + "\",\"clientType\":\"" + clientType + "\"" + extraJson + "}", ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
         return json(r);
+    }
+
+    /// A fresh client + one active portal app on it, for the §4.5 `portalAppId` tests.
+    private static PortalApp seedPortalApp(String tag) {
+        Client c = Client.create("OAuth Client API Test " + tag, ClientIdentifier.parse("oc-api-" + tag + "-" + RUN));
+        PortalApp app = PortalApp.create(c.id(), PortalAppCode.parse(tag + "-" + RUN), "App " + tag, null);
+        UOW.inTransaction(tx -> {
+            CLIENT_REPO.persist(c, tx.dbTx());
+            PORTAL_APP_REPO.persist(app, tx.dbTx());
+            return null;
+        });
+        return app;
     }
 
     // ── Happy paths ────────────────────────────────────────────────────────
@@ -155,6 +176,49 @@ class OAuthClientApiTest {
         assertThat(cleared.statusCode()).isEqualTo(204);
         assertThat(json(http.get("/api/oauth-clients/" + id, ANCHOR)).has("portalClientId"))
                 .as("blank clears it back to omitted").isFalse();
+    }
+
+    /// spec §4.5's controller pre-check: `portalAppId` resolves `portalClientId`
+    /// from the app's own owner, rejects an unknown app, and rejects a
+    /// request that names a conflicting `portalClientId` explicitly.
+    @Test
+    void createWithPortalAppIdResolvesPortalClientIdAndRejectsAMismatch() {
+        PortalApp app = seedPortalApp("resolve");
+        var body = create("resolve", "PUBLIC", ",\"portalAppId\":\"" + app.id() + "\"");
+        assertThat(body.get("client").get("portalAppId").asText()).isEqualTo(app.id());
+        assertThat(body.get("client").get("portalClientId").asText())
+                .as("resolved from the app, not sent by the caller").isEqualTo(app.clientId());
+
+        var notFound = http.post("/api/oauth-clients",
+                "{\"clientName\":\"" + name("resolve-404") + "\",\"clientType\":\"PUBLIC\",\"portalAppId\":\"pta_doesnotexist1\"}", ANCHOR);
+        assertThat(notFound.statusCode()).isEqualTo(404);
+        assertThat(json(notFound).get("error").asText()).isEqualTo("PortalApp_NOT_FOUND");
+
+        var mismatch = http.post("/api/oauth-clients",
+                "{\"clientName\":\"" + name("resolve-mismatch") + "\",\"clientType\":\"PUBLIC\",\"portalAppId\":\"" + app.id()
+                        + "\",\"portalClientId\":\"" + EntityType.CLIENT.generate() + "\"}", ANCHOR);
+        assertThat(mismatch.statusCode()).isEqualTo(400);
+        assertThat(json(mismatch).get("error").asText()).isEqualTo("PORTAL_APP_CLIENT_MISMATCH");
+    }
+
+    /// spec §4.5: `portalClientId: ""` clears both the portal flag and the
+    /// app link, even when `portalAppId` is simply omitted from the request
+    /// (not sent as `""` itself) — proving the API-level "clears both" rule,
+    /// distinct from the operation-level three-state contract
+    /// `OAuthClientOperationsTest` pins directly.
+    @Test
+    void updateClearingPortalClientIdAlsoClearsTheAppLinkWithoutNamingIt() {
+        PortalApp app = seedPortalApp("clearboth");
+        var body = create("clearboth", "PUBLIC", ",\"portalAppId\":\"" + app.id() + "\"");
+        String id = body.get("client").get("id").asText();
+        assertThat(body.get("client").get("portalAppId").asText()).isEqualTo(app.id());
+
+        var cleared = http.put("/api/oauth-clients/" + id, "{\"portalClientId\":\"\"}", ANCHOR);
+        assertThat(cleared.statusCode()).as(cleared.body()).isEqualTo(204);
+
+        var got = json(http.get("/api/oauth-clients/" + id, ANCHOR));
+        assertThat(got.has("portalClientId")).as("portalClientId cleared").isFalse();
+        assertThat(got.has("portalAppId")).as("app link cleared too, though never named in the request").isFalse();
     }
 
     @Test

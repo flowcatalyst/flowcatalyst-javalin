@@ -59,6 +59,7 @@ public final class CreateOAuthClient {
                             .withApplicationIds(cmd.applicationIds())
                             .withPrincipalId(cmd.principalId())
                             .withPkceRequired(cmd.pkceRequired() == null || cmd.pkceRequired())
+                            .withPortalAppId(cmd.portalAppId())
                             .withPortalAndApiAccess(cmd.portalClientId(), cmd.apiAccess() != null && cmd.apiAccess());
 
                     if (type == ClientType.CONFIDENTIAL) {
