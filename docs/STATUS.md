@@ -30,7 +30,13 @@ SPA at Go frontend `373fe93`.
 `fixme` (Go SPA defects P1/P2). Go's e2e column not re-run (the machine ran
 out of memory on `e2e:both`). Server + fcdev suites green.
 
-**For the owner:** `docs/go-mirror/2026-09-11-portal-apps-fix-list.md` —
+**Then Go `d6b215b` fixed all five (P1–P5, its spec's §11 errata):** SPA
+re-synced at `d6b215b`, both e2e `fixme`s lifted, the P3/P5 allow-list
+entries deleted. **Java e2e 51/51; parity against `d6b215b` 1,263 steps,
+393 OK, 870 ACCEPTED, 0 DIFF, 0 ERROR, no stale entries.** The one kept
+difference: Java prefixes the secret-scheme message with the field name.
+
+Originally, for the owner: `docs/go-mirror/2026-09-11-portal-apps-fix-list.md` —
 P1 the "New Portal App" button never renders (the permissions store is never
 filled), P2 a cold page load skips the SPA route guard (a role-less user is
 not bounced to `/profile`; the server still refuses every call), P3 portal

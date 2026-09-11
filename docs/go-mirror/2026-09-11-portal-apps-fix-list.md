@@ -1,5 +1,10 @@
 # Go fix list — found porting portal apps (Go `373fe93`/`2fe6bf0`), 2026-09-11
 
+**All five fixed in Go `d6b215b` (2026-09-11)** — recorded there as the
+reimplementation spec's §11 errata. Java matches: the SPA re-synced at
+`d6b215b`, the two e2e `fixme`s lifted, the P3/P5 allow-list entries deleted;
+the P4 entry remains only for the field-name prefix the owner kept.
+
 Five Go-side defects found while porting and cross-checking the portal-apps
 feature against Go `2783ff9`. None is patched here: the first two are in the
 Go-authored SPA (embedded verbatim in Java, so they bite both servers equally),

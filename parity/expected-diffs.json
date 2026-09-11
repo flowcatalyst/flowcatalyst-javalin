@@ -441,24 +441,10 @@
   "ruling": "orchestrator 2026-09-06; retire by building sync rollup events first (docs/backlog.md 'Sync rollup audit rows sort after Go's')"
  },
  {
-  "scenario": "portal*",
-  "step": "*",
-  "pointer": "/access_token/«jwt»/claims/azp",
-  "reason": "Java stamps azp (the redeeming OAuth client) on the portal identity access token, as it and Go both do on every other client-bound identity token; Go's portal branch alone mints without it (GenerateIdentityAccessToken instead of ...For)",
-  "ruling": "portal-apps.md J11 (Go defect, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
- },
- {
   "scenario": "auth-configs*",
   "step": "update-untouched-fields",
   "pointer": "/message",
-  "reason": "same code (UNSUPPORTED_SECRET_SCHEME) and, since Go's 2026-09-11 fix, the same message; Java prefixes the field name (oidcClientSecretRef: ...), Go does not — kept by the owner. Against Go 2783ff9 (before that fix) the list also differs: Go still renders \"ref\":// and lists literal:",
+  "reason": "same code (UNSUPPORTED_SECRET_SCHEME) and the same message since Go d6b215b; Java prefixes the field name (oidcClientSecretRef: ...), Go does not — kept by the owner",
   "ruling": "portal-apps.md J12 (owner 2026-09-11: field-name prefix kept)"
- },
- {
-  "scenario": "portal*",
-  "step": "*",
-  "pointer": "/id_token/«jwt»/claims/updated_at",
-  "reason": "a portal id_token's updated_at: Java reports the portal identity's own updated_at (the rule every principal id_token follows — an RP watching it must not see a change on every login); Go's synthetic principal has a zero UpdatedAt, which authservice replaces with the mint time",
-  "ruling": "portal-apps.md J11 (Go defect P5, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
  }
 ]

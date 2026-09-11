@@ -35,7 +35,7 @@ Owner questions: none blocking. Noted, not changed (pre-existing,
 `auth-identity.md` §11.8): Ensure on an existing identity reactivates it
 unconditionally, so an admin re-ensure of a suspended user un-suspends it.
 
-## Part B — normative contract (Go `2fe6bf0`, verbatim)
+## Part B — normative contract (Go `d6b215b`, verbatim; §11 errata = our fix list P1–P5)
 
 ### (Go title) Portal apps & platform access gate — reimplementation spec
 
@@ -488,6 +488,13 @@ Added to the existing portal id_token (roles still `[]`, no refresh token):
 
 Omitted (not null) when absent. Non-portal id_tokens never carry them.
 
+Two further token rules for portal subjects (errata P3/P5, §11):
+
+- The **access token** is client-bound like every other interactive
+  identity token: it carries `azp` = the redeeming OAuth `client_id`.
+- The id_token's **`updated_at`** is the portal identity's own
+  `updated_at` — never the mint time.
+
 ---
 
 ## 6. Profile-only gate (users without a platform role)
@@ -552,6 +559,13 @@ human users.
   client is chosen, options = that client's apps; sends `portalAppId`
   (edit: `""` to unlink, and `""` whenever the portal owner is cleared).
 - **Client switcher**: `POST /auth/client/switch` with `{clientId}`.
+- **Permission checks in components** read the session user's own
+  `permissions` (e.g. `userHasPermission(authStore.user, …)`), never a
+  separately-populated permission store (errata P1, §11).
+- **Cold loads**: the global route-permission guard runs before the route's
+  auth guard; on routes that require authentication it must **await the
+  initial session check** before applying the permission rules, so a
+  role-less user who types `/dashboard` lands on `/profile` (errata P2, §11).
 
 ---
 
@@ -629,3 +643,18 @@ today):
 - `GET /api/portal-users` default page size (100) is a behaviour change
   from the previous unpaginated list; match it so SDK callers see the same
   contract on both implementations.
+
+---
+
+## 11. Errata — fixed in Go after the first port (2026-09-11)
+
+Found by the Java port; Go now behaves as below, and ports should match
+(and drop any parity allow-list entries for them).
+
+| # | Where | Defect | Now |
+|---|---|---|---|
+| P1 | SPA Portal Apps page | Write controls gated on the permission store's `hasPermission`, whose list nothing populates — no one could create/edit/delete apps | Gated on the session user's permissions (`userHasPermission`) |
+| P2 | SPA global route guard | On a cold load it passed every navigation through before the session was hydrated, so the role-less → `/profile` redirect never happened | Awaits the session check on authenticated routes first |
+| P3 | Portal code redemption | Access token minted without `azp` | Carries `azp` = the OAuth client_id |
+| P4 | Unsupported secret-manager scheme (400 `UNSUPPORTED_SECRET_SCHEME`) | Message quoted the scheme before `://` (`"ref"://`) and listed `literal:` as a secret manager | `unsupported secret-manager scheme "ref://"; supported: aws-sm://, aws-ps://, gcp-sm://, vault://, env:// (prefix the value with "encrypt:" to store it as an encrypted plaintext secret instead)`. Note the list keeps the `aws-sm://` form — an owner ruling (2026-09-08) requires a typo like `aws-smm://` to see the correct spelling — so ports should match **this** list, not bare names. `literal:` is still *accepted*; it is just not advertised. |
+| P5 | Portal id_token | `updated_at` was the mint time | The identity's own `updated_at` |

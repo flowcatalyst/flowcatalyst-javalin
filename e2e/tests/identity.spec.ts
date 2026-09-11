@@ -64,28 +64,9 @@ test.describe("identity", () => {
         await adminPage.getByRole("combobox", { name: "Select a client" }).click();
         await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
 
-        // BLOCKED — confirmed frontend defect, not a flaky selector: the
-        // "New Portal App" button (`PortalAppsPage.vue`'s `v-if="canManage"`)
-        // never renders for ANY user, including this anchor admin.
-        // `canManage` reads `usePermissionsStore().hasPermission(...)`, but
-        // nothing in the SPA ever calls that store's `setPermissions` action
-        // (`frontend/src/stores/permissions.ts` — grep confirms zero callers
-        // outside the store itself); `userPermissions` therefore stays `[]`
-        // forever and `hasPermission` can never return true except for the
-        // literal `"*"` wildcard, which no seeded role uses (the seeded
-        // super-admin role's `ADMIN_ALL` is `platform:*:*:*`, which the
-        // pattern matcher never gets to see). Reproduced live: after
-        // selecting the client above, the page snapshot shows the "Portal
-        // Apps" header with zero buttons and the table's empty state — the
-        // exact same page an anchor sees. This is in the Go-authored SPA
-        // source (frontend/src/pages/portal/PortalAppsPage.vue,
-        // frontend/src/stores/permissions.ts), embedded verbatim on both
-        // sides, so it blocks portal app creation through the UI on Go too,
-        // not just Java. Left in place, unreached, for when it's fixed.
-        test.fixme(true, "PortalAppsPage.vue's canManage is always false — " +
-            "permissionsStore.userPermissions is never populated anywhere " +
-            "in the SPA, so the 'New Portal App' button never renders for " +
-            "any user (see the comment above for the trace)");
+        // The "New Portal App" button renders only for a holder of
+        // portal-user:manage — it never rendered for anyone until Go d6b215b
+        // (fix list P1: the page read a permissions store nothing filled).
 
         const code = unique("e2e-portal-app");
         const name = `E2E Portal App ${code}`;
@@ -256,32 +237,10 @@ test.describe("identity", () => {
         // Empty sidebar: no nav group survives the permission filter.
         await expect(userPage.locator(".sidebar-nav .nav-group")).toHaveCount(0);
 
-        // BLOCKED below this point — confirmed frontend defect, not a
-        // flaky assertion: `router/index.ts` registers the global
-        // `createRoutePermissionGuard()` (line 617) with `router.beforeEach`,
-        // which runs BEFORE the per-route `authGuard` (registered as
-        // `beforeEnter`, line 70) in Vue Router's guard order. On a cold
-        // page load, Pinia's `authStore` starts with `user = null` /
-        // `isAuthenticated = false` (`stores/auth.ts`), so the permission
-        // guard's very first check — "Skip for unauthenticated users
-        // (authGuard will handle)" — fires and calls `next()`
-        // UNCONDITIONALLY, before `authGuard` has even run the session
-        // check that would populate `user`. The navigation completes with
-        // no permission check ever having run. This only becomes visible
-        // for a user who SHOULD be denied — an admin cold-loading a page
-        // they're allowed to see looks identical either way, which is
-        // presumably why nothing caught it before this test. Since the
-        // sidebar has no links for a role-less user, a cold `page.goto`
-        // (typed URL / bookmark) is the only realistic way they'd reach
-        // another route, so this is exactly the path the spec's "any
-        // other route redirects there" (portal-apps.md §7) needs proven
-        // — it currently is not. Same Go-authored `router/guards.ts` and
-        // `router/index.ts` on both sides (embedded verbatim); the
-        // server-side `ProfileOnlyGate` still refuses the page's own API
-        // calls, so no data leaks, but the route itself does not bounce.
-        test.fixme(true, "the global permission guard races ahead of " +
-            "session hydration on a cold page load and lets the " +
-            "navigation through unconditionally — see the comment above");
+        // A cold load (a typed URL or bookmark — the only way a role-less
+        // user reaches another route, the sidebar being empty) must still
+        // bounce to /profile. It did not until Go d6b215b (fix list P2: the
+        // global guard ran before the session was hydrated).
 
         // Any other route — mapped or not — redirects to /profile. A fresh
         // page load is an "automatic landing" (`router/guards.ts`), so this
