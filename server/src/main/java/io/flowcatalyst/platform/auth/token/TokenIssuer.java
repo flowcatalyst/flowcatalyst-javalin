@@ -103,13 +103,25 @@ public final class TokenIssuer {
     /// @param applications    the `applications` entries the RP may see
     /// @param allApplications forced off on a confined view
     /// @param clients         the `clients` entries
+    /// @param portalClientId  the portal identity's tenant client id (portal logins only,
+    ///                        `docs/spec/portal-apps.md` §5.4); `null` for every non-portal id_token
+    /// @param portalAppCode   the app-linked OAuth client's app code (normalised); `null` on a
+    ///                        legacy client-wide portal login or a non-portal id_token
+    /// @param portalAppId     the app-linked OAuth client's app id (`pta_…`); `null` likewise
     public record IdTokenInput(String clientId, String nonce, Instant authTime, List<String> roles,
-                               List<String> applications, boolean allApplications, List<String> clients) {
+                               List<String> applications, boolean allApplications, List<String> clients,
+                               String portalClientId, String portalAppCode, String portalAppId) {
         public IdTokenInput {
             Objects.requireNonNull(clientId, "clientId");
             roles = List.copyOf(roles);
             applications = List.copyOf(applications);
             clients = List.copyOf(clients);
+        }
+
+        /// Non-portal id_tokens never carry portal claims (spec `portal-apps.md` §5.4).
+        public IdTokenInput(String clientId, String nonce, Instant authTime, List<String> roles,
+                            List<String> applications, boolean allApplications, List<String> clients) {
+            this(clientId, nonce, authTime, roles, applications, allApplications, clients, null, null, null);
         }
     }
 
@@ -210,6 +222,18 @@ public final class TokenIssuer {
         }
         if (p.clientId() != null && !p.clientId().isBlank()) {
             b.claim("client_id", p.clientId());
+        }
+        // Portal claims (`docs/spec/portal-apps.md` §5.4): omitted — not
+        // null — when absent, so a non-portal id_token never carries the
+        // keys at all.
+        if (in.portalClientId() != null && !in.portalClientId().isBlank()) {
+            b.claim("portal_client_id", in.portalClientId());
+        }
+        if (in.portalAppCode() != null && !in.portalAppCode().isBlank()) {
+            b.claim("portal_app_code", in.portalAppCode());
+        }
+        if (in.portalAppId() != null && !in.portalAppId().isBlank()) {
+            b.claim("portal_app_id", in.portalAppId());
         }
         return sign(b.build(), true);
     }

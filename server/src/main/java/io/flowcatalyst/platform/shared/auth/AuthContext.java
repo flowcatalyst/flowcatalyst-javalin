@@ -88,6 +88,14 @@ public record AuthContext(
         return allApplications || applications.contains(applicationId);
     }
 
+    /// A copy with [#principalType] overridden — every other field carried
+    /// through unchanged. Used by the [Authenticator] to stamp `USER` on a
+    /// session-cookie resolution regardless of which [ClaimsResolver] built
+    /// it (`docs/spec/portal-apps.md` §6, Part A J6).
+    public AuthContext withPrincipalType(PrincipalType type) {
+        return new AuthContext(principalId, type, scope, email, name, clients, roles, applications, allApplications, permissions, tokenUse);
+    }
+
     /// Whether a held permission satisfies `permission` (wildcard-aware, see [Permission#matches]).
     public boolean hasPermission(Permission permission) {
         return permission.grantedBy(permissions);

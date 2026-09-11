@@ -20,6 +20,7 @@ import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlow;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlowRepository;
+import io.flowcatalyst.platform.portalidentity.PortalAppGrantSource;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
 import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
@@ -61,6 +62,8 @@ class PortalAuthApiTest {
     private static final EmailDomainMappingRepository emailDomainMappingRepo = new EmailDomainMappingRepository(TestPg.dataSource());
     private static final PortalIdentityRepository identityRepo = new PortalIdentityRepository(TestPg.dataSource());
     private static final PortalLoginFlowRepository flowRepo = new PortalLoginFlowRepository(TestPg.dataSource());
+    private static final io.flowcatalyst.platform.portalapp.PortalAppRepository portalAppRepo =
+            new io.flowcatalyst.platform.portalapp.PortalAppRepository(TestPg.dataSource());
     private static final GrantStore grantStore = new GrantStore(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
@@ -93,7 +96,7 @@ class PortalAuthApiTest {
     static void start() {
         var envReader = io.flowcatalyst.server.EnvReader.system();
         var state = new PortalAuthApi.State(flowRepo, oauthClientRepo, identityRepo, identityProviderRepo, grantStore,
-                new PostgresRateLimitStore(TestPg.dataSource()), RateLimit.Policies.fromEnv(envReader), EMAILER);
+                new PostgresRateLimitStore(TestPg.dataSource()), RateLimit.Policies.fromEnv(envReader), EMAILER, portalAppRepo);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             PortalAuthApi.register(routes, state);
@@ -160,6 +163,39 @@ class PortalAuthApiTest {
     private static void disable(PortalIdentity identity) {
         uow.inTransaction(tx -> {
             identityRepo.persist(identity.deactivate(), tx.dbTx());
+            return null;
+        });
+    }
+
+    private static io.flowcatalyst.platform.portalapp.PortalApp testPortalApp(String clientId, String tag) {
+        var app = io.flowcatalyst.platform.portalapp.PortalApp.create(clientId,
+                io.flowcatalyst.platform.portalapp.PortalAppCode.parse("app-" + tag), "App " + tag, null);
+        uow.inTransaction(tx -> {
+            portalAppRepo.persist(app, tx.dbTx());
+            return null;
+        });
+        return app;
+    }
+
+    /// Links `oc` to `appId` directly at the entity level — the wire-level
+    /// setter is unit B's (spec `portal-apps.md` §4.5); the gate this class
+    /// tests only needs the stored row.
+    private static OAuthClient linkApp(OAuthClient oc, String appId) {
+        OAuthClient withApp = new OAuthClient(oc.id(), oc.clientId(), oc.clientName(), oc.clientType(), oc.secretRef(),
+                oc.previousSecretRef(), oc.previousSecretExpiresAt(), oc.previousSecretLastUsedAt(), oc.redirectUris(),
+                oc.postLogoutRedirectUris(), oc.grantTypes(), oc.defaultScopes(), oc.allowedOrigins(), oc.applicationIds(),
+                oc.pkceRequired(), oc.active(), oc.principalId(), oc.portalClientId(), appId, oc.apiAccess(),
+                oc.createdAt(), oc.updatedAt());
+        uow.inTransaction(tx -> {
+            oauthClientRepo.persist(withApp, tx.dbTx());
+            return null;
+        });
+        return withApp;
+    }
+
+    private static void grant(PortalIdentity identity, String appId) {
+        uow.inTransaction(tx -> {
+            identityRepo.persist(identity.grant(appId, PortalAppGrantSource.ADMIN), tx.dbTx());
             return null;
         });
     }
@@ -395,6 +431,94 @@ class PortalAuthApiTest {
         assertThat(eleventh.statusCode()).isEqualTo(429);
         assertThat(json(eleventh).get("error").asText()).isEqualTo("TOO_MANY_REQUESTS");
         assertThat(eleventh.headers().firstValue("Retry-After")).isPresent();
+    }
+
+    // ── The portal-app gate (portal-apps.md §5.1) ───────────────────────────
+
+    /// §9.5, and the mutant "gate before the password check": a correct
+    /// password against an app the identity is not granted is 403
+    /// NO_PORTAL_ACCESS, the flow is left live (never consumed), and
+    /// `lastLoginAt` is never touched — then granting the app and replaying
+    /// the SAME flow succeeds.
+    @Test
+    void passwordLoginGateRefusesAnUngrantedAppButLeavesTheFlowLiveForARetry() {
+        String clientId = testClient("gate-ok");
+        OAuthClient oc = portalOAuthClient("gate-ok", clientId, "https://portal.example.com/cb");
+        var app = testPortalApp(clientId, "gate-ok-" + RUN);
+        oc = linkApp(oc, app.id());
+        String email = "gate-ok-" + RUN + "@example.com";
+        PortalIdentity identity = identityWithPassword(clientId, email, "right-password");
+        PortalLoginFlow flow = liveFlow(oc, clientId, "https://portal.example.com/cb", "st-gate-ok");
+
+        var denied = http.post("/portal/auth/login",
+                "{\"flowId\":\"" + flow.id() + "\",\"email\":\"" + email + "\",\"password\":\"right-password\"}");
+        assertThat(denied.statusCode()).isEqualTo(403);
+        assertThat(json(denied).get("code").asText()).isEqualTo("NO_PORTAL_ACCESS");
+        assertThat(json(denied).get("message").asText()).isEqualTo("You don't have access to this portal");
+        assertThat(flowRepo.findLive(flow.id())).as("a 403 must not burn the flow").isPresent();
+        assertThat(identityRepo.findById(identity.id()).orElseThrow().lastLoginAt()).as("never touched on a denial").isNull();
+
+        grant(identity, app.id());
+        var granted = http.post("/portal/auth/login",
+                "{\"flowId\":\"" + flow.id() + "\",\"email\":\"" + email + "\",\"password\":\"right-password\"}");
+        assertThat(granted.statusCode()).as(granted.body()).isEqualTo(200);
+        assertThat(flowRepo.findLive(flow.id())).as("consumed only on the eventual success").isEmpty();
+        assertThat(identityRepo.findById(identity.id()).orElseThrow().lastLoginAt()).isNotNull();
+    }
+
+    /// Mutant: the gate runs BEFORE the password check. An ungranted
+    /// identity's WRONG password must still be a uniform 401, never a 403.
+    @Test
+    void aWrongPasswordAgainstAnUngrantedAppIsStill401NeverTheGate() {
+        String clientId = testClient("gate-wrongpw");
+        OAuthClient oc = portalOAuthClient("gate-wrongpw", clientId, "https://portal.example.com/cb");
+        var app = testPortalApp(clientId, "gate-wrongpw-" + RUN);
+        oc = linkApp(oc, app.id());
+        String email = "gate-wrongpw-" + RUN + "@example.com";
+        identityWithPassword(clientId, email, "the-real-password");
+        PortalLoginFlow flow = liveFlow(oc, clientId, "https://portal.example.com/cb", "st-gate-wrongpw");
+
+        var res = http.post("/portal/auth/login",
+                "{\"flowId\":\"" + flow.id() + "\",\"email\":\"" + email + "\",\"password\":\"nope\"}");
+        assertThat(res.statusCode()).as("password check runs first, the gate never gets a say").isEqualTo(401);
+        assertThat(json(res).get("code").asText()).isEqualTo("INVALID_CREDENTIALS");
+    }
+
+    /// The gate also refuses a deactivated app, even for a granted identity.
+    @Test
+    void passwordLoginGateRefusesAnInactiveAppEvenWhenGranted() {
+        String clientId = testClient("gate-inactive");
+        OAuthClient oc = portalOAuthClient("gate-inactive", clientId, "https://portal.example.com/cb");
+        var app = testPortalApp(clientId, "gate-inactive-" + RUN);
+        oc = linkApp(oc, app.id());
+        String email = "gate-inactive-" + RUN + "@example.com";
+        PortalIdentity identity = identityWithPassword(clientId, email, "right-password");
+        grant(identity, app.id());
+        uow.inTransaction(tx -> {
+            portalAppRepo.persist(app.update(null, null, false), tx.dbTx());
+            return null;
+        });
+        PortalLoginFlow flow = liveFlow(oc, clientId, "https://portal.example.com/cb", "st-gate-inactive");
+
+        var res = http.post("/portal/auth/login",
+                "{\"flowId\":\"" + flow.id() + "\",\"email\":\"" + email + "\",\"password\":\"right-password\"}");
+        assertThat(res.statusCode()).isEqualTo(403);
+        assertThat(json(res).get("code").asText()).isEqualTo("NO_PORTAL_ACCESS");
+        assertThat(flowRepo.findLive(flow.id())).isPresent();
+    }
+
+    /// A legacy client-wide portal client (no app link) is never gated.
+    @Test
+    void passwordLoginIsUngatedForALegacyClientWideOAuthClient() {
+        String clientId = testClient("gate-legacy");
+        OAuthClient oc = portalOAuthClient("gate-legacy", clientId, "https://portal.example.com/cb");
+        String email = "gate-legacy-" + RUN + "@example.com";
+        identityWithPassword(clientId, email, "right-password");
+        PortalLoginFlow flow = liveFlow(oc, clientId, "https://portal.example.com/cb", "st-gate-legacy");
+
+        var res = http.post("/portal/auth/login",
+                "{\"flowId\":\"" + flow.id() + "\",\"email\":\"" + email + "\",\"password\":\"right-password\"}");
+        assertThat(res.statusCode()).as(res.body()).isEqualTo(200);
     }
 
     // ── POST /portal/auth/password-reset ────────────────────────────────────

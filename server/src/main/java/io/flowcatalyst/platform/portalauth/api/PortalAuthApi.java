@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlow;
 import io.flowcatalyst.platform.portalauth.PortalLoginFlowRepository;
 import io.flowcatalyst.platform.portalidentity.PortalIdentity;
@@ -54,7 +55,7 @@ public final class PortalAuthApi {
     public record State(PortalLoginFlowRepository flows, OAuthClientRepository oauthClients,
                         PortalIdentityRepository identities, IdentityProviderRepository identityProviders,
                         GrantStore grantStore, RateLimit.Store rateLimitStore, RateLimit.Policies policies,
-                        PortalInviteEmailer emailer) {
+                        PortalInviteEmailer emailer, PortalAppRepository portalApps) {
         public State {
             Objects.requireNonNull(flows, "flows");
             Objects.requireNonNull(oauthClients, "oauthClients");
@@ -63,6 +64,7 @@ public final class PortalAuthApi {
             Objects.requireNonNull(grantStore, "grantStore");
             Objects.requireNonNull(policies, "policies");
             Objects.requireNonNull(emailer, "emailer");
+            Objects.requireNonNull(portalApps, "portalApps");
         }
     }
 
@@ -188,6 +190,15 @@ public final class PortalAuthApi {
         }
         if (!PasswordHash.matches(password, identity.get().passwordHash())) {
             ctx.status(401).json(new CodeMessage("INVALID_CREDENTIALS", "Invalid email or password"));
+            return;
+        }
+
+        // Portal-app gate (`docs/spec/portal-apps.md` §5.1): runs ONLY after a
+        // successful password verify, and before the flow is consumed — a
+        // denied caller must be able to retry the very same flow once granted.
+        var app = guarded(() -> s.portalApps().findByOAuthClientId(flow.oauthClientId()), "PORTAL_APP", "portal app lookup failed");
+        if (app.isPresent() && (!app.get().active() || !identity.get().hasApp(app.get().id()))) {
+            ctx.status(403).json(new CodeMessage("NO_PORTAL_ACCESS", "You don't have access to this portal"));
             return;
         }
 

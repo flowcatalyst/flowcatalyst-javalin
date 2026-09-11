@@ -133,7 +133,8 @@ class ServiceAccountApiTest {
                 issuer, new AccessTokenReader(oauthVerifier), new DbClaimsResolver(PRINCIPALS, ROLES),
                 ClaimLabels.of(new ClientRepository(TestPg.dataSource()), new ApplicationRepository(TestPg.dataSource())),
                 ENCRYPTION, null, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new EnvReader(Map.of())),
-                new Governor(new Governor.Config(1000, 1_000_000)), OAUTH_KEYS, OAUTH_ISSUER, Clock.systemUTC(), null);
+                new Governor(new Governor.Config(1000, 1_000_000)), OAUTH_KEYS, OAUTH_ISSUER, Clock.systemUTC(), null,
+                new io.flowcatalyst.platform.portalapp.PortalAppRepository(TestPg.dataSource()));
         oauthHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
             OAuthTokenApi.register(routes, oauthState);

@@ -12,6 +12,7 @@ import io.flowcatalyst.platform.loginattempt.AttemptType;
 import io.flowcatalyst.platform.loginattempt.LoginAttempt;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
+import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
@@ -46,6 +47,8 @@ import java.util.Optional;
 /// @param signingKeys     for JWKS
 /// @param baseUrl         the external issuer the discovery document advertises from (`FC_JWT_ISSUER`)
 /// @param portalSubjects  the portal plane's identities for `ptu_` codes; nullable ⇒ portal codes refused
+/// @param portalApps      resolves "the app for OAuth client X" for the redemption gate
+///                        (`docs/spec/portal-apps.md` §2.4, §5.3)
 public record OAuthState(
         OAuthClientRepository oauthClients,
         PrincipalRepository principals,
@@ -64,7 +67,8 @@ public record OAuthState(
         SigningKeys signingKeys,
         String baseUrl,
         Clock clock,
-        PortalSubjects portalSubjects) {
+        PortalSubjects portalSubjects,
+        PortalAppRepository portalApps) {
 
     private static final Logger LOG = LoggerFactory.getLogger(OAuthState.class);
 
@@ -82,6 +86,7 @@ public record OAuthState(
         Objects.requireNonNull(signingKeys, "signingKeys");
         Objects.requireNonNull(baseUrl, "baseUrl");
         Objects.requireNonNull(clock, "clock");
+        Objects.requireNonNull(portalApps, "portalApps");
         baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
     }
 

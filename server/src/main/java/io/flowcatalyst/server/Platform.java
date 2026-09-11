@@ -122,6 +122,7 @@ import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.api.PublicApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.auth.ProfileOnlyGate;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.sdksync.api.SdkSyncApi;
@@ -210,6 +211,10 @@ public final class Platform {
         var corsAllowlist = new CorsAllowlist(corsOriginRepo::allowedOrigins, Duration.ofMillis(env.corsCacheTtlMs()), Clock.systemUTC());
         routes.before(cors(new CorsFilter(corsAllowlist)));
         routes.before(authenticated(buildAuthenticator()));
+        // The profile-only gate (docs/spec/portal-apps.md §6): immediately after the
+        // authenticator, so it sees exactly the AuthContext (or lack of one) the
+        // authenticator bound, and before every other before-filter/handler.
+        routes.before(ProfileOnlyGate.INSTANCE);
         // Request-schema validation (docs/spec/request-schema-validation.md §3): after the
         // authenticator (an unauthenticated caller is refused before its body is inspected)
         // and before every handler (a missing/malformed field never reaches a domain check).
@@ -435,7 +440,8 @@ public final class Platform {
         var portalLoginFlowRepo = new PortalLoginFlowRepository(pool);
         PortalAuthApi.register(routes, new PortalAuthApi.State(portalLoginFlowRepo, oauthClientRepo, portalIdentityRepo,
                 identityProviderRepo, grantStore, RateLimitStores.build(portalEnvReader, pool),
-                RateLimit.Policies.fromEnv(portalEnvReader), new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks)));
+                RateLimit.Policies.fromEnv(portalEnvReader), new io.flowcatalyst.platform.portalidentity.PortalInvites(resetLinks),
+                portalAppRepo));
 
         // The OAuth / OIDC provider (auth-core §6.2, §6.2a, §6.2b). /oauth/authorize
         // and /auth/refresh are public (isPublicPath); the token, introspection,
@@ -450,7 +456,7 @@ public final class Platform {
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), loginAttemptRepo,
                 RateLimitStores.build(envReader, pool), RateLimit.Policies.fromEnv(envReader),
                 new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC(),
-                portalAccess);
+                portalAccess, portalAppRepo);
         OAuthIpLimits.register(routes, oauthState, new Governor(Governor.Config.oauthTokenIp(envReader)));
         OAuthAuthorizeApi.register(routes, oauthState);
         OAuthTokenApi.register(routes, oauthState);
