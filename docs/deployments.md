@@ -1,0 +1,332 @@
+# Phase 0 — deployment inventory
+
+Produced per `docs/verification-plan.md` "Phase 0 — deployment inventory".
+Source: the Pulumi IaC at `../inhance/iac` (read-only; nothing there was
+edited). Primary file `compute/index.ts` (4,994 lines) plus
+`compute/Pulumi.nonprod.yaml` and `compute/Pulumi.prod.yaml` for stack config
+values. All line numbers below are `compute/index.ts:<n>` unless stated
+otherwise.
+
+Three FlowCatalyst ECS services exist in this IaC, each × two environments
+(nonprod `np`, prod `prod`):
+
+1. **fc-platform** — the API/identity tier (task family `inhance-fc-{env}-platform`)
+2. **fc-worker** — dispatch scheduler / scheduled-job scheduler (task family `inhance-fc-{env}-worker`)
+3. **fc-router** — the message router (task family `inhance-fcr-{env}`)
+
+No other FlowCatalyst ECS service exists in this repo. A fourth adjacent
+service, **Postbox Processor** (`index.ts:1582` on), is a separate Go app
+(`apps/postbox-processor-go`) that is not part of FlowCatalyst and is out of
+scope here. Two Laravel apps (HR Administrator, RFP — `index.ts:3761` and
+`:4046`+) consume the FlowCatalyst platform as an OIDC/webhook **client**
+(`FLOWCATALYST_*` env vars pointed at `https://platform.inhanceapps.com`);
+they are not FlowCatalyst deployments and are also out of scope, noted only
+where their env vars name a FlowCatalyst-side secret.
+
+## Which binary each task is written for — a discrepancy in the IaC's own comments
+
+The task explicitly asked this to be recorded rather than resolved:
+
+- The **platform** task's header comment (`index.ts:877`) reads: *"Rust
+  fc-server binary — runs platform API with embedded frontend."* The comment
+  above the shared env block (`index.ts:850-852`) says: *"The Rust fc-server
+  binary accepts both FC_* and TS-style env var names. We use the TS names
+  here for backward compatibility with the existing task definitions; the
+  Rust binary resolves them via aliases."*
+- The **worker** task's header comment (`index.ts:952-954`), for the **same
+  ECR image** (`inhance/flowcatalyst`, same `imageTag`) as the platform task,
+  reads: *"Go fc-server binary (flowcatalyst-go) — runs Dispatch Scheduler
+  only... Message Router runs as a separate standalone binary (fc-router)."*
+- The **router** section header (`index.ts:1321`) reads *"FC Router (Rust
+  Message Router)"*, but the router container's own inline comment
+  (`index.ts:1503-1509`) says: *"the Go fc-server is a single binary; these
+  [`MESSAGE_ROUTER_ENABLED`/`PLATFORM_ENABLED`] select the router-only
+  role... The Go router is DB-less — config comes from the platform API
+  (`FLOWCATALYST_CONFIG_URL`)... Ignored by the legacy Rust standalone
+  fc-router binary."*
+
+So: the platform task's own header calls the image "Rust", the worker task's
+header calls the *identical* image "Go", and the router task's section
+header calls it "Rust" while its own inline comment describes Go-fc-server
+subsystem-toggle behaviour and says the toggles are meaningless to the
+"legacy Rust standalone" binary. Read literally, the IaC's own evidence
+(subsystem toggles, DB-less router deriving queues from `FLOWCATALYST_CONFIG_URL`,
+one image shared by platform+worker) is consistent with **all three tasks
+today running the unified Go `fc-server` binary** in different subsystem
+combinations, and the "Rust" wording in the two header comments is stale.
+This is exactly the ambiguity Phase 1 must resolve against the *actual*
+images in ECR (`inhance/flowcatalyst:{imageTag}`, `inhance/fc-router:{routerImageTag}`)
+before picking which behaviour Java must match.
+
+---
+
+## Shared infrastructure (both environments)
+
+- **Stack → env mapping**: Pulumi stack `nonprod` → `env="np"`, `prod` → `env="prod"` (`index.ts:5-8`).
+- **VPC / hosted zone**: from StackReference `organization/inhance-shared/{stack}` outputs `vpcId`, `hostedZoneId` (`index.ts:184-187`, exact StackReference name not re-confirmed above line 184 window — see `sharedStack` definition near there).
+- **RDS**: StackReference `organization/inhance-database/{stack}` outputs `dbSecurityGroupId`, `dbEndpoint`, `dbName`, `dbMasterUserSecretArn` (`index.ts:196-200`). One shared Postgres instance/database for platform+worker; router is DB-less by design.
+- **Cache**: StackReference `organization/inhance-cache/{stack}` outputs `cacheSecurityGroupId`, `cacheEndpoint` (`index.ts:203-205`) — ElastiCache Valkey, TLS (`rediss://`).
+- **ECS cluster**: `inhance-{env}-cluster`, Container Insights enabled (`index.ts:317-319`), EC2 launch type only (capacity provider `ec2CapacityProvider`, `index.ts:479`+), instance type from stack config (`ec2InstanceType`, default `t4g.large` np / `m7g.large` prod per yaml), ASG min/max from stack config. **No Fargate** anywhere in this file.
+- **ALB**: one shared internet-facing ALB (`index.ts:384`+) for the whole cluster. HTTPS listener on 443 (`index.ts:637-647`, default action 404 fixed-response, TLS policy `ELBSecurityPolicy-TLS13-1-2-2021-06`), HTTP listener on 80 redirects to 443 (`index.ts:649-657`). Host-header `ListenerRule`s route to each service's target group.
+- **Certificates**: prod uses one `*.inhanceapps.com` wildcard cert as the listener default (`index.ts:588-608`), covering both `platform.inhanceapps.com` and `fc-router.inhanceapps.com`. Nonprod issues per-service certs: `platform-np.inhanceapps.com` (`index.ts:610-629`) is the listener default; `qa-fc-router.inhanceapps.com` is added as an **additional SNI cert** via `aws.lb.ListenerCertificate` (`index.ts:1327-1351`, np only).
+- **Service discovery**: two mechanisms in play —
+  - A `PrivateDnsNamespace` `{env}.inhance2.local` (`index.ts:257-261`) with low-TTL (10s) `A` records `svc-fc-platform` / `svc-fc-worker` (`index.ts:266-284`) — these are declared but the actual east-west routing used by the tasks is:
+  - An ECS **Service Connect** `HttpNamespace` `{env}.inhance.sc` (`index.ts:293-297`). Platform is a Service Connect **server** at alias `fc-platform:8080`; worker is a **client-only** member; router is a server at alias `fc-router:8080` (also gets client access to `fc-platform:8080`).
+- **Dispatch queue**: one SQS FIFO queue `inhance-fc-{env}-dispatch.fifo` (`index.ts:244-251`, content-based dedup, visibility timeout 300s, retention 86400s = 1 day). Platform's PostCommitDispatcher publishes job notifications here; worker's Dispatch Scheduler polls PENDING jobs and publishes full MessagePointers here (comment `index.ts:238-242`).
+- **SSM prefix**: `/inhance/{env}/fc-platform` for platform+worker secrets (`index.ts:844`). Execution role is granted `ssm:GetParameter(s)` on `arn:aws:ssm:{region}:{account}:parameter/inhance/{env}/*` (`index.ts:778-795`) — a wildcard over the **whole env's** SSM tree, not scoped to the `fc-platform` prefix.
+- **CPU/memory sizing note (applies to all three FlowCatalyst services)**: every task definition sets only a container-level **`memoryReservation`** (soft limit, bin-packing hint) from stack config (`memory`/`routerMemory`). **No task- or container-level hard `memory` limit and no `cpu` reservation/limit are ever set** — the `cpu`/`routerCpu` stack config values (`index.ts:24`, `36`) are declared (`cpu` via `config.require`, so it must be present in every stack file) but **never referenced anywhere else in this file**. Tasks are unbounded on CPU and can burst past their memory reservation up to the host's free capacity.
+- **Autoscaling**: none. `desiredCount` / `workerDesiredCount` / `routerDesiredCount` are static Pulumi config values with no `aws.appautoscaling.Target`/`Policy` anywhere for these three services (confirmed by grep — Application Auto Scaling in this file exists only for the unrelated Integral fleet: staging/ceramic/spar/montego processors).
+- **Health check grace period**: not set on any of the three `aws.ecs.Service` resources (`healthCheckGracePeriodSeconds` absent) → ECS default (0s) applies.
+- **Container-level Docker health check**: none defined in any of the three `containerDefinitions` (no `healthCheck` block) — health is entirely the ALB target group's `/health` HTTP check (platform, router) or nothing at all (worker, which is not ALB-fronted).
+
+---
+
+## 1. fc-platform (API/identity tier)
+
+- **Task family**: `inhance-fc-{env}-platform` (`index.ts:881-949`, resource `fc-platform-task`).
+- **Service**: `inhance-fc-{env}-svc` (`index.ts:1010-1049`, resource `fc-service`).
+- **Image / tag logic**: `{ecrRepoUrl}:{imageTag}` — ECR repo `inhance/flowcatalyst` (`index.ts:209-221`; nonprod stack creates the repo, prod does `aws.ecr.getRepository` on the same name — **one shared ECR repo across both environments**). `imageTag` = stack config `imageTag`, default `"latest"` (`index.ts:26`) — neither `Pulumi.nonprod.yaml` nor `Pulumi.prod.yaml` overrides it, so **both environments float `:latest`** unless a deploy pipeline sets stack config explicitly outside this repo.
+- **Launch type / arch / network mode**: EC2 (`requiresCompatibilities: ["EC2"]`), `runtimePlatform.cpuArchitecture: "ARM64"` (Graviton), `networkMode: "bridge"`.
+- **CPU/memory**: `memoryReservation: parseInt(memory)` — stack config `memory`, `512` MB in both `Pulumi.nonprod.yaml` and `Pulumi.prod.yaml`. No hard memory limit, no CPU units (see shared-infrastructure note above).
+- **Port mapping**: container port 8080, `hostPort: 0` (dynamic host port, bridge mode), protocol tcp, named `http` (`index.ts:897`).
+- **Container health check**: none. **ALB target group** `flowcatalyst` (`inhance-fc-{env}-tg`, `index.ts:661-669`): path `/health`, port `traffic-port`, protocol HTTP, `healthyThreshold: 2`, `unhealthyThreshold: 3`; **interval/timeout/matcher not set in IaC** → AWS defaults (30s interval, 5s timeout, HTTP 200 matcher).
+- **Desired count / autoscaling**: `desiredCount` stack config — `2` in both nonprod and prod (`Pulumi.nonprod.yaml:3`, `Pulumi.prod.yaml:4`). No autoscaling (see above).
+- **IAM roles**: execution role `inhance-{env}-ecs-exec-role` (`index.ts:764-795`, shared with worker and router); task role `inhance-fc-{env}-task-role` (`index.ts:797-826`, shared with worker) — grants `secretsmanager:GetSecretValue` on the RDS master-user secret and `sqs:SendMessage/ReceiveMessage/DeleteMessage/GetQueueAttributes/GetQueueUrl` on the dispatch queue.
+- **Log group**: `/ecs/inhance-fc-{env}` (`index.ts:830-834`, `awslogs-stream-prefix: "flowcatalyst"`), retention 30 days.
+- **ALB listener rule**: `flowcatalyst-rule`, priority 100, host header = `platformDomain` (`platform-np.inhanceapps.com` np / `platform.inhanceapps.com` prod) → forward to the `flowcatalyst` target group (`index.ts:671-676`). Route53 alias record for `platformDomain` → ALB (`index.ts:1081-1090`).
+- **Service Connect**: server, alias `fc-platform:8080`, with a **900s** per-request and idle timeout override for the SC proxy (`index.ts:1029-1044`) — explicitly to avoid the SC proxy's ~15s default 504'ing long dispatch-processing calls and triggering SQS redelivery loops.
+- **Dependencies**: RDS (shared instance, via `DB_HOST`/`DB_SECRET_ARN`), ElastiCache Valkey (via `REDIS_URL`, standby leader election only — `STANDBY_ENABLED=false` here so unused today), SQS dispatch queue, no config-service dependency (platform *serves* `/api/config`, doesn't consume it).
+
+### Environment variables and secrets — fc-platform
+
+| Name | Source | Value | Notes |
+|---|---|---|---|
+| `RUST_LOG` | literal | `info` | shared block (`index.ts:855`) |
+| `DB_SECRET_PROVIDER` | literal | `aws` | shared block (`:857`) |
+| `DB_SECRET_ARN` | computed | `dbMasterUserSecretArn` (RDS StackReference output) | shared block (`:858`) |
+| `DB_HOST` | computed | `dbEndpoint` (RDS StackReference output) | shared block (`:859`) |
+| `DB_NAME` | computed | `dbName` (RDS StackReference output) | shared block (`:860`) |
+| `REDIS_URL` | computed | `rediss://{cacheEndpoint}:6379` | shared block (`:862`) |
+| `DISPATCH_QUEUE_TYPE` | literal | `SQS` | shared block (`:864`) |
+| `DISPATCH_QUEUE_URL` | computed | `dispatchQueue.url` | shared block (`:865`) |
+| `DISPATCH_QUEUE_REGION` | computed | `region` (stack config `aws:region`, `eu-west-1`) | shared block (`:866`) |
+| `PORT` | literal | `8080` | `:909` |
+| `PLATFORM_ENABLED` | literal | `true` | `:911` |
+| `STREAM_PROCESSOR_ENABLED` | literal | `true` | `:912` |
+| `DISPATCH_SCHEDULER_ENABLED` | literal | `false` | `:913` — scheduler runs on worker, not platform |
+| `MESSAGE_ROUTER_ENABLED` | literal | `false` | `:914` |
+| `STANDBY_ENABLED` | literal | `false` | `:915` |
+| `EXTERNAL_BASE_URL` | computed | `https://{platformDomain}` | `:917` |
+| `OIDC_ACCESS_TOKEN_TTL` | literal | `3600` | `:918` |
+| `OIDC_SESSION_TTL` | literal | `28800` (8h) | `:919` |
+| `OIDC_REFRESH_TOKEN_TTL` | literal | `2592000` (30d) | `:920` |
+| `FC_WEBAUTHN_RP_ID` | literal | `inhanceapps.com` | `:923` |
+| `FC_WEBAUTHN_RP_NAME` | literal | `Inhance` | `:924` |
+| `FC_WEBAUTHN_ORIGINS` | computed | `https://platform-np.inhanceapps.com` (np) / `https://platform.inhanceapps.com` (prod) | `:925`, source consts at `:15` |
+| `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` | literal | `http://fc-platform:8080/api/dispatch/process` | `:930-933`, in-VPC Service Connect alias, deliberately not the public ALB domain |
+| `SMTP_HOST` | literal | `smtp.sendgrid.net` | `:935` |
+| `SMTP_PORT` | literal | `587` | `:936` |
+| `SMTP_SECURE` | literal | `false` | `:937` |
+| `SMTP_USERNAME` | literal | `apikey` | `:938` |
+| `SMTP_FROM` | literal | `mailer@inhancesc.com` | `:939` |
+| `FC_STATIC_DIR` | literal | `/app/frontend/dist` | `:941` |
+| `FLOWCATALYST_APP_KEY` | SSM | `/inhance/{env}/fc-platform/app-key` | `:870` |
+| `FLOWCATALYST_JWT_PRIVATE_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-private-key` | `:871` |
+| `FLOWCATALYST_JWT_PUBLIC_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-public-key` | `:872` |
+| `FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-previous-public-key` | `:873` |
+| `SMTP_PASSWORD` | SSM | `/inhance/{env}/fc-platform/smtp_password` | `:945` |
+
+31 variables total (22 plain env, 5 SSM secrets counted above as part of the 22... to be precise: **26 plain environment entries + 5 SSM-sourced secrets = 31**).
+
+---
+
+## 2. fc-worker (dispatch scheduler / scheduled-job scheduler)
+
+- **Task family**: `inhance-fc-{env}-worker` (`index.ts:958-1006`, resource `fc-worker-task`).
+- **Service**: `inhance-fc-{env}-worker-svc` (`index.ts:1056-1077`, resource `fc-worker-service`).
+- **Image / tag logic**: **identical** to platform — `{ecrRepoUrl}:{imageTag}`, same ECR repo `inhance/flowcatalyst`, same floating `:latest` tag. One image, different subsystem toggles.
+- **Launch type / arch / network mode**: same as platform — EC2, ARM64, bridge.
+- **CPU/memory**: same `memoryReservation: parseInt(memory)` as platform (shares the `memory` stack config value — no independent worker memory knob). No hard limit, no CPU units.
+- **Port mapping**: container port 8080, `hostPort: 0`, named `http` — declared "for parity with the platform task def" but the worker service is Service-Connect **client-only** and has no ALB target group, so nothing routes to it (`index.ts:973-975`).
+- **Health check**: none — no ALB target group, no container health check. Service health is whatever ECS's own task-state tracking sees.
+- **Desired count / autoscaling**: `workerDesiredCount` stack config — `1` in both environments (`Pulumi.nonprod.yaml:4`, `Pulumi.prod.yaml:5`). "Single instance — no standby needed since these are idempotent workers and SQS/DB provide the coordination layer" (`index.ts:955-956`). No autoscaling.
+- **IAM roles**: same execution role and task role as platform (`inhance-{env}-ecs-exec-role`, `inhance-fc-{env}-task-role`).
+- **Log group**: `/ecs/inhance-fc-{env}-worker` (`index.ts:836-840`, stream prefix `flowcatalyst-worker`), retention 30 days.
+- **ALB**: not fronted by the ALB at all — no listener rule, no target group, no public domain.
+- **Service Connect**: client-only enrolment in the same namespace as platform/router, so it can resolve `http://fc-platform:8080` in-VPC (`index.ts:1067-1072`). `dependsOn: [fcService]` — "SC clients only learn aliases that exist when their tasks launch" (`:1075-1076`).
+- **Security group note**: `fc-worker-sg` (`index.ts:694-699`) has a security-group rule allowing platform→worker on port 8080 "future dashboard access" (`index.ts:701-710`) that is currently unused since the worker publishes no Service Connect server alias.
+- **Dependencies**: RDS (shared instance), ElastiCache Valkey (unused today, `STANDBY_ENABLED=false`), SQS dispatch queue (both consumer — Dispatch Scheduler polling PENDING jobs — and producer — publishing full MessagePointers), platform's in-VPC dispatch-process endpoint.
+
+### Environment variables and secrets — fc-worker
+
+| Name | Source | Value | Notes |
+|---|---|---|---|
+| `RUST_LOG` | literal | `info` | shared block |
+| `DB_SECRET_PROVIDER` | literal | `aws` | shared block |
+| `DB_SECRET_ARN` | computed | `dbMasterUserSecretArn` | shared block |
+| `DB_HOST` | computed | `dbEndpoint` | shared block |
+| `DB_NAME` | computed | `dbName` | shared block |
+| `REDIS_URL` | computed | `rediss://{cacheEndpoint}:6379` | shared block |
+| `DISPATCH_QUEUE_TYPE` | literal | `SQS` | shared block |
+| `DISPATCH_QUEUE_URL` | computed | `dispatchQueue.url` | shared block |
+| `DISPATCH_QUEUE_REGION` | computed | `region` | shared block |
+| `PLATFORM_ENABLED` | literal | `false` | `:987` |
+| `STREAM_PROCESSOR_ENABLED` | literal | `false` | `:988` |
+| `MESSAGE_ROUTER_ENABLED` | literal | `false` | `:989` |
+| `DISPATCH_SCHEDULER_ENABLED` | literal | `true` | `:990` |
+| `FC_SCHEDULED_JOB_ENABLED` | literal | `true` | `:991` |
+| `STANDBY_ENABLED` | literal | `false` | `:992` |
+| `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` | literal | `http://fc-platform:8080/api/dispatch/process` | `:996-999` |
+| `FLOWCATALYST_APP_KEY` | SSM | `/inhance/{env}/fc-platform/app-key` | shared secrets block |
+| `FLOWCATALYST_JWT_PRIVATE_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-private-key` | shared secrets block |
+| `FLOWCATALYST_JWT_PUBLIC_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-public-key` | shared secrets block |
+| `FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY` | SSM | `/inhance/{env}/fc-platform/jwt-previous-public-key` | shared secrets block |
+
+16 environment entries + 4 SSM secrets = **20 variables total**.
+
+---
+
+## 3. fc-router (message router)
+
+- **Task family**: `inhance-fcr-{env}` (`index.ts:1464-1528`, resource `router-task`).
+- **Service**: `inhance-fcr-{env}-svc` (`index.ts:1532-1565`, resource `router-service`).
+- **Image / tag logic**: `{routerEcrRepoUrl}:{routerImageTag}` — separate ECR repo `inhance/fc-router` (`index.ts:301-313`, same shared-repo-across-envs pattern as `inhance/flowcatalyst`). `routerImageTag` = stack config `routerImageTag`, default `"latest"` (`:38`) — **nonprod doesn't override it** (floats `:latest`); **prod pins it to `"prod"`** (`Pulumi.prod.yaml:11`).
+- **Launch type / arch / network mode**: EC2, ARM64, bridge — same as platform/worker.
+- **CPU/memory**: `memoryReservation: parseInt(routerMemory)` — stack config `routerMemory`, `512` MB in both environments. No hard limit, no CPU units (`routerCpu` stack config exists, `256` in both envs, but is never applied — same dead-config pattern as platform/worker's `cpu`).
+- **Port mapping**: container port 8080, `hostPort: 0`, named `http` (`index.ts:1480-1488`).
+- **Container health check**: none. **ALB target group** `fc-router` (`inhance-fcr-{env}-tg`, `index.ts:1355-1368`): path `/health`, port `traffic-port`, protocol HTTP, `healthyThreshold: 2`, `unhealthyThreshold: 3`; interval/timeout/matcher not set → AWS defaults.
+- **Desired count / autoscaling**: `routerDesiredCount` stack config — `1` in both environments (`Pulumi.nonprod.yaml:10`, `Pulumi.prod.yaml:8`). No autoscaling.
+- **IAM roles**: execution role shared (`inhance-{env}-ecs-exec-role`); **own** task role `inhance-fcr-{env}-task-role` (`index.ts:1418-1431`) — "Router needs SQS access for message consumption but no DB or Secrets Manager" (`:1416-1417`). Policy grants `sqs:ReceiveMessage/DeleteMessage/ChangeMessageVisibility/GetQueueAttributes/GetQueueUrl/SendMessage` on `Resource: "*"` (`:1433-1452`, blanket — not scoped to the dispatch queue or any specific ARN, since the router's real queues come from whatever `FLOWCATALYST_CONFIG_URL` returns).
+- **Log group**: `/ecs/inhance-fcr-{env}` (`index.ts:1456-1460`, stream prefix `fc-router`), retention 30 days.
+- **ALB listener rule**: `router-rule`, priority 300, host header = `routerDomain` (`qa-fc-router.inhanceapps.com` np / `fc-router.inhanceapps.com` prod) → forward to `fc-router` target group (`index.ts:1372-1388`). Route53 alias for `routerDomain` → ALB (`index.ts:1569-1580`). Nonprod additionally provisions/validates its own ACM cert and attaches it as an SNI cert on the shared HTTPS listener (`index.ts:1327-1351`).
+- **Service Connect**: server, alias `fc-router:8080`; also gets client access to the other aliases (`fc-platform:8080`) in the same namespace for config-sync and dispatch-callback traffic (`index.ts:1553-1561`).
+- **Dependencies**: **no RDS, no Secrets Manager** (DB-less by design per the inline comment). Config service: `FLOWCATALYST_CONFIG_URL` — nonprod points at the **Integral staging platform** (`https://staging-integral.inhanceapps.com/api/config`, `Pulumi.nonprod.yaml:13`), not at the FlowCatalyst platform's own domain, despite the code default (`routerConfigUrl` const, `index.ts:39`) being `https://{platformDomain}/api/config`; prod points at **four** Integral instances' config endpoints, comma-separated (`amsa`, `pilot-value-logistics`, `ceramic`, `spar` — `Pulumi.prod.yaml:15`). No `REDIS_URL` is set for the router at all (standby disabled; if standby were ever turned on without setting one, Java's own default `redis://127.0.0.1:6379` would apply — almost certainly wrong for this deployment). SQS queues are resolved per-queue from the config service response, not from the shared dispatch queue.
+
+### Environment variables and secrets — fc-router
+
+| Name | Source | Value | Notes |
+|---|---|---|---|
+| `RUST_LOG` | literal | `info` | `:1500` |
+| `API_PORT` | literal | `8080` | `:1501` |
+| `AWS_REGION` | computed | `region` (`eu-west-1`) | `:1502` |
+| `MESSAGE_ROUTER_ENABLED` | literal | `true` | `:1510` |
+| `PLATFORM_ENABLED` | literal | `false` | `:1511` |
+| `FLOWCATALYST_CONFIG_URL` | stack config | np: `https://staging-integral.inhanceapps.com/api/config`; prod: 4 comma-separated Integral `/api/config` URLs (see above) | `:1513`, default (unused, both envs override) `https://{platformDomain}/api/config` |
+| `FLOWCATALYST_CONFIG_INTERVAL` | literal | `300` | `:1514` |
+| `FLOWCATALYST_STANDBY_ENABLED` | literal | `false` | `:1516` |
+| `AUTH_MODE` | literal | `NONE` | `:1518` |
+| `NOTIFICATION_TEAMS_ENABLED` | literal | `true` | `:1520` |
+| `NOTIFICATION_TEAMS_WEBHOOK_URL` | literal — **secret, see below** | (secret — literal in IaC, not copied) | `:1521`, same literal value used in both np and prod (block is unconditional) |
+| `NOTIFICATION_MIN_SEVERITY` | literal | `WARNING` | `:1522` |
+| `NOTIFICATION_BATCH_INTERVAL` | literal | `300` | `:1523` |
+
+13 environment entries, 0 SSM/Secrets Manager secrets, **1 literal secret** — **13 variables total**.
+
+---
+
+## Secrets committed as literals in the IaC
+
+Only one was found across the three FlowCatalyst services (the HR/RFP client
+apps' `FLOWCATALYST_*` secrets are all SSM-sourced, not literals, and are out
+of scope as noted above):
+
+- **`NOTIFICATION_TEAMS_WEBHOOK_URL`** — `compute/index.ts:1521`, the
+  fc-router task definition. A Power Automate "trigger a flow" URL carrying a
+  `sig=` query-string signature, used identically for both the `np` and
+  `prod` stacks (the surrounding code is not inside an `env === "..."`
+  branch). Anyone with read access to this IaC repo — or to the ECS task
+  definition/console — can post to Teams as the FlowCatalyst router. Move to
+  SSM (pattern: `/inhance/{env}/fc-router/notify-webhook-url`) and reference
+  it as a `secrets` entry the way platform/worker's SSM-sourced secrets
+  already do.
+
+---
+
+## Java compatibility
+
+Checked against `server/src/main/java/io/flowcatalyst/server/Env.java`,
+`EnvReader.java`, `Logging.java`, `dbsecret/DbSecretMode.java`,
+`platform/shared/encryption/Encryption.java`,
+`platform/shared/auth/SigningKeys.java`,
+`platform/mail/SmtpMailService.java`, `platform/passkey/PasskeyService.java`,
+`platform/auth/token/TokenIssuer.java`, `Frontend.java`,
+`router/queue/QueueFactory.java`, `router/manager/RouterServer.java`,
+`docs/spec/router-env.md`, `docs/spec/dispatch-seam.md` §11. No Java code was
+changed to produce this table.
+
+| Variable | Services | Java status | Detail |
+|---|---|---|---|
+| `RUST_LOG` | platform, worker, router | **aliased** | `Logging.resolveLevels` — consulted **only** when `FC_LOG_LEVEL` is unset; parses as a `tracing`-style filter (bare token = root level, `fc_router=<level>` = `io.flowcatalyst.router`'s level, anything else logged as ignored). |
+| `DB_SECRET_PROVIDER` | platform, worker | **read** | `DbSecretMode.resolve` — must be `"aws"` or startup throws. |
+| `DB_SECRET_ARN` | platform, worker | **read** | `DbSecretMode.resolve`. |
+| `DB_HOST` | platform, worker | **read** | `Env.resolveDatabaseUrl` / `DbSecretMode.resolve`. |
+| `DB_NAME` | platform, worker | **read** | `Env.resolveDatabaseUrl` (default `flowcatalyst` if absent) / `DbSecretMode.resolve`. |
+| `REDIS_URL` | platform, worker | **aliased (last resort)** | `Env.standbyRedisUrl` — last in the chain `FC_STANDBY_REDIS_URL` → `FLOWCATALYST_STANDBY_REDIS_URL` → `FLOWCATALYST_REDIS_URL` → `REDIS_URL`. Only consulted when `STANDBY_ENABLED` (or an alias) is true — false everywhere in this IaC today, so effectively unread at runtime. |
+| `DISPATCH_QUEUE_TYPE` | platform, worker | **⚠ IGNORED — unknown to Java** | No reference anywhere in `server/src/main/java`. Java has no equivalent knob; its dispatch queue is whatever `FC_DEFAULT_BROKER`/router config names, not a single "the dispatch queue" setting. |
+| `DISPATCH_QUEUE_URL` | platform, worker | **⚠ IGNORED — unknown to Java** | Same — no reference anywhere. |
+| `DISPATCH_QUEUE_REGION` | platform, worker | **⚠ IGNORED — unknown to Java** | Same — no reference anywhere. |
+| `FLOWCATALYST_APP_KEY` | platform, worker | **read** | `Encryption.ENV_APP_KEY`, read via `Env.appKey`. |
+| `FLOWCATALYST_JWT_PRIVATE_KEY` | platform, worker | **read** | `SigningKeys.INLINE_PEM_VARS` (first of two inline-PEM sources). |
+| `FLOWCATALYST_JWT_PUBLIC_KEY` | platform, worker | **⚠ IGNORED — unknown to Java** | Only `FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY` is read (`Env.jwtPreviousPublicKey`); the **current** public key has no reference anywhere in `server/src/main/java`. Presumably Java derives the public key from the private key rather than reading it separately — needs an owner ruling on whether that derivation is actually wired up, since the IaC clearly expects this variable to matter (it is fetched from SSM on every boot). |
+| `FLOWCATALYST_JWT_PREVIOUS_PUBLIC_KEY` | platform, worker | **read** | `Env.jwtPreviousPublicKey` / `SigningKeys.normalizePem`; dropped unless it parses as a real PEM. |
+| `PORT` | platform | **aliased** | `Env.apiPort` — third in `FC_API_PORT` → `API_PORT` → `PORT`. |
+| `PLATFORM_ENABLED` | platform, worker, router | **aliased** | `Env.platformEnabled` — `FC_PLATFORM_ENABLED` → `PLATFORM_ENABLED`, default `true`. |
+| `STREAM_PROCESSOR_ENABLED` | platform, worker | **aliased** | `Env.streamEnabled` — `FC_STREAM_PROCESSOR_ENABLED` → `STREAM_PROCESSOR_ENABLED`. |
+| `DISPATCH_SCHEDULER_ENABLED` | platform, worker | **aliased** | `Env.schedulerEnabled` — `FC_SCHEDULER_ENABLED` → `DISPATCH_SCHEDULER_ENABLED`. |
+| `MESSAGE_ROUTER_ENABLED` | platform, worker, router | **aliased** | `Env.routerEnabled` — `FC_ROUTER_ENABLED` → `MESSAGE_ROUTER_ENABLED`. |
+| `STANDBY_ENABLED` | platform, worker | **aliased** | `Env.standbyEnabled` — third in `FC_STANDBY_ENABLED` → `FLOWCATALYST_STANDBY_ENABLED` → `STANDBY_ENABLED`. |
+| `EXTERNAL_BASE_URL` | platform | **aliased** | `Env.jwtIssuer` — third in `FC_JWT_ISSUER` → `FC_EXTERNAL_BASE_URL` → `EXTERNAL_BASE_URL`. |
+| `OIDC_ACCESS_TOKEN_TTL` | platform | **⚠ IGNORED — unknown to Java** | Java's own access-token TTL knob is `FC_JWT_ACCESS_TOKEN_TTL_SECS` (default 3600 — coincidentally the same value the IaC sets for `OIDC_ACCESS_TOKEN_TTL`, but by default, not by reading this name). No alias to `OIDC_ACCESS_TOKEN_TTL` exists. |
+| `OIDC_SESSION_TTL` | platform | **⚠ IGNORED — unknown to Java** | `TokenIssuer.SESSION_TTL_SECONDS` is a **hardcoded constant** `24 * 3600` (86400s / 24h). The IaC sets `28800` (8h) expecting it to be honoured — it is not read at all, and the hardcoded Java value (24h) is 3× longer than the IaC's intent. This is a behavioural drift, not just an unused variable. |
+| `OIDC_REFRESH_TOKEN_TTL` | platform | **⚠ IGNORED — unknown to Java** | No reference anywhere in `server/src/main/java`; `TokenIssuer` has no refresh-token-TTL concept found. |
+| `FC_WEBAUTHN_RP_ID` | platform | **read** | `Env.webauthnRpId` / `PasskeyService.Config.fromEnv`. |
+| `FC_WEBAUTHN_RP_NAME` | platform | **⚠ IGNORED — unknown to Java** | `PasskeyService.Config.fromEnv(env, displayName)` takes `displayName` as a **caller-supplied parameter** (`Platform.java:280`, sourced from `mfaBranding.platformName()`), never from this env var. |
+| `FC_WEBAUTHN_ORIGINS` | platform | **read** | `Env.webauthnOrigins` (comma-separated, trimmed, blanks dropped). |
+| `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` | platform, worker | **⚠ IGNORED — unknown to Java** | Java's only name for this is `FC_DISPATCH_PROCESSING_ENDPOINT` (`Env.dispatchProcessingEndpoint`, confirmed also in Go's own `envcfg.go` per `docs/spec/dispatch-seam.md` §11 — Go doesn't read this IaC name either). Unset, Java defaults to `http://localhost:{apiPort}/api/dispatch/process`. On the **worker** task this default is actively wrong: `localhost` resolves to the worker container itself, not to `fc-platform`, so a Java worker with no override would build dispatch messages whose `mediationTarget`/callback never reaches the platform. This is the single highest-priority Phase 1 fix in this table. |
+| `SMTP_HOST` | platform | **aliased** | `SmtpMailService.Config` — `FC_SMTP_HOST` → `SMTP_HOST`. |
+| `SMTP_PORT` | platform | **aliased** | `FC_SMTP_PORT` → `SMTP_PORT`, default 587. |
+| `SMTP_SECURE` | platform | **aliased** | `FC_SMTP_SECURE` → `SMTP_SECURE`. |
+| `SMTP_USERNAME` | platform | **aliased** | `FC_SMTP_USERNAME` → `SMTP_USERNAME`. |
+| `SMTP_FROM` | platform | **aliased** | `FC_SMTP_FROM` → `SMTP_FROM`, default `noreply@flowcatalyst.local` if neither set (IaC always sets it). |
+| `SMTP_PASSWORD` | platform | **aliased** | `FC_SMTP_PASSWORD` → `SMTP_PASSWORD`. |
+| `FC_STATIC_DIR` | platform | **⚠ IGNORED — unknown to Java** | `Frontend.java` serves the SPA from the **classpath** (`frontend/`, embedded at build time) unconditionally — no code path reads `FC_STATIC_DIR` or serves from an external directory. Harmless today only because the embedded copy is expected to match; if the deploy pipeline ever relies on mounting/refreshing `/app/frontend/dist` independently of the image, Java silently ignores that. |
+| `FC_SCHEDULED_JOB_ENABLED` | worker | **read (canonical name)** | `Env.scheduledJobEnabled` — this IaC name **is** the Java canonical name (alias is `SCHEDULED_JOB_SCHEDULER_ENABLED`, not set here). |
+| `FLOWCATALYST_CONFIG_URL` | router | **read** | `Env.routerConfigUrl`; comma-separated multi-URL supported (`HttpConfigSource.create`, `raw.split(",")`) — matches prod's 4-URL value. |
+| `FLOWCATALYST_CONFIG_INTERVAL` | router | **aliased** | `Env.routerConfigIntervalRaw` — `FC_ROUTER_CONFIG_INTERVAL_SECONDS` → `FLOWCATALYST_CONFIG_INTERVAL`; parsed by `RouterServer.parseConfigPollInterval`, WARNs and falls back to 300 if set-but-invalid. |
+| `FLOWCATALYST_STANDBY_ENABLED` | router | **aliased** | `Env.standbyEnabled` — same three-way alias as `STANDBY_ENABLED` above. |
+| `AUTH_MODE` | router | **read** | `Env.routerAuthMode`; `NONE` (case-insensitive) forces router BasicAuth off. |
+| `NOTIFICATION_TEAMS_ENABLED` | router | **read** | Raw string carried as `Env.routerNotifyTeamsEnabledRaw`; `WarningNotifier.create` — **deliberate deviation from Go/Rust**: an explicit `false` always disables even with a URL set (Go/Rust: `false` is ignored once a URL is configured, so this value is a no-op there but load-bearing in Java). |
+| `NOTIFICATION_TEAMS_WEBHOOK_URL` | router | **aliased** | `Env.routerNotifyWebhookUrl` — `FC_NOTIFY_WEBHOOK_URL` → `NOTIFICATION_TEAMS_WEBHOOK_URL`. |
+| `NOTIFICATION_MIN_SEVERITY` | router | **aliased** | `Env.routerNotifyMinSeverity` — `FC_NOTIFY_MIN_SEVERITY` → `NOTIFICATION_MIN_SEVERITY`; accepts `WARN` and `WARNING`. |
+| `NOTIFICATION_BATCH_INTERVAL` | router | **aliased** | `Env.routerNotifyBatchIntervalSeconds` — `FC_NOTIFY_BATCH_INTERVAL_SECONDS` → `NOTIFICATION_BATCH_INTERVAL`, default 300. |
+| `API_PORT` | router | **aliased** | Same chain as platform's `PORT` — `FC_API_PORT` → `API_PORT` → `PORT`. |
+| `AWS_REGION` | router | **read (implicit)** | Not read by `Env.java` at all; consumed by the AWS SDK for Java's own default region-resolution chain, same as the AWS SDK the Rust/Go binaries use — functionally equivalent, not a `Env`-level "read". |
+
+### Ignored/unknown variables — Phase 1 work list
+
+**fc-platform** (10): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
+`DISPATCH_QUEUE_REGION`, `FLOWCATALYST_JWT_PUBLIC_KEY`,
+`OIDC_ACCESS_TOKEN_TTL`, `OIDC_SESSION_TTL` (**behavioural drift, not just
+unread — see above**), `OIDC_REFRESH_TOKEN_TTL`, `FC_WEBAUTHN_RP_NAME`,
+`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` (**highest priority — wrong default
+context for this container**), `FC_STATIC_DIR`.
+
+**fc-worker** (5): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
+`DISPATCH_QUEUE_REGION`, `FLOWCATALYST_JWT_PUBLIC_KEY`,
+`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` (**highest priority — Java's
+fallback default resolves to `localhost` inside the worker container, which
+cannot reach the platform**).
+
+**fc-router** (0): every variable this IaC sets for the router task is read
+or aliased by Java today (see `docs/spec/router-env.md`, which this table
+cross-checks and agrees with).
+
+Recommended Phase 1 order: fix `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`
+first (it is not just untested, it is wrong-by-default for the worker
+container specifically), then resolve the `OIDC_SESSION_TTL`/
+`OIDC_ACCESS_TOKEN_TTL`/`OIDC_REFRESH_TOKEN_TTL` question (either wire them
+up or get an owner ruling that the hardcoded Java values are intentionally
+different), then the `DISPATCH_QUEUE_*` trio and `FLOWCATALYST_JWT_PUBLIC_KEY`
+(confirm Java's public-key derivation path actually works without ever
+reading the deployed public key material), then the smaller items
+(`FC_WEBAUTHN_RP_NAME`, `FC_STATIC_DIR`).
