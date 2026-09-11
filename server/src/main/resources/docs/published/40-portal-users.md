@@ -17,8 +17,9 @@ that renders Mermaid.
 
 | Part | Lives in | What it is |
 |---|---|---|
-| **Portal identity** | `portal_identities` (platform) | One row per **(client, email)**. Id prefix `ptu_`. Carries email, name, optional password hash, ACTIVE/DISABLED status. No roles, no permissions — ever. |
-| **Portal OAuth client** | `oauth_clients.portal_client_id` (platform) | The **only place "portal-ness" lives**. An OAuth client flagged with the owning tenant client. Its flows enter through `/portal/authorize` and yield `ptu_` subjects for that client. A client may have any number of portal apps; they share one identity population. |
+| **Portal identity** | `portal_identities` (platform) | One row per **(client, email)**. Id prefix `ptu_`. Carries email, name, optional password hash, ACTIVE/DISABLED status, the latest invite's dates, and its **portal-app grants**. No roles, no permissions — ever. One password across the client's portals. |
+| **Portal app** | `portal_apps` + `portal_identity_apps` (platform) | A named portal a client runs (`pta_`, e.g. code `customer-portal`). A client may run several. The portal backend identifies itself by the app's **code** (`portalAppCode`) when inviting; identities are **granted per app**, and a login through an app-linked OAuth client requires the grant. Managed under *Portal → Portal Apps*; creating an app provisions its portal OAuth client (credentials shown once) and deleting it removes that client. |
+| **Portal OAuth client** | `oauth_clients.portal_client_id` + `portal_app_id` (platform) | The **only place "portal-ness" lives**. An OAuth client flagged with the owning tenant client — and linked to the portal app it fronts. Its flows enter through `/portal/authorize` and yield `ptu_` subjects for that client; the id_token carries `portal_app_code`. A portal OAuth client with no app link is a *legacy client-wide* portal: no grant check, no app code. |
 | **Identity provider** | `identity_providers` + domain mappings (platform) | An **authenticator, nothing more**. If an OIDC IdP owns an email domain, every login attempt for that domain — employee login, any portal, invites — routes to it. There is deliberately **no per-portal binding on the IdP**: one Entra can serve employee sign-in and ten portals. |
 | **Membership** | The portal app's own database | What a `ptu_` identity may *do*. Organizations, roles, delegated admin — all app-side. The platform never learns what an "organization" is. A valid login with no membership row is refused by the app (the no-JIT membership gate). |
 
@@ -91,8 +92,8 @@ sequenceDiagram
     end
     LP-->>App: redirect_uri + authorization code (10 min, single-use)
     App->>TK: exchange code (client secret + PKCE verifier)
-    TK->>TK: identity still ACTIVE? (suspension bites here)
-    TK-->>App: id_token sub=ptu_, roles=[] + identity-only access token, NO refresh token
+    TK->>TK: identity still ACTIVE and granted this portal app? (suspension / revocation bites here)
+    TK-->>App: id_token sub=ptu_, roles=[], portal_app_code + identity-only access token, NO refresh token
     App->>App: membership gate - known ptu_? then create own session
 ```
 
@@ -100,7 +101,18 @@ sequenceDiagram
 the `ptu_` subject prefix):
 
 - **id_token** — `sub` is the `ptu_` id, email + name, **empty roles claim**
-  (portal roles are portal data). This is what the app authenticates from.
+  (portal roles are portal data), plus `portal_client_id` and — for an
+  app-linked portal OAuth client — `portal_app_code` / `portal_app_id`, so
+  the app knows which of the client's portals the user entered. This is what
+  the app authenticates from.
+
+**The app gate.** A password login through an app-linked OAuth client is
+refused with `NO_PORTAL_ACCESS` (after the password is verified, so it
+reveals nothing) unless the identity holds that app's grant. An SSO login
+JIT-creates the identity *and grants the app it came through* on first
+login only; an existing identity without the grant is bounced with
+`access_denied`. Redemption re-checks, and an inactive app refuses
+everyone.
 - **access token** — `token_use=identity`, stripped of all authority; the
   platform API middleware rejects it as a credential. Its only use is
   proving authentication (e.g. `/oauth/userinfo`).
@@ -110,8 +122,10 @@ the `ptu_` subject prefix):
 ## Invites and lifecycle
 
 `POST /api/portal-users` (**ensure**) is idempotent: it creates or
-reactivates the (client, email) identity and decides the invite by the same
-domain lookup as login. The caller is the portal's confined service account
+reactivates the (client, email) identity, **grants the caller's portal app**
+(`portalAppCode`), and decides the invite by the same domain lookup as login.
+Invites are initiated by the portal app — the platform UI deliberately has
+no invite button (the portal owns the membership half of the invite). The caller is the portal's confined service account
 or a client administrator — the permission (`platform:iam:portal-user:*`)
 is client-delegable, so a client manages its own portal population and
 nobody else's.
@@ -125,7 +139,7 @@ sequenceDiagram
     actor Invitee
 
     Admin->>App: invite email
-    App->>API: ensure (client, email)
+    App->>API: ensure (client, email, portalAppCode)
     API->>API: upsert portal identity (idempotent, never touches a set password)
     alt domain owned by an OIDC IdP
         API-->>Invitee: "Join the portal" - open it and sign in with your organisation
@@ -139,9 +153,15 @@ sequenceDiagram
 ```
 
 An invite has **two halves**: the platform identity (ensure) and the app's
-membership row. The portal's own admin surface writes both; inviting from
-the platform UI alone leaves the membership half missing and the app will
-refuse the login.
+membership row. The portal's own admin surface writes both — which is why
+invites only come from the portal app.
+
+**Status** shown to administrators is derived, never stored, so it cannot
+drift: **Invited** (invite outstanding; SSO invites never expire) →
+**Active** once a password is created or the user first signs in;
+**Invite expired** when the 72h link lapses unused (re-ensuring re-sends
+it); **Suspended** while deactivated. The admin list searches by prefix
+(`TERM%`) on email and name, filters by portal app, and paginates.
 
 Lifecycle is deliberately plain:
 
@@ -149,8 +169,12 @@ Lifecycle is deliberately plain:
   kills its own live sessions for the immediate cut.
 - **Reactivate** — explicit `activate`, or re-`ensure` (suspend-then-reinvite
   must work).
+- **Revoke one portal** (`DELETE /api/portal-users/{id}/apps/{code}`) —
+  the identity and its access to the client's other portals stay; grant
+  again with `POST /api/portal-users/{id}/apps`.
 - **Offboard** (`DELETE`) — the identity is just a row; deleting it is the
-  whole story. App deletes its membership first, then the platform identity.
+  whole story, across every portal of the client. App deletes its
+  membership first, then the platform identity.
 - **Forgot password** — self-service from the portal login page (15-minute
   link); silent-success, and refused entirely for SSO-owned domains.
 
@@ -214,7 +238,8 @@ The invariants that keep the plane separation honest:
 |---|---|
 | Front-channel auth (`/portal/authorize`, check-domain, password login, forgot password) | `internal/platform/portalauth` |
 | Identity plane (entity, ensure/status/delete operations) | `internal/platform/portalidentity` |
-| Admin API (`/api/portal-users`) | `internal/platform/portalidentity/api` |
+| Portal apps + grants (entity, operations, repository) | `internal/platform/portalidentity/app*.go` |
+| Admin API (`/api/portal-users`, `/api/portal-apps`) | `internal/platform/portalidentity/api` |
 | Token exchange branch (`ptu_` subjects) | `internal/platform/auth/oauthapi/portal_token.go` |
 | SSO bridge (portal OIDC start + callback sink) | `internal/platform/auth/bridge/login_endpoint.go` |
 | Domain → IdP routing | `internal/platform/identityprovider/portal_domain.go` |
