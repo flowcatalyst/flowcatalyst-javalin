@@ -24,6 +24,8 @@ export interface PortalUserSearch {
 	// Prefix (TERM%) on email and name.
 	q?: string;
 	portalAppCode?: string;
+	// Only users granted no portal app (exclusive with portalAppCode).
+	unassigned?: boolean;
 	page?: number;
 	size?: number;
 }
@@ -33,6 +35,7 @@ export const portalUsersApi = {
 		const qs = new URLSearchParams({ clientId: params.clientId });
 		if (params.q) qs.set("q", params.q);
 		if (params.portalAppCode) qs.set("portalAppCode", params.portalAppCode);
+		if (params.unassigned) qs.set("unassigned", "true");
 		if (params.page !== undefined) qs.set("page", String(params.page));
 		if (params.size !== undefined) qs.set("size", String(params.size));
 		return apiFetch(`/portal-users?${qs.toString()}`);

@@ -49,9 +49,12 @@ const clientOptions = computed(() => {
 	}));
 });
 
-const appOptions = computed(() =>
-	apps.value.map((a) => ({ label: `${a.name} (${a.code})`, value: a.code })),
-);
+// Sentinel filter value: users granted no portal app at all.
+const UNASSIGNED = "__unassigned__";
+const appOptions = computed(() => [
+	{ label: "No portal app (unassigned)", value: UNASSIGNED },
+	...apps.value.map((a) => ({ label: `${a.name} (${a.code})`, value: a.code })),
+]);
 
 onMounted(async () => {
 	try {
@@ -108,7 +111,11 @@ async function loadPortalUsers() {
 		const response = await portalUsersApi.list({
 			clientId: selectedClientId.value,
 			q: search.value.trim() || undefined,
-			portalAppCode: selectedAppCode.value || undefined,
+			portalAppCode:
+				selectedAppCode.value && selectedAppCode.value !== UNASSIGNED
+					? selectedAppCode.value
+					: undefined,
+			unassigned: selectedAppCode.value === UNASSIGNED || undefined,
 			page: page.value,
 			size: pageSize.value,
 		});
@@ -186,6 +193,46 @@ async function toggleStatus(user: PortalUser) {
 		await loadPortalUsers();
 	} catch (e: unknown) {
 		toast.error("Error", getErrorMessage(e, "Failed to update status"));
+	}
+}
+
+// ── Grant a portal app (covers users with no app, and adding another) ──
+
+const grantTarget = ref<PortalUser | null>(null);
+const grantAppCode = ref("");
+const granting = ref(false);
+const showGrantDialog = computed({
+	get: () => grantTarget.value !== null,
+	set: (open: boolean) => {
+		if (!open) grantTarget.value = null;
+	},
+});
+
+// Active apps the user doesn't hold yet.
+function grantableApps(user: PortalUser) {
+	const held = new Set(user.apps.map((a) => a.code));
+	return apps.value.filter((a) => a.active && !held.has(a.code));
+}
+
+function openGrant(user: PortalUser) {
+	grantTarget.value = user;
+	grantAppCode.value = grantableApps(user)[0]?.code ?? "";
+}
+
+async function grantApp() {
+	const user = grantTarget.value;
+	if (!user || !grantAppCode.value || granting.value) return;
+	granting.value = true;
+	try {
+		await portalUsersApi.grantApp(user.identityId, selectedClientId.value, grantAppCode.value);
+		const app = apps.value.find((a) => a.code === grantAppCode.value);
+		toast.success("Success", `${user.email} can now sign in to ${app?.name ?? grantAppCode.value}`);
+		grantTarget.value = null;
+		await loadPortalUsers();
+	} catch (e: unknown) {
+		toast.error("Error", getErrorMessage(e, "Failed to grant portal access"));
+	} finally {
+		granting.value = false;
 	}
 }
 
@@ -313,7 +360,12 @@ function confirmDelete(user: PortalUser) {
               @remove="confirmRevoke(data, app)"
             />
           </div>
-          <span v-else class="text-muted">—</span>
+          <Tag
+            v-else
+            value="No portal app"
+            severity="warn"
+            title="Can't sign in through any app-linked portal — grant a portal app"
+          />
         </template>
       </Column>
       <Column field="source" header="Source">
@@ -327,9 +379,17 @@ function confirmDelete(user: PortalUser) {
       <Column field="createdAt" header="Created">
         <template #body="{ data }">{{ formatDate(data.createdAt) }}</template>
       </Column>
-      <Column header="" :style="{ width: '8rem' }">
+      <Column header="" :style="{ width: '10rem' }">
         <template #body="{ data }">
           <div class="row-actions">
+            <Button
+              icon="pi pi-plus-circle"
+              title="Grant portal app"
+              text
+              rounded
+              :disabled="grantableApps(data).length === 0"
+              @click="openGrant(data)"
+            />
             <Button
               :icon="data.status === 'ACTIVE' ? 'pi pi-ban' : 'pi pi-check-circle'"
               :title="data.status === 'ACTIVE' ? 'Suspend' : 'Reactivate'"
@@ -349,6 +409,34 @@ function confirmDelete(user: PortalUser) {
         </template>
       </Column>
     </DataTable>
+
+    <Dialog
+      v-model:visible="showGrantDialog"
+      header="Grant portal app"
+      modal
+      :style="{ width: '28rem' }"
+    >
+      <template v-if="grantTarget">
+        <p class="grant-intro">
+          Let <strong>{{ grantTarget.email }}</strong> sign in to another of this client's portals.
+          Their password and other portals are unchanged.
+        </p>
+        <Select
+          v-model="grantAppCode"
+          :options="grantableApps(grantTarget)"
+          optionLabel="name"
+          optionValue="code"
+          placeholder="Select a portal app"
+          class="w-full"
+        >
+          <template #option="{ option }">{{ option.name }} <code>({{ option.code }})</code></template>
+        </Select>
+      </template>
+      <template #footer>
+        <Button label="Cancel" text :disabled="granting" @click="showGrantDialog = false" />
+        <Button label="Grant" :loading="granting" :disabled="!grantAppCode" @click="grantApp" />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -391,6 +479,9 @@ function confirmDelete(user: PortalUser) {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.25rem;
+}
+.grant-intro {
+	margin-top: 0;
 }
 .row-actions {
 	display: flex;

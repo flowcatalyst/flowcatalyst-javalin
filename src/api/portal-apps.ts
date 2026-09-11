@@ -1,5 +1,6 @@
 import { apiFetch } from "./client";
 import type {
+	AssignUnassignedResponse,
 	CreatePortalAppResponse as GenCreatePortalAppResponse,
 	PortalAppListResponse as GenPortalAppListResponse,
 	PortalAppResponse,
@@ -53,6 +54,16 @@ export const portalAppsApi = {
 		return apiFetch(`/portal-apps/${id}`, {
 			method: "PUT",
 			body: JSON.stringify(body),
+		});
+	},
+
+	// Grant this app to every one of the client's portal users that has no
+	// portal app (users predating portal apps would otherwise be locked out
+	// once their portal OAuth client is linked to an app).
+	assignUnassigned(id: string, clientId: string): Promise<AssignUnassignedResponse> {
+		return apiFetch(`/portal-apps/${id}/assign-unassigned`, {
+			method: "POST",
+			body: JSON.stringify({ clientId }),
 		});
 	},
 

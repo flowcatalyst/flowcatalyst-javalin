@@ -27,6 +27,8 @@ const clients = ref<Client[]>([]);
 const selectedClientId = ref<string>("");
 const apps = ref<PortalApp[]>([]);
 const loading = ref(false);
+// Portal users granted no portal app — locked out of app-linked portals.
+const unassignedUsers = ref(0);
 
 const isAnchor = computed(() => !authStore.user?.clientId);
 const canManage = computed(() =>
@@ -66,7 +68,9 @@ async function loadApps() {
 	if (!selectedClientId.value) return;
 	loading.value = true;
 	try {
-		apps.value = (await portalAppsApi.list(selectedClientId.value)).portalApps;
+		const response = await portalAppsApi.list(selectedClientId.value);
+		apps.value = response.portalApps;
+		unassignedUsers.value = response.unassignedUsers ?? 0;
 	} catch (e: unknown) {
 		toast.error("Error", getErrorMessage(e, "Failed to load portal apps"));
 	} finally {
@@ -217,6 +221,26 @@ function copy(value: string, what: string) {
 	toast.info("Copied", `${what} copied to clipboard`);
 }
 
+// Close the gap for users with no portal app (e.g. created before portal
+// apps existed): grant them all this app in one step.
+function confirmAssignUnassigned(app: PortalApp) {
+	confirm.require({
+		message: `Grant "${app.name}" to the ${unassignedUsers.value} portal user(s) who have no portal app? Users who already have an app are not changed.`,
+		header: "Assign unassigned users",
+		icon: "pi pi-users",
+		acceptLabel: "Assign",
+		accept: async () => {
+			try {
+				const result = await portalAppsApi.assignUnassigned(app.id, selectedClientId.value);
+				toast.success("Success", `${result.assigned} user(s) can now sign in to ${app.name}`);
+				await loadApps();
+			} catch (e: unknown) {
+				toast.error("Error", getErrorMessage(e, "Failed to assign users"));
+			}
+		},
+	});
+}
+
 function confirmDelete(app: PortalApp) {
 	confirm.require({
 		message: `Delete portal app "${app.name}"? Its OAuth client${app.oauthClients.length === 1 ? " is" : "s are"} deleted too, so the portal can no longer sign anyone in, and ${app.userCount} user(s) lose their access to it (their identities and access to other portals stay).`,
@@ -269,6 +293,20 @@ function confirmDelete(app: PortalApp) {
       />
     </div>
 
+    <Message
+      v-if="selectedClientId && unassignedUsers > 0"
+      severity="warn"
+      :closable="false"
+      class="unassigned-banner"
+    >
+      {{ unassignedUsers }} portal user(s) have no portal app, so they can't sign in through
+      any app-linked portal.
+      <template v-if="canManage">
+        Use <i class="pi pi-users" /> on an app to assign them, or grant apps one by one under
+        <router-link to="/identity/portal-users">Portal Users</router-link>.
+      </template>
+    </Message>
+
     <DataTable :value="apps" :loading="loading" dataKey="id">
       <template #empty>
         <span v-if="!selectedClientId">Select a client to view its portal apps.</span>
@@ -314,9 +352,17 @@ function confirmDelete(app: PortalApp) {
           />
         </template>
       </Column>
-      <Column v-if="canManage" header="" :style="{ width: '8rem' }">
+      <Column v-if="canManage" header="" :style="{ width: '10rem' }">
         <template #body="{ data }">
           <div class="row-actions">
+            <Button
+              icon="pi pi-users"
+              title="Assign users with no portal app to this app"
+              text
+              rounded
+              :disabled="unassignedUsers === 0 || !data.active"
+              @click="confirmAssignUnassigned(data)"
+            />
             <Button icon="pi pi-pencil" title="Edit" text rounded @click="openEdit(data)" />
             <Button
               icon="pi pi-trash"
@@ -528,6 +574,9 @@ function confirmDelete(app: PortalApp) {
 }
 .text-muted {
 	color: var(--p-text-muted-color);
+}
+.unassigned-banner {
+	margin-bottom: 1rem;
 }
 .oauth-ref {
 	display: inline-flex;
