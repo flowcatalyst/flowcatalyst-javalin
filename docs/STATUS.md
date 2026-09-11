@@ -4,6 +4,40 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
+
+Go moved four functional commits past our last sync (`1215ad5`):
+`373fe93` portal apps / per-app grants / derived portal-user state /
+profile-only gate, `2fe6bf0` its normative reimplementation spec (and the
+gate's platform envelope), `d3eac0d` the SPA client switch, and — from the
+earlier merge, missed until the parity run showed it — `f0c3eae`
+(`UNSUPPORTED_SECRET_SCHEME`). All ported on branch `portal-apps`. Spec:
+`docs/spec/portal-apps.md` (Part A = Java decisions J1–J12, Part B = Go's
+spec verbatim). Lockfile re-vendored at `2fe6bf0` (252 operations); embedded
+SPA at Go frontend `373fe93`.
+
+| Unit | What | Who |
+|---|---|---|
+| F | V9 = Go 053, jOOQ, `portalapp` aggregate, grants/invite dates/`state(now)` on `PortalIdentity`, prefix search, `OAuthClient.portalAppId`, Ensure with an app. **Go schema fixture not re-dumped** (no `pg_dump` in either embedded Postgres): 053's DDL applied to `go-schema.sql` by hand — sound only because V9 is byte-identical; replace at the next real re-capture | Sonnet; 8 mutants |
+| A | portal-users API: ensure with `portalAppCode`, grant/revoke, search + paging, `state` | Sonnet; 6 mutants (one test found decorative and fixed) |
+| B | portal-apps API: create (one tx with its OAuth client, secret once), update, delete (deletes the linked OAuth clients); OAuth-client `portalAppId` | Sonnet; 9 mutants |
+| C | login gate (password after verify, flow unconsumed; SSO JIT-grant on first login only; redemption re-check), portal id_token claims, `ProfileOnlyGate` (session contexts now `USER`-typed) | Sonnet; 10 mutants, incl. a real role-less cookie login |
+| D | parity: `portal-apps` + `profile-only` scenarios, portal-users and portal extended (+113 steps); e2e: portal flows replace the dead invite flow | Sonnet; orchestrator triaged every DIFF |
+| fixes | portal tokens `tier: ""` on the access token and id_token alike (ruling `44e5633` — Java stamped the placeholder `CLIENT`); portal id_token `updated_at` = the identity's, not the mint time; `UNSUPPORTED_SECRET_SCHEME`; the confinement parity step given a role (the gate had turned it into a gate step on both sides); the e2e mail parser reads logback `kvpList` (broken since `a9f7b7e` on 2026-09-09 — forgot-password had been red since) and the reset flow waits for its own subject (the outbox's 2 s poll lands it after the password-changed notice) | orchestrator; mutants on tier, scheme code, parser |
+
+**Parity against Go `2783ff9`: 1,263 steps, 391 OK, 872 ACCEPTED, 0 DIFF,
+0 ERROR, 252/252 + 102/102, no stale entries.** Java e2e 49 passed + 2
+`fixme` (Go SPA defects P1/P2). Go's e2e column not re-run (the machine ran
+out of memory on `e2e:both`). Server + fcdev suites green.
+
+**For the owner:** `docs/go-mirror/2026-09-11-portal-apps-fix-list.md` —
+P1 the "New Portal App" button never renders (the permissions store is never
+filled), P2 a cold page load skips the SPA route guard (a role-less user is
+not bounced to `/profile`; the server still refuses every call), P3 portal
+access token without `azp`, P4 the `"ref"://` message, P5 portal id_token
+`updated_at` = mint time. Not built: the SDK portal-claim accessors (J7 — our
+SDK has no ID-token principal).
+
 ## Vert.x listener cutover — reverted (2026-09-08)
 
 The Vert.x listener work (`docs/vertx-plan.md` Phases 0–3) landed on branch

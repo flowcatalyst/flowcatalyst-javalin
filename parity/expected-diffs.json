@@ -439,5 +439,26 @@
   "pointer": "/auditLogs/**",
   "reason": "ordering tie inside one sync: the list orders (performed_at desc, id desc) on both sides (Java ordered by performed_at alone until 2026-09-06 and matched by luck); the rollup and per-row audit rows of a sync share performed_at, and Java builds the rollup event after its rows (higher id) where Go builds it first, so those rows rotate at equal timestamps. The row set is unchanged; only their order.",
   "ruling": "orchestrator 2026-09-06; retire by building sync rollup events first (docs/backlog.md 'Sync rollup audit rows sort after Go's')"
+ },
+ {
+  "scenario": "portal*",
+  "step": "*",
+  "pointer": "/access_token/«jwt»/claims/azp",
+  "reason": "Java stamps azp (the redeeming OAuth client) on the portal identity access token, as it and Go both do on every other client-bound identity token; Go's portal branch alone mints without it (GenerateIdentityAccessToken instead of ...For)",
+  "ruling": "portal-apps.md J11 (Go defect, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
+ },
+ {
+  "scenario": "auth-configs*",
+  "step": "update-untouched-fields",
+  "pointer": "/message",
+  "reason": "same code (UNSUPPORTED_SECRET_SCHEME, Go f0c3eae) and same content; Java names the field (oidcClientSecretRef:) and quotes the scheme as \"ref://\" where Go renders \"ref\":// (a %q-then-append formatting slip) and lists literal: among the secret-manager schemes it is not",
+  "ruling": "portal-apps.md J12 (Go message defect, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
+ },
+ {
+  "scenario": "portal*",
+  "step": "*",
+  "pointer": "/id_token/«jwt»/claims/updated_at",
+  "reason": "a portal id_token's updated_at: Java reports the portal identity's own updated_at (the rule every principal id_token follows — an RP watching it must not see a change on every login); Go's synthetic principal has a zero UpdatedAt, which authservice replaces with the mint time",
+  "ruling": "portal-apps.md J11 (Go defect P5, docs/go-mirror/2026-09-11-portal-apps-fix-list.md)"
  }
 ]

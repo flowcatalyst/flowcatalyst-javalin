@@ -1,12 +1,18 @@
 // Go screens: frontend/src/pages/service-accounts/{ServiceAccountListPage,
 // ServiceAccountCreateDrawer,ServiceAccountDetailDrawer}.vue,
-// pages/portal/PortalUsersPage.vue, pages/developer/DeveloperUsersListPage.vue.
+// pages/portal/{PortalAppsPage,PortalUsersPage}.vue,
+// pages/developer/DeveloperUsersListPage.vue.
 // Parity scenarios covering the same wire (docs/spec/parity-harness.md):
-// the `service-account`, `portal-user`, and `principal` (developer-role)
-// groups' create/list/rotate scenarios.
+// the `service-account`, `portal-apps`, `portal-users`, `portal`, and
+// `principal` (developer-role) groups' create/list/grant/revoke scenarios;
+// `platform/profile-only.json` for the role-less gate (docs/spec/portal-apps.md §6, §9.9).
 //
-// docs/spec/frontend-e2e.md §3 "identity".
-import { test, expect } from "../fixtures/admin.js";
+// docs/spec/frontend-e2e.md §3 "identity". The re-synced SPA (Go frontend
+// `373fe93`) removed the "Invite Portal User" button — portal users are now
+// seeded only by the portal app itself (POST /api/portal-users) — so the
+// Portal Users flow below seeds through the API and exercises the list/
+// search/revoke surface instead of an invite dialog.
+import { test, expect, loginAndLand } from "../fixtures/admin.js";
 import { createClientScopedPrincipal, unique } from "../fixtures/clientScoped.js";
 
 test.describe("identity", () => {
@@ -51,29 +57,69 @@ test.describe("identity", () => {
         await expect(adminPage.getByText(clientSecret!)).toHaveCount(0);
     });
 
-    test("inviting a portal user lists it for its client, then deleting it removes the row", async ({ adminPage }) => {
+    test("creating a portal app with a callback shows its credentials once, lists it with its OAuth client id after reload, then deleting removes it", async ({ adminPage }) => {
         const { clientIdentifier } = await createClientScopedPrincipal(adminPage.request);
 
-        await adminPage.goto("/identity/portal-users");
+        await adminPage.goto("/identity/portal-apps");
         await adminPage.getByRole("combobox", { name: "Select a client" }).click();
         await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
 
-        const email = `${unique("e2e-portal-user")}@example.com`;
-        await adminPage.getByRole("button", { name: "Invite Portal User" }).click();
-        const inviteDialog = adminPage.getByRole("dialog", { name: "Invite Portal User" });
-        await inviteDialog.getByLabel("Email").fill(email);
-        const ensured = adminPage.waitForResponse(
-            (r) => r.url().includes("/api/portal-users") && r.request().method() === "POST",
+        // BLOCKED — confirmed frontend defect, not a flaky selector: the
+        // "New Portal App" button (`PortalAppsPage.vue`'s `v-if="canManage"`)
+        // never renders for ANY user, including this anchor admin.
+        // `canManage` reads `usePermissionsStore().hasPermission(...)`, but
+        // nothing in the SPA ever calls that store's `setPermissions` action
+        // (`frontend/src/stores/permissions.ts` — grep confirms zero callers
+        // outside the store itself); `userPermissions` therefore stays `[]`
+        // forever and `hasPermission` can never return true except for the
+        // literal `"*"` wildcard, which no seeded role uses (the seeded
+        // super-admin role's `ADMIN_ALL` is `platform:*:*:*`, which the
+        // pattern matcher never gets to see). Reproduced live: after
+        // selecting the client above, the page snapshot shows the "Portal
+        // Apps" header with zero buttons and the table's empty state — the
+        // exact same page an anchor sees. This is in the Go-authored SPA
+        // source (frontend/src/pages/portal/PortalAppsPage.vue,
+        // frontend/src/stores/permissions.ts), embedded verbatim on both
+        // sides, so it blocks portal app creation through the UI on Go too,
+        // not just Java. Left in place, unreached, for when it's fixed.
+        test.fixme(true, "PortalAppsPage.vue's canManage is always false — " +
+            "permissionsStore.userPermissions is never populated anywhere " +
+            "in the SPA, so the 'New Portal App' button never renders for " +
+            "any user (see the comment above for the trace)");
+
+        const code = unique("e2e-portal-app");
+        const name = `E2E Portal App ${code}`;
+        await adminPage.getByRole("button", { name: "New Portal App" }).click();
+        const createDialog = adminPage.getByRole("dialog", { name: "New Portal App" });
+        await createDialog.getByLabel("Name").fill(name);
+        await createDialog.getByLabel("Code").fill(code);
+        await createDialog.getByLabel("Callback URL(s)").fill(`https://${code}.example.com/callback`);
+
+        const created = adminPage.waitForResponse(
+            (r) => r.url().endsWith("/api/portal-apps") && r.request().method() === "POST",
         );
-        await inviteDialog.getByRole("button", { name: "Send Invite" }).click();
-        expect((await ensured).ok()).toBe(true);
+        await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+        const createdResponse = await created;
+        expect(createdResponse.ok(), await createdResponse.text()).toBe(true);
+        const createdBody = (await createdResponse.json()) as { oauthClientId: string; clientSecret: string };
 
-        // Reloaded proof: switch away to another client and back, refetching.
-        await adminPage.reload();
+        // The one-time credentials dialog: app code, client id, and a secret
+        // (CONFIDENTIAL — the create dialog's default client type).
+        const credentialsDialog = adminPage.getByRole("dialog", { name: "Portal app created" });
+        await expect(credentialsDialog).toBeVisible();
+        await expect(credentialsDialog.getByText(code, { exact: true })).toBeVisible();
+        await expect(credentialsDialog.getByText(createdBody.oauthClientId, { exact: true })).toBeVisible();
+        expect(createdBody.clientSecret, "no client secret shown on creation").toBeTruthy();
+        await expect(credentialsDialog.getByText(createdBody.clientSecret, { exact: true })).toBeVisible();
+        await credentialsDialog.getByRole("button", { name: "Done" }).click();
+
+        // Reloaded proof: navigate away and back, refetching.
+        await adminPage.goto("/identity/portal-apps");
         await adminPage.getByRole("combobox", { name: "Select a client" }).click();
         await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
-        const row = adminPage.getByRole("row", { name: new RegExp(email) });
+        const row = adminPage.getByRole("row", { name: new RegExp(name) });
         await expect(row).toBeVisible();
+        await expect(row.getByText(createdBody.oauthClientId, { exact: true })).toBeVisible();
 
         // Delete it — confirmed by its absence after a reload, not the
         // dialog closing. The row's icon-only buttons carry no accessible
@@ -84,7 +130,68 @@ test.describe("identity", () => {
         await adminPage.reload();
         await adminPage.getByRole("combobox", { name: "Select a client" }).click();
         await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
-        await expect(adminPage.getByRole("row", { name: new RegExp(email) })).toHaveCount(0);
+        await expect(adminPage.getByRole("row", { name: new RegExp(name) })).toHaveCount(0);
+    });
+
+    test("a portal user seeded through the API lists as Invited with its app chip, server search narrows the table, and revoking the chip removes it after reload", async ({ adminPage }) => {
+        const { clientIdentifier, clientId } = await createClientScopedPrincipal(adminPage.request);
+
+        // Seed the app and the user through the API — there is deliberately
+        // no invite button any more (portal-apps.md §7): invites are
+        // initiated by the portal app itself.
+        const appCode = unique("e2e-portal-app-for-users");
+        const appName = `E2E Portal App For Users ${appCode}`;
+        const appRes = await adminPage.request.post("/api/portal-apps", {
+            data: { clientId, code: appCode, name: appName, redirectUris: [`https://${appCode}.example.com/callback`] },
+        });
+        expect(appRes.ok(), await appRes.text()).toBe(true);
+
+        const email = `${unique("e2e-portal-user")}@example.com`;
+        const ensureRes = await adminPage.request.post("/api/portal-users", {
+            data: { clientId, email, portalAppCode: appCode, returnInviteLink: true },
+        });
+        expect(ensureRes.ok(), await ensureRes.text()).toBe(true);
+
+        await adminPage.goto("/identity/portal-users");
+        await adminPage.getByRole("combobox", { name: "Select a client" }).click();
+        await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
+
+        const row = adminPage.getByRole("row", { name: new RegExp(email) });
+        await expect(row).toBeVisible();
+        await expect(row.getByText("Invited", { exact: true })).toBeVisible();
+        const chip = row.locator(".p-chip", { hasText: appName });
+        await expect(chip).toBeVisible();
+
+        // Server-side search (debounced 300ms): a term that cannot match
+        // anything empties the table; the seeded email's own prefix narrows
+        // it back to (at least) this one row — proving the request actually
+        // reached the server's filter, not a client-side guess.
+        const searchField = adminPage.getByPlaceholder("Search email or name (starts with)");
+        const searchedNothing = adminPage.waitForResponse(
+            (r) => r.url().includes("/api/portal-users?") && r.request().method() === "GET",
+        );
+        await searchField.fill("zzz-no-such-prefix");
+        await searchedNothing;
+        await expect(adminPage.getByText("No portal users match.")).toBeVisible();
+        await expect(row).toHaveCount(0);
+
+        const searchedMatch = adminPage.waitForResponse(
+            (r) => r.url().includes("/api/portal-users?") && r.request().method() === "GET",
+        );
+        await searchField.fill(email.split("@")[0]);
+        await searchedMatch;
+        await expect(row).toBeVisible();
+
+        // Revoke the chip — confirmed by its absence from the row after a
+        // reload, not the confirm dialog closing.
+        await chip.locator(".p-chip-remove-icon").click();
+        await adminPage.getByRole("alertdialog").getByRole("button", { name: "Remove", exact: true }).click();
+        await adminPage.reload();
+        await adminPage.getByRole("combobox", { name: "Select a client" }).click();
+        await adminPage.getByRole("option", { name: new RegExp(clientIdentifier) }).click();
+        await searchField.fill(email.split("@")[0]);
+        await expect(row).toBeVisible();
+        await expect(row.locator(".p-chip", { hasText: appName })).toHaveCount(0);
     });
 
     test("granting and revoking the developer role changes what the Developer Users page lists", async ({ adminPage }) => {
@@ -127,5 +234,67 @@ test.describe("identity", () => {
         await adminPage.getByRole("alertdialog").getByRole("button", { name: "Yes", exact: true }).click();
         await adminPage.reload();
         await expect(adminPage.getByText(user.email)).toHaveCount(0);
+    });
+
+    // portal-apps.md §6/§9.9: a USER principal with no roles and no
+    // permissions may reach only its own profile — the profile-only gate,
+    // enforced both server-side (`ProfileOnlyGate`) and by the SPA's own
+    // route guard (`router/guards.ts`'s `landingPath`/`canAccessPath`).
+    test("a role-less user lands on /profile, any other route redirects there, and the sidebar is empty", async ({ adminPage, browser }) => {
+        // `createClientScopedPrincipal` creates a CLIENT-scoped USER with no
+        // roles assigned — role-less by construction, the same shape the
+        // parity harness's `platform/profile-only.json` uses.
+        const user = await createClientScopedPrincipal(adminPage.request);
+
+        const userContext = await browser.newContext();
+        const userPage = await userContext.newPage();
+        await loginAndLand(userPage, user.email, user.password);
+        // `loginAndLand` accepts either landing page; a role-less user must
+        // land on /profile specifically, never /dashboard.
+        await expect(userPage).toHaveURL(/\/profile(\?.*)?$/);
+
+        // Empty sidebar: no nav group survives the permission filter.
+        await expect(userPage.locator(".sidebar-nav .nav-group")).toHaveCount(0);
+
+        // BLOCKED below this point — confirmed frontend defect, not a
+        // flaky assertion: `router/index.ts` registers the global
+        // `createRoutePermissionGuard()` (line 617) with `router.beforeEach`,
+        // which runs BEFORE the per-route `authGuard` (registered as
+        // `beforeEnter`, line 70) in Vue Router's guard order. On a cold
+        // page load, Pinia's `authStore` starts with `user = null` /
+        // `isAuthenticated = false` (`stores/auth.ts`), so the permission
+        // guard's very first check — "Skip for unauthenticated users
+        // (authGuard will handle)" — fires and calls `next()`
+        // UNCONDITIONALLY, before `authGuard` has even run the session
+        // check that would populate `user`. The navigation completes with
+        // no permission check ever having run. This only becomes visible
+        // for a user who SHOULD be denied — an admin cold-loading a page
+        // they're allowed to see looks identical either way, which is
+        // presumably why nothing caught it before this test. Since the
+        // sidebar has no links for a role-less user, a cold `page.goto`
+        // (typed URL / bookmark) is the only realistic way they'd reach
+        // another route, so this is exactly the path the spec's "any
+        // other route redirects there" (portal-apps.md §7) needs proven
+        // — it currently is not. Same Go-authored `router/guards.ts` and
+        // `router/index.ts` on both sides (embedded verbatim); the
+        // server-side `ProfileOnlyGate` still refuses the page's own API
+        // calls, so no data leaks, but the route itself does not bounce.
+        test.fixme(true, "the global permission guard races ahead of " +
+            "session hydration on a cold page load and lets the " +
+            "navigation through unconditionally — see the comment above");
+
+        // Any other route — mapped or not — redirects to /profile. A fresh
+        // page load is an "automatic landing" (`router/guards.ts`), so this
+        // is a silent redirect, not the permission-denied modal.
+        await userPage.goto("/dashboard");
+        await expect(userPage).toHaveURL(/\/profile(\?.*)?$/);
+
+        await userPage.goto("/identity/portal-apps");
+        await expect(userPage).toHaveURL(/\/profile(\?.*)?$/);
+
+        await userPage.goto("/clients");
+        await expect(userPage).toHaveURL(/\/profile(\?.*)?$/);
+
+        await userContext.close();
     });
 });

@@ -141,7 +141,7 @@ test.describe("auth", () => {
         await page.getByRole("button", { name: "Send reset link" }).click();
         await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
 
-        const mail = await waitForMailTo(MAIL_LOG_PATH, ADMIN_EMAIL);
+        const mail = await waitForMailTo(MAIL_LOG_PATH, ADMIN_EMAIL, 10_000, "Reset your password");
         const link = firstLink(mail.body);
         expect(link, `no http(s) link found in the reset mail body: ${mail.body}`).not.toBeNull();
 

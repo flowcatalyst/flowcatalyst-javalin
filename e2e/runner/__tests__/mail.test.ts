@@ -66,6 +66,39 @@ describe("parseMailLog / lastMailTo (Java inline shape)", () => {
     });
 });
 
+// The shape the Java server has logged since a9f7b7e: values as logback
+// key-value pairs, the message only the marker sentence. Copied from a real
+// fcdev log line.
+const JAVA_KVP_LINE = (to: string, subject: string, body: string) =>
+    JSON.stringify({
+        timestamp: 1789126539215,
+        level: "WARN",
+        threadName: "virtual-1066",
+        loggerName: "io.flowcatalyst.platform.mail.MailService",
+        mdc: {},
+        kvpList: [{ to }, { subject }, { body }],
+        formattedMessage: "SMTP not configured; mail logged instead of sent",
+        throwable: null,
+    });
+
+describe("parseMailLog / lastMailTo (Java key-value shape)", () => {
+    it("reads to/subject/body from kvpList when the message carries none", () => {
+        const log = JAVA_KVP_LINE("e2e-admin@example.com", "Reset your password",
+            "<a href=\"http://127.0.0.1:9/auth/reset-password?token=xyz\">Reset password</a>");
+        const msg = lastMailTo(log, "e2e-admin@example.com");
+        expect(msg?.subject).toBe("Reset your password");
+        expect(msg?.body).toContain("token=xyz");
+    });
+
+    it("newest-for-an-address holds across the old and new java shapes", () => {
+        const log = [
+            JAVA_LINE("d@example.com", "Old", "old body"),
+            JAVA_KVP_LINE("d@example.com", "New", "new body"),
+        ].join("\n");
+        expect(lastMailTo(log, "d@example.com")?.subject).toBe("New");
+    });
+});
+
 describe("parseMailLog", () => {
     it("skips unrelated log lines instead of throwing", () => {
         const log = [
@@ -94,5 +127,16 @@ describe("firstLink", () => {
         // the closing `</a>` into the "link".
         const body = '<a href="http://localhost:3/reset?token=abc">reset</a> — thanks';
         expect(firstLink(body)).toBe("http://localhost:3/reset?token=abc");
+    });
+});
+
+describe("lastMailTo with a subject", () => {
+    it("skips a newer unrelated notice to the same address", () => {
+        const log = [
+            JAVA_KVP_LINE("e@example.com", "Reset your password", "http://x/reset?token=t"),
+            JAVA_KVP_LINE("e@example.com", "Your password was changed", "no link"),
+        ].join("\n");
+        expect(lastMailTo(log, "e@example.com")?.subject).toBe("Your password was changed");
+        expect(lastMailTo(log, "e@example.com", "Reset your password")?.body).toContain("token=t");
     });
 });

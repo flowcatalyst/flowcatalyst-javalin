@@ -61,7 +61,14 @@
       "request": { "method": "POST", "path": "/api/principals",
                    "body": { "email": "parity-s3-me-conf-${run}@example.com", "name": "S3 Me Confinement User",
                              "scope": "CLIENT", "clientId": "${confClientId}", "password": "Correct-Harness-Battery-2247" } },
-      "expect": { "status": 201 } },
+      "expect": { "status": 201 },
+      "capture": { "confPrincipalId": "/id" } },
+
+    { "id": "confinement-assign-role",
+      "why": "a role-less USER is refused outright by the profile-only gate (portal-apps.md §6) on /api/me/clients*, which would turn the confinement steps below into gate steps; one role makes them test confinement again.",
+      "request": { "method": "PUT", "path": "/api/principals/${confPrincipalId}/roles",
+                   "body": { "roles": ["platform:messaging-admin"] } },
+      "expect": { "status": 200 } },
 
     { "id": "confinement-login",
       "request": { "method": "POST", "path": "/auth/login",

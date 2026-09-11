@@ -61,6 +61,15 @@ function tryParseJavaShape(line: string): MailMessage | null {
         const parsed = JSON.parse(line);
         if (typeof parsed === "object" && parsed !== null) {
             const obj = parsed as Record<string, unknown>;
+            // Since a9f7b7e (2026-09-09) the Java log carries its values as
+            // structured fields — logback's `kvpList`, an array of one-key
+            // objects — and the message is the bare marker sentence.
+            if (Array.isArray(obj.kvpList)) {
+                const kv: Record<string, unknown> = Object.assign({}, ...obj.kvpList);
+                if (typeof kv.to === "string" && typeof kv.body === "string") {
+                    return { to: kv.to, subject: typeof kv.subject === "string" ? kv.subject : "", body: kv.body };
+                }
+            }
             const field = obj.formattedMessage ?? obj.message ?? obj.msg;
             if (typeof field === "string") text = field;
         }
@@ -75,11 +84,17 @@ function tryParseJavaShape(line: string): MailMessage | null {
 /// The newest message addressed to `address` (case-insensitive), or `null`
 /// when none. "Newest" = last matching line — both logs are append-only in
 /// chronological order.
-export function lastMailTo(logText: string, address: string): MailMessage | null {
+/// The newest message to `address`, optionally only one whose subject is
+/// exactly `subject` — needed on Java, where mail leaves through the outbox
+/// (a ~2 s poll) and so can land after an unrelated notice to the same
+/// address that a previous step triggered.
+export function lastMailTo(logText: string, address: string, subject?: string): MailMessage | null {
     const wanted = address.trim().toLowerCase();
     const messages = parseMailLog(logText);
     for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].to.trim().toLowerCase() === wanted) return messages[i];
+        if (messages[i].to.trim().toLowerCase() === wanted && (subject === undefined || messages[i].subject === subject)) {
+            return messages[i];
+        }
     }
     return null;
 }
@@ -88,7 +103,7 @@ export function lastMailTo(logText: string, address: string): MailMessage | null
 /// child process (spec §4), so there's an unavoidable gap between the HTTP
 /// response returning and the line landing on disk through our own pipe
 /// relay (`side.ts`'s `child.stdout.pipe(log)`).
-export async function waitForMailTo(logPath: string, address: string, timeoutMs = 10_000): Promise<MailMessage> {
+export async function waitForMailTo(logPath: string, address: string, timeoutMs = 10_000, subject?: string): Promise<MailMessage> {
     const { readFile } = await import("node:fs/promises");
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -98,10 +113,10 @@ export async function waitForMailTo(logPath: string, address: string, timeoutMs 
         } catch {
             // log file not created yet
         }
-        const found = lastMailTo(text, address);
+        const found = lastMailTo(text, address, subject);
         if (found) return found;
         if (Date.now() >= deadline) {
-            throw new Error(`waitForMailTo: no mail to ${address} in ${logPath} within ${timeoutMs}ms`);
+            throw new Error(`waitForMailTo: no mail to ${address}${subject ? ` with subject "${subject}"` : ""} in ${logPath} within ${timeoutMs}ms`);
         }
         await new Promise((r) => setTimeout(r, 200));
     }
