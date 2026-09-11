@@ -4,6 +4,15 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Next: the verification plan (2026-09-11)
+
+**Start with `docs/verification-plan.md`.** It lays out how to prove Java is
+operationally and behaviourally identical to Go, as deployments and not just
+as programs: deployment inventory → env/startup parity per role →
+observability → router sequence harness → non-HTTP subsystems → shadow run →
+cutover rehearsal. Owner smoke test of the UI (portal users) on 2026-09-11:
+fine. Last synced Go commit: `466dc11`.
+
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 
 Go moved four functional commits past our last sync (`1215ad5`):
