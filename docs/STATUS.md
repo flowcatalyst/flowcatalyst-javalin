@@ -18,7 +18,7 @@ SPA at Go frontend `373fe93`.
 
 | Unit | What | Who |
 |---|---|---|
-| F | V9 = Go 053, jOOQ, `portalapp` aggregate, grants/invite dates/`state(now)` on `PortalIdentity`, prefix search, `OAuthClient.portalAppId`, Ensure with an app. **Go schema fixture not re-dumped** (no `pg_dump` in either embedded Postgres): 053's DDL applied to `go-schema.sql` by hand — sound only because V9 is byte-identical; replace at the next real re-capture | Sonnet; 8 mutants |
+| F | V9 = Go 053, jOOQ, `portalapp` aggregate, grants/invite dates/`state(now)` on `PortalIdentity`, prefix search, `OAuthClient.portalAppId`, Ensure with an app. Go schema fixture first hand-applied (no `pg_dump` in either embedded Postgres), **then re-dumped the same day** from a Go-migrated Postgres 18 in Docker (`pg_dump --schema-only --no-owner --no-privileges`): the fingerprint came out identical, so the hand edit had been right | Sonnet; 8 mutants |
 | A | portal-users API: ensure with `portalAppCode`, grant/revoke, search + paging, `state` | Sonnet; 6 mutants (one test found decorative and fixed) |
 | B | portal-apps API: create (one tx with its OAuth client, secret once), update, delete (deletes the linked OAuth clients); OAuth-client `portalAppId` | Sonnet; 9 mutants |
 | C | login gate (password after verify, flow unconsumed; SSO JIT-grant on first login only; redemption re-check), portal id_token claims, `ProfileOnlyGate` (session contexts now `USER`-typed) | Sonnet; 10 mutants, incl. a real role-less cookie login |

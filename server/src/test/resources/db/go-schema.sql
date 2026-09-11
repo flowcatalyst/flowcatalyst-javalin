@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict J9hWsk47OylKxBI4UeZVES8IVNcGK1xZmSq353Kuy9h1tsh3tkVPwb5cQBM8V1f
+\restrict bjJp0NGJenahfVNPjPIz8KnpebfxQLI9g9tlNqArUxwhSEmXIaAhlGXT3srarT9
 
--- Dumped from database version 18.3
--- Dumped by pg_dump version 18.6
+-- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
+-- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -2668,14 +2668,14 @@ CREATE TABLE public.webauthn_credentials (
 -- Name: iam_login_attempts_2026_q3; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q3 FOR VALUES FROM ('2026-07-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q3 FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: iam_login_attempts_2026_q4; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q4 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2027-01-01 00:00:00+00');
+ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_attempts_2026_q4 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
 
 --
@@ -2689,21 +2689,21 @@ ALTER TABLE ONLY public.iam_login_attempts ATTACH PARTITION public.iam_login_att
 -- Name: msg_dispatch_job_attempts_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_job_attempts_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_job_attempts_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_dispatch_job_attempts_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2724,21 +2724,21 @@ ALTER TABLE ONLY public.msg_dispatch_job_attempts ATTACH PARTITION public.msg_di
 -- Name: msg_dispatch_jobs_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_jobs_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_jobs_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_jobs_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2759,21 +2759,21 @@ ALTER TABLE ONLY public.msg_dispatch_jobs ATTACH PARTITION public.msg_dispatch_j
 -- Name: msg_dispatch_jobs_read_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_jobs_read_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_dispatch_jobs_read_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispatch_jobs_read_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2794,21 +2794,21 @@ ALTER TABLE ONLY public.msg_dispatch_jobs_read ATTACH PARTITION public.msg_dispa
 -- Name: msg_events_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_events_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_events_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2829,21 +2829,21 @@ ALTER TABLE ONLY public.msg_events ATTACH PARTITION public.msg_events_2026_12 FO
 -- Name: msg_events_read_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_events_read_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_events_read_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2864,21 +2864,21 @@ ALTER TABLE ONLY public.msg_events_read ATTACH PARTITION public.msg_events_read_
 -- Name: msg_scheduled_job_instance_logs_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_scheduled_job_instance_logs_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.msg_scheduled_job_instance_logs_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -2899,21 +2899,21 @@ ALTER TABLE ONLY public.msg_scheduled_job_instance_logs ATTACH PARTITION public.
 -- Name: msg_scheduled_job_instances_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+01') TO ('2026-09-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00');
 
 
 --
 -- Name: msg_scheduled_job_instances_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+01') TO ('2026-10-01 00:00:00+01');
+ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
 
 
 --
 -- Name: msg_scheduled_job_instances_2026_10; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+01') TO ('2026-11-01 00:00:00+00');
+ALTER TABLE ONLY public.msg_scheduled_job_instances ATTACH PARTITION public.msg_scheduled_job_instances_2026_10 FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
 
 --
@@ -5263,10 +5263,31 @@ CREATE INDEX idx_oauth_oidc_login_states_expires ON public.oauth_oidc_login_stat
 
 
 --
+-- Name: idx_portal_identities_client_email_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identities_client_email_prefix ON public.portal_identities USING btree (client_id, email text_pattern_ops);
+
+
+--
+-- Name: idx_portal_identities_client_name_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identities_client_name_prefix ON public.portal_identities USING btree (client_id, lower((name)::text) text_pattern_ops);
+
+
+--
 -- Name: idx_portal_identities_email; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_portal_identities_email ON public.portal_identities USING btree (email);
+
+
+--
+-- Name: idx_portal_identity_apps_app; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_identity_apps_app ON public.portal_identity_apps USING btree (portal_app_id);
 
 
 --
@@ -8182,27 +8203,6 @@ ALTER INDEX public.idx_msg_scheduled_job_instances_job ATTACH PARTITION public.m
 
 
 --
--- Name: idx_portal_identity_apps_app; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_portal_identity_apps_app ON public.portal_identity_apps USING btree (portal_app_id);
-
-
---
--- Name: idx_portal_identities_client_email_prefix; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_portal_identities_client_email_prefix ON public.portal_identities USING btree (client_id, email text_pattern_ops);
-
-
---
--- Name: idx_portal_identities_client_name_prefix; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_portal_identities_client_name_prefix ON public.portal_identities USING btree (client_id, lower((name)::text) text_pattern_ops);
-
-
---
 -- Name: app_application_openapi_specs app_application_openapi_specs_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8323,14 +8323,6 @@ ALTER TABLE ONLY public.oauth_clients
 
 
 --
--- Name: webauthn_credentials webauthn_credentials_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.webauthn_credentials
-    ADD CONSTRAINT webauthn_credentials_principal_id_fkey FOREIGN KEY (principal_id) REFERENCES public.iam_principals(id) ON DELETE CASCADE;
-
-
---
 -- Name: portal_identity_apps portal_identity_apps_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8347,8 +8339,16 @@ ALTER TABLE ONLY public.portal_identity_apps
 
 
 --
+-- Name: webauthn_credentials webauthn_credentials_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_credentials
+    ADD CONSTRAINT webauthn_credentials_principal_id_fkey FOREIGN KEY (principal_id) REFERENCES public.iam_principals(id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict J9hWsk47OylKxBI4UeZVES8IVNcGK1xZmSq353Kuy9h1tsh3tkVPwb5cQBM8V1f
+\unrestrict bjJp0NGJenahfVNPjPIz8KnpebfxQLI9g9tlNqArUxwhSEmXIaAhlGXT3srarT9
 
