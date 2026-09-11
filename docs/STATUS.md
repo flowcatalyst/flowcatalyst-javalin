@@ -36,6 +36,15 @@ entries deleted. **Java e2e 51/51; parity against `d6b215b` 1,263 steps,
 393 OK, 870 ACCEPTED, 0 DIFF, 0 ERROR, no stale entries.** The one kept
 difference: Java prefixes the secret-scheme message with the field name.
 
+**Then Go `13e80c9`/`466dc11` (same day):** assign-unassigned
+(`POST /api/portal-apps/{id}/assign-unassigned`, the `unassigned` filter,
+`unassignedUsers`) and erratum P6 — persist deleted grants not in the loaded
+copy, losing a concurrent grant; **Java had the same defect** (J13) and now
+deletes only revoked grants. Lockfile 253 operations; SPA at `13e80c9`.
+Parity against `466dc11`: 1,282 steps, 0 DIFF, 0 ERROR; Java e2e 51/51. The
+harness's Go side now gets an ephemeral metrics port, and a JWT `updated_at`
+is masked as a time (rule 3).
+
 Originally, for the owner: `docs/go-mirror/2026-09-11-portal-apps-fix-list.md` —
 P1 the "New Portal App" button never renders (the permissions store is never
 filled), P2 a cold page load skips the SPA route guard (a role-less user is
