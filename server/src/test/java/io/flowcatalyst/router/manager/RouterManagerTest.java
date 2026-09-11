@@ -567,7 +567,10 @@ class RouterManagerTest {
         // not an external requeue).
         manager.route(List.of(ordered("m0", "b0", "G-POOL", "g1")), source);
 
-        await(() -> deadDrainerPool.queueSize() == 0);
+        // Await the effect asserted, not a proxy for it: the buffer empties when
+        // the drainer TAKES m1, before the mediator (which records it) runs —
+        // under full-suite load the assertion could land in that gap.
+        await(() -> deadDrainerPool.queueSize() == 0 && delivered.size() == 3);
         assertThat(delivered).as("both messages eventually delivered, in order")
                 .containsExactly("m0", "m0", "m1");
         deadDrainerPool.close();
