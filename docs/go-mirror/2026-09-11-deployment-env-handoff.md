@@ -30,21 +30,22 @@ alias of the corresponding `FC_*` setting where one exists, with today's
 values as defaults when unset. **This shortens prod sessions from 24 h to 8 h
 at deploy** — the owner's decision, to be announced.
 
-## 3. Deployed dispatch — waiting on the owner's choice
+## 3. Deployed dispatch — direction set, design not finished. **Do not start.**
 
 Outside `FC_DEFAULT_BROKER=postgres`, `schedulerPublisher`
 (`internal/server/subsystems.go:99`) returns `NoopPublisher`, so on ECS every
-dispatch job is claimed and never delivered. The IaC already sets
-`DISPATCH_QUEUE_TYPE=SQS`, `DISPATCH_QUEUE_URL` and `DISPATCH_QUEUE_REGION`,
-and nothing reads them. Wiring them needs:
+dispatch job is claimed and never delivered.
 
-- an SQS FIFO publisher: group = the job's message group, dedup id = the
-  job id;
-- the router consuming that queue.
+Owner direction, 2026-09-12 (`docs/spec/deployed-dispatch.md` §3): the router
+serves more than this platform, so **the platform serves its own router
+config** (queues + pools) and the router merges it with Integral's — dev mode
+too, which retires the fixed single-queue dev branch. Dispatch jobs go to
+per-client, per-priority queues (`…-{client}-DEFAULT` / `…-{client}-HIGH_PRIORITY`),
+platform-wide jobs to their own queue.
 
-How the router learns about the queue is options A/B/C in
-`docs/spec/deployed-dispatch.md` §3. **Do not start this until the owner picks
-one**; A is recommended.
+Five open questions remain in that spec (naming, where priority lives, who
+creates the queues, the endpoint and its auth, pool-key collisions). **Wait
+for them to be answered**; the Java side is not starting either.
 
 ## 4. Remove from the IaC (both sides ignore them)
 
