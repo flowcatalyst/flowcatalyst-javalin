@@ -284,11 +284,32 @@ Note this also shrinks R2's exposure: the only remaining re-publish path is
 
 ---
 
-## 3. Still on hold: do not start §3 in Go
+## 3. Java has now built §3 — Go can mirror (updated 2026-09-12)
 
-Unchanged from the 2026-09-11 hand-off item 3. **Java builds §3 first**, the
-spec records what was actually built, and Go mirrors from the updated spec —
-the way portal-apps and the secret-scheme work were mirrored.
+The hold is lifted. Java built it in four units, reactor green on an
+uncontended run at each: `92b6c9c` (priority carrier), `94c6e8d` (settings,
+naming, R7 resolver, served document), `603a14f` (SQS publisher), `d9e2263`
+(one code path, dev and prod). Mirror from `docs/spec/deployed-dispatch.md` §3
+plus the rulings above, the way portal-apps and the secret-scheme work were
+mirrored — not by transcribing the Java.
+
+Three things Java learned by building it that the spec alone will not tell you:
+
+1. **The Postgres publisher must route per (tenant, priority) too.** Java's
+   published to one queue named after the database URL. The moment dev
+   consumed the served document — which advertises composed names — every dev
+   dispatch job went where nothing was listening. Both publishers now share
+   one destination resolver so they cannot drift.
+2. **Scheme mismatch.** Java's database URL uses `postgresql://` while its
+   queue factory registers only `postgres`, so the served document named every
+   dev queue with a scheme the router refused outright. Check the equivalent on
+   the Go side.
+3. **Do not create the queue table from the consumer-build path when the queue
+   is on the platform's own database.** The platform owns that schema; doing
+   DDL there from a router process also makes consumer construction fail
+   wherever the shared pool cannot hand out a connection.
+
+Both assumptions the spec listed as unconfirmed are settled — R5 and R6 above.
 
 The two assumptions §3 listed as unconfirmed are now settled as R5 and R6
 above. **No design question on §3 is currently open with the owner.** What

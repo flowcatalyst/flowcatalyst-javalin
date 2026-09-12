@@ -20,16 +20,47 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
-- **Owner decision needed:** `docs/spec/deployed-dispatch.md`. Neither Go nor
-  Java has a real dispatch publisher outside `fcdev`; the choice is between
-  options A, B and C, with A recommended.
-- **Next unit (rulings recorded in that spec, §4):**
-  - Honour `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`.
-  - Honour `OIDC_SESSION_TTL`, `OIDC_ACCESS_TOKEN_TTL` and
-    `OIDC_REFRESH_TOKEN_TTL`.
-  - Patch Go to match, via `docs/go-mirror/`.
-  - List `FLOWCATALYST_JWT_PUBLIC_KEY`, `FC_WEBAUTHN_RP_NAME` and
-    `FC_STATIC_DIR` for removal from the IaC.
+## Deployed dispatch — §3 and §4 built in Java (2026-09-12)
+
+`docs/spec/deployed-dispatch.md` is **done on the Java side**, six commits,
+reactor green on an uncontended run at each. Every design question is ruled;
+the rulings and the evidence behind each are in
+`docs/go-mirror/2026-09-12-dispatch-rulings.md`, which is also the Go agent's
+brief.
+
+| Commit | Unit |
+|---|---|
+| `ecfff18` | §4 — `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` alias, the three OIDC TTLs |
+| `107a433` | The four owner rulings + §3 spec, superseded statements marked inline |
+| `92b6c9c` | A — `msg_subscriptions.queue` writable; `platform` identifier reserved |
+| `391c5b8` | R7 — platform pool codes prefixed, R-16 superseded |
+| `94c6e8d` | B — settings, queue naming, R7 resolver, the served document |
+| `603a14f` | C — SQS FIFO publisher, per-attempt dedup id, group-aware chunking |
+| `d9e2263` | D — the fixed single-queue branch removed; dev and prod share one path |
+
+**Go already had §4** at `e87b88d`, an ancestor of our last sync `466dc11` —
+neither side had noticed. `docs/deployments.md`'s "Go doesn't read this either"
+notes were stale and are corrected. Go has **not** started §3; it mirrors from
+the spec now that Java has built it.
+
+**Blocked on the owner (infrastructure, not code):**
+- The **Service Connect alias** for the platform's internal listener. R3 put
+  the router-config document there rather than on the ALB, so the router
+  cannot fetch config until that alias exists. This gates the feature.
+- `FC_DISPATCH_QUEUE_PREFIX` into the IaC (proposed `FC-staging`); SQS startup
+  now refuses without it.
+- The single `inhance-fc-{env}-dispatch.fifo` queue is now dead — only its
+  account and region are read. Delete or repurpose.
+- Remove `FLOWCATALYST_JWT_PUBLIC_KEY`, `FC_WEBAUTHN_RP_NAME`, `FC_STATIC_DIR`
+  (unread by both sides).
+
+**Announce before cutover:** prod sessions shorten 24 h → 8 h and refresh
+tokens lengthen 7 d → 30 d, both because the deployed `OIDC_*` values are now
+honoured.
+
+**Not yet done:** a parity run against Go. R7 changes a wire-visible pool code
+for platform-wide jobs, so expect a DIFF there needing an
+`parity/expected-diffs.json` entry until Go mirrors.
 
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 
