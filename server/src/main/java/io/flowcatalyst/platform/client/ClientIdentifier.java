@@ -28,7 +28,12 @@ public record ClientIdentifier(String value) {
     private static final Pattern SLUG = Pattern.compile("^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$");
 
     /// The tenant segment reserved for client-less dispatch jobs (ruling R5).
-    private static final String RESERVED_PLATFORM = "platform";
+    /// Public: [io.flowcatalyst.platform.scheduler.PoolCodeResolver] and
+    /// [io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder] both
+    /// need the exact same literal for the platform tenant (R7,
+    /// `docs/spec/deployed-dispatch.md` §3) and reuse this rather than each
+    /// declaring their own copy.
+    public static final String RESERVED_PLATFORM = "platform";
 
     public ClientIdentifier {
         Objects.requireNonNull(value, "value");

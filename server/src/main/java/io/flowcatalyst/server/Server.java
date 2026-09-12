@@ -1,5 +1,7 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
+import io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder;
 import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
@@ -440,7 +442,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         }
 
         // ── listeners ───────────────────────────────────────────────────────
-        var metrics = new Metrics(env, registry).start();
+        var metrics = new Metrics(env, registry, dispatchRouterConfigFor(mode, env)).start();
         LOG.atInfo().setMessage("metrics server listening")
                 .addKeyValue("addr", ":" + env.metricsPort())
                 .log();
@@ -451,6 +453,22 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
                 outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
+    }
+
+    /// R3 (`docs/spec/deployed-dispatch.md` §3): the router-config document
+    /// is served on the internal listener only, and only in platform mode —
+    /// a worker/router-only instance has no dispatch-pool/subscription data
+    /// of its own to describe, and [Metrics] is given no database dependency
+    /// of its own beyond this one collaborator. `null` for every other
+    /// [Mode], which is what makes [Metrics] not register the route at all.
+    ///
+    /// Package-private so a dedicated test can pin the mode gating directly,
+    /// without booting a listener — the same visibility reasoning as
+    /// [Router#electionConfig].
+    static RouterConfigDocumentBuilder dispatchRouterConfigFor(Mode mode, Env env) {
+        return mode instanceof Mode.Platform(var pool)
+                ? new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))
+                : null;
     }
 
     /// [Env]'s outbox fields, with the library defaults ([OutboxProcessor.Config#defaults])

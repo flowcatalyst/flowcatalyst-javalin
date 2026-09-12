@@ -231,7 +231,12 @@ public final class SqsQueue implements Consumer {
     /// `sqs.<region>.amazonaws.com` (or `sqs-fips.<region>.amazonaws.com[.cn]`).
     /// Empty when `uri` isn't a recognisable SQS endpoint (e.g. a non-AWS
     /// test URI, or a `LocalStack` host).
-    static Optional<String> regionFromUrl(String uri) {
+    ///
+    /// Public so [io.flowcatalyst.platform.dispatch.DispatchQueueSettings]
+    /// can derive the region for the platform's own composed SQS queue URLs
+    /// from `FC_DISPATCH_QUEUE_URL` without a second parser
+    /// (`docs/spec/deployed-dispatch.md` §3).
+    public static Optional<String> regionFromUrl(String uri) {
         URI parsed;
         try {
             parsed = new URI(uri);

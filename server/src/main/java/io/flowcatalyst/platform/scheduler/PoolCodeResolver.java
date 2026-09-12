@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
 import io.flowcatalyst.db.generated.tables.TntClients;
+import io.flowcatalyst.platform.client.ClientIdentifier;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -18,14 +19,25 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_POOLS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 
 /// Composes the `poolCode` a dispatch job publishes (dispatch-seam spec §2
-/// "`poolCode` composition", ledger R-16):
+/// "`poolCode` composition", ledger R-16 — **superseded for the two
+/// platform-level rows by ruling R7**, `docs/go-mirror/2026-09-12-dispatch-rulings.md`):
 ///
 /// | Job's pool | Job's client | Published `poolCode` |
 /// |---|---|---|
 /// | set, owned by a client | — | `{clientIdentifier}-{poolCode}` |
-/// | set, platform-level | — | `{poolCode}`, no prefix |
+/// | set, platform-level | — | `{poolCode}`, no prefix — **superseded (R7): `platform-{poolCode}`** |
 /// | unset (or unresolvable) | resolves | `{clientIdentifier}-DEFAULT-POOL` |
-/// | unset | unresolvable | `DEFAULT-POOL` |
+/// | unset | unresolvable | `DEFAULT-POOL` — **superseded (R7): `platform-DEFAULT-POOL`** |
+///
+/// R7's reasoning: the router merges this document with several Integral
+/// tenant configs and pools merge by `code`, first-definition-wins, so an
+/// unprefixed platform pool code could silently collide with (and lose to)
+/// an Integral tenant's pool of the same name. Only the two platform-level
+/// rows change; a client-owned pool's code is unaffected. [#composeCode] is
+/// the one place this composition happens, reused by
+/// [io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder] so a
+/// job's stamped code and the served router-config document can never
+/// disagree on the shape.
 ///
 /// Resolved by id lookup, never by `JOIN`ing onto the claim query: the claim
 /// runs `FOR UPDATE SKIP LOCKED` over `msg_dispatch_jobs` alone, and pools /
@@ -41,7 +53,12 @@ public final class PoolCodeResolver {
 
     private static final Logger LOG = LoggerFactory.getLogger(PoolCodeResolver.class);
 
-    /// The router's global fallback pool.
+    /// The router's global fallback pool — [RouterManager]'s own
+    /// always-injected bare pool of this exact name. [#resolve] itself no
+    /// longer returns this bare literal (R7: the fully-unresolvable case now
+    /// composes `platform-DEFAULT-POOL` instead), but the constant is kept
+    /// for [#DEFAULT_POOL_SUFFIX] and [#isDefaultPoolCode], and because it is
+    /// still the name of a real pool the router always runs.
     public static final String DEFAULT_POOL_CODE = "DEFAULT-POOL";
 
     /// The one permitted structural read of a composed code — see
@@ -86,9 +103,7 @@ public final class PoolCodeResolver {
         if (dispatchPoolId != null) {
             PoolRef ref = s.pools().get(dispatchPoolId);
             if (ref != null && !ref.code().isEmpty()) {
-                return ref.clientIdentifier() == null || ref.clientIdentifier().isEmpty()
-                        ? ref.code()
-                        : ref.clientIdentifier() + "-" + ref.code();
+                return composeCode(ref.code(), ref.clientIdentifier());
             }
         }
         if (clientId != null) {
@@ -97,11 +112,30 @@ public final class PoolCodeResolver {
                 return identifier + DEFAULT_POOL_SUFFIX;
             }
         }
-        return DEFAULT_POOL_CODE;
+        // Unresolvable altogether: R7 makes this the platform tenant's
+        // default-pool fallback rather than the bare global constant, so it
+        // self-synthesises via RouterManager's "-DEFAULT-POOL" suffix rule
+        // exactly like every other tenant's fallback, instead of relying on
+        // RouterManager's separate always-injected bare DEFAULT_POOL.
+        return ClientIdentifier.RESERVED_PLATFORM + DEFAULT_POOL_SUFFIX;
+    }
+
+    /// Composes the wire `poolCode` for a resolved pool row:
+    /// `{clientIdentifier}-{poolCode}` when client-owned,
+    /// `platform-{poolCode}` when platform-level (`clientIdentifier` `null`
+    /// or empty — ruling R7). The one place this composition happens; see
+    /// the class doc.
+    public static String composeCode(String poolCode, String clientIdentifier) {
+        String tenant = (clientIdentifier == null || clientIdentifier.isEmpty())
+                ? ClientIdentifier.RESERVED_PLATFORM
+                : clientIdentifier;
+        return tenant + "-" + poolCode;
     }
 
     /// Whether `code` names a fallback pool — the global [#DEFAULT_POOL_CODE]
-    /// or any per-client `{identifier}-DEFAULT-POOL`.
+    /// or any per-client/per-tenant `{identifier}-DEFAULT-POOL` (R7 made
+    /// `platform-DEFAULT-POOL` one more instance of this same suffix rule,
+    /// so no change was needed here).
     public static boolean isDefaultPoolCode(String code) {
         return DEFAULT_POOL_CODE.equals(code) || (code != null && code.endsWith(DEFAULT_POOL_SUFFIX));
     }

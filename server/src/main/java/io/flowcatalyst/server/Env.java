@@ -118,6 +118,27 @@ public record Env(
         // the IaC's Service Connect name for this callback); empty →
         // `http://localhost:<apiPort>/api/dispatch/process`.
         String dispatchProcessingEndpoint,
+        // `FC_DISPATCH_QUEUE_TYPE` (alias `DISPATCH_QUEUE_TYPE`), default `""`:
+        // `SQS` (case-insensitive) deployed, `postgres` (or unset) in dev.
+        // Read by [io.flowcatalyst.platform.dispatch.DispatchQueueSettings#resolve],
+        // never here — a startup refusal needs the two-field cross-check
+        // against [#dispatchQueuePrefix] below (`docs/spec/deployed-dispatch.md`
+        // §3 "Risks to pin with tests").
+        String dispatchQueueType,
+        // `FC_DISPATCH_QUEUE_URL` (alias `DISPATCH_QUEUE_URL`), default `""`:
+        // the IaC's dedicated SQS queue URL. Read **only** to derive the AWS
+        // account and region for composing this platform's own per-tenant
+        // queue URLs — the single queue that URL names is itself unused.
+        String dispatchQueueUrl,
+        // `FC_DISPATCH_QUEUE_REGION` (alias `DISPATCH_QUEUE_REGION`), default
+        // `""`: overrides the region parsed from [#dispatchQueueUrl] when set.
+        String dispatchQueueRegion,
+        // `FC_DISPATCH_QUEUE_PREFIX` (no alias — new name, not yet in the
+        // IaC), default `""`: the `FC-{env}` prefix composed dispatch queue
+        // names start with (e.g. `FC-staging`). Required whenever
+        // [#dispatchQueueType] is `SQS` — a blank prefix there is a startup
+        // error, never a queue literally named `FC-{env}`.
+        String dispatchQueuePrefix,
 
         // ── MCP ────────────────────────────────────────────────────────────
         // `FC_MCP_PORT`, default 8090.
@@ -390,6 +411,10 @@ public record Env(
                 e.or("FC_ROUTER_HTTP_PREFIX", "/router"),
                 e.or("FC_DEFAULT_BROKER", ""),
                 dispatch,
+                e.firstSet("FC_DISPATCH_QUEUE_TYPE", "DISPATCH_QUEUE_TYPE").orElse(""),
+                e.firstSet("FC_DISPATCH_QUEUE_URL", "DISPATCH_QUEUE_URL").orElse(""),
+                e.firstSet("FC_DISPATCH_QUEUE_REGION", "DISPATCH_QUEUE_REGION").orElse(""),
+                e.or("FC_DISPATCH_QUEUE_PREFIX", ""),
 
                 e.integer("FC_MCP_PORT", 8090),
                 e.or("FC_MCP_BIND", "127.0.0.1"),

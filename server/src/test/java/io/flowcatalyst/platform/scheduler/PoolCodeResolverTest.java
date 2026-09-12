@@ -28,15 +28,21 @@ class PoolCodeResolverTest {
         assertThat(code).isEqualTo("acme" + RUN + "-dpsched-fast-" + RUN);
     }
 
+    /// Ruling R7 (`docs/go-mirror/2026-09-12-dispatch-rulings.md`): a
+    /// platform-level pool now publishes `platform-{code}`, superseding the
+    /// old unprefixed form — the router merges this document with several
+    /// Integral tenant configs, first-code-wins, so an unprefixed platform
+    /// pool could silently collide with an Integral tenant's pool of the
+    /// same name.
     @Test
-    void aPlatformLevelPoolPublishesUnprefixed() {
+    void aPlatformLevelPoolPublishesWithThePlatformPrefix() {
         String poolId = SchedulerFixture.pool("dpsched-platfast-" + RUN, null, null);
 
-        // Even with a client id on the job, an unprefixed platform pool wins — the
+        // Even with a client id on the job, the platform-prefixed pool wins — the
         // pool composition never falls through to the client fallback once a pool resolves.
         String code = new PoolCodeResolver(DATA_SOURCE).resolve(poolId, "some-client-id");
 
-        assertThat(code).isEqualTo("dpsched-platfast-" + RUN);
+        assertThat(code).isEqualTo("platform-dpsched-platfast-" + RUN);
     }
 
     @Test
@@ -49,12 +55,19 @@ class PoolCodeResolverTest {
         assertThat(PoolCodeResolver.isDefaultPoolCode(code)).isTrue();
     }
 
+    /// Ruling R7: the fully-unresolvable case (no pool resolves, no client
+    /// resolves either) now composes `platform-DEFAULT-POOL` — superseding
+    /// the old bare `DEFAULT-POOL` — so it self-synthesises through
+    /// `RouterManager`'s generic `-DEFAULT-POOL` suffix rule exactly like
+    /// every other tenant's fallback, rather than depending on
+    /// `RouterManager`'s separate always-injected bare pool of that name.
     @Test
-    void neitherPoolNorClientFallsBackToTheGlobalDefault() {
+    void neitherPoolNorClientFallsBackToThePlatformDefault() {
         PoolCodeResolver resolver = new PoolCodeResolver(DATA_SOURCE);
 
-        assertThat(resolver.resolve(null, null)).isEqualTo("DEFAULT-POOL");
-        assertThat(resolver.resolve("unknown-pool-id", "unknown-client-id")).isEqualTo("DEFAULT-POOL");
+        assertThat(resolver.resolve(null, null)).isEqualTo("platform-DEFAULT-POOL");
+        assertThat(resolver.resolve("unknown-pool-id", "unknown-client-id")).isEqualTo("platform-DEFAULT-POOL");
+        assertThat(PoolCodeResolver.isDefaultPoolCode("platform-DEFAULT-POOL")).isTrue();
         assertThat(PoolCodeResolver.isDefaultPoolCode("DEFAULT-POOL")).isTrue();
         assertThat(PoolCodeResolver.isDefaultPoolCode("FAST")).isFalse();
     }

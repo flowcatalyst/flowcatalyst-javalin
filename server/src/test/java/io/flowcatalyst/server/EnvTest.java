@@ -39,6 +39,10 @@ class EnvTest {
         assertThat(env.routerHttpPrefix()).isEqualTo("/router");
         assertThat(env.defaultBroker()).isEmpty();
         assertThat(env.dispatchProcessingEndpoint()).isEqualTo("http://localhost:8080/api/dispatch/process");
+        assertThat(env.dispatchQueueType()).isEmpty();
+        assertThat(env.dispatchQueueUrl()).isEmpty();
+        assertThat(env.dispatchQueueRegion()).isEmpty();
+        assertThat(env.dispatchQueuePrefix()).isEmpty();
         assertThat(env.mcpPort()).isEqualTo(8090);
         assertThat(env.mcpBind()).isEqualTo("127.0.0.1");
 
@@ -311,6 +315,29 @@ class EnvTest {
     void explicitDispatchEndpointWins() {
         assertThat(load("FC_DISPATCH_PROCESSING_ENDPOINT", "https://fc.example/api/dispatch/process", "FC_API_PORT", "1234")
                 .dispatchProcessingEndpoint()).isEqualTo("https://fc.example/api/dispatch/process");
+    }
+
+    @Test
+    void dispatchQueueSettingsHonourTheDeployedAliasesWithCanonicalFirst() {
+        var env = load("FC_DISPATCH_QUEUE_TYPE", "SQS", "DISPATCH_QUEUE_TYPE", "postgres",
+                "FC_DISPATCH_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/111111111111/fc-canonical",
+                "DISPATCH_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/222222222222/fc-alias",
+                "FC_DISPATCH_QUEUE_REGION", "us-east-1", "DISPATCH_QUEUE_REGION", "eu-west-1",
+                "FC_DISPATCH_QUEUE_PREFIX", "FC-staging");
+        assertThat(env.dispatchQueueType()).isEqualTo("SQS");
+        assertThat(env.dispatchQueueUrl()).isEqualTo("https://sqs.us-east-1.amazonaws.com/111111111111/fc-canonical");
+        assertThat(env.dispatchQueueRegion()).isEqualTo("us-east-1");
+        assertThat(env.dispatchQueuePrefix()).isEqualTo("FC-staging");
+
+        // The deployed names alone, no FC_* set — every one of the three aliased
+        // settings must still resolve (FC_DISPATCH_QUEUE_PREFIX has no alias: it
+        // is a new name, not yet in the IaC).
+        var deployed = load("DISPATCH_QUEUE_TYPE", "postgres",
+                "DISPATCH_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/222222222222/fc-alias",
+                "DISPATCH_QUEUE_REGION", "eu-west-1");
+        assertThat(deployed.dispatchQueueType()).isEqualTo("postgres");
+        assertThat(deployed.dispatchQueueUrl()).isEqualTo("https://sqs.us-east-1.amazonaws.com/222222222222/fc-alias");
+        assertThat(deployed.dispatchQueueRegion()).isEqualTo("eu-west-1");
     }
 
     @Test

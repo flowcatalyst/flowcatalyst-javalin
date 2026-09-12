@@ -1,6 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.javalin.Javalin;
 import io.prometheus.metrics.expositionformats.ExpositionFormats;
@@ -17,14 +18,32 @@ import java.util.Objects;
 /// the real series under `/router/metrics`; the agreed tidy-up is to expose
 /// the real Prometheus registry here (the router alias stays for existing
 /// scrapes).
+///
+/// Since R3 (`docs/spec/deployed-dispatch.md` §3) this listener also serves
+/// one application endpoint, not just health/metrics: `/api/dispatch/router-config`,
+/// unauthenticated, when [#dispatchRouterConfig] is non-null. It lives here
+/// rather than on the public API listener because 8080 is ALB-facing and the
+/// document lists client identifiers, pool codes and queue URLs — this
+/// listener is reached only through a Service Connect alias, never the ALB.
 public final class Metrics {
 
     private final Env env;
     private final PrometheusRegistry registry;
+    private final RouterConfigDocumentBuilder dispatchRouterConfig;
 
     public Metrics(Env env, PrometheusRegistry registry) {
+        this(env, registry, null);
+    }
+
+    /// @param dispatchRouterConfig builds the `/api/dispatch/router-config`
+    ///                             document; `null` when this instance is
+    ///                             not in platform mode, in which case the
+    ///                             route is not registered at all (never
+    ///                             registered-then-failing).
+    public Metrics(Env env, PrometheusRegistry registry, RouterConfigDocumentBuilder dispatchRouterConfig) {
         this.env = Objects.requireNonNull(env, "env");
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.dispatchRouterConfig = dispatchRouterConfig;
     }
 
     /// The shared registry every subsystem registers its collectors with.
@@ -43,6 +62,9 @@ public final class Metrics {
             routes.get("/health", Health.noChecks()::handle);
             routes.get("/ready", this::ready);
             routes.get("/metrics", ctx -> scrape(ctx, formats));
+            if (dispatchRouterConfig != null) {
+                routes.get("/api/dispatch/router-config", this::routerConfig);
+            }
         }).start(env.metricsPort());
         return new Running(app);
     }
@@ -78,6 +100,13 @@ public final class Metrics {
         body.put("status", "ready");
         body.put("stream", env.streamEnabled());
         ctx.contentType("application/json").result(Json.writeLine(body));
+    }
+
+    /// `GET /api/dispatch/router-config` (R3): the platform's own
+    /// `{processingPools, queues}` document, unauthenticated — see the class
+    /// doc for why this listener rather than the public one.
+    private void routerConfig(Exchange ctx) {
+        ctx.contentType("application/json").result(Json.writeLine(dispatchRouterConfig.build()));
     }
 
     private void scrape(Exchange ctx, ExpositionFormats formats) throws IOException {
