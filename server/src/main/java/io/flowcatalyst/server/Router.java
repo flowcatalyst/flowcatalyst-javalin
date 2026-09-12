@@ -271,17 +271,21 @@ public final class Router implements AutoCloseable {
                 ? Duration.ofSeconds(env.routerSynthPoolIdleSecs())
                 : RouterManager.DEFAULT_SYNTH_POOL_IDLE_TTL;
         // config-poll (A-10) rides the same housekeeping scheduler as the
-        // other periodic tasks: applyConfiguration() already no-ops when not
+        // other periodic tasks: pollConfiguration() already no-ops when not
         // running, so this reaches a leader whether it just gained
-        // leadership (which already applied once) or has been leading for a
-        // while and the *source's* configuration changed underneath it.
+        // leadership (which is already applying, or has already applied,
+        // asynchronously — R-A/R-B) or has been leading for a while and the
+        // *source's* configuration changed underneath it. pollConfiguration
+        // (rather than applyConfiguration directly) is what skips this task
+        // while the router-initial-apply thread is still looping, so the
+        // two never race each other into a double fetch (R-B).
         var housekeepingTasks = new ArrayList<>(LifecycleLoops.standard(stalls, tracker, warningSink,
                 () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup,
                 () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl),
                 manager::closeDrainedPools, manager::retireLingeringConsumers));
         housekeepingTasks.add(new LifecycleLoops.Task("config-poll",
                 RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw()),
-                server::applyConfiguration));
+                server::pollConfiguration));
         // R-26 (`docs/spec/router-completion.md` §2 ruling 5): the stall
         // watchdog was built and tested but never wired until this task
         // exists — a consumer that stopped polling without ever failing

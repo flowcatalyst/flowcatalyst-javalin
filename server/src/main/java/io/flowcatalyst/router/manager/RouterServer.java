@@ -49,6 +49,13 @@ public final class RouterServer implements AutoCloseable {
     /// partially: the former wedges failover entirely.
     static final Duration TRANSITION_TIMEOUT = Duration.ofSeconds(30);
 
+    /// How often the initial-apply loop (R-B) retries a configuration source
+    /// that has never yet returned a present result. Only used before the
+    /// first successful [#applyConfiguration]; once that succeeds the loop
+    /// exits and [#CONFIG_POLL_INTERVAL_DEFAULT] takes over for the ordinary
+    /// periodic re-check.
+    static final Duration DEFAULT_INITIAL_APPLY_RETRY = Duration.ofSeconds(5);
+
     /// How often [#applyConfiguration] is re-run while leader, so a
     /// configuration change on the source side reaches a router that never
     /// lost and regained leadership (A-10). The default [#parseConfigPollInterval]
@@ -90,6 +97,7 @@ public final class RouterServer implements AutoCloseable {
     private final Warnings warnings;
     private final Clock clock;
     private final Duration drainTimeout;
+    private final Duration initialApplyRetry;
 
     /// The stall watchdog (R-26, `docs/spec/router-completion.md` §2 ruling
     /// 5) — [#restartStalledLoops] is the housekeeping task that drives it.
@@ -111,6 +119,15 @@ public final class RouterServer implements AutoCloseable {
     }
 
     private volatile boolean running;
+
+    /// The thread running the initial-apply loop (R-B) between leadership
+    /// gain and the first successful [#applyConfiguration] — `null` before
+    /// the first gain, a finished thread after that first success (callers
+    /// test [Thread#isAlive], not nullness). Held so [#loseLeadership]
+    /// and [#close] can interrupt it: a source that never answers must not
+    /// keep looping on a thread nobody is watching after this instance has
+    /// stopped leading or stopped altogether.
+    private volatile Thread initialApply;
 
     /// Where the router's configuration comes from. An interface so a
     /// single-tenant deployment can supply a fixed config without a config
@@ -141,15 +158,17 @@ public final class RouterServer implements AutoCloseable {
                         RouterManager.ConsumerFactory consumerFactory, ConfigSource configSource,
                         Warnings warnings, Clock clock, Duration drainTimeout) {
         this(manager, tracker, election, consumerFactory, configSource, warnings, clock, drainTimeout,
-                new ConsumerSupervisor(warnings, clock));
+                DEFAULT_INITIAL_APPLY_RETRY, new ConsumerSupervisor(warnings, clock));
     }
 
-    /// `supervisor` is injectable so a test can drive the stall-restart path
-    /// on a negligible delay rather than the production
-    /// [ConsumerSupervisor#RESTART_DELAY].
+    /// `initialApplyRetry` is how often the initial-apply loop (R-B) retries
+    /// a configuration source that has never succeeded; `supervisor` is
+    /// injectable so a test can drive the stall-restart path on a negligible
+    /// delay rather than the production [ConsumerSupervisor#RESTART_DELAY].
     public RouterServer(RouterManager manager, InFlightTracker tracker, LeaderElection election,
                         RouterManager.ConsumerFactory consumerFactory, ConfigSource configSource,
-                        Warnings warnings, Clock clock, Duration drainTimeout, ConsumerSupervisor supervisor) {
+                        Warnings warnings, Clock clock, Duration drainTimeout, Duration initialApplyRetry,
+                        ConsumerSupervisor supervisor) {
         this.manager = manager;
         this.tracker = tracker;
         this.election = election;
@@ -158,6 +177,7 @@ public final class RouterServer implements AutoCloseable {
         this.warnings = warnings;
         this.clock = clock;
         this.drainTimeout = drainTimeout;
+        this.initialApplyRetry = initialApplyRetry;
         this.supervisor = supervisor;
     }
 
@@ -215,9 +235,14 @@ public final class RouterServer implements AutoCloseable {
 
     /// Starts contending for leadership and reacting to it.
     ///
-    /// Returns once the first leadership decision has been acted on, so a
-    /// caller can assert the router's state immediately instead of racing
-    /// the election's own loop.
+    /// Returns once the first leadership decision has been **taken** — not
+    /// once it has been fully acted on. R-A (2026-09-12): if that decision is
+    /// "leader", the first [#applyConfiguration] runs on its own virtual
+    /// thread ([#gainLeadership]) rather than on this calling thread, so a
+    /// caller such as `Server.start()` never waits on a config fetch — the
+    /// production [ConfigSource] (`HttpConfigSource`) can spend on the order
+    /// of a minute retrying an unreachable config service, and a listener
+    /// bind must not queue behind that.
     public void start() {
         // Registered BEFORE start(), and that ordering is the whole of it:
         // an instance that comes up as leader transitions from follower to
@@ -234,13 +259,55 @@ public final class RouterServer implements AutoCloseable {
         election.start();
     }
 
+    /// R-A/R-B (2026-09-12): the first [#applyConfiguration] after gaining
+    /// leadership runs on its own virtual thread, `router-initial-apply`, so
+    /// this method — and therefore [#start] — never blocks on a config fetch.
+    /// That thread keeps calling [#applyConfiguration] until a result comes
+    /// back present, spacing attempts by [#initialApplyRetry], and stops the
+    /// moment leadership is lost or the server closes ([#loseLeadership],
+    /// [#close] interrupt it) — a source that never answers is retried
+    /// forever rather than given up on, but only for as long as this instance
+    /// is still trying to lead.
+    ///
+    /// The loop lives here rather than inside `HttpConfigSource`'s per-URL
+    /// retry deliberately: that retry runs each URL in parallel inside a
+    /// `StructuredTaskScope`, and an unbounded retry down there would hold
+    /// every healthy URL's configuration hostage to one dead one. Here, one
+    /// full [#applyConfiguration] attempt (across all URLs) either succeeds
+    /// or it doesn't, and only then does this loop wait and try again.
     private synchronized void gainLeadership() {
         if (running) {
             return;
         }
         log.info("leadership gained; starting consumers");
         running = true;
-        applyConfiguration();
+        initialApply = Thread.ofVirtual().name("router-initial-apply").start(this::runInitialApply);
+    }
+
+    private void runInitialApply() {
+        boolean failedOnce = false;
+        while (running && !Thread.currentThread().isInterrupted()) {
+            var result = applyConfiguration();
+            if (result.isPresent()) {
+                if (failedOnce) {
+                    log.info("initial configuration apply succeeded after a retry");
+                }
+                return;
+            }
+            if (!running) {
+                return;
+            }
+            if (!failedOnce) {
+                log.warn("initial configuration apply failed; retrying until it succeeds");
+                failedOnce = true;
+            }
+            try {
+                Thread.sleep(initialApplyRetry);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private synchronized void loseLeadership() {
@@ -249,6 +316,10 @@ public final class RouterServer implements AutoCloseable {
         }
         log.info("leadership lost; stopping consumers and handing work back");
         running = false;
+        var inFlight = initialApply;
+        if (inFlight != null) {
+            inFlight.interrupt();
+        }
         stopSources();
     }
 
@@ -277,6 +348,13 @@ public final class RouterServer implements AutoCloseable {
     /// a configuration fetched before that loss would start consumers as a
     /// follower.
     ///
+    /// Called directly by [#gainLeadership]'s `router-initial-apply` thread
+    /// (R-B) and by `/config/reload` (R-33), and — via [#pollConfiguration] —
+    /// by the periodic config-poll housekeeping task (A-10). Deliberately not
+    /// gated on [#initialApply] itself: the reload route and the
+    /// initial-apply loop both need an unconditional fetch, so that guard
+    /// lives one level up, in [#pollConfiguration], rather than here.
+    ///
     /// @return what changed, or empty when this instance is not currently
     ///         running (not leader) or the configuration source is
     ///         momentarily unavailable
@@ -289,6 +367,23 @@ public final class RouterServer implements AutoCloseable {
             return Optional.empty();
         }
         return apply(config.get());
+    }
+
+    /// The periodic config-poll housekeeping task's entry point (A-10),
+    /// wired in `io.flowcatalyst.server.Router` in place of
+    /// [#applyConfiguration] directly. R-B: while the `router-initial-apply`
+    /// thread is still looping — this instance has gained leadership but has
+    /// never yet had a configuration source answer — this is a no-op, so the
+    /// housekeeping thread never runs a second, concurrent fetch alongside
+    /// it. Once that thread has succeeded (or was never started, or has
+    /// since finished one way or the other), this simply delegates to
+    /// [#applyConfiguration] as before.
+    public Optional<RouterManager.ReconfigureResult> pollConfiguration() {
+        var inFlight = initialApply;
+        if (inFlight != null && inFlight.isAlive()) {
+            return Optional.empty();
+        }
+        return applyConfiguration();
     }
 
     /// The part of [#applyConfiguration] that actually touches [#manager]
@@ -438,6 +533,10 @@ public final class RouterServer implements AutoCloseable {
         }
         log.info("router stopping; draining in-flight work and closing pools");
         running = false;
+        var inFlight = initialApply;
+        if (inFlight != null) {
+            inFlight.interrupt();
+        }
         var consumers = manager.consumerNames().stream()
                 .map(manager::activeConsumer)
                 .flatMap(Optional::stream)

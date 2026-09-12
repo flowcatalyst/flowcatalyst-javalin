@@ -86,19 +86,25 @@ expired before any flow ran. Neither the fcdev integration test
 (`--router=false`) nor the in-process parity server (router off) could see
 it. Fixed in two units, both ruled by the owner the same evening:
 
-- **Unit 1 — the internal listener binds before the router.** It serves the
-  document and needs nothing from the router. `RouterStartupOrderTest` pins
-  both halves: the router's consumers include `platform-DEFAULT` right after
-  start (the document came from our own listener), and start takes under
-  20 s (mutant: the old order took 58 s and had no consumers). Server suite
-  green from clean (3,962); **Java e2e 51/51** on this unit alone.
-- **Unit 2 — R-A/R-B** (`docs/go-mirror/2026-09-12-router-first-fetch.md`):
-  the first apply runs on its own virtual thread so listeners never wait on
-  a config service (Go already does this in a goroutine; the router ECS
-  service has a 0 s health-check grace period), and a source that has never
-  succeeded is retried every 5 s until it does instead of waiting the
-  5-minute poll (Go does NOT do this — mirror item). The periodic poll skips
-  while the initial apply is in flight.
+- **Unit 1 `3048d6f` — the internal listener binds before the router.** It
+  serves the document and needs nothing from the router.
+  `RouterStartupOrderTest` boots the real server against its own internal
+  port and pins that the `platform-DEFAULT` consumer exists within 3 s of
+  start — a first attempt against an unbound port cannot meet that, its
+  retry being 5 s away (mutant: bind after the router — fails in 5.5 s).
+  Server suite green from clean; **Java e2e 51/51** on this unit alone.
+- **Unit 2 (the commit after `3048d6f`) — R-A/R-B**
+  (`docs/go-mirror/2026-09-12-router-first-fetch.md`): the first apply runs
+  on its own virtual thread so listeners never wait on a config service (Go
+  already does this in a goroutine; the router ECS service has a 0 s
+  health-check grace period), and a source that has never succeeded is
+  retried every 5 s until it does instead of waiting the 5-minute poll (Go
+  does NOT do this — mirror item). The periodic poll skips while the
+  initial apply is in flight. Four `RouterServerTest` tests, each with a
+  killed mutant (sync apply → `@Timeout`; no loop → await; no interrupt on
+  leadership loss → thread parked forever; no poll guard → double fetch).
+  Server suite green from clean (3,966); **Java e2e 51/51**, and fcdev's
+  log shows zero failed config-fetch attempts.
 
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 

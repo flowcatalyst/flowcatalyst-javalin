@@ -23,6 +23,7 @@ import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -137,6 +138,149 @@ class RouterServerTest {
         assertThat(router.leader()).isTrue();
         assertThat(router.running()).isTrue();
         await(() -> router.activeLoops() == 2);
+    }
+
+    // ── R-A/R-B: the first apply is asynchronous, and is retried until a
+    // never-yet-succeeded source finally answers ────────────────────────────
+
+    @Test
+    @Timeout(5)
+    @DisplayName("R-A: start() returns while the first configuration fetch is still in flight")
+    void startReturnsWhileTheFirstFetchIsStillInFlight() {
+        // Mutant: call applyConfiguration() synchronously in gainLeadership
+        // (the pre-R-A shape) -> start() blocks on the latch below forever
+        // -> the @Timeout(5) kills this test rather than letting it hang.
+        var latch = new CountDownLatch(1);
+        RouterServer.ConfigSource blocking = () -> {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Optional.of(config("q://1", "q://2"));
+        };
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, blocking, warnings, clock,
+                Duration.ofSeconds(1));
+
+        long startedAt = System.nanoTime();
+        server.start();
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertThat(elapsed).as("start() must not wait on the in-flight fetch").isLessThan(Duration.ofSeconds(1));
+        assertThat(server.running()).isTrue();
+        assertThat(server.activeLoops()).as("nothing applied yet; the fetch is still blocked").isZero();
+
+        latch.countDown();
+        await(() -> server.activeLoops() == 2);
+    }
+
+    @Test
+    @Timeout(15)
+    @DisplayName("R-B: a source that has never answered is retried until it does")
+    void aSourceThatHasNeverAnsweredIsRetriedUntilItDoes() {
+        // Mutant: a single attempt with no retry loop -> the fake never gets
+        // past its third empty answer -> the await() below times out.
+        var calls = new AtomicInteger();
+        RouterServer.ConfigSource flaky = () -> {
+            int n = calls.incrementAndGet();
+            return n <= 3 ? Optional.empty() : Optional.of(config("q://1"));
+        };
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, flaky, warnings, clock,
+                Duration.ofSeconds(1), Duration.ofMillis(10), new ConsumerSupervisor(warnings, clock));
+
+        server.start();
+
+        await(() -> server.activeLoops() == 1);
+        assertThat(calls.get()).as("retried past the first three failures until the source finally answered")
+                .isGreaterThanOrEqualTo(4);
+    }
+
+    @Test
+    @Timeout(15)
+    @DisplayName("R-B: losing leadership while the first fetch is looping stops the loop")
+    void leadershipLostWhileTheFirstFetchIsLoopingStopsTheLoop() throws InterruptedException {
+        // A fetch that blocks INDEFINITELY (never releases), representing a
+        // source genuinely stuck in slow I/O the way HttpConfigSource can
+        // be. `running` flipping false alone cannot end a call already
+        // blocked inside fetch() — only an actual Thread#interrupt can, and
+        // only that unblocks `neverReleased.await()` and flips `interrupted`
+        // to true. A short retry interval would let a merely-running=false
+        // check race this assertion into passing by accident (the loop
+        // would eventually notice on its next tick even without an
+        // interrupt); blocking forever removes that escape hatch entirely.
+        //
+        // Mutant: don't interrupt the initial-apply thread on loseLeadership
+        // -> the thread stays parked in `neverReleased.await()` forever,
+        // `interrupted` never flips true, and the await() below times out.
+        var fetchStarted = new CountDownLatch(1);
+        var neverReleased = new CountDownLatch(1);
+        var interrupted = new AtomicBoolean(false);
+        RouterServer.ConfigSource blocksForever = () -> {
+            fetchStarted.countDown();
+            try {
+                neverReleased.await();
+            } catch (InterruptedException e) {
+                interrupted.set(true);
+                Thread.currentThread().interrupt();
+            }
+            return Optional.empty();
+        };
+        election = new LeaderElection(LeaderElection.Config.of("fc:leader"), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, blocksForever, warnings, clock,
+                Duration.ofSeconds(1), Duration.ofMillis(10), new ConsumerSupervisor(warnings, clock));
+
+        server.start();
+        assertThat(fetchStarted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                .as("the first fetch actually started, and is now blocked").isTrue();
+
+        store.holder = "someone-else";
+        election.contendNow();
+
+        await(() -> !server.running());
+        await(() -> interrupted.get());
+
+        // The loop must actually be gone, not merely between retries: no
+        // consumer ever gets a chance to run once leadership was lost first.
+        assertThat(server.activeLoops()).isZero();
+    }
+
+    @Test
+    @Timeout(5)
+    @DisplayName("R-B: the periodic poll skips while the first apply is in flight")
+    void thePeriodicPollSkipsWhileTheFirstApplyIsInFlight() {
+        // Mutant: remove pollConfiguration()'s in-flight guard -> the second,
+        // guarded call below reaches the source itself, so `calls` is 2
+        // (not 1) before the latch is ever released.
+        var latch = new CountDownLatch(1);
+        var calls = new AtomicInteger();
+        RouterServer.ConfigSource blockingOnce = () -> {
+            int n = calls.incrementAndGet();
+            if (n == 1) {
+                try {
+                    latch.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return Optional.of(config("q://1"));
+        };
+        election = new LeaderElection(LeaderElection.Config.disabled(), store, clock);
+        server = new RouterServer(manager(), tracker, election, this::build, blockingOnce, warnings, clock,
+                Duration.ofSeconds(1));
+
+        server.start();
+        await(() -> calls.get() >= 1);
+
+        assertThat(server.pollConfiguration()).as("skipped while the first apply is still in flight").isEmpty();
+        assertThat(calls.get()).as("the periodic poll must not have reached the source itself").isEqualTo(1);
+
+        latch.countDown();
+        await(() -> server.activeLoops() == 1);
+
+        assertThat(server.pollConfiguration()).as("delegates once the first apply has finished").isPresent();
+        assertThat(calls.get()).isEqualTo(2);
     }
 
     @Test
@@ -545,7 +689,7 @@ class RouterServerTest {
         var localServer = new RouterServer(localManager, isolatedTracker, election, factory,
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
                         List.of(new QueueConfig("q://1", "orders", 1, 30)))),
-                warnings, mutableClock, Duration.ofSeconds(1), fastSupervisor);
+                warnings, mutableClock, Duration.ofSeconds(1), RouterServer.DEFAULT_INITIAL_APPLY_RETRY, fastSupervisor);
         try {
             localServer.start();
             await(() -> original.polls.get() >= 1);
@@ -602,7 +746,7 @@ class RouterServerTest {
         var localServer = new RouterServer(localManager, isolatedTracker, election, factory,
                 RouterServer.ConfigSource.fixed(new RouterConfig(List.of(new PoolSpec("A", 2, 0)),
                         List.of(new QueueConfig("q://1", "orders", 1, 30)))),
-                warnings, mutableClock, Duration.ofSeconds(1), fastSupervisor);
+                warnings, mutableClock, Duration.ofSeconds(1), RouterServer.DEFAULT_INITIAL_APPLY_RETRY, fastSupervisor);
         try {
             localServer.start();
             await(() -> localServer.activeLoops() == 1);
