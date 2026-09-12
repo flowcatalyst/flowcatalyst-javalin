@@ -30,22 +30,26 @@ alias of the corresponding `FC_*` setting where one exists, with today's
 values as defaults when unset. **This shortens prod sessions from 24 h to 8 h
 at deploy** — the owner's decision, to be announced.
 
-## 3. Deployed dispatch — direction set, design not finished. **Do not start.**
+## 3. Deployed dispatch — settled, but **Java builds it first**
 
 Outside `FC_DEFAULT_BROKER=postgres`, `schedulerPublisher`
 (`internal/server/subsystems.go:99`) returns `NoopPublisher`, so on ECS every
 dispatch job is claimed and never delivered.
 
-Owner direction, 2026-09-12 (`docs/spec/deployed-dispatch.md` §3): the router
-serves more than this platform, so **the platform serves its own router
-config** (queues + pools) and the router merges it with Integral's — dev mode
-too, which retires the fixed single-queue dev branch. Dispatch jobs go to
-per-client, per-priority queues (`…-{client}-DEFAULT` / `…-{client}-HIGH_PRIORITY`),
-platform-wide jobs to their own queue.
+The design is settled (`docs/spec/deployed-dispatch.md` §3, owner
+2026-09-12): the platform serves its own router config document, the router
+merges it with Integral's through one comma-separated
+`FLOWCATALYST_CONFIG_URL`, dispatch jobs go to lazily-created
+`FC-{env}-{client}-DEFAULT|HIGH_PRIORITY.fifo` queues (priority from
+`msg_subscriptions.queue`), platform-wide jobs to `…-platform-…`, pool keys
+`{tenant}-{pool}`, and dev mode uses the same path instead of its fixed
+single-queue branch.
 
-Five open questions remain in that spec (naming, where priority lives, who
-creates the queues, the endpoint and its auth, pool-key collisions). **Wait
-for them to be answered**; the Java side is not starting either.
+**Do not start yet.** Java implements it first and the spec records what was
+actually built (including two assumptions the owner has not confirmed:
+`platform` as the tenant segment for client-less jobs, and `DEFAULT` for a
+job with no subscription). Mirror it afterwards from the updated spec, the
+way the portal-apps and secret-scheme work was mirrored.
 
 ## 4. Remove from the IaC (both sides ignore them)
 
