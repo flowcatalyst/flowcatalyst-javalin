@@ -207,6 +207,12 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             return metrics.port();
         }
 
+        /// Test-only visibility hook (same reasoning as [#dispatchJobReaperClosed]):
+        /// `null` when the router is disabled ([Env#routerEnabled] false).
+        Router router() {
+            return router;
+        }
+
         /// Graceful stop: listeners first (Jetty drains in-flight requests
         /// within the grace period), then background subsystems.
         public void stop() {
@@ -330,162 +336,191 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             case Mode.RouterOnly(var pool) -> pool;
         };
 
-        // The router is started BEFORE the listeners bind, so a readiness
-        // probe never sees a server that is accepting traffic while its
-        // router is still deciding whether it holds leadership.
-        Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
-
-        var built = buildApiAndReaper(router);
-
-        // ── background subsystems ───────────────────────────────────────────
-        McpServer.Running mcp = null;
-        if (env.mcpEnabled()) {
-            // No database needed (`docs/spec/mcp.md` §1) — it must work on the
-            // router-only/MCP-only path Main already has, so this reads
-            // straight from Env rather than dbPool.
-            var mcpConfig = McpConfig.resolve(env.mcpPlatformUrl(), env.mcpClientId(), env.mcpClientSecret(),
-                    env.apiPort());
-            var tokenManager = mcpConfig.hasCredentials()
-                    ? new TokenManager(mcpConfig.baseUrl(), mcpConfig.clientId(), mcpConfig.clientSecret())
-                    : null;
-            var auth = PlatformClient.AuthMode.resolve(mcpConfig, tokenManager, env.mcpPlatformAuthToken());
-            var platformClient = new PlatformClient(mcpConfig.baseUrl(), auth);
-            mcp = McpServer.start(platformClient, env.mcpBind(), env.mcpPort(), Version.current());
-        }
-
-        DispatchScheduler scheduler = null;
-        AutoCloseable schedulerLeaderResource = null;
-        AutoCloseable schedulerPublisherResource = null;
-        if (env.schedulerEnabled()) {
-            if (dbPool == null) {
-                LOG.warn("scheduler enabled but no database pool is available; ignoring FC_SCHEDULER_ENABLED");
-            } else {
-                var leaderGate = leaderGate(env, "scheduler");
-                // Built before DispatchScheduler.start so an SqsDispatchPublisher's
-                // resource is tracked for #stop() regardless of whether the scheduler
-                // itself ends up starting (the fail-closed branch below releases it,
-                // same as the leader election, rather than leaking it).
-                DispatchPublisher publisher = schedulerPublisher(env, dbPool);
-                if (publisher instanceof AutoCloseable closeable) {
-                    schedulerPublisherResource = closeable;
-                }
-                scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
-                        publisher, leaderGate.isLeader());
-                if (scheduler == null) {
-                    // Fail-closed (no FLOWCATALYST_APP_KEY): DispatchScheduler.start already
-                    // logged the ERROR; release the leader election we just started for nothing.
-                    closeQuietly(leaderGate.resource());
-                    if (schedulerPublisherResource != null) {
-                        closeQuietly(schedulerPublisherResource);
-                        schedulerPublisherResource = null;
-                    }
-                } else {
-                    schedulerLeaderResource = leaderGate.resource();
-                }
-            }
-        }
-
-        OutboxProcessor outboxProcessor = null;
-        Javalin outboxAdminApi = null;
-        AutoCloseable outboxLeaderResource = null;
-        if (env.outboxEnabled()) {
-            if (dbPool == null) {
-                LOG.warn("outbox enabled but no database pool is available; ignoring FC_OUTBOX_ENABLED");
-            } else if (env.outboxPlatformUrl().isBlank()) {
-                LOG.warn("outbox enabled but FC_OUTBOX_PLATFORM_URL (or an alias) is not set; "
-                        + "ignoring FC_OUTBOX_ENABLED");
-            } else {
-                var leaderGate = leaderGate(env, "outbox");
-                var repository = new PostgresOutboxRepository(dbPool);
-                repository.initSchema();
-                var dispatcher = new HttpDispatcher(HttpDispatcher.defaultClient(), env.outboxPlatformUrl(),
-                        OutboxProcessor.Config.DEFAULT_HTTP_TIMEOUT, null, env.outboxPlatformAuthToken());
-                var config = outboxConfig(env);
-                outboxProcessor = new OutboxProcessor(repository, dispatcher, config, leaderGate.isLeader());
-                outboxProcessor.start();
-                outboxLeaderResource = leaderGate.resource();
-                LOG.atInfo().setMessage("outbox processor started")
-                        .addKeyValue("platform_url", env.outboxPlatformUrl())
-                        .addKeyValue("poll_interval", config.pollInterval())
-                        .addKeyValue("admin_port", env.outboxAdminPort())
-                        .log();
-                if (env.outboxAdminPort() > 0) {
-                    outboxAdminApi = OutboxAdminApi.start(outboxProcessor, env.outboxAdminPort());
-                    LOG.atInfo().setMessage("outbox admin api listening")
-                            .addKeyValue("addr", "127.0.0.1:" + env.outboxAdminPort())
-                            .log();
-                }
-            }
-        }
-
-        StreamProcessor streamProcessor = null;
-        AutoCloseable streamLeaderResource = null;
-        if (env.streamEnabled()) {
-            if (dbPool == null) {
-                LOG.warn("stream processor enabled but no database pool is available; ignoring "
-                        + "FC_STREAM_PROCESSOR_ENABLED");
-            } else {
-                var leaderGate = leaderGate(env, "stream");
-                streamProcessor = StreamProcessor.start(dbPool, StreamProcessor.Settings.fromEnv(env),
-                        leaderGate.isLeader());
-                streamLeaderResource = leaderGate.resource();
-            }
-        }
-
-        ScheduledJobScheduler scheduledJobScheduler = null;
-        AutoCloseable scheduledJobLeaderResource = null;
-        if (env.scheduledJobEnabled()) {
-            if (dbPool == null) {
-                LOG.warn("scheduled-job scheduler enabled but no database pool is available; ignoring "
-                        + "FC_SCHEDULED_JOB_ENABLED");
-            } else {
-                var leaderGate = leaderGate(env, "scheduled-job");
-                scheduledJobScheduler = ScheduledJobScheduler.start(dbPool,
-                        ScheduledJobScheduler.Settings.fromEnv(env), leaderGate.isLeader());
-                scheduledJobLeaderResource = leaderGate.resource();
-            }
-        }
-
-        // Not leader-gated (purger spec §4): every Platform/Worker instance
-        // purges, whenever a pool exists at all — the statements are
-        // idempotent/`IF EXISTS`, so a duplicate pass from a second instance
-        // is harmless. Excluded for RouterOnly: its pool (when present) is
-        // the router's own Postgres broker, whose database may host nothing
-        // but `queue_messages` — the purger's sweeps read platform tables
-        // (auth, mail, oauth…) that a router-only deployment never migrates.
-        boolean platformTablesAvailable = mode instanceof Mode.Platform || mode instanceof Mode.Worker;
-        Purger purger = platformTablesAvailable
-                ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system()))
-                : null;
-        // Mail (mail-outbox spec §2): Platform.register wired Notifications/Mfa/ResetLinks
-        // to the OutboxMailService; this is the other half, the background sender that
-        // delivers through the SMTP-or-logging transport. Platform mode only.
-        MailSender mailSender = null;
-        if (mode instanceof Mode.Platform(var pool)) {
-            mailSender = MailSender.start(pool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
-                    MailSender.DEFAULT_INTERVAL);
-            registry.register(mailSender.collector());
-        }
-        registry.register(AuthAlarms.collector());
-        if (router != null) registry.register(router.mediationHttpVersionCollector());
-        switch (mode) {
-            case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
-            case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
-            default -> { }
-        }
-
-        // ── listeners ───────────────────────────────────────────────────────
+        // ── internal listener ───────────────────────────────────────────────
+        // The internal listener binds first, before the router starts. R3
+        // (`docs/spec/deployed-dispatch.md` §3) serves the router-config
+        // document here, and fcdev points the router's own config URL at
+        // that same document: bound first, the router's first fetch
+        // succeeds on its first attempt; bound after, every fcdev boot
+        // would fail that attempt against a port nobody is listening on
+        // and get its queues 5s later on the retry (RouterStartupOrderTest).
+        // Independently, R-A (2026-09-12) runs the first configuration
+        // apply on the router's own virtual thread, so Router.start() never
+        // waits on a config service that is down — that is what lets both
+        // listeners bind within milliseconds regardless of where the
+        // document lives. The API listener still binds after the router
+        // (below) because its router surface is mounted on it, and leadership
+        // is still decided synchronously before it does.
         var metrics = new Metrics(env, registry, dispatchRouterConfigFor(mode, env)).start();
         LOG.atInfo().setMessage("metrics server listening")
                 .addKeyValue("addr", ":" + env.metricsPort())
                 .log();
-        ApiListener api = built.starter().start(env.apiPort());
-        LOG.atInfo().setMessage("api server listening")
-                .addKeyValue("addr", ":" + env.apiPort())
-                .log();
-        return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
-                schedulerPublisherResource, outboxProcessor, outboxAdminApi, outboxLeaderResource,
-                streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
+
+        try {
+            Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
+
+            var built = buildApiAndReaper(router);
+
+            // ── background subsystems ───────────────────────────────────────
+            McpServer.Running mcp = null;
+            if (env.mcpEnabled()) {
+                // No database needed (`docs/spec/mcp.md` §1) — it must work on the
+                // router-only/MCP-only path Main already has, so this reads
+                // straight from Env rather than dbPool.
+                var mcpConfig = McpConfig.resolve(env.mcpPlatformUrl(), env.mcpClientId(), env.mcpClientSecret(),
+                        env.apiPort());
+                var tokenManager = mcpConfig.hasCredentials()
+                        ? new TokenManager(mcpConfig.baseUrl(), mcpConfig.clientId(), mcpConfig.clientSecret())
+                        : null;
+                var auth = PlatformClient.AuthMode.resolve(mcpConfig, tokenManager, env.mcpPlatformAuthToken());
+                var platformClient = new PlatformClient(mcpConfig.baseUrl(), auth);
+                mcp = McpServer.start(platformClient, env.mcpBind(), env.mcpPort(), Version.current());
+            }
+
+            DispatchScheduler scheduler = null;
+            AutoCloseable schedulerLeaderResource = null;
+            AutoCloseable schedulerPublisherResource = null;
+            if (env.schedulerEnabled()) {
+                if (dbPool == null) {
+                    LOG.warn("scheduler enabled but no database pool is available; ignoring FC_SCHEDULER_ENABLED");
+                } else {
+                    var leaderGate = leaderGate(env, "scheduler");
+                    // Built before DispatchScheduler.start so an SqsDispatchPublisher's
+                    // resource is tracked for #stop() regardless of whether the scheduler
+                    // itself ends up starting (the fail-closed branch below releases it,
+                    // same as the leader election, rather than leaking it).
+                    DispatchPublisher publisher = schedulerPublisher(env, dbPool);
+                    if (publisher instanceof AutoCloseable closeable) {
+                        schedulerPublisherResource = closeable;
+                    }
+                    scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
+                            publisher, leaderGate.isLeader());
+                    if (scheduler == null) {
+                        // Fail-closed (no FLOWCATALYST_APP_KEY): DispatchScheduler.start already
+                        // logged the ERROR; release the leader election we just started for nothing.
+                        closeQuietly(leaderGate.resource());
+                        if (schedulerPublisherResource != null) {
+                            closeQuietly(schedulerPublisherResource);
+                            schedulerPublisherResource = null;
+                        }
+                    } else {
+                        schedulerLeaderResource = leaderGate.resource();
+                    }
+                }
+            }
+
+            OutboxProcessor outboxProcessor = null;
+            Javalin outboxAdminApi = null;
+            AutoCloseable outboxLeaderResource = null;
+            if (env.outboxEnabled()) {
+                if (dbPool == null) {
+                    LOG.warn("outbox enabled but no database pool is available; ignoring FC_OUTBOX_ENABLED");
+                } else if (env.outboxPlatformUrl().isBlank()) {
+                    LOG.warn("outbox enabled but FC_OUTBOX_PLATFORM_URL (or an alias) is not set; "
+                            + "ignoring FC_OUTBOX_ENABLED");
+                } else {
+                    var leaderGate = leaderGate(env, "outbox");
+                    var repository = new PostgresOutboxRepository(dbPool);
+                    repository.initSchema();
+                    var dispatcher = new HttpDispatcher(HttpDispatcher.defaultClient(), env.outboxPlatformUrl(),
+                            OutboxProcessor.Config.DEFAULT_HTTP_TIMEOUT, null, env.outboxPlatformAuthToken());
+                    var config = outboxConfig(env);
+                    outboxProcessor = new OutboxProcessor(repository, dispatcher, config, leaderGate.isLeader());
+                    outboxProcessor.start();
+                    outboxLeaderResource = leaderGate.resource();
+                    LOG.atInfo().setMessage("outbox processor started")
+                            .addKeyValue("platform_url", env.outboxPlatformUrl())
+                            .addKeyValue("poll_interval", config.pollInterval())
+                            .addKeyValue("admin_port", env.outboxAdminPort())
+                            .log();
+                    if (env.outboxAdminPort() > 0) {
+                        outboxAdminApi = OutboxAdminApi.start(outboxProcessor, env.outboxAdminPort());
+                        LOG.atInfo().setMessage("outbox admin api listening")
+                                .addKeyValue("addr", "127.0.0.1:" + env.outboxAdminPort())
+                                .log();
+                    }
+                }
+            }
+
+            StreamProcessor streamProcessor = null;
+            AutoCloseable streamLeaderResource = null;
+            if (env.streamEnabled()) {
+                if (dbPool == null) {
+                    LOG.warn("stream processor enabled but no database pool is available; ignoring "
+                            + "FC_STREAM_PROCESSOR_ENABLED");
+                } else {
+                    var leaderGate = leaderGate(env, "stream");
+                    streamProcessor = StreamProcessor.start(dbPool, StreamProcessor.Settings.fromEnv(env),
+                            leaderGate.isLeader());
+                    streamLeaderResource = leaderGate.resource();
+                }
+            }
+
+            ScheduledJobScheduler scheduledJobScheduler = null;
+            AutoCloseable scheduledJobLeaderResource = null;
+            if (env.scheduledJobEnabled()) {
+                if (dbPool == null) {
+                    LOG.warn("scheduled-job scheduler enabled but no database pool is available; ignoring "
+                            + "FC_SCHEDULED_JOB_ENABLED");
+                } else {
+                    var leaderGate = leaderGate(env, "scheduled-job");
+                    scheduledJobScheduler = ScheduledJobScheduler.start(dbPool,
+                            ScheduledJobScheduler.Settings.fromEnv(env), leaderGate.isLeader());
+                    scheduledJobLeaderResource = leaderGate.resource();
+                }
+            }
+
+            // Not leader-gated (purger spec §4): every Platform/Worker instance
+            // purges, whenever a pool exists at all — the statements are
+            // idempotent/`IF EXISTS`, so a duplicate pass from a second instance
+            // is harmless. Excluded for RouterOnly: its pool (when present) is
+            // the router's own Postgres broker, whose database may host nothing
+            // but `queue_messages` — the purger's sweeps read platform tables
+            // (auth, mail, oauth…) that a router-only deployment never migrates.
+            boolean platformTablesAvailable = mode instanceof Mode.Platform || mode instanceof Mode.Worker;
+            Purger purger = platformTablesAvailable
+                    ? Purger.start(dbPool, RateLimit.Policies.fromEnv(EnvReader.system()))
+                    : null;
+            // Mail (mail-outbox spec §2): Platform.register wired Notifications/Mfa/ResetLinks
+            // to the OutboxMailService; this is the other half, the background sender that
+            // delivers through the SMTP-or-logging transport. Platform mode only.
+            MailSender mailSender = null;
+            if (mode instanceof Mode.Platform(var pool)) {
+                mailSender = MailSender.start(pool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
+                        MailSender.DEFAULT_INTERVAL);
+                registry.register(mailSender.collector());
+            }
+            registry.register(AuthAlarms.collector());
+            if (router != null) registry.register(router.mediationHttpVersionCollector());
+            switch (mode) {
+                case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+                case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+                default -> { }
+            }
+
+            // ── API listener ──────────────────────────────────────────────
+            // Bound last: buildApiAndReaper needed the router above, and the
+            // API listener's readiness surface must never see a router that
+            // has not yet gained or lost leadership. Leadership is decided
+            // synchronously before this point, but (R-A) the first
+            // configuration apply may still be running in the background on
+            // its own thread — that is fine and expected: it is what let
+            // both this listener and the internal one above bind within
+            // milliseconds regardless of the config service's own state.
+            ApiListener api = built.starter().start(env.apiPort());
+            LOG.atInfo().setMessage("api server listening")
+                    .addKeyValue("addr", ":" + env.apiPort())
+                    .log();
+            return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
+                    schedulerPublisherResource, outboxProcessor, outboxAdminApi, outboxLeaderResource,
+                    streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
+        } catch (RuntimeException e) {
+            // The internal listener is already bound at this point; nothing
+            // else has been returned to a caller who could stop it, so this
+            // is the only place that can.
+            metrics.stop();
+            throw e;
+        }
     }
 
     /// R3 (`docs/spec/deployed-dispatch.md` §3): the router-config document
