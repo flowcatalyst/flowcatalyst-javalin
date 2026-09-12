@@ -44,21 +44,30 @@ public final class TokenIssuer {
     public static final long ACCESS_TTL_SECONDS = 3600;
     /// `IDTokenExpirySecs`: five minutes (§3.2).
     public static final long ID_TOKEN_TTL_SECONDS = 300;
-    /// The session cookie's life — 24 h, compile-time by ruling C-Q16.
+    /// The session cookie's default life — 24 h. Ruling C-Q16 made this
+    /// compile-time; superseded 2026-09-11 (`docs/spec/deployed-dispatch.md`
+    /// §4) — the deployed environment sets `OIDC_SESSION_TTL` and Java must
+    /// honour it, so this constant is now only [Config#of]'s default.
     public static final long SESSION_TTL_SECONDS = 24 * 3600;
 
-    /// @param issuer   `FC_JWT_ISSUER`
-    /// @param audience the platform audience — equals the issuer in every deployment (§4)
-    public record Config(String issuer, String audience, long accessTtlSeconds, long idTokenTtlSeconds) {
+    /// @param issuer           `FC_JWT_ISSUER`
+    /// @param audience         the platform audience — equals the issuer in every deployment (§4)
+    /// @param sessionTtlSeconds the `fc_session` cookie's lifetime — the session JWT's `exp`
+    ///                          and (via [io.flowcatalyst.platform.auth.login.SessionCookie])
+    ///                          the cookie's `Max-Age` must stay equal
+    public record Config(String issuer, String audience, long accessTtlSeconds, long idTokenTtlSeconds,
+                          long sessionTtlSeconds) {
         public Config {
             Objects.requireNonNull(issuer, "issuer");
             if (issuer.isBlank()) throw new IllegalArgumentException("issuer must not be blank");
             audience = audience == null || audience.isBlank() ? issuer : audience;
-            if (accessTtlSeconds <= 0 || idTokenTtlSeconds <= 0) throw new IllegalArgumentException("TTLs must be positive");
+            if (accessTtlSeconds <= 0 || idTokenTtlSeconds <= 0 || sessionTtlSeconds <= 0) {
+                throw new IllegalArgumentException("TTLs must be positive");
+            }
         }
 
         public static Config of(String issuer) {
-            return new Config(issuer, issuer, ACCESS_TTL_SECONDS, ID_TOKEN_TTL_SECONDS);
+            return new Config(issuer, issuer, ACCESS_TTL_SECONDS, ID_TOKEN_TTL_SECONDS, SESSION_TTL_SECONDS);
         }
     }
 
@@ -246,7 +255,9 @@ public final class TokenIssuer {
     /// (the provider passes only subject and email), `all_applications =
     /// false`, **no `aud`** (which is what lets the middleware's audience
     /// guard pass cookies), no `kid`. Everything else is re-resolved from the
-    /// store on every request. 24 h; cannot be revoked — logout clears the
+    /// store on every request. Lifetime is [Config#sessionTtlSeconds()]
+    /// (default 24 h; the deployed environment sets it to 8 h — owner ruling
+    /// 2026-09-11, superseding C-Q16); cannot be revoked — logout clears the
     /// cookie.
     public String sessionToken(String principalId, String email) {
         Objects.requireNonNull(principalId, "principalId");
@@ -257,7 +268,7 @@ public final class TokenIssuer {
                 .subject(principalId)
                 .issueTime(Date.from(now))
                 .notBeforeTime(Date.from(now))
-                .expirationTime(Date.from(now.plusSeconds(SESSION_TTL_SECONDS)))
+                .expirationTime(Date.from(now.plusSeconds(config.sessionTtlSeconds())))
                 .claim("tier", "")
                 .claim("all_applications", false);
         if (email != null && !email.isBlank()) {

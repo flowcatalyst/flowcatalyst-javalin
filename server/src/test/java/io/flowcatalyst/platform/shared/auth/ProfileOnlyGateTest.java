@@ -160,7 +160,7 @@ class ProfileOnlyGateTest {
         var authenticator = new Authenticator(verifier, resolver, Authenticator.Config.PRODUCTION);
         var loginState = new LoginApi.State(PRINCIPALS, mappings, idps, ATTEMPTS,
                 new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), TOKEN_ISSUER, resolver, MfaChallenge.none(),
-                new SessionCookie(false), DS, Clock.systemUTC());
+                new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
 
         real = TestHttp.routes(routes -> {
             HttpError.install(routes);

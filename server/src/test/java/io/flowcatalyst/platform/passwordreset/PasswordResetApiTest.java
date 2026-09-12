@@ -202,7 +202,7 @@ class PasswordResetApiTest {
         String email = "confirm-" + RUN + "@example.com";
         String pid = user(email, PasswordHash.hash(OLD_PASSWORD), null);
         MFA.issueTrustedDevice(pid, "laptop", Duration.ofDays(7));
-        var issued = RefreshToken.issue(pid, Instant.now());
+        var issued = RefreshToken.issue(pid, Instant.now(), RefreshToken.TTL_SECONDS);
         GRANTS.insert(issued.token().withFamily(issued.token().id()));
         SENT.clear();
         http.post("/auth/password-reset/request", Json.write(Map.of("email", email)));

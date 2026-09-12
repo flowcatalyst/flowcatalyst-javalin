@@ -163,7 +163,7 @@ class TwoFactorApiTest {
         var mfaGate = new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE);
         var backoff = new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT);
         var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, backoff, TOKEN_ISSUER, RESOLVER, mfaGate,
-                new SessionCookie(false), DS, Clock.systemUTC());
+                new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
 
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
@@ -360,7 +360,7 @@ class TwoFactorApiTest {
         var brokenAttempts = new LoginAttemptRepository(brokenDataSource());
         var brokenLogin = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, brokenAttempts,
                 new BackoffCheck(brokenAttempts, BackoffPolicy.DEFAULT), TOKEN_ISSUER, RESOLVER,
-                new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE), new SessionCookie(false), DS, Clock.systemUTC());
+                new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
         try (var closed = TestHttp.routes(routes -> {
             HttpError.install(routes);
             TwoFactorApi.register(routes, new TwoFactorApi.State(brokenLogin, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
@@ -534,7 +534,7 @@ class TwoFactorApiTest {
         var mfaGate = new LoginMfaGate(mfa, POLICY, TOKENS, DEVICE_COOKIE);
         var backoff = new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT);
         var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, backoff, TOKEN_ISSUER, RESOLVER,
-                mfaGate, new SessionCookie(false), DS, Clock.systemUTC());
+                mfaGate, new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
 
         try (TestHttp isolated = TestHttp.routes(routes -> {
             HttpError.install(routes);

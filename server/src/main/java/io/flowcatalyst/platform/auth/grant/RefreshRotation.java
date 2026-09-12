@@ -60,10 +60,17 @@ public final class RefreshRotation {
 
     private final GrantStore store;
     private final Clock clock;
+    private final long refreshTtlSeconds;
 
-    public RefreshRotation(GrantStore store, Clock clock) {
+    /// @param refreshTtlSeconds the TTL a freshly-rooted family gets at issuance
+    ///                          (`Env.refreshTokenTtlSeconds()`, owner ruling 2026-09-11
+    ///                          supersedes C-Q16); irrelevant to a rotation itself, which
+    ///                          always inherits the presented token's own expiry below —
+    ///                          [RefreshToken#issue] still needs a value to construct with.
+    public RefreshRotation(GrantStore store, Clock clock, long refreshTtlSeconds) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.refreshTtlSeconds = refreshTtlSeconds;
     }
 
     /// Consumes `raw` and issues its replacement.
@@ -90,7 +97,7 @@ public final class RefreshRotation {
 
         store.revokeByHash(hash);
 
-        RefreshToken.Issued issued = RefreshToken.issue(stored.principalId(), clock.instant());
+        RefreshToken.Issued issued = RefreshToken.issue(stored.principalId(), clock.instant(), refreshTtlSeconds);
         RefreshToken replacement = issued.token()
                 .withBinding(stored.oauthClientId(), stored.scopes(), stored.accessibleClients(), stored.authTime())
                 .withExpiresAt(stored.expiresAt())

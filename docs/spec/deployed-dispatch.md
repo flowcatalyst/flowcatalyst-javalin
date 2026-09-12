@@ -133,3 +133,50 @@ differ only in the queue *type* the same document names.
   `go vet`, the package tests), saved under `docs/go-mirror/`, and applied to
   the Go working tree without committing, as with the 2026-09-09
   debug-event patch.
+
+### What was actually built (Java, 2026-09-12)
+
+The callback alias and the three OIDC TTLs, `docs/go-mirror/2026-09-11-deployment-env-handoff.md`
+§1–§2 — Java built first, per that hand-off's item 3 note.
+
+- **`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`**, alias of the existing
+  `FC_DISPATCH_PROCESSING_ENDPOINT` (`EnvReader.firstSet`, canonical first).
+  Default unchanged: the computed `http://localhost:<apiPort>/api/dispatch/process`.
+- **`FC_JWT_ACCESS_TOKEN_TTL_SECS`** (existing canonical) gains the alias
+  `OIDC_ACCESS_TOKEN_TTL`, default 3600 — via the new `EnvReader.longAlias`
+  (`integerAlias`'s semantics widened to `long`: an unparseable canonical
+  value falls through to the alias, never straight to the default).
+- **`FC_SESSION_TTL_SECS`** (new canonical), alias `OIDC_SESSION_TTL`,
+  default 86400 (24h, unchanged) — `Env.sessionTtlSeconds`. Threaded into
+  `TokenIssuer.Config.sessionTtlSeconds` (the session JWT's `exp`) and into
+  `SessionCookie`'s `Max-Age` (now constructor state, not the old
+  `TokenIssuer.SESSION_TTL_SECONDS` compile-time static); the two are kept
+  equal by construction from this one value, pinned by a dedicated test
+  (`LoginApiTest#configuredSessionTtlKeepsTheCookieMaxAgeEqualToTheJwtLifetime`).
+  This ruling supersedes C-Q16 ("session TTL is compile-time") for these two
+  classes; the superseded ruling is still named in both classes' docs, not
+  deleted.
+- **`FC_REFRESH_TOKEN_TTL_SECS`** (new canonical), alias
+  `OIDC_REFRESH_TOKEN_TTL`, default 604800 (7d, unchanged) —
+  `Env.refreshTokenTtlSeconds`. Threaded from `Platform` into `OAuthState`
+  and `RefreshRotation` as constructor state (never a static or singleton),
+  reaching `RefreshToken.issue`'s TTL at `/oauth/token` issuance and at
+  rotation. This ruling supersedes C-Q16 ("7 days is the refresh family's
+  absolute cap") for freshly-issued tokens; the superseded ruling is still
+  named in `RefreshToken`'s docs, not deleted.
+  - **Carve-out 1 — `GrantStore` hydration.** The fallback that reconstructs
+    a legacy row's expiry when `expires_at` is `NULL` (`GrantStore.java`,
+    `toRefreshToken`) deliberately keeps the historical `RefreshToken.TTL_SECONDS`
+    constant, never `Env.refreshTokenTtlSeconds()`: it is reconstructing what
+    the row's expiry *was* when it was written, not assigning a fresh TTL. A
+    deploy-time TTL change must not retroactively extend already-issued
+    legacy tokens.
+  - **Carve-out 2 — rotation never extends.** `RefreshRotation.rotate` still
+    calls `RefreshToken.issue` with the configured TTL (so the value has to
+    be threaded through), then immediately overwrites the result with the
+    presented token's own `expiresAt` (`withExpiresAt(stored.expiresAt())`).
+    A family's absolute cap is set once, at first issuance, and rotation
+    never moves it — even when the configured TTL is later raised.
+- Both TTL changes and the callback alias are mirrored to Go per
+  `docs/go-mirror/2026-09-11-deployment-env-handoff.md` §1–§2, per this
+  section's own "Java builds first" note.

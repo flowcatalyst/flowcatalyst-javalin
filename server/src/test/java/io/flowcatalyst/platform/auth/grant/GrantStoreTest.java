@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.auth.grant;
 
 import io.flowcatalyst.testpg.TestPg;
 import org.jooq.DSLContext;
+import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
@@ -151,7 +152,7 @@ class GrantStoreTest {
 
     @Test
     void aRefreshTokenRoundTripsWithItsFamilyMirroredIntoGrantId() {
-        var issued = RefreshToken.issue(principal("t"), NOW);
+        var issued = RefreshToken.issue(principal("t"), NOW, RefreshToken.TTL_SECONDS);
         var t = issued.token().withBinding("oac_rp", List.of("openid", "offline_access"), List.of("clt_1:acme"), NOW.minusSeconds(60))
                 .withFamily("fam-" + RUN).withOrigin("10.0.0.1", "ua");
         STORE.insert(t);
@@ -178,7 +179,7 @@ class GrantStoreTest {
 
     @Test
     void emptyAccessibleClientsIsAnArrayNeverNull() {
-        var t = RefreshToken.issue(principal("ac"), NOW).token();
+        var t = RefreshToken.issue(principal("ac"), NOW, RefreshToken.TTL_SECONDS).token();
         STORE.insert(t);
         JsonNode payload = payload("RefreshToken:" + t.id());
         assertThat(payload.get("accessibleClients").isArray()).isTrue();
@@ -189,7 +190,7 @@ class GrantStoreTest {
 
     @Test
     void revokeByHashSetsRevokedRevokedAtAndConsumedAtSoValidLookupsMiss() {
-        var t = RefreshToken.issue(principal("rv"), NOW).token();
+        var t = RefreshToken.issue(principal("rv"), NOW, RefreshToken.TTL_SECONDS).token();
         STORE.insert(t);
         assertThat(STORE.revokeByHash(t.tokenHash())).isTrue();
         assertThat(STORE.findValidByHash(t.tokenHash())).isEmpty();
@@ -204,9 +205,9 @@ class GrantStoreTest {
     @Test
     void familyAndPrincipalRevocationsHitOnlyTheActiveTokens() {
         String fam = "fam2-" + RUN;
-        var a = RefreshToken.issue(principal("f"), NOW).token().withFamily(fam);
-        var b = RefreshToken.issue(principal("f"), NOW).token().withFamily(fam);
-        var other = RefreshToken.issue(principal("f"), NOW).token().withFamily("fam3-" + RUN);
+        var a = RefreshToken.issue(principal("f"), NOW, RefreshToken.TTL_SECONDS).token().withFamily(fam);
+        var b = RefreshToken.issue(principal("f"), NOW, RefreshToken.TTL_SECONDS).token().withFamily(fam);
+        var other = RefreshToken.issue(principal("f"), NOW, RefreshToken.TTL_SECONDS).token().withFamily("fam3-" + RUN);
         STORE.insert(a);
         STORE.insert(b);
         STORE.insert(other);
@@ -222,10 +223,44 @@ class GrantStoreTest {
 
     @Test
     void markReplacedRecordsTheSuccessorHash() {
-        var t = RefreshToken.issue(principal("mr"), NOW).token();
+        var t = RefreshToken.issue(principal("mr"), NOW, RefreshToken.TTL_SECONDS).token();
         STORE.insert(t);
         assertThat(STORE.markReplaced(t.tokenHash(), "next-hash")).isTrue();
         assertThat(STORE.findByHash(t.tokenHash()).orElseThrow().replacedBy()).isEqualTo("next-hash");
+    }
+
+    /// A row from before `expires_at` was persisted (`expires_at IS NULL`):
+    /// hydration must reconstruct what the row's expiry *was* — the historical
+    /// `RefreshToken.TTL_SECONDS` (7d) — never today's configured
+    /// `Env.refreshTokenTtlSeconds()`, or a deploy-time TTL change would
+    /// retroactively extend an already-issued legacy token. Written as a raw
+    /// insert (never through [GrantStore#insert(RefreshToken)], which always
+    /// stamps `expires_at`) so this is a genuinely null column, not a token
+    /// that merely looks old.
+    @Test
+    void aLegacyRowWithNullExpiresAtHydratesToCreatedPlusSevenDaysRegardlessOfConfiguredTtl() {
+        String id = "legacy-" + RUN;
+        String hash = RefreshToken.hash("raw-" + id);
+        var payload = Json.MAPPER.createObjectNode();
+        payload.put("accountId", principal("legacy"));
+        payload.put("tokenHash", hash);
+        payload.put("scope", "");
+        payload.putArray("accessibleClients");
+        payload.put("revoked", false);
+        payload.put("kind", "RefreshToken");
+        payload.put("iat", NOW.getEpochSecond());
+        DB.insertInto(OAUTH_OIDC_PAYLOADS)
+                .set(OAUTH_OIDC_PAYLOADS.ID, "RefreshToken:" + id)
+                .set(OAUTH_OIDC_PAYLOADS.TYPE, "RefreshToken")
+                .set(OAUTH_OIDC_PAYLOADS.PAYLOAD, JSONB.jsonb(Json.write(payload)))
+                .set(OAUTH_OIDC_PAYLOADS.CREATED_AT, NOW.atOffset(ZoneOffset.UTC))
+                // expires_at intentionally left unset -> NULL, simulating a pre-column row.
+                .execute();
+
+        var read = STORE.findByHash(hash).orElseThrow();
+        assertThat(read.expiresAt())
+                .as("reconstructs the 7d cap this row was written under, never a configured TTL")
+                .isEqualTo(NOW.plusSeconds(7 * 24 * 3600));
     }
 
     // ── pending auth ───────────────────────────────────────────────────────

@@ -232,7 +232,7 @@ public final class Platform {
         var loginAttemptRepo = new LoginAttemptRepository(pool);
         var loginMappingRepo = new EmailDomainMappingRepository(pool);
         var tokenIssuer = new TokenIssuer(signingKeys, new TokenIssuer.Config(env.jwtIssuer(), env.jwtIssuer(),
-                env.jwtAccessTokenTtlSeconds(), TokenIssuer.ID_TOKEN_TTL_SECONDS));
+                env.jwtAccessTokenTtlSeconds(), TokenIssuer.ID_TOKEN_TTL_SECONDS, env.sessionTtlSeconds()));
         var backoff = new BackoffCheck(loginAttemptRepo, BackoffPolicy.fromEnv(env.reader()));
         // The second factor (auth-identity §6): TOTP secrets under the app key, e-mail
         // PINs through the mail transport, the pending /
@@ -255,7 +255,7 @@ public final class Platform {
         var loginState = new LoginApi.State(loginPrincipalRepo, loginMappingRepo,
                 new IdentityProviderRepository(pool), loginAttemptRepo, backoff, tokenIssuer,
                 new DbClaimsResolver(loginPrincipalRepo, new RoleRepository(pool)), mfaGate,
-                new SessionCookie(cookiesSecure), pool, Clock.systemUTC());
+                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()), pool, Clock.systemUTC());
         LoginApi.register(routes, loginState);
         // The 2FA HTTP surface (auth-identity §6.3, §6.4, §6.6, §6.7) and
         // change-password's MFA interplay (§6.8) share LoginApi's own state
@@ -279,7 +279,7 @@ public final class Platform {
         var passkeyRepo = new PasskeyRepository(pool);
         var passkeyService = new PasskeyService(PasskeyService.Config.fromEnv(env.reader(), mfaBranding.platformName()), passkeyRepo);
         PasskeyApi.register(routes, new PasskeyApi.State(passkeyService, passkeyRepo, new CeremonyRepository(pool), loginPrincipalRepo,
-                uow, tokenIssuer, new SessionCookie(cookiesSecure), notices, loginAttemptRepo, backoff, Clock.systemUTC()));
+                uow, tokenIssuer, new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()), notices, loginAttemptRepo, backoff, Clock.systemUTC()));
         // The portal identities are built later (after the OAuth-client store); the reset
         // confirm reaches them through this late-bound seam.
         var portalPasswordsHolder = new java.util.concurrent.atomic.AtomicReference<PortalPasswords>(PortalPasswords.notWired());
@@ -458,12 +458,12 @@ public final class Platform {
         var envReader = env.reader();
         // grantStore was built above, alongside the 2FA / change-password wiring.
         var oauthState = new OAuthState(oauthClientRepo, loginPrincipalRepo, serviceAccountRepo, grantStore,
-                new RefreshRotation(grantStore, Clock.systemUTC()), tokenIssuer, new AccessTokenReader(buildVerifier()),
+                new RefreshRotation(grantStore, Clock.systemUTC(), env.refreshTokenTtlSeconds()), tokenIssuer, new AccessTokenReader(buildVerifier()),
                 new DbClaimsResolver(loginPrincipalRepo, roleRepo), ClaimLabels.of(clientRepo, applicationRepo),
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), loginAttemptRepo,
                 RateLimitStores.build(envReader, pool), RateLimit.Policies.fromEnv(envReader),
                 new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC(),
-                portalAccess, portalAppRepo);
+                portalAccess, portalAppRepo, env.refreshTokenTtlSeconds());
         OAuthIpLimits.register(routes, oauthState, new Governor(Governor.Config.oauthTokenIp(envReader)));
         OAuthAuthorizeApi.register(routes, oauthState);
         OAuthTokenApi.register(routes, oauthState);
@@ -488,7 +488,7 @@ public final class Platform {
         var sinkHolder = new java.util.concurrent.atomic.AtomicReference<PortalSso>();
         var bridgeState = new OidcBridgeApi.State(oidcClients, loginStateRepo, loginPrincipalRepo,
                 loginMappingRepo, identityProviderRepo, idpRoleMappingRepo, roleRepo, oauthClientRepo, uow,
-                tokenIssuer, new SessionCookie(cookiesSecure),
+                tokenIssuer, new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), env.jwtIssuer(), Clock.systemUTC());
         OidcBridgeApi.register(routes, bridgeState);
         var portalSso = new PortalSso(new PortalSso.State(portalLoginFlowRepo, portalIdentityRepo, clientRepo, portalAppRepo, uow, grantStore,

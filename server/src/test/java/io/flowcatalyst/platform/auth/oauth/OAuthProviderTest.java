@@ -192,10 +192,10 @@ class OAuthProviderTest {
 
     private static OAuthState state() {
         return new OAuthState(CLIENTS, PRINCIPALS, new ServiceAccountRepository(DS, Optional.of(ENC)), GRANTS,
-                new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
+                new RefreshRotation(GRANTS, Clock.systemUTC(), RefreshToken.TTL_SECONDS), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
                 RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.of(ENC),
                 ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
-                governor, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
+                governor, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS, RefreshToken.TTL_SECONDS);
     }
 
     @AfterAll
@@ -557,7 +557,7 @@ class OAuthProviderTest {
 
     @Test
     void slashAuthRefreshMintsAFullAuthorityApiTokenForAnUnboundToken() throws Exception {
-        var issued = RefreshToken.issue(userId, Instant.now());
+        var issued = RefreshToken.issue(userId, Instant.now(), RefreshToken.TTL_SECONDS);
         GRANTS.insert(issued.token().withFamily(issued.token().id()));
         var r = http.post("/auth/refresh", Json.write(Map.of("refreshToken", issued.raw())));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -725,10 +725,10 @@ class OAuthProviderTest {
         });
         try {
             OAuthState noEnc = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS,
-                    new RefreshRotation(GRANTS, Clock.systemUTC()), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
+                    new RefreshRotation(GRANTS, Clock.systemUTC(), RefreshToken.TTL_SECONDS), ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER),
                     RESOLVER, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)), Optional.empty(),
                     ATTEMPTS, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())),
-                    new Governor(new Governor.Config(60, 1000)), KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
+                    new Governor(new Governor.Config(60, 1000)), KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS, RefreshToken.TTL_SECONDS);
             try (var h = TestHttp.routes(routes -> {
                 HttpError.install(routes);
                 OAuthTokenApi.register(routes, noEnc);
@@ -804,9 +804,9 @@ class OAuthProviderTest {
         Governor tight = new Governor(new Governor.Config(1, 1));
         try (var h = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            OAuthState s = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
+            OAuthState s = new OAuthState(CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC(), RefreshToken.TTL_SECONDS),
                     ISSUER_UNDER_TEST, new AccessTokenReader(VERIFIER), RESOLVER, ClaimLabels.none(), Optional.of(ENC), null,
-                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS);
+                    null, RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), tight, KEYS, ISSUER, Clock.systemUTC(), null, PORTAL_APPS, RefreshToken.TTL_SECONDS);
             OAuthTokenApi.register(routes, s);
         })) {
             String form = "grant_type=client_credentials";

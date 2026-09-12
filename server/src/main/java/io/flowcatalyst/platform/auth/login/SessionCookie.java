@@ -7,17 +7,26 @@ import io.flowcatalyst.http.HttpCookie;
 
 /// The `fc_session` cookie's attributes (`docs/spec/auth-core.md` §6.1,
 /// "Cookie attributes"): `Path=/`, `HttpOnly`, `SameSite=Lax`, `Max-Age`
-/// 24 h, `Secure` unless test headers are allowed (a local HTTP dev box).
+/// configurable (default 24 h; the deployed environment sets 8 h — owner
+/// ruling 2026-09-11 supersedes C-Q16's "session TTL is compile-time",
+/// `docs/spec/deployed-dispatch.md` §4), `Secure` unless test headers are
+/// allowed (a local HTTP dev box). `maxAgeSeconds` must equal the session
+/// JWT's lifetime ([TokenIssuer.Config#sessionTtlSeconds()]) — the two are
+/// set independently by the composition root and nothing else enforces they
+/// agree.
 public final class SessionCookie {
 
     public static final String NAME = Authenticator.SESSION_COOKIE;
-    public static final int MAX_AGE_SECONDS = (int) TokenIssuer.SESSION_TTL_SECONDS;
 
+    private final int maxAgeSeconds;
     private final boolean secure;
 
-    /// @param secure `!FC_AUTH_ALLOW_TEST_HEADERS` (Go `CookieSecure`)
-    public SessionCookie(boolean secure) {
+    /// @param secure        `!FC_AUTH_ALLOW_TEST_HEADERS` (Go `CookieSecure`)
+    /// @param maxAgeSeconds the cookie's `Max-Age` — must equal the minting
+    ///                      [TokenIssuer]'s `config().sessionTtlSeconds()`
+    public SessionCookie(boolean secure, int maxAgeSeconds) {
         this.secure = secure;
+        this.maxAgeSeconds = maxAgeSeconds;
     }
 
     public boolean secure() {
@@ -25,7 +34,7 @@ public final class SessionCookie {
     }
 
     public void set(Exchange ctx, String token) {
-        ctx.cookie(new HttpCookie(NAME, token, "/", MAX_AGE_SECONDS, true, secure, HttpCookie.SameSite.LAX));
+        ctx.cookie(new HttpCookie(NAME, token, "/", maxAgeSeconds, true, secure, HttpCookie.SameSite.LAX));
     }
 
     /// An expired cookie with the same attributes — Go writes `MaxAge: -1`,

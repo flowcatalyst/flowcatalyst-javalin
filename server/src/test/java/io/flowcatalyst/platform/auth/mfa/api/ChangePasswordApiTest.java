@@ -117,7 +117,7 @@ class ChangePasswordApiTest {
         // ChangePasswordApi only reaches into LoginApi.State for principals/writes/clock;
         // attempts and backoff are unused here, so both are left null together.
         var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, null, null, TOKEN_ISSUER, RESOLVER,
-                io.flowcatalyst.platform.auth.login.MfaChallenge.none(), new SessionCookie(false), DS, Clock.systemUTC());
+                io.flowcatalyst.platform.auth.login.MfaChallenge.none(), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
         var state = new ChangePasswordApi.State(loginState, MFA, DEVICE_COOKIE, GRANTS, NOTIFIER);
 
         http = TestHttp.routes(routes -> {
@@ -150,7 +150,7 @@ class ChangePasswordApiTest {
         String pid = principal(email, PasswordHash.hash(PASSWORD));
         MFA.issueTrustedDevice(pid, "Mozilla", java.time.Duration.ofDays(7));
         assertThat(MFA.listTrustedDevices(pid)).isNotEmpty();
-        var issuedRefresh = RefreshToken.issue(pid, Instant.now());
+        var issuedRefresh = RefreshToken.issue(pid, Instant.now(), RefreshToken.TTL_SECONDS);
         GRANTS.insert(issuedRefresh.token());
         assertThat(GRANTS.findValidByHash(issuedRefresh.token().tokenHash())).isPresent();
 

@@ -224,10 +224,27 @@ class TokenIssuerTest {
         assertThat(r).as("no aud is what lets the middleware's audience guard pass cookies")
                 .doesNotContainKey("aud").doesNotContainKey("clients").doesNotContainKey("roles")
                 .doesNotContainKey("applications").doesNotContainKey("scope").doesNotContainKey("token_use");
-        assertThat(r.get("exp")).isEqualTo(NOW.plusSeconds(24 * 3600).getEpochSecond());
+        assertThat(r.get("exp")).isEqualTo(NOW.plusSeconds(ISSUER_UNDER_TEST.config().sessionTtlSeconds()).getEpochSecond());
         assertThat(kid(token)).as("sessiontoken.Mint stamps no kid").isNull();
         // And the verifier accepts it as a session (no audience → passes).
         assertThat(verified(token).subject()).isEqualTo("prn_user");
+    }
+
+    /// Pins that the session `exp` actually comes from `Config.sessionTtlSeconds()`,
+    /// not a compile-time constant (owner ruling 2026-09-11 supersedes C-Q16,
+    /// `docs/spec/deployed-dispatch.md` §4): a configured TTL of 8h must produce
+    /// `exp == iat + 28800`, not the old hardcoded 24h. A mutant that hardcodes
+    /// [TokenIssuer#SESSION_TTL_SECONDS] back into [TokenIssuer#sessionToken]
+    /// would still pass every other test here but fails this one.
+    @Test
+    void sessionTokenExpiryComesFromTheConfiguredTtlNotAHardcodedConstant() {
+        long configuredTtl = 8 * 3600L; // the deployed OIDC_SESSION_TTL value
+        var issuer = new TokenIssuer(KEYS, new TokenIssuer.Config(ISSUER, ISSUER, TokenIssuer.ACCESS_TTL_SECONDS,
+                TokenIssuer.ID_TOKEN_TTL_SECONDS, configuredTtl), Clock.fixed(NOW, ZoneOffset.UTC));
+        var r = raw(issuer.sessionToken("prn_user", "ann@example.com"));
+        assertThat(r.get("exp")).isEqualTo(NOW.plusSeconds(configuredTtl).getEpochSecond());
+        assertThat(r.get("exp")).as("must differ from the old hardcoded 24h default")
+                .isNotEqualTo(NOW.plusSeconds(24 * 3600).getEpochSecond());
     }
 
     @Test

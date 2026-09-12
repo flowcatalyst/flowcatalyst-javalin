@@ -49,6 +49,8 @@ import java.util.Optional;
 /// @param portalSubjects  the portal plane's identities for `ptu_` codes; nullable ⇒ portal codes refused
 /// @param portalApps      resolves "the app for OAuth client X" for the redemption gate
 ///                        (`docs/spec/portal-apps.md` §2.4, §5.3)
+/// @param refreshTtlSeconds the TTL a freshly-issued refresh token gets (`Env.refreshTokenTtlSeconds()`;
+///                          owner ruling 2026-09-11 supersedes C-Q16, `docs/spec/deployed-dispatch.md` §4)
 public record OAuthState(
         OAuthClientRepository oauthClients,
         PrincipalRepository principals,
@@ -68,7 +70,8 @@ public record OAuthState(
         String baseUrl,
         Clock clock,
         PortalSubjects portalSubjects,
-        PortalAppRepository portalApps) {
+        PortalAppRepository portalApps,
+        long refreshTtlSeconds) {
 
     private static final Logger LOG = LoggerFactory.getLogger(OAuthState.class);
 

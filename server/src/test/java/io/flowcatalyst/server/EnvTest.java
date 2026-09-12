@@ -25,6 +25,8 @@ class EnvTest {
         assertThat(env.databaseUrl()).isEqualTo("postgresql://postgres@localhost:5432/flowcatalyst");
         assertThat(env.jwtIssuer()).isEqualTo("http://localhost:8080");
         assertThat(env.jwtAccessTokenTtlSeconds()).isEqualTo(3600L);
+        assertThat(env.sessionTtlSeconds()).isEqualTo(86400L);
+        assertThat(env.refreshTokenTtlSeconds()).isEqualTo(604800L);
 
         assertThat(env.platformEnabled()).isTrue();
         assertThat(env.routerEnabled()).isFalse();
@@ -452,5 +454,83 @@ class EnvTest {
     void accessTokenTtlIsReadFromTheGoVariable() {
         assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "120")).jwtAccessTokenTtlSeconds()).isEqualTo(120L);
         assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "not-a-number")).jwtAccessTokenTtlSeconds()).isEqualTo(3600L);
+    }
+
+    /// The four deployed-environment variables the ECS task definitions set
+    /// and Java previously ignored (owner ruling 2026-09-11,
+    /// `docs/spec/deployed-dispatch.md` §4 / `docs/go-mirror/2026-09-11-deployment-env-handoff.md`):
+    /// the `FC_*` canonical name wins when both are set, the alias alone is
+    /// honoured, neither set yields the documented default, and an
+    /// unparseable canonical value falls through to the alias rather than
+    /// straight to the default (`EnvReader#integerAlias`/`#longAlias`
+    /// semantics). A mutant that reads only the canonical name, or that
+    /// swaps precedence, fails at least one line here.
+    @Test
+    void accessTokenTtlHonoursTheDeployedOidcAlias() {
+        assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "120", "OIDC_ACCESS_TOKEN_TTL", "999")).jwtAccessTokenTtlSeconds())
+                .as("canonical wins over the alias").isEqualTo(120L);
+        assertThat(Env.load(Map.of("OIDC_ACCESS_TOKEN_TTL", "1800")).jwtAccessTokenTtlSeconds())
+                .as("alias alone is honoured").isEqualTo(1800L);
+        assertThat(Env.load(Map.of()).jwtAccessTokenTtlSeconds()).as("neither set: the documented default").isEqualTo(3600L);
+        assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "not-a-number", "OIDC_ACCESS_TOKEN_TTL", "1800")).jwtAccessTokenTtlSeconds())
+                .as("unparseable canonical falls through to the alias").isEqualTo(1800L);
+    }
+
+    @Test
+    void sessionTtlHonoursTheDeployedOidcAliasAndDefaultsToTwentyFourHours() {
+        assertThat(Env.load(Map.of("FC_SESSION_TTL_SECS", "3600", "OIDC_SESSION_TTL", "28800")).sessionTtlSeconds())
+                .as("canonical wins over the alias").isEqualTo(3600L);
+        assertThat(Env.load(Map.of("OIDC_SESSION_TTL", "28800")).sessionTtlSeconds())
+                .as("alias alone is honoured — the deployed 8h value").isEqualTo(28800L);
+        assertThat(Env.load(Map.of()).sessionTtlSeconds()).as("neither set: today's 24h default").isEqualTo(86400L);
+        assertThat(Env.load(Map.of("FC_SESSION_TTL_SECS", "not-a-number", "OIDC_SESSION_TTL", "28800")).sessionTtlSeconds())
+                .as("unparseable canonical falls through to the alias").isEqualTo(28800L);
+    }
+
+    @Test
+    void refreshTokenTtlHonoursTheDeployedOidcAliasAndDefaultsToSevenDays() {
+        assertThat(Env.load(Map.of("FC_REFRESH_TOKEN_TTL_SECS", "3600", "OIDC_REFRESH_TOKEN_TTL", "2592000")).refreshTokenTtlSeconds())
+                .as("canonical wins over the alias").isEqualTo(3600L);
+        assertThat(Env.load(Map.of("OIDC_REFRESH_TOKEN_TTL", "2592000")).refreshTokenTtlSeconds())
+                .as("alias alone is honoured — the deployed 30d value").isEqualTo(2592000L);
+        assertThat(Env.load(Map.of()).refreshTokenTtlSeconds()).as("neither set: today's 7d default").isEqualTo(604800L);
+        assertThat(Env.load(Map.of("FC_REFRESH_TOKEN_TTL_SECS", "not-a-number", "OIDC_REFRESH_TOKEN_TTL", "2592000")).refreshTokenTtlSeconds())
+                .as("unparseable canonical falls through to the alias").isEqualTo(2592000L);
+    }
+
+    /// Go's `positiveOr` (`internal/server/envcfg.go`) sends a zero or negative
+    /// TTL to the default. Java must too, and for two different reasons that
+    /// each bite a different variable: a non-positive `OIDC_SESSION_TTL` or
+    /// `OIDC_ACCESS_TOKEN_TTL` reaches `TokenIssuer.Config`, which rejects it and
+    /// **refuses to start the platform**; a negative `OIDC_REFRESH_TOKEN_TTL`
+    /// reaches nothing at all and silently mints refresh tokens that expired
+    /// before they were handed out. Neither is what the deployed environment
+    /// gets from Go, so neither may be what it gets from Java.
+    @Test
+    void aNonPositiveTtlFallsBackToTheDefaultRatherThanReachingTheCaller() {
+        assertThat(Env.load(Map.of("OIDC_SESSION_TTL", "0")).sessionTtlSeconds())
+                .as("zero session TTL would refuse to start; Go uses 24h").isEqualTo(86400L);
+        assertThat(Env.load(Map.of("OIDC_SESSION_TTL", "-5")).sessionTtlSeconds())
+                .as("negative session TTL would refuse to start; Go uses 24h").isEqualTo(86400L);
+        assertThat(Env.load(Map.of("OIDC_REFRESH_TOKEN_TTL", "-5")).refreshTokenTtlSeconds())
+                .as("a negative refresh TTL would mint already-expired tokens").isEqualTo(604800L);
+        assertThat(Env.load(Map.of("FC_JWT_ACCESS_TOKEN_TTL_SECS", "-5")).jwtAccessTokenTtlSeconds())
+                .as("negative access TTL would refuse to start; Go uses 1h").isEqualTo(3600L);
+        assertThat(Env.load(Map.of("FC_SESSION_TTL_SECS", "-5", "OIDC_SESSION_TTL", "28800")).sessionTtlSeconds())
+                .as("a non-positive canonical takes the default, it does not fall through to the alias — Go's positiveOr(envIntAlias(..)) nests the same way")
+                .isEqualTo(86400L);
+    }
+
+    @Test
+    void dispatchProcessingEndpointHonoursTheDeployedSchedulerAlias() {
+        assertThat(Env.load(Map.of("FC_DISPATCH_PROCESSING_ENDPOINT", "http://a", "DISPATCH_SCHEDULER_PROCESSING_ENDPOINT", "http://b"))
+                .dispatchProcessingEndpoint()).as("canonical wins over the alias").isEqualTo("http://a");
+        assertThat(Env.load(Map.of("DISPATCH_SCHEDULER_PROCESSING_ENDPOINT", "http://fc-platform:8080/api/dispatch/process"))
+                .dispatchProcessingEndpoint()).as("alias alone is honoured — the deployed Service Connect name")
+                .isEqualTo("http://fc-platform:8080/api/dispatch/process");
+        assertThat(Env.load(Map.of()).dispatchProcessingEndpoint())
+                .as("neither set: the computed localhost default").isEqualTo("http://localhost:8080/api/dispatch/process");
+        // Unlike the numeric TTLs, this pair is string-valued, so `firstSet` decides on
+        // "set" not "parses" — there is no unparseable form to fall through from.
     }
 }

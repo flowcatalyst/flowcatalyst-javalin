@@ -321,7 +321,7 @@ public final class OAuthTokenApi {
         String idToken = scopeHas(scope, "openid") ? InteractiveMint.idToken(s, p, code.clientId(), client, code.nonce(), code.authTime()) : null;
         String refreshRaw = null;
         if (scopeHas(scope, "offline_access")) {
-            RefreshToken.Issued issued = RefreshToken.issue(p.id(), now);
+            RefreshToken.Issued issued = RefreshToken.issue(p.id(), now, s.refreshTtlSeconds());
             // A new family rooted at this first token, bound to the code's
             // client, carrying the sign-in time forward.
             RefreshToken entity = issued.token()

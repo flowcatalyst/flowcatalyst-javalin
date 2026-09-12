@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
+import io.flowcatalyst.platform.auth.grant.RefreshToken;
 import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
 import io.flowcatalyst.platform.auth.oauth.OAuthState;
 import io.flowcatalyst.platform.auth.oauth.OAuthTokenApi;
@@ -129,12 +130,12 @@ class ServiceAccountApiTest {
         var grants = new GrantStore(TestPg.dataSource());
         var issuer = new TokenIssuer(OAUTH_KEYS, TokenIssuer.Config.of(OAUTH_ISSUER));
         var oauthVerifier = new JwtVerifier(new JwtVerifier.Config(OAUTH_ISSUER, new JwtVerifier.RsaKeys(OAUTH_KEYS.publicKey())));
-        var oauthState = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, SA_REPO, grants, new RefreshRotation(grants, Clock.systemUTC()),
+        var oauthState = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, SA_REPO, grants, new RefreshRotation(grants, Clock.systemUTC(), RefreshToken.TTL_SECONDS),
                 issuer, new AccessTokenReader(oauthVerifier), new DbClaimsResolver(PRINCIPALS, ROLES),
                 ClaimLabels.of(new ClientRepository(TestPg.dataSource()), new ApplicationRepository(TestPg.dataSource())),
                 ENCRYPTION, null, new RateLimit.NoopStore(), RateLimit.Policies.fromEnv(new EnvReader(Map.of())),
                 new Governor(new Governor.Config(1000, 1_000_000)), OAUTH_KEYS, OAUTH_ISSUER, Clock.systemUTC(), null,
-                new io.flowcatalyst.platform.portalapp.PortalAppRepository(TestPg.dataSource()));
+                new io.flowcatalyst.platform.portalapp.PortalAppRepository(TestPg.dataSource()), RefreshToken.TTL_SECONDS);
         oauthHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
             OAuthTokenApi.register(routes, oauthState);

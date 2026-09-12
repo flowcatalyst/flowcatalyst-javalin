@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.testpg.TestPg;
+import com.nimbusds.jwt.SignedJWT;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -34,6 +35,7 @@ import javax.sql.DataSource;
 import java.net.http.HttpResponse;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.text.ParseException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -42,6 +44,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_LOGIN_ATTEMPTS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
@@ -119,7 +122,7 @@ class LoginApiTest {
 
     private static LoginApi.State state(LoginAttemptRepository attempts, BackoffCheck backoff, MfaChallenge mfa) {
         return new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, attempts, backoff, ISSUER_UNDER_TEST, RESOLVER, mfa,
-                new SessionCookie(false), DS, Clock.systemUTC());
+                new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
     }
 
     // ── login ──────────────────────────────────────────────────────────────
@@ -147,6 +150,46 @@ class LoginApiTest {
         assertThat(attempts(userEmail) - before).as("one SUCCESS row").isEqualTo(1);
         assertThat(lastAttempt(userEmail).get(IAM_LOGIN_ATTEMPTS.OUTCOME)).isEqualTo("SUCCESS");
         assertThat(lastAttempt(userEmail).get(IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID)).isEqualTo(userId);
+    }
+
+    /// The cookie `Max-Age` (`SessionCookie`) and the session JWT's `exp`
+    /// (`TokenIssuer`) are set independently by the composition root from
+    /// what is now one setting (`Env.sessionTtlSeconds`, owner ruling
+    /// 2026-09-11 supersedes C-Q16, `docs/spec/deployed-dispatch.md` §4) —
+    /// nothing in the type system stops them drifting. Runs its own server
+    /// with a deliberately non-default TTL (3600s, not the 86400s the shared
+    /// `http` above uses) so a mutant that wires the configured value into
+    /// only one of the two classes fails this test even though each half
+    /// looks right in isolation against the default.
+    @Test
+    void configuredSessionTtlKeepsTheCookieMaxAgeEqualToTheJwtLifetime() throws ParseException {
+        long configuredTtl = 3600L;
+        var issuer = new TokenIssuer(KEYS, new TokenIssuer.Config(ISSUER, ISSUER, TokenIssuer.ACCESS_TTL_SECONDS,
+                TokenIssuer.ID_TOKEN_TTL_SECONDS, configuredTtl));
+        var state = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS,
+                new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), issuer, RESOLVER, MfaChallenge.none(),
+                new SessionCookie(false, (int) configuredTtl), DS, Clock.systemUTC());
+        try (var h = TestHttp.routes(routes -> LoginApi.register(routes, state))) {
+            var r = h.post("/auth/login", body(userEmail, PASSWORD), "Content-Type", "application/json");
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            String cookie = r.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_session="))
+                    .findFirst().orElseThrow(() -> new AssertionError("no fc_session cookie in " + r.headers().map()));
+
+            var maxAge = Pattern.compile("Max-Age=(\\d+)").matcher(cookie);
+            assertThat(maxAge.find()).as("cookie carries a Max-Age").isTrue();
+            long cookieMaxAge = Long.parseLong(maxAge.group(1));
+            assertThat(cookieMaxAge).as("cookie Max-Age reflects the configured TTL, not the 86400s default")
+                    .isEqualTo(configuredTtl);
+
+            String raw = cookie.substring("fc_session=".length(), cookie.indexOf(';'));
+            var claims = SignedJWT.parse(raw).getJWTClaimsSet();
+            long jwtLifetime = claims.getExpirationTime().toInstant().getEpochSecond()
+                    - claims.getIssueTime().toInstant().getEpochSecond();
+            assertThat(jwtLifetime).as("the JWT's own lifetime reflects the same configured TTL")
+                    .isEqualTo(configuredTtl);
+            assertThat(cookieMaxAge).as("the invariant: the two must never drift from each other")
+                    .isEqualTo(jwtLifetime);
+        }
     }
 
     @Test

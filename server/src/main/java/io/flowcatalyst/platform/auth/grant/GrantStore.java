@@ -291,6 +291,11 @@ public final class GrantStore {
                 text(p, "userAgent"),
                 epochOrNull(p, "authTime"),
                 createdAt,
+                // Deliberately the historical constant, not `Env.refreshTokenTtlSeconds()`:
+                // this reconstructs what a legacy row's expiry *was* when it was written
+                // (before `expires_at` was persisted), not what a new token's TTL should
+                // be. Making it configurable would retroactively extend already-issued
+                // tokens whenever the deployed TTL changes.
                 exp == null ? createdAt.plusSeconds(RefreshToken.TTL_SECONDS) : exp.toInstant());
     }
 

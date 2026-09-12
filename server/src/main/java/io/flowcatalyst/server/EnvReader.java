@@ -93,6 +93,26 @@ public record EnvReader(Map<String, String> env) {
         return parseLong(get(key)).orElse(def);
     }
 
+    /// [#integerAlias(String, String, int)]'s `long` counterpart: `key` first,
+    /// then `alias`; each is only taken when it both is set and parses — an
+    /// unparseable primary falls through to the alias.
+    public long longAlias(String key, String alias, long def) {
+        var primary = parseLong(get(key));
+        if (primary.isPresent()) return primary.get();
+        return parseLong(get(alias)).orElse(def);
+    }
+
+    /// [#longAlias] behind Go's `positiveOr` guard (`internal/server/envcfg.go`):
+    /// a resolved value of zero or less is not a usable duration, so it falls
+    /// back to `def` instead of reaching the caller. Without this, a deployed
+    /// `OIDC_SESSION_TTL=0` refuses to start (`TokenIssuer.Config` rejects a
+    /// non-positive TTL) and a negative `OIDC_REFRESH_TOKEN_TTL` silently mints
+    /// already-expired refresh tokens — Go quietly uses the default for both.
+    public long positiveLongAlias(String key, String alias, long def) {
+        long resolved = longAlias(key, alias, def);
+        return resolved > 0 ? resolved : def;
+    }
+
     /// `envBool`: `1/true/yes/on` → `true`, `0/false/no/off` → `false`
     /// (case-insensitive, surrounding whitespace ignored); anything else,
     /// including unset, → `def`.

@@ -30,7 +30,7 @@ class RefreshRotationTest {
     private static final Instant NOW = Instant.now().minusSeconds(1).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final GrantStore STORE = new GrantStore(DS, CLOCK);
-    private static final RefreshRotation ROTATION = new RefreshRotation(STORE, CLOCK);
+    private static final RefreshRotation ROTATION = new RefreshRotation(STORE, CLOCK, RefreshToken.TTL_SECONDS);
 
     private static String principal(String suffix) {
         return "prn_rot" + RUN + suffix;
@@ -46,7 +46,7 @@ class RefreshRotationTest {
     void aValidTokenIsRotatedWithItsLineageAndTheFamilysExpiryCapInherited() {
         Instant authTime = NOW.minusSeconds(500);
         Instant cap = NOW.plusSeconds(3600); // a family already six days old
-        var issued = RefreshToken.issue(principal("a"), NOW);
+        var issued = RefreshToken.issue(principal("a"), NOW, RefreshToken.TTL_SECONDS);
         var t = issued.token().withBinding("oac_rp", List.of("openid", "offline_access"), List.of("clt_1"), authTime)
                 .withFamily("fam-" + RUN).withExpiresAt(cap);
         STORE.insert(t);
@@ -70,9 +70,33 @@ class RefreshRotationTest {
         assertThat(STORE.findValidByHash(RefreshToken.hash(r.newRaw().orElseThrow()))).isPresent();
     }
 
+    /// Rotation must not extend the family cap even when the rotator is
+    /// configured with a **longer** TTL than the family was originally
+    /// issued under (a deploy that raises `OIDC_REFRESH_TOKEN_TTL` from 7d to
+    /// 30d must not retroactively extend refresh families that predate the
+    /// change). `RefreshRotation.rotate` calls `RefreshToken.issue(..,
+    /// refreshTtlSeconds)` and then overwrites the result with the stored
+    /// token's own expiry — this pins that the overwrite actually happens: a
+    /// mutant that drops `.withExpiresAt(stored.expiresAt())` would leak the
+    /// rotator's own (here, much longer) configured TTL into the replacement.
+    @Test
+    void rotationNeverExtendsPastTheOriginalCapEvenWithALongerConfiguredTtl() {
+        long thirtyDays = 30L * 24 * 3600; // far longer than the family's own cap below
+        var longTtlRotation = new RefreshRotation(STORE, CLOCK, thirtyDays);
+        Instant shortCap = NOW.plusSeconds(60); // the family's own, much nearer cap
+        var issued = RefreshToken.issue(principal("longttl"), NOW, RefreshToken.TTL_SECONDS);
+        STORE.insert(issued.token().withFamily("famlongttl-" + RUN).withExpiresAt(shortCap));
+
+        var r = longTtlRotation.rotate(issued.raw(), null);
+        assertThat(r.rotated()).isTrue();
+        assertThat(r.replacement().orElseThrow().expiresAt())
+                .as("inherits the family's own nearer cap, never the rotator's longer configured TTL")
+                .isEqualTo(shortCap);
+    }
+
     @Test
     void aLegacyTokenWithoutAFamilyRootsOneAtItsReplacement() {
-        var issued = RefreshToken.issue(principal("l"), NOW);
+        var issued = RefreshToken.issue(principal("l"), NOW, RefreshToken.TTL_SECONDS);
         STORE.insert(issued.token()); // tokenFamily null, grant_id null
         var r = ROTATION.rotate(issued.raw(), null);
         var next = r.replacement().orElseThrow();
@@ -81,7 +105,7 @@ class RefreshRotationTest {
 
     @Test
     void replayOfARotatedOutTokenRevokesTheWholeFamily() {
-        var issued = RefreshToken.issue(principal("r"), NOW);
+        var issued = RefreshToken.issue(principal("r"), NOW, RefreshToken.TTL_SECONDS);
         STORE.insert(issued.token().withFamily("famr-" + RUN));
         var first = ROTATION.rotate(issued.raw(), null);
         String liveRaw = first.newRaw().orElseThrow();
@@ -96,7 +120,7 @@ class RefreshRotationTest {
 
     @Test
     void aBindingRefusalRotatesNothing() {
-        var issued = RefreshToken.issue(principal("b"), NOW);
+        var issued = RefreshToken.issue(principal("b"), NOW, RefreshToken.TTL_SECONDS);
         STORE.insert(issued.token().withBinding("oac_other", List.of(), List.of(), null).withFamily("famb-" + RUN));
         assertThatThrownBy(() -> ROTATION.rotate(issued.raw(), stored -> "Token was not issued to this client"))
                 .isInstanceOf(RefreshRotation.NotAuthorized.class)
@@ -108,7 +132,7 @@ class RefreshRotationTest {
     @Test
     void anUnknownOrExpiredTokenIsInvalidWithoutSideEffects() {
         assertThat(ROTATION.rotate("never-issued", null)).isEqualTo(RefreshRotation.Result.INVALID);
-        var issued = RefreshToken.issue(principal("x"), NOW);
+        var issued = RefreshToken.issue(principal("x"), NOW, RefreshToken.TTL_SECONDS);
         STORE.insert(issued.token().withExpiresAt(NOW.minusSeconds(1)));
         assertThat(ROTATION.rotate(issued.raw(), null).rotated()).isFalse();
     }

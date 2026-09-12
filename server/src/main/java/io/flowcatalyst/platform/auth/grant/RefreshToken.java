@@ -49,7 +49,15 @@ public record RefreshToken(
         Instant createdAt,
         Instant expiresAt) {
 
-    /// `refreshTokenDefaultExpiry`: seven days — also the family's absolute cap (ruling C-Q16).
+    /// `refreshTokenDefaultExpiry`: seven days — also the family's absolute cap.
+    /// Ruling C-Q16 made this compile-time; superseded 2026-09-11
+    /// (`docs/spec/deployed-dispatch.md` §4) for **freshly issued** tokens —
+    /// the deployed environment sets `OIDC_REFRESH_TOKEN_TTL=2592000` (30d)
+    /// and [#issue(String, Instant, long)] must honour it. This constant
+    /// remains the default for callers that don't have a configured value,
+    /// and stays the fixed reconstruction TTL `GrantStore` hydration uses for
+    /// legacy rows whose `expires_at` is null (`GrantStore.java`) — that value
+    /// is what those rows' expiry *was*, not what a new token's should be.
     public static final long TTL_SECONDS = 7 * 24 * 3600;
 
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -72,10 +80,13 @@ public record RefreshToken(
         }
     }
 
-    public static Issued issue(String principalId, Instant now) {
+    /// @param ttlSeconds the family's absolute cap at issuance — `Env.refreshTokenTtlSeconds()`
+    ///                   through the composition root, never a static default (owner ruling
+    ///                   2026-09-11 supersedes C-Q16, `docs/spec/deployed-dispatch.md` §4)
+    public static Issued issue(String principalId, Instant now, long ttlSeconds) {
         String raw = generateRaw();
         return new Issued(raw, new RefreshToken(Tsid.generate(), hash(raw), principalId, null, List.of(), List.of(),
-                false, null, null, null, null, null, null, null, now, now.plusSeconds(TTL_SECONDS)));
+                false, null, null, null, null, null, null, null, now, now.plusSeconds(ttlSeconds)));
     }
 
     /// 32 random bytes, unpadded base64url.

@@ -276,13 +276,13 @@ changed to produce this table.
 | `MESSAGE_ROUTER_ENABLED` | platform, worker, router | **aliased** | `Env.routerEnabled` — `FC_ROUTER_ENABLED` → `MESSAGE_ROUTER_ENABLED`. |
 | `STANDBY_ENABLED` | platform, worker | **aliased** | `Env.standbyEnabled` — third in `FC_STANDBY_ENABLED` → `FLOWCATALYST_STANDBY_ENABLED` → `STANDBY_ENABLED`. |
 | `EXTERNAL_BASE_URL` | platform | **aliased** | `Env.jwtIssuer` — third in `FC_JWT_ISSUER` → `FC_EXTERNAL_BASE_URL` → `EXTERNAL_BASE_URL`. |
-| `OIDC_ACCESS_TOKEN_TTL` | platform | **⚠ IGNORED — unknown to Java** | Java's own access-token TTL knob is `FC_JWT_ACCESS_TOKEN_TTL_SECS` (default 3600 — coincidentally the same value the IaC sets for `OIDC_ACCESS_TOKEN_TTL`, but by default, not by reading this name). No alias to `OIDC_ACCESS_TOKEN_TTL` exists. |
-| `OIDC_SESSION_TTL` | platform | **⚠ IGNORED — unknown to Java** | `TokenIssuer.SESSION_TTL_SECONDS` is a **hardcoded constant** `24 * 3600` (86400s / 24h). The IaC sets `28800` (8h) expecting it to be honoured — it is not read at all, and the hardcoded Java value (24h) is 3× longer than the IaC's intent. This is a behavioural drift, not just an unused variable. |
-| `OIDC_REFRESH_TOKEN_TTL` | platform | **⚠ IGNORED — unknown to Java** | No reference anywhere in `server/src/main/java`; `TokenIssuer` has no refresh-token-TTL concept found. |
+| `OIDC_ACCESS_TOKEN_TTL` | platform | **aliased** | `Env.jwtAccessTokenTtlSeconds` — `FC_JWT_ACCESS_TOKEN_TTL_SECS` → `OIDC_ACCESS_TOKEN_TTL`, default 3600, via `EnvReader.longAlias`. Fixed 2026-09-12 (`docs/spec/deployed-dispatch.md` §4). |
+| `OIDC_SESSION_TTL` | platform | **aliased** | `Env.sessionTtlSeconds` — `FC_SESSION_TTL_SECS` (new) → `OIDC_SESSION_TTL`, default 86400 (24h). Threaded into `TokenIssuer.Config.sessionTtlSeconds` (the session JWT `exp`) and `SessionCookie`'s `Max-Age`, kept equal. Fixed 2026-09-12 — **this shortens prod sessions from 24h to 8h at deploy**, the owner's decision (`docs/spec/deployed-dispatch.md` §4). |
+| `OIDC_REFRESH_TOKEN_TTL` | platform | **aliased** | `Env.refreshTokenTtlSeconds` — `FC_REFRESH_TOKEN_TTL_SECS` (new) → `OIDC_REFRESH_TOKEN_TTL`, default 604800 (7d). Threaded through `Platform` into `RefreshToken.issue`'s TTL at fresh issuance and `OAuthState`/`RefreshRotation`'s TTL for `/oauth/token` and rotation. **Two deliberate carve-outs**: `GrantStore`'s null-`expires_at` hydration fallback keeps the historical 7-day constant (a legacy row's expiry as it *was*, not a new TTL), and rotation still never extends a family's cap regardless of this value. Fixed 2026-09-12. |
 | `FC_WEBAUTHN_RP_ID` | platform | **read** | `Env.webauthnRpId` / `PasskeyService.Config.fromEnv`. |
 | `FC_WEBAUTHN_RP_NAME` | platform | **⚠ IGNORED — unknown to Java** | `PasskeyService.Config.fromEnv(env, displayName)` takes `displayName` as a **caller-supplied parameter** (`Platform.java:280`, sourced from `mfaBranding.platformName()`), never from this env var. |
 | `FC_WEBAUTHN_ORIGINS` | platform | **read** | `Env.webauthnOrigins` (comma-separated, trimmed, blanks dropped). |
-| `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` | platform, worker | **⚠ IGNORED — unknown to Java** | Java's only name for this is `FC_DISPATCH_PROCESSING_ENDPOINT` (`Env.dispatchProcessingEndpoint`, confirmed also in Go's own `envcfg.go` per `docs/spec/dispatch-seam.md` §11 — Go doesn't read this IaC name either). Unset, Java defaults to `http://localhost:{apiPort}/api/dispatch/process`. On the **worker** task this default is actively wrong: `localhost` resolves to the worker container itself, not to `fc-platform`, so a Java worker with no override would build dispatch messages whose `mediationTarget`/callback never reaches the platform. This is the single highest-priority Phase 1 fix in this table. |
+| `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` | platform, worker | **aliased** | `Env.dispatchProcessingEndpoint` — `FC_DISPATCH_PROCESSING_ENDPOINT` → `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`, via `EnvReader.firstSet`; unset, still defaults to `http://localhost:{apiPort}/api/dispatch/process`. Fixed 2026-09-12 (`docs/spec/deployed-dispatch.md` §4) — the worker task now resolves the real `fc-platform` Service Connect alias instead of the wrong localhost default. |
 | `SMTP_HOST` | platform | **aliased** | `SmtpMailService.Config` — `FC_SMTP_HOST` → `SMTP_HOST`. |
 | `SMTP_PORT` | platform | **aliased** | `FC_SMTP_PORT` → `SMTP_PORT`, default 587. |
 | `SMTP_SECURE` | platform | **aliased** | `FC_SMTP_SECURE` → `SMTP_SECURE`. |
@@ -304,29 +304,25 @@ changed to produce this table.
 
 ### Ignored/unknown variables — Phase 1 work list
 
-**fc-platform** (10): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
-`DISPATCH_QUEUE_REGION`, `FLOWCATALYST_JWT_PUBLIC_KEY`,
-`OIDC_ACCESS_TOKEN_TTL`, `OIDC_SESSION_TTL` (**behavioural drift, not just
-unread — see above**), `OIDC_REFRESH_TOKEN_TTL`, `FC_WEBAUTHN_RP_NAME`,
-`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` (**highest priority — wrong default
-context for this container**), `FC_STATIC_DIR`.
+**Fixed 2026-09-12** (`docs/spec/deployed-dispatch.md` §4,
+`docs/go-mirror/2026-09-11-deployment-env-handoff.md`): `OIDC_ACCESS_TOKEN_TTL`,
+`OIDC_SESSION_TTL`, `OIDC_REFRESH_TOKEN_TTL` and
+`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` are now all read (see their rows
+above); Go mirrors the same four changes. Still outstanding:
 
-**fc-worker** (5): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
-`DISPATCH_QUEUE_REGION`, `FLOWCATALYST_JWT_PUBLIC_KEY`,
-`DISPATCH_SCHEDULER_PROCESSING_ENDPOINT` (**highest priority — Java's
-fallback default resolves to `localhost` inside the worker container, which
-cannot reach the platform**).
+**fc-platform** (6): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
+`DISPATCH_QUEUE_REGION`, `FLOWCATALYST_JWT_PUBLIC_KEY`, `FC_WEBAUTHN_RP_NAME`,
+`FC_STATIC_DIR`.
+
+**fc-worker** (3): `DISPATCH_QUEUE_TYPE`, `DISPATCH_QUEUE_URL`,
+`DISPATCH_QUEUE_REGION`.
 
 **fc-router** (0): every variable this IaC sets for the router task is read
 or aliased by Java today (see `docs/spec/router-env.md`, which this table
 cross-checks and agrees with).
 
-Recommended Phase 1 order: fix `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`
-first (it is not just untested, it is wrong-by-default for the worker
-container specifically), then resolve the `OIDC_SESSION_TTL`/
-`OIDC_ACCESS_TOKEN_TTL`/`OIDC_REFRESH_TOKEN_TTL` question (either wire them
-up or get an owner ruling that the hardcoded Java values are intentionally
-different), then the `DISPATCH_QUEUE_*` trio and `FLOWCATALYST_JWT_PUBLIC_KEY`
+Recommended Phase 1 order (revised 2026-09-12, the TTL/callback fix now
+landed): the `DISPATCH_QUEUE_*` trio and `FLOWCATALYST_JWT_PUBLIC_KEY`
 (confirm Java's public-key derivation path actually works without ever
-reading the deployed public key material), then the smaller items
+reading the deployed public key material) next, then the smaller items
 (`FC_WEBAUTHN_RP_NAME`, `FC_STATIC_DIR`).

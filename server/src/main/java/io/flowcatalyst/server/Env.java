@@ -73,10 +73,25 @@ public record Env(
         // `FC_JWT_ISSUER` (aliases `FC_EXTERNAL_BASE_URL`, `EXTERNAL_BASE_URL`),
         // default `http://localhost:8080`: JWT issuer/audience and external base URL.
         String jwtIssuer,
-        // `FC_JWT_ACCESS_TOKEN_TTL_SECS`, default 3600: the access-token
-        // lifetime — sets the minted `exp` and the advertised `expires_in`
-        // together (A-23). Zero or negative refuses to start (TokenIssuer.Config).
+        // `FC_JWT_ACCESS_TOKEN_TTL_SECS` (alias `OIDC_ACCESS_TOKEN_TTL`), default
+        // 3600: the access-token lifetime — sets the minted `exp` and the
+        // advertised `expires_in` together (A-23). Zero or negative refuses to
+        // start (TokenIssuer.Config).
         long jwtAccessTokenTtlSeconds,
+        // `FC_SESSION_TTL_SECS` (new; alias `OIDC_SESSION_TTL`), default 86400
+        // (24h): the session cookie's `Max-Age` and the session JWT's `exp`,
+        // kept equal (owner ruling 2026-09-11 supersedes C-Q16's "session TTL
+        // is compile-time" — see `docs/spec/deployed-dispatch.md` §4). Zero or
+        // negative refuses to start (TokenIssuer.Config).
+        long sessionTtlSeconds,
+        // `FC_REFRESH_TOKEN_TTL_SECS` (new; alias `OIDC_REFRESH_TOKEN_TTL`),
+        // default 604800 (7d): the refresh token's lifetime at issuance (owner
+        // ruling 2026-09-11 supersedes C-Q16's "7 days is the refresh family's
+        // absolute cap" — see `docs/spec/deployed-dispatch.md` §4). Rotation
+        // still never extends a family past its original expiry, and the
+        // `GrantStore` hydration fallback for legacy null-`expires_at` rows
+        // deliberately keeps the historical 7-day constant (`GrantStore.java`).
+        long refreshTokenTtlSeconds,
 
         // ── subsystem toggles ──────────────────────────────────────────────
         // `FC_PLATFORM_ENABLED` (alias `PLATFORM_ENABLED`), default true.
@@ -99,7 +114,9 @@ public record Env(
         String routerHttpPrefix,
         // `FC_DEFAULT_BROKER`, default `""` (no pools start); fcdev sets `postgres`.
         String defaultBroker,
-        // `FC_DISPATCH_PROCESSING_ENDPOINT`; empty → `http://localhost:<apiPort>/api/dispatch/process`.
+        // `FC_DISPATCH_PROCESSING_ENDPOINT` (alias `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`,
+        // the IaC's Service Connect name for this callback); empty →
+        // `http://localhost:<apiPort>/api/dispatch/process`.
         String dispatchProcessingEndpoint,
 
         // ── MCP ────────────────────────────────────────────────────────────
@@ -333,7 +350,7 @@ public record Env(
 
     public static Env load(EnvReader e) {
         var apiPort = e.integerAlias("FC_API_PORT", "API_PORT", "PORT", 8080);
-        var dispatch = e.or("FC_DISPATCH_PROCESSING_ENDPOINT", "");
+        var dispatch = e.firstSet("FC_DISPATCH_PROCESSING_ENDPOINT", "DISPATCH_SCHEDULER_PROCESSING_ENDPOINT").orElse("");
         if (dispatch.isEmpty()) {
             // Default the dispatch callback to the local API listener: the router
             // consumes a queued job and POSTs {messageId} here for delivery.
@@ -358,7 +375,9 @@ public record Env(
 
                 resolveDatabaseUrl(e),
                 e.firstSet("FC_JWT_ISSUER", "FC_EXTERNAL_BASE_URL", "EXTERNAL_BASE_URL").orElse("http://localhost:8080"),
-                e.longValue("FC_JWT_ACCESS_TOKEN_TTL_SECS", 3600L),
+                e.positiveLongAlias("FC_JWT_ACCESS_TOKEN_TTL_SECS", "OIDC_ACCESS_TOKEN_TTL", 3600L),
+                e.positiveLongAlias("FC_SESSION_TTL_SECS", "OIDC_SESSION_TTL", 86400L),
+                e.positiveLongAlias("FC_REFRESH_TOKEN_TTL_SECS", "OIDC_REFRESH_TOKEN_TTL", 604800L),
 
                 e.boolAlias("FC_PLATFORM_ENABLED", "PLATFORM_ENABLED", true),
                 e.boolAlias("FC_ROUTER_ENABLED", "MESSAGE_ROUTER_ENABLED", false),

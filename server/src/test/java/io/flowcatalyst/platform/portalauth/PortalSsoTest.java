@@ -11,6 +11,7 @@ import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
+import io.flowcatalyst.platform.auth.grant.RefreshToken;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.oauth.AccessTokenReader;
 import io.flowcatalyst.platform.auth.oauth.OAuthState;
@@ -172,17 +173,17 @@ class PortalSsoTest {
         var states = new LoginStateRepository(DS);
         var sinkHolder = new AtomicReference<PortalSso>();
         var bridge = new OidcBridgeApi.State(oidcClients, states, PRINCIPALS, MAPPINGS, IDPS, new IdpRoleMappingRepository(DS),
-                new RoleRepository(DS), OAUTH_CLIENTS, UOW, TOKEN_ISSUER, new SessionCookie(false),
+                new RoleRepository(DS), OAUTH_CLIENTS, UOW, TOKEN_ISSUER, new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), ISSUER, Clock.systemUTC());
         var sso = new PortalSso(new PortalSso.State(FLOWS, IDENTITIES, new ClientRepository(DS), PORTAL_APPS, UOW, GRANTS, oidcClients, states,
                 bridge, Clock.systemUTC()));
         sinkHolder.set(sso);
         var access = new PortalIdentityAccess(IDENTITIES, UOW);
-        var oauth = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC()),
+        var oauth = new OAuthState(OAUTH_CLIENTS, PRINCIPALS, null, GRANTS, new RefreshRotation(GRANTS, Clock.systemUTC(), RefreshToken.TTL_SECONDS),
                 TOKEN_ISSUER, new AccessTokenReader(VERIFIER), new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS)),
                 ClaimLabels.none(), Optional.of(ENC), null, null,
                 RateLimit.Policies.fromEnv(new io.flowcatalyst.server.EnvReader(Map.of())), null, KEYS, ISSUER, Clock.systemUTC(), access,
-                PORTAL_APPS);
+                PORTAL_APPS, RefreshToken.TTL_SECONDS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             OidcBridgeApi.register(routes, bridge);

@@ -76,6 +76,24 @@ class EnvReaderTest {
         assertThat(of().integerAlias("P", "A", "B", 9)).isEqualTo(9);
     }
 
+    /// [EnvReader#longAlias]'s `integerAlias`-mirroring semantics
+    /// (`FC_SESSION_TTL_SECS`/`OIDC_SESSION_TTL`, `FC_REFRESH_TOKEN_TTL_SECS`/
+    /// `OIDC_REFRESH_TOKEN_TTL` and `FC_JWT_ACCESS_TOKEN_TTL_SECS`/
+    /// `OIDC_ACCESS_TOKEN_TTL` all resolve through it): an unparseable primary
+    /// falls through to the alias, never straight to the default.
+    @Test
+    void longAliasFallsThroughOnUnparseablePrimary() {
+        assertThat(of("P", "x", "A", "9").longAlias("P", "A", 1L))
+                .as("unparseable primary falls through to the alias").isEqualTo(9L);
+        assertThat(of("P", "4", "A", "9").longAlias("P", "A", 1L))
+                .as("a parseable primary wins over a set alias").isEqualTo(4L);
+        assertThat(of("A", "9").longAlias("P", "A", 1L))
+                .as("unset primary falls through to the alias").isEqualTo(9L);
+        assertThat(of().longAlias("P", "A", 1L)).as("neither set yields the default").isEqualTo(1L);
+        assertThat(of("A", "bad").longAlias("P", "A", 1L))
+                .as("unparseable alias too falls through to the default").isEqualTo(1L);
+    }
+
     @Test
     void boolVocabulary() {
         for (var t : new String[]{"1", "true", "TRUE", "True", "yes", "YES", "on", "On", " true ", "\ton\n"}) {

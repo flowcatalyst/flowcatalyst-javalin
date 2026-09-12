@@ -77,7 +77,7 @@ class PasskeyApiTest {
     static void start() {
         var service = new PasskeyService(new PasskeyService.Config("localhost", Set.of(ORIGIN), "FlowCatalyst " + RUN), CREDS);
         var state = new PasskeyApi.State(service, CREDS, new CeremonyRepository(DS), PRINCIPALS, UOW, TOKEN_ISSUER,
-                new SessionCookie(false), new Notifications(SENT::add, () -> "Acme"), ATTEMPTS,
+                new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), new Notifications(SENT::add, () -> "Acme"), ATTEMPTS,
                 new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), Clock.systemUTC());
         var resolver = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
         http = TestHttp.routes(routes -> {

@@ -208,7 +208,7 @@ class OidcBridgeTest {
         var clients = new OidcClients(IDPS, MAPPINGS, Optional.of(ENC),
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(), Clock.systemUTC(), Duration.ofMinutes(10));
         var state = new OidcBridgeApi.State(clients, STATES, PRINCIPALS, MAPPINGS, IDPS, ROLE_MAPPINGS, ROLES, OAUTH_CLIENTS, UOW,
-                new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER)), new SessionCookie(false), OidcBridgeApi.PortalSink.disabled(),
+                new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER)), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), OidcBridgeApi.PortalSink.disabled(),
                 ISSUER, Clock.systemUTC());
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
