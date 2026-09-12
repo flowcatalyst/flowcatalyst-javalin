@@ -13,6 +13,7 @@ import java.net.http.HttpResponse;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Boots the real [Server] (platform enabled, ephemeral ports) against the
 /// migrated embedded Postgres and checks the listener surface Go exposes:
@@ -97,6 +98,32 @@ class ServerTest {
     /// since `stop()` only runs once for that one in `@AfterAll`) and asserts
     /// the reaper's executor is actually shut down afterward — a state that
     /// must change, not merely the absence of a symptom.
+    /// `docs/spec/deployed-dispatch.md` §3 "Wiring": `schedulerPublisher`
+    /// runs in worker mode too, and `DISPATCH_SCHEDULER_ENABLED=true` in the
+    /// real deployment is set on the WORKER, not the platform. Before this
+    /// unit, [DispatchQueueSettings#resolve] was only ever called in platform
+    /// mode (for the served document), so a worker with a misconfigured SQS
+    /// dispatch setup would silently fall through to the NOOP publisher
+    /// instead of refusing to start — this pins that it now fails at boot,
+    /// on the SAME mode the real deployment actually uses.
+    @Test
+    void aWorkerWithAMisconfiguredSqsDispatchSetupRefusesToStart() {
+        Env env = Env.load(Map.of(
+                "FC_API_PORT", "0",
+                "FC_METRICS_PORT", "0",
+                "FC_PLATFORM_ENABLED", "false",
+                "FC_SCHEDULER_ENABLED", "true",
+                "FC_DISPATCH_QUEUE_TYPE", "SQS"
+                // FC_DISPATCH_QUEUE_PREFIX deliberately unset: DispatchQueueSettings.resolve
+                // refuses to start rather than compose a queue literally named "FC-{env}-...".
+        ));
+        var server = new Server(env, new Server.Mode.Worker(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
+
+        assertThatThrownBy(server::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FC_DISPATCH_QUEUE_PREFIX");
+    }
+
     @Test
     void stopClosesTheDispatchJobReaper() {
         Env env = Env.load(Map.of(

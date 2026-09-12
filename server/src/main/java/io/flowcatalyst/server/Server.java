@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
 import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
+import io.flowcatalyst.platform.scheduler.SqsDispatchPublisher;
 import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.mail.MailSender;
@@ -149,6 +150,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final Router router;
         private final DispatchScheduler scheduler;
         private final AutoCloseable schedulerLeaderResource;
+        private final AutoCloseable schedulerPublisherResource;
         private final DispatchJobReaper dispatchJobReaper;
         private final MailSender mailSender;
         private final OutboxProcessor outboxProcessor;
@@ -164,6 +166,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
         private Running(ApiListener api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
                          MailSender mailSender, DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
+                         AutoCloseable schedulerPublisherResource,
                          OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
                          StreamProcessor streamProcessor, AutoCloseable streamLeaderResource,
                          ScheduledJobScheduler scheduledJobScheduler, AutoCloseable scheduledJobLeaderResource,
@@ -175,6 +178,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             this.mailSender = mailSender;
             this.scheduler = scheduler;
             this.schedulerLeaderResource = schedulerLeaderResource;
+            this.schedulerPublisherResource = schedulerPublisherResource;
             this.outboxProcessor = outboxProcessor;
             this.outboxAdminApi = outboxAdminApi;
             this.outboxLeaderResource = outboxLeaderResource;
@@ -228,6 +232,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         schedulerLeaderResource.close();
                     } catch (Exception e) {
                         LOG.warn("closing the scheduler's leader election failed", e);
+                    }
+                }
+                // SqsDispatchPublisher owns an SqsClient (HTTP connection pool +
+                // threads) that nothing else references; NoopPublisher and
+                // PostgresQueuePublisher aren't AutoCloseable, so this is null for
+                // both and only ever set for the SQS branch.
+                if (schedulerPublisherResource != null) {
+                    try {
+                        schedulerPublisherResource.close();
+                    } catch (Exception e) {
+                        LOG.warn("closing the scheduler's publisher failed", e);
                     }
                 }
                 // The admin listener first (stop accepting operator control),
@@ -335,17 +350,30 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
 
         DispatchScheduler scheduler = null;
         AutoCloseable schedulerLeaderResource = null;
+        AutoCloseable schedulerPublisherResource = null;
         if (env.schedulerEnabled()) {
             if (dbPool == null) {
                 LOG.warn("scheduler enabled but no database pool is available; ignoring FC_SCHEDULER_ENABLED");
             } else {
                 var leaderGate = leaderGate(env, "scheduler");
+                // Built before DispatchScheduler.start so an SqsDispatchPublisher's
+                // resource is tracked for #stop() regardless of whether the scheduler
+                // itself ends up starting (the fail-closed branch below releases it,
+                // same as the leader election, rather than leaking it).
+                DispatchPublisher publisher = schedulerPublisher(env, dbPool);
+                if (publisher instanceof AutoCloseable closeable) {
+                    schedulerPublisherResource = closeable;
+                }
                 scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
-                        schedulerPublisher(env, dbPool), leaderGate.isLeader());
+                        publisher, leaderGate.isLeader());
                 if (scheduler == null) {
                     // Fail-closed (no FLOWCATALYST_APP_KEY): DispatchScheduler.start already
                     // logged the ERROR; release the leader election we just started for nothing.
                     closeQuietly(leaderGate.resource());
+                    if (schedulerPublisherResource != null) {
+                        closeQuietly(schedulerPublisherResource);
+                        schedulerPublisherResource = null;
+                    }
                 } else {
                     schedulerLeaderResource = leaderGate.resource();
                 }
@@ -451,7 +479,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 .addKeyValue("addr", ":" + env.apiPort())
                 .log();
         return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
-                outboxProcessor, outboxAdminApi, outboxLeaderResource,
+                schedulerPublisherResource, outboxProcessor, outboxAdminApi, outboxLeaderResource,
                 streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
     }
 
@@ -488,11 +516,35 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 d.httpTimeout());
     }
 
-    /// The scheduler's [DispatchPublisher]: the built-in Postgres broker —
-    /// the SAME queue [Router]'s default-broker consumer drains (`FC_DEFAULT_BROKER=postgres`
-    /// plus a usable database URL) — or a loud-WARN [NoopPublisher] otherwise
-    /// (dispatch-seam spec §11: "explicitly called out as unsafe for production").
+    /// The scheduler's [DispatchPublisher]: [SqsDispatchPublisher] for a
+    /// deployed SQS dispatch setup (`FC_DISPATCH_QUEUE_TYPE=SQS`), else the
+    /// built-in Postgres broker — the SAME queue [Router]'s default-broker
+    /// consumer drains (`FC_DEFAULT_BROKER=postgres` plus a usable database
+    /// URL) — or a loud-WARN [NoopPublisher] otherwise (dispatch-seam spec
+    /// §11: "explicitly called out as unsafe for production").
+    ///
+    /// **[DispatchQueueSettings#resolve] is called unconditionally, before
+    /// any branch is chosen** (`docs/spec/deployed-dispatch.md` §3 "Wiring").
+    /// This method runs in BOTH platform and worker mode — `Server#start`
+    /// calls it whenever `FC_SCHEDULER_ENABLED` is set and a pool exists,
+    /// regardless of `mode` — but [#dispatchRouterConfigFor] only resolves
+    /// [DispatchQueueSettings] in platform mode, for the served document. A
+    /// worker (where `DISPATCH_SCHEDULER_ENABLED=true` actually lives in the
+    /// real deployment) with a misconfigured SQS setup — `FC_DISPATCH_QUEUE_TYPE=SQS`
+    /// but no usable prefix/account/region — would otherwise never hit that
+    /// platform-only resolution and would silently fall through to the NOOP
+    /// publisher instead of refusing to start. Resolving here, unconditionally,
+    /// closes that gap: [DispatchQueueSettings#resolve]'s eager
+    /// `IllegalStateException` now fires at boot on a worker too.
     private static DispatchPublisher schedulerPublisher(Env env, DataSource pool) {
+        DispatchQueueSettings settings = DispatchQueueSettings.resolve(env);
+        if (settings.sqs()) {
+            LOG.atInfo().setMessage("scheduler: dispatch jobs published to SQS")
+                    .addKeyValue("prefix", settings.prefix())
+                    .addKeyValue("region", settings.sqsRegion())
+                    .log();
+            return new SqsDispatchPublisher(pool, settings);
+        }
         if ("postgres".equals(env.defaultBroker()) && !env.databaseUrl().isBlank()) {
             String queueName = defaultQueueUri(env);
             PostgresQueue.initSchema(pool);

@@ -218,7 +218,13 @@ public final class SqsQueue implements Consumer {
     /// the code the staging router actually logged (2026-09-04). Matching the
     /// raw code too means a gap in the SDK's mapping cannot turn an expected
     /// absence back into a paging CONNECTION warning.
-    static boolean isQueueMissing(SqsException e) {
+    ///
+    /// Public for the same reason as [#regionFromUrl]:
+    /// [io.flowcatalyst.platform.scheduler.SqsDispatchPublisher] needs the
+    /// exact same missing-queue detection for the lazy-creation path
+    /// (`docs/spec/deployed-dispatch.md` §3 settled item 3) and must not grow
+    /// a second, possibly-divergent copy of this AWS-spelling table.
+    public static boolean isQueueMissing(SqsException e) {
         if (e instanceof QueueDoesNotExistException) {
             return true;
         }

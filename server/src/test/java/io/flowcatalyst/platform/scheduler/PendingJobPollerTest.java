@@ -180,6 +180,28 @@ class PendingJobPollerTest {
         assertThat(REPO.findById(jobB).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
     }
 
+    /// Ruling O2: a chunked publisher reports only the jobs it actually
+    /// failed to publish, and the poller must revert exactly those — never
+    /// the whole claimed batch, and never nothing. Both sides of the counter
+    /// are asserted: a version that reverted everything (the old contract)
+    /// would fail the QUEUED assertion, and a version that reverted nothing
+    /// (a caller that ignored the exception's ids) would fail the PENDING
+    /// assertion — an assertion of only one side would pass under either bug.
+    @Test
+    void partialPublishFailureRevertsOnlyTheUnpublishedJobsLeavingTheRestQueued() {
+        String published = seedWriteRow(Seed.of(code("partialok")));
+        String unpublished = seedWriteRow(Seed.of(code("partialfail")));
+
+        poller(FakeDispatchPublisher.failingForJobIds(java.util.Set.of(unpublished)), () -> true).pollOnce();
+
+        assertThat(REPO.findById(published).orElseThrow().status())
+                .as("published job stays QUEUED — a partial failure must not revert it")
+                .isEqualTo(DispatchJobStatus.QUEUED);
+        assertThat(REPO.findById(unpublished).orElseThrow().status())
+                .as("the one job the publisher reported unpublished reverts to PENDING")
+                .isEqualTo(DispatchJobStatus.PENDING);
+    }
+
     @Test
     void theRevertGuardLeavesARowTheProcessingEndpointAlreadyAdvancedPastQueuedAlone() {
         String stillQueued = seedWriteRow(Seed.of(code("guardqueued")).withStatus("QUEUED"));

@@ -39,7 +39,12 @@ public final class PostgresQueuePublisher implements DispatchPublisher {
         try {
             PostgresQueueRows.insertBatch(dataSource, queueName, batch.stream().map(PublishedMessage::message).toList());
         } catch (SQLException e) {
-            throw new PublishException("postgres publish failed for queue " + queueName, e);
+            // One statement, one transaction: a failure here never partially
+            // applies, so the whole batch is unpublished (ruling O2 — this
+            // publisher's contribution to that ruling's "still effectively
+            // all-or-nothing in practice" carve-out).
+            List<String> ids = batch.stream().map(PublishedMessage::jobId).toList();
+            throw new PublishException("postgres publish failed for queue " + queueName, e, ids);
         }
     }
 }

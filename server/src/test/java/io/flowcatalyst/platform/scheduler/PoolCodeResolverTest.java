@@ -71,4 +71,19 @@ class PoolCodeResolverTest {
         assertThat(PoolCodeResolver.isDefaultPoolCode("DEFAULT-POOL")).isTrue();
         assertThat(PoolCodeResolver.isDefaultPoolCode("FAST")).isFalse();
     }
+
+    /// [PoolCodeResolver#clientIdentifier] is [SqsDispatchPublisher]'s tenant
+    /// lookup, reusing the SAME cached snapshot [#resolve] reads. Pinned
+    /// directly (not just through the publisher) because it is its own
+    /// public contract: a resolved client, an unresolved one, and `null`
+    /// input are three distinct outcomes a caller can observe.
+    @Test
+    void clientIdentifierResolvesFromTheSameCachedSnapshotOrNullWhenUnresolved() {
+        String clientId = SchedulerFixture.client("charlie" + RUN);
+        PoolCodeResolver resolver = new PoolCodeResolver(DATA_SOURCE);
+
+        assertThat(resolver.clientIdentifier(clientId)).isEqualTo("charlie" + RUN);
+        assertThat(resolver.clientIdentifier("unknown-client-id")).isNull();
+        assertThat(resolver.clientIdentifier(null)).isNull();
+    }
 }

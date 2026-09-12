@@ -102,9 +102,15 @@ public final class PendingJobPoller {
         try {
             publisher.publish(batch);
         } catch (DispatchPublisher.PublishException e) {
-            List<String> ids = claimed.toPublish().stream().map(DispatchJobRepository.ClaimRow::id).toList();
+            // Ruling O2: revert exactly the jobs the publisher reports as
+            // unpublished — not the whole claimed batch. A job the publisher
+            // omits from this list was accepted by the broker and is
+            // legitimately QUEUED; reverting it too would republish (and
+            // duplicate) a message that already went out.
+            List<String> ids = e.unpublishedJobIds();
             LOG.atWarn().setMessage("batch publish failed; reverting job(s) QUEUED→PENDING")
                     .addKeyValue("count", ids.size())
+                    .addKeyValue("claimed", batch.size())
                     .setCause(e)
                     .log();
             repository.revertQueuedToPending(ids);
@@ -203,7 +209,7 @@ public final class PendingJobPoller {
         String groupId = (c.messageGroup() == null || c.messageGroup().isEmpty()) ? null : c.messageGroup();
         Message message = new Message(c.id(), poolCode, authToken, null,
                 MediationType.HTTP, processingEndpoint, groupId, false, c.mode());
-        return new PublishedMessage(c.id(), c.createdAt(), message);
+        return new PublishedMessage(c.id(), c.createdAt(), c.clientId(), c.subscriptionId(), message);
     }
 
     /// Wraps a claim-transaction JDBC failure — connection acquisition,

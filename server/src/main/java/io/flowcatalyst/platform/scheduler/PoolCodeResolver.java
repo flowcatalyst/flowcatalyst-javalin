@@ -120,6 +120,25 @@ public final class PoolCodeResolver {
         return ClientIdentifier.RESERVED_PLATFORM + DEFAULT_POOL_SUFFIX;
     }
 
+    /// The client's identifier for `clientId` (`null` when `clientId` is
+    /// `null` or unresolved), from the SAME cached `tnt_clients` snapshot
+    /// [#resolve] reads — exposed so [SqsDispatchPublisher] can derive a
+    /// claimed job's tenant without a second copy of this query (a claimed
+    /// [io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow]
+    /// carries only `clientId`, never the identifier itself). Never throws;
+    /// an unresolved client falls back to
+    /// [io.flowcatalyst.platform.client.ClientIdentifier#RESERVED_PLATFORM]
+    /// at the call site, exactly as an unresolved client already does in
+    /// [#resolve].
+    public String clientIdentifier(String clientId) {
+        if (clientId == null) {
+            return null;
+        }
+        ensureFresh();
+        String identifier = snapshot.clientIdentifiers().get(clientId);
+        return (identifier == null || identifier.isEmpty()) ? null : identifier;
+    }
+
     /// Composes the wire `poolCode` for a resolved pool row:
     /// `{clientIdentifier}-{poolCode}` when client-owned,
     /// `platform-{poolCode}` when platform-level (`clientIdentifier` `null`

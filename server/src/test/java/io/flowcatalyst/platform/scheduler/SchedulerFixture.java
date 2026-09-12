@@ -85,4 +85,23 @@ final class SchedulerFixture {
                 .execute();
         return id;
     }
+
+    /// A bare subscription (no connection — [PausedConnectionCache] is not
+    /// under test here) carrying `queue`, for
+    /// [SubscriptionPriorityCache]/[SqsDispatchPublisher] tests that only
+    /// need `msg_subscriptions.queue` to exist against a real subscription
+    /// id. `queue` may be `null` (the "nothing has ever written it" case,
+    /// ruling R6) or any raw stored value, including legacy junk.
+    static String subscriptionWithQueue(String queue) {
+        String id = Tsid.generate();
+        String code = "schedfx-subq-" + id.toLowerCase(java.util.Locale.ROOT);
+        DB.insertInto(MSG_SUBSCRIPTIONS)
+                .set(MSG_SUBSCRIPTIONS.ID, id)
+                .set(MSG_SUBSCRIPTIONS.CODE, code)
+                .set(MSG_SUBSCRIPTIONS.NAME, code)
+                .set(MSG_SUBSCRIPTIONS.TARGET, "https://hook.example/" + id)
+                .set(MSG_SUBSCRIPTIONS.QUEUE, queue)
+                .execute();
+        return id;
+    }
 }
