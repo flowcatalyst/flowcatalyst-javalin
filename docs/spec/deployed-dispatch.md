@@ -99,6 +99,13 @@ in.
    the platform's. The merge already exists (first definition per key wins).
 5. **Pool keys follow Integral's** `{tenant}-{pool}`, so the platform's are
    `{clientIdentifier}-{poolCode}` and `platform-{poolCode}`.
+   **Confirmed against the code (R7, 2026-09-12):** this contradicted
+   `PoolCodeResolver`, which published platform-level pools *unprefixed*
+   (dispatch-seam §2 / ledger R-16). The owner kept item 5, so R-16 is
+   superseded and `PoolCodeResolver` changes — a wire change for
+   platform-wide jobs, so a Go divergence until mirrored. The document needs
+   no `*-DEFAULT-POOL` rows: `RouterManager.poolFor` synthesises any such code
+   on demand.
 
 ### What each side builds
 

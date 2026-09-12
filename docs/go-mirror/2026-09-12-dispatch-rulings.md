@@ -205,6 +205,45 @@ chose this over warning on it, and over refusing to publish. If that becomes a
 problem in practice the remedy is a migration (R6's rejected option 3), not a
 change to the publish path.
 
+### R7 — platform pool codes take the `platform-` prefix; R-16 is superseded
+
+Settled item 5 says pool keys are `{clientIdentifier}-{poolCode}` and
+`platform-{poolCode}`. `PoolCodeResolver` implements the opposite for
+platform-level pools, and it is recorded as **dispatch-seam §2 / ledger R-16**:
+
+| Job's pool | Job's client | Published `poolCode` before this ruling |
+|---|---|---|
+| set, owned by a client | — | `{clientIdentifier}-{poolCode}` |
+| set, platform-level | — | `{poolCode}` — **no prefix** |
+| unset/unresolvable | resolves | `{clientIdentifier}-DEFAULT-POOL` |
+| unset | unresolvable | `DEFAULT-POOL` |
+
+The pool code the scheduler stamps must match a pool in the router's merged
+config, so the served document and the resolver cannot disagree.
+
+**Ruling (owner, 2026-09-12): follow item 5.** Platform-level pools publish
+`platform-{poolCode}`, and the unresolvable case publishes
+`platform-DEFAULT-POOL`. The router merges our document with four Integral
+configs and pools merge by `code` first-wins, so an unprefixed platform pool
+(`WEBHOOKS`) would silently inherit an Integral tenant's settings of the same
+name, with only a merge-conflict log line to show for it.
+
+**Consequences:**
+1. R-16 and dispatch-seam §2 are **superseded** — both updated, naming the
+   superseding ruling rather than deleting the old text.
+2. It changes the `poolCode` on the wire for platform-wide jobs, so it is a
+   real Go-vs-Java divergence until Go mirrors, and needs an entry in
+   `parity/expected-diffs.json` if a corpus step exercises it.
+3. **The served document does not need default-pool rows.**
+   `RouterManager.poolFor` takes an exact match, then **auto-synthesises any
+   code ending in `-DEFAULT-POOL`** (concurrency 20), and only then warns
+   (`ROUTING`) and falls back to the bare `DEFAULT-POOL` that `wantedPools`
+   always injects. So `platform-DEFAULT-POOL` and
+   `{clientIdentifier}-DEFAULT-POOL` both self-create. The document carries
+   only the real named rows from `msg_dispatch_pools`, and a named pool
+   missing from it is degraded — warned and routed to the fallback — never
+   lost. The document being incomplete is survivable.
+
 ---
 
 ## 2. Orchestrator rulings (taken on evidence, not owner questions)

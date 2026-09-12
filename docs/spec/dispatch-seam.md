@@ -106,12 +106,25 @@ platform scheduler resolves these from the owning subscription's
 configuration at publish time, so the router never needs to know
 anything about clients or subscriptions."*
 
+**Superseded in part by ruling R7 (owner, 2026-09-12)** —
+`docs/go-mirror/2026-09-12-dispatch-rulings.md`. The two platform-level rows
+below gain a `platform-` prefix, so that the platform's served router-config
+document can namespace its pools the way Integral namespaces its tenants'
+(`deployed-dispatch.md` §3, settled item 5). Without it, an unprefixed
+platform pool silently inherits the settings of an identically-named Integral
+tenant pool, because the router merges pools by `code` first-wins. Java
+changes first; Go mirrors, and the two disagree on the wire until it does.
+
 | Job's dispatch pool | Job's client | Published `poolCode` | Evidence |
 |---|---|---|---|
 | set, pool has an owning client identifier | — | `{clientIdentifier}-{poolCode}` | `poolcode.go:96-101` |
-| set, pool is platform-level (no client) | — | `{poolCode}`, no prefix | `poolcode.go:96-101` |
+| set, pool is platform-level (no client) | — | ~~`{poolCode}`, no prefix~~ → **`platform-{poolCode}`** (R7) | `poolcode.go:96-101` |
 | unset (or unresolvable — deleted pool) | resolves | `{clientIdentifier}-DEFAULT-POOL` | `poolcode.go:104-107` |
-| unset | unresolvable | `DEFAULT-POOL` | `poolcode.go:109`, `DefaultPoolCode` at `poolcode.go:16` |
+| unset | unresolvable | ~~`DEFAULT-POOL`~~ → **`platform-DEFAULT-POOL`** (R7) | `poolcode.go:109`, `DefaultPoolCode` at `poolcode.go:16` |
+
+Both new forms still route: `RouterManager.poolFor` synthesises any code
+ending in `-DEFAULT-POOL` on demand, so `platform-DEFAULT-POOL` needs no
+config entry.
 
 Namespacing exists because `msg_dispatch_pools` is unique on
 `(code, client_id)` while the router keys pools by code alone and treats
