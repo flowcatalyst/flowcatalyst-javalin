@@ -66,23 +66,59 @@ in.
   document, so `DISPATCH_QUEUE_*` stays a *platform* setting (how to name and
   address the queues it advertises), not a router one.
 
-### Open questions before code
+### Settled (owner, 2026-09-12)
 
-1. **Names.** Integral uses `FC-{env}-{tenant}-{queue}.fifo`. Does the
-   platform's own dispatch queue follow the same convention, and what is the
-   platform-wide one called (`FC-{env}-platform-DEFAULT.fifo`?).
-2. **Priority values.** `DEFAULT` and `HIGH_PRIORITY` only, or an open set?
-   Does it live on `msg_subscriptions.queue`, and where does a direct
-   (non-subscription) dispatch job get its priority?
-3. **Who creates the SQS queues?** Integral creates them lazily on first send.
-   The same for FlowCatalyst (the publisher creates if missing), or created in
-   the IaC per client? Lazy pairs well with the router change of 2026-09-11:
-   a not-yet-created queue is polled by nobody and alerts no one.
-4. **Endpoint.** Path and auth for the platform's config document, and whether
-   the router's `FLOWCATALYST_CONFIG_URL` becomes `<integral>,<platform>`.
-5. **Pool keys across sources.** Integral's pool keys are `{tenant}-{pool}`;
-   the merge is first-definition-wins per key, so the platform's keys must not
-   collide with Integral's.
+1. **Naming: Integral's convention**, `FC-{env}-{tenant}-{queue}.fifo`, with
+   the client's identifier as `{tenant}` and the priority as `{queue}`:
+   `FC-staging-acme-DEFAULT.fifo`, `FC-staging-acme-HIGH_PRIORITY.fifo`.
+   Sanitised as Integral sanitises (`_`, `.`, space → `-`), refusing a blank
+   tenant rather than producing a shared lane.
+   *Assumed, not stated:* platform-wide (client-less) jobs use `platform` in
+   the tenant position — `FC-{env}-platform-DEFAULT.fifo`.
+2. **Priorities: `DEFAULT` and `HIGH_PRIORITY` only**, carried by
+   `msg_subscriptions.queue` (today read-only and set by nothing).
+   *Assumed:* a dispatch job with no subscription gets `DEFAULT`; a blank or
+   unrecognised `queue` value is `DEFAULT`, not an error.
+3. **Queues are created lazily**, on first publish, as Integral does. Pairs
+   with the router's 2026-09-11 behaviour: a queue that does not exist yet is
+   consumed by nobody and alerts no one.
+4. **One `FLOWCATALYST_CONFIG_URL`**, comma-separated: Integral's endpoint and
+   the platform's. The merge already exists (first definition per key wins).
+5. **Pool keys follow Integral's** `{tenant}-{pool}`, so the platform's are
+   `{clientIdentifier}-{poolCode}` and `platform-{poolCode}`.
+
+### What each side builds
+
+**Platform (Java now, Go mirrored):**
+- Serve the router config document — the existing `{processingPools, queues}`
+  shape — listing, per client with dispatch work: its queues (one per
+  priority in use) and its pools from `msg_dispatch_pools` (code, concurrency,
+  rate limit). Queue type and address come from the platform's own settings:
+  `DISPATCH_QUEUE_TYPE` (`SQS` deployed, `postgres` in dev) and the account
+  and region from `DISPATCH_QUEUE_URL` / `DISPATCH_QUEUE_REGION`, with names
+  built as above. **One new setting is unavoidable**: the `FC-{env}` prefix,
+  since neither side has an app-environment name today — propose
+  `FC_DISPATCH_QUEUE_PREFIX` (IaC: `FC-staging`), no default outside dev.
+- The scheduler publishes each claimed job to its client's queue for its
+  priority, creating the queue if missing. FIFO: message group = the job's
+  message group, dedup id = the job id.
+
+**Router:** nothing. It learns the queues and pools from the merged config,
+and already tolerates a queue that does not exist yet.
+
+**Dev mode:** `fcdev` points `FLOWCATALYST_CONFIG_URL` at its own platform
+and drops `Router.configSource`'s fixed single-queue branch, so dev and prod
+differ only in the queue *type* the same document names.
+
+### Risks to pin with tests
+
+- A client whose identifier changes would rename its queues; messages in the
+  old queue are then orphaned. Decide before this ships: forbid the rename,
+  or keep the queue name from the id rather than the identifier.
+- Pool-key collisions with Integral's tenants (first definition wins, so a
+  collision silently takes Integral's pool).
+- The prefix being unset in a deployed environment must be a startup error,
+  not a queue literally named `FC-{env}`.
 
 ## 4. The other Phase 1 rulings (2026-09-11)
 
