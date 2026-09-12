@@ -1,7 +1,13 @@
 # Deployed dispatch — the scheduler has no real publisher outside dev (2026-09-11)
 
-Status: **direction set 2026-09-12 (§3); five open questions there before code.** Found by the
-verification plan's Phase 0 inventory (`docs/deployments.md`).
+Status: **§4 built in Java 2026-09-12 (`ecfff18`); §3 fully ruled, no open
+design question — buildable.** Found by the verification plan's Phase 0
+inventory (`docs/deployments.md`).
+
+The 2026-09-12 rulings that closed §3's remaining questions, and the evidence
+behind each, are in `docs/go-mirror/2026-09-12-dispatch-rulings.md`. Where that
+file and §3's older prose disagree, **the rulings file wins** — three of §3's
+statements below are now superseded and are marked inline.
 
 ## 1. What is true today, on both sides
 
@@ -73,12 +79,19 @@ in.
    `FC-staging-acme-DEFAULT.fifo`, `FC-staging-acme-HIGH_PRIORITY.fifo`.
    Sanitised as Integral sanitises (`_`, `.`, space → `-`), refusing a blank
    tenant rather than producing a shared lane.
-   *Assumed, not stated:* platform-wide (client-less) jobs use `platform` in
-   the tenant position — `FC-{env}-platform-DEFAULT.fifo`.
+   ~~*Assumed, not stated:*~~ **Ruled (R5, 2026-09-12):** platform-wide
+   (client-less) jobs use `platform` in the tenant position —
+   `FC-{env}-platform-DEFAULT.fifo`. A client identifier of literally
+   `platform` must be refused at creation so it cannot collide.
 2. **Priorities: `DEFAULT` and `HIGH_PRIORITY` only**, carried by
-   `msg_subscriptions.queue` (today read-only and set by nothing).
-   *Assumed:* a dispatch job with no subscription gets `DEFAULT`; a blank or
-   unrecognised `queue` value is `DEFAULT`, not an error.
+   `msg_subscriptions.queue`.
+   **Superseded in part (R1, 2026-09-12):** "read-only and set by nothing" was
+   understated — *nothing on either side can write it*, and the SPA's `queue`
+   field is silently discarded by both servers. `queue` is therefore being
+   added to subscription create/update, validated **case-insensitively** to the
+   two names (R1a) so the SPA's existing `"default"` keeps working.
+   ~~*Assumed:*~~ **Ruled (R6):** a job with no subscription, a blank value, or
+   an unrecognised one all publish as `DEFAULT`, never an error.
 3. **Queues are created lazily**, on first publish, as Integral does. Pairs
    with the router's 2026-09-11 behaviour: a queue that does not exist yet is
    consumed by nobody and alerts no one.
@@ -99,22 +112,52 @@ in.
   built as above. **One new setting is unavoidable**: the `FC-{env}` prefix,
   since neither side has an app-environment name today — propose
   `FC_DISPATCH_QUEUE_PREFIX` (IaC: `FC-staging`), no default outside dev.
+- **Where it is served (R3, 2026-09-12):** on the platform's **internal
+  listener** (`FC_METRICS_PORT`, 9090), which is not ALB-facing, reached
+  through a new Service Connect alias. No authentication, and no secret on
+  either side. An earlier same-day answer chose a shared-secret header and was
+  reversed once it emerged that the fc-router task role deliberately has no
+  Secrets Manager access. **This gates the feature on an IaC change** (owner:
+  the alias varies deployment by deployment and will be added separately).
+  `/api/config/*` is already taken on the platform, so the path is
+  `/api/dispatch/router-config`.
 - The scheduler publishes each claimed job to its client's queue for its
   priority, creating the queue if missing. FIFO: message group = the job's
-  message group, dedup id = the job id.
+  message group. **Superseded (R2, 2026-09-12):** the dedup id is *not* the job
+  id — that collides with ledger rule R-18 and would let SQS FIFO silently drop
+  a `StaleQueuedJobPoller` re-publish inside its 5-minute window. It is the job
+  id **plus the publish attempt**, so it is never reused.
+- **Batching (O2):** `PendingJobPoller` claims 100 and SQS caps a batch at 10,
+  so `publish` chunks and, on failure, reverts **only the unpublished
+  remainder** to `PENDING`. `DispatchPublisher`'s documented all-or-nothing
+  contract cannot hold against SQS and must be updated.
 
 **Router:** nothing. It learns the queues and pools from the merged config,
-and already tolerates a queue that does not exist yet.
+and already tolerates a queue that does not exist yet. (R3 keeps this true —
+the config URL it already reads is the only thing that changes.)
 
 **Dev mode:** `fcdev` points `FLOWCATALYST_CONFIG_URL` at its own platform
 and drops `Router.configSource`'s fixed single-queue branch, so dev and prod
 differ only in the queue *type* the same document names.
 
+**Scope of that removal (R4, 2026-09-12):** the branch goes **entirely**, not
+just for dev — one code path, as intended. Accepted consequence: a bare server
+run with `FC_DEFAULT_BROKER=postgres` and no config URL stops consuming
+anything. In Java that touches `Router.configSource`,
+`Router.usesDefaultPostgresBroker` (which `Main` uses to decide whether a
+router-only process needs a database pool), and five behaviours pinned by
+`RouterConfigSourceTest`. Check the equivalent Go surface before removing it
+there and report what breaks.
+
 ### Risks to pin with tests
 
-- A client whose identifier changes would rename its queues; messages in the
-  old queue are then orphaned. Decide before this ships: forbid the rename,
-  or keep the queue name from the id rather than the identifier.
+- ~~A client whose identifier changes would rename its queues.~~ **Closed
+  (O1, 2026-09-12):** `tnt_clients.identifier` is already immutable in code on
+  both sides — no `withIdentifier`, `UpdateClient` carries only `{id, name}`,
+  and `docs/spec/client.md:23` says so. Queue names keep the readable
+  identifier. Pin the immutability with a test so it cannot be relaxed
+  unnoticed; the residual risk of a direct SQL update orphaning that client's
+  queues is accepted, not defended against.
 - Pool-key collisions with Integral's tenants (first definition wins, so a
   collision silently takes Integral's pool).
 - The prefix being unset in a deployed environment must be a startup error,
