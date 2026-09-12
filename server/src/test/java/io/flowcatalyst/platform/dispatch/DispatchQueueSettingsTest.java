@@ -66,6 +66,12 @@ class DispatchQueueSettingsTest {
                 .hasMessageContaining("account id");
     }
 
+    /// **Corrected by unit D.** Before this, `databaseUrl` carried
+    /// `FC_DATABASE_URL` verbatim (`postgresql://`), a scheme
+    /// [io.flowcatalyst.router.queue.QueueFactory#resolveScheme] does not
+    /// register — the router would have refused every Postgres-backed queue
+    /// the served document names. Found by unit D's end-to-end test; see
+    /// [DispatchQueueSettings#databaseUrl]'s doc.
     @Test
     void blankOrUnsetTypeResolvesToPostgresAndNeedsNoPrefix() {
         Env env = Env.load(Map.of("FC_DATABASE_URL", "postgresql://u@h:5432/db"));
@@ -73,16 +79,30 @@ class DispatchQueueSettingsTest {
         DispatchQueueSettings settings = DispatchQueueSettings.resolve(env);
 
         assertThat(settings.sqs()).isFalse();
-        assertThat(settings.databaseUrl()).isEqualTo("postgresql://u@h:5432/db");
+        assertThat(settings.databaseUrl())
+                .as("scheme normalised to postgres:// — QueueFactory registers no \"postgresql\" backend")
+                .isEqualTo("postgres://u@h:5432/db");
     }
 
+    /// **Corrected by unit D** — see the note on
+    /// [#blankOrUnsetTypeResolvesToPostgresAndNeedsNoPrefix].
     @Test
     void postgresQueueUriIsTheDatabaseUrlRegardlessOfTheComposedName() {
         Env env = Env.load(Map.of("FC_DATABASE_URL", "postgresql://u@h:5432/db"));
         DispatchQueueSettings settings = DispatchQueueSettings.resolve(env);
         var name = DispatchQueueName.compose("FC-staging", "acme", QueuePriority.DEFAULT, false);
 
-        assertThat(settings.queueUriFor(name)).isEqualTo("postgresql://u@h:5432/db");
+        assertThat(settings.queueUriFor(name)).isEqualTo("postgres://u@h:5432/db");
+    }
+
+    /// A URI that already uses `postgres://` (or carries no `postgresql://`
+    /// prefix to rewrite at all) passes through unchanged — the
+    /// normalisation is a targeted rewrite, not a re-parse.
+    @Test
+    void anAlreadyNormalisedDatabaseUrlIsUnchanged() {
+        Env env = Env.load(Map.of("FC_DATABASE_URL", "postgres://u@h:5432/db"));
+
+        assertThat(DispatchQueueSettings.resolve(env).databaseUrl()).isEqualTo("postgres://u@h:5432/db");
     }
 
     /// The account id and region both come from `FC_DISPATCH_QUEUE_URL` when

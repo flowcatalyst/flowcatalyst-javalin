@@ -106,11 +106,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         }
 
         /// The router and/or MCP surfaces only — no platform API, no
-        /// worker-tier subsystem enabled. `pool` is null unless the router
-        /// itself needs Postgres (`FC_DEFAULT_BROKER=postgres`, no config
-        /// URL — [Router#usesDefaultPostgresBroker]): that pool exists
-        /// solely for the router's own `queue_messages` table, so [Main]
-        /// never runs platform migrations or the seeder against it.
+        /// worker-tier subsystem enabled. `pool` is `null` in the ordinary
+        /// case: since R4 (`docs/go-mirror/2026-09-12-dispatch-rulings.md`)
+        /// removed the router's fixed single-queue branch, a router-only
+        /// instance never opens its own pool through [Main] just to run the
+        /// built-in Postgres broker — a config-URL-supplied `postgres://`
+        /// queue opens its own pool from its own URI instead
+        /// (`QueueFactory#createPostgres`). [Main] never runs platform
+        /// migrations or the seeder against `pool` when it is non-null for
+        /// some other reason.
         record RouterOnly(DataSource pool) implements Mode {
         }
 
@@ -319,9 +323,10 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         DataSource dbPool = switch (mode) {
             case Mode.Platform(var pool) -> pool;
             case Mode.Worker(var pool) -> pool;
-            // RouterOnly's pool is null unless the router itself needs
-            // Postgres for the built-in broker (§8.4) — either way this is
-            // exactly the pool the router (and only the router) should see.
+            // RouterOnly's pool is null in the ordinary case (R4 removed the
+            // fixed single-queue branch that used to need one here) — either
+            // way this is exactly the pool the router (and only the router)
+            // should see.
             case Mode.RouterOnly(var pool) -> pool;
         };
 
@@ -517,11 +522,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     /// The scheduler's [DispatchPublisher]: [SqsDispatchPublisher] for a
-    /// deployed SQS dispatch setup (`FC_DISPATCH_QUEUE_TYPE=SQS`), else the
-    /// built-in Postgres broker — the SAME queue [Router]'s default-broker
-    /// consumer drains (`FC_DEFAULT_BROKER=postgres` plus a usable database
-    /// URL) — or a loud-WARN [NoopPublisher] otherwise (dispatch-seam spec
-    /// §11: "explicitly called out as unsafe for production").
+    /// deployed SQS dispatch setup (`FC_DISPATCH_QUEUE_TYPE=SQS`), else
+    /// [PostgresQueuePublisher] over the built-in Postgres broker — routing
+    /// per (tenant, priority) onto the SAME `queue_messages` table a
+    /// Postgres-backed router consumer drains (`FC_DEFAULT_BROKER=postgres`
+    /// plus a usable database URL) — or a loud-WARN [NoopPublisher] otherwise
+    /// (dispatch-seam spec §11: "explicitly called out as unsafe for
+    /// production").
     ///
     /// **[DispatchQueueSettings#resolve] is called unconditionally, before
     /// any branch is chosen** (`docs/spec/deployed-dispatch.md` §3 "Wiring").
@@ -546,26 +553,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             return new SqsDispatchPublisher(pool, settings);
         }
         if ("postgres".equals(env.defaultBroker()) && !env.databaseUrl().isBlank()) {
-            String queueName = defaultQueueUri(env);
             PostgresQueue.initSchema(pool);
-            LOG.atInfo().setMessage("scheduler: dispatch jobs published to the built-in postgres broker")
-                    .addKeyValue("queue", queueName)
+            LOG.atInfo().setMessage("scheduler: dispatch jobs published to the built-in postgres broker, "
+                            + "one row-queue per (tenant, priority)")
+                    .addKeyValue("prefix", settings.prefix())
                     .log();
-            return new PostgresQueuePublisher(pool, queueName);
+            return new PostgresQueuePublisher(pool, settings);
         }
         LOG.warn("scheduler running with a NOOP publisher: dispatch jobs will be claimed but NOT delivered; "
                 + "set FC_DEFAULT_BROKER=postgres (with a database URL) or wire a real publisher "
                 + "before enabling FC_SCHEDULER_ENABLED in production");
         return new NoopPublisher();
-    }
-
-    /// Mirrors [Router#defaultQueueUri] (private there): the scheduler MUST
-    /// publish into the exact queue name the default-broker router consumes
-    /// from, so this one-line derivation from `FC_DATABASE_URL` is
-    /// deliberately duplicated rather than exposed across a new dependency
-    /// edge between the two composition roots.
-    private static String defaultQueueUri(Env env) {
-        return env.databaseUrl().replaceFirst("^postgresql://", "postgres://");
     }
 
     /// `isLeader`: `() -> true` when standby is disabled. `resource`: what

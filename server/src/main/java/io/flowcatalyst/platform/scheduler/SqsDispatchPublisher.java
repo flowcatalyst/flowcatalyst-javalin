@@ -43,15 +43,12 @@ import java.util.UUID;
 /// `clientId` / `subscriptionId`, never the tenant identifier or priority
 /// themselves — the claim query
 /// ([io.flowcatalyst.platform.dispatchjob.DispatchJobRepository#claimPending])
-/// is deliberately join-free. Both are resolved through the SAME cached
-/// lookups the rest of the scheduler already uses, on the same 60s TTL
-/// idiom: [PoolCodeResolver#clientIdentifier(String)] for the tenant
-/// (falling back to [ClientIdentifier#RESERVED_PLATFORM], ruling R5, when the
-/// job has no client or the client is unresolved) and
-/// [SubscriptionPriorityCache#priorityFor(String)] for the priority (ruling
-/// R6: no subscription, an unresolvable one, or an unrecognised stored value
-/// all read as [QueuePriority#DEFAULT], never an error and never a dropped
-/// job).
+/// is deliberately join-free. [#destinationFor] delegates the whole
+/// resolution to [DispatchDestinationResolver] — the SAME collaborator
+/// [PostgresQueuePublisher] uses, so the two publishers cannot independently
+/// drift on where a job goes. See that class's doc for the tenant (falling
+/// back to [ClientIdentifier#RESERVED_PLATFORM], ruling R5) and priority
+/// (ruling R6: [QueuePriority#DEFAULT] on anything unusable) rules.
 ///
 /// ### Chunking and per-queue grouping (ruling O2)
 ///
@@ -155,28 +152,34 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
 
     private final SqsClient client;
     private final DispatchQueueSettings settings;
-    private final PoolCodeResolver tenants;
-    private final SubscriptionPriorityCache priorities;
+    private final DispatchDestinationResolver destinations;
 
     /// Production entry point: builds its own [SqsClient] once, for
     /// `settings`' region, via the SDK's default credentials/region provider
     /// chain — the same idiom [SqsQueue] and
     /// [io.flowcatalyst.server.dbsecret.DbSecretFetcher] already use — and
-    /// its own [PoolCodeResolver] / [SubscriptionPriorityCache], independent
-    /// of any instance [DispatchScheduler] builds for the poller itself
-    /// (deliberately duplicated rather than threaded across a new dependency
-    /// edge between the two, the same tradeoff `Server#defaultQueueUri`
-    /// documents for its own duplication).
+    /// its own [PoolCodeResolver] / [SubscriptionPriorityCache] (through a
+    /// fresh [DispatchDestinationResolver]), independent of any instance
+    /// [DispatchScheduler] builds for the poller itself (deliberately
+    /// duplicated rather than threaded across a new dependency edge between
+    /// the two).
     public SqsDispatchPublisher(DataSource dataSource, DispatchQueueSettings settings) {
-        this(buildClient(settings), settings, new PoolCodeResolver(dataSource), new SubscriptionPriorityCache(dataSource));
+        this(buildClient(settings), settings, new DispatchDestinationResolver(
+                new PoolCodeResolver(dataSource), new SubscriptionPriorityCache(dataSource), settings));
     }
 
+    /// Test seam: the resolver's own two collaborators, built into a fresh
+    /// [DispatchDestinationResolver] — kept so existing tests need not change
+    /// shape.
     SqsDispatchPublisher(SqsClient client, DispatchQueueSettings settings, PoolCodeResolver tenants,
                          SubscriptionPriorityCache priorities) {
+        this(client, settings, new DispatchDestinationResolver(tenants, priorities, settings));
+    }
+
+    SqsDispatchPublisher(SqsClient client, DispatchQueueSettings settings, DispatchDestinationResolver destinations) {
         this.client = Objects.requireNonNull(client, "client");
         this.settings = Objects.requireNonNull(settings, "settings");
-        this.tenants = Objects.requireNonNull(tenants, "tenants");
-        this.priorities = Objects.requireNonNull(priorities, "priorities");
+        this.destinations = Objects.requireNonNull(destinations, "destinations");
     }
 
     private static SqsClient buildClient(DispatchQueueSettings settings) {
@@ -276,10 +279,7 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
     }
 
     private DispatchQueueName destinationFor(PublishedMessage m) {
-        String identifier = tenants.clientIdentifier(m.clientId());
-        String tenant = identifier != null ? identifier : ClientIdentifier.RESERVED_PLATFORM;
-        QueuePriority priority = priorities.priorityFor(m.subscriptionId());
-        return DispatchQueueName.compose(settings.prefix(), tenant, priority, settings.sqs());
+        return destinations.destinationFor(m);
     }
 
     /// The `MessageGroupId` a job publishes under — see [#entryFor] and the

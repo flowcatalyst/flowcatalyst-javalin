@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
@@ -42,8 +43,13 @@ class PendingJobPollerTest {
     private static final DispatchJobRepository REPO = new DispatchJobRepository(DATA_SOURCE);
     private static final String APP_KEY = "test-app-key-" + RUN;
     private static final HmacTokenVerifier AUTH = HmacTokenVerifier.fromAppKey(APP_KEY);
-    private static final String QUEUE_NAME = "scheduler-test-queue-" + RUN;
     private static final String PROCESSING_ENDPOINT = "http://localhost:18080/api/dispatch/process";
+    /// Postgres/no-prefix (dev-shaped) settings — [PostgresQueuePublisher]
+    /// now routes per (tenant, priority) rather than to one fixed queue name
+    /// (`docs/spec/deployed-dispatch.md` §3, unit D part 1), so
+    /// [#queueRow(String)] looks a row up by id alone; which composed queue
+    /// name it actually landed in is pinned by `PostgresQueuePublisherTest`.
+    private static final DispatchQueueSettings SETTINGS = new DispatchQueueSettings(false, "", "", "", "");
 
     @BeforeAll
     static void initQueueSchema() {
@@ -56,7 +62,7 @@ class PendingJobPollerTest {
     }
 
     private static Record queueRow(String id) {
-        return DB.fetchOne("SELECT * FROM queue_messages WHERE queue_name = ? AND id = ?", QUEUE_NAME, id);
+        return DB.fetchOne("SELECT * FROM queue_messages WHERE id = ?", id);
     }
 
     private static String seedWithScheduledFor(Seed s, Instant scheduledFor) {
@@ -80,7 +86,7 @@ class PendingJobPollerTest {
         String jobId = seedWriteRow(Seed.of(code("full")).withDispatchPoolId(poolId).withClientId(clientId)
                 .withMessageGroup(group).withMode("BLOCK_ON_ERROR"));
 
-        poller(new PostgresQueuePublisher(DATA_SOURCE, QUEUE_NAME), () -> true).pollOnce();
+        poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true).pollOnce();
 
         assertThat(REPO.findById(jobId).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
 
@@ -108,7 +114,7 @@ class PendingJobPollerTest {
     void ungroupedJobPublishesWithNoMessageGroupId() {
         String jobId = seedWriteRow(Seed.of(code("ungrouped")));
 
-        poller(new PostgresQueuePublisher(DATA_SOURCE, QUEUE_NAME), () -> true).pollOnce();
+        poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true).pollOnce();
 
         Message message = Json.read(queueRow(jobId).get("payload", String.class), Message.class);
         assertThat(message.messageGroupId()).isNull();

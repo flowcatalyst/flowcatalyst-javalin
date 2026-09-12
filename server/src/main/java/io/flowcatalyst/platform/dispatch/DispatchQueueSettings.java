@@ -21,8 +21,19 @@ import java.util.Objects;
 /// @param prefix       `FC_DISPATCH_QUEUE_PREFIX`, e.g. `FC-staging`.
 ///                     Checked non-blank by [#resolve] whenever [#sqs] is
 ///                     true; may be blank for a Postgres deployment (dev)
-/// @param databaseUrl  [Env#databaseUrl()] — the `queueUri` every
-///                     Postgres-backed queue in the document shares.
+/// @param databaseUrl  [Env#databaseUrl()], scheme-normalised to
+///                     `postgres://` — the `queueUri` every Postgres-backed
+///                     queue in the document shares. Normalised (not
+///                     `env.databaseUrl()` verbatim) because
+///                     [io.flowcatalyst.router.queue.QueueFactory#resolveScheme]
+///                     only registers the `postgres` key, never `postgresql`,
+///                     which is [Env#databaseUrl]'s own scheme (found via
+///                     unit D's end-to-end test: without this, the router
+///                     would refuse every Postgres-backed queue the served
+///                     document names, logging "queue uses a scheme with no
+///                     registered consumer") — the same one-line rewrite
+///                     `Server#defaultQueueUri`/`Router#defaultQueueUri`
+///                     already apply for the identical reason.
 ///                     `RouterConfig#merge` keys queues by `queueUri`, but
 ///                     only *across* merged sources: several queue *names*
 ///                     sharing one URI inside this one document is the
@@ -76,7 +87,7 @@ public record DispatchQueueSettings(boolean sqs, String prefix, String databaseU
                             + "per-deployment prefix");
         }
         if (!sqs) {
-            return new DispatchQueueSettings(false, prefix, env.databaseUrl(), "", "");
+            return new DispatchQueueSettings(false, prefix, normalisePostgresScheme(env.databaseUrl()), "", "");
         }
         String url = env.dispatchQueueUrl();
         String region = env.dispatchQueueRegion();
@@ -113,6 +124,16 @@ public record DispatchQueueSettings(boolean sqs, String prefix, String databaseU
         return sqs
                 ? "https://sqs." + sqsRegion + ".amazonaws.com/" + sqsAccountId + "/" + name.value()
                 : databaseUrl;
+    }
+
+    /// [Env#databaseUrl()] uses the `postgresql://` scheme (it is a plain
+    /// JDBC-shaped connection string); [io.flowcatalyst.router.queue.QueueFactory#resolveScheme]
+    /// only ever registers the `postgres` key. Without this rewrite every
+    /// Postgres-backed queue in the served document would carry a scheme the
+    /// router refuses outright — see [#databaseUrl]'s doc for how this was
+    /// found. A no-op for a blank/already-`postgres://` URL.
+    private static String normalisePostgresScheme(String url) {
+        return url.replaceFirst("^postgresql://", "postgres://");
     }
 
     /// The first path segment of an SQS queue URL

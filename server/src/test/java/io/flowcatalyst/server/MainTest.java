@@ -40,14 +40,22 @@ class MainTest {
         }
     }
 
-    /// The gap: router-only + the built-in Postgres broker must get a pool
-    /// — this is the assertion that fails against the pre-fix `needsDb`,
-    /// which ignored the router entirely.
+    /// **Superseded by R4** (`docs/go-mirror/2026-09-12-dispatch-rulings.md`):
+    /// this used to be the gap-closing assertion — router-only + the
+    /// built-in Postgres broker needed a pool through `Main`. R4 removed
+    /// `Router#usesDefaultPostgresBroker` along with the fixed single-queue
+    /// branch it audited: a router-only instance no longer opens a pool
+    /// through `Main` just because `FC_DEFAULT_BROKER=postgres` is set — a
+    /// config-URL-supplied Postgres queue opens its own pool from its own URI
+    /// instead (`QueueFactory#createPostgres`). This test now pins the
+    /// opposite of what it originally asserted; kept under its original name
+    /// with the ruling noted, not deleted, per CONVENTIONS' preference for
+    /// recording a superseded rule rather than silently erasing it.
     @Test
     void routerOnlyWithPostgresDefaultBrokerNeedsDbButNotMigrateOrSeed() {
         var e = env("FC_PLATFORM_ENABLED", "false", "FC_ROUTER_ENABLED", "true",
                 "FC_DEFAULT_BROKER", "postgres");
-        assertThat(Main.needsDb(e)).isTrue();
+        assertThat(Main.needsDb(e)).as("R4: the router itself never causes Main to open a pool any more").isFalse();
         // load-bearing: queue_messages is created by PostgresQueue.initSchema,
         // not Flyway — a router-only instance must never run platform
         // migrations or the seeder against a database that may host nothing
@@ -69,10 +77,10 @@ class MainTest {
         assertThat(Main.needsDb(e)).isFalse();
     }
 
-    /// A config URL wins over the default broker (`Router#usesDefaultPostgresBroker`
-    /// mirrors `Router#configSource`'s own precedence) — a router pointed at a
-    /// config service never grows a Postgres broker just because
-    /// FC_DEFAULT_BROKER is also set to postgres.
+    /// **Superseded by R4**: before R4 removed `Router#usesDefaultPostgresBroker`,
+    /// this pinned that a config URL wins over the default broker for
+    /// `needsDb`'s own precedence. Now the router never factors into
+    /// `needsDb` at all — this still holds, but for a simpler reason.
     @Test
     void routerOnlyWithConfigUrlAndPostgresBrokerNeedsNoDb() {
         var e = env("FC_PLATFORM_ENABLED", "false", "FC_ROUTER_ENABLED", "true",

@@ -106,6 +106,38 @@ class SqsDispatchPublisherTest {
                         queueUrl(clientIdentifier, "HIGH_PRIORITY"));
     }
 
+    // ── (2b) both publishers resolve the same destination — anti-drift ─────
+
+    /// **Asserted against the shared resolver, so this publisher and
+    /// [PostgresQueuePublisherTest]'s mirror-image assertion cannot drift**
+    /// (`docs/spec/deployed-dispatch.md` §3, unit D part 1). Mutant this
+    /// pins: this publisher composing its own SQS queue URL inline instead
+    /// of delegating tenant/priority resolution to
+    /// [DispatchDestinationResolver] via [#destinationFor] — a hand-rolled
+    /// composition that happened to agree for the simple cases above but
+    /// diverged for a real client + HIGH_PRIORITY job would fail this
+    /// comparison.
+    @Test
+    void resolvesExactlyWhatTheSharedResolverComputesForTheSameJob() throws Exception {
+        String clientIdentifier = "sqspubshared" + RUN;
+        String clientId = SchedulerFixture.client(clientIdentifier);
+        String highSub = SchedulerFixture.subscriptionWithQueue("HIGH_PRIORITY");
+        String jobId = "sqspub-shared-" + RUN;
+
+        DispatchDestinationResolver resolver = new DispatchDestinationResolver(
+                new PoolCodeResolver(DATA_SOURCE), new SubscriptionPriorityCache(DATA_SOURCE), SETTINGS);
+        PublishedMessage message = published(jobId, clientId, highSub, "g");
+        String expectedUrl = SETTINGS.queueUriFor(resolver.destinationFor(message));
+
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        publisher(client).publish(List.of(message));
+
+        assertThat(client.sendRequests()).hasSize(1);
+        assertThat(client.sendRequests().getFirst().queueUrl())
+                .as("SqsDispatchPublisher must resolve exactly what the shared resolver computes")
+                .isEqualTo(expectedUrl);
+    }
+
     // ── (3) legacy/unusable stored queue value reads as DEFAULT, never throws ─
 
     /// Mutant this pins: [io.flowcatalyst.platform.shared.dispatch.QueuePriority#forPublishing]

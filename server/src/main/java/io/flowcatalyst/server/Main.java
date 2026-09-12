@@ -40,15 +40,20 @@ public final class Main {
                 .log();
 
         // The platform database is needed by any subsystem that reads/writes
-        // Postgres — including a router-only instance running the built-in
-        // Postgres broker (`docs/spec/router.md` §8.4): it still writes/reads
-        // `queue_messages` even with FC_PLATFORM_ENABLED=false. A router-only
-        // or MCP-only instance with no Postgres broker skips connect entirely.
+        // Postgres. A router-only instance never opens one through Main any
+        // more (R4, `docs/go-mirror/2026-09-12-dispatch-rulings.md`):
+        // Router#usesDefaultPostgresBroker and the fixed single-queue branch
+        // it audited are both gone, and a config-URL-driven Postgres queue
+        // opens its OWN pool from its own URI (`QueueFactory#createPostgres`)
+        // rather than borrowing one Main provisioned in advance. A router-only
+        // or MCP-only instance skips connect entirely.
         boolean needsDb = needsDb(env);
         // Migrations and the seeder are platform-shaped work: `queue_messages`
-        // is created by PostgresQueue.initSchema (Router.configSource), not
-        // Flyway, so a router-only instance must never run either against a
-        // database that may host nothing but that one table.
+        // is created by PostgresQueue.initSchema (now called from
+        // QueueFactory.createPostgres and from Server#schedulerPublisher, not
+        // Router.configSource), not Flyway, so a router-only instance must
+        // never run either against a database that may host nothing but that
+        // one table.
         boolean needsMigrateAndSeed = needsMigrateAndSeed(env);
 
         GatedDataSource pool = null;
@@ -134,13 +139,22 @@ public final class Main {
     }
 
     /// Whether this instance needs a Postgres pool at all: any DB-backed
-    /// background subsystem ([#needsMigrateAndSeed]), or the router running
-    /// its own built-in Postgres broker (`docs/spec/router.md` §8.4,
-    /// [Router#usesDefaultPostgresBroker]) — a router-only deployment with
-    /// `FC_ROUTER_ENABLED=true FC_DEFAULT_BROKER=postgres` still needs a pool
-    /// even though `FC_PLATFORM_ENABLED` and every worker flag are off.
+    /// background subsystem ([#needsMigrateAndSeed]) — the same as
+    /// [#needsMigrateAndSeed] now.
+    ///
+    /// **Before R4** (`docs/go-mirror/2026-09-12-dispatch-rulings.md`), a
+    /// router-only deployment with `FC_ROUTER_ENABLED=true
+    /// FC_DEFAULT_BROKER=postgres` also needed a pool here, for
+    /// `Router#usesDefaultPostgresBroker`'s fixed single-queue branch. R4
+    /// removed that branch entirely: a router-only instance now either has a
+    /// config URL (in which case each config-URL-supplied `postgres://`
+    /// queue opens its own pool from its own URI,
+    /// `QueueFactory#createPostgres`) or has no queues at all — neither case
+    /// needs `Main` to provision one in advance. Kept as its own method
+    /// (rather than folded away entirely) so a future DB-needing router
+    /// condition has an obvious home.
     static boolean needsDb(Env env) {
-        return needsMigrateAndSeed(env) || (env.routerEnabled() && Router.usesDefaultPostgresBroker(env));
+        return needsMigrateAndSeed(env);
     }
 
     /// Whether platform migrations and the seeder should run against the

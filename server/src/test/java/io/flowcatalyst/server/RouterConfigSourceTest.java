@@ -11,10 +11,15 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Pins where a running router takes its configuration from
-/// (`docs/spec/router.md` §8.4, Go `server/run.go:346`): a config URL wins;
-/// otherwise the built-in Postgres broker exists **only** when
-/// `FC_DEFAULT_BROKER=postgres`. A production `fc-server` with neither must
-/// start with no queues — it must never synthesise a broker on its own.
+/// (`docs/spec/router.md` §8.4, Go `server/run.go:346` — **superseded by R4**,
+/// `docs/go-mirror/2026-09-12-dispatch-rulings.md`): a config URL wins;
+/// without one, the router starts with no queues, full stop.
+/// `FC_DEFAULT_BROKER` no longer changes anything here — R4 removed the
+/// fixed single-queue branch entirely, "not just for dev": one code path, as
+/// intended. These tests used to pin the OPPOSITE of several of the
+/// assertions below (a synthesised default-broker queue); they are rewritten
+/// to pin the new contract rather than deleted, per CONVENTIONS' preference
+/// for recording a superseded rule rather than silently erasing it.
 class RouterConfigSourceTest {
 
     private static final Warnings NO_WARNINGS = (severity, category, message) -> { };
@@ -26,7 +31,7 @@ class RouterConfigSourceTest {
     }
 
     private static RouterConfig fetched(Env env) {
-        return Router.configSource(env, null, NO_WARNINGS).fetch().orElseThrow();
+        return Router.configSource(env, NO_WARNINGS).fetch().orElseThrow();
     }
 
     @Test
@@ -36,21 +41,26 @@ class RouterConfigSourceTest {
         assertThat(config.processingPools()).isEmpty();
     }
 
+    /// **Reversed by R4.** Before this ruling, `FC_DEFAULT_BROKER=postgres`
+    /// with no config URL synthesised one queue on the database URL. Mutant
+    /// this pins: restoring that branch — a non-empty queue list would then
+    /// come back here.
     @Test
-    void defaultBrokerPostgresSynthesisesOneQueueOnTheDatabaseUrl() {
+    void defaultBrokerPostgresNoLongerSynthesisesAQueue() {
         var config = fetched(env(
                 "FC_DEFAULT_BROKER", "postgres",
                 "FC_DATABASE_URL", "postgresql://u@db:5432/fc"));
-        assertThat(config.queues()).hasSize(1);
-        assertThat(config.queues().getFirst().queueUri()).isEqualTo("postgres://u@db:5432/fc");
+        assertThat(config.queues()).isEmpty();
+        assertThat(config.processingPools()).isEmpty();
     }
 
+    /// **Reversed by R4.** Before this ruling, a missing `FC_DATABASE_URL`
+    /// with `FC_DEFAULT_BROKER=postgres` fell back to a local Postgres URL
+    /// (matching Go) rather than starting with nothing.
     @Test
-    void defaultBrokerWithoutDatabaseUrlFallsBackToLocalPostgresLikeGo() {
+    void defaultBrokerWithoutDatabaseUrlStillStartsNothing() {
         var config = fetched(env("FC_DEFAULT_BROKER", "postgres"));
-        assertThat(config.queues()).hasSize(1);
-        assertThat(config.queues().getFirst().queueUri())
-                .isEqualTo("postgres://postgres@localhost:5432/flowcatalyst");
+        assertThat(config.queues()).isEmpty();
     }
 
     @Test
@@ -60,11 +70,20 @@ class RouterConfigSourceTest {
     }
 
     @Test
-    void configUrlWinsOverTheDefaultBroker() {
+    void configUrlWinsRegardlessOfDefaultBroker() {
         var source = Router.configSource(env(
                 "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
                 "FC_DEFAULT_BROKER", "postgres",
-                "FC_DATABASE_URL", "postgresql://u@db:5432/fc"), null, NO_WARNINGS);
+                "FC_DATABASE_URL", "postgresql://u@db:5432/fc"), NO_WARNINGS);
+        assertThat(source).isInstanceOf(HttpConfigSource.class);
+    }
+
+    /// A config URL is used even with `FC_DEFAULT_BROKER` entirely unset —
+    /// R4's "one code path" means the broker setting plays no role at all in
+    /// choosing the source any more, only in whether the URL is present.
+    @Test
+    void configUrlUsedWithNoDefaultBrokerSet() {
+        var source = Router.configSource(env("FLOWCATALYST_CONFIG_URL", "http://config.local/router"), NO_WARNINGS);
         assertThat(source).isInstanceOf(HttpConfigSource.class);
     }
 }

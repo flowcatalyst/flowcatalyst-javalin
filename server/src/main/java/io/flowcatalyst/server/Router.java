@@ -1,7 +1,6 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.http.vertx.VertxMediationClient;
-import io.flowcatalyst.router.config.QueueConfig;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;
 import io.flowcatalyst.router.manager.ConsumerSupervisor;
@@ -44,7 +43,6 @@ import javax.sql.DataSource;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -243,7 +241,7 @@ public final class Router implements AutoCloseable {
         var traffic = trafficFor(env, clock);
 
         var server = new RouterServer(manager, tracker, election,
-                consumerFactory(dataSource, env), configSource(env, dataSource, warningSink),
+                consumerFactory(dataSource, env), configSource(env, warningSink),
                 warningSink, clock, Duration.ofSeconds(env.routerDrainTimeoutSec()));
 
         // Traffic follows leadership: an instance that is not leading has
@@ -439,11 +437,13 @@ public final class Router implements AutoCloseable {
     /// consuming Postgres queues from `FLOWCATALYST_CONFIG_URL` needs no
     /// platform pool either.
     ///
-    /// `dataSource`'s own connection string is [#defaultQueueUri] — the same
-    /// derivation [#configSource] uses for the synthesised default-broker
-    /// queue — so [QueueFactory] can recognise that queue's URI as "already
-    /// [dataSource]'s database" and reuse it instead of opening a redundant
-    /// second pool next to it.
+    /// `dataSource`'s own connection string is [#defaultQueueUri] — so
+    /// [QueueFactory] can recognise a config-URL-supplied queue's URI as
+    /// "already [dataSource]'s database" (dev mode: the platform's own
+    /// served router-config document names every Postgres-backed queue with
+    /// [io.flowcatalyst.server.Env#databaseUrl] verbatim,
+    /// `docs/spec/deployed-dispatch.md` §3) and reuse it instead of opening a
+    /// redundant second pool next to it.
     private static RouterManager.ConsumerFactory consumerFactory(DataSource dataSource, Env env) {
         return new io.flowcatalyst.router.queue.QueueFactory(
                 dataSource, dataSource == null ? null : defaultQueueUri(env));
@@ -451,53 +451,34 @@ public final class Router implements AutoCloseable {
 
     /// Where the router's configuration comes from.
     ///
-    /// With a config URL the router polls it (§8.1). Without one, **only**
-    /// when `FC_DEFAULT_BROKER=postgres`, it runs the default broker: a
-    /// single Postgres queue and the fallback pool, which is what `fcdev` and
-    /// single-tenant deployments use (§8.4, `server/run.go:346`). With
-    /// neither, the router starts with no queues and no pools — a production
-    /// `fc-server` never grows a Postgres broker just because nobody pointed
-    /// it at a config service.
-    ///
-    /// The schema for the default queue is created here (idempotent) so the
-    /// first poll finds its table even when the scheduler — which also
-    /// creates it — is disabled on this instance.
-    static RouterServer.ConfigSource configSource(Env env, DataSource dataSource, Warnings warnings) {
-        if (!env.routerConfigUrl().isBlank()) {
-            LOG.atInfo().setMessage("router configuration source selected")
-                    .addKeyValue("url", env.routerConfigUrl())
-                    .log();
-            return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings);
-        }
-        if (!DEFAULT_BROKER_POSTGRES.equals(env.defaultBroker())) {
-            LOG.info("router has no config URL and FC_DEFAULT_BROKER is not postgres: no pools will start");
+    /// With a config URL the router polls it (§8.1) — dev and prod alike
+    /// (R4, `docs/go-mirror/2026-09-12-dispatch-rulings.md`): `fcdev` points
+    /// its own config URL at its own platform, whose served document lists
+    /// Postgres-backed queues instead of SQS ones
+    /// (`docs/spec/deployed-dispatch.md` §3 "Dev mode"). Without one, the
+    /// router starts with no queues and no pools, full stop — `FC_DEFAULT_BROKER`
+    /// no longer changes this. **This removes the fixed single-queue branch
+    /// entirely** (R4's ruling, "not just for dev — one code path, as
+    /// intended"): a bare `fc-server` run with `FC_DEFAULT_BROKER=postgres`
+    /// and no config URL is an accepted consequence, and now stops consuming
+    /// anything.
+    static RouterServer.ConfigSource configSource(Env env, Warnings warnings) {
+        if (env.routerConfigUrl().isBlank()) {
+            LOG.info("router has no config URL (R4): no queues will start");
             return RouterServer.ConfigSource.fixed(RouterConfig.EMPTY);
         }
-        var queue = QueueConfig.of(defaultQueueUri(env));
-        if (dataSource != null) {
-            io.flowcatalyst.router.queue.postgres.PostgresQueue.initSchema(dataSource);
-        }
-        LOG.atInfo().setMessage("router using the default broker")
-                .addKeyValue("queue", queue.queueName())
+        LOG.atInfo().setMessage("router configuration source selected")
+                .addKeyValue("url", env.routerConfigUrl())
                 .log();
-        return RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(queue)));
+        return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings);
     }
-
-    /// Whether [#configSource] would run the built-in Postgres broker for
-    /// this [Env] — the same two conditions [#configSource] itself checks
-    /// (no config URL, `FC_DEFAULT_BROKER=postgres`). [Main] calls this to
-    /// decide whether a router-only deployment still needs a database pool
-    /// (`docs/spec/router.md` §8.4): the config-URL and non-Postgres broker
-    /// branches above start with no pools at all, so neither needs one.
-    static boolean usesDefaultPostgresBroker(Env env) {
-        return env.routerConfigUrl().isBlank() && DEFAULT_BROKER_POSTGRES.equals(env.defaultBroker());
-    }
-
-    private static final String DEFAULT_BROKER_POSTGRES = "postgres";
 
     /// Go falls back to a local Postgres when the default broker is on but
-    /// no database URL was given (`server/run.go:350-352`), so a router-only
-    /// instance still names a real queue.
+    /// no database URL was given (`server/run.go:350-352`); [#consumerFactory]
+    /// keeps naming a real database URL on that same fallback so a
+    /// config-URL-supplied Postgres queue that happens to carry no host of
+    /// its own (a bare `postgres://` sentinel) can still be recognised as
+    /// "the platform's own database" rather than dereferenced literally.
     private static final String DEFAULT_BROKER_FALLBACK_URL = "postgresql://postgres@localhost:5432/flowcatalyst";
 
     static String defaultQueueUri(Env env) {

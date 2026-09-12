@@ -148,6 +148,18 @@ public final class QueueFactory implements RouterManager.ConsumerFactory {
         // on the same config.
         int poolSize = Math.max(4, Runtime.getRuntime().availableProcessors());
         GatedDataSource ownPool = Database.newPool(ownConnection.get(), poolSize);
+        // Idempotent (`CREATE TABLE IF NOT EXISTS`), and deliberately only on
+        // THIS branch. R4 removed `Router#configSource`'s fixed single-queue
+        // branch, which used to be the router's one schema-creation call site,
+        // so a config-URL-driven Postgres queue needs another — but only when
+        // the queue names a database of its own. The shared-pool branch above
+        // is the *platform's* database, and the platform owns its own schema
+        // (`Server#schedulerPublisher` creates `queue_messages` there); a
+        // router process must not run DDL against it, and doing so also made
+        // consumer construction fail outright wherever the shared DataSource
+        // cannot hand out a connection. A database only this queue touches is
+        // a different matter: nothing else will ever provision it.
+        PostgresQueue.initSchema(ownPool.hikari());
         // The plain Hikari pool, not the gate: the gate (Tier 1,
         // `docs/spec/admission.md` §1) exists to keep the platform's shared
         // request-serving pool from reaching HikariCP's timed wait under

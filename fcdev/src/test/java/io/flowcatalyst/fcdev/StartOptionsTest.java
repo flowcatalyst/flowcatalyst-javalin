@@ -127,6 +127,12 @@ class StartOptionsTest {
         assertThat(env.streamEnabled()).isTrue();
         assertThat(env.defaultBroker()).isEqualTo("postgres");
         assertThat(env.jwtIssuer()).isEqualTo("http://dev.local"); // explicit FC_* overrides survive
+        // R4/R3 (`docs/spec/deployed-dispatch.md` §3,
+        // `docs/go-mirror/2026-09-12-dispatch-rulings.md`): fcdev points its
+        // own config URL at its own INTERNAL listener (FC_METRICS_PORT), not
+        // the API port — the served document lives there, not on the
+        // ALB-facing one.
+        assertThat(env.routerConfigUrl()).isEqualTo("http://localhost:7001/api/dispatch/router-config");
     }
 
     @Test
@@ -134,5 +140,31 @@ class StartOptionsTest {
         var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
         var env = StartCommand.devEnv(DevEnv.of(Map.of("FC_DEFAULT_BROKER", "none")).mutable(), o, "postgresql://x@y/z");
         assertThat(env.defaultBroker()).isEqualTo("none");
+    }
+
+    /// Mutant this pins: hardcoding the config URL default so it always wins
+    /// — an operator who already pointed `FLOWCATALYST_CONFIG_URL` elsewhere
+    /// (Integral, a shared config service) must keep that value.
+    @Test
+    void explicitConfigUrlIsNotOverridden() {
+        var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
+        var env = StartCommand.devEnv(
+                DevEnv.of(Map.of("FLOWCATALYST_CONFIG_URL", "http://integral.example/router-config")).mutable(),
+                o, "postgresql://x@y/z");
+        assertThat(env.routerConfigUrl()).isEqualTo("http://integral.example/router-config");
+    }
+
+    /// `--metrics-port 0` (an ephemeral port picked at bind time) is not
+    /// knowable when `devEnv` runs — `Env` is built and handed to `Server`
+    /// before the metrics listener binds, so there is no later point to
+    /// substitute the real port in. Mutant this pins: synthesising
+    /// `http://localhost:0/...` instead of leaving the setting unset — a URL
+    /// that can never work is worse than none, because it fails only once
+    /// the router tries to poll it rather than obviously at a glance.
+    @Test
+    void metricsPortZeroDoesNotSynthesiseABogusConfigUrl() {
+        var o = parse(Map.of(), "--metrics-port", "0");
+        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z");
+        assertThat(env.routerConfigUrl()).isEmpty();
     }
 }

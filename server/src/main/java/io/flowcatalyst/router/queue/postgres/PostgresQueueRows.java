@@ -10,6 +10,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 
 /// The one place `queue_messages` rows are written from a [Message] —
 /// shared by [PostgresQueue] (the router's own `POST /messages` publisher,
@@ -40,19 +41,46 @@ public final class PostgresQueueRows {
     private PostgresQueueRows() {
     }
 
-    /// Inserts one row per message, in one JDBC batch. Throws (nothing
-    /// inserted from the caller's point of view — see [Publisher#publishBatch])
-    /// if the batch statement fails; a no-op for an empty list.
+    /// One message bound for one named queue — the unit [#insertBatch(DataSource,List)]
+    /// writes, so a single JDBC batch can span several distinct destination
+    /// queues in one statement
+    /// ([io.flowcatalyst.platform.scheduler.PostgresQueuePublisher] routes
+    /// per (tenant, priority), `docs/spec/deployed-dispatch.md` §3 unit D
+    /// part 1).
+    public record Row(String queueName, Message message) {
+        public Row {
+            Objects.requireNonNull(queueName, "queueName");
+            Objects.requireNonNull(message, "message");
+        }
+    }
+
+    /// Inserts one row per message, all bound for the SAME `queueName`, in
+    /// one JDBC batch — [PostgresQueue]'s own `POST /messages` publisher,
+    /// which always addresses one queue at a time. Throws (nothing inserted
+    /// from the caller's point of view — see [Publisher#publishBatch]) if the
+    /// batch statement fails; a no-op for an empty list.
     public static void insertBatch(DataSource dataSource, String queueName, List<Message> messages) throws SQLException {
-        if (messages.isEmpty()) {
+        insertBatch(dataSource, messages.stream().map(m -> new Row(queueName, m)).toList());
+    }
+
+    /// Inserts one row per [Row], in one JDBC batch — each row may name a
+    /// DIFFERENT destination queue, which is what lets
+    /// [io.flowcatalyst.platform.scheduler.PostgresQueuePublisher] publish a
+    /// heterogeneous batch (several tenants/priorities) as a single
+    /// statement, keeping its documented all-or-nothing failure contract
+    /// (ruling O2's carve-out) even though the batch spans several queues.
+    /// Throws if the batch statement fails; a no-op for an empty list.
+    public static void insertBatch(DataSource dataSource, List<Row> rows) throws SQLException {
+        if (rows.isEmpty()) {
             return;
         }
         long now = Instant.now().getEpochSecond();
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(INSERT_SQL)) {
-            for (Message m : messages) {
+            for (Row row : rows) {
+                Message m = row.message();
                 ps.setString(1, m.id());
-                ps.setString(2, queueName);
+                ps.setString(2, row.queueName());
                 ps.setString(3, m.messageGroupId());
                 ps.setLong(4, now);
                 ps.setString(5, Json.write(m));
