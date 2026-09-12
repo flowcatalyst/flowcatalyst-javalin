@@ -13,9 +13,10 @@ Read §0 first — it corrects the earlier hand-off.
 
 The earlier hand-off asked Go to honour `DISPATCH_SCHEDULER_PROCESSING_ENDPOINT`
 and the three OIDC TTLs. **Go already had, at commit `e87b88d` ("honour the
-deployed environment: dispatch callback + OIDC TTLs"), which is an ancestor of
-`466dc11`** — our last sync point. It was in the tree when that hand-off was
-written and neither side noticed; `docs/deployments.md`'s "Go doesn't read this
+deployed environment: dispatch callback + OIDC TTLs"), committed 2026-09-12
+09:31 — five commits *past* `466dc11`**, our last sync point, not an ancestor
+of it as first written here (the other four are SDK/fcdev version bumps). It
+landed after that hand-off was written and neither side noticed; `docs/deployments.md`'s "Go doesn't read this
 name either" note is stale and is being corrected.
 
 Java has now built the same thing (2026-09-12). Do **not** redo it. What is

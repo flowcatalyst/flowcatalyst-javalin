@@ -38,8 +38,9 @@ brief.
 | `603a14f` | C — SQS FIFO publisher, per-attempt dedup id, group-aware chunking |
 | `d9e2263` | D — the fixed single-queue branch removed; dev and prod share one path |
 
-**Go already had §4** at `e87b88d`, an ancestor of our last sync `466dc11` —
-neither side had noticed. `docs/deployments.md`'s "Go doesn't read this either"
+**Go already had §4** at `e87b88d` — committed 2026-09-12 09:31, five
+commits *past* our last sync `466dc11` (the other four are SDK/fcdev version
+bumps), not an ancestor of it as first written here. `docs/deployments.md`'s "Go doesn't read this either"
 notes were stale and are corrected. Go has **not** started §3; it mirrors from
 the spec now that Java has built it.
 
@@ -58,10 +59,11 @@ the spec now that Java has built it.
 tokens lengthen 7 d → 30 d, both because the deployed `OIDC_*` values are now
 honoured.
 
-**Not yet done:** a parity run against Go, plus the Java e2e suite.
-
-Expect it to come back **clean**, despite two Java-vs-Go behavioural changes —
-checked, not assumed:
+**Parity against Go `e87b88d` (2026-09-12 evening): 1,282 steps, 394 OK,
+888 ACCEPTED, 0 DIFF, 0 ERROR, 253/253 + 102/102, no stale entries.** The
+server suite ran green on the same reactor pass (3,961 tests). It came back
+clean as expected, despite two Java-vs-Go behavioural changes — checked, not
+assumed:
 - R7's composed pool code is stamped on the wire `Message`, and **no HTTP
   response exposes it**; the corpus contains no `poolCode` reference at all.
 - Java now persists `msg_subscriptions.queue` where Go still discards it, but
@@ -69,8 +71,34 @@ checked, not assumed:
   difference. A scenario added later *would* DIFF until Go mirrors — that is
   the moment to add an `expected-diffs.json` entry, not before.
 
-So a DIFF from either would mean something unanticipated, not a known
-deviation to allow-list. Record the Go commit the run was against, as usual.
+So a DIFF from either would have meant something unanticipated, not a known
+deviation to allow-list; none appeared. Harness note: `PARITY_GO_SRC` must be
+absolute — surefire runs in `parity/`, so a repo-root-relative path dies with
+a misleading "Cannot run program go" (`parity/README.md` now says so).
+
+**The Java e2e found a startup regression from unit D** (`d9e2263`): fcdev
+now points the router's config URL at the platform's own internal listener,
+but `Server.start()` bound both listeners only after `Router.start` returned,
+and the router's first config fetch on leadership gain was synchronous with a
+12×5 s retry window. fcdev stalled ~60 s, the fetch failed, the router ran
+with no queues until the 5-minute poll, and the e2e's 60 s health wait
+expired before any flow ran. Neither the fcdev integration test
+(`--router=false`) nor the in-process parity server (router off) could see
+it. Fixed in two units, both ruled by the owner the same evening:
+
+- **Unit 1 — the internal listener binds before the router.** It serves the
+  document and needs nothing from the router. `RouterStartupOrderTest` pins
+  both halves: the router's consumers include `platform-DEFAULT` right after
+  start (the document came from our own listener), and start takes under
+  20 s (mutant: the old order took 58 s and had no consumers). Server suite
+  green from clean (3,962); **Java e2e 51/51** on this unit alone.
+- **Unit 2 — R-A/R-B** (`docs/go-mirror/2026-09-12-router-first-fetch.md`):
+  the first apply runs on its own virtual thread so listeners never wait on
+  a config service (Go already does this in a goroutine; the router ECS
+  service has a 0 s health-check grace period), and a source that has never
+  succeeded is retried every 5 s until it does instead of waiting the
+  5-minute poll (Go does NOT do this — mirror item). The periodic poll skips
+  while the initial apply is in flight.
 
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 
