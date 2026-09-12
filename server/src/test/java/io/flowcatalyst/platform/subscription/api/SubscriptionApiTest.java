@@ -256,6 +256,53 @@ class SubscriptionApiTest {
         assertThat(json(missing).get("error").asText()).isEqualTo("Subscription_NOT_FOUND");
     }
 
+    /// Ruling R1a end to end: the shipped SPA's create form sends
+    /// `queue: "default"` (lower-case), required on every create. A
+    /// case-sensitive server would 400 every UI-created subscription; this
+    /// pins that lower-case survives the full HTTP round trip and comes back
+    /// normalised upper-case.
+    @Test
+    void createAcceptsTheSpasLowerCaseQueueAndNormalisesItUpperCaseOnRead() {
+        String id = create(code("queue-default"), "Queue Default", ",\"queue\":\"default\"");
+        var s = json(http.get("/api/subscriptions/" + id, ANCHOR));
+        assertThat(s.get("queue").asText()).isEqualTo("DEFAULT");
+    }
+
+    @Test
+    void createAcceptsHighPriorityAndItSurvivesTheRoundTrip() {
+        String id = create(code("queue-high"), "Queue High", ",\"queue\":\"HIGH_PRIORITY\"");
+        var s = json(http.get("/api/subscriptions/" + id, ANCHOR));
+        assertThat(s.get("queue").asText()).isEqualTo("HIGH_PRIORITY");
+    }
+
+    @Test
+    void createRejectsAnUnrecognisedQueueValue() {
+        var r = http.post("/api/subscriptions", body(code("queue-bad"), "Queue Bad", ",\"queue\":\"workers-high\""), ANCHOR);
+        assertThat(r.statusCode()).isEqualTo(400);
+        assertThat(json(r).get("error").asText()).isEqualTo("INVALID_QUEUE");
+    }
+
+    @Test
+    void updateSetsTheQueueAndAnAbsentFieldLeavesItUnchanged() {
+        String id = create(code("queue-upd"), "Queue Upd", "");
+        assertThat(json(http.get("/api/subscriptions/" + id, ANCHOR)).has("queue")).as("no queue on create").isFalse();
+
+        var put = http.put("/api/subscriptions/" + id, "{\"queue\":\"high_priority\"}", ANCHOR);
+        assertThat(put.statusCode()).isEqualTo(204);
+        assertThat(json(http.get("/api/subscriptions/" + id, ANCHOR)).get("queue").asText()).isEqualTo("HIGH_PRIORITY");
+
+        // An update omitting "queue" entirely leaves the stored priority untouched.
+        var nameOnly = http.put("/api/subscriptions/" + id, "{\"name\":\"Renamed\"}", ANCHOR);
+        assertThat(nameOnly.statusCode()).isEqualTo(204);
+        var again = json(http.get("/api/subscriptions/" + id, ANCHOR));
+        assertThat(again.get("name").asText()).isEqualTo("Renamed");
+        assertThat(again.get("queue").asText()).as("absent queue field is unchanged, not cleared").isEqualTo("HIGH_PRIORITY");
+
+        var bad = http.put("/api/subscriptions/" + id, "{\"queue\":\"nonsense\"}", ANCHOR);
+        assertThat(bad.statusCode()).isEqualTo(400);
+        assertThat(json(bad).get("error").asText()).isEqualTo("INVALID_QUEUE");
+    }
+
     @Test
     void pauseAndResumeReturn204AndFlipTheStatus() {
         String id = create(code("flip"), "Flip", "");

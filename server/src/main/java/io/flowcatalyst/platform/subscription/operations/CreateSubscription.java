@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.subscription.EndpointUrl;
+import io.flowcatalyst.platform.shared.dispatch.QueuePriority;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.platform.subscription.SubscriptionCode;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
@@ -26,6 +27,7 @@ public final class CreateSubscription {
                     SubscriptionCode.parse(cmd.code());
                     UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name is required");
                     EndpointUrl.parse(cmd.endpoint());
+                    QueuePriority.parse(cmd.queue()); // null-safe for absent/blank; throws INVALID_QUEUE otherwise (R1a)
                     if (cmd.eventTypes().isEmpty()) {
                         throw UseCaseException.validation("EVENT_TYPES_REQUIRED", "at least one event type binding is required");
                     }
@@ -40,6 +42,7 @@ public final class CreateSubscription {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Subscription with code '" + code + "' already exists");
                     }
+                    QueuePriority queue = QueuePriority.parse(cmd.queue());
                     Subscription s = Subscription.create(code, cmd.name().strip(), EndpointUrl.parse(cmd.endpoint()).value())
                             .withDescription(cmd.description())
                             .withClientId(cmd.clientId())
@@ -48,6 +51,7 @@ public final class CreateSubscription {
                             .withServiceAccountId(cmd.serviceAccountId())
                             .withEventTypes(cmd.eventTypes())
                             .withCustomConfig(cmd.customConfig())
+                            .withQueue(queue == null ? null : queue.name())
                             .withCreatedBy(ec.principalId());
                     if (cmd.mode() != null) s = s.withMode(DispatchMode.parse(cmd.mode()));
                     if (cmd.timeoutSeconds() != null) s = s.withTimeoutSeconds(cmd.timeoutSeconds());

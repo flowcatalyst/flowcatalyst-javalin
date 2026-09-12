@@ -78,6 +78,7 @@ class SubscriptionTest {
         assertThat(s.dataOnly()).isEqualTo(Subscription.DEFAULT_DATA_ONLY).isTrue();
         assertThat(s.createdBy()).isNull();
         assertThat(s.clientScoped()).isFalse();
+        assertThat(s.queue()).as("ruling R1: no priority is set until create/update sets one").isNull();
     }
 
     // ── Transitions ────────────────────────────────────────────────────────
@@ -103,13 +104,16 @@ class SubscriptionTest {
                 .withCustomConfig(List.of(new ConfigEntry("X-Env", "test")))
                 .withDispatchPool("dpl_1", "pool-one")
                 .withMode(DispatchMode.BLOCK_ON_ERROR)
-                .withDataOnly(false);
+                .withDataOnly(false)
+                .withQueue("HIGH_PRIORITY");
         assertThat(s.eventTypes()).containsExactly(EventTypeBinding.of("orders:order:created"));
         assertThat(s.customConfig()).containsExactly(new ConfigEntry("X-Env", "test"));
         assertThat(s.dispatchPoolId()).isEqualTo("dpl_1");
         assertThat(s.dispatchPoolCode()).isEqualTo("pool-one");
         assertThat(s.mode()).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
         assertThat(s.dataOnly()).isFalse();
+        assertThat(s.queue()).isEqualTo("HIGH_PRIORITY");
+        assertThat(s.withQueue(null).queue()).as("withQueue(null) clears it").isNull();
         assertThat(s.withDispatchPoolId("dpl_2").dispatchPoolCode()).as("admin pool id does not touch the code").isEqualTo("pool-one");
         assertThat(s.withEventTypes(List.of()).eventTypes()).as("bindings may be emptied wholesale").isEmpty();
         assertThat(s.withConnectionId(null).connectionId()).isNull();

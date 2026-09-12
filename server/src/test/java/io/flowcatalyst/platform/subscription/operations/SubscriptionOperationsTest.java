@@ -94,7 +94,7 @@ class SubscriptionOperationsTest {
 
     private static CreateCommand createCommand(String code, String name) {
         return new CreateCommand(code, name, ENDPOINT, null, null, null, null, null, BINDINGS, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     private static SubscriptionCreated created(String code, String name) {
@@ -106,7 +106,7 @@ class SubscriptionOperationsTest {
     }
 
     private static UpdateCommand updateOf(String id, String name) {
-        return new UpdateCommand(id, name, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        return new UpdateCommand(id, name, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     private static SyncSubscriptionsCommand sync(String appCode, boolean removeUnlisted, SyncSubscriptionInput... rows) {
@@ -177,7 +177,7 @@ class SubscriptionOperationsTest {
                 List.of(new EventTypeBinding(null, "subcrt:orders:order:created", "1.0", "x == 1"),
                         EventTypeBinding.of("subcrt:orders:order:*")),
                 List.of(new ConfigEntry("X-Env", "test")),
-                "BLOCK_ON_ERROR", 60, 5, 10, 3600, false));
+                "BLOCK_ON_ERROR", "high_priority", 60, 5, 10, 3600, false));
 
         assertThat(ev.subscriptionId()).startsWith("sub_");
         assertThat(ev.code()).as("code is trimmed + lowercased").isEqualTo(code);
@@ -200,6 +200,8 @@ class SubscriptionOperationsTest {
         assertThat(got.serviceAccountId()).isEqualTo("sva_subcreate1");
         assertThat(got.createdBy()).isEqualTo(PRINCIPAL);
         assertThat(got.mode()).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
+        assertThat(got.queue()).as("R1a: lower-case \"high_priority\" is accepted and normalised upper-case")
+                .isEqualTo("HIGH_PRIORITY");
         assertThat(got.timeoutSeconds()).isEqualTo(60);
         assertThat(got.maxRetries()).isEqualTo(5);
         assertThat(got.delaySeconds()).isEqualTo(10);
@@ -232,6 +234,8 @@ class SubscriptionOperationsTest {
         assertThat(opJson.get("code").asText()).isEqualTo("  " + code.toUpperCase(Locale.ROOT) + "  ");
         assertThat(opJson.get("eventTypes").get(0).get("eventTypeCode").asText()).isEqualTo("subcrt:orders:order:created");
         assertThat(opJson.get("mode").asText()).isEqualTo("BLOCK_ON_ERROR");
+        assertThat(opJson.get("queue").asText()).as("the audit stores the raw command value, not the normalised one")
+                .isEqualTo("high_priority");
     }
 
     @Test
@@ -249,20 +253,22 @@ class SubscriptionOperationsTest {
         assertThat(got.customConfig()).isEmpty();
         assertThat(got.description()).isNull();
         assertThat(got.connectionId()).isNull();
+        assertThat(got.queue()).as("ruling R1: no queue sent leaves it unset").isNull();
     }
 
     static Stream<Arguments> malformedCreateCommands() {
         return Stream.of(
-                Arguments.of("null code", new CreateCommand(null, "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "CODE_REQUIRED"),
-                Arguments.of("blank code", new CreateCommand("  ", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "CODE_REQUIRED"),
-                Arguments.of("underscore code", new CreateCommand("sub_bad", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
-                Arguments.of("digit-leading code", new CreateCommand("1sub-bad", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
-                Arguments.of("null name", new CreateCommand("sub-noname", null, ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "NAME_REQUIRED"),
-                Arguments.of("blank name", new CreateCommand("sub-noname", " ", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "NAME_REQUIRED"),
-                Arguments.of("null endpoint", new CreateCommand("sub-noep", "X", null, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "INVALID_ENDPOINT"),
-                Arguments.of("ftp endpoint", new CreateCommand("sub-ftpep", "X", "ftp://files.example.test", null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null), "INVALID_ENDPOINT"),
-                Arguments.of("no event types", new CreateCommand("sub-noet", "X", ENDPOINT, null, null, null, null, null, List.of(), null, null, null, null, null, null, null), "EVENT_TYPES_REQUIRED"),
-                Arguments.of("null event types", new CreateCommand("sub-noet", "X", ENDPOINT, null, null, null, null, null, null, null, null, null, null, null, null, null), "EVENT_TYPES_REQUIRED"));
+                Arguments.of("null code", new CreateCommand(null, "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "CODE_REQUIRED"),
+                Arguments.of("blank code", new CreateCommand("  ", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "CODE_REQUIRED"),
+                Arguments.of("underscore code", new CreateCommand("sub_bad", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("digit-leading code", new CreateCommand("1sub-bad", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("null name", new CreateCommand("sub-noname", null, ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "NAME_REQUIRED"),
+                Arguments.of("blank name", new CreateCommand("sub-noname", " ", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "NAME_REQUIRED"),
+                Arguments.of("null endpoint", new CreateCommand("sub-noep", "X", null, null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "INVALID_ENDPOINT"),
+                Arguments.of("ftp endpoint", new CreateCommand("sub-ftpep", "X", "ftp://files.example.test", null, null, null, null, null, BINDINGS, null, null, null, null, null, null, null, null), "INVALID_ENDPOINT"),
+                Arguments.of("no event types", new CreateCommand("sub-noet", "X", ENDPOINT, null, null, null, null, null, List.of(), null, null, null, null, null, null, null, null), "EVENT_TYPES_REQUIRED"),
+                Arguments.of("null event types", new CreateCommand("sub-noet", "X", ENDPOINT, null, null, null, null, null, null, null, null, null, null, null, null, null, null), "EVENT_TYPES_REQUIRED"),
+                Arguments.of("unrecognised queue", new CreateCommand("sub-badq", "X", ENDPOINT, null, null, null, null, null, BINDINGS, null, null, "workers-high", null, null, null, null, null), "INVALID_QUEUE"));
     }
 
     @ParameterizedTest(name = "{0} → {2}")
@@ -282,7 +288,7 @@ class SubscriptionOperationsTest {
 
         String client = EntityType.CLIENT.generate();
         var bound = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code, "Bound", ENDPOINT, null, client,
-                null, null, null, BINDINGS, null, null, null, null, null, null, null));
+                null, null, null, BINDINGS, null, null, null, null, null, null, null, null));
         assertThat(reload(bound.subscriptionId()).clientId()).isEqualTo(client);
         assertThat(repo.findByCodeAndClient(code, client)).isPresent();
         assertThat(repo.findByCodeAndClient(code, null)).as("platform-wide row is a different one").isPresent()
@@ -309,7 +315,7 @@ class SubscriptionOperationsTest {
         // Bound to a client the principal cannot access → denied.
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
                         new CreateCommand(code("subscope-other"), "X", ENDPOINT, null, otherClient,
-                                null, null, null, BINDINGS, null, null, null, null, null, null, null), clientEc)),
+                                null, null, null, BINDINGS, null, null, null, null, null, null, null, null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
 
         // Unauthenticated (no bound principal) → denied before anything is written.
@@ -320,7 +326,7 @@ class SubscriptionOperationsTest {
         // Bound to the principal's own client → allowed.
         var ev = Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
                 new CreateCommand(code("subscope-own"), "Mine", ENDPOINT, null, ownClient,
-                        null, null, null, BINDINGS, null, null, null, null, null, null, null), clientEc));
+                        null, null, null, BINDINGS, null, null, null, null, null, null, null, null), clientEc));
         assertThat(ev.code()).isEqualTo(code("subscope-own"));
     }
 
@@ -333,7 +339,7 @@ class SubscriptionOperationsTest {
         var ev = runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), "  After  ", "after",
                 "https://after.example.test/hook", "con_subupd1",
                 List.of(EventTypeBinding.of("subupd:orders:order:updated")), List.of(new ConfigEntry("k", "v")),
-                "NEXT_ON_ERROR", 90, 7, 5, 7200, "dpl_subupd1", "sva_subupd1", false));
+                "NEXT_ON_ERROR", "default", 90, 7, 5, 7200, "dpl_subupd1", "sva_subupd1", false));
         assertThat(ev.subscriptionId()).isEqualTo(seeded.subscriptionId());
         assertThat(ev.name()).as("name is trimmed").isEqualTo("After");
         assertThat(ev.eventType()).isEqualTo(SubscriptionEvents.UPDATED);
@@ -348,6 +354,7 @@ class SubscriptionOperationsTest {
                 .extracting(EventTypeBinding::eventTypeCode).containsExactly("subupd:orders:order:updated");
         assertThat(got.customConfig()).containsExactly(new ConfigEntry("k", "v"));
         assertThat(got.mode()).isEqualTo(DispatchMode.NEXT_ON_ERROR);
+        assertThat(got.queue()).as("R1a: lower-case \"default\" is accepted and normalised upper-case").isEqualTo("DEFAULT");
         assertThat(got.timeoutSeconds()).isEqualTo(90);
         assertThat(got.maxRetries()).isEqualTo(7);
         assertThat(got.delaySeconds()).isEqualTo(5);
@@ -359,24 +366,32 @@ class SubscriptionOperationsTest {
 
         // Absent fields are unchanged; an explicit empty list empties.
         runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
-                List.of(), null, null, null, null, null, null, null, null, null));
+                List.of(), null, null, null, null, null, null, null, null, null, null));
         var again = reload(seeded.subscriptionId());
         assertThat(again.name()).isEqualTo("After");
         assertThat(again.eventTypes()).as("an explicit [] leaves zero bindings (spec open question 10)").isEmpty();
         assertThat(again.customConfig()).as("absent list is unchanged").containsExactly(new ConfigEntry("k", "v"));
+        assertThat(again.queue()).as("a null queue field on update leaves the stored priority unchanged").isEqualTo("DEFAULT");
+
+        // A present-but-blank queue is not absence: it parses to null (R1) and clears the priority.
+        runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
+                null, null, null, "", null, null, null, null, null, null, null));
+        assertThat(reload(seeded.subscriptionId()).queue()).as("an explicit blank queue clears it").isNull();
 
         var events = eventsFor(seeded.subscriptionId(), SubscriptionEvents.UPDATED);
-        assertThat(events).hasSize(2);
+        assertThat(events).hasSize(3);
         assertThat(json(events.getFirst().get("data", String.class)).propertyNames()).containsExactlyInAnyOrder("subscriptionId", "name");
-        assertThat(auditsFor(seeded.subscriptionId(), "UpdateCommand")).hasSize(2);
+        assertThat(auditsFor(seeded.subscriptionId(), "UpdateCommand")).hasSize(3);
     }
 
     static Stream<Arguments> badUpdateCommands() {
         return Stream.of(
                 Arguments.of("missing id", updateOf(null, "X"), UseCaseError.Validation.class, "ID_REQUIRED"),
                 Arguments.of("blank name", updateOf("sub_doesnotexist1", " "), UseCaseError.Validation.class, "NAME_REQUIRED"),
-                Arguments.of("bad endpoint", new UpdateCommand("sub_doesnotexist1", null, null, "not-a-url", null, null, null, null, null, null, null, null, null, null, null),
+                Arguments.of("bad endpoint", new UpdateCommand("sub_doesnotexist1", null, null, "not-a-url", null, null, null, null, null, null, null, null, null, null, null, null),
                         UseCaseError.Validation.class, "INVALID_ENDPOINT"),
+                Arguments.of("bad queue", new UpdateCommand("sub_doesnotexist1", null, null, null, null, null, null, null, "workers-high", null, null, null, null, null, null, null),
+                        UseCaseError.Validation.class, "INVALID_QUEUE"),
                 Arguments.of("unknown id", updateOf("sub_doesnotexist1", "X"), UseCaseError.NotFound.class, "Subscription_NOT_FOUND"));
     }
 
@@ -440,7 +455,7 @@ class SubscriptionOperationsTest {
     @Test
     void deleteRemovesTheRowAndItsJunctionRows() {
         var seeded = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code("subdel"), "Doomed", ENDPOINT, null, null,
-                null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null));
+                null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null, null));
 
         var ev = runAsAnchor(DeleteSubscription.of(repo), new DeleteCommand(seeded.subscriptionId()));
         assertThat(ev.subscriptionId()).isEqualTo(seeded.subscriptionId());
@@ -618,7 +633,7 @@ class SubscriptionOperationsTest {
         String client = EntityType.CLIENT.generate();
         var a = created(code("sublist-b"), "B");
         var b = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code("sublist-a"), "A", ENDPOINT, null, client,
-                null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null));
+                null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null, null));
         runAsAnchor(PauseSubscription.of(repo), new PauseCommand(a.subscriptionId()));
 
         var byClient = repo.findWithFilters(new ListFilter(null, client));

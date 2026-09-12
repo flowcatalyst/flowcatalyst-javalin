@@ -182,6 +182,7 @@ public final class SubscriptionApi {
             List<EventTypeBindingDto> eventTypes,
             List<ConfigEntryDto> customConfig,
             String mode,
+            String queue,
             Integer timeoutSeconds,
             Integer maxRetries,
             Integer delaySeconds,
@@ -190,7 +191,7 @@ public final class SubscriptionApi {
 
         public CreateCommand toCommand() {
             return new CreateCommand(code, name, endpoint, description, clientId, connectionId, dispatchPoolId,
-                    serviceAccountId, bindings(eventTypes), entries(customConfig), mode, timeoutSeconds, maxRetries,
+                    serviceAccountId, bindings(eventTypes), entries(customConfig), mode, queue, timeoutSeconds, maxRetries,
                     delaySeconds, maxAgeSeconds, dataOnly);
         }
     }
@@ -205,6 +206,7 @@ public final class SubscriptionApi {
             List<EventTypeBindingDto> eventTypes,
             List<ConfigEntryDto> customConfig,
             String mode,
+            String queue,
             Integer timeoutSeconds,
             Integer maxRetries,
             Integer delaySeconds,
@@ -215,7 +217,7 @@ public final class SubscriptionApi {
 
         public UpdateCommand toCommand(String id) {
             return new UpdateCommand(id, name, description, endpoint, connectionId, bindings(eventTypes),
-                    entries(customConfig), mode, timeoutSeconds, maxRetries, delaySeconds, maxAgeSeconds,
+                    entries(customConfig), mode, queue, timeoutSeconds, maxRetries, delaySeconds, maxAgeSeconds,
                     dispatchPoolId, serviceAccountId, dataOnly);
         }
     }

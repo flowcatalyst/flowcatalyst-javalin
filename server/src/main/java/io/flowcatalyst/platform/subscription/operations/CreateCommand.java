@@ -23,6 +23,9 @@ import java.util.List;
 /// @param eventTypes       at least one binding
 /// @param customConfig     optional key/values; `null` = none
 /// @param mode             optional dispatch mode string
+/// @param queue            optional dispatch priority string, case-insensitive
+///                          `DEFAULT` / `HIGH_PRIORITY` (ruling R1/R1a);
+///                          `null` or blank leaves it unset
 /// @param timeoutSeconds   optional
 /// @param maxRetries       optional
 /// @param delaySeconds     optional
@@ -40,6 +43,7 @@ public record CreateCommand(
         List<EventTypeBinding> eventTypes,
         List<ConfigEntry> customConfig,
         String mode,
+        String queue,
         Integer timeoutSeconds,
         Integer maxRetries,
         Integer delaySeconds,

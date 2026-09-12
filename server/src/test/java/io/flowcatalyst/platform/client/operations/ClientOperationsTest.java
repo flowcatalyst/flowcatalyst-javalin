@@ -165,7 +165,9 @@ class ClientOperationsTest {
                 Arguments.of("underscore", new CreateCommand("X", "my_client"), "INVALID_IDENTIFIER"),
                 Arguments.of("leading hyphen", new CreateCommand("X", "-abc"), "INVALID_IDENTIFIER"),
                 Arguments.of("trailing hyphen", new CreateCommand("X", "abc-"), "INVALID_IDENTIFIER"),
-                Arguments.of("inner space", new CreateCommand("X", "a b"), "INVALID_IDENTIFIER"));
+                Arguments.of("inner space", new CreateCommand("X", "a b"), "INVALID_IDENTIFIER"),
+                Arguments.of("reserved platform identifier", new CreateCommand("X", "platform"), "RESERVED_IDENTIFIER"),
+                Arguments.of("reserved platform identifier, mixed case", new CreateCommand("X", "Platform"), "RESERVED_IDENTIFIER"));
     }
 
     @ParameterizedTest(name = "{0} → {2}")

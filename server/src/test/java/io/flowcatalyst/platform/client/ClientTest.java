@@ -51,6 +51,16 @@ class ClientTest {
         assertThatThrownBy(() -> ClientIdentifier.parse(raw)).hasMessageContaining(ClientIdentifier.FORMAT_MESSAGE);
     }
 
+    /// Ruling R5: `platform` is the tenant segment reserved for client-less
+    /// dispatch jobs (`FC-{env}-platform-DEFAULT.fifo`); a client with that
+    /// identifier would collide with it. Rejected after normalisation, so
+    /// every case variant is caught.
+    @ParameterizedTest
+    @ValueSource(strings = {"platform", "Platform", "PLATFORM", "  platform  "})
+    void identifierRejectsTheReservedPlatformNameRegardlessOfCase(String raw) {
+        assertUseCaseError(() -> ClientIdentifier.parse(raw), UseCaseError.Validation.class, "RESERVED_IDENTIFIER");
+    }
+
     // ── Status ─────────────────────────────────────────────────────────────
 
     @Test

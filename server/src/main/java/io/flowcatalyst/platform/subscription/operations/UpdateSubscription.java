@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.subscription.operations;
 
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.subscription.EndpointUrl;
+import io.flowcatalyst.platform.shared.dispatch.QueuePriority;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents.SubscriptionUpdated;
@@ -25,6 +26,7 @@ public final class UpdateSubscription {
                         UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name cannot be empty");
                     }
                     if (cmd.endpoint() != null) EndpointUrl.parse(cmd.endpoint());
+                    if (cmd.queue() != null) QueuePriority.parse(cmd.queue()); // throws INVALID_QUEUE for non-blank junk (R1a)
                 })
                 .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadScoped
                 .execute((cmd, ec) -> {
@@ -36,6 +38,10 @@ public final class UpdateSubscription {
                     if (cmd.eventTypes() != null) s = s.withEventTypes(cmd.eventTypes());
                     if (cmd.customConfig() != null) s = s.withCustomConfig(cmd.customConfig());
                     if (cmd.mode() != null) s = s.withMode(DispatchMode.parse(cmd.mode()));
+                    if (cmd.queue() != null) {
+                        QueuePriority q = QueuePriority.parse(cmd.queue());
+                        s = s.withQueue(q == null ? null : q.name());
+                    }
                     if (cmd.timeoutSeconds() != null) s = s.withTimeoutSeconds(cmd.timeoutSeconds());
                     if (cmd.maxRetries() != null) s = s.withMaxRetries(cmd.maxRetries());
                     if (cmd.delaySeconds() != null) s = s.withDelaySeconds(cmd.delaySeconds());

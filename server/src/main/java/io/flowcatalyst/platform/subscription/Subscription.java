@@ -33,7 +33,11 @@ import java.util.Objects;
 /// @param eventTypes       the patterns, in stored order; replaced wholesale on update
 /// @param connectionId     optional delivery connection (not a foreign key)
 /// @param endpoint         delivery URL (column `target`)
-/// @param queue            optional; read-only today (spec §1)
+/// @param queue            optional dispatch priority, `DEFAULT` / `HIGH_PRIORITY`
+///                          (ruling R1); `null` = not set. Stored verbatim —
+///                          a legacy row may hold other text (ruling R6),
+///                          which only the publish path, not this record,
+///                          treats as `DEFAULT`
 /// @param customConfig     free-form key/values; replaced wholesale on update
 /// @param source           who authored the row — decides whether sync may touch it
 /// @param status           `ACTIVE` | `PAUSED`
@@ -257,6 +261,20 @@ public record Subscription(
         return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, clientScoped,
                 eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
                 dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, newMode, timeoutSeconds, maxRetries,
+                serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
+    }
+
+    /// Sets the dispatch priority (ruling R1); the caller — [CreateSubscription]
+    /// / [UpdateSubscription] — validates through
+    /// [io.flowcatalyst.platform.shared.dispatch.QueuePriority#parse] and passes
+    /// its normalised name or `null`. This wither itself does not validate, so
+    /// it can still carry a legacy row's non-conforming text (ruling R6)
+    /// unchanged — the publish path, not this record, coerces that to
+    /// `DEFAULT`.
+    public Subscription withQueue(String newQueue) {
+        return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, clientScoped,
+                eventTypes, connectionId, endpoint, newQueue, customConfig, source, status, maxAgeSeconds,
+                dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
                 serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
     }
 
