@@ -58,9 +58,19 @@ the spec now that Java has built it.
 tokens lengthen 7 d → 30 d, both because the deployed `OIDC_*` values are now
 honoured.
 
-**Not yet done:** a parity run against Go. R7 changes a wire-visible pool code
-for platform-wide jobs, so expect a DIFF there needing an
-`parity/expected-diffs.json` entry until Go mirrors.
+**Not yet done:** a parity run against Go, plus the Java e2e suite.
+
+Expect it to come back **clean**, despite two Java-vs-Go behavioural changes —
+checked, not assumed:
+- R7's composed pool code is stamped on the wire `Message`, and **no HTTP
+  response exposes it**; the corpus contains no `poolCode` reference at all.
+- Java now persists `msg_subscriptions.queue` where Go still discards it, but
+  **no corpus scenario sends that field**, so nothing exercises the
+  difference. A scenario added later *would* DIFF until Go mirrors — that is
+  the moment to add an `expected-diffs.json` entry, not before.
+
+So a DIFF from either would mean something unanticipated, not a known
+deviation to allow-list. Record the Go commit the run was against, as usual.
 
 ## Re-sync with Go `2783ff9`: portal apps (2026-09-11)
 
