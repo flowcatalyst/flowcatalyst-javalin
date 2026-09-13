@@ -1156,6 +1156,10 @@ export type CreateSubscriptionRequest = {
      */
     mode?: string;
     name: string;
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Selects which of the client's two dispatch queues jobs raised from this subscription publish to. Omitted or blank leaves it unset, which publishes as DEFAULT.
+     */
+    queue?: string;
     serviceAccountId?: string;
     timeoutSeconds?: number;
     [key: string]: unknown | string | Array<ConfigEntryDto> | boolean | number | Array<EventTypeBindingDto> | undefined;
@@ -3006,6 +3010,10 @@ export type UpdateSubscriptionRequest = {
     maxRetries?: number;
     mode?: string;
     name?: string;
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.
+     */
+    queue?: string;
     serviceAccountId?: string;
     timeoutSeconds?: number;
     [key: string]: unknown | string | Array<ConfigEntryDto> | boolean | number | Array<EventTypeBindingDto> | undefined;
@@ -3782,6 +3790,10 @@ export type CreateSubscriptionRequestWritable = {
      */
     mode?: string;
     name: string;
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Selects which of the client's two dispatch queues jobs raised from this subscription publish to. Omitted or blank leaves it unset, which publishes as DEFAULT.
+     */
+    queue?: string;
     serviceAccountId?: string;
     timeoutSeconds?: number;
     [key: string]: unknown | string | Array<ConfigEntryDto> | boolean | number | Array<EventTypeBindingDto> | undefined;
@@ -4790,6 +4802,10 @@ export type UpdateSubscriptionRequestWritable = {
     maxRetries?: number;
     mode?: string;
     name?: string;
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.
+     */
+    queue?: string;
     serviceAccountId?: string;
     timeoutSeconds?: number;
     [key: string]: unknown | string | Array<ConfigEntryDto> | boolean | number | Array<EventTypeBindingDto> | undefined;
