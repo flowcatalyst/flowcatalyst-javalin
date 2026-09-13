@@ -54,6 +54,17 @@ class PlatformConfigApiTest {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, CLIENT};
+    /// An anchor holding every permission EXCEPT the config family (spec `reach-only-routes.md` §3);
+    /// only the three grant-management routes (`/access`) carry this gate — see PlatformConfigApi's class doc.
+    private static final String[] ANCHOR_NO_CONFIG_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_CONFIG_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:config:view"};
 
     private static final PlatformConfigApi.State state = new PlatformConfigApi.State(
             new PlatformConfigRepository(TestPg.dataSource()), new ConfigAccessRepository(TestPg.dataSource()),
@@ -286,5 +297,25 @@ class PlatformConfigApiTest {
         var malformed = http.put(property("smtp", "port"), "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: the `/access` grant-management
+    /// routes require CONFIG_VIEW/CONFIG_UPDATE on top of the anchor gate —
+    /// an anchor without it is refused, and CONFIG_VIEW alone (not the
+    /// wildcard) is enough to read. The property routes (list/get/set/delete)
+    /// keep their existing Access-based reach+grant gate, untouched by this
+    /// unit (PlatformConfigApi's class doc explains why).
+    @Test
+    void anchorWithoutConfigPermissionIsRefusedOnTheAccessRoutesButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/api/platform-config/" + APP + "/access", ANCHOR_NO_CONFIG_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"x\",\"canWrite\":true}", ANCHOR_NO_CONFIG_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/platform-config/" + APP + "/access", ANCHOR_CONFIG_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 }

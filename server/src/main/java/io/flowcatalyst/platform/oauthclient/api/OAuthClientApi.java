@@ -34,9 +34,16 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.OAUTH_CLIENT_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.OAUTH_CLIENT_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.OAUTH_CLIENT_REGENERATE_SECRET;
+import static io.flowcatalyst.platform.shared.auth.Permission.OAUTH_CLIENT_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.OAUTH_CLIENT_VIEW;
+
 /// The `/api/oauth-clients` surface (spec `auth-core.md` §6.3). **Every
 /// route is anchor-only** (`Checks.requireAnchor`, checked first in every
-/// handler) — the ten routes the lockfile documents, plus
+/// handler), followed by the permission gate (`docs/spec/reach-only-routes.md`)
+/// — the ten routes the lockfile documents, plus
 /// `revoke-previous-secret` (A-22, `docs/improvements.md`; not yet in the
 /// vendored lockfile — see the class-level gap note below). A write handler
 /// does exactly: anchor gate → command from DTO → `Operation.run` →
@@ -108,12 +115,14 @@ public final class OAuthClientApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_VIEW);
         List<OAuthClientResponse> items = s.repo().findAll().stream().map(c -> response(s, c)).toList();
         ctx.json(new OAuthClientListResponse(items));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_VIEW);
         String id = ctx.pathParam("id");
         OAuthClient c = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("OAuthClient", id));
         ctx.json(response(s, c));
@@ -121,6 +130,7 @@ public final class OAuthClientApi {
 
     private static void getByClientId(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_VIEW);
         String clientId = ctx.pathParam("clientId");
         OAuthClient c = s.repo().findByClientId(clientId).orElseThrow(() -> HttpError.notFound("OAuthClient", clientId));
         ctx.json(response(s, c));
@@ -128,6 +138,7 @@ public final class OAuthClientApi {
 
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_CREATE);
         var req = ctx.bodyAsClass(CreateOAuthClientRequest.class);
         String resolvedPortalClientId = resolvePortalClientId(s, req.portalAppId(), req.portalClientId());
         var cmd = req.toCommand(resolvedPortalClientId);
@@ -142,6 +153,7 @@ public final class OAuthClientApi {
 
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_UPDATE);
         var req = ctx.bodyAsClass(UpdateOAuthClientRequest.class);
         String resolvedPortalClientId = resolvePortalClientId(s, req.portalAppId(), req.portalClientId());
         var cmd = req.toCommand(ctx.pathParam("id"), resolvedPortalClientId);
@@ -173,18 +185,21 @@ public final class OAuthClientApi {
 
     private static void activate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_UPDATE);
         ActivateOAuthClient.of(s.repo()).run(s.uow(), new ActivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client activated"));
     }
 
     private static void deactivate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_UPDATE);
         DeactivateOAuthClient.of(s.repo()).run(s.uow(), new DeactivateOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "OAuth client deactivated"));
     }
 
     private static void rotateSecret(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_REGENERATE_SECRET);
         String id = ctx.pathParam("id");
         Long graceSeconds = ctx.body().isBlank() ? null : ctx.bodyAsClass(RotateOAuthClientSecretRequest.class).graceSeconds();
         var secret = new AtomicReference<String>();
@@ -196,6 +211,7 @@ public final class OAuthClientApi {
 
     private static void revokePreviousSecret(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_REGENERATE_SECRET);
         RevokeOAuthClientPreviousSecret.of(s.repo())
                 .run(s.uow(), new RevokeOAuthClientPreviousSecretCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new SuccessResponse(true, "Previous client secret revoked"));
@@ -203,6 +219,7 @@ public final class OAuthClientApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_DELETE);
         DeleteOAuthClient.of(s.repo()).run(s.uow(), new DeleteOAuthClientCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

@@ -1417,6 +1417,34 @@ raised, that the gap between attempts grows to the cap, that exactly one INFO
 line is logged, and that polling returns to normal once the queue exists.
 Separately, assert a connection error still raises `CONNECTION`.
 
+## A service account cannot run an event-type sync: rollup audit write fails (both sides, noticed 2026-09-13)
+
+`POST /api/applications/{code}/event-types/sync` as an application's own
+service account (client-credentials token, `platform:application-service`,
+which holds the sync permission) answers **500 `AUDIT_WRITE` "rollup audit
+write failed" on Go and Java alike**, even with an empty `eventTypes` list.
+Seen in the parity corpus while re-pointing the profile-only scenario's
+service step (`parity/scenarios/platform/profile-only.json`,
+`service-passes-gated-route`). The same route as the admin session works
+(`applications/sdk-sync.json`). Sync by a service account is the SDK's
+whole purpose, so this is a real defect, not a corpus artefact — probably
+the rollup audit row assuming a USER actor (an email or user-identity
+column). Reproduce in a unit test, find the column, fix on the Java side,
+hand to Go.
+
+## Platform-config property routes: grant model without a permission code (noticed 2026-09-13)
+
+`GET/PUT/DELETE /api/config/{app}/{section}/{property}` and
+`GET /api/platform-config/{app}` gate on a per-application access grant
+(`platformconfig` `Access`): a non-anchor principal granted access to an
+application reads or writes that application's config holding no permission
+code at all, while anchors need `platform:admin:config:view/update` only for
+the grant-management routes (`docs/spec/reach-only-routes.md`). Two models
+coexist on one aggregate. Owner question: should the property routes also
+require the config codes (grant = reach, code = authority, consistent with
+the 2026-09-13 ruling), which would mean every grant holder also needs a
+role carrying them?
+
 ## Service-account list order differs between the sides (noticed 2026-09-13)
 
 `GET /api/service-accounts`: Java orders by `code` ascending
@@ -1438,7 +1466,10 @@ from roles, at every tier; anchor scope governs reach only, never authority.
 requires a user-write permission; `requireAdmin` (anchor OR the wildcard) is
 removed, its one caller (`DashboardBff.stats`) now gates
 `requireAnchor` + `requireAny(CLIENT_VIEW, APPLICATION_VIEW)`. Full spec and
-tests: `docs/spec/permissions-from-roles.md`. §4 of that spec (service-account
+tests: `docs/spec/permissions-from-roles.md`. The nine reach-only route
+classes that spec's §3a found (gated on `requireAnchor` alone, so the
+withdrawn bypass had nothing to have been bypassing) are gated as of
+`docs/spec/reach-only-routes.md`, 2026-09-13. §4 of that spec (service-account
 **reach** — today every service principal is created `ANCHOR` regardless of
 `ServiceAccount.clientIds`) is deliberately out of scope and remains open —
 that is the Go-side half below, still unresolved.

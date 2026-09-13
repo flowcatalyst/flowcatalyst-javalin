@@ -18,8 +18,13 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.CORS_ORIGIN_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CORS_ORIGIN_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CORS_ORIGIN_VIEW;
+
 /// The `/api/platform/cors` surface (spec §3). The allowlist is anchor-only:
-/// every handler opens with `requireAnchor` — except `/allowed`, the public,
+/// every handler opens with `requireAnchor`, followed by the permission gate
+/// (`docs/spec/reach-only-routes.md`) — except `/allowed`, the public,
 /// browser-facing read that serves the origin strings to a caller that is
 /// not logged in yet. A write handler does exactly: gate → command from DTO →
 /// `Operation.run` → response. Reads go straight to the repository. Every
@@ -70,11 +75,13 @@ public final class CorsOriginApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CORS_ORIGIN_VIEW);
         ctx.json(CorsOriginListResponse.from(s.repo().findAll()));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CORS_ORIGIN_VIEW);
         ctx.json(AllowedOriginResponse.from(load(s, ctx.pathParam("id"))));
     }
 
@@ -82,6 +89,7 @@ public final class CorsOriginApi {
 
     private static void add(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CORS_ORIGIN_CREATE);
         var cmd = ctx.bodyAsClass(AddOriginRequest.class).toCommand();
         var event = AddOrigin.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         s.onChange().run();
@@ -90,6 +98,7 @@ public final class CorsOriginApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CORS_ORIGIN_DELETE);
         DeleteOrigin.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         s.onChange().run();
         ctx.status(204);

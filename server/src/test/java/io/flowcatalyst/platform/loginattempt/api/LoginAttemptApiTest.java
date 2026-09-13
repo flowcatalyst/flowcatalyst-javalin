@@ -44,6 +44,16 @@ class LoginAttemptApiTest {
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, "cli_latapi",
             Authenticator.TEST_PERMISSIONS, "platform:admin:*"};
+    /// An anchor holding every permission EXCEPT the login-attempt family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_LOGIN_ATTEMPT_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_LOGIN_ATTEMPT_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:login-attempt:view"};
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String ADA = "ada.api." + RUN + "@example.test";
@@ -214,5 +224,22 @@ class LoginAttemptApiTest {
         var client = http.get("/api/login-attempts", CLIENT_ADMIN);
         assertThat(client.statusCode()).isEqualTo(403);
         assertThat(client.body()).isEqualTo("{\"error\":\"ANCHOR_REQUIRED\",\"message\":\"anchor scope required\"}\n");
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without
+    /// LOGIN_ATTEMPT_VIEW is refused, and the specific view code (not the
+    /// wildcard) is enough to read. This aggregate has no write route.
+    /// Filtered by `identifier` (like every other read in this class) so an
+    /// unrelated corrupt row seeded elsewhere in the shared database
+    /// (`LoginAttemptRepositoryTest`'s deliberately-malformed `SOMETHING_NEW`
+    /// row) cannot 500 the unfiltered list.
+    @Test
+    void anchorWithoutLoginAttemptPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var denied = http.get("/api/login-attempts?identifier=" + q(ADA), ANCHOR_NO_LOGIN_ATTEMPT_PERMS);
+        assertThat(denied.statusCode()).isEqualTo(403);
+        assertThat(json(denied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var allowed = http.get("/api/login-attempts?identifier=" + q(ADA), ANCHOR_LOGIN_ATTEMPT_VIEW_ONLY);
+        assertThat(allowed.statusCode()).as(allowed.body()).isEqualTo(200);
     }
 }

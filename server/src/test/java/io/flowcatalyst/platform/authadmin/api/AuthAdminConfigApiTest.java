@@ -49,6 +49,24 @@ class AuthAdminConfigApiTest {
                     + "platform:iam:auth-config:view,platform:iam:auth-config:manage,"
                     + "platform:iam:idp-role-mapping:view,platform:iam:idp-role-mapping:manage"};
 
+    /// An anchor holding every permission EXCEPT the anchor-domain / auth-config / IdP families (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_FAMILY_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    private static final String[] ANCHOR_DOMAIN_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:anchor-domain:view"};
+    private static final String[] AUTH_CONFIG_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:auth:client-auth-config:view"};
+    private static final String[] IDP_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:iam:idp:view"};
+
     private static final io.flowcatalyst.platform.shared.encryption.Encryption ENCRYPTION =
             io.flowcatalyst.platform.shared.encryption.Encryption.withKey(io.flowcatalyst.platform.shared.encryption.Encryption.generateKey());
     private static final AuthAdminConfigApi.State state = new AuthAdminConfigApi.State(
@@ -333,5 +351,40 @@ class AuthAdminConfigApiTest {
         assertThat(json(http.get("/api/anchor-domains", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(anchorDomainId));
         assertThat(json(http.get("/api/auth-configs", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(authConfigId));
         assertThat(json(http.get("/api/idp-role-mappings", ANCHOR)).get("items")).anySatisfy(n -> assertThat(n.get("id").asText()).isEqualTo(mappingId));
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without the family's
+    /// permission is refused read and write for each of the three families,
+    /// and the family's specific view code (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutTheFamilyPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        // Anchor domains.
+        var adReadDenied = http.get("/api/anchor-domains", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(adReadDenied.statusCode()).isEqualTo(403);
+        assertThat(json(adReadDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        var adWriteDenied = http.post("/api/anchor-domains", "{\"domain\":\"" + domain("api-permdenied-anc") + "\"}", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(adWriteDenied.statusCode()).isEqualTo(403);
+        assertThat(json(adWriteDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(http.get("/api/anchor-domains", ANCHOR_DOMAIN_VIEW_ONLY).statusCode()).isEqualTo(200);
+
+        // Auth configs.
+        var acReadDenied = http.get("/api/auth-configs", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(acReadDenied.statusCode()).isEqualTo(403);
+        assertThat(json(acReadDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        var acWriteDenied = http.post("/api/auth-configs", "{\"emailDomain\":\"" + domain("api-permdenied-cfg")
+                + "\",\"configType\":\"ANCHOR\",\"authProvider\":\"INTERNAL\",\"oidcMultiTenant\":false}", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(acWriteDenied.statusCode()).isEqualTo(403);
+        assertThat(json(acWriteDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(http.get("/api/auth-configs", AUTH_CONFIG_VIEW_ONLY).statusCode()).isEqualTo(200);
+
+        // IdP role mappings.
+        var irmReadDenied = http.get("/api/idp-role-mappings", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(irmReadDenied.statusCode()).isEqualTo(403);
+        assertThat(json(irmReadDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        var irmWriteDenied = http.post("/api/idp-role-mappings",
+                "{\"idpType\":\"keycloak\",\"idpRoleName\":\"" + tok("api-permdenied-role") + "\",\"platformRoleName\":\"app:role\"}", ANCHOR_NO_FAMILY_PERMS);
+        assertThat(irmWriteDenied.statusCode()).isEqualTo(403);
+        assertThat(json(irmWriteDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(http.get("/api/idp-role-mappings", IDP_VIEW_ONLY).statusCode()).isEqualTo(200);
     }
 }

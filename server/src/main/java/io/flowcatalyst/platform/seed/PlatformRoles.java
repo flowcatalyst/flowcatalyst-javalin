@@ -36,7 +36,11 @@ public final class PlatformRoles {
                             ADMIN_AUDIT_LOG_READ, ADMIN_AUDIT_LOG_EXPORT,
                             ADMIN_LOGIN_ATTEMPT_READ,
                             ADMIN_DOCS_READ,
-                            DEVELOPER_APPLICATION_OPENAPI_MANAGE)),
+                            DEVELOPER_APPLICATION_OPENAPI_MANAGE,
+                            // docs/spec/reach-only-routes.md §2: config + CORS-origin were
+                            // held by no role before the permission gates existed.
+                            ADMIN_CONFIG_READ, ADMIN_CONFIG_UPDATE,
+                            ADMIN_CORS_ORIGIN_READ, ADMIN_CORS_ORIGIN_CREATE, ADMIN_CORS_ORIGIN_DELETE)),
 
             // platform:admin-readonly
             mk("admin-readonly", "Platform Admin Read-Only",
@@ -48,7 +52,10 @@ public final class PlatformRoles {
                             ADMIN_AUDIT_LOG_READ,
                             ADMIN_LOGIN_ATTEMPT_READ,
                             ADMIN_DOCS_READ,
-                            DEVELOPER_APPLICATION_OPENAPI_VIEW)),
+                            DEVELOPER_APPLICATION_OPENAPI_VIEW,
+                            // docs/spec/reach-only-routes.md §2.
+                            ADMIN_CONFIG_READ,
+                            ADMIN_CORS_ORIGIN_READ)),
 
             // platform:iam-admin
             mk("iam-admin", "Platform IAM Admin",
@@ -57,7 +64,13 @@ public final class PlatformRoles {
                             IAM_USER_READ, IAM_USER_CREATE, IAM_USER_UPDATE, IAM_USER_DELETE,
                             IAM_USER_ACTIVATE, IAM_USER_DEACTIVATE, IAM_USER_ASSIGN_ROLES,
                             IAM_ROLE_READ, IAM_ROLE_CREATE, IAM_ROLE_UPDATE, IAM_ROLE_DELETE,
-                            IAM_CLIENT_ACCESS_GRANT, IAM_CLIENT_ACCESS_REVOKE, IAM_CLIENT_ACCESS_READ)),
+                            IAM_CLIENT_ACCESS_GRANT, IAM_CLIENT_ACCESS_REVOKE, IAM_CLIENT_ACCESS_READ,
+                            // docs/spec/reach-only-routes.md §2: IdP + email-domain-mapping
+                            // were held by no role before the permission gates existed.
+                            ADMIN_IDENTITY_PROVIDER_READ, ADMIN_IDENTITY_PROVIDER_CREATE,
+                            ADMIN_IDENTITY_PROVIDER_UPDATE, ADMIN_IDENTITY_PROVIDER_DELETE,
+                            ADMIN_EMAIL_DOMAIN_MAPPING_READ, ADMIN_EMAIL_DOMAIN_MAPPING_CREATE,
+                            ADMIN_EMAIL_DOMAIN_MAPPING_UPDATE, ADMIN_EMAIL_DOMAIN_MAPPING_DELETE)),
 
             // platform:iam-readonly
             mk("iam-readonly", "Platform IAM Read-Only",
@@ -65,7 +78,10 @@ public final class PlatformRoles {
                     List.of(
                             IAM_USER_READ,
                             IAM_ROLE_READ,
-                            IAM_CLIENT_ACCESS_READ)),
+                            IAM_CLIENT_ACCESS_READ,
+                            // docs/spec/reach-only-routes.md §2.
+                            ADMIN_IDENTITY_PROVIDER_READ,
+                            ADMIN_EMAIL_DOMAIN_MAPPING_READ)),
 
             // platform:client-admin — delegated user management scoped to the
             // administrator's own client(s). Same user permissions as iam-admin
@@ -145,7 +161,12 @@ public final class PlatformRoles {
                             ADMIN_SCHEDULED_JOB_INSTANCE_READ,
                             ADMIN_PROCESS_READ,
                             ADMIN_AUDIT_LOG_READ,
-                            ADMIN_LOGIN_ATTEMPT_READ)),
+                            ADMIN_LOGIN_ATTEMPT_READ,
+                            // docs/spec/reach-only-routes.md §2.
+                            ADMIN_IDENTITY_PROVIDER_READ,
+                            ADMIN_EMAIL_DOMAIN_MAPPING_READ,
+                            ADMIN_CONFIG_READ,
+                            ADMIN_CORS_ORIGIN_READ)),
 
             // platform:portal-administrator — CLIENT-delegable: assign to a
             // client administrator (manage their client's portal users in the

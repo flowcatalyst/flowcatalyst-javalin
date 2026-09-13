@@ -25,11 +25,20 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.CONFIG_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CONFIG_VIEW;
+
 /// The platform-config surface (spec §4): the legacy `/api/platform-config/…`
 /// list + grant routes and the SPA's `/api/config/{app}/{section}/{property}`
-/// single-property routes. Gates are per application — anchor, or a role
-/// with a grant ([Access]) — never permission codes; the grant routes are
-/// anchor-only. A write handler does: gate → command from DTO →
+/// single-property routes. Gates on the property routes are per application —
+/// anchor, or a role with a grant ([Access]) — never permission codes; the
+/// three grant-management routes below (`listAccess`/`grant`/`revoke`) are
+/// anchor-only and, per `docs/spec/reach-only-routes.md`, now also require
+/// `CONFIG_VIEW`/`CONFIG_UPDATE` on top of `requireAnchor` — the property
+/// routes' `Access`-based reach+grant gate is untouched (a non-anchor grant
+/// holder has never carried permission codes; adding one here would be a
+/// different, broader change than this unit's reach-only-bypass fix). A
+/// write handler does: gate → command from DTO →
 /// `Operation.run` → response. Reads go straight to the repositories and
 /// apply the secret-masking rule here. Every handler runs inside
 /// [Auth#scoped] so the operations can read [Auth#current()].
@@ -110,12 +119,14 @@ public final class PlatformConfigApi {
 
     private static void listAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CONFIG_VIEW);
         ctx.json(new AccessListResponse(s.grants().findByApplication(ctx.pathParam("app")).stream()
                 .map(AccessResponse::from).toList()));
     }
 
     private static void grant(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CONFIG_UPDATE);
         var cmd = ctx.bodyAsClass(GrantAccessRequest.class).toCommand(ctx.pathParam("app"));
         var event = GrantAccess.of(s.grants()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.accessId()));
@@ -123,6 +134,7 @@ public final class PlatformConfigApi {
 
     private static void revoke(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CONFIG_UPDATE);
         RevokeAccess.of(s.grants()).run(s.uow(), new RevokeAccessCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

@@ -49,6 +49,16 @@ class IdentityProviderApiTest {
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, "clt_idpapitest00",
             Authenticator.TEST_PERMISSIONS, "*"};
+    /// An anchor holding every permission EXCEPT the IdP family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_IDP_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_IDP_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:iam:idp:view"};
 
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
     private static final Encryption ENCRYPTION = Encryption.withKey(Encryption.generateKey());
@@ -258,6 +268,23 @@ class IdentityProviderApiTest {
         assertThat(del.statusCode()).isEqualTo(403);
         assertThat(json(del).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
         assertThat(repo.findById(id)).as("gate ran before the operation").isPresent();
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without IDP_VIEW is
+    /// refused read, an anchor without IDP_CREATE is refused write, and
+    /// IDP_VIEW alone (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutIdpPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/api/identity-providers", ANCHOR_NO_IDP_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/identity-providers", oidcBody(code("api-permdenied"), null, ""), ANCHOR_NO_IDP_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/identity-providers", ANCHOR_IDP_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 
     // ── Secrets without a key (spec §5) ────────────────────────────────────

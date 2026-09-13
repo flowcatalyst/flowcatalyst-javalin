@@ -18,8 +18,11 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.LOGIN_ATTEMPT_VIEW;
+
 /// The `/api/login-attempts` surface (spec §2) — one read-only route. The
-/// handler does exactly: anchor gate → repository read → response; there
+/// handler does exactly: anchor gate → permission gate
+/// (`docs/spec/reach-only-routes.md`) → repository read → response; there
 /// are no use cases on this aggregate. It runs inside [Auth#scoped].
 ///
 /// | Method | Path | Status |
@@ -50,6 +53,7 @@ public final class LoginAttemptApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), LOGIN_ATTEMPT_VIEW);
         int size = pageSize(ctx);
         List<LoginAttempt> rows = s.repo().findPage(listFilter(ctx), after(ctx), size + 1);
         ctx.json(page(rows, size));

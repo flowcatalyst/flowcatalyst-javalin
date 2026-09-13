@@ -2,7 +2,9 @@
 # Tab-separated; kind is the first column. NOT included (fcdev's MCP bootstrap, not the seeder):
 # iam_service_accounts mcp:local, the SERVICE principal + its role grant, oauth_clients + grant types.
 # platform:router (role + its one permission row) is Java-first (`docs/spec/router-config-auth.md`
-# R3′) and matches Go only once Go mirrors it — see SeederTest#rolesMatchGo.
+# R3′) and matches Go only once Go mirrors it — see SeederTest#rolesMatchGo. The 21 `perm` rows
+# added to iam-admin/iam-readonly/admin/admin-readonly/viewer (`docs/spec/reach-only-routes.md`
+# §2: IdP, email-domain-mapping, config, CORS-origin) are Java-first the same way.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -40,6 +42,11 @@ perm	platform:admin	platform:admin:audit-log:export
 perm	platform:admin	platform:admin:login-attempt:view
 perm	platform:admin	platform:admin:docs:view
 perm	platform:admin	platform:developer:application-openapi:manage
+perm	platform:admin	platform:admin:config:view
+perm	platform:admin	platform:admin:config:update
+perm	platform:admin	platform:admin:cors-origin:view
+perm	platform:admin	platform:admin:cors-origin:create
+perm	platform:admin	platform:admin:cors-origin:delete
 perm	platform:admin-readonly	platform:admin:client:view
 perm	platform:admin-readonly	platform:admin:anchor-domain:view
 perm	platform:admin-readonly	platform:admin:application:view
@@ -47,6 +54,8 @@ perm	platform:admin-readonly	platform:admin:audit-log:view
 perm	platform:admin-readonly	platform:admin:login-attempt:view
 perm	platform:admin-readonly	platform:admin:docs:view
 perm	platform:admin-readonly	platform:developer:application-openapi:view
+perm	platform:admin-readonly	platform:admin:config:view
+perm	platform:admin-readonly	platform:admin:cors-origin:view
 perm	platform:iam-admin	platform:iam:user:view
 perm	platform:iam-admin	platform:iam:user:create
 perm	platform:iam-admin	platform:iam:user:update
@@ -61,9 +70,19 @@ perm	platform:iam-admin	platform:iam:role:delete
 perm	platform:iam-admin	platform:iam:client-access:grant
 perm	platform:iam-admin	platform:iam:client-access:revoke
 perm	platform:iam-admin	platform:iam:client-access:view
+perm	platform:iam-admin	platform:iam:idp:view
+perm	platform:iam-admin	platform:iam:idp:create
+perm	platform:iam-admin	platform:iam:idp:update
+perm	platform:iam-admin	platform:iam:idp:delete
+perm	platform:iam-admin	platform:iam:email-domain-mapping:view
+perm	platform:iam-admin	platform:iam:email-domain-mapping:create
+perm	platform:iam-admin	platform:iam:email-domain-mapping:update
+perm	platform:iam-admin	platform:iam:email-domain-mapping:delete
 perm	platform:iam-readonly	platform:iam:user:view
 perm	platform:iam-readonly	platform:iam:role:view
 perm	platform:iam-readonly	platform:iam:client-access:view
+perm	platform:iam-readonly	platform:iam:idp:view
+perm	platform:iam-readonly	platform:iam:email-domain-mapping:view
 perm	platform:client-admin	platform:iam:user:view
 perm	platform:client-admin	platform:iam:user:create
 perm	platform:client-admin	platform:iam:user:update
@@ -139,6 +158,10 @@ perm	platform:viewer	platform:messaging:scheduled-job-instance:view
 perm	platform:viewer	platform:messaging:process:view
 perm	platform:viewer	platform:admin:audit-log:view
 perm	platform:viewer	platform:admin:login-attempt:view
+perm	platform:viewer	platform:iam:idp:view
+perm	platform:viewer	platform:iam:email-domain-mapping:view
+perm	platform:viewer	platform:admin:config:view
+perm	platform:viewer	platform:admin:cors-origin:view
 perm	platform:portal-administrator	platform:iam:portal-user:view
 perm	platform:portal-administrator	platform:iam:portal-user:manage
 perm	platform:developer	platform:developer:application-openapi:view

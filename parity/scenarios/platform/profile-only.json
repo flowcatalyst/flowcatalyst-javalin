@@ -95,9 +95,8 @@
       "capture": { "serviceToken": "/access_token" } },
 
     { "id": "service-passes-gated-route",
-      "why": "a SERVICE bearer reaching a route the USER gate above refused — proof the gate is principal-type-scoped, not path-scoped.",
-      "request": { "method": "GET", "path": "/api/clients", "auth": "${serviceToken}", "headers": { "Cookie": "" } },
-      "expect": { "status": 200 } },
+      "why": "a SERVICE bearer reaching PAST the profile-only gate — proof the gate is principal-type-scoped, not path-scoped. Since permissions-from-roles.md (2026-09-13) a service account holds exactly its role's permissions, so Java answers this with the ROUTE's own 403 PERMISSION_REQUIRED (platform:application-service has no client:view), never the gate's NO_PLATFORM_ROLE — which is the proof; Go's anchor bypass still answers 200. Java-first, allow-listed. (An empty event-type sync as the service actor would have been the positive case, but it 500s AUDIT_WRITE on both sides — docs/backlog.md.)",
+      "request": { "method": "GET", "path": "/api/clients", "auth": "${serviceToken}", "headers": { "Cookie": "" } } },
 
     { "id": "unauthenticated-passes-through",
       "why": "spec §6: 'Pass through untouched: unauthenticated requests (handlers apply their own checks)' — no bearer, no cookie; the 401 below comes from the route's own authenticator requirement, not NO_PLATFORM_ROLE.",

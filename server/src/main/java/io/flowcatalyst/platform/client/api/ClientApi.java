@@ -41,11 +41,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_ACTIVATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_DEACTIVATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_SUSPEND;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_VIEW;
 import static java.util.stream.Collectors.toMap;
 
 /// The `/api/clients` surface (spec §3). Clients are anchor-only: every
 /// handler opens with `requireAnchor` (the one exception, the applications
-/// read, admits a principal with access to that client). A write handler
+/// read, admits a principal with access to that client), followed by the
+/// permission gate (`docs/spec/reach-only-routes.md`). A write handler
 /// does exactly: gate → command from DTO → `Operation.run` → response.
 /// Reads go straight to the repository. Every handler runs inside
 /// [Auth#scoped] so the operations can read [Auth#current()].
@@ -115,28 +123,33 @@ public final class ClientApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_VIEW);
         ctx.json(ClientListResponse.from(s.repo().findAll()));
     }
 
     private static void search(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_VIEW);
         ctx.json(ClientListResponse.from(s.repo().search(ctx.bodyAsClass(SearchClientRequest.class).term())));
     }
 
     /// `?q=` absent → no term → the first 50 clients.
     private static void searchByQuery(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_VIEW);
         ctx.json(ClientListResponse.from(s.repo().search(ctx.queryParam("q"))));
     }
 
     private static void getByIdentifier(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_VIEW);
         String identifier = ctx.pathParam("identifier");
         ctx.json(ClientResponse.from(s.repo().findByIdentifier(identifier).orElseThrow(() -> HttpError.notFound("Client", identifier))));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_VIEW);
         ctx.json(ClientResponse.from(load(s, ctx.pathParam("id"))));
     }
 
@@ -145,6 +158,7 @@ public final class ClientApi {
     private static void applications(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         requireAnchorOrClientAccess(Auth.current(), id);
+        Checks.require(Auth.current(), CLIENT_VIEW);
         load(s, id);
         ctx.json(ClientApplicationsResponse.from(s.applications().findWithFilters(new ListFilter(null, null)), enabledByApplication(s, id)));
     }
@@ -153,6 +167,7 @@ public final class ClientApi {
 
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_CREATE);
         var cmd = ctx.bodyAsClass(CreateClientRequest.class).toCommand();
         var event = CreateClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.clientId()));
@@ -160,6 +175,7 @@ public final class ClientApi {
 
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateClientRequest.class).toCommand(ctx.pathParam("id"));
         UpdateClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -167,18 +183,21 @@ public final class ClientApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_DELETE);
         DeleteClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void activate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_ACTIVATE);
         ActivateClient.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client activated"));
     }
 
     private static void suspend(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_SUSPEND);
         var cmd = ctx.bodyAsClass(SuspendClientRequest.class).toCommand(ctx.pathParam("id"));
         SuspendClient.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client suspended"));
@@ -186,6 +205,7 @@ public final class ClientApi {
 
     private static void addNote(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_UPDATE);
         var cmd = ctx.bodyAsClass(AddNoteRequest.class).toCommand(ctx.pathParam("id"));
         AddNote.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new StatusChangeResponse("Note added"));
@@ -195,6 +215,7 @@ public final class ClientApi {
     /// and discarded (spec §3, open question 2).
     private static void deactivate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_DEACTIVATE);
         ctx.bodyAsClass(StatusChangeRequest.class);
         DeleteClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client deactivated"));
@@ -204,6 +225,7 @@ public final class ClientApi {
 
     private static void updateApplications(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateClientApplicationsRequest.class).toCommand(ctx.pathParam("id"));
         UpdateClientApplications.of(s.applications(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -211,6 +233,7 @@ public final class ClientApi {
 
     private static void enableApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_UPDATE);
         var cmd = new EnableForClientCommand(ctx.pathParam("applicationId"), ctx.pathParam("id"));
         EnableApplicationForClient.of(s.applications(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -218,6 +241,7 @@ public final class ClientApi {
 
     private static void disableApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_UPDATE);
         var cmd = new DisableForClientCommand(ctx.pathParam("applicationId"), ctx.pathParam("id"));
         DisableApplicationForClient.of(s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);

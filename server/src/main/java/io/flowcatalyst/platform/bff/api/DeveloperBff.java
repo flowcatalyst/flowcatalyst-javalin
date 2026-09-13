@@ -26,10 +26,14 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.APPLICATION_OPENAPI_SYNC;
+import static io.flowcatalyst.platform.shared.auth.Permission.APPLICATION_OPENAPI_VIEW;
+
 /// The `/bff/developer/*` surface (bff spec §4): read-only application /
 /// OpenAPI-spec / event-type lookups for the developer portal, plus the one
 /// write endpoint that syncs the platform's own generated OpenAPI document.
-/// Every route is anchor-only.
+/// Every route is anchor-only, followed by the permission gate
+/// (`docs/spec/reach-only-routes.md`).
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
@@ -77,6 +81,7 @@ public final class DeveloperBff {
 
     private static void listApplications(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         var apps = s.applications().findWithFilters(new ApplicationRepository.ListFilter(null, true));
         var out = apps.stream().map(a -> toSummary(a, s.specs().findCurrentByApplication(a.id()).orElse(null))).toList();
         ctx.json(new ApplicationsResponse(out));
@@ -84,12 +89,14 @@ public final class DeveloperBff {
 
     private static void getApplication(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         Application app = application(s, ctx.pathParam("appId"));
         ctx.json(toSummary(app, s.specs().findCurrentByApplication(app.id()).orElse(null)));
     }
 
     private static void getCurrentSpec(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         String appId = ctx.pathParam("appId");
         OpenApiSpec spec = s.specs().findCurrentByApplication(appId).orElseThrow(() -> HttpError.notFound("OpenApiSpec", appId));
         ctx.json(SpecResponse.from(spec));
@@ -97,12 +104,14 @@ public final class DeveloperBff {
 
     private static void listVersions(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         var specs = s.specs().findAllByApplication(ctx.pathParam("appId"));
         ctx.json(new VersionsResponse(specs.stream().map(VersionSummary::from).toList()));
     }
 
     private static void getVersion(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         String appId = ctx.pathParam("appId");
         String specId = ctx.pathParam("specId");
         OpenApiSpec spec = s.specs().findById(specId).filter(sp -> sp.applicationId().equals(appId))
@@ -112,6 +121,7 @@ public final class DeveloperBff {
 
     private static void listEventTypes(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_VIEW);
         Application app = application(s, ctx.pathParam("appId"));
         var out = s.eventTypes().findByApplication(app.code()).stream().map(EventTypeSummary::from).toList();
         ctx.json(new EventTypesResponse(out));
@@ -121,6 +131,7 @@ public final class DeveloperBff {
     /// sync use case against the seeded `platform` application row.
     private static void syncPlatformOpenApi(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_OPENAPI_SYNC);
         Application app = s.applications().findByCode(PLATFORM_APPLICATION_CODE)
                 .orElseThrow(() -> UseCaseException.internal("SEED", "platform application missing - run seed", null));
         var cmd = new SyncOpenApiSpecCommand(app.id(), app.code(), s.platformOpenApi().get());

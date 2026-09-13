@@ -33,9 +33,21 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.ANCHOR_DOMAIN_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ANCHOR_DOMAIN_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ANCHOR_DOMAIN_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ANCHOR_DOMAIN_VIEW;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_AUTH_CONFIG_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_AUTH_CONFIG_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_AUTH_CONFIG_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_AUTH_CONFIG_VIEW;
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_VIEW;
+
 /// The `/api/anchor-domains`, `/api/auth-configs` and `/api/idp-role-mappings`
 /// surfaces (spec §3). All eleven routes are anchor-only, reads included
-/// (spec §1) — every handler opens with `requireAnchor`. A write handler
+/// (spec §1) — every handler opens with `requireAnchor`, followed by the
+/// permission gate (`docs/spec/reach-only-routes.md`). A write handler
 /// does exactly: gate → command from DTO → `Operation.run` → response. Reads
 /// go straight to the repository. Every handler runs inside [Auth#scoped]
 /// so the operations can read [Auth#current()].
@@ -91,11 +103,13 @@ public final class AuthAdminConfigApi {
 
     private static void listAnchorDomains(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ANCHOR_DOMAIN_VIEW);
         ctx.json(new AnchorDomainListResponse(s.anchorDomainRepo().findAll().stream().map(AnchorDomainResponse::from).toList()));
     }
 
     private static void createAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ANCHOR_DOMAIN_CREATE);
         var cmd = ctx.bodyAsClass(CreateAnchorDomainRequest.class).toCommand();
         var event = CreateAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.anchorDomainId()));
@@ -103,6 +117,7 @@ public final class AuthAdminConfigApi {
 
     private static void updateAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ANCHOR_DOMAIN_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateAnchorDomainRequest.class).toCommand(ctx.pathParam("id"));
         UpdateAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -110,6 +125,7 @@ public final class AuthAdminConfigApi {
 
     private static void deleteAnchorDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ANCHOR_DOMAIN_DELETE);
         DeleteAnchorDomain.of(s.anchorDomainRepo()).run(s.uow(), new DeleteAnchorDomainCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
@@ -118,11 +134,13 @@ public final class AuthAdminConfigApi {
 
     private static void listAuthConfigs(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_AUTH_CONFIG_VIEW);
         ctx.json(new AuthConfigListResponse(s.authConfigRepo().findAll().stream().map(AuthConfigResponse::from).toList()));
     }
 
     private static void createAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_AUTH_CONFIG_CREATE);
         var cmd = ctx.bodyAsClass(CreateAuthConfigRequest.class).toCommand(s.secrets());
         var event = CreateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.authConfigId()));
@@ -130,6 +148,7 @@ public final class AuthAdminConfigApi {
 
     private static void updateAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_AUTH_CONFIG_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateAuthConfigRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateAuthConfig.of(s.authConfigRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -137,6 +156,7 @@ public final class AuthAdminConfigApi {
 
     private static void deleteAuthConfig(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_AUTH_CONFIG_DELETE);
         DeleteAuthConfig.of(s.authConfigRepo()).run(s.uow(), new DeleteAuthConfigCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
@@ -145,11 +165,13 @@ public final class AuthAdminConfigApi {
 
     private static void listIdpRoleMappings(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_VIEW);
         ctx.json(new IdpRoleMappingListResponse(s.idpRoleMappingRepo().findAll().stream().map(IdpRoleMappingResponse::from).toList()));
     }
 
     private static void createIdpRoleMapping(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_UPDATE);
         var cmd = ctx.bodyAsClass(CreateIdpRoleMappingRequest.class).toCommand();
         var event = CreateIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.mappingId()));
@@ -157,6 +179,7 @@ public final class AuthAdminConfigApi {
 
     private static void deleteIdpRoleMapping(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_UPDATE);
         DeleteIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), new DeleteIdpRoleMappingCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

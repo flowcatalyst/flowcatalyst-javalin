@@ -20,6 +20,44 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## Reach-only routes gained their permission gates (2026-09-13, owner go-ahead)
+
+`docs/spec/reach-only-routes.md`: the nine API classes that gated on anchor
+reach alone now also require the family's permission after `requireAnchor`
+— clients, OAuth clients (secret rotation under the regenerate-secret
+code), identity providers, anchor domains, auth configs, idp-role-mappings
+(folded under the IdP codes), email-domain mappings, platform-config access
+grants (folded under the config codes), CORS origins (`/allowed` stays
+public), login attempts, the developer BFF. Two routes deliberately not:
+the email-domain `lookup` (pre-login IdP discovery) and the platform-config
+property routes (their own per-application grant gate — grant-vs-role
+question in `docs/backlog.md`). Four permission families existed in the
+seed but were held by no role; `iam-admin`/`iam-readonly` gain IdP and
+email-domain-mapping, `admin`/`admin-readonly` config and CORS-origin,
+`viewer` the four views (+21 permission rows, Java-first; Go hand-off
+`docs/go-mirror/2026-09-13-reach-only-routes.md`).
+
+Evidence: per class a read and a write refused for an anchor without the
+family (403 `PERMISSION_REQUIRED`) and the read accepted with the family's
+view code alone; nine mutants killed (one gate line each). Server 3,993 and
+fcdev 108 green from clean. **Parity against Go `e87b88d` (clean export):
+1,310 steps, 392 OK, 918 ACCEPTED, 0 DIFF, 0 ERROR, no stale entries** —
+the role listings and login permission arrays are allow-listed as
+Java-first (whole-list pointers now, replacing the per-index entries), and
+the profile-only scenario's service step was re-pointed: past the gate, the
+application service account is refused by the route's own permission check
+(Java 403, Go 200), which is the proof the step wanted. **Java e2e 51/51.**
+
+Found by the corpus, recorded in `docs/backlog.md`: **every rollup-auditing
+sync route answers 500 `AUDIT_WRITE` on Go and Java alike** in the harness
+(event types, dispatch pools, subscriptions, principals, processes — roles,
+docs, scheduled jobs and OpenAPI syncs work), even for the admin session;
+the corpus accepted it because both sides agree. Java's own `SdkSyncApiTest`
+passes, so it is environment-specific (the Go-migrated schema, or the
+partitioned audit table) and the 500's cause is swallowed on the way to the
+wire. Next: reproduce with `PARITY_ONLY=applications/*`, surface the cause,
+fix, hand to Go.
+
 ## Permissions come from roles at every tier; scope is reach (2026-09-13)
 
 Owner ruling, `docs/spec/permissions-from-roles.md`: "anchor users still

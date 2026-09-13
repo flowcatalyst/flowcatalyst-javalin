@@ -21,8 +21,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.IDP_VIEW;
+
 /// The `/api/identity-providers` surface (spec §3). Identity providers are
-/// anchor-only: every handler opens with `requireAnchor`. A write handler
+/// anchor-only: every handler opens with `requireAnchor`, followed by the
+/// permission gate (`docs/spec/reach-only-routes.md`). A write handler
 /// does exactly: gate → command from DTO → run → response; the only
 /// wire-boundary mapping beyond field names is the client secret's at-rest
 /// conversion ([ClientSecretEncryption], spec §5), done before the command
@@ -77,11 +83,13 @@ public final class IdentityProviderApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_VIEW);
         ctx.json(IdentityProviderListResponse.from(s.repo().findAll()));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_VIEW);
         ctx.json(IdentityProviderResponse.from(load(s, ctx.pathParam("id"))));
     }
 
@@ -90,6 +98,7 @@ public final class IdentityProviderApi {
     /// 201 with the full provider (re-read after commit): the SPA's create toast reads `name` (spec §3).
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_CREATE);
         var cmd = ctx.bodyAsClass(CreateIdentityProviderRequest.class).toCommand(s.secrets());
         var result = CreateIdentityProvider.of(s.repo(), s.mappings()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(IdentityProviderResponse.from(load(s, result.identityProviderId())));
@@ -98,6 +107,7 @@ public final class IdentityProviderApi {
     /// 200 with the full provider (not 204): the SPA's detail page replaces its model with the body (spec §3).
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateIdentityProviderRequest.class).toCommand(ctx.pathParam("id"), s.secrets());
         UpdateIdentityProvider.of(s.repo(), s.mappings()).run(s.uow(), cmd, Auth.executionContext());
         s.onChange().accept(ctx.pathParam("id"));
@@ -106,6 +116,7 @@ public final class IdentityProviderApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), IDP_DELETE);
         DeleteIdentityProvider.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         s.onChange().accept(ctx.pathParam("id"));
         ctx.status(204);

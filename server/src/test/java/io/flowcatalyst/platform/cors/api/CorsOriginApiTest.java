@@ -43,6 +43,16 @@ class CorsOriginApiTest {
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, "cli_cors_" + RUN,
             Authenticator.TEST_PERMISSIONS, "*"};
+    /// An anchor holding every permission EXCEPT the CORS-origin family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_CORS_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_CORS_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:cors-origin:view"};
 
     private static final CorsOriginApi.State state = new CorsOriginApi.State(new CorsOriginRepository(TestPg.dataSource()),
             new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)), () -> { });
@@ -202,5 +212,25 @@ class CorsOriginApiTest {
         var malformed = http.post("/api/platform/cors", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without
+    /// CORS_ORIGIN_VIEW is refused read, an anchor without CORS_ORIGIN_CREATE
+    /// is refused write, CORS_ORIGIN_VIEW alone (not the wildcard) is enough
+    /// to read, and `/allowed` stays public with no principal at all.
+    @Test
+    void anchorWithoutCorsPermissionIsRefusedButTheSpecificPermissionSucceedsAndAllowedStaysPublic() {
+        var readDenied = http.get("/api/platform/cors", ANCHOR_NO_CORS_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/platform/cors", "{\"origin\":\"" + origin("permdenied") + "\"}", ANCHOR_NO_CORS_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/platform/cors", ANCHOR_CORS_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
+
+        assertThat(http.get("/api/platform/cors/allowed").statusCode()).as("no principal at all").isEqualTo(200);
     }
 }

@@ -49,6 +49,17 @@ class ClientApiTest {
             Authenticator.TEST_SCOPE, "ANCHOR",
             Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
 
+    /// An anchor holding every permission EXCEPT the client family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_CLIENT_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_CLIENT_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:client:view"};
+
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
     private static final ClientApi.State state = new ClientApi.State(new ClientRepository(TestPg.dataSource()),
             new ApplicationRepository(TestPg.dataSource()), new ClientConfigRepository(TestPg.dataSource()),
@@ -385,6 +396,23 @@ class ClientApiTest {
         var anon = http.get("/api/clients");
         assertThat(anon.statusCode()).isEqualTo(403);
         assertThat(json(anon).get("error").asText()).isEqualTo("UNAUTHENTICATED");
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without CLIENT_VIEW is
+    /// refused read, an anchor without CLIENT_CREATE is refused write, and
+    /// CLIENT_VIEW alone (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutClientPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/api/clients", ANCHOR_NO_CLIENT_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/clients", "{\"name\":\"X\",\"identifier\":\"" + ident("permdenied") + "\"}", ANCHOR_NO_CLIENT_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/clients", ANCHOR_CLIENT_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 
     @Test

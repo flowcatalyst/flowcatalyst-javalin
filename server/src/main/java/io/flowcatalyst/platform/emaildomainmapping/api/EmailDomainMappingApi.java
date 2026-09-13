@@ -26,9 +26,17 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.EMAIL_DOMAIN_MAPPING_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.EMAIL_DOMAIN_MAPPING_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.EMAIL_DOMAIN_MAPPING_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.EMAIL_DOMAIN_MAPPING_VIEW;
+
 /// The `/api/email-domain-mappings` surface (spec §3). Mappings are
-/// anchor-only: every handler opens with `requireAnchor` except the
-/// `lookup` read, which has no gate (spec §3, open question 1). A write
+/// anchor-only: every handler opens with `requireAnchor`, followed by the
+/// permission gate (`docs/spec/reach-only-routes.md`), except the
+/// `lookup` read, which has no gate at all (spec §3, open question 1 — it is
+/// consulted during login, before the caller can hold any permission, so it
+/// stays ungated rather than gaining a check it could never pass). A write
 /// handler does exactly: gate → command from DTO → `Operation.run` →
 /// response. Reads go straight to the repository and enrich the response
 /// with the identity provider's display name. Every handler runs inside
@@ -75,6 +83,7 @@ public final class EmailDomainMappingApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_VIEW);
         List<EmailDomainMapping> mappings = s.repo().findAll();
         ctx.json(MappingListResponse.from(mappings, idpNames(s, mappings)));
     }
@@ -92,12 +101,14 @@ public final class EmailDomainMappingApi {
 
     private static void getByDomain(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_VIEW);
         EmailDomainMapping m = byDomain(s, ctx.pathParam("domain"));
         ctx.json(MappingResponse.from(m, idpName(s, m)));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_VIEW);
         EmailDomainMapping m = byId(s, ctx.pathParam("id"));
         ctx.json(MappingResponse.from(m, idpName(s, m)));
     }
@@ -106,6 +117,7 @@ public final class EmailDomainMappingApi {
 
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_CREATE);
         var cmd = ctx.bodyAsClass(CreateMappingRequest.class).toCommand();
         var event = CreateEmailDomainMapping.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.mappingId()));
@@ -113,6 +125,7 @@ public final class EmailDomainMappingApi {
 
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateMappingRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEmailDomainMapping.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -120,6 +133,7 @@ public final class EmailDomainMappingApi {
 
     private static void moveProvider(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_UPDATE);
         var cmd = ctx.bodyAsClass(MoveProviderRequest.class).toCommand(ctx.pathParam("id"));
         var result = MoveEmailDomainMappingProvider.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(MoveProviderResponse.from(result));
@@ -127,6 +141,7 @@ public final class EmailDomainMappingApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EMAIL_DOMAIN_MAPPING_DELETE);
         DeleteEmailDomainMapping.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

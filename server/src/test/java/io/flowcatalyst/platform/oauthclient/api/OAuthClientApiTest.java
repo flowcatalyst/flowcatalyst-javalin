@@ -54,6 +54,16 @@ class OAuthClientApiTest {
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, "cli_ocapi_" + RUN,
             Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
+    /// An anchor holding every permission EXCEPT the oauth-client family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_OAUTH_CLIENT_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_OAUTH_CLIENT_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:auth:oauth-client:view"};
 
     private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
     private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
@@ -382,5 +392,22 @@ class OAuthClientApiTest {
         var stillThere = json(http.get("/api/oauth-clients/" + id, ANCHOR));
         assertThat(stillThere.get("clientName").asText()).isEqualTo(name("gate"));
         assertThat(stillThere.get("active").asBoolean()).isTrue();
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without OAUTH_CLIENT_VIEW
+    /// is refused read, an anchor without OAUTH_CLIENT_CREATE is refused
+    /// write, and OAUTH_CLIENT_VIEW alone (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutOAuthClientPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/api/oauth-clients", ANCHOR_NO_OAUTH_CLIENT_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/oauth-clients", "{\"clientName\":\"" + name("permdenied") + "\",\"clientType\":\"PUBLIC\"}", ANCHOR_NO_OAUTH_CLIENT_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/oauth-clients", ANCHOR_OAUTH_CLIENT_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 }

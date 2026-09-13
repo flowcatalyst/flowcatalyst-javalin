@@ -92,7 +92,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(152);
+        assertThat(total).isEqualTo(173);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission

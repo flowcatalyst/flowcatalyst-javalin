@@ -50,6 +50,16 @@ class EmailDomainMappingApiTest {
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, "clt_x",
             Authenticator.TEST_PERMISSIONS, "platform:iam:email-domain-mapping:view,platform:iam:email-domain-mapping:create,platform:iam:email-domain-mapping:update,platform:iam:email-domain-mapping:delete,platform:iam:email-domain-mapping:manage"};
+    /// An anchor holding every permission EXCEPT the email-domain-mapping family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_MAPPING_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_MAPPING_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:iam:email-domain-mapping:view"};
 
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
     private static final EmailDomainMappingApi.State state = new EmailDomainMappingApi.State(
@@ -330,5 +340,24 @@ class EmailDomainMappingApiTest {
         assertThat(anonymous.statusCode()).isEqualTo(403);
         assertThat(json(anonymous).get("error").asText()).isEqualTo("UNAUTHENTICATED");
         assertThat(json(http.get("/api/email-domain-mappings/" + id, ANCHOR)).get("id").asText()).as("nothing was deleted").isEqualTo(id);
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without
+    /// EMAIL_DOMAIN_MAPPING_VIEW is refused read, an anchor without
+    /// EMAIL_DOMAIN_MAPPING_CREATE is refused write, and the specific view
+    /// code (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutMappingPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/api/email-domain-mappings", ANCHOR_NO_MAPPING_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/api/email-domain-mappings",
+                "{\"emailDomain\":\"" + domain("permdenied") + "\",\"identityProviderId\":\"idp_x\",\"scopeType\":\"ANCHOR\"}", ANCHOR_NO_MAPPING_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/api/email-domain-mappings", ANCHOR_MAPPING_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 }

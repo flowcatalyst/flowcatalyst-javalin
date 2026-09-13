@@ -77,8 +77,12 @@ class SeederTest {
 
     // `platform:router` (and its one permission row, in rolePermissionsMatchGo
     // below) is Java-first (`docs/spec/router-config-auth.md` R3′): Java seeds
-    // it now, on purpose, ahead of Go — the fixture's role/perm counts (15/152,
-    // not Go's 14/151) and its own comment record that until Go mirrors it.
+    // it now, on purpose, ahead of Go. The 21 role/permission rows added by
+    // `docs/spec/reach-only-routes.md` §2 (IdP + email-domain-mapping on
+    // iam-admin/iam-readonly; config + CORS-origin on admin/admin-readonly/
+    // viewer) are Java-first the same way. The fixture's role/perm counts
+    // (15/173, not Go's 14/151) and its own comment record that until Go
+    // mirrors both.
     @Test
     void rolesMatchGo() {
         List<String> actual = db.selectFrom(IAM_ROLES).fetch().stream()
@@ -98,7 +102,7 @@ class SeederTest {
                 .fetch().stream()
                 .map(r -> line("perm", r.value1(), r.value2()))
                 .toList();
-        assertThat(actual).hasSize(152).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
+        assertThat(actual).hasSize(173).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
     }
 
     @Test
@@ -243,7 +247,7 @@ class SeederTest {
     void secondRunChangesNothing() {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(15);
-        assertThat(firstRun.get("iam_role_permissions")).hasSize(152);
+        assertThat(firstRun.get("iam_role_permissions")).hasSize(173);
         assertThat(firstRun.get("msg_event_types")).hasSize(72);
         assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(72);
         assertThat(firstRun.get("app_applications")).hasSize(1);

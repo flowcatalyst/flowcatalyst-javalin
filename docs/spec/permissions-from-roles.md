@@ -92,6 +92,10 @@ mapping (existing codes where they exist, new ones where they do not), its
 own tests, and a Go mirror item. The parity scenario in §3.4 deliberately
 uses `POST /api/event-types` for the anchor-viewer refusal for that reason.
 
+**Done 2026-09-13**: `docs/spec/reach-only-routes.md` — all nine classes
+gated, the seed roles that held none of these codes updated, and the
+read-refused/write-refused tests added per class.
+
 ## 4. Service-account reach (second half of the ruling — next unit)
 
 Today every service principal is created `ANCHOR` (`Principal.newService`),

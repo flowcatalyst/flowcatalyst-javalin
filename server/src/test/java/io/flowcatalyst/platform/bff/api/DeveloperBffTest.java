@@ -50,6 +50,16 @@ class DeveloperBffTest {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_PERMISSIONS, "platform:developer:application-openapi:manage"};
+    /// An anchor holding every permission EXCEPT the developer-openapi family (spec `reach-only-routes.md` §3).
+    private static final String[] ANCHOR_NO_OPENAPI_PERMS = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
+    /// An anchor holding only the specific view code (not the wildcard).
+    private static final String[] ANCHOR_OPENAPI_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:developer:application-openapi:view"};
 
     @BeforeAll
     static void start() {
@@ -120,6 +130,24 @@ class DeveloperBffTest {
         assertThat(http.post("/bff/developer/sync-platform-openapi", null, VIEWER).statusCode()).isEqualTo(403);
 
         assertThat(http.get("/bff/developer/applications", ANCHOR).statusCode()).isEqualTo(200);
+    }
+
+    /// docs/spec/reach-only-routes.md §1/§3: an anchor without
+    /// DEVELOPER_APPLICATION_OPENAPI_VIEW is refused read, an anchor without
+    /// DEVELOPER_APPLICATION_OPENAPI_SYNC is refused the sync write, and the
+    /// specific view code (not the wildcard) is enough to read.
+    @Test
+    void anchorWithoutOpenApiPermissionIsRefusedButTheSpecificPermissionSucceeds() {
+        var readDenied = http.get("/bff/developer/applications", ANCHOR_NO_OPENAPI_PERMS);
+        assertThat(readDenied.statusCode()).isEqualTo(403);
+        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var writeDenied = http.post("/bff/developer/sync-platform-openapi", null, ANCHOR_NO_OPENAPI_PERMS);
+        assertThat(writeDenied.statusCode()).isEqualTo(403);
+        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var readAllowed = http.get("/bff/developer/applications", ANCHOR_OPENAPI_VIEW_ONLY);
+        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 
     // ── Applications list / by id ────────────────────────────────────────
