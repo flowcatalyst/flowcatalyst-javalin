@@ -35,7 +35,7 @@ class EventTypesBffTest {
     private static TestHttp http;
 
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();
-    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL, Authenticator.TEST_SCOPE, "ANCHOR"};
+    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL, Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     private static final String CLIENT = "cli_" + RUN + "_et";
     private static final String[] VIEWER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),

@@ -45,7 +45,8 @@ class OAuthClientApiTest {
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     /// A CLIENT-scoped principal holding every plausible permission, which must not help — this
     /// surface is anchor-only, not permission-gated (spec §6.3).
     private static final String[] CLIENT_SCOPED = {

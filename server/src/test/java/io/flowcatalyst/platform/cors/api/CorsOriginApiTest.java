@@ -35,7 +35,8 @@ class CorsOriginApiTest {
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL,
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     /// A CLIENT-scoped principal holding the super-admin wildcard — which must not help on an anchor-only surface.
     private static final String[] CLIENT_ADMIN = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),

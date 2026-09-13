@@ -104,14 +104,17 @@ by code (`GET /api/service-accounts/code/app:{applicationCode}`) and assign
 principals route refuses non-`USER` principals with `NOT_A_USER`). No
 Service Connect alias, no internal-listener exposure.
 
-**Gate detail found while building (2026-09-13):** `Checks.require` grants
-every anchor-scoped caller every permission (Go `auth.go:409` does the same),
-and a provisioned service account is anchor-scoped, so the usual gate would
-have passed any application's service account with no `platform:router`
-role at all. `RouterConfigApi` therefore checks `AuthContext#hasPermission`
-directly after `requireAnchor`. The anchor auto-grant itself is a
-pre-existing property of both sides and is raised separately
-(`docs/backlog.md`).
+**Gate detail found while building (2026-09-13):** at the time this route was
+built, `Checks.require` granted every anchor-scoped caller every permission
+(Go `auth.go:409` does the same), and a provisioned service account is
+anchor-scoped, so the usual gate would have passed any application's service
+account with no `platform:router` role at all. `RouterConfigApi` checked
+`AuthContext#hasPermission` directly after `requireAnchor` to work around it.
+That anchor bypass is now withdrawn platform-wide (owner ruling 2026-09-13,
+`docs/spec/permissions-from-roles.md`) — permissions always come from roles,
+at every tier — so the workaround is gone too: `RouterConfigApi` is back to
+the ordinary `Checks.requireAnchor` + `Checks.require(DISPATCH_POOL_VIEW)`
+gate, same as any other anchor-only, permission-gated route.
 
 ## 5. Tests that must exist (each with a killed mutant)
 

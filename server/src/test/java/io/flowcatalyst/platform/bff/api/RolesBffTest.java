@@ -38,7 +38,7 @@ class RolesBffTest {
             new ApplicationRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
     private static TestHttp http;
 
-    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR"};
+    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     private static final String[] WRITER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",

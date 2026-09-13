@@ -65,7 +65,8 @@ class PrincipalApiTest {
     private static String[] anchor() {
         return new String[] {
                 Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-                Authenticator.TEST_SCOPE, "ANCHOR"};
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     }
 
     /// A CLIENT-scoped caller bound to `clientId`, holding `permissions`.

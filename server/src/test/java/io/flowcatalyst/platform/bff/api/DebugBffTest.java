@@ -49,7 +49,8 @@ class DebugBffTest {
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     private static final String[] EVENT_RAW_VIEWER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",

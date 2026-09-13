@@ -20,6 +20,44 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## Permissions come from roles at every tier; scope is reach (2026-09-13)
+
+Owner ruling, `docs/spec/permissions-from-roles.md`: "anchor users still
+need their roles and permissions applied, but they are global across all
+clients; service accounts should be linked to a client or be an anchor."
+The permission gate's anchor short-circuit (Java `Checks.require`, Go
+`auth.go:409`) is withdrawn: `require`/`requireAny` match held permissions
+only; `requireAnchor` and every other `isAnchor()` stay as reach checks;
+`requireUserAdmin` lets an anchor reach any target but demands a user-write
+permission; `requireAdmin` is gone (dashboard stats gates anchor + a view
+permission). The router-config route is back on the ordinary gate. 36 test
+fixtures that authenticated as a bare anchor now state their permissions
+(`platform:*:*:*`); no assertion was weakened. Go mirror:
+`docs/go-mirror/2026-09-13-permissions-from-roles.md`.
+
+Found while building, both recorded in the spec (§3a) and backlog:
+- **Nine API aggregates gate on anchor reach alone with no permission at
+  all** (clients, OAuth clients, identity providers, auth-admin config,
+  email-domain mappings, platform config, CORS origins, login attempts, the
+  developer BFF) — an anchor viewer can still write there. Next unit: a
+  per-route permission mapping.
+- `GET /api/service-accounts` orders by `code` on Java and by something
+  else on Go; every earlier corpus row happened to sort the same both ways.
+- **Service-account reach** (a linked account confined to its clients) is
+  the second half of the ruling and gets its own spec after this.
+
+Evidence: server suite 3,984 green from clean; fcdev 108; `ChecksTest`
+(anchor without the permission refused, wildcard and specific pass, CLIENT
+unchanged, user-admin needs a write permission) and two API-level proofs
+(a provisioned service account's token 403 on `GET /api/principals` and 200
+on its own sync route; an anchor holding only `platform:viewer` 403 on
+`POST /api/event-types`), each with a killed mutant. **Parity against Go
+`e87b88d` (clean export): 1,310 steps, 398 OK, 912 ACCEPTED, 0 DIFF,
+0 ERROR, 253/253 + 103/103, no stale entries** — the new `authz` scenario
+(self-cleaning: a bypassed write on Go would otherwise leave state later
+list steps see) and the dashboard-gate code change are allow-listed as
+Java-first with the ruling. **Java e2e 51/51.**
+
 ## R3′ — the router-config document is an authenticated API route (2026-09-13)
 
 Owner rulings 2026-09-13 (`docs/spec/router-config-auth.md`): the Service

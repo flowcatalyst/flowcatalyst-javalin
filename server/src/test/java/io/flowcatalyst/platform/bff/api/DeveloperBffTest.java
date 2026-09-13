@@ -45,7 +45,7 @@ class DeveloperBffTest {
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static TestHttp http;
 
-    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR"};
+    private static final String[] ANCHOR = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     private static final String[] VIEWER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",

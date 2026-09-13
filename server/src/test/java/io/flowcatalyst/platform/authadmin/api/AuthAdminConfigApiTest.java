@@ -38,7 +38,8 @@ class AuthAdminConfigApiTest {
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     /// A CLIENT-scoped principal holding every relevant permission, which must not help (spec §1, §7).
     private static final String[] CLIENT_SCOPED = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),

@@ -15,16 +15,21 @@ import static io.flowcatalyst.platform.shared.auth.Permission.*;
 ///   - `require(ac, Permission)` for a single permission (`VIEW` on GET,
 ///     the verb on a verb), `requireAny(ac, Permission...)` for the "any
 ///     write" / sync groupings, `requireAnchor(ac)` for anchor-only
-///     resources (clients, identity providers), `requireAdmin(ac)` (Go
-///     `IsAdmin`) for anchor OR the super-admin wildcard.
+///     resources (clients, identity providers) — a **reach** check, not an
+///     authority one.
 ///   - Every helper takes the (possibly `null`) [AuthContext] and **throws**
 ///     `UseCaseException.authorization(CODE, message)` on failure — the HTTP
 ///     layer renders it as the 403 envelope — so handlers need no branching.
-///     Codes: `UNAUTHENTICATED`, `ANCHOR_REQUIRED`, `ADMIN_REQUIRED`,
-///     `SCOPE_FORBIDDEN`, `PERMISSION_REQUIRED`, `FORBIDDEN`.
-///   - Anchors pass every permission check; otherwise the required code is
-///     matched against held permissions with `*` segment wildcards
-///     ([Permission#matches]).
+///     Codes: `UNAUTHENTICATED`, `ANCHOR_REQUIRED`, `SCOPE_FORBIDDEN`,
+///     `PERMISSION_REQUIRED`, `FORBIDDEN`.
+///   - **Permissions always come from roles, at every tier** (owner ruling
+///     2026-09-13, `docs/spec/permissions-from-roles.md`). `require`/
+///     `requireAny` no longer treat `isAnchor()` as holding every
+///     permission — an anchor-scoped principal is matched against its held
+///     permissions exactly like a client-scoped one, with `*` segment
+///     wildcards ([Permission#matches]). `ANCHOR`/`PARTNER`/`CLIENT` remain a
+///     pure reach question — which tenants a principal may act for — kept
+///     separate from what it may do inside that reach.
 ///
 /// Which permissions gate which endpoint is each aggregate's business (its
 /// spec and its `api/` class) — nothing per-resource lives here.
@@ -39,48 +44,49 @@ public final class Checks {
         return UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
     }
 
-    /// Fails unless the principal holds `permission` (anchors always do).
+    /// Fails unless the principal holds `permission` (permissions always
+    /// come from roles — spec `permissions-from-roles.md` §1 — so scope,
+    /// anchor included, grants no bypass here).
     ///
     /// @throws UseCaseException `UNAUTHENTICATED` | `PERMISSION_REQUIRED`
     ///                          `permission required: <code>`
     public static void require(AuthContext a, Permission permission) {
         if (a == null) throw unauthenticated();
-        if (a.isAnchor() || a.hasPermission(permission)) return;
+        if (a.hasPermission(permission)) return;
         throw UseCaseException.authorization("PERMISSION_REQUIRED", "permission required: " + permission.code());
     }
 
     /// Fails unless the principal holds at least one of `permissions`
-    /// (anchors always do).
+    /// (permissions always come from roles — spec `permissions-from-roles.md`
+    /// §1 — so scope, anchor included, grants no bypass here).
     ///
     /// @throws UseCaseException `UNAUTHENTICATED` | `PERMISSION_REQUIRED`
     ///                          `one of: <code>, <code>…`
     public static void requireAny(AuthContext a, Permission... permissions) {
         if (a == null) throw unauthenticated();
-        if (a.isAnchor() || Arrays.stream(permissions).anyMatch(a::hasPermission)) return;
+        if (Arrays.stream(permissions).anyMatch(a::hasPermission)) return;
         throw UseCaseException.authorization("PERMISSION_REQUIRED", "one of: "
                 + Arrays.stream(permissions).map(Permission::code).collect(Collectors.joining(", ")));
     }
 
-    /// Fails unless the principal is anchor-scoped.
+    /// Fails unless the principal is anchor-scoped. A reach check — it says
+    /// nothing about authority, which `require`/`requireAny` still enforce.
     public static void requireAnchor(AuthContext a) {
         if (a == null) throw unauthenticated();
         if (!a.isAnchor()) throw UseCaseException.authorization("ANCHOR_REQUIRED", "anchor scope required");
     }
 
-    /// Go `IsAdmin`: anchor-scoped or holding the super-admin wildcard.
-    public static void requireAdmin(AuthContext a) {
-        if (a == null) throw unauthenticated();
-        if (a.isAnchor() || a.hasPermission(SUPER_ADMIN)) return;
-        throw UseCaseException.authorization("ADMIN_REQUIRED", "admin permission required");
-    }
-
     /// Authorizes a user-management action on a principal owned by
-    /// `targetClientId`: anchors pass for any target; a non-anchor must be able
-    /// to access the target's client AND hold a user-write permission; a `null`
-    /// target (platform user) is anchor-only.
+    /// `targetClientId`: an anchor reaches any target but must still hold a
+    /// user-write permission; a non-anchor must be able to access the
+    /// target's client AND hold a user-write permission; a `null` target
+    /// (platform user) is anchor-only.
     public static void requireUserAdmin(AuthContext a, String targetClientId) {
         if (a == null) throw unauthenticated();
-        if (a.isAnchor()) return;
+        if (a.isAnchor()) {
+            requireAny(a, USER_CREATE, USER_UPDATE, USER_DELETE);
+            return;
+        }
         if (targetClientId == null) {
             throw UseCaseException.authorization("ANCHOR_REQUIRED", "anchor scope required for platform users");
         }
@@ -138,15 +144,15 @@ public final class Checks {
 
     // ── Portal users (CLIENT-delegable) ────────────────────────────────────
 
-    /// Listing a client's portal identities: anchors pass; otherwise access to
-    /// the client AND view-or-manage.
+    /// Listing a client's portal identities: reach to the client (anchors
+    /// reach every client) AND view-or-manage.
     public static void requirePortalUserView(AuthContext a, String clientId) {
         requireClientAccess(a, clientId);
         requireAny(a, PORTAL_USER_VIEW, PORTAL_USER_MANAGE);
     }
 
-    /// Ensure/invite, suspend, delete a client's portal identities: anchors
-    /// pass; otherwise access to the client AND manage.
+    /// Ensure/invite, suspend, delete a client's portal identities: reach to
+    /// the client (anchors reach every client) AND manage.
     public static void requirePortalUserManage(AuthContext a, String clientId) {
         requireClientAccess(a, clientId);
         require(a, PORTAL_USER_MANAGE);

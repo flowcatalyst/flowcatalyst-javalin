@@ -448,6 +448,34 @@
   "ruling": "portal-apps.md J12 (owner 2026-09-11: field-name prefix kept)"
  },
  {
+  "scenario": "authz*",
+  "step": "service-account-reads-principals",
+  "pointer": "/**",
+  "reason": "Java-first: permissions come from roles at every tier (owner 2026-09-13); a provisioned application service account holds no IAM read — Java 403 PERMISSION_REQUIRED, Go's anchor bypass 200",
+  "ruling": "docs/spec/permissions-from-roles.md; retire when Go drops the anchor bypass"
+ },
+ {
+  "scenario": "authz*",
+  "step": "anchor-viewer-creates-an-event-type",
+  "pointer": "/**",
+  "reason": "Java-first: an anchor user holding only platform:viewer has no event-type create — Java 403 PERMISSION_REQUIRED, Go's anchor bypass 201",
+  "ruling": "docs/spec/permissions-from-roles.md; retire when Go drops the anchor bypass"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-dashboard-forbidden",
+  "pointer": "/error",
+  "reason": "Java-first: dashboard stats now gates requireAnchor + a view permission instead of Go's IsAdmin (anchor OR wildcard), so a CLIENT-scoped caller is refused as ANCHOR_REQUIRED rather than ADMIN_REQUIRED",
+  "ruling": "docs/spec/permissions-from-roles.md §1 (requireAdmin removed); retire when Go mirrors"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-dashboard-forbidden",
+  "pointer": "/message",
+  "reason": "Java-first: same as /error — 'anchor scope required' vs 'admin permission required'",
+  "ruling": "docs/spec/permissions-from-roles.md §1 (requireAdmin removed); retire when Go mirrors"
+ },
+ {
   "scenario": "bff*",
   "step": "dashboard-stats",
   "pointer": "/rolesDefined",

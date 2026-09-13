@@ -42,7 +42,8 @@ class IdentityProviderApiTest {
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     private static final String[] CLIENT_SCOPED = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",

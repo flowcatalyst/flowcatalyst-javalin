@@ -201,7 +201,7 @@ class MeApiTest {
         Client mine = persistClient("Me Client " + RUN, "me-mine-" + RUN);
         Client theirs = persistClient("Me Other Client " + RUN, "me-other-" + RUN);
 
-        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR"};
+        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
         var anchorBody = json(http.get("/api/me/clients", anchor));
         assertThat(anchorBody.propertyNames()).containsExactlyInAnyOrder("clients", "total");
         assertThat(anchorBody.get("clients").findValuesAsString("id")).contains(mine.id(), theirs.id());
@@ -231,7 +231,7 @@ class MeApiTest {
 
     @Test
     void unknownClientIs404() {
-        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR"};
+        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
         assertThat(http.get("/api/me/clients/clt_doesnotexist1", anchor).statusCode()).isEqualTo(404);
     }
 
@@ -246,7 +246,7 @@ class MeApiTest {
         persistClientConfig(enabled.id(), c.id(), true);
         persistClientConfig(disabled.id(), c.id(), false);
 
-        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR"};
+        String[] anchor = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR", Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
         var body = json(http.get("/api/me/clients/" + c.id() + "/applications", anchor));
         assertThat(body.get("clientId").asText()).as("present for the per-client variant").isEqualTo(c.id());
         var ids = body.get("applications").findValuesAsString("id");

@@ -42,7 +42,8 @@ class EmailDomainMappingApiTest {
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL,
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     /// A CLIENT-scoped principal holding every mapping permission, which must not help.
     private static final String[] CLIENT_SCOPED = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),

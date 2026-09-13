@@ -41,12 +41,21 @@ class DashboardBffTest {
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static TestHttp http;
 
+    // Anchor scope alone is reach, not authority (docs/spec/permissions-from-roles.md):
+    // ADMIN states the specific permission the gate requires (one of CLIENT_VIEW/APPLICATION_VIEW).
     private static final String[] ADMIN = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:admin:client:view"};
     private static final String[] VIEWER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT"}; // no special permission at all
+    // Anchor reach, but neither CLIENT_VIEW nor APPLICATION_VIEW held — pins that
+    // reach alone (isAnchor()) is no longer enough (permissions-from-roles.md §1).
+    private static final String[] ANCHOR_NO_STATS_PERMISSION = {
+            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
 
     @BeforeAll
     static void start() {
@@ -157,17 +166,29 @@ class DashboardBffTest {
                 "eventsApprox", "dispatchJobsApprox", "auditLogsApprox", "loginAttemptsApprox");
     }
 
-    // ── Gate: admin only (spec §2, Go auth.IsAdmin) ────────────────────────
+    // ── Gate: anchor reach + a stats-view permission (spec §2) ─────────────
 
     @Test
     void clientScopedPrincipalWithoutSuperAdminIsForbidden() {
         var r = http.get("/bff/dashboard/stats", VIEWER);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
-        assertThat(json(r).get("error").asText()).isEqualTo("ADMIN_REQUIRED");
+        assertThat(json(r).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
+    }
+
+    /// Anchor scope used to bypass every permission check (Go `auth.IsAdmin`
+    /// / old `Checks.requireAdmin`); that bypass is withdrawn
+    /// (docs/spec/permissions-from-roles.md, ruling 2026-09-13) — an anchor
+    /// with reach but no `CLIENT_VIEW`/`APPLICATION_VIEW` permission is now
+    /// refused, where it previously would have read the stats.
+    @Test
+    void anchorWithoutStatsPermissionIsForbidden() {
+        var r = http.get("/bff/dashboard/stats", ANCHOR_NO_STATS_PERMISSION);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
     }
 
     @Test
-    void anchorCanRead() {
+    void anchorWithTheStatsPermissionCanRead() {
         assertThat(http.get("/bff/dashboard/stats", ADMIN).statusCode()).isEqualTo(200);
     }
 

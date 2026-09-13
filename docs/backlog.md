@@ -1417,7 +1417,31 @@ raised, that the gap between attempts grows to the cap, that exactly one INFO
 line is logged, and that polling returns to normal once the queue exists.
 Separately, assert a connection error still raises `CONNECTION`.
 
+## Service-account list order differs between the sides (noticed 2026-09-13)
+
+`GET /api/service-accounts`: Java orders by `code` ascending
+(`ServiceAccountRepository`), Go by something else — the parity run that
+introduced an account whose code sorts *between* existing ones
+(`app:parity-authz-…` between `app:parity` and `app:parity-cc-…`) came back
+with Go listing it first and Java in code order. Every earlier corpus row
+happened to sort the same both ways, which is why this never showed. Pick
+one key (code is the stable, human-predictable one) and mirror it; until
+then the `authz` scenario deletes what it created so later list steps stay
+clean.
+
 ## Every anchor-scoped principal passes every permission check (both sides, noticed 2026-09-13)
+
+**RESOLVED 2026-09-13 (Java side).** Owner ruling: permissions always come
+from roles, at every tier; anchor scope governs reach only, never authority.
+`Checks.require`/`requireAny` no longer short-circuit on `isAnchor()`;
+`requireUserAdmin` still lets an anchor reach any target but now also
+requires a user-write permission; `requireAdmin` (anchor OR the wildcard) is
+removed, its one caller (`DashboardBff.stats`) now gates
+`requireAnchor` + `requireAny(CLIENT_VIEW, APPLICATION_VIEW)`. Full spec and
+tests: `docs/spec/permissions-from-roles.md`. §4 of that spec (service-account
+**reach** — today every service principal is created `ANCHOR` regardless of
+`ServiceAccount.clientIds`) is deliberately out of scope and remains open —
+that is the Go-side half below, still unresolved.
 
 `Checks.require` / `requireAny` return early on `isAnchor()` (Go
 `internal/platform/shared/auth/auth.go:409` is identical: `a.IsAnchor() ||

@@ -61,7 +61,8 @@ class SdkSyncApiTest {
     private static String[] anchor() {
         return new String[] {
                 Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-                Authenticator.TEST_SCOPE, "ANCHOR"};
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     }
 
     /// A client-scoped caller holding exactly `permissions`, bound to

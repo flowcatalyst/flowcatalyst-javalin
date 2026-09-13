@@ -46,7 +46,8 @@ class ClientApiTest {
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL,
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
 
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
     private static final ClientApi.State state = new ClientApi.State(new ClientRepository(TestPg.dataSource()),

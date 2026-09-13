@@ -2,11 +2,15 @@ package io.flowcatalyst.platform.bff.api;
 
 import io.flowcatalyst.platform.bff.DashboardRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
 
 import java.util.Objects;
+
+import static io.flowcatalyst.platform.shared.auth.Permission.APPLICATION_VIEW;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_VIEW;
 
 /// `GET /bff/dashboard/stats` (bff spec §2): a mix of exact control-plane
 /// counts and `pg_class.reltuples`-approximated message-plane counts, for
@@ -16,9 +20,12 @@ import java.util.Objects;
 /// |---|---|---|
 /// | GET | `/bff/dashboard/stats` | 200 [StatsResponse] |
 ///
-/// **Gate (bff spec §2):** admin — anchor scope or the super-admin wildcard,
-/// Go `auth.IsAdmin`. The whole-platform counts are not for client-scoped
-/// users.
+/// **Gate (bff spec §2):** [Checks#requireAnchor] (the whole-platform counts
+/// are not for client-scoped users) plus [Checks#requireAny] on
+/// `CLIENT_VIEW`/`APPLICATION_VIEW` — a read permission on what is counted.
+/// Permissions always come from roles at every tier, anchor included
+/// (`docs/spec/permissions-from-roles.md`); `Checks#requireAdmin` (Go
+/// `auth.IsAdmin`) is gone, this was its one caller.
 public final class DashboardBff {
 
     /// The message-plane tables approximated via `pg_class.reltuples` (bff spec §2).
@@ -38,7 +45,9 @@ public final class DashboardBff {
     }
 
     private static void stats(Exchange ctx, State s) {
-        Checks.requireAdmin(Auth.current()); // 401 unauthenticated, 403 ADMIN_REQUIRED otherwise
+        AuthContext ac = Auth.current();
+        Checks.requireAnchor(ac); // 401 unauthenticated, 403 ANCHOR_REQUIRED otherwise
+        Checks.requireAny(ac, CLIENT_VIEW, APPLICATION_VIEW); // 403 PERMISSION_REQUIRED otherwise
         var exact = s.repo().exactCounts();
         var approx = s.repo().approximateCounts(APPROX_TABLES);
         ctx.json(new StatsResponse(

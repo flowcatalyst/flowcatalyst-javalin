@@ -35,9 +35,15 @@ class RouterConfigEndpointTest {
     private static Server.Running running;
     private static final HttpClient http = HttpClient.newHttpClient();
 
+    // This fixture is only ever used to set up fixtures (create an application,
+    // provision its service account, assign roles) via the real anchor operator
+    // workflow — never to pin a permission assertion itself — so it carries the
+    // wildcard (permissions-from-roles.md §2: anchor scope alone is reach, not
+    // authority, since 2026-09-13).
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR"};
+            Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
 
     @BeforeAll
     static void start() {
@@ -209,6 +215,68 @@ class RouterConfigEndpointTest {
         String token = mintToken(creds);
 
         var response = get(running.apiPort(), "/api/dispatch/router-config", "Authorization", "Bearer " + token);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(403);
+        assertThat(json(response).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+    }
+
+    /// Spec §3.2 (`docs/spec/permissions-from-roles.md`): a provisioned
+    /// application service account's client-credentials token is refused on
+    /// an admin read it holds no permission for (`GET /api/principals`
+    /// needs `USER_VIEW`; the account's default `platform:application-service`
+    /// role has no such thing), and accepted on the action its own default
+    /// role DOES grant — `POST /api/applications/{code}/event-types/sync`
+    /// needs one of `EVENT_TYPE_SYNC`/`EVENT_TYPE_MANAGE`/
+    /// `APP_SVC_EVENT_TYPE_CREATE`/`UPDATE`/`DELETE`, and
+    /// `platform:application-service` grants `APP_SVC_EVENT_TYPE_CREATE`.
+    /// This is the API-level twin of `ChecksTest`'s unit assertions: it
+    /// proves the withdrawn bypass is gone on a REAL route reached through a
+    /// REAL minted token, not just through `Checks` called directly. A
+    /// mutant that reinstated the anchor bypass in `Checks.require`/
+    /// `requireAny` would turn the 403 into a 200 (every provisioned
+    /// service account is anchor-scoped by construction).
+    @Test
+    void aProvisionedServiceAccountIsRefusedAnAdminReadButKeepsItsOwnRole() throws Exception {
+        var creds = provision("routercfg-appsvc", false);
+        String token = mintToken(creds);
+
+        var principals = get(running.apiPort(), "/api/principals", "Authorization", "Bearer " + token);
+        assertThat(principals.statusCode()).as(principals.body()).isEqualTo(403);
+        assertThat(json(principals).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var sync = post(running.apiPort(), "/api/applications/routercfg-appsvc/event-types/sync",
+                "{\"eventTypes\":[]}", "Authorization", "Bearer " + token);
+        assertThat(sync.statusCode()).as(sync.body()).isEqualTo(200);
+    }
+
+    /// Spec §3.2's other half: an anchor test principal holding only
+    /// `platform:viewer`'s permissions is refused a write it could
+    /// previously perform under the anchor bypass. `PlatformRoles` is the
+    /// authority for what `platform:viewer` actually grants (read-only —
+    /// `ADMIN_EVENT_TYPE_READ`/`EVENT_TYPE_VIEW`, never
+    /// `EVENT_TYPE_CREATE`/`UPDATE`/`DELETE`) — read from there rather than
+    /// hand-picking a permission, so this stays true if the role's list
+    /// changes. `POST /api/clients` is NOT usable for this: `ClientApi`
+    /// gates every route with `Checks.requireAnchor` alone, no permission
+    /// check at all, so an anchor reaches it regardless of role — a
+    /// pre-existing, separate design choice this unit does not touch.
+    /// `POST /api/event-types`, by contrast, goes through
+    /// `Checks.requireAny(EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE,
+    /// EVENT_TYPE_DELETE)`, which is exactly what the withdrawn anchor
+    /// bypass used to short-circuit.
+    @Test
+    void anAnchorWithOnlyViewerPermissionsIsRefusedAWrite() throws Exception {
+        var viewerPermissions = io.flowcatalyst.platform.seed.PlatformRoles.all().stream()
+                .filter(r -> r.name().equals("platform:viewer"))
+                .findFirst().orElseThrow()
+                .permissions();
+        String[] anchorViewer = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, String.join(",", viewerPermissions)};
+
+        var response = post(running.apiPort(), "/api/event-types",
+                "{\"code\":\"anchor-viewer-write-" + System.nanoTime() + "\",\"name\":\"n\"}", anchorViewer);
 
         assertThat(response.statusCode()).as(response.body()).isEqualTo(403);
         assertThat(json(response).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");

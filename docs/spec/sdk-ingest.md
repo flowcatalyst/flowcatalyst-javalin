@@ -27,8 +27,10 @@ the read surfaces already ported in their own units; this unit adds only
 the writes. Routes marked **no** are outside the lockfile: the contract for
 those is this document plus the Java SDK (`sdk/` module) that calls them —
 the port must check what the SDK sends and keep both sides agreeing.
-Anchor callers bypass every permission check (`requirePermission`: anchor
-OR permission).
+Anchor scope is reach, not authority: `Checks.require` matches the caller's
+held permissions like any other principal (`docs/spec/permissions-from-roles.md`,
+ruling 2026-09-13 — the Go anchor bypass in `requirePermission` is withdrawn
+on the Java side).
 
 ## 2. Common batch shape [C]
 
