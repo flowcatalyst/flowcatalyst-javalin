@@ -342,6 +342,25 @@ public record Principal(
         return new ClientAssociationChanged(withScope(UserScope.PARTNER, null), grants);
     }
 
+    /// The SERVICE reach derivation (spec `docs/spec/service-account-reach.md`
+    /// §1): a service account's `clientIds` decide its linked principal's
+    /// association — none → `ANCHOR`, no home client; exactly one → `CLIENT`
+    /// homed there; several → `PARTNER`, no home client, each id a grant.
+    /// Unlike [#toPartner(String)] (a user's single-client promotion, which
+    /// keeps the old home client reachable as a grant), the grants here are
+    /// exactly `clientIds` — this replaces the account's whole reach, not one
+    /// incremental change.
+    public ClientAssociationChanged withServiceReach(List<String> clientIds) {
+        List<String> ids = clientIds == null ? List.of() : clientIds;
+        if (ids.isEmpty()) {
+            return toAnchor();
+        }
+        if (ids.size() == 1) {
+            return changeClient(ids.get(0));
+        }
+        return new ClientAssociationChanged(withScope(UserScope.PARTNER, null), List.copyOf(ids));
+    }
+
     // ── Construction-time copies ───────────────────────────────────────────
 
     public Principal withClientId(String newClientId) {

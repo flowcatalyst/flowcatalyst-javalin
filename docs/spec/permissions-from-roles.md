@@ -108,6 +108,8 @@ service-account update path, and the claims a token carries, and is
 specified separately once this unit has landed — it must not be folded in
 here.
 
+**Done 2026-09-13** — see `docs/spec/service-account-reach.md`.
+
 ## 5. Docs to update in the same unit
 
 `auth-core.md` rulings (a new row: the bypass is withdrawn, with the date),

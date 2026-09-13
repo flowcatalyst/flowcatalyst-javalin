@@ -20,6 +20,35 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## Service-account reach follows its client links (2026-09-13, owner go-ahead)
+
+`docs/spec/service-account-reach.md`, the second half of the ruling: a
+service account's `clientIds` now decide its linked SERVICE principal's
+association — none → `ANCHOR` (unchanged, incl. every application-provisioned
+account and `fcdev-router`), exactly one → `CLIENT` homed there, several →
+`PARTNER` with each as a grant — derived on create and on update in the same
+transaction, every client id validated to exist (`Client` not found
+otherwise). `Principal.withServiceReach` holds the mapping. Found while
+reviewing: the existing grants writer is add-only (`ON CONFLICT DO NOTHING`),
+so a shrinking link set would have left stale reach; a reach-replacement
+writer (`withClientGrantsReplaced`) now deletes grants outside the new set,
+and three shrink tests pin it (mutant: the add-only writer leaves the third
+client's grant). A token minted before an update keeps its claims until it
+expires — documented. Go hand-off `docs/go-mirror/2026-09-13-service-account-reach.md`.
+
+Evidence: operations tests (one → CLIENT, two → PARTNER, none → ANCHOR,
+update re-derives, unknown client refused, three shrink cases) and API tests
+through a real client-credentials token (`tier` CLIENT with `clients`
+`[id]`, `GET /api/clients` 403 `ANCHOR_REQUIRED`, `GET /api/subscriptions`
+filtered to the account's own client; two ids → PARTNER with both), all
+with killed mutants. Server 4,004 and fcdev 108 green from clean. **Parity
+against Go `e87b88d` (clean export): 1,311 steps, 392 OK, 919 ACCEPTED,
+0 DIFF, 0 ERROR, no stale entries** — the `service-accounts` scenario's
+minted token now carries `tier: CLIENT` and its client where Go says
+`ANCHOR`/`*`, and a new step pins the linked account refused
+`GET /api/clients`; all allow-listed as Java-first with the spec. **Java
+e2e 51/51.**
+
 ## Reach-only routes gained their permission gates (2026-09-13, owner go-ahead)
 
 `docs/spec/reach-only-routes.md`: the nine API classes that gated on anchor

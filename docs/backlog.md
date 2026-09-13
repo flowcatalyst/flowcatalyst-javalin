@@ -1471,8 +1471,10 @@ classes that spec's §3a found (gated on `requireAnchor` alone, so the
 withdrawn bypass had nothing to have been bypassing) are gated as of
 `docs/spec/reach-only-routes.md`, 2026-09-13. §4 of that spec (service-account
 **reach** — today every service principal is created `ANCHOR` regardless of
-`ServiceAccount.clientIds`) is deliberately out of scope and remains open —
-that is the Go-side half below, still unresolved.
+`ServiceAccount.clientIds`) was deliberately out of scope for this unit and
+specified separately; **done 2026-09-13**, Java side: `docs/spec/service-account-reach.md`
+(`clientIds` now decide the linked principal's tier — none stays `ANCHOR`,
+one is `CLIENT`, several is `PARTNER`). The Go mirror is still unresolved.
 
 `Checks.require` / `requireAny` return early on `isAnchor()` (Go
 `internal/platform/shared/auth/auth.go:409` is identical: `a.IsAnchor() ||

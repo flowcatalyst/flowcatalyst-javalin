@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.serviceaccount.operations;
 
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
@@ -71,7 +72,7 @@ public final class CreateServiceAccountWithCredentials {
     }
 
     public static TxOperation<CreateCommand, Result> of(ServiceAccountRepository saRepo, PrincipalRepository principals,
-            OAuthClientRepository oauthClients, Optional<Encryption> encryption) {
+            OAuthClientRepository oauthClients, ClientRepository clients, Optional<Encryption> encryption) {
         return TxOperation.<CreateCommand, Result>named("CreateServiceAccountWithCredentials")
                 .validate(cmd -> {
                     ServiceAccountCode.parseUserChosen(cmd.code());
@@ -101,8 +102,17 @@ public final class CreateServiceAccountWithCredentials {
 
                     // 2. Linked SERVICE principal — a persistence detail of SA creation (no event of
                     // its own, exactly like Go: "the principal row is a persistence detail of SA
-                    // creation"). Confine it to the application when one was given.
-                    Principal principal = Principal.newService(sa.id(), sa.name());
+                    // creation"). Confine it to the application when one was given, and derive its
+                    // client reach from the account's clientIds (service-account-reach.md §1): none
+                    // stays ANCHOR, one is CLIENT homed there, several is PARTNER with each a grant.
+                    List<String> clientIds = cmd.clientIds() == null ? List.of() : cmd.clientIds();
+                    for (String clientId : clientIds) {
+                        if (clients.findById(clientId).isEmpty()) {
+                            throw UseCaseException.resourceNotFound("Client", clientId);
+                        }
+                    }
+                    Principal.ClientAssociationChanged reach = Principal.newService(sa.id(), sa.name()).withServiceReach(clientIds);
+                    Principal principal = reach.principal();
                     boolean appScoped = cmd.applicationId() != null && !cmd.applicationId().isBlank();
                     if (appScoped) {
                         principal = principal.assignApplicationAccess(List.of(cmd.applicationId()), false).principal();
@@ -110,9 +120,12 @@ public final class CreateServiceAccountWithCredentials {
                     try {
                         if (appScoped) {
                             principals.withApplicationAccess().persist(principal, scoped.dbTx());
-                        } else {
-                            principals.persist(principal, scoped.dbTx());
                         }
+                        // Reach REPLACES the grant set (service-account-reach.md §1) — one persist
+                        // through the composed writer, even when clientIds is empty (a fresh
+                        // principal has no stale grants to clean, but this stays symmetric with
+                        // UpdateServiceAccount's re-derivation).
+                        principals.withClientGrantsReplaced(reach.grantClientIds(), ec.principalId()).persist(principal, scoped.dbTx());
                     } catch (SQLException e) {
                         throw UseCaseException.internal("PERSIST", "service principal persist failed", e);
                     }

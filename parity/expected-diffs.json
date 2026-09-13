@@ -649,5 +649,26 @@
   "pointer": "/**",
   "reason": "Java-first: past the profile-only gate, the route's own permission gate refuses the application service account (403 PERMISSION_REQUIRED — not the gate's NO_PLATFORM_ROLE, which is the point of the step); Go's anchor bypass answers 200 with the client list",
   "ruling": "owner 2026-09-13, permissions-from-roles.md + reach-only-routes.md; retire when Go drops the bypass"
+ },
+ {
+  "scenario": "service-accounts*",
+  "step": "linked-account-refused-anchor-route",
+  "pointer": "/**",
+  "reason": "Java-first: a service account linked to one client is CLIENT-scoped (service-account-reach.md) and its token is refused GET /api/clients with ANCHOR_REQUIRED; Go mints every service account as ANCHOR and answers 200",
+  "ruling": "owner 2026-09-13, docs/spec/service-account-reach.md; retire when Go derives service-account reach from its client links"
+ },
+ {
+  "scenario": "service-accounts*",
+  "step": "mint-token",
+  "pointer": "/accessToken/«jwt»/claims/tier",
+  "reason": "Java-first: a service account linked to one client mints a CLIENT-tier token (service-account-reach.md); Go mints every service account as ANCHOR",
+  "ruling": "owner 2026-09-13, docs/spec/service-account-reach.md; retire when Go derives service-account reach from its client links"
+ },
+ {
+  "scenario": "service-accounts*",
+  "step": "mint-token",
+  "pointer": "/accessToken/«jwt»/claims/clients/0",
+  "reason": "Java-first: the linked account's clients claim names its client (service-account-reach.md); Go's anchor wildcard is '*'",
+  "ruling": "owner 2026-09-13, docs/spec/service-account-reach.md; retire when Go derives service-account reach from its client links"
  }
 ]

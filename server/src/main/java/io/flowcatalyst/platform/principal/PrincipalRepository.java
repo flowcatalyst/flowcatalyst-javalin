@@ -306,6 +306,40 @@ public final class PrincipalRepository implements Persist<Principal> {
         });
     }
 
+    /// Row + the client-access grants REPLACED with exactly `clientIds`: any
+    /// existing grant whose client id is not in the set is deleted first, then
+    /// the missing ones are inserted (`ON CONFLICT (principal_id, client_id)
+    /// DO NOTHING`), recorded as granted by `grantedBy`. For service-account
+    /// reach (`docs/spec/service-account-reach.md` §1), where `clientIds` IS
+    /// the account's whole reach — unlike [#withClientGrants], which only ever
+    /// adds (the user path's TO_PARTNER promotion, which must keep an old home
+    /// client reachable as an addition, on purpose).
+    public Persist<Principal> withClientGrantsReplaced(List<String> clientIds, String grantedBy) {
+        List<String> ids = List.copyOf(clientIds);
+        Objects.requireNonNull(grantedBy, "grantedBy");
+        return new Composed((p, txDsl) -> {
+            if (ids.isEmpty()) {
+                txDsl.deleteFrom(G).where(G.PRINCIPAL_ID.eq(p.id())).execute();
+            } else {
+                txDsl.deleteFrom(G).where(G.PRINCIPAL_ID.eq(p.id())).and(G.CLIENT_ID.notIn(ids)).execute();
+            }
+            OffsetDateTime now = utc(Instant.now());
+            for (String cid : ids) {
+                ClientAccessGrant g = ClientAccessGrant.create(p.id(), cid, grantedBy);
+                txDsl.insertInto(G)
+                        .set(G.ID, g.id())
+                        .set(G.PRINCIPAL_ID, g.principalId())
+                        .set(G.CLIENT_ID, g.clientId())
+                        .set(G.GRANTED_BY, g.grantedBy())
+                        .set(G.GRANTED_AT, utc(g.grantedAt()))
+                        .set(G.CREATED_AT, utc(g.createdAt()))
+                        .set(G.UPDATED_AT, now)
+                        .onConflict(G.PRINCIPAL_ID, G.CLIENT_ID).doNothing()
+                        .execute();
+            }
+        });
+    }
+
     /// A junction write that follows the row upsert on the same connection.
     @FunctionalInterface
     private interface JunctionWrite {

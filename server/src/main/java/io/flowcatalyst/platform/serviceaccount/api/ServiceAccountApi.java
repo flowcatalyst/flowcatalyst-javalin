@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import io.flowcatalyst.platform.serviceaccount.operations.MintServiceAccountTokenCommand;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountTokenMinted;
 
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
@@ -93,17 +94,19 @@ public final class ServiceAccountApi {
     /// The handlers' dependencies.
     ///
     /// @param oauthClients       where `create` mints the account's `CONFIDENTIAL` OAuth client (spec §4.1, §8)
+    /// @param clients            validates `clientIds` on create/update (service-account-reach.md §1)
     /// @param encryption         encrypts that client's secret at rest; empty ⇒ `create` fails internal `SECRET`
     /// @param minter             mints the `POST /{id}/token` bearer; `null` disables that endpoint (fail closed, spec §8 step 2)
     /// @param flattenPermissions role names → permission ceiling for the token mint; `null` mints with no scope claim
     public record State(ServiceAccountRepository repo, PrincipalRepository principals, UnitOfWork uow,
-                        OAuthClientRepository oauthClients, Optional<Encryption> encryption,
+                        OAuthClientRepository oauthClients, ClientRepository clients, Optional<Encryption> encryption,
                         ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(principals, "principals");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(oauthClients, "oauthClients");
+            Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(encryption, "encryption");
         }
     }
@@ -158,7 +161,7 @@ public final class ServiceAccountApi {
     private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
-        var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.encryption())
+        var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.clients(), s.encryption())
                 .run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreateServiceAccountResponse(
                 // principalId omitted on the nested serviceAccount, matching Go (spec §9.1, §10 Q5) —
@@ -172,7 +175,7 @@ public final class ServiceAccountApi {
     private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(UpdateServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
-        UpdateServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        UpdateServiceAccount.of(s.repo(), s.principals(), s.clients()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 

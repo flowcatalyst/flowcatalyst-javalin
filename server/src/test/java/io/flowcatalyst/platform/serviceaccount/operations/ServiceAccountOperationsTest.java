@@ -1,12 +1,16 @@
 package io.flowcatalyst.platform.serviceaccount.operations;
 
 import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.serviceaccount.CorruptServiceAccountException;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
@@ -73,6 +77,7 @@ class ServiceAccountOperationsTest {
     private static final ServiceAccountRepository repo = new ServiceAccountRepository(DS, Optional.of(ENCRYPTION));
     private static final PrincipalRepository principals = new PrincipalRepository(DS);
     private static final OAuthClientRepository oauthClients = new OAuthClientRepository(DS, new ApplicationRepository(DS));
+    private static final ClientRepository clients = new ClientRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -96,8 +101,18 @@ class ServiceAccountOperationsTest {
     }
 
     private static CreateServiceAccountWithCredentials.Result createWithCredentials(String code, String name, String applicationId) {
-        return runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.of(ENCRYPTION)),
-                new CreateCommand(code, name, null, null, null, applicationId, null));
+        return createWithCredentials(code, name, applicationId, null);
+    }
+
+    private static CreateServiceAccountWithCredentials.Result createWithCredentials(String code, String name, String applicationId, List<String> clientIds) {
+        return runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.of(ENCRYPTION)),
+                new CreateCommand(code, name, null, null, clientIds, applicationId, null));
+    }
+
+    private static String seedClient(String tag) {
+        var c = Client.create("Client " + tag, ClientIdentifier.parse(tag + RUN));
+        uow.inTransaction(tx -> { clients.persist(c, tx.dbTx()); return null; });
+        return c.id();
     }
 
     private static ServiceAccount reload(String id) {
@@ -188,7 +203,7 @@ class ServiceAccountOperationsTest {
     @ParameterizedTest(name = "{0} -> {2}")
     @MethodSource("malformedCreateCommands")
     void createRejectsAMalformedCommand(String label, CreateCommand cmd, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.of(ENCRYPTION)), cmd),
+        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.of(ENCRYPTION)), cmd),
                 UseCaseError.Validation.class, expectedCode);
     }
 
@@ -255,7 +270,7 @@ class ServiceAccountOperationsTest {
         String c = code("sanokey");
         String name = "NoKeyAtomicity-" + RUN;
 
-        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, Optional.empty()),
+        assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.empty()),
                         new CreateCommand(c, name, null, null, null, null, null)),
                 UseCaseError.Internal.class, "SECRET");
 
@@ -270,16 +285,17 @@ class ServiceAccountOperationsTest {
     void updateReplacesMutableFieldsButNotTheCode() {
         String c = code("saupd");
         var seeded = createWithCredentials(c, "Before", null).serviceAccount();
+        String clientId = seedClient("saupd");
 
-        var ev = runAsAnchor(UpdateServiceAccount.of(repo),
-                new UpdateCommand(seeded.id(), "After", "after-desc", "anchor", List.of("clt_x"), null));
+        var ev = runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                new UpdateCommand(seeded.id(), "After", "after-desc", "anchor", List.of(clientId), null));
         assertThat(ev.name()).isEqualTo("After");
 
         var got = reload(seeded.id());
         assertThat(got.name()).isEqualTo("After");
         assertThat(got.description()).isEqualTo("after-desc");
         assertThat(got.scope()).isEqualTo("anchor");
-        assertThat(got.clientIds()).containsExactly("clt_x");
+        assertThat(got.clientIds()).containsExactly(clientId);
         assertThat(got.code()).as("code is immutable").isEqualTo(c);
 
         assertThat(eventsFor(seeded.id(), ServiceAccountEvents.UPDATED)).hasSize(1);
@@ -288,12 +304,130 @@ class ServiceAccountOperationsTest {
 
     @Test
     void updateRejectsMissingIdBlankNameOrUnknownRow() {
-        assertUseCaseError(() -> runAsAnchor(UpdateServiceAccount.of(repo), new UpdateCommand(null, "X", null, null, null, null)),
+        assertUseCaseError(() -> runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients), new UpdateCommand(null, "X", null, null, null, null)),
                 UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(UpdateServiceAccount.of(repo), new UpdateCommand("sac_doesnotexist1", " ", null, null, null, null)),
+        assertUseCaseError(() -> runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients), new UpdateCommand("sac_doesnotexist1", " ", null, null, null, null)),
                 UseCaseError.Validation.class, "NAME_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(UpdateServiceAccount.of(repo), new UpdateCommand("sac_doesnotexist1", "X", null, null, null, null)),
+        assertUseCaseError(() -> runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients), new UpdateCommand("sac_doesnotexist1", "X", null, null, null, null)),
                 UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
+    }
+
+    // ── Service-account reach (spec: docs/spec/service-account-reach.md) ────
+
+    @Test
+    void createWithNoClientIdsLeavesThePrincipalAnchor() {
+        var res = createWithCredentials(code("reachnone"), "ReachNone", null);
+        var principal = principals.findByServiceAccount(res.serviceAccount().id()).orElseThrow();
+        assertThat(principal.scope()).isEqualTo(UserScope.ANCHOR);
+        assertThat(principal.clientId()).isNull();
+        assertThat(principal.assignedClients()).isEmpty();
+    }
+
+    @Test
+    void createWithOneClientIdHomesThePrincipalAsClient() {
+        String clientId = seedClient("reachone");
+        var res = createWithCredentials(code("reachone"), "ReachOne", null, List.of(clientId));
+
+        var principal = principals.findByServiceAccount(res.serviceAccount().id()).orElseThrow();
+        assertThat(principal.scope()).isEqualTo(UserScope.CLIENT);
+        assertThat(principal.clientId()).isEqualTo(clientId);
+        assertThat(principal.assignedClients()).isEmpty();
+    }
+
+    @Test
+    void createWithTwoClientIdsMakesThePrincipalPartnerWithBothGrants() {
+        String c1 = seedClient("reachp1");
+        String c2 = seedClient("reachp2");
+        var res = createWithCredentials(code("reachtwo"), "ReachTwo", null, List.of(c1, c2));
+
+        var principal = principals.findByServiceAccount(res.serviceAccount().id()).orElseThrow();
+        assertThat(principal.scope()).isEqualTo(UserScope.PARTNER);
+        assertThat(principal.clientId()).isNull();
+        assertThat(principal.assignedClients()).containsExactlyInAnyOrder(c1, c2);
+    }
+
+    @Test
+    void createRejectsAnUnknownClientId() {
+        assertUseCaseError(() -> createWithCredentials(code("reachbad"), "ReachBad", null, List.of("clt_doesnotexist1")),
+                UseCaseError.NotFound.class, "Client_NOT_FOUND");
+    }
+
+    /// spec §3.1: an update from `none` to `one` re-derives the linked
+    /// principal — loaded back through `findByServiceAccount`, exactly as the
+    /// operation itself loads it.
+    @Test
+    void updateFromNoneToOneClientReDerivesTheLinkedPrincipal() {
+        var seeded = createWithCredentials(code("reachupd"), "ReachUpdate", null).serviceAccount();
+        var before = principals.findByServiceAccount(seeded.id()).orElseThrow();
+        assertThat(before.scope()).as("starts ANCHOR: no clientIds given at create").isEqualTo(UserScope.ANCHOR);
+        String clientId = seedClient("reachupdcl");
+
+        runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                new UpdateCommand(seeded.id(), null, null, null, List.of(clientId), null));
+
+        var after = principals.findByServiceAccount(seeded.id()).orElseThrow();
+        assertThat(after.scope()).isEqualTo(UserScope.CLIENT);
+        assertThat(after.clientId()).isEqualTo(clientId);
+    }
+
+    @Test
+    void updateRejectsAnUnknownClientId() {
+        var seeded = createWithCredentials(code("reachupdbad"), "ReachUpdateBad", null).serviceAccount();
+        assertUseCaseError(() -> runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                        new UpdateCommand(seeded.id(), null, null, null, List.of("clt_doesnotexist1"), null)),
+                UseCaseError.NotFound.class, "Client_NOT_FOUND");
+    }
+
+    /// Reach REPLACES the grant set, it does not only add (`withClientGrantsReplaced`,
+    /// not the add-only `withClientGrants`): shrinking from three clients to two must
+    /// drop the third's grant, not merely leave it stale. Mutant: swap the persist
+    /// back to the add-only writer — this test fails on the stale `c` grant.
+    @Test
+    void updateFromThreeClientsToTwoDropsTheThirdsGrant() {
+        String a = seedClient("reach3a");
+        String b = seedClient("reach3b");
+        String c = seedClient("reach3c");
+        var seeded = createWithCredentials(code("reach3to2"), "Reach3to2", null, List.of(a, b, c)).serviceAccount();
+
+        runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                new UpdateCommand(seeded.id(), null, null, null, List.of(a, b), null));
+
+        var after = principals.findByServiceAccount(seeded.id()).orElseThrow();
+        assertThat(after.scope()).isEqualTo(UserScope.PARTNER);
+        assertThat(after.assignedClients()).as("c's grant must be gone, not merely unlisted")
+                .containsExactlyInAnyOrder(a, b);
+    }
+
+    /// Shrinking PARTNER(2) -> CLIENT(1): the surviving grant row for `a` must be
+    /// gone too — `a` is now the home client, not a grant.
+    @Test
+    void updateFromTwoClientsToOneHomesThePrincipalWithNoLeftoverGrant() {
+        String a = seedClient("reach2a");
+        String b = seedClient("reach2b");
+        var seeded = createWithCredentials(code("reach2to1"), "Reach2to1", null, List.of(a, b)).serviceAccount();
+
+        runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                new UpdateCommand(seeded.id(), null, null, null, List.of(a), null));
+
+        var after = principals.findByServiceAccount(seeded.id()).orElseThrow();
+        assertThat(after.scope()).isEqualTo(UserScope.CLIENT);
+        assertThat(after.clientId()).isEqualTo(a);
+        assertThat(after.assignedClients()).as("no leftover grant once a is the home client").isEmpty();
+    }
+
+    /// Shrinking CLIENT(1) -> none: back to ANCHOR, no home client, no grants.
+    @Test
+    void updateFromOneClientToNoneReturnsTheAccountToAnchor() {
+        String a = seedClient("reach1to0");
+        var seeded = createWithCredentials(code("reach1to0"), "Reach1to0", null, List.of(a)).serviceAccount();
+
+        runAsAnchorTx(UpdateServiceAccount.of(repo, principals, clients),
+                new UpdateCommand(seeded.id(), null, null, null, List.of(), null));
+
+        var after = principals.findByServiceAccount(seeded.id()).orElseThrow();
+        assertThat(after.scope()).isEqualTo(UserScope.ANCHOR);
+        assertThat(after.clientId()).isNull();
+        assertThat(after.assignedClients()).isEmpty();
     }
 
     // ── Deactivate ─────────────────────────────────────────────────────────

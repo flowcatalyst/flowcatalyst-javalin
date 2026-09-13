@@ -12,13 +12,21 @@ import io.flowcatalyst.platform.auth.ratelimit.Governor;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.token.ClaimLabels;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
+import io.flowcatalyst.platform.application.ClientConfigRepository;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.client.api.ClientApi;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.operations.RsaServiceAccountTokenMinter;
+import io.flowcatalyst.platform.subscription.Subscription;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
+import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -77,6 +85,15 @@ class ServiceAccountApiTest {
     private static final OAuthClientRepository OAUTH_CLIENTS =
             new OAuthClientRepository(TestPg.dataSource(), new ApplicationRepository(TestPg.dataSource()));
     private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
+    /// The service-account-reach tests (spec `docs/spec/service-account-reach.md`)
+    /// need real clients to link to, a subscription per client to prove the
+    /// resulting token is really client-filtered, and a second live server
+    /// (`apiHttp`) that verifies a real client-credentials bearer — not the
+    /// `X-FC-Test-*` header bypass `http`'s authenticator accepts.
+    private static final ClientRepository CLIENTS = new ClientRepository(TestPg.dataSource());
+    private static final ApplicationRepository APPLICATIONS = new ApplicationRepository(TestPg.dataSource());
+    private static final ClientConfigRepository CLIENT_CONFIGS = new ClientConfigRepository(TestPg.dataSource());
+    private static final SubscriptionRepository SUBSCRIPTIONS = new SubscriptionRepository(TestPg.dataSource());
 
     private static TestHttp http;
     /// A second, independent server exercising only `POST /oauth/token`
@@ -84,7 +101,18 @@ class ServiceAccountApiTest {
     /// writes to — proves the minted pair is a real, usable credential
     /// (spec §8), not merely a row that exists.
     private static TestHttp oauthHttp;
+    /// A third server, `/api/clients` and `/api/subscriptions` only, whose
+    /// authenticator verifies a bearer with the SAME key + issuer `oauthHttp`
+    /// mints under — so a service-account reach test's token is checked for
+    /// real (RS256 signature + claims), never the test-header bypass.
+    private static TestHttp apiHttp;
     private static Role grantedRole;
+    /// Seeded fresh here rather than relying on the built-in `platform:viewer`
+    /// catalogue role being present in `iam_roles` — this fixture never runs
+    /// the platform seeder, so an unseeded role name would assign but grant
+    /// no real permission at mint time (roles are free-form strings on the
+    /// principal; the ceiling comes from a role LOOKUP by name).
+    private static Role subscriptionViewerRole;
 
     private static String[] anchor() {
         return new String[] {
@@ -110,13 +138,16 @@ class ServiceAccountApiTest {
     @BeforeAll
     static void start() {
         grantedRole = Role.create("saapi" + RUN, "granter", "Granter").update(new Role.Changes(null, null, List.of(GRANTED_PERMISSION), null));
+        subscriptionViewerRole = Role.create("saapi" + RUN, "subscription-viewer", "Subscription Viewer")
+                .update(new Role.Changes(null, null, List.of(Permission.SUBSCRIPTION_VIEW.code()), null));
         UOW.inTransaction(tx -> {
             ROLES.persist(grantedRole, tx.dbTx());
+            ROLES.persist(subscriptionViewerRole, tx.dbTx());
             return null;
         });
 
         var minter = new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER);
-        var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, UOW, OAUTH_CLIENTS, ENCRYPTION, minter,
+        var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, UOW, OAUTH_CLIENTS, CLIENTS, ENCRYPTION, minter,
                 roleNames -> roleNames.stream().flatMap(n -> ROLES.findByName(n).stream()).flatMap(r -> r.permissions().stream()).distinct().toList());
 
         var keys = KEYS;
@@ -141,12 +172,25 @@ class ServiceAccountApiTest {
             HttpError.install(routes);
             OAuthTokenApi.register(routes, oauthState);
         });
+
+        // Verifies with the SAME key + issuer `oauthState.issuer()` mints under (real
+        // RS256 verification, never the `http` server's `X-FC-Test-*` bypass) — a
+        // client-credentials token is self-contained, so no ClaimsResolver is needed
+        // on this "from header" path (Authenticator's own contract).
+        var apiAuth = new Authenticator(oauthVerifier, ClaimsResolver.none(), Authenticator.Config.of(false));
+        apiHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", apiAuth);
+            ClientApi.register(routes, new ClientApi.State(CLIENTS, APPLICATIONS, CLIENT_CONFIGS, UOW));
+            SubscriptionApi.register(routes, new SubscriptionApi.State(SUBSCRIPTIONS, UOW));
+        });
     }
 
     @AfterAll
     static void stop() {
         http.close();
         oauthHttp.close();
+        apiHttp.close();
     }
 
     private static HttpResponse<String> tokenRequest(Map<String, String> form, String... headers) {
@@ -183,6 +227,43 @@ class ServiceAccountApiTest {
         var r = http.post("/api/service-accounts", "{\"code\":\"" + code + "\",\"name\":\"" + name + "\"}", anchor());
         assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
         return json(r);
+    }
+
+    /// Same, with `clientIds` on the wire (service-account-reach.md §1).
+    private static JsonNode createWithClientIds(String code, String name, List<String> clientIds) {
+        String ids = clientIds.stream().map(id -> "\"" + id + "\"").collect(java.util.stream.Collectors.joining(","));
+        var r = http.post("/api/service-accounts",
+                "{\"code\":\"" + code + "\",\"name\":\"" + name + "\",\"clientIds\":[" + ids + "]}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        return json(r);
+    }
+
+    private static String seedClient(String tag) {
+        var c = Client.create("Client " + tag, ClientIdentifier.parse(tag + RUN));
+        UOW.inTransaction(tx -> { CLIENTS.persist(c, tx.dbTx()); return null; });
+        return c.id();
+    }
+
+    /// A minimal, `ACTIVE` client-scoped subscription, for the reach tests'
+    /// "only my client's rows come back" assertion.
+    private static Subscription seedSubscription(String code, String clientId) {
+        var sub = Subscription.create(code, "Sub " + code, "https://example.test/" + code).withClientId(clientId);
+        UOW.inTransaction(tx -> { SUBSCRIPTIONS.persist(sub, tx.dbTx()); return null; });
+        return sub;
+    }
+
+    /// The JWT's middle (payload) segment, base64url-decoded and parsed —
+    /// deliberately NOT going through [JwtVerifier] here: the reach tests read
+    /// the claims the mint actually wrote, the same way a relying party's
+    /// naive decode would.
+    private static JsonNode decodePayload(String jwt) {
+        String[] parts = jwt.split("\\.");
+        byte[] payload = Base64.getUrlDecoder().decode(parts[1]);
+        try {
+            return Json.MAPPER.readTree(payload);
+        } catch (Exception e) {
+            throw new IllegalStateException("not JSON: " + new String(payload, StandardCharsets.UTF_8), e);
+        }
     }
 
     // ── Create ─────────────────────────────────────────────────────────────
@@ -469,7 +550,7 @@ class ServiceAccountApiTest {
                 getClass().getClassLoader(), new Class<?>[] {javax.sql.DataSource.class},
                 (proxy, method, args) -> { throw new java.sql.SQLException("audit store down"); });
         var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, new UnitOfWork(broken, new PlatformSink(Json.MAPPER)),
-                OAUTH_CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of());
+                OAUTH_CLIENTS, CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of());
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(KEYS.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         try (var h = TestHttp.routes(routes -> {
@@ -495,5 +576,83 @@ class ServiceAccountApiTest {
         var r = http.post("/api/service-accounts/" + id + "/token", null, anchor());
         assertThat(r.statusCode()).isEqualTo(400);
         assertThat(json(r).get("error").asText()).isEqualTo("SERVICE_ACCOUNT_INACTIVE");
+    }
+
+    // ── Service-account reach (spec: docs/spec/service-account-reach.md) ────
+
+    /// spec §3.2, end to end: one `clientIds` entry at create mints a real
+    /// `client_credentials` token whose decoded `tier`/`clients` are `CLIENT`
+    /// / that one client; the anchor-only `/api/clients` refuses it
+    /// (`ANCHOR_REQUIRED`, permissions notwithstanding); once granted
+    /// `platform:viewer` and re-minted, `/api/subscriptions` — a
+    /// client-scoped list — returns only this account's own client's row,
+    /// never the other client's. Mutant: skip the derivation in
+    /// `CreateServiceAccountWithCredentials` → `tier` stays `ANCHOR` and
+    /// `GET /api/clients` answers 200, not 403.
+    @Test
+    void clientCredentialsTokenForAOneClientAccountIsClientScopedAndClientFilteredButAnchorRoutesRefuseIt() {
+        String myClient = seedClient("reachmine");
+        String otherClient = seedClient("reachother");
+        var mine = seedSubscription(code("reachsubmine"), myClient);
+        var other = seedSubscription(code("reachsubother"), otherClient);
+
+        var created = createWithClientIds(code("reachclient"), "ReachClient", List.of(myClient));
+        String saId = created.get("serviceAccount").get("id").asText();
+        String oauthClientId = created.get("oauth").get("clientId").asText();
+        String oauthClientSecret = created.get("oauth").get("clientSecret").asText();
+
+        var tokenResp = tokenRequest(Map.of("grant_type", "client_credentials"), basicAuth(oauthClientId, oauthClientSecret));
+        assertThat(tokenResp.statusCode()).as(tokenResp.body()).isEqualTo(200);
+        String accessToken = json(tokenResp).get("access_token").asText();
+
+        var payload = decodePayload(accessToken);
+        assertThat(payload.get("tier").asText()).isEqualTo("CLIENT");
+        var clientsClaim = payload.get("clients").valueStream().map(JsonNode::asText).toList();
+        assertThat(clientsClaim).as("exactly the one linked client").hasSize(1);
+        assertThat(clientsClaim.getFirst()).startsWith(myClient);
+
+        // Anchor-only route: refused regardless of permission (spec §2, "reach, not authority").
+        var forbidden = apiHttp.get("/api/clients", "Authorization", "Bearer " + accessToken);
+        assertThat(forbidden.statusCode()).isEqualTo(403);
+        assertThat(json(forbidden).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
+
+        // Grant the account a view permission as the anchor admin, then mint a FRESH
+        // token — the token is self-contained, so permissions are baked in at mint time.
+        var roleAssign = http.put("/api/service-accounts/" + saId + "/roles",
+                "{\"roles\":[\"" + subscriptionViewerRole.name() + "\"]}", anchor());
+        assertThat(roleAssign.statusCode()).as(roleAssign.body()).isEqualTo(200);
+        var tokenResp2 = tokenRequest(Map.of("grant_type", "client_credentials"), basicAuth(oauthClientId, oauthClientSecret));
+        assertThat(tokenResp2.statusCode()).as(tokenResp2.body()).isEqualTo(200);
+        String accessToken2 = json(tokenResp2).get("access_token").asText();
+
+        var list = json(apiHttp.get("/api/subscriptions", "Authorization", "Bearer " + accessToken2));
+        var visibleCodesAmongOurs = list.get("subscriptions").valueStream().map(n -> n.get("code").asText())
+                .filter(c -> c.equals(mine.code()) || c.equals(other.code())).toList();
+        assertThat(visibleCodesAmongOurs).as("only this account's own client's subscription is visible")
+                .containsExactly(mine.code());
+    }
+
+    /// spec §3.1/§3.2: several `clientIds` at create make the linked principal
+    /// `PARTNER` with each id a grant — the token's decoded `tier`/`clients`
+    /// carry that directly. Mutant: derivation skipped → `tier` stays `ANCHOR`
+    /// (killed the same way as the single-client test above, from the other end).
+    @Test
+    void clientCredentialsTokenForATwoClientAccountIsPartnerWithBothClients() {
+        String clientA = seedClient("reachpa");
+        String clientB = seedClient("reachpb");
+
+        var created = createWithClientIds(code("reachpartner"), "ReachPartner", List.of(clientA, clientB));
+        String oauthClientId = created.get("oauth").get("clientId").asText();
+        String oauthClientSecret = created.get("oauth").get("clientSecret").asText();
+
+        var tokenResp = tokenRequest(Map.of("grant_type", "client_credentials"), basicAuth(oauthClientId, oauthClientSecret));
+        assertThat(tokenResp.statusCode()).as(tokenResp.body()).isEqualTo(200);
+        var payload = decodePayload(json(tokenResp).get("access_token").asText());
+
+        assertThat(payload.get("tier").asText()).isEqualTo("PARTNER");
+        var clientsClaim = payload.get("clients").valueStream().map(JsonNode::asText).toList();
+        assertThat(clientsClaim).hasSize(2);
+        assertThat(clientsClaim).anySatisfy(pair -> assertThat(pair).startsWith(clientA));
+        assertThat(clientsClaim).anySatisfy(pair -> assertThat(pair).startsWith(clientB));
     }
 }
