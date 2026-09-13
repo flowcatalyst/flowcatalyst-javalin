@@ -187,9 +187,18 @@ public final class Platform {
     private static final Logger LOG = LoggerFactory.getLogger(Platform.class);
 
     private final Env env;
-    /// The `API` physical pool (admission.md §11.7) — every repository below
-    /// is built from it unless a route group needs a different physical pool
-    /// (see `pools` / `dispatchPool` / `bffPool` below).
+    /// **The pool is chosen by the request, not by the handler class**
+    /// (`docs/spec/admission.md` §11.7 part B). Every request-path repository
+    /// below is built ONCE over [io.flowcatalyst.platform.shared.database.Pools#routed()]:
+    /// its `getConnection()` resolves the physical pool from the current
+    /// request's [io.flowcatalyst.http.Group] — `Admission.CURRENT`, bound by
+    /// the Vert.x adapter around the whole before → handler → after chain —
+    /// so the SAME repository instance correctly lands on `api`, `bff` or
+    /// `dispatch` depending on which mount (`/api/**`, `/bff/**`, or the
+    /// message router's own calls) is calling it right now. A checkout
+    /// outside a request scope is a programming error and throws; background
+    /// subsystems (the dispatch-job reaper below) hold `pools.background()`
+    /// explicitly instead.
     private final DataSource pool;
     private final io.flowcatalyst.platform.shared.database.Pools pools;
     private final SigningKeys signingKeys;
@@ -198,7 +207,7 @@ public final class Platform {
     public Platform(Env env, io.flowcatalyst.platform.shared.database.Pools pools, SigningKeys signingKeys) {
         this.env = Objects.requireNonNull(env, "env");
         this.pools = Objects.requireNonNull(pools, "pools");
-        this.pool = pools.api();
+        this.pool = pools.routed();
         this.signingKeys = Objects.requireNonNull(signingKeys, "signingKeys");
         this.uow = new UnitOfWork(pool, new PlatformSink(Json.MAPPER));
     }
@@ -218,7 +227,15 @@ public final class Platform {
         // Built here, ahead of the authenticator, because the CORS filter (spec §9) must
         // answer a preflight before the bearer check ever runs; CorsOriginApi.register
         // below reuses the SAME repository instance and wires `onChange` to invalidate it.
-        var corsOriginRepo = new CorsOriginRepository(pool);
+        //
+        // Over pools.api() EXPLICITLY, not the routed `pool` above: CorsAllowlist's
+        // constructor loads its first snapshot eagerly, right here at boot — before any
+        // request has ever bound an Admission scope — so a checkout over the routed
+        // source would throw (admission.md §11.7 part B: no scope bound is a programming
+        // error). CorsOriginApi's own routes are always under /api/, so this is the same
+        // physical pool the routed source would have resolved for them anyway; only the
+        // boot-time eager load actually needs the explicit pool.
+        var corsOriginRepo = new CorsOriginRepository(pools.api());
         var corsAllowlist = new CorsAllowlist(corsOriginRepo::allowedOrigins, Duration.ofMillis(env.corsCacheTtlMs()), Clock.systemUTC());
         routes.before(cors(new CorsFilter(corsAllowlist)));
         routes.before(authenticated(buildAuthenticator()));
@@ -248,7 +265,12 @@ public final class Platform {
         // enrol token derived from the session key, the trusted-device cookie secure
         // whenever the session cookie is. The TOTP label carries the live platform name.
         var cookiesSecure = !env.authAllowTestHeaders();
-        var mfaBranding = new Branding(new PlatformConfigRepository(pool));
+        // Over pools.api() EXPLICITLY, not the routed `pool`: `mfaBranding.platformName()`
+        // is read EAGERLY below (PasskeyService.Config.fromEnv), at boot, before any
+        // Admission scope exists — same reasoning as corsOriginRepo above. Its own routes
+        // (platform config) are always /api/, so this loses no pool-selection correctness
+        // for its other, lazy (request-time) uses either.
+        var mfaBranding = new Branding(new PlatformConfigRepository(pools.api()));
         // Outbound mail (auth-identity §9; mail-outbox §2): every caller here gets the
         // outbox — one PENDING row inserted in its own short transaction, returned at
         // once. MailSender (wired in Server, next to the reaper) is what actually
@@ -325,10 +347,11 @@ public final class Platform {
         // here from the internal listener, behind ordinary bearer auth. Its own
         // repositories (not dispatchPoolRepo/subscriptionRepo above — those are
         // wired for other APIs) so this reads exactly as R3's Metrics wiring did.
-        // Group.DISPATCH (admission.md §11.7): the router itself fetches this document,
-        // so its repository is built over the DISPATCH physical pool, not the API one.
+        // Group.DISPATCH (admission.md §11.7): the router itself fetches this document —
+        // over the routed source, which resolves to the DISPATCH physical pool for this
+        // mount, exactly as pools.dispatch() would have.
         RouterConfigApi.register(routes.in(Group.DISPATCH), new RouterConfigApi.State(
-                new RouterConfigDocumentBuilder(pools.dispatch(), DispatchQueueSettings.resolve(env))));
+                new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))));
         var roleRepo = new RoleRepository(pool);
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));
@@ -391,19 +414,21 @@ public final class Platform {
         // start without it"). Both self-verify the same scheduler-signed per-job HMAC bearer, so
         // they share one HmacTokenVerifier instance.
         //
-        // Group.DISPATCH (admission.md §11.7): both routes are called only by the message
-        // router, so their repository is built over the DISPATCH physical pool — a second
-        // `DispatchJobRepository` instance over the same table as `dispatchJobRepo` above
-        // (safe: the repository is a stateless jOOQ wrapper over its DataSource).
-        var dispatchPoolJobRepo = new DispatchJobRepository(pools.dispatch());
+        // Group.DISPATCH (admission.md §11.7 part B): both routes are called only by the
+        // message router. Part A gave them a second `DispatchJobRepository` instance built
+        // over the DISPATCH physical pool explicitly; the routed source (§11.7 part B)
+        // resolves the SAME physical pool for a Group.DISPATCH mount, so `dispatchJobRepo`
+        // above — already built over `pool` — is reused here rather than duplicated: one
+        // repository instance correctly serves both its `/api/dispatch-jobs*` (API_READ,
+        // via the default) and these DISPATCH mounts.
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
-            SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchPoolJobRepo, dispatchAuthVerifier));
+            SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
             // DeliveryCredentials.none() (dispatch-seam spec §5, §15): the platform has no
             // serviceaccount aggregate yet to resolve job -> subscription -> application ->
             // service-account webhook credentials from, so every delivery goes out bare until
             // that aggregate lands.
-            ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchPoolJobRepo, dispatchAuthVerifier,
+            ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
@@ -415,13 +440,15 @@ public final class Platform {
         EventApi.register(routes, eventApiState);
         // SDK ingest (docs/spec/sdk-ingest.md): infra batch inserts, no unit of work — the POSTs
         // alongside the GET-only EventApi/DispatchJobApi/AuditLogApi read surfaces above.
-        // Group.DISPATCH (admission.md §11.7): these are the "ingest" routes the message
-        // router's own outbox processor calls — every repository here is a fresh instance
-        // over pools.dispatch(), not the API-pool-bound ones above (stateless jOOQ wrappers,
-        // same tables, different physical connection pool).
-        var ingestState = IngestApi.State.of(new EventRepository(pools.dispatch()), dispatchPoolJobRepo,
-                new AuditLogRepository(pools.dispatch()), new ClientRepository(pools.dispatch()),
-                new ApplicationRepository(pools.dispatch()));
+        // Group.DISPATCH (admission.md §11.7 part B): these are the "ingest" routes the
+        // message router's own outbox processor calls, AND (below, `/bff/events/batch`)
+        // a Group.BFF mount — exactly the case the routed source exists for: the SAME
+        // repository instances (`eventRepo`, `dispatchJobRepo`, `clientRepo`,
+        // `applicationRepo`, already built over `pool` above) correctly resolve DISPATCH's
+        // physical pool for one mount and BFF's for the other, so nothing here needs its
+        // own pools.dispatch()-bound copy any more.
+        var ingestState = IngestApi.State.of(eventRepo, dispatchJobRepo,
+                new AuditLogRepository(pool), clientRepo, applicationRepo);
         IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
@@ -562,14 +589,14 @@ public final class Platform {
         // deliberately left ungrouped — it is under `/api/`, not `/bff/`, and
         // every route is a read, so it takes the API_READ default.
         Routes bff = routes.in(Group.BFF);
-        // DashboardRepository is used only here — nothing on the /api side shares it — so
-        // it is the one BFF repository this unit gives a genuinely separate physical pool
-        // (pools.bff()) rather than reusing an /api-group instance built over pools.api().
-        // Every other BFF mount below reuses the SAME repository/state instances as its
-        // `/api` sibling (deliberately, per the comment above — "the two prefixes serve
-        // the same handlers") and so still executes against the API pool; un-sharing those
-        // is left for a follow-up (see the report).
-        DashboardBff.register(bff, new DashboardBff.State(new DashboardRepository(pools.bff())));
+        // admission.md §11.7 part B: DashboardRepository (BFF-only) and every repository
+        // shared with an `/api` sibling below are ALL built over the same routed `pool` —
+        // the pool is chosen by the request's group, not by which repository instance a
+        // handler happens to close over, so a `/bff/**` call lands on the BFF physical
+        // pool and its `/api/**` sibling lands on the API pool through the exact same
+        // repository object. Part A's separate pools.bff()-bound DashboardRepository copy
+        // is retired in favour of this.
+        DashboardBff.register(bff, new DashboardBff.State(new DashboardRepository(pool)));
         FilterOptionsBff.register(bff, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
         DeveloperBff.register(bff, new DeveloperBff.State(applicationRepo, openApiSpecRepo, eventTypeRepo, uow,
                 lockfile::json));

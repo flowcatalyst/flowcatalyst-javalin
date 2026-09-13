@@ -1,6 +1,5 @@
 package io.flowcatalyst.platform.shared;
 
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.vertx.VertxListener;
@@ -43,17 +42,11 @@ public final class TestHttp implements AutoCloseable {
     /// envelope and the bodiless-response rule are the adapter's, then the
     /// resulting `Routes` is handed to `configure`.
     public static TestHttp routes(Consumer<Routes> configure) {
-        return routes(Budgets.derived(), configure);
+        return new TestHttp(configure);
     }
 
-    /// Same, with explicit tier-2 budgets (`docs/spec/admission.md` §2) so a
-    /// test can pin the bulkhead with a budget of one.
-    public static TestHttp routes(Budgets budgets, Consumer<Routes> configure) {
-        return new TestHttp(budgets, configure);
-    }
-
-    private TestHttp(Budgets budgets, Consumer<Routes> configure) {
-        this.vertx = VertxListener.start(VertxListener.Options.local(0, budgets), routes -> {
+    private TestHttp(Consumer<Routes> configure) {
+        this.vertx = VertxListener.start(VertxListener.Options.local(0), routes -> {
             routes.before(SCHEMA_VALIDATION);
             configure.accept(routes);
         });

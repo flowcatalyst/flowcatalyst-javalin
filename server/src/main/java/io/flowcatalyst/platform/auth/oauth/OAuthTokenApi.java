@@ -16,6 +16,7 @@ import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +47,10 @@ public final class OAuthTokenApi {
     }
 
     public static void register(Routes routes, OAuthState s) {
-        routes.post("/oauth/token", ctx -> token(ctx, s));
+        // Group.OIDC (admission.md §11.7 part B follow-up): authenticates the client
+        // (client_secret / Basic credentials) and verifies the grant (an authorization
+        // code, a refresh token, or the developer client_credentials branch).
+        routes.in(Group.OIDC).post("/oauth/token", ctx -> token(ctx, s));
     }
 
     record TokenRequest(String grantType, String code, String redirectUri, String clientId, String clientSecret,

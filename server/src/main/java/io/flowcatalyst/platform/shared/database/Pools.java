@@ -1,10 +1,17 @@
 package io.flowcatalyst.platform.shared.database;
 
+import io.flowcatalyst.http.Admission;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.server.EnvReader;
 import io.prometheus.metrics.model.registry.MultiCollector;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
+import java.io.PrintWriter;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.Objects;
+import java.util.logging.Logger;
+import javax.sql.DataSource;
 
 /// The four physical connection pools a `Platform`/`Worker` instance opens
 /// (`docs/spec/admission.md` §11.7, "Pools"), all against the SAME database —
@@ -98,6 +105,82 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
             case NO_DB -> throw new IllegalArgumentException(
                     "NO_DB routes never check out a connection; there is no pool for them");
         };
+    }
+
+    /// **The pool is chosen by the request, not by the handler class**
+    /// (`docs/spec/admission.md` §11.7 part B). A [DataSource] whose
+    /// `getConnection()` resolves [#forGroup] from the current request's
+    /// [Group] — [Admission#CURRENT], bound by the Vert.x adapter around the
+    /// whole before → handler → after chain — so every request-path
+    /// repository can be built ONCE over this source and still land on the
+    /// right physical pool for whichever mount (`/api/**` or `/bff/**`)
+    /// called it. No scope bound is a programming error, not a fallback:
+    /// background code holds its own explicit pool ([#background()] or one
+    /// of the other three) and never reaches this source, so a checkout with
+    /// no [Admission] bound throws rather than silently picking one. `NO_DB`
+    /// never reaches here either — passing it throws, exactly as
+    /// [#forGroup] already does, since [Admission] always carries a real
+    /// [Group].
+    public DataSource routed() {
+        return new RoutedDataSource();
+    }
+
+    private final class RoutedDataSource implements DataSource {
+        private DataSource resolve() {
+            Admission admission = Admission.currentOrNull();
+            if (admission == null) {
+                throw new IllegalStateException(
+                        "Pools.routed() called with no admission scope bound; background code must "
+                                + "hold its own explicit pool (Pools#api/#bff/#dispatch/#background)");
+            }
+            return forGroup(admission.group());
+        }
+
+        @Override
+        public Connection getConnection() throws SQLException {
+            return resolve().getConnection();
+        }
+
+        @Override
+        public Connection getConnection(String username, String password) throws SQLException {
+            return resolve().getConnection(username, password);
+        }
+
+        @Override
+        public PrintWriter getLogWriter() throws SQLException {
+            return api.getLogWriter();
+        }
+
+        @Override
+        public void setLogWriter(PrintWriter out) throws SQLException {
+            api.setLogWriter(out);
+        }
+
+        @Override
+        public void setLoginTimeout(int seconds) throws SQLException {
+            api.setLoginTimeout(seconds);
+        }
+
+        @Override
+        public int getLoginTimeout() throws SQLException {
+            return api.getLoginTimeout();
+        }
+
+        @Override
+        public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+            return api.getParentLogger();
+        }
+
+        @Override
+        public <T> T unwrap(Class<T> iface) throws SQLException {
+            if (iface.isInstance(this)) return iface.cast(this);
+            return api.unwrap(iface);
+        }
+
+        @Override
+        public boolean isWrapperFor(Class<?> iface) throws SQLException {
+            return iface.isInstance(this) || api.isWrapperFor(iface);
+        }
     }
 
     /// Registers all four gates' collectors, each its own [MultiCollector]

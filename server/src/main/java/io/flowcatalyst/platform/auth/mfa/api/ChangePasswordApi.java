@@ -16,6 +16,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,7 +58,10 @@ public final class ChangePasswordApi {
     }
 
     public static void register(Routes routes, State s) {
-        routes.post("/auth/change-password", Auth.scoped(ctx -> changePassword(ctx, s)));
+        // Group.LOGIN (admission.md §11.7 part B follow-up): re-verifies the current
+        // password (PasswordHash.matches) and, when 2FA is confirmed, a second-factor
+        // code (verifyAnySecondFactor) before accepting the new one.
+        routes.in(Group.LOGIN).post("/auth/change-password", Auth.scoped(ctx -> changePassword(ctx, s)));
         routes.post("/auth/change-password/send-email-code", Auth.scoped(ctx -> sendEmailCode(ctx, s)));
     }
 

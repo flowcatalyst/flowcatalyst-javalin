@@ -18,6 +18,7 @@ import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,7 +73,11 @@ public final class PasswordResetApi {
     public static void register(Routes routes, State s) {
         routes.post("/auth/password-reset/request", ctx -> request(ctx, s));
         routes.get("/auth/password-reset/validate", ctx -> validate(ctx, s));
-        routes.post("/auth/password-reset/confirm", ctx -> confirm(ctx, s));
+        // Group.LOGIN (admission.md §11.7 part B follow-up): password-reset completion —
+        // verifies a TOTP factor (Mfa#verifyTotp) when the token requires one, then
+        // hashes and persists the new password (ResetPassword / PasswordHash.hash on the
+        // portal branch).
+        routes.in(Group.LOGIN).post("/auth/password-reset/confirm", ctx -> confirm(ctx, s));
     }
 
     // ── request ────────────────────────────────────────────────────────────

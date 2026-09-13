@@ -11,7 +11,6 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.mail.MailSender;
 import io.flowcatalyst.platform.mail.MailService;
 import io.flowcatalyst.platform.purger.Purger;
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.vertx.VertxListener;
@@ -748,17 +747,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
         };
-        // The main request-path worker pool is sized off the `API` physical pool
-        // now (admission.md §11.7) — the same pool `API_READ`/`API_WRITE`/`LOGIN`/
-        // `OIDC` routes check out from.
-        int mainWorkers = switch (mode) {
-            case Mode.Platform(var pools) -> pools.api().ordinaryPermits();
-            case Mode.Worker(var pools) -> pools.api().ordinaryPermits();
-            default -> io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2;
+        // Per-group request-path workers, derived from the four physical pools
+        // (admission.md §11.7 "Workers"). RouterOnly has no [Pools] and every route it
+        // registers is NO_DB (the router's own API/dashboard, health), so it needs no
+        // worker pool for any real group at all.
+        var workers = switch (mode) {
+            case Mode.Platform(var pools) -> io.flowcatalyst.http.RequestWorkers.derived(pools);
+            case Mode.Worker(var pools) -> io.flowcatalyst.http.RequestWorkers.derived(pools);
+            case Mode.RouterOnly _ -> io.flowcatalyst.http.RequestWorkers.of(java.util.Map.of());
         };
-        var workers = io.flowcatalyst.http.RequestWorkers.derived(mainWorkers);
         registry.register(workers.collector());
-        var options = new VertxListener.Options("0.0.0.0", env.apiPort(), true, Budgets.derived(),
+        var options = new VertxListener.Options("0.0.0.0", env.apiPort(), true,
                 java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE, workers,
                 io.flowcatalyst.server.transport.Listeners.resolve(env));
         var prepared = VertxListener.prepare(options, configure);

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.flowcatalyst.http.Admission;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.testpg.TestPg;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -111,8 +112,10 @@ class GatedDataSourceTest {
 
     @Test
     void aNestedCheckoutInsideARequestScopeJoinsTheOuterTransactionAndReleasesNothing() throws Exception {
+        // Group.API_WRITE: Mode.PINNED, admission.md §11.7 part B — "the write path still
+        // pins". A nested checkout under a PINNED scope joins the outer connection.
         var gate = gate();
-        ScopedValue.where(Admission.CURRENT, new Admission("/api/x")).call(() -> {
+        ScopedValue.where(Admission.CURRENT, new Admission("/api/x", Group.API_WRITE)).call(() -> {
             try (Connection outer = gate.getConnection()) {
                 outer.setAutoCommit(false);
                 try (Statement st = outer.createStatement()) {
@@ -139,6 +142,38 @@ class GatedDataSourceTest {
             return null;
         });
         assertThat(gate.held()).isZero();
+    }
+
+    /// `docs/spec/admission.md` §11.7 part B: a `PER_STATEMENT` scope (`API_READ`, `BFF`)
+    /// never pins — each of N statements' connections is independent and the gate's held
+    /// gauge is back to zero as soon as that statement's `Connection` closes, unlike the
+    /// `PINNED` write path above. Mutant: branch on `admission.held() > 0` alone (drop the
+    /// mode check) — the second statement would then join the first as a re-entrant
+    /// handle, and `gate.held()` would read 1 (not 2, and not back to 0 between statements).
+    @Test
+    void aPerStatementScopeHoldsNoConnectionBetweenStatementsAndEachCheckoutIsIndependent() throws Exception {
+        var gate = gate();
+        ScopedValue.where(Admission.CURRENT, new Admission("/api/reads", Group.API_READ)).call(() -> {
+            for (int i = 0; i < 3; i++) {
+                assertThat(gate.held()).as("nothing held between statements").isZero();
+                try (Connection c = gate.getConnection(); Statement st = c.createStatement();
+                     var rs = st.executeQuery("select 1")) {
+                    assertThat(gate.held()).as("exactly this statement's own connection").isEqualTo(1);
+                    assertThat(rs.next()).isTrue();
+                }
+                assertThat(gate.held()).as("released as soon as this statement's connection closed").isZero();
+            }
+            // Two statements open at once (not nested — independent, concurrent-in-principle
+            // checkouts): PER_STATEMENT never joins, so this is two real permits, not one —
+            // the mutant (branching on held()>0 alone) would instead make `b` a re-entrant
+            // handle on `a` and gate.held() would read 1.
+            try (Connection a = gate.getConnection(); Connection b = gate.getConnection()) {
+                assertThat(gate.held()).as("two independent checkouts, not a re-entrant join").isEqualTo(2);
+                assertThat(a).isNotSameAs(b);
+            }
+            assertThat(gate.held()).isZero();
+            return null;
+        });
     }
 
     @Test

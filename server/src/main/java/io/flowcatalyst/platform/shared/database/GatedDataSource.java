@@ -109,13 +109,18 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
 
     private Connection checkout(Lane lane) throws SQLException {
         Admission admission = Admission.currentOrNull();
-        if (admission != null && admission.held() > 0) {
+        if (admission != null && admission.mode() == Admission.Mode.PINNED && admission.held() > 0) {
             // Re-entrant checkout: a request has one connection. A repository read inside a
             // transaction-scoped operation joins the transaction the outer checkout holds
             // (it sees the transaction's own writes, as it must) instead of taking a second
             // connection — which under a full gate is a deadlock, the case the corpus hit at
             // five sites on 2026-09-06. The handle's close() releases nothing and it may not
             // commit, roll back or change auto-commit: the outer owns the transaction.
+            //
+            // PER_STATEMENT scopes (API_READ, BFF — admission.md §11.7 part B) never take
+            // this branch: nothing is pinned to join, and every checkout — however many are
+            // concurrently outstanding — goes through the ordinary path below and is
+            // returned to the pool independently when its own Connection closes.
             Connection outer = admission.heldConnections().get(0);
             Connection pooled = outer instanceof GatedConnection g ? g.delegate() : outer;
             return new GatedConnection(pooled, () -> { }, false);

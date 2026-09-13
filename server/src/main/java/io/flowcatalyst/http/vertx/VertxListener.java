@@ -1,7 +1,6 @@
 package io.flowcatalyst.http.vertx;
 
 import io.flowcatalyst.http.Admission;
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.ExceptionMappers;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Handler;
@@ -48,6 +47,9 @@ public final class VertxListener implements AutoCloseable {
     /// How long a cancelled query gets to wake its thread before the interrupt fallback.
     static final Duration CANCEL_GRACE = Duration.ofMillis(250);
     static final byte[] DEADLINE_BODY = "{\"error\":\"DEADLINE\",\"message\":\"the request exceeded its deadline\"}".getBytes(StandardCharsets.UTF_8);
+    /// `docs/spec/admission.md` §11.7 part B item 4: a request refused at a full group
+    /// queue, or whose deadline fired while still queued (never got a worker).
+    static final byte[] OVERLOADED_BODY = "{\"error\":\"OVERLOADED\",\"message\":\"the server is at capacity for this request group\"}".getBytes(StandardCharsets.UTF_8);
 
     /// What the listener needs beyond routes. `deadline` is the product default
     /// (30 s); `DISPATCH` routes get `dispatchDeadline` (130 s) — both derived,
@@ -55,24 +57,35 @@ public final class VertxListener implements AutoCloseable {
     /// `docs/spec/http-transport.md` §2 TLS material is configured, is a second
     /// `HttpServer` on the SAME `Router` (`docs/spec/vertx-listener.md` §1
     /// "Listeners"): TLS 1.2/1.3 with ALPN -> h2, http/1.1.
-    public record Options(String host, int port, boolean h2c, Budgets budgets, Duration deadline,
+    public record Options(String host, int port, boolean h2c, Duration deadline,
                           Duration dispatchDeadline, Duration shutdownGrace, RequestWorkers workers,
                           Optional<Tls> tls) {
-        public static Options local(int port, Budgets budgets) {
-            return local(port, budgets, RequestWorkers.derived(io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2));
+        /// Test convenience: a fixed, generous [RequestWorkers] sizing over every real
+        /// group — not derived from any real [io.flowcatalyst.platform.shared.database.Pools],
+        /// since most callers of this overload never touch a database at all.
+        public static Options local(int port) {
+            int n = io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2;
+            int cores = Runtime.getRuntime().availableProcessors();
+            return local(port, RequestWorkers.of(java.util.Map.of(
+                    io.flowcatalyst.http.Group.API_WRITE, n,
+                    io.flowcatalyst.http.Group.API_READ, 2 * n,
+                    io.flowcatalyst.http.Group.BFF, 2 * n,
+                    io.flowcatalyst.http.Group.DISPATCH, n,
+                    io.flowcatalyst.http.Group.LOGIN, cores,
+                    io.flowcatalyst.http.Group.OIDC, cores)));
         }
 
-        public static Options local(int port, Budgets budgets, RequestWorkers workers) {
-            return new Options("127.0.0.1", port, true, budgets, Duration.ofSeconds(30), Duration.ofSeconds(130),
+        public static Options local(int port, RequestWorkers workers) {
+            return new Options("127.0.0.1", port, true, Duration.ofSeconds(30), Duration.ofSeconds(130),
                     Duration.ofSeconds(5), workers, Optional.empty());
         }
 
         public Options withDeadline(Duration d) {
-            return new Options(host, port, h2c, budgets, d, d, shutdownGrace, workers, tls);
+            return new Options(host, port, h2c, d, d, shutdownGrace, workers, tls);
         }
 
         public Options withTls(Tls tls) {
-            return new Options(host, port, h2c, budgets, deadline, dispatchDeadline, shutdownGrace, workers,
+            return new Options(host, port, h2c, deadline, dispatchDeadline, shutdownGrace, workers,
                     Optional.of(tls));
         }
     }
@@ -233,12 +246,27 @@ public final class VertxListener implements AutoCloseable {
         return routes;
     }
 
-    public Budgets budgets() {
-        return options.budgets();
-    }
-
     public RequestWorkers workers() {
         return options.workers();
+    }
+
+    /// Every "platform" prefix (`Platform#isPlatformPath`, duplicated here rather than
+    /// depended on — this package must not depend on `io.flowcatalyst.server`): an
+    /// ungrouped registration under one of these defaults to `API_READ` (`docs/spec/admission.md`
+    /// §11.7 "Ungrouped `/api/` registrations default to `API_READ`", extended to the whole
+    /// authenticated surface — `/auth/`, `/oauth/`, `/bff/`, `/portal/`, `/.well-known/` all
+    /// touch the database the same way an ungrouped `/api/` route does). Everything else
+    /// (health, metrics, the SPA, OpenAPI documents, the router's own API, test fixtures)
+    /// defaults to `NO_DB`: nothing to queue for, unbounded.
+    private static final String[] PLATFORM_PREFIXES =
+            {"/api/", "/auth/", "/oauth/", "/bff/", "/portal/", "/.well-known/"};
+
+    private static Group effectiveGroup(Group declared, String path) {
+        if (declared != null) return declared;
+        for (String prefix : PLATFORM_PREFIXES) {
+            if (path.startsWith(prefix)) return Group.API_READ;
+        }
+        return Group.NO_DB;
     }
 
     /// Runs on the event loop: reads the body (capped at Javalin's
@@ -248,11 +276,12 @@ public final class VertxListener implements AutoCloseable {
     private void dispatch(RoutingContext rc, Group group, Handler handler) {
         Context requestContext = vertx.getOrCreateContext();
         var request = rc.request();
+        Group effectiveGroup = effectiveGroup(group, request.path());
         if (rc.get(BODY_KEY) != null) {
             // Re-dispatched (failure handler after the body was already read).
             byte[] bytes = rc.get(BODY_KEY);
             boolean oversized = Boolean.TRUE.equals(rc.get(OVERSIZED_KEY));
-            options.workers().submit(group, () -> runChain(rc, requestContext, group, handler, bytes, oversized));
+            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized);
             return;
         }
         String contentType = request.getHeader("Content-Type");
@@ -277,22 +306,66 @@ public final class VertxListener implements AutoCloseable {
             byte[] bytes = buffer.getBytes();
             rc.put(BODY_KEY, bytes);
             rc.put(OVERSIZED_KEY, oversized[0]);
-            // Request-level admission (RequestWorkers): FIFO into the group's worker pool.
-            options.workers().submit(group, () -> runChain(rc, requestContext, group, handler, bytes, oversized[0]));
+            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized[0]);
         });
     }
 
     private static final String BODY_KEY = "io.flowcatalyst.http.vertx.body";
     private static final String OVERSIZED_KEY = "io.flowcatalyst.http.vertx.oversized";
 
+    /// Request-level admission (`RequestWorkers`, `docs/spec/admission.md` §11.7 part B):
+    /// FIFO into `group`'s worker pool. Runs on the event loop.
+    ///
+    /// Every queued request carries its own deadline, armed HERE — on the loop, before the
+    /// request has a worker at all — not just once a worker starts running it (the earlier
+    /// `runChain`-only timer left a request that never got a worker completely
+    /// unprotected). `claimed` decides the race between "a worker took it" and "the
+    /// deadline fired first": whichever wins runs exactly once. A full queue is the same
+    /// outcome by a different path — `RequestWorkers#submit` already returned `false`
+    /// without ever running `task`.
+    private void submitOrReject(RoutingContext rc, Context requestContext, Group group, Handler handler,
+                                byte[] requestBody, boolean oversized) {
+        Duration deadline = group == Group.DISPATCH ? options.dispatchDeadline() : options.deadline();
+        var claimed = new AtomicBoolean();
+        long timerId = vertx.setTimer(deadline.toMillis(), id -> {
+            if (claimed.compareAndSet(false, true)) {
+                options.workers().markRejected(group);
+                answerOverloaded(rc);
+            }
+        });
+        boolean accepted = options.workers().submit(group, () -> {
+            if (!claimed.compareAndSet(false, true)) return; // the queued-request deadline already answered
+            vertx.cancelTimer(timerId);
+            runChain(rc, requestContext, group, handler, requestBody, oversized);
+        });
+        if (!accepted) {
+            if (claimed.compareAndSet(false, true)) {
+                vertx.cancelTimer(timerId);
+                answerOverloaded(rc);
+            }
+        }
+    }
+
+    /// `503`, `Retry-After: 1`, the platform's error envelope — a request refused at a
+    /// full group queue or whose queued-request deadline fired first. Called on the event
+    /// loop; never on a request's own virtual thread.
+    private static void answerOverloaded(RoutingContext rc) {
+        var resp = rc.response();
+        if (resp.ended() || resp.closed()) return;
+        resp.setStatusCode(503);
+        resp.putHeader("Retry-After", "1");
+        resp.putHeader("Content-Type", "application/json");
+        resp.end(Buffer.buffer(OVERLOADED_BODY));
+    }
+
     /// The seam chain on the request's virtual thread (spec §1 "dispatch
-    /// model B"): group permit → admission scope → deadline → before* →
-    /// handler → after*, then one hop back to the loop to write.
+    /// model B"): admission scope → deadline → before* → handler → after*,
+    /// then one hop back to the loop to write.
     private void runChain(RoutingContext rc, Context requestContext, Group group, Handler handler,
                           byte[] requestBody, boolean oversized) {
         var x = new VertxExchange(rc, requestBody, oversized);
         Thread me = Thread.currentThread();
-        var admission = new Admission(rc.request().path());
+        var admission = new Admission(rc.request().path(), group);
         var deadlineFired = new AtomicBoolean();
         var finished = new AtomicBoolean();
         Duration deadline = group == Group.DISPATCH ? options.dispatchDeadline() : options.deadline();

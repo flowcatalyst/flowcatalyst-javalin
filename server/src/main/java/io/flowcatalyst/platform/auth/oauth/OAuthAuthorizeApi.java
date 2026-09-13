@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,7 +41,9 @@ public final class OAuthAuthorizeApi {
     }
 
     public static void register(Routes routes, OAuthState s) {
-        routes.get("/oauth/authorize", ctx -> authorize(ctx, s));
+        // Group.OIDC (admission.md §11.7 part B follow-up): authenticates the client
+        // and the caller's session, then mints an authorization code.
+        routes.in(Group.OIDC).get("/oauth/authorize", ctx -> authorize(ctx, s));
     }
 
     static void authorize(Exchange ctx, OAuthState s) {

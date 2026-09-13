@@ -1,6 +1,5 @@
 package io.flowcatalyst.server;
 
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.RequestWorkers;
@@ -54,9 +53,9 @@ public final class Metrics {
         // and plain HTTP/1.1 only (`docs/spec/http-transport.md` §1
         // "Metrics stays a plain HTTP/1.1 Jetty as today"; `VertxListener.Options.local`
         // would default h2c on, which this listener was never meant to have).
-        var options = new VertxListener.Options("0.0.0.0", env.metricsPort(), false, Budgets.none(),
+        var options = new VertxListener.Options("0.0.0.0", env.metricsPort(), false,
                 Duration.ofSeconds(30), Duration.ofSeconds(130), Duration.ofSeconds(5),
-                RequestWorkers.of(1, Map.of()), Optional.empty());
+                RequestWorkers.of(Map.of()), Optional.empty());
         var listener = VertxListener.start(options, routes -> {
             var noDb = routes.in(Group.NO_DB);
             noDb.get("/health", Health.noChecks()::handle);

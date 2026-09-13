@@ -7,6 +7,7 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import tools.jackson.databind.JsonNode;
 
@@ -28,7 +29,9 @@ public final class AuthRefreshApi {
     }
 
     public static void register(Routes routes, OAuthState s) {
-        routes.post("/auth/refresh", ctx -> refresh(ctx, s));
+        // Group.OIDC (admission.md §11.7 part B follow-up): verifies and rotates a
+        // refresh token, exactly the grant /oauth/token's refresh_token branch verifies.
+        routes.in(Group.OIDC).post("/auth/refresh", ctx -> refresh(ctx, s));
     }
 
     static void refresh(Exchange ctx, OAuthState s) {

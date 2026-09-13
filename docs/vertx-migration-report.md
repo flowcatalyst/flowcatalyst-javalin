@@ -241,3 +241,226 @@ JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dsurefire.timeout=900
 JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am test -Dtest='io.flowcatalyst.fcdev.*Test' -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.timeout=900
 ```
 **108 tests, 0 failures, 0 errors, 0 skipped.** `StartIntegrationTest` (4/4) and `DevDispatchRouterConfigIntegrationTest` (2/2) — the two real-boot tests that exercise `StartCommand`'s new `Pools.open(...)` wiring end to end — both green; `ServerTest` (7/7), `MainTest` (9/9) and `RouterStartupOrderTest` (1/1) in the server suite likewise.
+
+## Phase 2b — workers, queues, routed pools
+
+Branch `vertx-2`, worktree `flowcatalyst-javalin-vertx2`. Goal: `docs/spec/admission.md`
+§11.7's build plan, the second half Phase 2a deferred — `RequestWorkers` actually wired,
+bounded queues with `503`/`Retry-After`, a queued-request deadline, per-statement reads,
+`Budgets`' deletion, the new metrics — plus the same day's "part B" ruling: **the pool is
+chosen by the request, not by the handler class**.
+
+### Part B — `Pools.routed()` and per-request modes
+
+`io.flowcatalyst.platform.shared.database.Pools` gained `#routed()`: a `DataSource` whose
+`getConnection()` reads `Admission.CURRENT`'s `Group` and delegates to `#forGroup`. No
+scope bound throws `IllegalStateException` (background code's mistake, not a fallback);
+`NO_DB` throws the same `IllegalArgumentException` `#forGroup` already did. `Admission`
+(`io.flowcatalyst.http`) gained a `Group` field (now required — the two-arg constructor
+`new Admission(path, group)` replaces the one-arg form everywhere, including every test)
+and a `Mode` enum: `PINNED` (`API_WRITE`, `DISPATCH`, `LOGIN`, `OIDC`, and `NO_DB` as a
+safe default it should never actually need — one connection per request, a nested
+checkout joins it, exactly today's behaviour) or `PER_STATEMENT` (`API_READ`, `BFF` —
+every checkout independent, nothing pinned). `Group#mode()` is the one place the mapping
+lives, an exhaustive `switch` with no `default` arm (CLAUDE.md's "a defaulted member on a
+sealed [construct] is untested by construction" — a new `Group` value fails to compile
+here until it picks a mode). `GatedDataSource#checkout` now branches on
+`admission.mode() == PINNED` (was: unconditionally re-entrant) before deciding whether a
+checkout while already holding one joins the outer connection or is just another
+independent permit.
+
+**`Platform` undoes Part A's per-pool repository copies.** The `pool` field is now
+`pools.routed()` (was `pools.api()`); every `pools.dispatch()`/`pools.bff()`-bound
+repository Part A built specially (`RouterConfigDocumentBuilder`, the `SettledApi`/
+`ProcessingApi` job repository, `IngestApi`'s four repositories, `DashboardBff`'s
+`DashboardRepository`) is now the SAME instance its `/api` sibling already uses, built
+over `pool` — one repository, correct on whichever physical pool the calling mount's
+group resolves to. `dispatchPoolJobRepo` (a second `DispatchJobRepository` instance) is
+gone entirely, folded into `dispatchJobRepo`. Migration, seeding and probes are unchanged
+(`Main`, explicit `pools.api()`); the dispatch-job reaper is unchanged (background,
+explicit `pools.background()`).
+
+**Two boot-time eager reads needed an explicit pool instead of the routed one**, found by
+running the suite, not by inspection: `CorsAllowlist`'s constructor and
+`PasskeyService.Config.fromEnv(..., mfaBranding.platformName())` both read the database
+synchronously at `Platform.register()` time, before any request — and therefore before any
+`Admission` scope — exists. Both `corsOriginRepo` and `mfaBranding`'s
+`PlatformConfigRepository` now take `pools.api()` explicitly (a comment at each site says
+why); both are otherwise `/api/`-only, so this loses no pool-selection correctness for
+their ordinary, request-time (lazy) uses. Every test that boots a real `Platform`
+(`LockfileCoverageTest`, `RouteGroupTest`, `ServerTest`, `RouterStartupOrderTest`,
+`RouterConfigEndpointTest`) caught this immediately as an `IllegalStateException` at boot
+— the fix is these two lines, not a broader pattern (nothing else in `Platform.register`
+reads the database outside a lambda/method reference).
+
+### `RequestWorkers`, actually wired
+
+No more `MAIN` fallback bucket — every group is real. `RequestWorkers.derived(int)` is
+gone; `RequestWorkers.derived(Pools)` sizes six real groups off the four physical pools
+(§11.3a): `API_WRITE` = `pools.api().ordinaryPermits()`; `API_READ` = 2×that (reads
+release between statements, §11.4/§10, so two workers keep one connection busy);
+`BFF` = 2× `pools.bff().ordinaryPermits()`; `DISPATCH` = `pools.dispatch().ordinaryPermits()`;
+`LOGIN`/`OIDC` = `availableProcessors()`. `ordinaryPermits()`, not the raw pool size, so a
+worker never waits at the gate (§9's original invariant, carried forward — the spec text
+says "pool size" but the existing `Server` code this unit inherited already used
+`ordinaryPermits()` for exactly this reason, and nothing here had cause to relitigate it).
+`NO_DB` is deliberately absent — [`RequestWorkers#submit`] special-cases it: a fresh,
+unbounded virtual thread, never queued, as before. `#of(Map<Group,Integer>)` (dropped the
+`mainWorkers` int parameter) stays for tests; a group with no configured pool throws from
+`#submit` rather than silently falling back to a shared bucket.
+
+A default boot (budget `B` = 32) ends up with: `api` = 16 → 15 ordinary (`reservedFor(16)`
+= 1) → `API_WRITE` = 15, `API_READ` = 30; `bff` = 8 → 7 ordinary → `BFF` = 14; `dispatch` =
+8 → 7 ordinary → `DISPATCH` = 7; `LOGIN`/`OIDC` = the host's core count each.
+
+**`VertxListener`** no longer carries `Budgets`; `Options` dropped the field entirely.
+Every route's *effective* group is resolved once, in `dispatch()`: a declared group wins;
+an ungrouped registration under `/api/`, `/auth/`, `/oauth/`, `/bff/`, `/portal/` or
+`/.well-known/` (`Platform#isPlatformPath`'s prefixes, duplicated rather than depended on
+— `http` must not depend on `server`) defaults to `API_READ`; everything else (health,
+metrics, the SPA, OpenAPI documents, the router's own API, test fixtures) defaults to
+`NO_DB`. This is what makes `pools.routed()` safe to call from every ungrouped `/api/**`
+read route Part A left ungrouped by design.
+
+### Bounded queues, `503 OVERLOADED`, the queued-request deadline
+
+Each group's queue holds at most `8×` its worker count (`RequestWorkers#QUEUE_MULTIPLIER`);
+`#submit` returns `false` — task never run — once full, and `VertxListener` answers `503`,
+`Retry-After: 1`, `{"error":"OVERLOADED",...}` from the event loop without ever starting a
+worker. Every queued request also carries its own deadline, armed in a new
+`submitOrReject` method **at enqueue time**, on the loop — before any worker exists for it
+— not only once `runChain` starts running it (the gap Phase 1 left: a request stuck behind
+a full queue had no protection until a worker finally reached it). An `AtomicBoolean
+claimed` decides the race between "a worker took it" and "the deadline fired first"
+exactly once, either way; `runChain`'s own existing running-phase deadline (query-cancel +
+interrupt) is untouched.
+
+### Metrics
+
+`fc_request_workers_busy{group}`, `fc_request_queue_depth{group}` (both relabelled from
+`pool` to `group`), new `fc_request_queue_wait_seconds{group}` (classic histogram,
+enqueue → a worker taking the request — recorded in `RequestWorkers#loop`, not by the
+submitted task itself, so it measures time-in-queue, not queue-plus-run), new
+`fc_request_rejected_total{group}` (counts both a queue-full refusal from `#submit` and a
+queued-deadline refusal via the new `#markRejected`). `fc_db_gate_*{pool}` unchanged
+(Part A).
+
+### `Budgets` deleted
+
+`http/Budgets.java`, `BudgetsTest.java`, `VertxListener.Options`' `budgets` parameter,
+`Server`'s `Budgets.derived()` call, `Metrics`'/`OutboxAdminApi`'s `Budgets.none()` calls —
+all gone. It was already dead code before this unit (nothing in `VertxListener` ever
+called `Budgets#acquire`); `TestHttp.routes(Budgets, Consumer)` is gone too (only
+`SeamContract` used it, and only to pass `Budgets.derived()` — a no-op). `ClusterBudget`
+(tier 3) is untouched.
+
+### Tests (each with a killed mutant)
+
+- `PoolsTest#routedResolvesThePhysicalPoolFromTheCurrentRequestsGroupThroughOneSharedSource`:
+  one shared `routed()` `DataSource`, bound under `Group.BFF` then `Group.API_READ`
+  (counting-wrapper pools, `BackgroundPoolWiringTest`'s own pattern) — asserts the `bff`
+  counter, then the `api` counter, each moves by exactly one connection and the other
+  three stay at zero. Mutant: `resolve()` hard-coded to `return api;` — the BFF assertion
+  fails (`expected: 1 but was: 0`), confirmed and reverted.
+- `RequestWorkersTest#derivedSizesFollowTheSpecMultipliers`: `API_WRITE` = `pools.api()`'s
+  ordinary permits, `API_READ` = 2×, `BFF` = 2× `pools.bff()`'s, `DISPATCH` = 1×
+  `pools.dispatch()`'s, `LOGIN`/`OIDC` = core count. Mutant: swapped the `API_WRITE`/
+  `API_READ` multipliers — `expected: 15 but was: 30`, confirmed and reverted.
+- `GatedDataSourceTest#aPerStatementScopeHoldsNoConnectionBetweenStatementsAndEachCheckoutIsIndependent`:
+  under a `Group.API_READ` (`PER_STATEMENT`) scope, `gate.held()` returns to zero between
+  three sequential statements, and two concurrently open checkouts hold TWO permits, not
+  one (no re-entrant join). Mutant: drop the `admission.mode() == PINNED` guard (branch on
+  `held() > 0` alone, Part A's original rule) — `expected: 2 but was: 1`, confirmed and
+  reverted. `aNestedCheckoutInsideARequestScopeJoinsTheOuterTransactionAndReleasesNothing`
+  (the write path, now built with `Group.API_WRITE`) stays green throughout — the write
+  path still pins, byte-for-byte.
+- `VertxListenerTest#aFullDispatchQueueIsRefusedAtOnceWhileApiReadOnTheSameServerStillAnswers`:
+  fills `DISPATCH`'s one worker + 8-deep queue with blocked requests; the 10th gets `503`
+  `OVERLOADED` + `Retry-After: 1` immediately, while `API_READ` on the same server still
+  answers `200`. Mutant: `poolOrThrow` ignores `group` and always returns the first pool
+  (one shared queue) — the `API_READ` request got `503` too (`expected: 200 but was:
+  503`), confirmed and reverted.
+- `VertxListenerTest#aQueuedRequestWhoseDeadlineFiresIsAnswered503AndItsHandlerNeverRuns`:
+  the `DISPATCH` pool's one worker is occupied directly through `RequestWorkers` (bypassing
+  `runChain`'s own deadline entirely, so nothing else races the timer under test); an HTTP
+  request to the same group gets `503 OVERLOADED` within its 400 ms deadline and
+  `handlerRan` stays `false`. Mutant: the queued-phase timer armed 365 days out instead of
+  at `deadline` — the client's own request timeout fired first (`HttpTimeoutException`),
+  confirmed and reverted.
+- `RequestWorkersTest#aFullQueueIsRefusedWithoutRunningTheTaskAndCountsAsRejected` and
+  `RequestWorkersTest#theCollectorExposesAllFourSeriesLabelledByGroup` pin the queue bound
+  and the four metric series (names, and the `group` label) directly, without a real
+  listener. Mutant for the bound: `if (false && now > p.queueBound)` — the 9th queued task
+  that should have been refused was accepted instead (`expected: false but was: true`),
+  confirmed and reverted.
+
+### `Group.LOGIN`/`Group.OIDC` declared on their real routes (2026-09-13 follow-up)
+
+The "Left as written" note below this section originally flagged `LOGIN`/`OIDC` as sized
+but unwired. This follow-up wires them: every route whose handler verifies a password, a
+second factor, a WebAuthn assertion, or an OAuth grant/client credential now declares the
+group, decided per handler by "does it call `PasswordHash.verify`/`.matches`/`.hash`, an
+`Mfa` verify/confirm method (`verifyTotp`, `verifyLoginEmailPin`, `verifyRecoveryCode`,
+`confirmTotpEnrollment`, `confirmEmailEnrollment` — the last two verify a code against the
+pending secret/PIN the same as their non-enrolment counterparts), `PasskeyService#finishAssertion`,
+or authenticate/verify an OAuth client or grant" — not by file or by "is this generally an
+auth route" (most 2FA `begin`/status/list/remove routes verify nothing and stay `API_READ`).
+
+**`Group.LOGIN`** (9 routes, all `PINNED`):
+
+| Route | Class | What it verifies |
+|---|---|---|
+| `POST /auth/login` | `LoginApi` | the password (`PasswordHash.verify`/`equalizeTiming`) |
+| `POST /auth/2fa/verify` | `TwoFactorApi` | TOTP / email PIN / recovery code |
+| `POST /auth/2fa/enroll/totp/confirm` | `TwoFactorApi` | the TOTP code against the pending secret |
+| `POST /auth/2fa/enroll/email/confirm` | `TwoFactorApi` | the email PIN |
+| `POST /auth/2fa/methods/totp/confirm` | `TwoFactorApi` (self-service) | same as enrol/totp/confirm |
+| `POST /auth/2fa/methods/email/confirm` | `TwoFactorApi` (self-service) | same as enrol/email/confirm |
+| `POST /auth/change-password` | `ChangePasswordApi` | the current password, then any confirmed 2FA code |
+| `POST /auth/password-reset/confirm` | `PasswordResetApi` | a TOTP factor (when the token requires one) before setting the new password |
+| `POST /auth/webauthn/authenticate/complete` | `PasskeyApi` | the WebAuthn assertion (`PasskeyService#finishAssertion`) |
+
+**`Group.OIDC`** (5 routes, all `PINNED`, exactly the coordinator's list — the OAuth
+*provider* surface; `OidcBridgeApi`/`PortalAuthApi`'s employee-SSO/portal-SSO routes are a
+different concept — the platform as an OIDC *client* — and stay out of scope here):
+`POST /oauth/token` (`OAuthTokenApi`), `GET /oauth/authorize` (`OAuthAuthorizeApi`),
+`POST /oauth/introspect` and `POST /oauth/revoke` (`OAuthIntrospectionApi`, one class),
+`POST /auth/refresh` (`AuthRefreshApi`).
+
+**Test:** `RouteGroupTest#loginAndOidcAreDeclaredOnTheirVerifyRoutes` — a real booted
+`Server`'s registry, `declared.get("POST /auth/login") == Group.LOGIN` and
+`declared.get("POST /oauth/token") == Group.OIDC`. A spot-check by name (unlike the
+exhaustive source-scan `API_WRITE` test above), because "verifies a credential" is a
+per-handler judgment call across several auth classes, not one grep-able call shape.
+Mutant: reverted `routes.in(Group.LOGIN).post("/auth/login", …)` to plain
+`routes.post(…)` — `declared.get("POST /auth/login")` read `null` (an ungrouped route's
+default only applies at Vert.x dispatch time, never in the registry itself), test failed
+with `expected: LOGIN but was: null`; same mutant/result for `/oauth/token` and `OIDC`;
+both confirmed and reverted.
+
+**Effect on worker pools**: `LOGIN`/`OIDC` traffic — previously silently unbounded
+(`NO_DB` by the `defaultGroupFor` fallback, since none of these paths are under `/api/`)
+— now actually queues through the `LOGIN`/`OIDC` worker pools sized in the first half of
+this unit (`availableProcessors()` each), the isolation §2's derivation was written for.
+
+### Suites
+
+```
+JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dsurefire.timeout=900
+```
+**4030 tests, 0 failures, 0 errors** (4029 before this follow-up + 1 new test).
+
+```
+JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am test -Dtest='io.flowcatalyst.fcdev.*Test' -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.timeout=900
+```
+**108 tests, 0 failures, 0 errors.**
+
+### Left as written, not done here
+
+- `bench/real`'s two-CPU throughput / one-core switches-per-request round against the
+  2026-09-08 baseline — explicitly the orchestrator's, not this unit's.
+- `OidcBridgeApi` (employee OIDC SSO bridge) and `PortalAuthApi`'s portal-SSO/portal-login
+  routes are NOT declared `Group.OIDC`/`Group.LOGIN` by this follow-up — the coordinator's
+  list was the five OAuth-provider routes plus `/auth/refresh`, not the platform's own
+  OIDC-client surface; admission.md §2's original text ("OIDC: `/auth/oidc/**`, portal SSO
+  callback") is broader than what landed here. Left as a further judgment call if wanted.

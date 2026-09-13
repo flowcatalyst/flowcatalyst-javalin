@@ -414,3 +414,9 @@ lands on the right pool. `Admission` also carries the group's **mode**: `PINNED`
 `DISPATCH`, `LOGIN`, `OIDC`: one connection for the request, nested checkouts join it, the guard
 armed) or `PER_STATEMENT` (`API_READ`, `BFF`: every checkout goes to the pool and back, no
 pinning, guard not armed). The mode is a property of the group, derived, never configured.
+
+**Part B landed 2026-09-13** (`docs/vertx-migration-report.md` §"Phase 2b — workers, queues,
+routed pools"): `Pools.routed()`, `Admission` carrying the request's `Group`/`Mode`,
+`RequestWorkers.derived(Pools)` sized per §11.3a, bounded queues (8× workers) with `503`
+`OVERLOADED` + `Retry-After: 1`, a queued-request deadline armed at enqueue (not only once a
+worker starts running the chain), the four new/relabelled metrics, and `Budgets`' deletion.

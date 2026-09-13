@@ -32,7 +32,7 @@ abstract class SeamContract {
     private static final List<Thread> THREADS = new CopyOnWriteArrayList<>();
 
     static void start() {
-        app = TestHttp.routes(Budgets.derived(), routes -> {
+        app = TestHttp.routes(routes -> {
             // The three exception mappers a real bootstrap site would
             // install through `HttpError` — reproduced here as a fixture so
             // this test does not depend on that (out-of-scope, unedited)

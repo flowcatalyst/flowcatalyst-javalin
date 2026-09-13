@@ -36,5 +36,22 @@ public enum Group {
     /// because the adapter cannot know before running; the pool gate still applies
     /// if such a route does touch the pool, so a wrong declaration costs a wait,
     /// never correctness.
-    NO_DB
+    NO_DB;
+
+    /// The request's admission mode (`docs/spec/admission.md` §11.7 part B,
+    /// "The pool is chosen by the request, not by the handler class"):
+    /// [Admission.Mode#PINNED] for a group whose handler holds one connection
+    /// for the whole request ([#API_WRITE], [#DISPATCH], [#LOGIN], [#OIDC] —
+    /// and [#NO_DB], which never checks out a connection under ordinary
+    /// operation and keeps the gate's original pinned behaviour as its
+    /// default if it ever does), [Admission.Mode#PER_STATEMENT] for a group
+    /// that borrows a connection per statement ([#API_READ], [#BFF]).
+    /// Exhaustive by construction — a new [Group] value fails to compile here
+    /// until it picks one, never inherits a default silently.
+    public Admission.Mode mode() {
+        return switch (this) {
+            case API_WRITE, DISPATCH, LOGIN, OIDC, NO_DB -> Admission.Mode.PINNED;
+            case API_READ, BFF -> Admission.Mode.PER_STATEMENT;
+        };
+    }
 }

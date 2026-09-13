@@ -138,6 +138,34 @@ class RouteGroupTest {
         }
     }
 
+    /// `docs/spec/admission.md` §11.7 part B follow-up (2026-09-13): `LOGIN` and `OIDC`
+    /// pinned by name on the two clearest routes — a fresh password verify and a fresh
+    /// OAuth-provider grant verify — rather than re-deriving the whole "does this handler
+    /// verify a credential" classification by a source scan the way the API_WRITE test
+    /// above does (that classification is a judgment call across several auth classes,
+    /// not a single grep-able call shape). Mutant: drop `routes.in(Group.LOGIN)` from
+    /// `LoginApi#register`'s `/auth/login` registration (back to plain `routes.post(...)`)
+    /// — `declared.get("POST /auth/login")` reads `null` (the `/auth/` prefix still
+    /// defaults an ungrouped registration to `API_READ` only at DISPATCH time in the
+    /// Vert.x adapter, not in the registry `RouteRegistry` records), so this test names
+    /// the exact route and fails; same for `/oauth/token` and `Group.OIDC`.
+    @Test
+    void loginAndOidcAreDeclaredOnTheirVerifyRoutes() {
+        Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
+        var server = new Server(env,
+                new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())),
+                Server.Spa.none(), new PrometheusRegistry());
+        RouteRegistry registry = server.buildApi().registry();
+
+        Map<String, Group> declared = new HashMap<>();
+        for (var reg : registry.registrations()) {
+            declared.put(reg.method() + " " + reg.path(), reg.group());
+        }
+
+        assertThat(declared.get("POST /auth/login")).as("POST /auth/login").isEqualTo(Group.LOGIN);
+        assertThat(declared.get("POST /oauth/token")).as("POST /oauth/token").isEqualTo(Group.OIDC);
+    }
+
     // ── the scan ─────────────────────────────────────────────────────────
 
     private static Set<String> scanForApiWriteRoutes() throws IOException {

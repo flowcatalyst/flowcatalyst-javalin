@@ -1,6 +1,5 @@
 package io.flowcatalyst.outbox;
 
-import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.RequestWorkers;
 import io.flowcatalyst.http.Routes;
@@ -25,7 +24,7 @@ public final class OutboxAdminApi {
         // database-bound request — nothing here should ever queue behind
         // another admin call. `Options.local` binds 127.0.0.1, never the API
         // listener's 0.0.0.0.
-        var options = VertxListener.Options.local(port, Budgets.none(), RequestWorkers.of(1, Map.of()));
+        var options = VertxListener.Options.local(port, RequestWorkers.of(Map.of()));
         var listener = VertxListener.start(options, routes -> register(routes.in(Group.NO_DB), processor));
         return new Running(listener);
     }

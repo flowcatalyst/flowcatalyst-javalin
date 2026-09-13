@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.auth.oauth;
 import io.flowcatalyst.platform.auth.grant.RefreshToken;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.util.LinkedHashMap;
@@ -22,8 +23,11 @@ public final class OAuthIntrospectionApi {
     }
 
     public static void register(Routes routes, OAuthState s) {
-        routes.post("/oauth/introspect", ctx -> introspect(ctx, s));
-        routes.post("/oauth/revoke", ctx -> revoke(ctx, s));
+        // Group.OIDC (admission.md §11.7 part B follow-up): both authenticate the
+        // caller (a platform access token or client credentials) before answering.
+        Routes oidc = routes.in(Group.OIDC);
+        oidc.post("/oauth/introspect", ctx -> introspect(ctx, s));
+        oidc.post("/oauth/revoke", ctx -> revoke(ctx, s));
     }
 
     static void introspect(Exchange ctx, OAuthState s) {

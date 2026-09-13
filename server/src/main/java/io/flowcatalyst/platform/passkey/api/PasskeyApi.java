@@ -27,6 +27,7 @@ import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,7 +77,10 @@ public final class PasskeyApi {
         routes.post("/auth/webauthn/register/begin", Auth.scoped(ctx -> registerBegin(ctx, s)));
         routes.post("/auth/webauthn/register/complete", Auth.scoped(ctx -> registerComplete(ctx, s)));
         routes.post("/auth/webauthn/authenticate/begin", ctx -> authenticateBegin(ctx, s));
-        routes.post("/auth/webauthn/authenticate/complete", ctx -> authenticateComplete(ctx, s));
+        // Group.LOGIN (admission.md §11.7 part B follow-up): the WebAuthn-assertion
+        // verify (PasskeyService#finishAssertion) — an authentication path exactly like
+        // /auth/login, just with a signature instead of a password.
+        routes.in(Group.LOGIN).post("/auth/webauthn/authenticate/complete", ctx -> authenticateComplete(ctx, s));
         routes.get("/auth/webauthn/credentials", Auth.scoped(ctx -> listCredentials(ctx, s)));
         routes.delete("/auth/webauthn/credentials/{id}", Auth.scoped(ctx -> deleteCredential(ctx, s)));
     }
