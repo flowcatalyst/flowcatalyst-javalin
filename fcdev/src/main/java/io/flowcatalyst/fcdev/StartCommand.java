@@ -162,6 +162,11 @@ public final class StartCommand implements Callable<Integer> {
 
             String mcpBaseUrl = "http://localhost:" + opts.apiPort();
             DevBootstrap.bootstrapMcpCredentials(pool, mcpBaseUrl, paths);
+            // `docs/spec/router-config-auth.md` §3: runs regardless of `--router`
+            // (`StartIntegrationTest` boots with `--router=false` and must stay
+            // green) — the credentials, and the `FC_ROUTER_PLATFORM_URL` default,
+            // are dev-environment setup, not conditional on the router being on.
+            DevBootstrap.bootstrapRouterCredentials(pool, dev, opts.apiPort());
 
             // ── the shared server ─────────────────────────────────────────
             Env serverEnv = devEnv(dev, opts, databaseUrl);
@@ -202,15 +207,17 @@ public final class StartCommand implements Callable<Integer> {
     /// flags, the embedded Postgres broker unless `FC_DEFAULT_BROKER` is set.
     ///
     /// **`FLOWCATALYST_CONFIG_URL` defaults to fcdev's own served
-    /// router-config document** (`docs/spec/deployed-dispatch.md` §3, R4,
-    /// `docs/go-mirror/2026-09-12-dispatch-rulings.md`): dev and prod now run
-    /// one code path — both learn their queues and pools from a served
-    /// document, differing only in the queue *type* it names (Postgres here,
-    /// SQS in prod). R3 put that document on the platform's INTERNAL
-    /// listener (`FC_METRICS_PORT`), not the API one, so the URL is built off
-    /// `opts.metricsPort()`, not `opts.apiPort()`. `setDefault`, not `set`, so
-    /// an operator who has already pointed `FLOWCATALYST_CONFIG_URL`
-    /// elsewhere (Integral, say) is never overridden.
+    /// router-config document** (`docs/spec/router-config-auth.md` §3, R3′;
+    /// superseding R3/R4's internal-listener placement, `docs/go-mirror/2026-09-12-dispatch-rulings.md`):
+    /// dev and prod now run one code path — both learn their queues and
+    /// pools from a served document, differing only in the queue *type* it
+    /// names (Postgres here, SQS in prod). The document now lives on the API
+    /// listener behind ordinary bearer auth, so the URL is built off
+    /// `opts.apiPort()` — always known, unlike the old internal-listener
+    /// `--metrics-port 0` case, so there is no "cannot default it" branch any
+    /// more. `setDefault`, not `set`, so an operator who has already pointed
+    /// `FLOWCATALYST_CONFIG_URL` elsewhere (Integral, say) is never
+    /// overridden.
     static Env devEnv(DevEnv.Mutable dev, StartOptions opts, String databaseUrl) {
         dev.set("FC_DATABASE_URL", databaseUrl)
                 .set("FC_API_PORT", Integer.toString(opts.apiPort()))
@@ -232,20 +239,17 @@ public final class StartCommand implements Callable<Integer> {
                 // setDefault, not set: FLOWCATALYST_DEV_MODE=false still wins.
                 .setDefault("FLOWCATALYST_DEV_MODE", "true")
                 .setDefault("FC_DEFAULT_BROKER", "postgres");
-        // `--metrics-port 0` (an ephemeral port picked at bind time, e.g.
-        // StartIntegrationTest) is not knowable here: Env is built and handed
-        // to Server BEFORE the metrics listener binds, so there is no later
-        // point at which the real port could be substituted in. Emitting
-        // "http://localhost:0/..." would be a URL that can never work; refuse
-        // to synthesise one instead; an operator who genuinely wants the
-        // router to consume dispatch queues in this mode must set
-        // FLOWCATALYST_CONFIG_URL explicitly once the port is known some
-        // other way.
-        if (opts.metricsPort() > 0) {
+        // `--api-port 0` (an ephemeral port picked at bind time, e.g. the
+        // integration tests) is not knowable here: Env is built and handed
+        // to Server BEFORE the API listener binds. "http://localhost:0/..."
+        // would be a URL that can never work, so refuse to synthesise one;
+        // DevBootstrap#bootstrapRouterCredentials skips for the same reason,
+        // and the router then simply runs with no queues in that mode.
+        if (opts.apiPort() > 0) {
             dev.setDefault("FLOWCATALYST_CONFIG_URL",
-                    "http://localhost:" + opts.metricsPort() + "/api/dispatch/router-config");
+                    "http://localhost:" + opts.apiPort() + "/api/dispatch/router-config");
         } else {
-            LOG.warn("--metrics-port 0 (ephemeral): fcdev cannot default FLOWCATALYST_CONFIG_URL to an address "
+            LOG.warn("--api-port 0 (ephemeral): fcdev cannot default FLOWCATALYST_CONFIG_URL to an address "
                     + "it does not know yet; set it explicitly if the router needs to consume dispatch queues here");
         }
         return Env.load(dev.toMap());
@@ -279,6 +283,12 @@ public final class StartCommand implements Callable<Integer> {
 
         public int metricsPort() {
             return running.metricsPort();
+        }
+
+        /// The running server itself — for this module's integration tests,
+        /// which watch the router adopt fcdev's own served document.
+        Server.Running running() {
+            return running;
         }
 
         /// The embedded Postgres, when one was started.

@@ -1,4 +1,4 @@
-package io.flowcatalyst.mcp;
+package io.flowcatalyst.http.oauth;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.flowcatalyst.platform.shared.json.Json;

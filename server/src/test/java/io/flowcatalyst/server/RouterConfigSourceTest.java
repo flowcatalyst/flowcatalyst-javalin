@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Pins where a running router takes its configuration from
 /// (`docs/spec/router.md` §8.4, Go `server/run.go:346` — **superseded by R4**,
@@ -84,6 +85,73 @@ class RouterConfigSourceTest {
     @Test
     void configUrlUsedWithNoDefaultBrokerSet() {
         var source = Router.configSource(env("FLOWCATALYST_CONFIG_URL", "http://config.local/router"), NO_WARNINGS);
+        assertThat(source).isInstanceOf(HttpConfigSource.class);
+    }
+
+    // ── Client-credentials pairing (`docs/spec/router-config-auth.md` §2) ──
+
+    /// `FC_ROUTER_CLIENT_ID` without `FC_ROUTER_CLIENT_SECRET` (both paired
+    /// with a platform URL) is refused loudly rather than silently fetching
+    /// unauthenticated. A mutant that dropped either half of the pairing
+    /// check (e.g. only checking `hasId`) would let this construct a
+    /// working, credential-less source instead of throwing.
+    @Test
+    void clientIdWithoutSecretIsRefused() {
+        var env = env(
+                "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
+                "FC_ROUTER_PLATFORM_URL", "http://config.local",
+                "FC_ROUTER_CLIENT_ID", "router-client");
+        assertThatThrownBy(() -> Router.configSource(env, NO_WARNINGS))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FC_ROUTER_CLIENT_ID").hasMessageContaining("FC_ROUTER_CLIENT_SECRET");
+    }
+
+    /// The other half of the pairing.
+    @Test
+    void clientSecretWithoutIdIsRefused() {
+        var env = env(
+                "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
+                "FC_ROUTER_PLATFORM_URL", "http://config.local",
+                "FC_ROUTER_CLIENT_SECRET", "shh");
+        assertThatThrownBy(() -> Router.configSource(env, NO_WARNINGS))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FC_ROUTER_CLIENT_ID").hasMessageContaining("FC_ROUTER_CLIENT_SECRET");
+    }
+
+    /// Both credentials set, but no `FC_ROUTER_PLATFORM_URL` to mint against
+    /// (§2: "credentials set without it are refused at the same place") — a
+    /// mutant that skipped this check would silently build a `TokenManager`
+    /// pointed at an empty base URL instead of refusing at startup.
+    @Test
+    void credentialsWithoutPlatformUrlAreRefused() {
+        var env = env(
+                "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
+                "FC_ROUTER_CLIENT_ID", "router-client",
+                "FC_ROUTER_CLIENT_SECRET", "shh");
+        assertThatThrownBy(() -> Router.configSource(env, NO_WARNINGS))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("FC_ROUTER_PLATFORM_URL");
+    }
+
+    /// Neither credential set: no refusal, and the source built is the same
+    /// unauthenticated `HttpConfigSource` as before — the router's default,
+    /// zero-config path must not regress.
+    @Test
+    void noCredentialsAtAllBuildsAnOrdinarySource() {
+        var source = Router.configSource(env(
+                "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
+                "FC_ROUTER_PLATFORM_URL", "http://config.local"), NO_WARNINGS);
+        assertThat(source).isInstanceOf(HttpConfigSource.class);
+    }
+
+    /// Both credentials set together, with a platform URL: no refusal.
+    @Test
+    void bothCredentialsWithPlatformUrlAreAccepted() {
+        var source = Router.configSource(env(
+                "FLOWCATALYST_CONFIG_URL", "http://config.local/router",
+                "FC_ROUTER_PLATFORM_URL", "http://config.local",
+                "FC_ROUTER_CLIENT_ID", "router-client",
+                "FC_ROUTER_CLIENT_SECRET", "shh"), NO_WARNINGS);
         assertThat(source).isInstanceOf(HttpConfigSource.class);
     }
 }

@@ -1,5 +1,6 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.http.oauth.TokenManager;
 import io.flowcatalyst.http.vertx.VertxMediationClient;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.inflight.InFlightTracker;
@@ -94,13 +95,20 @@ public final class Router implements AutoCloseable {
     /// close.
     private final VertxMediationClient vertxMediationClient;
 
+    /// Held only for [#startElection]'s own log line (prefix/standby/alb) —
+    /// everything else [#build] needed from it was already consumed while
+    /// building the fields above.
+    private final Env env;
+
     private Router(RouterServer server, RouterManager manager, InFlightTracker tracker,
                    BreakerRegistry breakers, WarningStore warnings, Traffic traffic,
                    LeaderElection election, LeaderElection.Config electionConfig,
                    UnifiedJedis redisClient, Map<String, PoolMetricsCollector> metrics,
                    Warnings notifier, LifecycleLoops housekeeping, BrokerStatsCache brokerStats,
-                   PoolMetricsCollector mediationMetrics, VertxMediationClient vertxMediationClient) {
+                   PoolMetricsCollector mediationMetrics, VertxMediationClient vertxMediationClient,
+                   Env env) {
         this.server = server;
+        this.env = env;
         this.mediationMetrics = mediationMetrics;
         this.manager = manager;
         this.tracker = tracker;
@@ -176,12 +184,17 @@ public final class Router implements AutoCloseable {
         return server;
     }
 
-    /// Builds and starts the router.
+    /// Builds the router — everything it needs (pools, election, housekeeping
+    /// loops) — but does NOT contend for leadership yet: [#startElection]
+    /// does that separately, once the caller's own listeners are bound
+    /// (`Server#start`; `docs/spec/router-config-auth.md` R3′ moved the
+    /// config document onto the API listener, so the router must not race
+    /// its own bind).
     ///
     /// `dataSource` is required only for the Postgres queue backend; a
     /// deployment consuming solely from SQS or NATS may pass null, which is
     /// why a router-only instance can skip Postgres entirely.
-    public static Router start(Env env, DataSource dataSource, Clock clock) {
+    public static Router build(Env env, DataSource dataSource, Clock clock) {
         var warnings = new WarningStore(clock);
         // The store is what the dashboard reads; the notifier is what reaches
         // someone who is not looking at the dashboard. Raisers get both.
@@ -294,6 +307,17 @@ public final class Router implements AutoCloseable {
                 server::restartStalledLoops));
         housekeeping.start(housekeepingTasks);
 
+        return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
+                redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics, vertxMediationClient,
+                env);
+    }
+
+    /// Contends for leadership and, on gaining it, kicks off the first
+    /// configuration apply (R-A: on the router's own virtual thread, not this
+    /// caller's). Must be called after every listener the router's own
+    /// configuration source might fetch from is already bound — see
+    /// [#build] and `Server#start`.
+    public void startElection() {
         server.start();
         LOG.atInfo().setMessage("router started")
                 .addKeyValue("leader", server.leader())
@@ -301,8 +325,6 @@ public final class Router implements AutoCloseable {
                 .addKeyValue("standby", env.standbyEnabled())
                 .addKeyValue("alb", env.albEnabled())
                 .log();
-        return new Router(server, manager, tracker, breakers, warnings, traffic, election, electionConfig,
-                redisClient, metrics, notifier, housekeeping, brokerStats, mediationMetrics, vertxMediationClient);
     }
 
     /// The A-01 gate: [BlockedSiblings.Settle] iff a platform base URL is
@@ -474,7 +496,32 @@ public final class Router implements AutoCloseable {
         LOG.atInfo().setMessage("router configuration source selected")
                 .addKeyValue("url", env.routerConfigUrl())
                 .log();
-        return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings);
+        return io.flowcatalyst.router.config.http.HttpConfigSource.create(env.routerConfigUrl(), warnings,
+                tokenManagerFor(env), env.routerPlatformUrl().isBlank() ? null : env.routerPlatformUrl());
+    }
+
+    /// The router's client-credentials auth for its own platform
+    /// (`docs/spec/router-config-auth.md` §2): `FC_ROUTER_CLIENT_ID` /
+    /// `FC_ROUTER_CLIENT_SECRET` set together or not at all, and only
+    /// alongside [Env#routerPlatformUrl] — the credential is minted at
+    /// `{routerPlatformUrl}/oauth/token`, so a credential with no platform
+    /// URL to mint against is a configuration error, refused loudly here
+    /// rather than silently fetching unauthenticated.
+    private static TokenManager tokenManagerFor(Env env) {
+        boolean hasId = !env.routerClientId().isBlank();
+        boolean hasSecret = !env.routerClientSecret().isBlank();
+        if (!hasId && !hasSecret) {
+            return null;
+        }
+        if (hasId != hasSecret) {
+            throw new IllegalStateException("FC_ROUTER_CLIENT_ID and FC_ROUTER_CLIENT_SECRET must be set together "
+                    + "(or not at all) — router config source cannot start");
+        }
+        if (env.routerPlatformUrl().isBlank()) {
+            throw new IllegalStateException("FC_ROUTER_CLIENT_ID/FC_ROUTER_CLIENT_SECRET are set but "
+                    + "FC_ROUTER_PLATFORM_URL is not — the router has no platform to mint a token against");
+        }
+        return new TokenManager(env.routerPlatformUrl(), env.routerClientId(), env.routerClientSecret());
     }
 
     /// Go falls back to a local Postgres when the default broker is on but

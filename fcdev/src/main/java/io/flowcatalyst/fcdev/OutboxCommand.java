@@ -1,7 +1,7 @@
 package io.flowcatalyst.fcdev;
 
 import io.flowcatalyst.platform.shared.database.GatedDataSource;
-import io.flowcatalyst.mcp.TokenManager;
+import io.flowcatalyst.http.oauth.TokenManager;
 import io.flowcatalyst.outbox.HttpDispatcher;
 import io.flowcatalyst.outbox.OutboxProcessor;
 import io.flowcatalyst.outbox.PostgresOutboxRepository;

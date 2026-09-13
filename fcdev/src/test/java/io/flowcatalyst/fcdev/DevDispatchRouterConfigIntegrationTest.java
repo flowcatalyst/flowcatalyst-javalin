@@ -2,7 +2,6 @@ package io.flowcatalyst.fcdev;
 
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.api.Wire;
-import io.flowcatalyst.router.config.RouterConfig;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
@@ -11,49 +10,47 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The end-to-end dev path (`docs/spec/deployed-dispatch.md` §3, unit D part
-/// 5): `fcdev` with the router ON serves its own router-config document and
-/// the router consumes it — the same code path prod runs, differing only in
-/// the queue TYPE the document names (Postgres here, SQS there). Before this
-/// unit, `fcdev` never set `FLOWCATALYST_CONFIG_URL` at all, so this whole
-/// path was untested by construction.
+/// The end-to-end dev path (`docs/spec/router-config-auth.md`, R3′): `fcdev`
+/// with the router ON bootstraps its own `fcdev-router` OAuth client
+/// ([DevBootstrap#bootstrapRouterCredentials]), points the router at its own
+/// API listener for both the token and the document, and the router
+/// consumes what the platform serves — the same code path prod runs,
+/// differing only in the queue TYPE the document names (Postgres here, SQS
+/// there) and in who provisioned the client.
 ///
-/// A fixed (pre-reserved) `--metrics-port` is required: R3 put the served
-/// document on the platform's INTERNAL listener, so
-/// `StartCommand#devEnv`'s default is built from `FC_METRICS_PORT`, which
-/// must be known before `Server#start` runs (`--metrics-port 0`'s ephemeral
-/// port is not knowable that early — see `StartOptionsTest`).
+/// Everything happens on `fcdev start` itself: the election starts only
+/// after both listeners are bound (spec §5a), so the router's FIRST fetch
+/// mints a token, GETs the document and starts the consumers before this
+/// class's tests even run. That is what the 3 s window below pins — a first
+/// attempt that failed (unbound listener, a bad credential, a token without
+/// `platform:router`) costs a 5 s retry and cannot meet it.
 ///
-/// **The router's OWN first config poll, during `Server#start`, cannot
-/// possibly succeed here**: `Router#start` runs (and, with standby disabled,
-/// synchronously applies its first fetch) strictly BEFORE `Server#start`
-/// binds the metrics listener the config URL points at, so every one of
-/// `HttpConfigSource`'s 12 retries hits a refused connection. This test does
-/// not rely on that first attempt, or on the 300s periodic poll that would
-/// eventually retry it — it forces a second attempt through the router's own
-/// `POST /config/reload` admin route once boot has completed and both
-/// listeners are definitely up, exactly as an operator or a dashboard reload
-/// button would.
+/// Mutants that must fail this: `bootstrapRouterCredentials` putting a
+/// secret on the env other than the one it stored (the token mint is
+/// refused); `devEnv` defaulting the config URL to the metrics port again
+/// (404); the election started before the API bind (connection refused on
+/// the first attempt).
 @org.junit.jupiter.api.TestInstance(org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS)
 class DevDispatchRouterConfigIntegrationTest {
 
     private static final HttpClient HTTP = HttpClient.newHttpClient();
 
     private Path root;
-    private int metricsPort;
     private StartCommand.Started started;
+    private Instant launched;
 
     @BeforeAll
     void boot() throws Exception {
@@ -62,14 +59,19 @@ class DevDispatchRouterConfigIntegrationTest {
         var dataPath = root.resolve("flowcatalyst/embedded-pg");
         var pidFile = root.resolve("flowcatalyst/fcdev.pid");
         var cache = root.resolve("cache");
-        metricsPort = freePort();
         var env = DevEnv.of(Map.of(
                 "FC_EMBEDDED_DB_PATH", dataPath.toString(),
                 "FC_DEV_PID_FILE", pidFile.toString(),
                 "XDG_CACHE_HOME", cache.toString()));
         var sub = new StartCommand.Sub(env);
+        // A pre-reserved API port: R3′ builds the config URL and the token
+        // endpoint from it, and `--api-port 0`'s ephemeral port is not
+        // knowable before `Server#start` binds (fcdev then synthesises no
+        // URL and bootstraps no credentials — `StartOptionsTest`,
+        // `DevBootstrapRouterCredentialsTest`).
+        int apiPort = freePort();
         new CommandLine(sub, new EnvFactory(env)).parseArgs(
-                "--api-port", "0", "--metrics-port", String.valueOf(metricsPort), "--embedded-db-port", "0",
+                "--api-port", String.valueOf(apiPort), "--metrics-port", "0", "--embedded-db-port", "0",
                 "--router=true", "--scheduler=false", "--stream=false", "--scheduled-job=false", "--outbox=false");
         var paths = new DevPaths(root, cache);
         try {
@@ -79,6 +81,7 @@ class DevDispatchRouterConfigIntegrationTest {
             // collectors (Server.Running#stop doesn't), so two Servers on
             // the JVM-wide default would collide on registration.
             started = new StartCommand(env, paths, sub.opts, new PrometheusRegistry()).launch();
+            launched = Instant.now();
         } catch (Exception | ExceptionInInitializerError e) {
             LoggerFactory.getLogger(DevDispatchRouterConfigIntegrationTest.class)
                     .warn("embedded PostgreSQL could not start here; skipping", e);
@@ -92,59 +95,44 @@ class DevDispatchRouterConfigIntegrationTest {
         if (root != null) EmbeddedPg.deleteTree(root);
     }
 
-    /// **Part 1 of the two facts this test pins.** The document
-    /// `fcdev`'s own platform serves on its internal listener already lists
-    /// the always-present `platform-DEFAULT` queue (every tenant set
-    /// unconditionally includes the platform tenant,
-    /// `RouterConfigDocumentBuilder`), addressed as a Postgres row-queue on
-    /// the SAME database URL the embedded Postgres was started with — never
-    /// an SQS URL, `.fifo` name, or anything shaped like the prod document.
-    /// Mutant this pins: `devEnv` failing to default `FLOWCATALYST_CONFIG_URL`
-    /// at all (the router-config document would never even be reachable
-    /// through this test's own assertions below) or defaulting it to the API
-    /// port instead of the metrics one (R3) — either breaks this fetch or
-    /// points it at a route that does not exist there.
+    /// The router adopted fcdev's own served document on its first attempt:
+    /// a consumer for the always-present `platform-DEFAULT` queue
+    /// (`RouterConfigDocumentBuilder`, every tenant set includes the platform
+    /// tenant) is running within 3 s of `launch()` returning, and it is a
+    /// Postgres-backed consumer — the document named a `postgres://` queue on
+    /// the embedded database, never anything SQS-shaped.
     @Test
-    void thePlatformServesItsOwnRouterConfigDocumentNamingAPostgresQueue() throws Exception {
-        var response = get("http://localhost:" + metricsPort + "/api/dispatch/router-config");
-        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+    void theRouterConsumesThePlatformDefaultQueueFromItsOwnServedDocument() {
+        var manager = started.running().router().manager();
+        await(() -> manager.consumerNames().contains("platform-DEFAULT"),
+                Duration.ofSeconds(3).minus(Duration.between(launched, Instant.now())));
 
-        RouterConfig config = Json.read(response.body(), RouterConfig.class);
-        var platformDefault = config.queues().stream()
-                .filter(q -> "platform-DEFAULT".equals(q.queueName()))
-                .findFirst();
-        assertThat(platformDefault).as("the always-present platform tenant's DEFAULT queue").isPresent();
-        assertThat(platformDefault.get().queueUri())
+        var consumer = manager.activeConsumer("platform-DEFAULT");
+        assertThat(consumer).as("an active consumer on the platform's DEFAULT queue").isPresent();
+        assertThat(consumer.get().getClass().getPackageName())
                 .as("Postgres-backed in dev — never SQS-shaped")
-                .startsWith("postgres://")
-                .doesNotContain(".fifo");
+                .endsWith(".postgres");
     }
 
-    /// **Part 2: the router actually picks it up.** `/config/reload` re-runs
-    /// `RouterServer#applyConfiguration` synchronously and reports what
-    /// changed — this is the FIRST attempt that can possibly succeed (see the
-    /// class doc), so `consumersStarted` must count at least the
-    /// `platform-DEFAULT` queue's consumer starting for the very first time.
-    /// Mutant this pins: the router silently never adopting a config-URL
-    /// source at all (`reloaded` would stay `false`, `pools`/`consumersStarted`
-    /// would stay `0` — `AdminRoutes#configReload`'s own "not running/no
-    /// source" degrade shape) — a counter that must change, not an absence
-    /// that would hold either way.
+    /// A forced reload (`POST /config/reload`, what the dashboard button
+    /// does) still works against the authenticated document and reports the
+    /// truth: the source answered (`reloaded`), nothing failed to build, and
+    /// nothing NEW started, because the boot already started everything the
+    /// document names. Read together with the test above: `0` here is only
+    /// meaningful because the consumer is proven to exist already.
     @Test
-    void theRouterAdoptsTheServedConfigOnAForcedReload() throws Exception {
+    void aForcedReloadReadsTheSameDocumentAndFindsNothingNewToStart() throws Exception {
+        var manager = started.running().router().manager();
+        await(() -> manager.consumerNames().contains("platform-DEFAULT"), Duration.ofSeconds(3));
+
         var reload = post("http://localhost:" + started.apiPort() + "/router/config/reload");
         assertThat(reload.statusCode()).as(reload.body()).isEqualTo(200);
 
         Wire.ConfigReloadResponse result = Json.read(reload.body(), Wire.ConfigReloadResponse.class);
-        assertThat(result.reloaded()).as("the router adopted a config-URL source, not the not-running degrade shape").isTrue();
-        assertThat(result.consumersStarted())
-                .as("at least the platform-DEFAULT queue's consumer started for the first time")
-                .isGreaterThanOrEqualTo(1);
+        assertThat(result.reloaded()).as("the source answered and the config applied").isTrue();
         assertThat(result.failedQueues()).as("the Postgres-backed queue this document names must build cleanly").isEmpty();
-    }
-
-    private static HttpResponse<String> get(String url) throws Exception {
-        return HTTP.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(result.consumersStarted()).as("everything the document names was already running").isZero();
+        assertThat(manager.consumerNames()).contains("platform-DEFAULT");
     }
 
     private static HttpResponse<String> post(String url) throws Exception {
@@ -156,10 +144,26 @@ class DevDispatchRouterConfigIntegrationTest {
     /// before returning, good enough for a port that gets bound milliseconds
     /// later.
     private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
+        try (var socket = new java.net.ServerSocket(0)) {
             return socket.getLocalPort();
-        } catch (IOException e) {
+        } catch (java.io.IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static void await(BooleanSupplier condition, Duration timeout) {
+        long deadline = System.nanoTime() + Math.max(0, timeout.toNanos());
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        }
+        assertThat(condition.getAsBoolean()).as("condition met within " + timeout).isTrue();
     }
 }

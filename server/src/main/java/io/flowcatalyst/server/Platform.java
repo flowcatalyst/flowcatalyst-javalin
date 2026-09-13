@@ -75,6 +75,9 @@ import io.flowcatalyst.platform.cors.filter.CorsAllowlist;
 import io.flowcatalyst.platform.cors.filter.CorsFilter;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.api.ConnectionApi;
+import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
+import io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder;
+import io.flowcatalyst.platform.dispatch.api.RouterConfigApi;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
@@ -312,6 +315,12 @@ public final class Platform {
         ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, uow));
         var dispatchPoolRepo = new DispatchPoolRepository(pool);
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
+        // R3′ (`docs/spec/router-config-auth.md`): the router-config document moved
+        // here from the internal listener, behind ordinary bearer auth. Its own
+        // repositories (not dispatchPoolRepo/subscriptionRepo above — those are
+        // wired for other APIs) so this reads exactly as R3's Metrics wiring did.
+        RouterConfigApi.register(routes, new RouterConfigApi.State(
+                new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))));
         var roleRepo = new RoleRepository(pool);
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));

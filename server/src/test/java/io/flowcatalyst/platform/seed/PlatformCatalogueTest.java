@@ -76,13 +76,13 @@ class PlatformCatalogueTest {
     @Test
     void roleCatalogueShape() {
         List<RoleDefinition> roles = PlatformRoles.all();
-        assertThat(roles).hasSize(14);
+        assertThat(roles).hasSize(15);
         assertThat(roles).extracting(RoleDefinition::name).containsExactly(
                 "platform:super-admin", "platform:admin", "platform:admin-readonly",
                 "platform:iam-admin", "platform:iam-readonly", "platform:client-admin",
                 "platform:auth-admin", "platform:auth-readonly", "platform:ai-agent-readonly",
                 "platform:messaging-admin", "platform:viewer", "platform:portal-administrator",
-                "platform:developer", "platform:application-service");
+                "platform:developer", "platform:application-service", "platform:router");
         int total = 0;
         for (RoleDefinition r : roles) {
             assertThat(r.source()).isEqualTo("CODE");
@@ -92,8 +92,14 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(151);
+        assertThat(total).isEqualTo(152);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
+        // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission
+        // the router's client-credentials principal needs — never more, or a
+        // client-scoped token minted for this role would see more than the
+        // router-config document.
+        assertThat(roles.get(14).name()).isEqualTo("platform:router");
+        assertThat(roles.get(14).permissions()).containsExactly(Permissions.ADMIN_DISPATCH_POOL_READ);
     }
 }

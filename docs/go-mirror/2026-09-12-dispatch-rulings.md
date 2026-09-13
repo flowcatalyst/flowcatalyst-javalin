@@ -129,6 +129,13 @@ Message group id is unchanged: the dispatch job's message group.
 
 ### R3 — the router-config endpoint is authenticated with a shared secret
 
+> **Superseded 2026-09-13 by R3′ — `docs/spec/router-config-auth.md`.** Build
+> that, not this: the document is an authenticated route on the API
+> listener, the router is an OAuth client (`client_credentials`) with the
+> new built-in role `platform:router`, and there is no Service Connect
+> alias and no internal-listener exposure. The text below is kept for the
+> history of the decision only.
+
 **The problem found.** The platform must serve its router-config document
 somewhere the router can GET it. The router runs `AUTH_MODE=NONE`, with no
 database and no Secrets Manager, and reaches the platform in-VPC as

@@ -1,4 +1,4 @@
-package io.flowcatalyst.mcp;
+package io.flowcatalyst.http.oauth;
 
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;

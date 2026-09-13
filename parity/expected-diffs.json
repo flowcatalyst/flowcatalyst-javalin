@@ -446,5 +446,166 @@
   "pointer": "/message",
   "reason": "same code (UNSUPPORTED_SECRET_SCHEME) and the same message since Go d6b215b; Java prefixes the field name (oidcClientSecretRef: ...), Go does not — kept by the owner",
   "ruling": "portal-apps.md J12 (owner 2026-09-11: field-name prefix kept)"
+ },
+ {
+  "scenario": "bff*",
+  "step": "dashboard-stats",
+  "pointer": "/rolesDefined",
+  "reason": "Java-first: one more built-in role (platform:router, R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "bff-sync-platform-roles",
+  "pointer": "/total",
+  "reason": "Java-first: the platform-roles sync counts platform:router (R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "bff-sync-platform-roles",
+  "pointer": "/updated",
+  "reason": "Java-first: the platform-roles sync counts platform:router (R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-roles-read-allowed",
+  "pointer": "/items/13/**",
+  "reason": "Java-first: platform:router (R3′) sorts between portal-administrator and super-admin, shifting the last items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-roles-read-allowed",
+  "pointer": "/items/14/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-roles-read-allowed",
+  "pointer": "/items/15/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "bff*",
+  "step": "confinement-roles-read-allowed",
+  "pointer": "/total",
+  "reason": "Java-first: one more built-in role (platform:router, R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "profile-only gate*",
+  "step": "admin-passes-gated-route",
+  "pointer": "/items/15/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "profile-only gate*",
+  "step": "admin-passes-gated-route",
+  "pointer": "/items/16/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "profile-only gate*",
+  "step": "admin-passes-gated-route",
+  "pointer": "/items/17/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "profile-only gate*",
+  "step": "admin-passes-gated-route",
+  "pointer": "/total",
+  "reason": "Java-first: one more built-in role (platform:router, R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "roles*",
+  "step": "list",
+  "pointer": "/roles/15/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "roles*",
+  "step": "list",
+  "pointer": "/roles/16/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "roles*",
+  "step": "list",
+  "pointer": "/roles/17/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "roles*",
+  "step": "list",
+  "pointer": "/roles/18/**",
+  "reason": "Java-first: platform:router (R3′) shifts the last role-list items by one until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "roles*",
+  "step": "list",
+  "pointer": "/total",
+  "reason": "Java-first: one more built-in role (platform:router, R3′) until Go seeds it",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-token",
+  "pointer": "/access_token/«jwt»/claims/scope",
+  "reason": "Java-first: the token carries platform:messaging:dispatch-pool:view from platform:router; on Go the role assignment failed (unknown role), so its scope is application-service only",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-token",
+  "pointer": "/scope",
+  "reason": "Java-first: same as the access_token scope claim — platform:router's permission is present only on Java",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-role-exists",
+  "pointer": "/**",
+  "reason": "Java-first: the built-in platform:router role (R3′) is not seeded by Go until it mirrors docs/spec/router-config-auth.md; Go answers 404 where Java answers the role",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "assign-router-role",
+  "pointer": "/**",
+  "reason": "Java-first: assigning platform:router fails on Go (unknown role) until it seeds the role",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go seeds the role"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-config-with-router-role",
+  "pointer": "/**",
+  "reason": "Java-first: GET /api/dispatch/router-config does not exist on Go until it builds deployed-dispatch §3 from the spec; Go's SPA catch-all answers 200 text/html where Java answers the document",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go serves the route"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-config-without-the-permission",
+  "pointer": "/**",
+  "reason": "Java-first: Go has no such route (its SPA catch-all answers 200 text/html) where Java answers 403 for a token without platform:messaging:dispatch-pool:view",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go serves the route"
+ },
+ {
+  "scenario": "router-config*",
+  "step": "router-config-unauthenticated",
+  "pointer": "/**",
+  "reason": "Java-first: Go has no such route (its SPA catch-all answers 200 text/html) where Java answers 401 with no credential",
+  "ruling": "owner 2026-09-13, router-config-auth.md §1; retire when Go serves the route"
  }
 ]

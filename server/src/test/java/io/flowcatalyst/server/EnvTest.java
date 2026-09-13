@@ -376,6 +376,18 @@ class EnvTest {
         assertThat(env.routerPlatformUrl()).isEqualTo("https://platform.internal");
     }
 
+    /// `docs/spec/router-config-auth.md` §2: both default `""`, both read through verbatim.
+    @Test
+    void routerClientCredentialsDefaultEmptyAndReadThrough() {
+        var defaults = load();
+        assertThat(defaults.routerClientId()).isEmpty();
+        assertThat(defaults.routerClientSecret()).isEmpty();
+
+        var env = load("FC_ROUTER_CLIENT_ID", "router-client", "FC_ROUTER_CLIENT_SECRET", "s3cr3t");
+        assertThat(env.routerClientId()).isEqualTo("router-client");
+        assertThat(env.routerClientSecret()).isEqualTo("s3cr3t");
+    }
+
     @Test
     void routerAuthModeNoneForcesAuthOff() {
         var env = load("AUTH_MODE", " none ", "FC_ROUTER_AUTH_USER", "u", "FC_ROUTER_AUTH_PASS", "p");

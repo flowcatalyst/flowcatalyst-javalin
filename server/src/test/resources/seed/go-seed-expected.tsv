@@ -1,6 +1,8 @@
 # Seeder-owned rows from a fresh Go `fcdev start` (go-data.sql), ids/timestamps stripped.
 # Tab-separated; kind is the first column. NOT included (fcdev's MCP bootstrap, not the seeder):
 # iam_service_accounts mcp:local, the SERVICE principal + its role grant, oauth_clients + grant types.
+# platform:router (role + its one permission row) is Java-first (`docs/spec/router-config-auth.md`
+# R3′) and matches Go only once Go mirrors it — see SeederTest#rolesMatchGo.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -15,6 +17,7 @@ role	platform:viewer	Platform Viewer	Read-only access across IAM, admin, and mes
 role	platform:portal-administrator	Portal Administrator	Manage the client's portal users: invite, suspend, and remove portal identities	CODE	platform	false
 role	platform:developer	Developer	Developer portal: API documentation, accessible event types, and a self-service API credential for local testing	CODE	platform	false
 role	platform:application-service	Application Service Account	Permissions for application service accounts (scoped to own application)	CODE	platform	false
+role	platform:router	Router	Fetches the dispatch router configuration	CODE	platform	false
 perm	platform:super-admin	platform:*:*:*
 perm	platform:admin	platform:admin:client:view
 perm	platform:admin	platform:admin:client:create
@@ -166,6 +169,7 @@ perm	platform:application-service	platform:application-service:docs:sync
 perm	platform:application-service	platform:application-service:scheduled-job:sync
 perm	platform:application-service	platform:application-service:process:view
 perm	platform:application-service	platform:application-service:process:sync
+perm	platform:router	platform:messaging:dispatch-pool:view
 eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:activated	User Activated	CURRENT	UI	false	platform	iam	user

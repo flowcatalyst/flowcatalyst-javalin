@@ -7,6 +7,7 @@
   "GET /.well-known/jwks.json",
   "GET /.well-known/openid-configuration",
   "GET /api/config/platform",
+  "GET /api/dispatch/router-config",
   "GET /api/me",
   "GET /api/me/applications",
   "GET /api/me/clients",

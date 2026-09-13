@@ -4,7 +4,7 @@ import io.flowcatalyst.mcp.McpConfig;
 import io.flowcatalyst.mcp.McpResources;
 import io.flowcatalyst.mcp.McpTools;
 import io.flowcatalyst.mcp.PlatformClient;
-import io.flowcatalyst.mcp.TokenManager;
+import io.flowcatalyst.http.oauth.TokenManager;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;

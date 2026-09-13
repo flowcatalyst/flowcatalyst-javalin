@@ -1416,3 +1416,22 @@ Test: a scripted consumer returning that error. Assert that no warning is
 raised, that the gap between attempts grows to the cap, that exactly one INFO
 line is logged, and that polling returns to normal once the queue exists.
 Separately, assert a connection error still raises `CONNECTION`.
+
+## Every anchor-scoped principal passes every permission check (both sides, noticed 2026-09-13)
+
+`Checks.require` / `requireAny` return early on `isAnchor()` (Go
+`internal/platform/shared/auth/auth.go:409` is identical: `a.IsAnchor() ||
+a.HasPermission(perm)`). A provisioned application service account is an
+anchor-scoped `SERVICE` principal, so its `platform:application-service`
+role — deliberately the least-privilege set (event create, event-type
+view/create) — is decorative: the account passes the gate on every admin
+route, dispatch jobs, users, audit logs included. Found while building the
+router-config route (`docs/spec/router-config-auth.md`), which checks the
+permission directly for that reason and is the only route where a role on a
+service account currently means anything.
+
+Needs an owner ruling because it changes both sides: should the anchor
+auto-grant apply to `USER` principals only (a service account holds exactly
+its roles' permissions), or should service accounts be created with a
+narrower scope? Either way the parity corpus should gain a step proving a
+provisioned service account is refused an admin route.

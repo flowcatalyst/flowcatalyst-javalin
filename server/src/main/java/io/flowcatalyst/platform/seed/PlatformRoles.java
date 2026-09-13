@@ -170,7 +170,16 @@ public final class PlatformRoles {
             // platform:application-service
             mk("application-service", "Application Service Account",
                     "Permissions for application service accounts (scoped to own application)",
-                    APPLICATION_SERVICE));
+                    APPLICATION_SERVICE),
+
+            // platform:router — `docs/spec/router-config-auth.md` R3′: the one
+            // permission the router's client-credentials principal needs to
+            // fetch `/api/dispatch/router-config`. Anchor-only (every built-in
+            // role is), not client-delegable — the document lists every
+            // client's queues.
+            mk("router", "Router",
+                    "Fetches the dispatch router configuration",
+                    List.of(ADMIN_DISPATCH_POOL_READ)));
 
     private PlatformRoles() {
     }

@@ -119,15 +119,17 @@ in.
   built as above. **One new setting is unavoidable**: the `FC-{env}` prefix,
   since neither side has an app-environment name today — propose
   `FC_DISPATCH_QUEUE_PREFIX` (IaC: `FC-staging`), no default outside dev.
-- **Where it is served (R3, 2026-09-12):** on the platform's **internal
-  listener** (`FC_METRICS_PORT`, 9090), which is not ALB-facing, reached
-  through a new Service Connect alias. No authentication, and no secret on
-  either side. An earlier same-day answer chose a shared-secret header and was
-  reversed once it emerged that the fc-router task role deliberately has no
-  Secrets Manager access. **This gates the feature on an IaC change** (owner:
-  the alias varies deployment by deployment and will be added separately).
-  `/api/config/*` is already taken on the platform, so the path is
-  `/api/dispatch/router-config`.
+- **Where it is served — superseded 2026-09-13 by R3′,
+  `docs/spec/router-config-auth.md`:** on the **API listener**, behind the
+  platform's ordinary bearer authentication (`platform:messaging:dispatch-pool:view`,
+  anchor only); the router authenticates with OAuth client credentials
+  (`FC_ROUTER_CLIENT_ID` / `FC_ROUTER_CLIENT_SECRET` against
+  `FC_ROUTER_PLATFORM_URL`), a new built-in role `platform:router` carries
+  the permission, and fcdev bootstraps its own client. The 2026-09-12 R3
+  (internal listener + Service Connect alias, no auth) was a workaround for
+  one deployment's IaC and is withdrawn: nothing in the platform's deployment
+  gates the feature any more. `/api/config/*` is already taken on the
+  platform, so the path is `/api/dispatch/router-config`.
 - The scheduler publishes each claimed job to its client's queue for its
   priority, creating the queue if missing. FIFO: message group = the job's
   message group. **Superseded (R2, 2026-09-12):** the dedup id is *not* the job

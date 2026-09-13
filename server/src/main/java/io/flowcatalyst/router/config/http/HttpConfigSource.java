@@ -1,5 +1,6 @@
 package io.flowcatalyst.router.config.http;
 
+import io.flowcatalyst.http.oauth.TokenManager;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.config.RouterConfig;
 import io.flowcatalyst.router.manager.RouterServer;
@@ -59,6 +60,19 @@ import java.util.concurrent.StructuredTaskScope;
 /// notice when it recovers). Only when **every** URL contributes nothing —
 /// fresh or cached — does [#fetch] answer [Optional#empty()], the contract's
 /// definition of "genuinely unavailable".
+///
+/// ### Optional bearer auth for the router's own platform (`docs/spec/router-config-auth.md` §2)
+///
+/// A [TokenManager], when given, mints a `client_credentials` token at the
+/// platform origin (`FC_ROUTER_PLATFORM_URL`'s origin) and attaches it only
+/// to requests whose URL shares that exact origin — a deployment's
+/// `FLOWCATALYST_CONFIG_URL` may list several third-party config services
+/// beside the platform's own document, and the credential belongs to the
+/// platform, never to them. A `401` from a request that carried the token
+/// invalidates the cache so the next attempt re-mints. A
+/// [TokenManager.TokenException] while minting is treated exactly like any
+/// other transport failure — logged through [#firstOfStreak], the attempt
+/// counted as failed, R-B's retry loop unchanged.
 public final class HttpConfigSource implements RouterServer.ConfigSource {
 
     private static final Logger log = LoggerFactory.getLogger(HttpConfigSource.class);
@@ -76,6 +90,14 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     private final Duration retryInterval;
     private final Duration requestTimeout;
     private final Warnings warnings;
+    /// `null` when the router carries no client credentials (`docs/spec/router-config-auth.md`
+    /// §2) — every request is then fetched unauthenticated, exactly as before.
+    private final TokenManager tokenManager;
+    /// The platform's own origin (`scheme://host[:port]`), computed once from
+    /// `FC_ROUTER_PLATFORM_URL`; `null` alongside [#tokenManager]. Only a
+    /// request whose URL shares this exact origin carries the bearer token —
+    /// see [#sameOrigin].
+    private final String platformOrigin;
 
     /// Reported to `slog` only, never the operator warning store — matches
     /// Go's `mergeConfigs`, which treats a conflicting duplicate as a
@@ -117,12 +139,23 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// care about the notices use the [Warnings.NO_OP] convenience above.
     HttpConfigSource(List<String> urls, HttpClient client, int maxAttempts, Duration retryInterval,
                       Duration requestTimeout, Warnings warnings) {
+        this(urls, client, maxAttempts, retryInterval, requestTimeout, warnings, null, null);
+    }
+
+    /// The full constructor: an optional [TokenManager] plus the platform
+    /// origin it mints for (`docs/spec/router-config-auth.md` §2). Both
+    /// `null`, or both non-null — [#create] is the only caller that ever
+    /// passes non-null values.
+    HttpConfigSource(List<String> urls, HttpClient client, int maxAttempts, Duration retryInterval,
+                      Duration requestTimeout, Warnings warnings, TokenManager tokenManager, String platformOrigin) {
         this.urls = List.copyOf(urls);
         this.client = client;
         this.maxAttempts = maxAttempts;
         this.retryInterval = retryInterval;
         this.requestTimeout = requestTimeout;
         this.warnings = warnings;
+        this.tokenManager = tokenManager;
+        this.platformOrigin = platformOrigin;
     }
 
     /// The production source: `rawEnvValue` is `FLOWCATALYST_CONFIG_URL`
@@ -137,6 +170,15 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// As above, wired to the operator warning store so a failing/stale
     /// source (R-30) and its recovery are operator-visible.
     public static RouterServer.ConfigSource create(String rawEnvValue, Warnings warnings) {
+        return create(rawEnvValue, warnings, null, null);
+    }
+
+    /// As above, plus optional client-credentials auth for the router's own
+    /// platform (`docs/spec/router-config-auth.md` §2): `tokenManager` and
+    /// `platformUrl` are both non-null or both null — [io.flowcatalyst.server.Router#configSource]
+    /// is the only caller and enforces that pairing before it ever reaches here.
+    public static RouterServer.ConfigSource create(String rawEnvValue, Warnings warnings,
+                                                     TokenManager tokenManager, String platformUrl) {
         var urls = parseUrls(rawEnvValue);
         if (urls.isEmpty()) {
             return Optional::empty;
@@ -145,7 +187,28 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                 .connectTimeout(DEFAULT_REQUEST_TIMEOUT)
                 .build();
         return new HttpConfigSource(urls, client, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_INTERVAL,
-                DEFAULT_REQUEST_TIMEOUT, warnings);
+                DEFAULT_REQUEST_TIMEOUT, warnings, tokenManager, originOf(platformUrl));
+    }
+
+    /// `scheme://host[:port]` of `url`, or `null` for a `null`/unparseable one.
+    private static String originOf(String url) {
+        if (url == null) {
+            return null;
+        }
+        try {
+            var uri = URI.create(url);
+            return uri.getScheme() + "://" + uri.getAuthority();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /// Whether `url` shares [#platformOrigin] exactly — the same-origin rule
+    /// that decides whether a request carries the bearer token (§2: "other
+    /// origins are fetched as before, and the credential is never sent to
+    /// them").
+    private boolean carriesAuthTo(String url) {
+        return tokenManager != null && platformOrigin != null && platformOrigin.equals(originOf(url));
     }
 
     /// Splits on `,`, trims each part, drops empties (§8.1).
@@ -334,12 +397,13 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     /// cancellation-by-interruption work at this blocking point
     /// (CONVENTIONS §8).
     private Optional<RouterConfig> attemptOnce(String url) throws InterruptedException {
-        HttpRequest request;
+        boolean authorized = carriesAuthTo(url);
+
+        HttpRequest.Builder builder;
         try {
-            request = HttpRequest.newBuilder(URI.create(url))
+            builder = HttpRequest.newBuilder(URI.create(url))
                     .GET()
-                    .timeout(requestTimeout)
-                    .build();
+                    .timeout(requestTimeout);
         } catch (RuntimeException e) {
             log.atWarn().setMessage("config fetch: malformed")
                     .addKeyValue("url", url)
@@ -348,6 +412,22 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
             return Optional.empty();
         }
 
+        if (authorized) {
+            String token;
+            try {
+                token = tokenManager.token();
+            } catch (TokenManager.TokenException e) {
+                // A minting failure is an attempt failure like any other transport
+                // failure (`docs/spec/router-config-auth.md` §2) — never an
+                // exception out of fetch(); R-B's retry loop keeps working.
+                firstOfStreak(log.atWarn().setMessage("config fetch attempt failed: token mint failed")
+                        .addKeyValue("url", url), url, e).log();
+                return Optional.empty();
+            }
+            builder.header("Authorization", "Bearer " + token);
+        }
+        HttpRequest request = builder.build();
+
         HttpResponse<byte[]> response;
         try {
             response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -355,6 +435,13 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
             firstOfStreak(log.atWarn().setMessage("config fetch attempt failed")
                     .addKeyValue("url", url), url, e).log();
             return Optional.empty();
+        }
+
+        if (authorized && response.statusCode() == 401) {
+            // The cached token was rejected — invalidate so the NEXT attempt
+            // re-mints, rather than replaying a token known to be bad on every
+            // remaining retry of this streak (§2).
+            tokenManager.invalidate();
         }
 
         if (response.statusCode() >= 300) {

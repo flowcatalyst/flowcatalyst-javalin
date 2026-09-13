@@ -262,6 +262,14 @@ public record Env(
         // `BLOCK_ON_ERROR` group's untried siblings are released back to the broker; set, they are
         // ACKed and reported to this platform base URL's `/api/dispatch/settled` hook instead.
         String routerPlatformUrl,
+        // `FC_ROUTER_CLIENT_ID`, default `""` (`docs/spec/router-config-auth.md` §2): the
+        // router's OAuth client_credentials identity for fetching the router-config document
+        // from `routerPlatformUrl`. Set together with [#routerClientSecret] or not at all —
+        // `Router#configSource` refuses one without the other, and both without
+        // [#routerPlatformUrl].
+        String routerClientId,
+        // `FC_ROUTER_CLIENT_SECRET`, default `""`. See [#routerClientId].
+        String routerClientSecret,
 
         // ── ALB self-registration ──────────────────────────────────────────
         // `FC_ALB_ENABLED`, default false.
@@ -468,6 +476,8 @@ public record Env(
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_USER", "AUTH_BASIC_USERNAME").orElse(""),
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_PASS", "AUTH_BASIC_PASSWORD").orElse(""),
                 e.get("FC_ROUTER_PLATFORM_URL"),
+                e.get("FC_ROUTER_CLIENT_ID"),
+                e.get("FC_ROUTER_CLIENT_SECRET"),
 
                 e.bool("FC_ALB_ENABLED", false),
                 e.get("FC_ALB_TARGET_GROUP_ARN"),

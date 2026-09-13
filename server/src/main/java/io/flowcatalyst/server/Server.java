@@ -1,7 +1,6 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
-import io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder;
 import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
@@ -25,7 +24,7 @@ import io.flowcatalyst.http.javalin.JavalinJsonMapper;
 import io.flowcatalyst.mcp.McpConfig;
 import io.flowcatalyst.mcp.McpServer;
 import io.flowcatalyst.mcp.PlatformClient;
-import io.flowcatalyst.mcp.TokenManager;
+import io.flowcatalyst.http.oauth.TokenManager;
 import io.flowcatalyst.outbox.HttpDispatcher;
 import io.flowcatalyst.outbox.OutboxAdminApi;
 import io.flowcatalyst.outbox.OutboxProcessor;
@@ -207,9 +206,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             return metrics.port();
         }
 
-        /// Test-only visibility hook (same reasoning as [#dispatchJobReaperClosed]):
-        /// `null` when the router is disabled ([Env#routerEnabled] false).
-        Router router() {
+        /// Test-only visibility hook (same reasoning as [#dispatchJobReaperClosed]),
+        /// public so fcdev's own integration tests can watch the router
+        /// adopt the served document: `null` when the router is disabled
+        /// ([Env#routerEnabled] false).
+        public Router router() {
             return router;
         }
 
@@ -337,27 +338,25 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         };
 
         // ── internal listener ───────────────────────────────────────────────
-        // The internal listener binds first, before the router starts. R3
-        // (`docs/spec/deployed-dispatch.md` §3) serves the router-config
-        // document here, and fcdev points the router's own config URL at
-        // that same document: bound first, the router's first fetch
-        // succeeds on its first attempt; bound after, every fcdev boot
-        // would fail that attempt against a port nobody is listening on
-        // and get its queues 5s later on the retry (RouterStartupOrderTest).
-        // Independently, R-A (2026-09-12) runs the first configuration
-        // apply on the router's own virtual thread, so Router.start() never
-        // waits on a config service that is down — that is what lets both
-        // listeners bind within milliseconds regardless of where the
-        // document lives. The API listener still binds after the router
-        // (below) because its router surface is mounted on it, and leadership
-        // is still decided synchronously before it does.
-        var metrics = new Metrics(env, registry, dispatchRouterConfigFor(mode, env)).start();
+        // The internal listener binds first, before the router contends for
+        // leadership. R3′ (`docs/spec/router-config-auth.md`) moved the
+        // router-config document to the API listener (behind ordinary bearer
+        // auth) — the internal listener carries only health/metrics now — but
+        // this ordering still matters: BOTH listeners are bound before the
+        // router's election starts (below, after the API listener), so the
+        // router's first configuration fetch — which in fcdev goes to this
+        // same process's API listener for both the token and the document —
+        // can never race either bind. The internal listener binds first
+        // simply because it has no dependency on the router (R3 history);
+        // the router itself is only *built* here, not started.
+        var metrics = new Metrics(env, registry).start();
         LOG.atInfo().setMessage("metrics server listening")
                 .addKeyValue("addr", ":" + env.metricsPort())
                 .log();
 
+        Router router = null;
         try {
-            Router router = env.routerEnabled() ? Router.start(env, dbPool, Clock.systemUTC()) : null;
+            router = env.routerEnabled() ? Router.build(env, dbPool, Clock.systemUTC()) : null;
 
             var built = buildApiAndReaper(router);
 
@@ -499,44 +498,43 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
 
             // ── API listener ──────────────────────────────────────────────
-            // Bound last: buildApiAndReaper needed the router above, and the
-            // API listener's readiness surface must never see a router that
-            // has not yet gained or lost leadership. Leadership is decided
-            // synchronously before this point, but (R-A) the first
-            // configuration apply may still be running in the background on
-            // its own thread — that is fine and expected: it is what let
-            // both this listener and the internal one above bind within
-            // milliseconds regardless of the config service's own state.
+            // Bound before the router's election (below): buildApiAndReaper
+            // needed the router built (not started) above to mount its HTTP
+            // surface, and now both listeners are up before the router ever
+            // contends for leadership — the router's own configuration
+            // fetch, which in fcdev goes to this same process's API
+            // listener, can never race either bind.
             ApiListener api = built.starter().start(env.apiPort());
             LOG.atInfo().setMessage("api server listening")
                     .addKeyValue("addr", ":" + env.apiPort())
                     .log();
+
+            // ── router election ──────────────────────────────────────────
+            // Only now, with both listeners bound, does the router contend
+            // for leadership. Leadership itself is decided synchronously by
+            // this call, but (R-A) the first configuration apply may still
+            // be running in the background on its own thread — that is fine
+            // and expected: it is what lets this call return promptly
+            // regardless of the config service's own state.
+            if (router != null) {
+                router.startElection();
+            }
             return new Running(api, metrics, router, built.dispatchJobReaper(), mailSender, scheduler, schedulerLeaderResource,
                     schedulerPublisherResource, outboxProcessor, outboxAdminApi, outboxLeaderResource,
                     streamProcessor, streamLeaderResource, scheduledJobScheduler, scheduledJobLeaderResource, purger, mcp);
         } catch (RuntimeException e) {
             // The internal listener is already bound at this point; nothing
             // else has been returned to a caller who could stop it, so this
-            // is the only place that can.
+            // is the only place that can. The router may have been built
+            // (but never started an election) if the failure happened
+            // between Router.build and here — close it too rather than
+            // leaking its housekeeping threads/pools.
+            if (router != null) {
+                router.close();
+            }
             metrics.stop();
             throw e;
         }
-    }
-
-    /// R3 (`docs/spec/deployed-dispatch.md` §3): the router-config document
-    /// is served on the internal listener only, and only in platform mode —
-    /// a worker/router-only instance has no dispatch-pool/subscription data
-    /// of its own to describe, and [Metrics] is given no database dependency
-    /// of its own beyond this one collaborator. `null` for every other
-    /// [Mode], which is what makes [Metrics] not register the route at all.
-    ///
-    /// Package-private so a dedicated test can pin the mode gating directly,
-    /// without booting a listener — the same visibility reasoning as
-    /// [Router#electionConfig].
-    static RouterConfigDocumentBuilder dispatchRouterConfigFor(Mode mode, Env env) {
-        return mode instanceof Mode.Platform(var pool)
-                ? new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))
-                : null;
     }
 
     /// [Env]'s outbox fields, with the library defaults ([OutboxProcessor.Config#defaults])

@@ -20,6 +20,50 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## R3′ — the router-config document is an authenticated API route (2026-09-13)
+
+Owner rulings 2026-09-13 (`docs/spec/router-config-auth.md`): the Service
+Connect alias was one deployment's workaround, not a product decision —
+FlowCatalyst is run by organisations managing their own infrastructure. The
+document now lives on the **API listener** behind bearer auth; the router is
+an **OAuth client** (`client_credentials`, `FC_ROUTER_CLIENT_ID` /
+`FC_ROUTER_CLIENT_SECRET`, minted against `FC_ROUTER_PLATFORM_URL`, sent
+only to that origin — the deployed router's config URL also lists Integral
+services); a new built-in role **`platform:router`** carries exactly
+`platform:messaging:dispatch-pool:view`; fcdev bootstraps its own
+`fcdev-router` client every boot (fresh secret, nothing on disk). Three
+things found while building, all recorded in the spec:
+
+- `Checks.require` grants every anchor-scoped caller every permission (Go
+  `auth.go:409` too), and a provisioned service account is anchor-scoped —
+  so the route checks the permission directly, and the anchor auto-grant
+  itself is a new `docs/backlog.md` entry needing a ruling on both sides.
+- Roles for a service account go through `PUT /api/service-accounts/{id}/roles`
+  (the principals route refuses non-`USER` principals).
+- With the document and `/oauth/token` on the API listener, the router's
+  election now starts **after both listeners are bound** (Go's `run.go`
+  order); `Router.build` + `startElection` replace `Router.start`.
+  `--api-port 0` synthesises no config URL and bootstraps no credentials.
+
+Evidence: server suite 3,976 green from clean; fcdev 108 green, including
+`DevDispatchRouterConfigIntegrationTest` (a real `fcdev start` fetches the
+document through its token on the first attempt, 3 s window; mutant with a
+wrong secret fails) and the operator-supplied-client guard (mutant fails).
+**Parity against Go `e87b88d`: 1,295 steps, 392 OK, 903 ACCEPTED, 0 DIFF,
+0 ERROR, 253/253 + 103/103, no stale entries** — the new `router-config`
+scenario and the role-listing shifts are allow-listed as Java-first with the
+ruling, to retire when Go seeds the role and serves the route. The Go
+working tree did not compile at the time (the owner's Go agent mid-edit in
+`internal/platform/scheduler`), so the run used a clean `git archive` of
+`e87b88d` plus the working tree's `frontend/dist`. **Java e2e 51/51**, with
+fcdev's log showing the credentials bootstrapped and zero failed config-fetch
+attempts.
+
+Left for Go (from the spec): seed `platform:router`, serve the route, mirror
+the election-after-listeners order; then retire the eighteen Java-first
+allow-list entries. Left for the owner: the anchor auto-grant ruling
+(`docs/backlog.md`).
+
 ## Deployed dispatch — §3 and §4 built in Java (2026-09-12)
 
 `docs/spec/deployed-dispatch.md` is **done on the Java side**, six commits,
@@ -45,9 +89,14 @@ notes were stale and are corrected. Go has **not** started §3; it mirrors from
 the spec now that Java has built it.
 
 **Blocked on the owner (infrastructure, not code):**
-- The **Service Connect alias** for the platform's internal listener. R3 put
-  the router-config document there rather than on the ALB, so the router
-  cannot fetch config until that alias exists. This gates the feature.
+- ~~The **Service Connect alias** for the platform's internal listener.~~
+  **Withdrawn 2026-09-13 (R3′, `docs/spec/router-config-auth.md`):** the
+  document is an authenticated API route and the router is an OAuth client
+  with the built-in `platform:router` role, so no deployment-specific
+  networking gates the feature. The router task needs
+  `FC_ROUTER_CLIENT_ID` / `FC_ROUTER_CLIENT_SECRET` and
+  `FC_ROUTER_PLATFORM_URL` instead; in this IaC that means the fc-router
+  task gets a secret after all, by whatever mechanism the owner prefers.
 - `FC_DISPATCH_QUEUE_PREFIX` into the IaC (proposed `FC-staging`); SQS startup
   now refuses without it.
 - The single `inhance-fc-{env}-dispatch.fifo` queue is now dead — only its

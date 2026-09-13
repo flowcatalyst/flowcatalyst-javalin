@@ -534,6 +534,152 @@ class HttpConfigSourceTest {
         releaseServer.countDown();
     }
 
+    // ---- optional bearer auth (`docs/spec/router-config-auth.md` §2) ---------------
+
+    private HttpServer startServerWithAuth(HttpHandler configHandler, HttpHandler tokenHandler) {
+        try {
+            var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/config", configHandler);
+            server.createContext("/oauth/token", tokenHandler);
+            server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+            server.start();
+            servers.add(server);
+            return server;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void respondToken(HttpExchange exchange, String accessToken) throws IOException {
+        byte[] body = ("{\"access_token\":\"" + accessToken + "\",\"expires_in\":3600}")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, body.length);
+        try (var os = exchange.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    private static String originOf(HttpServer server) {
+        return "http://127.0.0.1:" + server.getAddress().getPort();
+    }
+
+    private HttpConfigSource sourceWithAuth(List<String> urls, int maxAttempts, Duration interval,
+                                             Duration requestTimeout, io.flowcatalyst.http.oauth.TokenManager tokenManager,
+                                             String platformOrigin) {
+        var client = HttpClient.newBuilder().connectTimeout(requestTimeout).build();
+        return new HttpConfigSource(urls, client, maxAttempts, interval, requestTimeout, Warnings.NO_OP,
+                tokenManager, platformOrigin);
+    }
+
+    /// Pins the same-origin rule (§2): the platform's own URL carries the
+    /// bearer header, a different origin never sees the credential at all —
+    /// not merely "not the platform's token", but no `Authorization` header
+    /// whatsoever. A mutant that attached the header to every URL (dropping
+    /// the origin check) would turn the third-party assertion from `null`
+    /// into a real header value.
+    @Test
+    @DisplayName("with a token manager, a request to the platform's own origin carries the bearer header; a different origin does not")
+    void tokenManagerAttachesBearerOnlyToThePlatformOrigin() {
+        var tokenHits = new AtomicInteger();
+        var platformAuthSeen = new AtomicReference<String>();
+        var platform = startServerWithAuth(
+                exchange -> {
+                    platformAuthSeen.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                    respondOk(exchange, configWithQueue("postgres://platform/db", 1));
+                },
+                exchange -> {
+                    tokenHits.incrementAndGet();
+                    respondToken(exchange, "tok-1");
+                });
+        var thirdPartyAuthSeen = new AtomicReference<String>();
+        var thirdParty = startServer(exchange -> {
+            thirdPartyAuthSeen.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            respondOk(exchange, configWithQueue("postgres://third-party/db", 2));
+        });
+
+        String platformOrigin = originOf(platform);
+        var tokenManager = new io.flowcatalyst.http.oauth.TokenManager(platformOrigin, "cid", "secret");
+        var src = sourceWithAuth(List.of(urlOf(platform), urlOf(thirdParty)), 2, Duration.ofMillis(10),
+                Duration.ofSeconds(5), tokenManager, platformOrigin);
+
+        var result = src.fetch();
+
+        assertThat(result).isPresent();
+        assertThat(platformAuthSeen.get()).as("the platform's own origin carries the token").isEqualTo("Bearer tok-1");
+        assertThat(thirdPartyAuthSeen.get()).as("a different origin never sees the credential").isNull();
+        assertThat(tokenHits).as("one mint for the whole fetch (both URLs share the cached token)").hasValue(1);
+    }
+
+    /// A `401` from a request that carried the token invalidates the cache,
+    /// so the NEXT attempt re-mints rather than replaying a token already
+    /// known to be rejected (§2). Counting token-endpoint hits, not merely
+    /// "the fetch eventually succeeds", is what a mutant that forgot to call
+    /// `invalidate()` cannot fake: it would still show exactly one mint.
+    @Test
+    @DisplayName("a 401 from the platform invalidates the cached token; the next attempt re-mints")
+    void a401FromThePlatformInvalidatesTheCachedToken() {
+        var tokenHits = new AtomicInteger();
+        var rejectNext = new AtomicBoolean(true);
+        var platform = startServerWithAuth(
+                exchange -> {
+                    if (rejectNext.get()) {
+                        respondStatus(exchange, 401);
+                    } else {
+                        respondOk(exchange, configWithQueue("postgres://platform/db", 1));
+                    }
+                },
+                exchange -> {
+                    tokenHits.incrementAndGet();
+                    respondToken(exchange, "tok-" + tokenHits.get());
+                });
+
+        String platformOrigin = originOf(platform);
+        var tokenManager = new io.flowcatalyst.http.oauth.TokenManager(platformOrigin, "cid", "secret");
+        var src = sourceWithAuth(List.of(urlOf(platform)), 1, Duration.ofMillis(10), Duration.ofSeconds(5),
+                tokenManager, platformOrigin);
+
+        assertThat(src.fetch()).as("first attempt: minted token rejected with 401, no last-known-good yet").isEmpty();
+        assertThat(tokenHits).as("first mint").hasValue(1);
+
+        rejectNext.set(false);
+        assertThat(src.fetch()).as("second attempt: the invalidated cache forces a re-mint, which the platform now accepts").isPresent();
+        assertThat(tokenHits).as("the 401 must have invalidated the cache — a second mint, not a replay of tok-1").hasValue(2);
+    }
+
+    /// A minting failure ([io.flowcatalyst.http.oauth.TokenManager.TokenException])
+    /// is an attempt failure like any other transport failure — `fetch()`
+    /// answers empty, it never throws out of the retry loop. A mutant that
+    /// let the exception propagate uncaught would fail this test with the
+    /// exception itself rather than a clean `isEmpty()`.
+    @Test
+    @DisplayName("a token-minting failure is an ordinary attempt failure, not an exception out of fetch()")
+    void aMintingFailureIsAnAttemptFailureNotAnException() {
+        // The token endpoint always fails (a real, counted HTTP round trip —
+        // TokenManager surfaces its non-2xx as a TokenException).
+        var tokenHits = new AtomicInteger();
+        var platform = startServerWithAuth(
+                exchange -> respondOk(exchange, configWithQueue("postgres://platform/db", 1)),
+                exchange -> {
+                    tokenHits.incrementAndGet();
+                    respondStatus(exchange, 500);
+                });
+        String platformOrigin = originOf(platform);
+        var tokenManager = new io.flowcatalyst.http.oauth.TokenManager(platformOrigin, "cid", "secret");
+        // 3 attempts: if the TokenException escaped attemptOnce() uncaught (the
+        // mutant this pins), it would blow straight past fetchWithRetry's loop and
+        // abort the whole subtask on the FIRST failure — exactly 1 hit, not 3 — even
+        // though src.fetch() would still (via the StructuredTaskScope's own FAILED-subtask
+        // handling) come back empty either way, which is why isEmpty() alone cannot
+        // tell the two apart.
+        var src = sourceWithAuth(List.of(urlOf(platform)), 3, Duration.ofMillis(10), Duration.ofSeconds(5),
+                tokenManager, platformOrigin);
+
+        assertThat(src.fetch()).as("minting failed on every attempt; no last-known-good to fall back to").isEmpty();
+        assertThat(tokenHits).as("the retry loop must keep retrying past a minting failure, same as any other "
+                + "transport failure — not abort the streak on the first one").hasValue(3);
+    }
+
     private static void sleepQuietly(Duration duration) {
         try {
             Thread.sleep(duration);

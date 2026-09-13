@@ -1,6 +1,8 @@
 package io.flowcatalyst.fcdev;
 
+import io.flowcatalyst.platform.seed.RouterClientBootstrap;
 import io.flowcatalyst.platform.seed.Seeder;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.database.Migrator;
@@ -122,6 +124,53 @@ public final class DevBootstrap {
         LOG.atInfo().setMessage("MCP credential bootstrap not yet ported; skipping (would write)")
                 .addKeyValue("path", paths.mcpCredentialsPath())
                 .addKeyValue("platform_url", baseUrl)
+                .log();
+    }
+
+    /// The router's fixed client id (`docs/spec/router-config-auth.md` §3) —
+    /// kept here too (mirrors [RouterClientBootstrap#CLIENT_ID]) so tests in
+    /// this module can assert against it without reaching into `server`.
+    static final String ROUTER_CLIENT_ID = RouterClientBootstrap.CLIENT_ID;
+
+    /// `bootstrapRouterCredentials` (`docs/spec/router-config-auth.md` §3,
+    /// Go's `cmd/fcdev/mcp_bootstrap.go` shape): a thin wrapper around
+    /// [RouterClientBootstrap#bootstrap] — the operator-supplied-client
+    /// guard, then the shared idempotent upsert, then `setDefault` on
+    /// `FC_ROUTER_CLIENT_ID` / `FC_ROUTER_CLIENT_SECRET` /
+    /// `FC_ROUTER_PLATFORM_URL`. An operator who already set
+    /// `FC_ROUTER_CLIENT_ID` brought their own client: nothing here runs,
+    /// because rotating `fcdev-router`'s secret would be pointless and
+    /// `setDefault` alone would still leave their id paired with a secret
+    /// this method just invented. Requires [#ensureAppKey] to have already
+    /// put `FLOWCATALYST_APP_KEY` on `dev` — the secret is stored the same
+    /// verify-only keyed-hash way an OAuth client secret always is
+    /// ([RouterClientBootstrap#bootstrap] hashes it via `Encryption#hashSecretRef`).
+    public static void bootstrapRouterCredentials(DataSource pool, DevEnv.Mutable dev, int apiPort) {
+        if (apiPort <= 0) {
+            // Same reason StartCommand#devEnv refuses to synthesise the config
+            // URL: the platform URL the token is minted against would be
+            // "http://localhost:0". Credentials without a platform URL are
+            // refused by Router.configSource, so leave both unset.
+            LOG.warn("--api-port 0 (ephemeral): not bootstrapping fcdev-router credentials; "
+                    + "the router has no platform address to mint a token against yet");
+            return;
+        }
+        if (!dev.get("FC_ROUTER_CLIENT_ID").isEmpty()) {
+            LOG.atInfo().setMessage("router credentials supplied by the environment; not bootstrapping fcdev-router")
+                    .addKeyValue("client_id", dev.get("FC_ROUTER_CLIENT_ID"))
+                    .log();
+            return;
+        }
+        var encryption = Encryption.fromKeys(dev.get(ENV_APP_KEY), "")
+                .orElseThrow(() -> new IllegalStateException(
+                        ENV_APP_KEY + " is not set; cannot bootstrap router credentials"));
+        var credentials = RouterClientBootstrap.bootstrap(pool, encryption);
+
+        dev.setDefault("FC_ROUTER_CLIENT_ID", credentials.clientId())
+                .setDefault("FC_ROUTER_CLIENT_SECRET", credentials.secret())
+                .setDefault("FC_ROUTER_PLATFORM_URL", "http://localhost:" + apiPort);
+        LOG.atInfo().setMessage("router credentials bootstrapped")
+                .addKeyValue("client_id", credentials.clientId())
                 .log();
     }
 
