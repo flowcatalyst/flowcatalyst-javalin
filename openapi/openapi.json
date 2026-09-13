@@ -3037,6 +3037,10 @@
           "name": {
             "type": "string"
           },
+          "queue": {
+            "description": "Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Selects which of the client's two dispatch queues jobs raised from this subscription publish to. Omitted or blank leaves it unset, which publishes as DEFAULT.",
+            "type": "string"
+          },
           "serviceAccountId": {
             "type": "string"
           },
@@ -8651,6 +8655,10 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "queue": {
+            "description": "Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.",
             "type": "string"
           },
           "serviceAccountId": {

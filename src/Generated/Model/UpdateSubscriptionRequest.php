@@ -67,6 +67,12 @@ class UpdateSubscriptionRequest extends \ArrayObject
      */
     protected $name;
     /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.
+     *
+     * @var string|null
+     */
+    protected $queue;
+    /**
      * @var string|null
      */
     protected $serviceAccountId;
@@ -310,6 +316,28 @@ class UpdateSubscriptionRequest extends \ArrayObject
     {
         $this->initialized['name'] = true;
         $this->name = $name;
+        return $this;
+    }
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.
+     *
+     * @return string|null
+     */
+    public function getQueue(): ?string
+    {
+        return $this->queue;
+    }
+    /**
+     * Dispatch priority: DEFAULT or HIGH_PRIORITY (matched ignoring case). Omitted leaves the stored value alone; an explicit blank clears it, which publishes as DEFAULT.
+     *
+     * @param string|null $queue
+     *
+     * @return self
+     */
+    public function setQueue(?string $queue): self
+    {
+        $this->initialized['queue'] = true;
+        $this->queue = $queue;
         return $this;
     }
     /**
