@@ -1,8 +1,8 @@
 package io.flowcatalyst.fcdev;
 
-import io.flowcatalyst.platform.shared.database.GatedDataSource;
-import io.flowcatalyst.platform.shared.database.Database;
+import io.flowcatalyst.platform.shared.database.Pools;
 import io.flowcatalyst.server.Env;
+import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.server.Frontend;
 import io.flowcatalyst.server.Server;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
@@ -122,7 +122,7 @@ public final class StartCommand implements Callable<Integer> {
         }
 
         EmbeddedPg pg = null;
-        GatedDataSource pool = null;
+        Pools pools = null;
         try {
             // ── embedded Postgres ─────────────────────────────────────────
             String databaseUrl = opts.databaseUrl();
@@ -149,24 +149,27 @@ public final class StartCommand implements Callable<Integer> {
             }
 
             // ── connect + migrate + seed ──────────────────────────────────
-            pool = Database.newPool(databaseUrl);
+            // Four physical pools (admission.md §11.7), not one — sized from the
+            // process/dev environment fcdev was started with, same as `FC_DB_POOL_SIZE`
+            // would be read in production.
+            pools = Pools.open(databaseUrl, new EnvReader(env.vars()));
             LOG.info("postgres connected");
-            DevBootstrap.migrate(pool);
+            DevBootstrap.migrate(pools.api());
 
             var dev = env.mutable();
             DevBootstrap.seedAdminDefaults(dev);
             Path embeddedDbPath = Path.of(opts.embeddedDbPath());
             DevBootstrap.ensureSigningKey(dev, embeddedDbPath);
             DevBootstrap.ensureAppKey(dev, embeddedDbPath);
-            DevBootstrap.seed(pool, dev.freeze());
+            DevBootstrap.seed(pools.api(), dev.freeze());
 
             String mcpBaseUrl = "http://localhost:" + opts.apiPort();
-            DevBootstrap.bootstrapMcpCredentials(pool, mcpBaseUrl, paths);
+            DevBootstrap.bootstrapMcpCredentials(pools.api(), mcpBaseUrl, paths);
             // `docs/spec/router-config-auth.md` §3: runs regardless of `--router`
             // (`StartIntegrationTest` boots with `--router=false` and must stay
             // green) — the credentials, and the `FC_ROUTER_PLATFORM_URL` default,
             // are dev-environment setup, not conditional on the router being on.
-            DevBootstrap.bootstrapRouterCredentials(pool, dev, opts.apiPort());
+            DevBootstrap.bootstrapRouterCredentials(pools.api(), dev, opts.apiPort());
 
             // ── the shared server ─────────────────────────────────────────
             Env serverEnv = devEnv(dev, opts, databaseUrl);
@@ -175,10 +178,10 @@ public final class StartCommand implements Callable<Integer> {
                 case Server.Spa.Embedded _ -> LOG.info("embedded Vue SPA available");
                 case Server.Spa.None _ -> LOG.warn("frontend not embedded — this flowcatalyst-server build carries no SPA; API only");
             }
-            Server.Running running = new Server(serverEnv, new Server.Mode.Platform(pool), spa, registry).start();
-            return new Started(running, pool, pg, ownsPid ? pidFile : null, pid);
+            Server.Running running = new Server(serverEnv, new Server.Mode.Platform(pools), spa, registry).start();
+            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid);
         } catch (IOException | RuntimeException e) {
-            if (pool != null) pool.close();
+            if (pools != null) pools.close();
             if (pg != null) pg.close();
             if (ownsPid) PidFile.removeIfOwned(pidFile, pid);
             throw e;
@@ -261,16 +264,16 @@ public final class StartCommand implements Callable<Integer> {
     /// fails. Idempotent: the shutdown hook and `call()` may both invoke it.
     public static final class Started implements AutoCloseable {
         private final Server.Running running;
-        private final GatedDataSource pool;
+        private final Pools pools;
         private final EmbeddedPg pg;
         private final Path pidFile;
         private final long pid;
         // Guards the once-only teardown; set by whichever of the hook / call() gets there first.
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        Started(Server.Running running, GatedDataSource pool, EmbeddedPg pg, Path pidFile, long pid) {
+        Started(Server.Running running, Pools pools, EmbeddedPg pg, Path pidFile, long pid) {
             this.running = running;
-            this.pool = pool;
+            this.pools = pools;
             this.pg = pg;
             this.pidFile = pidFile;
             this.pid = pid;
@@ -308,7 +311,7 @@ public final class StartCommand implements Callable<Integer> {
                 running.stop();
             } finally {
                 try {
-                    pool.close();
+                    pools.close();
                 } finally {
                     try {
                         if (pg != null) pg.close();

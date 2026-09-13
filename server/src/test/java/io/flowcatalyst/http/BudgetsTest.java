@@ -20,7 +20,7 @@ class BudgetsTest {
         assertThat(b.budget(Group.LOGIN)).contains(n);
         assertThat(b.budget(Group.OIDC)).contains(n);
         assertThat(b.budget(Group.DISPATCH)).isEmpty();
-        assertThat(b.budget(Group.INGEST)).isEmpty();
+        assertThat(b.budget(Group.BFF)).isEmpty();
     }
 
     @Test

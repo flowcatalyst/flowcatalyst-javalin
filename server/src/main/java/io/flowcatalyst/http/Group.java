@@ -1,12 +1,34 @@
 package io.flowcatalyst.http;
 
-/// The four tier-2 admission-control bulkhead groups (`docs/spec/admission.md`).
-/// A registration made through `Routes.in(Group)` carries the group so the
-/// adapter can apply the corresponding budget. In Phase 1 the Javalin
-/// adapter records the group on the [RouteRegistry.Registration] and applies
-/// no budget.
+/// The admission-control / connection-pool groups (`docs/spec/admission.md`
+/// §11.7, "groups and pools"). A registration made through `Routes.in(Group)`
+/// carries the group so the adapter can apply the corresponding budget/pool;
+/// [io.flowcatalyst.platform.shared.database.Pools#forGroup] maps every group
+/// to one of the four physical [io.flowcatalyst.platform.shared.database.GatedDataSource]s.
 public enum Group {
-    LOGIN, OIDC, DISPATCH, INGEST,
+    /// Every route the message router calls: processing, settled, ingest —
+    /// today's (pre-§11.7) `DISPATCH` and `INGEST` merged into one group. Its
+    /// own pool (`DISPATCH`, ¼ of the budget) so a slow customer webhook or a
+    /// busy ingest never occupies an `API` pool slot.
+    DISPATCH,
+    /// `/bff/**`: what the SPA calls, declared flatly regardless of
+    /// read/write — its own pool (`BFF`, ¼ of the budget).
+    BFF,
+    /// An `/api/**` route whose handler runs an `Operation`/`TxOperation`
+    /// (a use case in a transaction): the connection is pinned for the whole
+    /// request. Served by the `API` pool.
+    API_WRITE,
+    /// Every other `/api/**` route — the default for an ungrouped `/api/`
+    /// registration (`LockfileCoverageTest`'s sibling `RouteGroupTest`
+    /// treats a `null` group on an `/api/` path as `API_READ`). Served by
+    /// the `API` pool.
+    API_READ,
+    /// Login (CPU-bound); served by the `API` pool alongside `API_READ` /
+    /// `API_WRITE` / `OIDC` — not wired at any registration in this unit
+    /// (§11.7's "groups and pools" half only), kept for the workers unit.
+    LOGIN,
+    /// OIDC (CPU-bound); same pool and same "not wired yet" note as [#LOGIN].
+    OIDC,
     /// Routes that never check out a database connection (the SPA, the OpenAPI
     /// documents, the router's in-memory API, the 404 path): nothing to queue for,
     /// so the listener runs them unbounded, one virtual thread each, never behind

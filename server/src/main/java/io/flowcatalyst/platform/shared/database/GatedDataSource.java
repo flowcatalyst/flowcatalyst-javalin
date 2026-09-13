@@ -149,20 +149,32 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
         return gated;
     }
 
-    /// `fc_db_gate_waiting{lane}` and `fc_db_gate_held{lane}`.
-    public MultiCollector collector() {
+    /// `fc_db_gate_waiting{pool,lane}` and `fc_db_gate_held{pool,lane}`, `pool`
+    /// naming which of [io.flowcatalyst.platform.shared.database.Pools]'s four
+    /// physical sources this gate is (`api` / `bff` / `dispatch` / `background`)
+    /// so the two group-sized gates on the request path — and the background
+    /// one — are distinguishable in the same registry (`docs/spec/admission.md`
+    /// §11.7).
+    public MultiCollector collector(String poolName) {
+        java.util.Objects.requireNonNull(poolName, "poolName");
         return () -> {
             var w = GaugeSnapshot.builder().name("fc_db_gate_waiting")
-                    .help("Callers parked (untimed) on the pool gate, by lane.");
+                    .help("Callers parked (untimed) on the pool gate, by pool and lane.");
             var h = GaugeSnapshot.builder().name("fc_db_gate_held")
-                    .help("Pool-gate permits currently held, by lane.");
+                    .help("Pool-gate permits currently held, by pool and lane.");
             for (Lane lane : new Lane[] {ordinary, probes}) {
-                var labels = Labels.of("lane", lane.name);
+                var labels = Labels.of("pool", poolName, "lane", lane.name);
                 w.dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().labels(labels).value(lane.waiting.get()).build());
                 h.dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().labels(labels).value(lane.held.get()).build());
             }
             return MetricSnapshots.builder().metricSnapshot(w.build()).metricSnapshot(h.build()).build();
         };
+    }
+
+    /// Back-compat for a single-pool caller (fcdev one-off commands, tests):
+    /// names the series `"default"`.
+    public MultiCollector collector() {
+        return collector("default");
     }
 
     @Override

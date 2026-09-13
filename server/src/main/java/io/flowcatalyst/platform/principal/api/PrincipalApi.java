@@ -71,6 +71,7 @@ import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -169,35 +170,36 @@ public final class PrincipalApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/principals", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/principals", Auth.scoped(ctx -> create(ctx, s)));
-        routes.post("/api/principals/users", Auth.scoped(ctx -> createUser(ctx, s)));
-        routes.post("/api/principals/bulk-import", Auth.scoped(ctx -> bulkImport(ctx, s)));
-        routes.post("/api/principals/sync", Auth.scoped(ctx -> syncUsers(ctx, s)));
+        write.post("/api/principals", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/principals/users", Auth.scoped(ctx -> createUser(ctx, s)));
+        write.post("/api/principals/bulk-import", Auth.scoped(ctx -> bulkImport(ctx, s)));
+        write.post("/api/principals/sync", Auth.scoped(ctx -> syncUsers(ctx, s)));
         routes.get("/api/principals/check-email-domain", Auth.scoped(ctx -> checkEmailDomain(ctx, s)));
         routes.get("/api/principals/developer-users", Auth.scoped(ctx -> listDeveloperUsers(ctx, s)));
         routes.get("/api/principals/{id}", Auth.scoped(ctx -> getById(ctx, s)));
         routes.get("/api/principals/{id}/version", Auth.scoped(ctx -> getVersion(ctx, s)));
-        routes.put("/api/principals/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/principals/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.post("/api/principals/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
-        routes.post("/api/principals/{id}/reset-password", Auth.scoped(ctx -> resetPassword(ctx, s)));
+        write.put("/api/principals/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post("/api/principals/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.post("/api/principals/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        write.post("/api/principals/{id}/reset-password", Auth.scoped(ctx -> resetPassword(ctx, s)));
         routes.post("/api/principals/{id}/send-password-reset", Auth.scoped(ctx -> sendPasswordReset(ctx, s)));
         routes.post("/api/principals/{id}/reset-2fa", Auth.scoped(ctx -> resetTwoFactor(ctx, s)));
-        routes.delete("/api/principals/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.delete("/api/principals/{id}", Auth.scoped(ctx -> delete(ctx, s)));
         routes.get("/api/principals/{id}/roles", Auth.scoped(ctx -> listRoles(ctx, s)));
-        routes.put("/api/principals/{id}/roles", Auth.scoped(ctx -> assignRoles(ctx, s)));
-        routes.post("/api/principals/{id}/roles", Auth.scoped(ctx -> addRole(ctx, s)));
-        routes.delete("/api/principals/{id}/roles/{role}", Auth.scoped(ctx -> removeRole(ctx, s)));
+        write.put("/api/principals/{id}/roles", Auth.scoped(ctx -> assignRoles(ctx, s)));
+        write.post("/api/principals/{id}/roles", Auth.scoped(ctx -> addRole(ctx, s)));
+        write.delete("/api/principals/{id}/roles/{role}", Auth.scoped(ctx -> removeRole(ctx, s)));
         routes.get("/api/principals/{id}/application-access", Auth.scoped(ctx -> listApplicationAccess(ctx, s)));
-        routes.put("/api/principals/{id}/application-access", Auth.scoped(ctx -> assignApplicationAccess(ctx, s)));
+        write.put("/api/principals/{id}/application-access", Auth.scoped(ctx -> assignApplicationAccess(ctx, s)));
         routes.get("/api/principals/{id}/available-applications", Auth.scoped(ctx -> listAvailableApplications(ctx, s)));
         routes.get("/api/principals/{id}/client-access", Auth.scoped(ctx -> listClientAccess(ctx, s)));
-        routes.post("/api/principals/{id}/client-access", Auth.scoped(ctx -> grantClientAccess(ctx, s)));
-        routes.delete("/api/principals/{id}/client-access/{clientId}", Auth.scoped(ctx -> revokeClientAccess(ctx, s)));
-        routes.put("/api/principals/{id}/client-association", Auth.scoped(ctx -> setClientAssociation(ctx, s)));
-        routes.post("/api/principals/{id}/developer-credential", Auth.scoped(ctx -> setDeveloperCredential(ctx, s)));
-        routes.delete("/api/principals/{id}/developer-credential", Auth.scoped(ctx -> revokeDeveloperCredential(ctx, s)));
+        write.post("/api/principals/{id}/client-access", Auth.scoped(ctx -> grantClientAccess(ctx, s)));
+        write.delete("/api/principals/{id}/client-access/{clientId}", Auth.scoped(ctx -> revokeClientAccess(ctx, s)));
+        write.put("/api/principals/{id}/client-association", Auth.scoped(ctx -> setClientAssociation(ctx, s)));
+        write.post("/api/principals/{id}/developer-credential", Auth.scoped(ctx -> setDeveloperCredential(ctx, s)));
+        write.delete("/api/principals/{id}/developer-credential", Auth.scoped(ctx -> revokeDeveloperCredential(ctx, s)));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

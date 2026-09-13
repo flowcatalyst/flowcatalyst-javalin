@@ -300,7 +300,7 @@ abstract class SeamContract {
         try (var fixture = TestHttp.routes(routes -> {
             routes.get("/fixture/a", ctx -> ctx.result("a"));
             routes.in(Group.LOGIN).post("/fixture/b", ctx -> ctx.result("b"));
-            routes.in(Group.INGEST).put("/fixture/c", ctx -> { });
+            routes.in(Group.DISPATCH).put("/fixture/c", ctx -> { });
             routes.delete("/fixture/d", ctx -> { });
             routes.before(ctx -> { });
             routes.after(ctx -> { });
@@ -310,7 +310,7 @@ abstract class SeamContract {
             assertThat(regs).containsExactlyInAnyOrder(
                     new RouteRegistry.Registration("GET", "/fixture/a", null),
                     new RouteRegistry.Registration("POST", "/fixture/b", Group.LOGIN),
-                    new RouteRegistry.Registration("PUT", "/fixture/c", Group.INGEST),
+                    new RouteRegistry.Registration("PUT", "/fixture/c", Group.DISPATCH),
                     new RouteRegistry.Registration("DELETE", "/fixture/d", null));
         }
     }

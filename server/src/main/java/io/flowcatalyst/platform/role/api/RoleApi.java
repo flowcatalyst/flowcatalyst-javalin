@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -72,12 +73,13 @@ public final class RoleApi {
     /// lockfile's. Literal segments are registered before the `{id}` /
     /// `{roleName}` routes so they take precedence (spec §3).
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/roles", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/roles", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/roles", Auth.scoped(ctx -> create(ctx, s)));
         // Permission catalogue.
         routes.get("/api/roles/permissions", Auth.scoped(ctx -> listPermissions(ctx, s)));
         routes.get("/api/roles/permissions/{permission}", Auth.scoped(ctx -> getPermission(ctx, s)));
-        routes.delete("/api/roles/permissions/{permission}", Auth.scoped(ctx -> deletePermission(ctx, s)));
+        write.delete("/api/roles/permissions/{permission}", Auth.scoped(ctx -> deletePermission(ctx, s)));
         // Lookups by code / source / application + filter options.
         routes.get("/api/roles/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
         routes.get("/api/roles/by-source/{source}", Auth.scoped(ctx -> listBySource(ctx, s)));
@@ -85,13 +87,13 @@ public final class RoleApi {
         routes.get("/api/roles/filters/applications", Auth.scoped(ctx -> applicationFilters(ctx, s)));
         // The role itself.
         routes.get("/api/roles/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/roles/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/roles/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/roles/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/roles/{id}", Auth.scoped(ctx -> delete(ctx, s)));
         // Permission grants on a role.
         routes.get("/api/roles/{roleName}/permissions", Auth.scoped(ctx -> listRolePermissions(ctx, s)));
-        routes.post("/api/roles/{roleName}/permissions", Auth.scoped(ctx -> grantFromBody(ctx, s))); // SDK alias
-        routes.post("/api/roles/{roleName}/permissions/{permission}", Auth.scoped(ctx -> grant(ctx, s)));
-        routes.delete("/api/roles/{roleName}/permissions/{permission}", Auth.scoped(ctx -> revoke(ctx, s)));
+        write.post("/api/roles/{roleName}/permissions", Auth.scoped(ctx -> grantFromBody(ctx, s))); // SDK alias
+        write.post("/api/roles/{roleName}/permissions/{permission}", Auth.scoped(ctx -> grant(ctx, s)));
+        write.delete("/api/roles/{roleName}/permissions/{permission}", Auth.scoped(ctx -> revoke(ctx, s)));
     }
 
     // ── Role handlers ──────────────────────────────────────────────────────

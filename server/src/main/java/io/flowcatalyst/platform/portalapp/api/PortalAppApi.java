@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -62,11 +63,12 @@ public final class PortalAppApi {
     }
 
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/portal-apps", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/portal-apps", Auth.scoped(ctx -> create(ctx, s)));
-        routes.put("/api/portal-apps/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/portal-apps/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/portal-apps/{id}/assign-unassigned", Auth.scoped(ctx -> assignUnassigned(ctx, s)));
+        write.post("/api/portal-apps", Auth.scoped(ctx -> create(ctx, s)));
+        write.put("/api/portal-apps/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/portal-apps/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/portal-apps/{id}/assign-unassigned", Auth.scoped(ctx -> assignUnassigned(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

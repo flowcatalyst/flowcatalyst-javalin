@@ -40,6 +40,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -100,22 +101,23 @@ public final class ApplicationApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. Literal sub-paths are registered before the `{id}` ones.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/applications", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/applications", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/applications", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/applications/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
         routes.get("/api/applications/by-id/{id}/roles", Auth.scoped(ctx -> listRoles(ctx, s)));
         routes.get("/api/applications/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/applications/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/applications/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/applications/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.post("/api/applications/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
-        routes.post("/api/applications/{id}/service-account", Auth.scoped(ctx -> attachServiceAccount(ctx, s)));
+        write.put("/api/applications/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/applications/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/applications/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.post("/api/applications/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        write.post("/api/applications/{id}/service-account", Auth.scoped(ctx -> attachServiceAccount(ctx, s)));
         routes.get("/api/applications/{id}/clients", Auth.scoped(ctx -> listClientConfigs(ctx, s)));
         routes.get("/api/applications/{id}/clients/{clientId}", Auth.scoped(ctx -> getClientConfig(ctx, s)));
-        routes.post("/api/applications/{id}/clients/{clientId}/enable", Auth.scoped(ctx -> enableForClient(ctx, s)));
-        routes.post("/api/applications/{id}/clients/{clientId}/disable", Auth.scoped(ctx -> disableForClient(ctx, s)));
-        routes.post("/api/applications/{id}/provision-service-account", Auth.scoped(ctx -> provisionServiceAccount(ctx, s)));
-        routes.post("/api/applications/{id}/provision-login-client", Auth.scoped(ctx -> provisionLoginClient(ctx, s)));
+        write.post("/api/applications/{id}/clients/{clientId}/enable", Auth.scoped(ctx -> enableForClient(ctx, s)));
+        write.post("/api/applications/{id}/clients/{clientId}/disable", Auth.scoped(ctx -> disableForClient(ctx, s)));
+        write.post("/api/applications/{id}/provision-service-account", Auth.scoped(ctx -> provisionServiceAccount(ctx, s)));
+        write.post("/api/applications/{id}/provision-login-client", Auth.scoped(ctx -> provisionLoginClient(ctx, s)));
     }
 
     // ── Handlers: applications ─────────────────────────────────────────────

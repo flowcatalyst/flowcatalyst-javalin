@@ -16,7 +16,7 @@ import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.http.vertx.VertxListener;
 import java.util.function.Consumer;
-import io.flowcatalyst.platform.shared.database.GatedDataSource;
+import io.flowcatalyst.platform.shared.database.Pools;
 import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
@@ -88,19 +88,24 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// What the instance runs, and therefore whether it owns a database pool.
     public sealed interface Mode permits Mode.Platform, Mode.Worker, Mode.RouterOnly {
 
-        /// The platform API is served from `pool`; any enabled DB-backed
-        /// background subsystem shares it.
-        record Platform(DataSource pool) implements Mode {
+        /// The platform API is served from `pools.api()`/`pools.bff()`/
+        /// `pools.dispatch()` (by route group, `docs/spec/admission.md`
+        /// §11.7); every enabled DB-backed background subsystem shares
+        /// `pools.background()`.
+        record Platform(Pools pools) implements Mode {
             public Platform {
-                Objects.requireNonNull(pool, "pool");
+                Objects.requireNonNull(pools, "pools");
             }
         }
 
         /// DB-backed background subsystems (scheduler, stream, outbox …)
-        /// without the platform API — the worker tier.
-        record Worker(DataSource pool) implements Mode {
+        /// without the platform API — the worker tier. Only `pools.background()`
+        /// is ever used (no request path exists in this mode), but the whole
+        /// [Pools] travels together with [Platform] so [Main]/`StartCommand`
+        /// open one set of four pools per process, not two.
+        record Worker(Pools pools) implements Mode {
             public Worker {
-                Objects.requireNonNull(pool, "pool");
+                Objects.requireNonNull(pools, "pools");
             }
         }
 
@@ -327,9 +332,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
+        // Every background subsystem below (scheduler, outbox, stream,
+        // scheduled-job scheduler, purger, mail sender — and the router's own
+        // housekeeping, `Router.build`'s dataSource) runs on `pools.background()`,
+        // never a request-path pool (admission.md §11.7).
         DataSource dbPool = switch (mode) {
-            case Mode.Platform(var pool) -> pool;
-            case Mode.Worker(var pool) -> pool;
+            case Mode.Platform(var pools) -> pools.background();
+            case Mode.Worker(var pools) -> pools.background();
             // RouterOnly's pool is null in the ordinary case (R4 removed the
             // fixed single-queue branch that used to need one here) — either
             // way this is exactly the pool the router (and only the router)
@@ -484,16 +493,18 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             // to the OutboxMailService; this is the other half, the background sender that
             // delivers through the SMTP-or-logging transport. Platform mode only.
             MailSender mailSender = null;
-            if (mode instanceof Mode.Platform(var pool)) {
-                mailSender = MailSender.start(pool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
+            if (mode instanceof Mode.Platform) {
+                // pools.background() via `dbPool` (admission.md §11.7's BACKGROUND list
+                // names the mail sender explicitly), not the API pool.
+                mailSender = MailSender.start(dbPool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
                         MailSender.DEFAULT_INTERVAL);
                 registry.register(mailSender.collector());
             }
             registry.register(AuthAlarms.collector());
             if (router != null) registry.register(router.mediationHttpVersionCollector());
             switch (mode) {
-                case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
-                case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+                case Mode.Platform(var pools) -> pools.registerCollectors(registry);
+                case Mode.Worker(var pools) -> pools.registerCollectors(registry);
                 default -> { }
             }
 
@@ -702,7 +713,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             routes.get("/health", health(mode)::handle);
 
             switch (mode) {
-                case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(routes);
+                case Mode.Platform(var pools) -> reaperHolder[0] = new Platform(env, pools, loadSigningKeys()).register(routes);
                 case Mode.Worker _, Mode.RouterOnly _ -> {
                     // no platform API on this instance
                 }
@@ -737,9 +748,12 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
         };
+        // The main request-path worker pool is sized off the `API` physical pool
+        // now (admission.md §11.7) — the same pool `API_READ`/`API_WRITE`/`LOGIN`/
+        // `OIDC` routes check out from.
         int mainWorkers = switch (mode) {
-            case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
-            case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> g.ordinaryPermits();
+            case Mode.Platform(var pools) -> pools.api().ordinaryPermits();
+            case Mode.Worker(var pools) -> pools.api().ordinaryPermits();
             default -> io.flowcatalyst.platform.shared.database.Database.DEFAULT_POOL_SIZE - 2;
         };
         var workers = io.flowcatalyst.http.RequestWorkers.derived(mainWorkers);
@@ -777,10 +791,10 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// login-attempt partitions the backoff store writes into are missing.
     private static Health health(Mode mode) {
         return switch (mode) {
-            case Mode.Platform(var pool) -> {
-                // Probes take from the gate's reserved lane so readiness stays truthful
-                // when the ordinary permits are all held (admission.md §1).
-                var attempts = new LoginAttemptRepository(pool instanceof GatedDataSource g ? g.forProbes() : pool);
+            case Mode.Platform(var pools) -> {
+                // Probes take from the API pool's reserved lane so readiness stays
+                // truthful when its ordinary permits are all held (admission.md §1, §11.3).
+                var attempts = new LoginAttemptRepository(pools.api().forProbes());
                 yield new Health(List.of(new Health.Check("loginAttemptPartitions", () -> {
                     var missing = attempts.missingQuarterlyPartitions(Instant.now());
                     return missing.isEmpty() ? "" : "missing partitions: " + String.join(", ", missing);

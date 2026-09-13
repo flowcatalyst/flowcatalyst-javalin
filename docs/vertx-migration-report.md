@@ -73,3 +73,171 @@ Native build was not run (out of scope for this phase); native reachability meta
 - `docs/vertx-plan.md`'s "Kept from the Vert.x work despite the reversion" list already correctly predicted that `RequestWorkers` would need a real caller again; that held exactly as described.
 - The old tree's `NoFrameworkLeakTest` assumed Javalin was gone entirely (single Vert.x-only scan). That's no longer true with MCP staying on Javalin, and main had *already* anticipated a two-framework world (it added the Vert.x scan for the mediation client) before this phase started — the merge in conflict #6 above was smaller than expected as a result.
 - `OutboxAdminApi`'s and `Metrics`'s restored Vert.x versions needed zero logic changes beyond the framework swap — their route bodies (`ready()`, `scrape()`, the `/outbox/groups/*` handlers) were already 100% framework-neutral on both sides of the revert.
+
+## Phase 2a — groups and pools
+
+Branch `vertx-2`, worktree `flowcatalyst-javalin-vertx2`. Goal: `docs/spec/admission.md`
+§11.7's build plan, first half only — endpoint groups and the four physical connection
+pools. The second half (request workers, bounded queues, per-statement reads, `Budgets`
+deletion, the new metrics) is a separate unit; `RequestWorkers` and `Budgets` are kept
+compiling and wired exactly as Phase 1 left them.
+
+### Groups
+
+`io.flowcatalyst.http.Group` gained `BFF`, `API_WRITE`, `API_READ` and dropped `INGEST`
+(merged into `DISPATCH`, per §11.7: "every route the message router calls: processing,
+settled, ingest"). `LOGIN`/`OIDC`/`NO_DB` are unchanged and are not wired at any new
+registration in this unit (that is the workers unit's job — `LOGIN`/`OIDC` sizing is
+processor-count-based, not pool-based).
+
+**Classification method.** `/bff/**` is flat `Group.BFF` regardless of read/write (the
+spec's own rule — a BFF write, if any, would declare `API_WRITE`, but none currently do).
+`DISPATCH` is the three `/api/dispatch/*` routes the router calls (`process`, `settled`,
+`router-config`) plus the whole `IngestApi` surface (`/api/events*`, `/api/dispatch-jobs`
+create, `/api/audit-logs/batch` — infrastructure batch inserts the SDK's own outbox
+processor POSTs, spec `sdk-ingest.md`). Every other `/api/**` route defaults to
+`API_READ` (an ungrouped `/api/` registration's group is `null` in the registry; the
+default is asserted by the test below, not enforced at runtime — nothing currently
+relies on the distinction at request time since both share the `API` physical pool).
+`API_WRITE` is explicit: a route is marked with it iff its handler ultimately calls
+`Operation#run`/`TxOperation#run` (a `UnitOfWork` transaction) — determined by scanning
+each `*Api.java`'s `register()` body, resolving one level of local `Handler var = ...;`
+indirection and following private-method calls transitively to find a
+`.run(uow, …)`/`uow.inTransaction(…)`/`uow.commit*(…)`/`uow.emitEvent(…)` call. A route
+whose handler writes to the database *outside* the `UnitOfWork` envelope (three found:
+`PrincipalApi#sendPasswordReset`/`#resetTwoFactor`, `ScheduledJobApi#writeInstanceLog`/
+`#completeInstance`) is correctly `API_READ` by this rule — no transaction is opened, so
+there is nothing for the pinned-connection mode to protect, which is exactly the
+admission-control property the split exists for.
+
+**Landed:** 238 `/api/**` routes scanned across 28 `*Api.java`/bff files, 131 declared
+`API_WRITE` (only the write ones needed an edit — `routes.post(...)` → `write.post(...)`
+against a local `Routes write = routes.in(Group.API_WRITE);`; reads are untouched and
+take the default), 107 left as the `API_READ` default. Six further write routes
+(`DispatchJobApi#registerAt`'s `requeue`/`{id}/cancel`, `ProcessApi#registerAt`'s
+`create`/`update`/`{id}/archive`/`{id}/delete`) are mounted through a shared
+`registerAt(routes, prefix, state)` helper reused for both the `/api/` and `/bff/`
+mounts with a *variable* prefix, so the literal-path scan can't see them; both gained a
+private 4-arg overload (`registerAt(routes, prefix, state, Group writeGroup)`) that only
+marks the writes when `writeGroup != null` — the `/api/` caller passes `Group.API_WRITE`,
+the `/bff/` caller (a separately-wrapped `Routes` already carrying `Group.BFF`) keeps the
+public 3-arg overload, so the two mounts never fight over one route's group. 13 files
+needed no change at all (every route already the `API_READ` default): `AuditLogApi`,
+`DocsApi`, `EventApi`, `LoginAttemptApi`, `MeApi`, `PublicApi`, plus the seven pure-BFF
+classes wrapped at their `Platform.java` call site instead of internally.
+
+**Test:** `server/src/test/java/io/flowcatalyst/server/RouteGroupTest.java` — two tests.
+`everyWriteRouteFoundBySourceScanIsDeclaredApiWrite` re-derives the write-route set from
+the *current* source tree at test time (not a hand-written list — a later write route
+added without `Group.API_WRITE` fails the same day) and asserts it against the live
+registry from a real booted `Server`, both directions (every scanned write route is
+`API_WRITE`; every route declared `API_WRITE` was found by the scan or is one of the six
+dynamic-prefix routes named above). `explicitlyPinnedDynamicPrefixWriteRoutesAreApiWrite`
+covers those six by name. Mutant: reverted `write.put("/api/clients/{id}", …)` to
+`routes.put(...)` in `ClientApi#register` — `everyWriteRouteFoundBySourceScanIs...` failed
+with `PUT /api/clients/{id}: expected API_WRITE, registry has null`; reverting the mutant
+restored green (confirmed with a clean, non-incremental build both times — see the build
+hygiene note below).
+
+### Pools
+
+`io.flowcatalyst.platform.shared.database.Pools` — a new record, four `GatedDataSource`s
+(`api`, `bff`, `dispatch`, `background`) opened by `Pools#open(url, EnvReader)` from one
+budget `B` (`FC_DB_POOL_SIZE`, default 32 — [`Pools#DEFAULT_BUDGET`]): `api = B/2`,
+`bff = B/4`, `dispatch = B/4`, `background = 4` fixed outside `B`. Each is independently
+overridable (`FC_DB_POOL_SIZE_API` / `_BFF` / `_DISPATCH` / `_BACKGROUND` — the only
+knobs) and every pool is floored at `Pools#MIN_POOL_SIZE` (2), whether derived or
+overridden. `Pools#forGroup(Group)` maps `API_READ`/`API_WRITE`/`LOGIN`/`OIDC` → `api`,
+`BFF` → `bff`, `DISPATCH` → `dispatch`; `NO_DB` throws (those routes never touch a pool).
+`GatedDataSource#collector()` gained a `collector(String poolName)` overload adding a
+`pool` label alongside the existing `lane` one, so `fc_db_gate_waiting`/`fc_db_gate_held`
+are distinguishable per physical pool; `Pools#registerCollectors(PrometheusRegistry)`
+registers all four.
+
+**Wiring.** `Main`/`StartCommand` open one `Pools` (`Pools#open`/dev's own `EnvReader`)
+in place of `Database.newPool`; `Server.Mode.Platform`/`Worker` now carry `Pools` instead
+of one `DataSource` (`RouterOnly` is unchanged — still a nullable single pool, since it
+never goes through this split). Every background subsystem in `Server#start`
+(scheduler, outbox, stream, scheduled-job scheduler, purger, mail sender, and — since it
+is not really request-path work either — the router's own `dataSource` parameter) now
+derives from `pools.background()` via the existing `dbPool` local, not a request-path
+pool; readiness probes take `pools.api().forProbes()` (§1's reserved lane, now on the
+`api` pool specifically). AWS Secrets Manager credential rotation now starts one
+`DbSecretRefresher` per physical pool (four independent `HikariDataSource`s each need
+their own credential push) rather than one.
+
+`Platform`'s constructor now takes `Pools` and keeps `pool = pools.api()` as its
+existing field (used, unchanged, by the large majority of `/api/**` and `/auth/`/`/oauth/`
+repositories — every one of those groups shares the `api` physical pool by design, so
+"hand each API class the pool for its group" is a no-op for them). Three call sites got a
+genuinely different physical pool: the dispatch-job reaper (background-listed explicitly
+in §11.7) gets its own `DispatchJobRepository(pools.background())`; `SettledApi`/
+`ProcessingApi`/`IngestApi`/`RouterConfigApi` (the `DISPATCH` group) get fresh repository
+instances over `pools.dispatch()` (`DispatchJobRepository`, `EventRepository`,
+`ClientRepository`, `ApplicationRepository`, `AuditLogRepository` — all stateless jOOQ
+wrappers over their `DataSource`, so a second instance over the same tables is safe, not
+a second view of the data); `DashboardBff` (the one BFF repository nothing on the `/api`
+side shares) gets `DashboardRepository(pools.bff())`.
+
+**What is NOT physically separated in this unit, and why.** Every other `/bff/**` mount
+(`FilterOptionsBff`, `DeveloperBff`, `EventTypesBff`, `RolesBff`, `ScheduledJobsBff`,
+`DebugBff`, and the three `registerAt`-shared classes) still executes against `pools.api()`
+— their repository/`State` instances are the exact same objects their `/api` sibling
+registers with, *by design* (`Platform.java`'s own comment: "the aggregate mounts reuse
+the SAME handlers/state as their `/api` registrations … under a second base path"). Their
+routes carry `Group.BFF` correctly (admission/metrics/future-worker-sizing all see them
+as `BFF`), but un-sharing their repositories to point at `pools.bff()` would mean
+building a second `UnitOfWork`/repository set for each, contradicting that explicit
+sharing decision. Left for a follow-up if BFF's own connection-hold profile turns out to
+need it — the metrics ruled in §11.6 (queue depth/utilisation per pool) are what would
+tell you.
+
+**Tests** (`server/src/test/java/io/flowcatalyst/platform/shared/database/PoolsTest.java`,
+6 tests): sizes from the default budget (mutant: `budget/4` instead of `budget/2` for
+`api` — two size assertions fail, `expected: 16 but was: 8`); `FC_DB_POOL_SIZE` rescaling
+every share together; per-group override wins; every pool floored at 2 from both a tiny
+budget and a tiny override; `forGroup` mapping (including `NO_DB` throwing); the collector
+exposes all four `pool` labels (`fc_db_gate_waiting`/`_held`, scraped from a real
+`PrometheusRegistry` — `MetricSnapshots` does not merge same-named snapshots from
+different collectors into one, so the assertion `flatMap`s data points across all
+matching snapshots rather than taking the first).
+`server/src/test/java/io/flowcatalyst/server/BackgroundPoolWiringTest.java` pins pool
+*identity*, not merely that a subsystem started: four `CountingDataSource` wrappers (one
+per physical pool, all delegating to the same migrated `TestPg` fixture) feed a real
+`Server` booted in `Mode.Worker` with only the outbox enabled; `Mode.Worker` never builds
+`Platform` (`Server#buildApiAndReaper`'s `Mode.Worker _, Mode.RouterOnly _ -> {}` branch),
+so with the router off every connection is attributable to a background subsystem —
+`PostgresOutboxRepository#initSchema` runs synchronously inside `Server#start`, so the
+assertion needs no wait/retry. Mutant: `case Mode.Worker(var pools) -> pools.background();`
+→ `pools.api();` — `backgroundConnections` stayed 0 and the test failed
+(`Expecting actual: 0 to be greater than: 0`); reverted, confirmed green again.
+
+**A build-hygiene incident worth recording**: the `RouteGroupTest` mutant above initially
+appeared to still fail *after* reverting the source — an incremental `mvn test` had not
+recompiled `ClientApi.class` (`server/target/classes` predated the revert, confirmed by
+comparing the `.class` mtime against the `.java` mtime — they matched, but the *content*
+did not, i.e. Maven's compiler plugin skipped it). `rm -rf server/target/{classes,test-classes}`
+and a clean run reproduced the correct (passing) result. `CLAUDE.md`'s "prefer `mvn clean
+test` after any interface change" is this exact failure mode, not a hypothetical one.
+
+### Docs
+
+- `docs/spec/cutover.md` §4b: the Postgres sizing guidance is now
+  `pods × (B + 4) ≤ max_connections − superuser_reserved_connections` (was
+  `pods × 32 ≤ …` against the single old pool), naming all four env-var knobs.
+- `server/src/main/java/io/flowcatalyst/server/Env.java`'s class doc: added `Pools`'
+  four env vars to the "not here, on purpose" list (they are read directly by
+  `Pools#open`, not through the `Env` record, matching every other per-subsystem
+  `FromEnv` knob already documented there).
+
+### Suites
+
+```
+JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dsurefire.timeout=900
+```
+**4019 tests, 0 failures, 0 errors, 1 skipped** (pre-existing, unrelated to this unit).
+
+```
+JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am test -Dtest='io.flowcatalyst.fcdev.*Test' -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.timeout=900
+```
+**108 tests, 0 failures, 0 errors, 0 skipped.** `StartIntegrationTest` (4/4) and `DevDispatchRouterConfigIntegrationTest` (2/2) — the two real-boot tests that exercise `StartCommand`'s new `Pools.open(...)` wiring end to end — both green; `ServerTest` (7/7), `MainTest` (9/9) and `RouterStartupOrderTest` (1/1) in the server suite likewise.

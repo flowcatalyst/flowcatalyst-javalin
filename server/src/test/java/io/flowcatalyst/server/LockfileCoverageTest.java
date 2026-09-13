@@ -53,7 +53,7 @@ class LockfileCoverageTest {
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
         Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
-        var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
+        var server = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(), new PrometheusRegistry());
         RouteRegistry registry = server.buildApi().registry();
 
         Set<String> registered = new TreeSet<>();

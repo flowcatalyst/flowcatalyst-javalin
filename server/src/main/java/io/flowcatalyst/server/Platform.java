@@ -154,6 +154,7 @@ import io.flowcatalyst.platform.shared.openapi.SpecRoutes;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Handler;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
@@ -186,13 +187,18 @@ public final class Platform {
     private static final Logger LOG = LoggerFactory.getLogger(Platform.class);
 
     private final Env env;
+    /// The `API` physical pool (admission.md §11.7) — every repository below
+    /// is built from it unless a route group needs a different physical pool
+    /// (see `pools` / `dispatchPool` / `bffPool` below).
     private final DataSource pool;
+    private final io.flowcatalyst.platform.shared.database.Pools pools;
     private final SigningKeys signingKeys;
     private final UnitOfWork uow;
 
-    public Platform(Env env, DataSource pool, SigningKeys signingKeys) {
+    public Platform(Env env, io.flowcatalyst.platform.shared.database.Pools pools, SigningKeys signingKeys) {
         this.env = Objects.requireNonNull(env, "env");
-        this.pool = Objects.requireNonNull(pool, "pool");
+        this.pools = Objects.requireNonNull(pools, "pools");
+        this.pool = pools.api();
         this.signingKeys = Objects.requireNonNull(signingKeys, "signingKeys");
         this.uow = new UnitOfWork(pool, new PlatformSink(Json.MAPPER));
     }
@@ -319,8 +325,10 @@ public final class Platform {
         // here from the internal listener, behind ordinary bearer auth. Its own
         // repositories (not dispatchPoolRepo/subscriptionRepo above — those are
         // wired for other APIs) so this reads exactly as R3's Metrics wiring did.
-        RouterConfigApi.register(routes, new RouterConfigApi.State(
-                new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))));
+        // Group.DISPATCH (admission.md §11.7): the router itself fetches this document,
+        // so its repository is built over the DISPATCH physical pool, not the API one.
+        RouterConfigApi.register(routes.in(Group.DISPATCH), new RouterConfigApi.State(
+                new RouterConfigDocumentBuilder(pools.dispatch(), DispatchQueueSettings.resolve(env))));
         var roleRepo = new RoleRepository(pool);
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));
@@ -370,21 +378,32 @@ public final class Platform {
         // The reaper (dispatch-seam spec §7) is not leader-gated — every sweep is one
         // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
         // leader-gated loops Server starts. Returned below so Server.Running#stop() can
-        // close it.
-        var dispatchJobReaper = new DispatchJobReaper(dispatchJobRepo).start();
+        // close it. It is a background sweep, not a request-path route, so its own
+        // repository instance is built over pools.background() (admission.md §11.7's
+        // BACKGROUND list names the dispatch-job reaper explicitly) — a second,
+        // independent `DispatchJobRepository` over the same table as `dispatchJobRepo`
+        // above (the repositories are stateless jOOQ wrappers, so a second instance is
+        // just a different physical connection pool, not a different view of the data).
+        var dispatchJobReaper = new DispatchJobReaper(new DispatchJobRepository(pools.background())).start();
         // /api/dispatch/settled and /api/dispatch/process (dispatch-seam spec §5, §6, §11):
         // public routes, registered below via Platform.isPublicPath; fail-closed on a missing
         // FLOWCATALYST_APP_KEY, matching Go's scheduler + processing/settled mount ("refuses to
         // start without it"). Both self-verify the same scheduler-signed per-job HMAC bearer, so
         // they share one HmacTokenVerifier instance.
+        //
+        // Group.DISPATCH (admission.md §11.7): both routes are called only by the message
+        // router, so their repository is built over the DISPATCH physical pool — a second
+        // `DispatchJobRepository` instance over the same table as `dispatchJobRepo` above
+        // (safe: the repository is a stateless jOOQ wrapper over its DataSource).
+        var dispatchPoolJobRepo = new DispatchJobRepository(pools.dispatch());
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
-            SettledApi.register(routes, new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
+            SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchPoolJobRepo, dispatchAuthVerifier));
             // DeliveryCredentials.none() (dispatch-seam spec §5, §15): the platform has no
             // serviceaccount aggregate yet to resolve job -> subscription -> application ->
             // service-account webhook credentials from, so every delivery goes out bare until
             // that aggregate lands.
-            ProcessingApi.register(routes, new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
+            ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchPoolJobRepo, dispatchAuthVerifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient())));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
@@ -396,8 +415,14 @@ public final class Platform {
         EventApi.register(routes, eventApiState);
         // SDK ingest (docs/spec/sdk-ingest.md): infra batch inserts, no unit of work — the POSTs
         // alongside the GET-only EventApi/DispatchJobApi/AuditLogApi read surfaces above.
-        var ingestState = IngestApi.State.of(eventRepo, dispatchJobRepo, new AuditLogRepository(pool), clientRepo, applicationRepo);
-        IngestApi.register(routes, ingestState);
+        // Group.DISPATCH (admission.md §11.7): these are the "ingest" routes the message
+        // router's own outbox processor calls — every repository here is a fresh instance
+        // over pools.dispatch(), not the API-pool-bound ones above (stateless jOOQ wrappers,
+        // same tables, different physical connection pool).
+        var ingestState = IngestApi.State.of(new EventRepository(pools.dispatch()), dispatchPoolJobRepo,
+                new AuditLogRepository(pools.dispatch()), new ClientRepository(pools.dispatch()),
+                new ApplicationRepository(pools.dispatch()));
+        IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
         // the developer client-secret is encrypted under the app key from `env`, like the IdP secrets above.
@@ -532,20 +557,32 @@ public final class Platform {
         // `/bff/*` and `/api/me*` by design (bff spec §1). The aggregate
         // mounts reuse the SAME handlers/state as their `/api` registrations
         // above under a second base path (Go `registerBFF`/`registerAt`).
-        DashboardBff.register(routes, new DashboardBff.State(new DashboardRepository(pool)));
-        FilterOptionsBff.register(routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
-        DeveloperBff.register(routes, new DeveloperBff.State(applicationRepo, openApiSpecRepo, eventTypeRepo, uow,
+        // Every `/bff/**` registration carries Group.BFF flatly (admission.md
+        // §11.7: "`/bff/**` → BFF", not split by read/write); `/api/me*` is
+        // deliberately left ungrouped — it is under `/api/`, not `/bff/`, and
+        // every route is a read, so it takes the API_READ default.
+        Routes bff = routes.in(Group.BFF);
+        // DashboardRepository is used only here — nothing on the /api side shares it — so
+        // it is the one BFF repository this unit gives a genuinely separate physical pool
+        // (pools.bff()) rather than reusing an /api-group instance built over pools.api().
+        // Every other BFF mount below reuses the SAME repository/state instances as its
+        // `/api` sibling (deliberately, per the comment above — "the two prefixes serve
+        // the same handlers") and so still executes against the API pool; un-sharing those
+        // is left for a follow-up (see the report).
+        DashboardBff.register(bff, new DashboardBff.State(new DashboardRepository(pools.bff())));
+        FilterOptionsBff.register(bff, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
+        DeveloperBff.register(bff, new DeveloperBff.State(applicationRepo, openApiSpecRepo, eventTypeRepo, uow,
                 lockfile::json));
-        EventTypesBff.register(routes, new EventTypesBff.State(eventTypeRepo, uow));
-        RolesBff.register(routes, new RolesBff.State(roleRepo, permissionRepo, applicationRepo, uow));
-        ScheduledJobsBff.register(routes, new ScheduledJobsBff.State(scheduledJobRepo,
+        EventTypesBff.register(bff, new EventTypesBff.State(eventTypeRepo, uow));
+        RolesBff.register(bff, new RolesBff.State(roleRepo, permissionRepo, applicationRepo, uow));
+        ScheduledJobsBff.register(bff, new ScheduledJobsBff.State(scheduledJobRepo,
                 new ScheduledJobInstanceRepository(pool), clientRepo, applicationRepo));
         MeApi.register(routes, new MeApi.State(principalRepo, applicationRepo, clientRepo, new ClientConfigRepository(pool)));
-        EventApi.registerAt(routes, "/bff/events", eventApiState);
-        IngestApi.registerEventsBatchAt(routes, "/bff/events/batch", ingestState);
-        DispatchJobApi.registerAt(routes, "/bff/dispatch-jobs", new DispatchJobApi.State(dispatchJobRepo, uow));
-        ProcessApi.registerAt(routes, "/bff/processes", new ProcessApi.State(processRepo, uow));
-        DebugBff.register(routes, new DebugBff.State(eventRepo, dispatchJobRepo));
+        EventApi.registerAt(bff, "/bff/events", eventApiState);
+        IngestApi.registerEventsBatchAt(bff, "/bff/events/batch", ingestState);
+        DispatchJobApi.registerAt(bff, "/bff/dispatch-jobs", new DispatchJobApi.State(dispatchJobRepo, uow));
+        ProcessApi.registerAt(bff, "/bff/processes", new ProcessApi.State(processRepo, uow));
+        DebugBff.register(bff, new DebugBff.State(eventRepo, dispatchJobRepo));
 
         LOG.info("platform API wired");
         return dispatchJobReaper;

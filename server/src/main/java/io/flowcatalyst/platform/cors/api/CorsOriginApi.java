@@ -12,6 +12,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -59,11 +60,12 @@ public final class CorsOriginApi {
     /// lockfile's. The literal `/allowed` segment is registered before the
     /// `{id}` routes so it takes precedence (spec §3).
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/platform/cors/allowed", Auth.scoped(ctx -> publicAllowed(ctx, s)));
         routes.get("/api/platform/cors", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/platform/cors", Auth.scoped(ctx -> add(ctx, s)));
+        write.post("/api/platform/cors", Auth.scoped(ctx -> add(ctx, s)));
         routes.get("/api/platform/cors/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.delete("/api/platform/cors/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.delete("/api/platform/cors/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

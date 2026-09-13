@@ -19,6 +19,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -57,13 +58,14 @@ public final class ConnectionApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/connections", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/connections", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/connections", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/connections/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/connections/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/connections/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/connections/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
-        routes.post("/api/connections/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.put("/api/connections/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/connections/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/connections/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
+        write.post("/api/connections/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

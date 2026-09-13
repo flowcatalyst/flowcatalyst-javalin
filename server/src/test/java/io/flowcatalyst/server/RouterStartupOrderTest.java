@@ -107,7 +107,7 @@ class RouterStartupOrderTest {
                 "FC_ROUTER_CLIENT_SECRET", credentials.secret()));
 
         Instant before = Instant.now();
-        running = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(),
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(),
                 new PrometheusRegistry()).start();
 
         // The document served on OUR OWN API listener must be fetched and

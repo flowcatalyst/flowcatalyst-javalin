@@ -17,6 +17,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -59,20 +60,28 @@ public final class ProcessApi {
     /// Mounts the endpoints under `/api/processes`; paths, methods and status
     /// codes are the lockfile's.
     public static void register(Routes routes, State s) {
-        registerAt(routes, "/api/processes", s);
+        registerAt(routes, "/api/processes", s, Group.API_WRITE);
     }
 
     /// Mounts every process route under `prefix` — `/api/processes` for the
     /// SDK surface, `/bff/processes` for the SPA (bff spec §8, Go
-    /// `registerAt`): the two prefixes serve the same handlers.
+    /// `registerAt`): the two prefixes serve the same handlers. `/bff/processes`
+    /// carries `Group.BFF` throughout (the caller wraps `routes`), so this
+    /// overload never re-marks the writes there — only [#register]'s `/api/`
+    /// mount does, via [#registerAt(Routes,String,State,Group)].
     public static void registerAt(Routes routes, String prefix, State s) {
+        registerAt(routes, prefix, s, null);
+    }
+
+    private static void registerAt(Routes routes, String prefix, State s, Group writeGroup) {
+        Routes write = writeGroup != null ? routes.in(writeGroup) : routes;
         routes.get(prefix, Auth.scoped(ctx -> list(ctx, s)));
-        routes.post(prefix, Auth.scoped(ctx -> create(ctx, s)));
+        write.post(prefix, Auth.scoped(ctx -> create(ctx, s)));
         routes.get(prefix + "/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
         routes.get(prefix + "/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put(prefix + "/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post(prefix + "/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
-        routes.delete(prefix + "/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put(prefix + "/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post(prefix + "/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
+        write.delete(prefix + "/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

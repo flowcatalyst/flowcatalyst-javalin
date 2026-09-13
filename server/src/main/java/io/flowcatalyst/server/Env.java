@@ -28,7 +28,12 @@ import java.util.Map;
 /// ([io.flowcatalyst.platform.shared.auth.SigningKeys] reads the inline PEM
 /// variables), the log level/format ([Logging]), and the per-package
 /// `FromEnv`-style knobs (email, rate limiting, login backoff) which belong
-/// to their own subsystems. The field-encryption keys *are* here
+/// to their own subsystems — the connection-pool sizing knobs among them:
+/// `FC_DB_POOL_SIZE` (the budget `B`, default 32) and its four per-group
+/// overrides `FC_DB_POOL_SIZE_API` / `_BFF` / `_DISPATCH` / `_BACKGROUND`
+/// are read directly by [io.flowcatalyst.platform.shared.database.Pools#open]
+/// (`docs/spec/admission.md` §11.7), not through this record. The
+/// field-encryption keys *are* here
 /// ([#appKey()] / [#appKeyPrevious()]) so that every way of loading the
 /// environment — the process, a `.env` file, fcdev's map — reaches the
 /// encryption service the same way. The scheduled-job scheduler's own

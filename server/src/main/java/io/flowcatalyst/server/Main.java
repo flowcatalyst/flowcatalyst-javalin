@@ -1,8 +1,7 @@
 package io.flowcatalyst.server;
 
-import io.flowcatalyst.platform.shared.database.GatedDataSource;
+import io.flowcatalyst.platform.shared.database.Pools;
 import io.flowcatalyst.platform.seed.Seeder;
-import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.database.Migrator;
 import io.flowcatalyst.server.Server.Mode;
 import io.flowcatalyst.server.Server.Spa;
@@ -13,6 +12,9 @@ import io.flowcatalyst.server.dbsecret.DbSecretRefresher;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /// `fc-server`: the unified production server. Single jar; every subsystem is
 /// independently togglable via `FC_*_ENABLED` so the same image can be
@@ -56,8 +58,8 @@ public final class Main {
         // one table.
         boolean needsMigrateAndSeed = needsMigrateAndSeed(env);
 
-        GatedDataSource pool = null;
-        DbSecretRefresher dbSecretRefresher = null;
+        Pools pools = null;
+        List<DbSecretRefresher> dbSecretRefreshers = List.of();
         Mode mode;
         if (needsDb) {
             // AWS Secrets Manager DB mode (docs/spec/db-secret.md): when DB_SECRET_ARN +
@@ -82,13 +84,24 @@ public final class Main {
                 return;
             }
 
-            pool = Database.newPool(databaseUrl);
+            // Four physical pools (admission.md §11.7), not one: `API` (½ B),
+            // `BFF` (¼ B), `DISPATCH` (¼ B), `BACKGROUND` (4, outside B) —
+            // `FC_DB_POOL_SIZE` overrides B, `FC_DB_POOL_SIZE_<GROUP>` overrides
+            // one pool.
+            pools = Pools.open(databaseUrl, EnvReader.system());
             LOG.info("postgres connected");
 
             if (secretMode != null) {
                 try {
-                    dbSecretRefresher = DbSecretRefresher.start(pool.hikari(), DbSecretFetcher.aws(secretMode.arn()),
-                            secretMode.arn(), secretMode.refreshIntervalMs());
+                    // One refresher per physical pool — each is an independent
+                    // HikariDataSource, so each needs its own credential push.
+                    var refreshers = new ArrayList<DbSecretRefresher>(4);
+                    for (var g : new io.flowcatalyst.platform.shared.database.GatedDataSource[] {
+                            pools.api(), pools.bff(), pools.dispatch(), pools.background()}) {
+                        refreshers.add(DbSecretRefresher.start(g.hikari(), DbSecretFetcher.aws(secretMode.arn()),
+                                secretMode.arn(), secretMode.refreshIntervalMs()));
+                    }
+                    dbSecretRefreshers = refreshers;
                 } catch (RuntimeException e) {
                     LOG.error("DB secret refresher init failed", e);
                     System.exit(1);
@@ -97,17 +110,17 @@ public final class Main {
             }
 
             if (needsMigrateAndSeed) {
-                Migrator.migrate(pool);
+                Migrator.migrate(pools.api());
                 LOG.info("migrations applied");
-                new Seeder(pool).run();
+                new Seeder(pools.api()).run();
                 LOG.info("seed complete");
             } else {
                 LOG.info("router-only Postgres broker: skipping platform migrations and seed "
                         + "(queue_messages is created by PostgresQueue.initSchema)");
             }
-            mode = env.platformEnabled() ? new Mode.Platform(pool)
-                    : needsMigrateAndSeed ? new Mode.Worker(pool)
-                    : Mode.routerOnly(pool);
+            mode = env.platformEnabled() ? new Mode.Platform(pools)
+                    : needsMigrateAndSeed ? new Mode.Worker(pools)
+                    : Mode.routerOnly(pools.api());
         } else {
             LOG.atInfo().setMessage("no database-backed subsystem enabled; skipping postgres connect/migrate/seed")
                     .addKeyValue("router", env.routerEnabled())
@@ -127,13 +140,13 @@ public final class Main {
 
         var running = new Server(env, mode, spa, PrometheusRegistry.defaultRegistry).start();
 
-        GatedDataSource poolToClose = pool;
-        DbSecretRefresher dbSecretRefresherToClose = dbSecretRefresher;
+        Pools poolsToClose = pools;
+        List<DbSecretRefresher> dbSecretRefreshersToClose = dbSecretRefreshers;
         Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("shutdown").unstarted(() -> {
             LOG.info("shutdown signal received");
             running.stop();
-            if (dbSecretRefresherToClose != null) dbSecretRefresherToClose.close();
-            if (poolToClose != null) poolToClose.close();
+            dbSecretRefreshersToClose.forEach(DbSecretRefresher::close);
+            if (poolsToClose != null) poolsToClose.close();
         }));
         running.awaitStop();
     }

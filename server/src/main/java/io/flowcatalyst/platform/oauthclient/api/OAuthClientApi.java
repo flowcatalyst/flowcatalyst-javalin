@@ -26,6 +26,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -95,20 +96,21 @@ public final class OAuthClientApi {
     }
 
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/oauth-clients", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/oauth-clients", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/oauth-clients", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/oauth-clients/by-client-id/{clientId}", Auth.scoped(ctx -> getByClientId(ctx, s)));
         routes.get("/api/oauth-clients/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/oauth-clients/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/oauth-clients/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.post("/api/oauth-clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        write.put("/api/oauth-clients/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post("/api/oauth-clients/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.post("/api/oauth-clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
 
         Handler rotate = Auth.scoped(ctx -> rotateSecret(ctx, s));
-        routes.post("/api/oauth-clients/{id}/rotate-secret", rotate);
-        routes.post("/api/oauth-clients/{id}/regenerate-secret", rotate); // SDK alias
+        write.post("/api/oauth-clients/{id}/rotate-secret", rotate);
+        write.post("/api/oauth-clients/{id}/regenerate-secret", rotate); // SDK alias
 
-        routes.post("/api/oauth-clients/{id}/revoke-previous-secret", Auth.scoped(ctx -> revokePreviousSecret(ctx, s)));
-        routes.delete("/api/oauth-clients/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/oauth-clients/{id}/revoke-previous-secret", Auth.scoped(ctx -> revokePreviousSecret(ctx, s)));
+        write.delete("/api/oauth-clients/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

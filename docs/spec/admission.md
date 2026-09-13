@@ -399,3 +399,18 @@ write path still pins (a nested checkout is refused, as today); every subsystem 
 `BACKGROUND` pool (assert by pool identity on a captured connection); a deadline fires on a
 queued request. `bench/real` round comparing the two-CPU throughput and one-core switches per
 request against the 2026-09-08 baseline, per the brief's §7.
+
+**The pool is chosen by the request, not by the handler class (part B, 2026-09-13).** Part A
+found that most `/bff/**` routes are the same handler classes mounted twice, holding
+repositories built over one captured `DataSource`, so a BFF request still drew from the API
+pool. Threading a pool into every class per mount would fight that (correct) sharing. Instead
+`Pools.routed()` is a `DataSource` whose `getConnection()` resolves the pool from the current
+request's group — `Admission.CURRENT` carries the `Group` the adapter set at entry — and every
+request-path repository is built over it. Outside a request (background code, which holds its
+explicit pool) the routed source is never used; a checkout with no scope bound is a programming
+error and throws. Part A's per-pool repository copies for dispatch and the dashboard BFF are
+undone in favour of the routed source, so one repository instance serves every mount and still
+lands on the right pool. `Admission` also carries the group's **mode**: `PINNED` (`API_WRITE`,
+`DISPATCH`, `LOGIN`, `OIDC`: one connection for the request, nested checkouts join it, the guard
+armed) or `PER_STATEMENT` (`API_READ`, `BFF`: every checkout goes to the pool and back, no
+pinning, guard not armed). The mode is a property of the group, derived, never configured.

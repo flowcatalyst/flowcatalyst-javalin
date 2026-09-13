@@ -29,6 +29,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.net.URI;
@@ -77,13 +78,14 @@ public final class PortalUserApi {
     }
 
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/portal-users", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/portal-users", Auth.scoped(ctx -> ensure(ctx, s)));
-        routes.post("/api/portal-users/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.post("/api/portal-users/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
-        routes.delete("/api/portal-users/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/portal-users/{id}/apps", Auth.scoped(ctx -> grantApp(ctx, s)));
-        routes.delete("/api/portal-users/{id}/apps/{portalAppCode}", Auth.scoped(ctx -> revokeApp(ctx, s)));
+        write.post("/api/portal-users", Auth.scoped(ctx -> ensure(ctx, s)));
+        write.post("/api/portal-users/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.post("/api/portal-users/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        write.delete("/api/portal-users/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/portal-users/{id}/apps", Auth.scoped(ctx -> grantApp(ctx, s)));
+        write.delete("/api/portal-users/{id}/apps/{portalAppCode}", Auth.scoped(ctx -> revokeApp(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

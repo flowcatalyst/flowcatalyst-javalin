@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.subscription.operations.UpdateCommand;
 import io.flowcatalyst.platform.subscription.operations.UpdateSubscription;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -60,13 +61,14 @@ public final class SubscriptionApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/subscriptions", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/subscriptions", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/subscriptions", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/subscriptions/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/subscriptions/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/subscriptions/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/subscriptions/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
-        routes.post("/api/subscriptions/{id}/resume", Auth.scoped(ctx -> resume(ctx, s)));
+        write.put("/api/subscriptions/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/subscriptions/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/subscriptions/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
+        write.post("/api/subscriptions/{id}/resume", Auth.scoped(ctx -> resume(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

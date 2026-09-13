@@ -34,6 +34,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -101,22 +102,23 @@ public final class ClientApi {
     /// lockfile's. Literal segments are registered before the `{id}` routes
     /// so they take precedence (spec §3).
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/clients", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/clients", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/clients", Auth.scoped(ctx -> create(ctx, s)));
         routes.post("/api/clients/search", Auth.scoped(ctx -> search(ctx, s)));
         routes.get("/api/clients/search", Auth.scoped(ctx -> searchByQuery(ctx, s))); // SDK alias
         routes.get("/api/clients/by-identifier/{identifier}", Auth.scoped(ctx -> getByIdentifier(ctx, s)));
         routes.get("/api/clients/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/clients/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/clients/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/clients/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.post("/api/clients/{id}/suspend", Auth.scoped(ctx -> suspend(ctx, s)));
-        routes.post("/api/clients/{id}/notes", Auth.scoped(ctx -> addNote(ctx, s)));
-        routes.post("/api/clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s))); // delete alias
+        write.put("/api/clients/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/clients/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/clients/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.post("/api/clients/{id}/suspend", Auth.scoped(ctx -> suspend(ctx, s)));
+        write.post("/api/clients/{id}/notes", Auth.scoped(ctx -> addNote(ctx, s)));
+        write.post("/api/clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s))); // delete alias
         routes.get("/api/clients/{id}/applications", Auth.scoped(ctx -> applications(ctx, s)));
-        routes.put("/api/clients/{id}/applications", Auth.scoped(ctx -> updateApplications(ctx, s)));
-        routes.post("/api/clients/{id}/applications/{applicationId}/enable", Auth.scoped(ctx -> enableApplication(ctx, s)));
-        routes.post("/api/clients/{id}/applications/{applicationId}/disable", Auth.scoped(ctx -> disableApplication(ctx, s)));
+        write.put("/api/clients/{id}/applications", Auth.scoped(ctx -> updateApplications(ctx, s)));
+        write.post("/api/clients/{id}/applications/{applicationId}/enable", Auth.scoped(ctx -> enableApplication(ctx, s)));
+        write.post("/api/clients/{id}/applications/{applicationId}/disable", Auth.scoped(ctx -> disableApplication(ctx, s)));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

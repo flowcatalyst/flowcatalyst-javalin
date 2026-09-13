@@ -26,6 +26,7 @@ import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.operations.SyncSubscriptions;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.util.Objects;
@@ -89,16 +90,17 @@ public final class SdkSyncApi {
     }
 
     public static void register(Routes routes, State s) {
-        routes.post("/api/applications/{appCode}/event-types/sync", Auth.scoped(ctx -> syncEventTypes(ctx, s)));
-        routes.post("/api/applications/{appCode}/roles/sync", Auth.scoped(ctx -> syncRoles(ctx, s)));
-        routes.post("/api/applications/{appCode}/subscriptions/sync", Auth.scoped(ctx -> syncSubscriptions(ctx, s)));
-        routes.post("/api/applications/{appCode}/dispatch-pools/sync", Auth.scoped(ctx -> syncDispatchPools(ctx, s)));
-        routes.post("/api/applications/{appCode}/principals/sync", Auth.scoped(ctx -> syncPrincipals(ctx, s)));
-        routes.post("/api/applications/{appCode}/docs/sync", Auth.scoped(ctx -> syncDocs(ctx, s)));
-        routes.post("/api/applications/{appCode}/processes/sync", Auth.scoped(ctx -> syncProcesses(ctx, s)));
-        routes.post("/api/processes/sync", Auth.scoped(ctx -> syncProcessesByBody(ctx, s)));
-        routes.post("/api/applications/{appCode}/scheduled-jobs/sync", Auth.scoped(ctx -> syncScheduledJobs(ctx, s)));
-        routes.post("/api/applications/{appCode}/openapi/sync", Auth.scoped(ctx -> syncOpenapi(ctx, s)));
+        Routes write = routes.in(Group.API_WRITE);
+        write.post("/api/applications/{appCode}/event-types/sync", Auth.scoped(ctx -> syncEventTypes(ctx, s)));
+        write.post("/api/applications/{appCode}/roles/sync", Auth.scoped(ctx -> syncRoles(ctx, s)));
+        write.post("/api/applications/{appCode}/subscriptions/sync", Auth.scoped(ctx -> syncSubscriptions(ctx, s)));
+        write.post("/api/applications/{appCode}/dispatch-pools/sync", Auth.scoped(ctx -> syncDispatchPools(ctx, s)));
+        write.post("/api/applications/{appCode}/principals/sync", Auth.scoped(ctx -> syncPrincipals(ctx, s)));
+        write.post("/api/applications/{appCode}/docs/sync", Auth.scoped(ctx -> syncDocs(ctx, s)));
+        write.post("/api/applications/{appCode}/processes/sync", Auth.scoped(ctx -> syncProcesses(ctx, s)));
+        write.post("/api/processes/sync", Auth.scoped(ctx -> syncProcessesByBody(ctx, s)));
+        write.post("/api/applications/{appCode}/scheduled-jobs/sync", Auth.scoped(ctx -> syncScheduledJobs(ctx, s)));
+        write.post("/api/applications/{appCode}/openapi/sync", Auth.scoped(ctx -> syncOpenapi(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

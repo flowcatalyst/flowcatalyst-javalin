@@ -16,8 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /// a budget is unlimited. Budgets are derived, never configured:
 /// [#derived()] gives `LOGIN` and `OIDC` the processor count, because
 /// password4j's Argon2 executor is a fixed pool of that size and a login
-/// beyond it only queues on the hash pool; `DISPATCH` and `INGEST` carry no
-/// budget (owner rulings 2026-09-06).
+/// beyond it only queues on the hash pool; `DISPATCH` (which merged the old
+/// `INGEST` group, `docs/spec/admission.md` §11.7) carries no budget (owner
+/// rulings 2026-09-06).
 public final class Budgets {
     /// A held group permit; closing releases it exactly once.
     public interface Permit extends AutoCloseable {
