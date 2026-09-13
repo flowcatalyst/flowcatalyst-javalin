@@ -15,12 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Pins `docs/spec/http-seam.md` §4 rows 1-9 (row 10, `NoFrameworkLeakTest`,
-/// lands in a later unit) through the Javalin adapter under test —
-/// `TestHttp.routes(...)`, the JDK `HttpClient`, no shortcuts through the
-/// adapter's internals. Javalin/Jetty is the only concrete subclass
-/// (`JavalinSeamContractTest`) since the Vert.x listener cutover was
-/// reverted 2026-09-08 (`docs/vertx-plan.md` closing section).
+/// Pins `docs/spec/http-seam.md` §4 rows 1-9 (row 10 is `NoFrameworkLeakTest`)
+/// through the Vert.x adapter under test — `TestHttp.routes(...)`, the JDK
+/// `HttpClient`, no shortcuts through the adapter's internals.
 abstract class SeamContract {
 
     protected static TestHttp app;
@@ -34,8 +31,8 @@ abstract class SeamContract {
     /// handler and the after filter on `/seam/thread`, for row 8.
     private static final List<Thread> THREADS = new CopyOnWriteArrayList<>();
 
-    static void start(TestHttp.Adapter adapter) {
-        app = TestHttp.routes(adapter, Budgets.derived(), routes -> {
+    static void start() {
+        app = TestHttp.routes(Budgets.derived(), routes -> {
             // The three exception mappers a real bootstrap site would
             // install through `HttpError` — reproduced here as a fixture so
             // this test does not depend on that (out-of-scope, unedited)

@@ -3,57 +3,34 @@ package io.flowcatalyst.platform.shared;
 import io.flowcatalyst.http.Budgets;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
-import io.flowcatalyst.http.javalin.JavalinAdapter;
-import io.flowcatalyst.http.javalin.JavalinJsonMapper;
+import io.flowcatalyst.http.vertx.VertxListener;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
-import io.javalin.Javalin;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.time.Duration;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.function.Consumer;
 
-/// Test harness: a Javalin app on an ephemeral port with the platform JSON
-/// mapper, plus a tiny JDK `HttpClient` wrapper.
+/// Test harness: a [VertxListener] on an ephemeral port, plus a tiny JDK
+/// `HttpClient` wrapper.
 public final class TestHttp implements AutoCloseable {
 
-    /// Which seam adapter the harness stands up. Javalin/Jetty is the only
-    /// implementation (the Vert.x listener cutover was reverted 2026-09-08,
-    /// `docs/vertx-plan.md` closing section) — kept as a single-member enum
-    /// so `SeamContract#start(Adapter)` and its one concrete subclass
-    /// (`JavalinSeamContractTest`) need no further change.
-    public enum Adapter {
-        JAVALIN
-    }
-
-    private final Javalin app;
+    private final VertxListener vertx;
     private final HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
     /// The registry every instance is built through (see [#routes(Consumer)]).
     private final RouteRegistry registry;
 
-    /// A route the harness registers for itself, to prove the connector is
-    /// serving before any test issues its first real request. Named to be
-    /// unmistakable and to collide with nothing a test would mount.
-    private static final String READY_PATH = "/__testhttp_ready";
-
     /// The loopback address, used for both the bind and every request. A
     /// bare `localhost` can resolve differently for the two sides (IPv4 vs
     /// IPv6), and a port that is free on one family can be another
-    /// process's on the other — on 2026-09-05 a whole test class talked to
-    /// a local SOCKS proxy that way and read its HTML as 404s.
+    /// process's on the other.
     static final String HOST = "127.0.0.1";
-
-    /// Each instance answers its readiness probe with its own nonce, so the
-    /// probe proves it reached THIS server and not whatever else holds the
-    /// port; a foreign answer rebinds on a fresh port.
-    private final String nonce = java.util.UUID.randomUUID().toString();
 
     /// Built once per JVM (the startup keyword-walk over all 245 lockfile
     /// operations is otherwise repeated for every `TestHttp` instance a test
@@ -62,22 +39,11 @@ public final class TestHttp implements AutoCloseable {
     private static final SchemaValidation SCHEMA_VALIDATION = SchemaValidation.build(Lockfile.load(Json.MAPPER));
 
     /// Builds a harness wired through the `io.flowcatalyst.http` seam
-    /// (`docs/spec/http-seam.md`): `JavalinAdapter.install` sets up the
-    /// platform JSON mapper's app, the 404/405 envelope and the
-    /// bodiless-response rule, then hands the resulting `Routes` to
-    /// `configure`. Kept as a static factory (rather than a public
-    /// constructor of the same shape) so the call-site name stays `routes(...)`
-    /// — the name that mattered when a second, now-deleted constructor
-    /// needed disambiguating.
+    /// (`docs/spec/http-seam.md`): the platform JSON mapper, the 404/405
+    /// envelope and the bodiless-response rule are the adapter's, then the
+    /// resulting `Routes` is handed to `configure`.
     public static TestHttp routes(Consumer<Routes> configure) {
         return routes(Budgets.derived(), configure);
-    }
-
-    /// Forces one adapter — a no-op now that Javalin is the only one, kept
-    /// so `SeamContract#start(Adapter)` and `JavalinSeamContractTest` need
-    /// no further change.
-    public static TestHttp routes(Adapter adapter, Budgets budgets, Consumer<Routes> configure) {
-        return routes(budgets, configure);
     }
 
     /// Same, with explicit tier-2 budgets (`docs/spec/admission.md` §2) so a
@@ -87,37 +53,11 @@ public final class TestHttp implements AutoCloseable {
     }
 
     private TestHttp(Budgets budgets, Consumer<Routes> configure) {
-        Javalin started = null;
-        AssertionError last = null;
-        RouteRegistry[] registryHolder = new RouteRegistry[1];
-        for (int attempt = 0; attempt < 3 && started == null; attempt++) {
-            Javalin candidate = Javalin.create(cfg -> {
-                cfg.startup.showJavalinBanner = false;
-                cfg.jsonMapper(new JavalinJsonMapper());
-                var routes = JavalinAdapter.install(cfg, budgets);
-                registryHolder[0] = routes;
-                routes.before(SCHEMA_VALIDATION);
-                // Registered BEFORE the caller's routes so a catch-all of theirs
-                // still wins for every other path. Deliberately on `cfg.routes`
-                // (raw Javalin), not the seam `routes`: this is harness
-                // plumbing, not a route a test registered, so it must not
-                // show up in `registry().registrations()`.
-                cfg.routes.get(READY_PATH, ctx -> ctx.result(nonce));
-                configure.accept(routes);
-            }).start(HOST, 0);
-            try {
-                awaitReady(candidate.port(), READY_PATH);
-                started = candidate;
-            } catch (ForeignServer e) {
-                last = e;
-                candidate.stop();
-            }
-        }
-        if (started == null) {
-            throw last;
-        }
-        this.app = started;
-        this.registry = registryHolder[0];
+        this.vertx = VertxListener.start(VertxListener.Options.local(0, budgets), routes -> {
+            routes.before(SCHEMA_VALIDATION);
+            configure.accept(routes);
+        });
+        this.registry = vertx.registry();
     }
 
     /// The registry this instance was built through.
@@ -125,80 +65,9 @@ public final class TestHttp implements AutoCloseable {
         return registry;
     }
 
-    /// The readiness probe answered, but not with this instance's nonce:
-    /// another process owns the port on the address the client used.
-    static final class ForeignServer extends AssertionError {
-        ForeignServer(int port, String body) {
-            super("port " + port + " answered the readiness probe with a foreign body: "
-                    + (body.length() > 80 ? body.substring(0, 80) + "…" : body));
-        }
-    }
-
     public int port() {
-        return app.port();
+        return vertx.port();
     }
-
-    /// Blocks until a request to `probePath` actually comes back, then returns.
-    ///
-    /// Called from the constructor against [#READY_PATH], so **every instance
-    /// is ready before it is handed to a test** and no test needs to know this
-    /// race exists. Public because a caller that rebinds or otherwise wants to
-    /// re-check can.
-    ///
-    /// A freshly bound Jetty connector occasionally drops the very first
-    /// connection on a JDK `HttpClient` — "header parser received no bytes",
-    /// "EOF reached while reading" — a harness/OS race with nothing to do with
-    /// routing. Without this, the drop surfaces as an ERROR in whichever test
-    /// happens to go first, which reads like a real failure of that test. It
-    /// did exactly that to `DashboardHandlerTest` on 2026-08-27, in the one
-    /// test that builds its own instance inside the test method.
-    ///
-    /// **One attempt is not enough.** A connector that rejects the first
-    /// request may reject the second, so absorbing exactly one failure just
-    /// moves the problem to the next call — where it arrives as a body that
-    /// parses to something missing the field under test, i.e. a
-    /// `NullPointerException` that looks like an ordering bug and is not one.
-    /// This retries until it genuinely answers, so a test past this line is
-    /// talking to a server that works.
-    ///
-    /// `probePath` must be a route this instance actually registers; the
-    /// response is discarded, so any status will do.
-    ///
-    /// Each probe carries its own short timeout. Without one, a first
-    /// connection that Jetty accepts but does not answer (the race this
-    /// method exists to absorb) hangs the single probe past the whole budget,
-    /// and the failure reads "never became ready" after exactly one attempt.
-    /// Several bounded probes inside a generous budget is what makes the
-    /// retry loop actually retry.
-    public void awaitReady(String probePath) {
-        awaitReady(port(), probePath);
-    }
-
-    private void awaitReady(int port, String probePath) {
-        long deadline = System.nanoTime() + READY_BUDGET.toNanos();
-        RuntimeException last = null;
-        while (System.nanoTime() < deadline) {
-            try {
-                var r = client.send(HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port + probePath))
-                        .GET().timeout(READY_PROBE_TIMEOUT).build(), HttpResponse.BodyHandlers.ofString());
-                if (probePath.equals(READY_PATH) && !nonce.equals(r.body())) {
-                    throw new ForeignServer(port, r.body());
-                }
-                return;
-            } catch (IOException e) {
-                last = new UncheckedIOException(e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new AssertionError("interrupted while waiting for the test server", e);
-            }
-        }
-        throw new AssertionError("test server never became ready at " + probePath, last);
-    }
-
-    /// Per-probe bound (see [#awaitReady]); the overall budget is generous
-    /// because a full suite run is exactly when the JVM is busiest.
-    private static final Duration READY_PROBE_TIMEOUT = Duration.ofMillis(500);
-    private static final Duration READY_BUDGET = Duration.ofSeconds(20);
 
     public HttpResponse<String> get(String path, String... headers) {
         return send(HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path)).GET(), headers);
@@ -248,21 +117,10 @@ public final class TestHttp implements AutoCloseable {
         }
     }
 
-    /// Stops the server **and closes the client**.
-    ///
-    /// The client used to be left open, which leaked its selector and
-    /// executor: 1200 create/close cycles ended with 1401 live threads, and
-    /// closing it brings that to 1203.
-    ///
-    /// The residual ~1 thread per instance is **not** ours and is not fixable
-    /// from here — it is Javalin's own non-daemon helper
-    /// (`io.javalin.jetty.JettyServer` line 41, parked in a sleep loop),
-    /// created per instance and not reclaimed by `app.stop()`. Recorded so the
-    /// next person to measure a rising thread count does not go looking for it
-    /// in this class.
+    /// Stops the server and closes the client.
     @Override
     public void close() {
-        app.stop();
+        vertx.close();
         client.close();
     }
 }

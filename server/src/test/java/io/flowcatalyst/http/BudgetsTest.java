@@ -2,19 +2,15 @@ package io.flowcatalyst.http;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.flowcatalyst.platform.shared.TestHttp;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
-/// `docs/spec/admission.md` §2 and §6 row 7: the tier-2 group bulkhead.
+/// `docs/spec/admission.md` §2 and §6 row 7: the tier-2 group bulkhead
+/// primitive. The Vert.x listener enforces the equivalent group budget as a
+/// worker pool instead ([RequestWorkersTest]) — [Budgets] itself is tested
+/// here in isolation.
 class BudgetsTest {
 
     @Test
@@ -50,35 +46,5 @@ class BudgetsTest {
         second.close();
         assertThat(b.held(Group.LOGIN)).isZero();
         assertThat(b.acquire(Group.DISPATCH)).as("an unbudgeted group hands out a no-op permit").isNotNull();
-    }
-
-    @Test
-    void theLoginGroupAdmitsItsBudgetAndQueuesTheNextRequestUntilAHandlerFinishes() throws Exception {
-        var budgets = Budgets.of(Map.of(Group.LOGIN, 1));
-        var inHandler = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        // The Javalin adapter enforces Budgets with a semaphore around the handler; the
-        // Vert.x adapter enforces the same group budget as a worker pool
-        // (RequestWorkersTest), so this pins the Javalin mechanism explicitly.
-        try (TestHttp http = TestHttp.routes(TestHttp.Adapter.JAVALIN, budgets, routes -> routes.in(Group.LOGIN).get("/login", ctx -> {
-            inHandler.countDown();
-            release.await();
-            ctx.status(200).result("ok");
-        }))) {
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + http.port() + "/login")).timeout(Duration.ofSeconds(10)).build();
-            CompletableFuture<HttpResponse<String>> r1 = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
-            assertThat(inHandler.await(2, TimeUnit.SECONDS)).isTrue();
-            CompletableFuture<HttpResponse<String>> r2 = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
-            Thread.sleep(300);
-            assertThat(budgets.held(Group.LOGIN)).isEqualTo(1);
-            assertThat(budgets.waiting(Group.LOGIN)).as("the second request is parked on the bulkhead, not in the handler").isEqualTo(1);
-            assertThat(r2.isDone()).isFalse();
-            release.countDown();
-            assertThat(r1.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
-            assertThat(r2.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
-            assertThat(budgets.held(Group.LOGIN)).isZero();
-            assertThat(budgets.waiting(Group.LOGIN)).isZero();
-        }
     }
 }

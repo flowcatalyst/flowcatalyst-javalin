@@ -30,10 +30,6 @@
     <jackson.version>3.1.5</jackson.version>
     <javalin.version>7.2.3</javalin.version>
     <vertx.version>5.1.7</vertx.version>
-    <!-- The exact Jetty version Javalin 7.2.3 brings (javalin-parent-7.2.3.pom
-         line ~105); pinned here too so the HTTP/2 artifacts below cannot
-         drift from what Javalin's own jetty-server is. -->
-    <jetty.version>12.1.12</jetty.version>
     <jooq.version>3.21.7</jooq.version>
     <hikaricp.version>7.1.0</hikaricp.version>
     <flyway.version>13.3.0</flyway.version>
@@ -73,18 +69,6 @@
         <groupId>tools.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
         <version>${jackson.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-      <!-- HTTP/2 (h2c/h2) connectors on the server listeners
-           (docs/spec/http-transport.md): pins every org.eclipse.jetty* artifact
-           to the exact version Javalin 7.2.3 already brings via jetty-server,
-           so the http2/alpn add-ons below never drift from it. HTTP/3 (QUIC)
-           was dropped, owner ruling 2026-09-08. -->
-      <dependency>
-        <groupId>org.eclipse.jetty</groupId>
-        <artifactId>jetty-bom</artifactId>
-        <version>${jetty.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -133,7 +117,11 @@
         <version>${project.version}</version>
       </dependency>
 
-      <!-- HTTP -->
+      <!-- HTTP: Vert.x is the API/metrics listener (docs/spec/vertx-listener.md).
+           Javalin stays only for MCP's own independent listener
+           (io.flowcatalyst.mcp.McpServer), which embeds the MCP SDK's
+           servlet-based streamable-HTTP transport — a second, dedicated
+           Javalin instance never wired through the io.flowcatalyst.http seam. -->
       <dependency>
         <groupId>io.javalin</groupId>
         <artifactId>javalin</artifactId>
@@ -142,6 +130,11 @@
       <dependency>
         <groupId>io.vertx</groupId>
         <artifactId>vertx-core</artifactId>
+        <version>${vertx.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-web</artifactId>
         <version>${vertx.version}</version>
       </dependency>
       <dependency>
