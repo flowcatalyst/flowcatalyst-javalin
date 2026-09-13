@@ -1026,6 +1026,15 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     /**
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\RouterConfig|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function getRouterConfig(string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\GetRouterConfig(), $fetch);
+    }
+    /**
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
      * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\DocListResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
      */
     public function listDocs(string $fetch = self::FETCH_OBJECT)

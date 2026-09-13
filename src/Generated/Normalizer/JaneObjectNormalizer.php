@@ -286,6 +286,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\PermissionResponse::class => \FlowCatalyst\Generated\Normalizer\PermissionResponseNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\PoolConfig::class => \FlowCatalyst\Generated\Normalizer\PoolConfigNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\PortalAppListResponse::class => \FlowCatalyst\Generated\Normalizer\PortalAppListResponseNormalizer::class,
         
         \FlowCatalyst\Generated\Model\PortalAppResponse::class => \FlowCatalyst\Generated\Normalizer\PortalAppResponseNormalizer::class,
@@ -326,6 +328,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\PublicAllowedResponse::class => \FlowCatalyst\Generated\Normalizer\PublicAllowedResponseNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\QueueConfig::class => \FlowCatalyst\Generated\Normalizer\QueueConfigNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\RawDispatchJobResponse::class => \FlowCatalyst\Generated\Normalizer\RawDispatchJobResponseNormalizer::class,
         
         \FlowCatalyst\Generated\Model\RawEventResponse::class => \FlowCatalyst\Generated\Normalizer\RawEventResponseNormalizer::class,
@@ -363,6 +367,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class => \FlowCatalyst\Generated\Normalizer\RotateOAuthClientSecretRequestNormalizer::class,
         
         \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class => \FlowCatalyst\Generated\Normalizer\RotateOAuthClientSecretResponseNormalizer::class,
+        
+        \FlowCatalyst\Generated\Model\RouterConfig::class => \FlowCatalyst\Generated\Normalizer\RouterConfigNormalizer::class,
         
         \FlowCatalyst\Generated\Model\ScheduledJobInstanceLogResponse::class => \FlowCatalyst\Generated\Normalizer\ScheduledJobInstanceLogResponseNormalizer::class,
         
@@ -674,6 +680,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\OffsetPageScheduledJobResponse::class => false,
             \FlowCatalyst\Generated\Model\PermissionListResponse::class => false,
             \FlowCatalyst\Generated\Model\PermissionResponse::class => false,
+            \FlowCatalyst\Generated\Model\PoolConfig::class => false,
             \FlowCatalyst\Generated\Model\PortalAppListResponse::class => false,
             \FlowCatalyst\Generated\Model\PortalAppResponse::class => false,
             \FlowCatalyst\Generated\Model\PortalUserAppGrantBody::class => false,
@@ -694,6 +701,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\ProcessResponse::class => false,
             \FlowCatalyst\Generated\Model\ProvisionLoginClientRequest::class => false,
             \FlowCatalyst\Generated\Model\PublicAllowedResponse::class => false,
+            \FlowCatalyst\Generated\Model\QueueConfig::class => false,
             \FlowCatalyst\Generated\Model\RawDispatchJobResponse::class => false,
             \FlowCatalyst\Generated\Model\RawEventResponse::class => false,
             \FlowCatalyst\Generated\Model\RegenerateAuthTokenResponse::class => false,
@@ -713,6 +721,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\RolesAssignedResponse::class => false,
             \FlowCatalyst\Generated\Model\RotateOAuthClientSecretRequest::class => false,
             \FlowCatalyst\Generated\Model\RotateOAuthClientSecretResponse::class => false,
+            \FlowCatalyst\Generated\Model\RouterConfig::class => false,
             \FlowCatalyst\Generated\Model\ScheduledJobInstanceLogResponse::class => false,
             \FlowCatalyst\Generated\Model\ScheduledJobInstanceResponse::class => false,
             \FlowCatalyst\Generated\Model\ScheduledJobResponse::class => false,

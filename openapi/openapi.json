@@ -4970,6 +4970,29 @@
         ],
         "type": "object"
       },
+      "PoolConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "concurrency": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rateLimitPerMinute": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "concurrency"
+        ],
+        "type": "object"
+      },
       "PortalAppListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -5728,6 +5751,34 @@
         ],
         "type": "object"
       },
+      "QueueConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "connections": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queueName": {
+            "type": "string"
+          },
+          "queueUri": {
+            "type": "string"
+          },
+          "visibilityTimeout": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "queueName",
+          "queueUri",
+          "connections",
+          "visibilityTimeout"
+        ],
+        "type": "object"
+      },
       "RawDispatchJobResponse": {
         "additionalProperties": false,
         "properties": {
@@ -6390,6 +6441,37 @@
         },
         "required": [
           "clientId"
+        ],
+        "type": "object"
+      },
+      "RouterConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/RouterConfig.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "processingPools": {
+            "items": {
+              "$ref": "#/components/schemas/PoolConfig"
+            },
+            "type": "array"
+          },
+          "queues": {
+            "items": {
+              "$ref": "#/components/schemas/QueueConfig"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "processingPools",
+          "queues"
         ],
         "type": "object"
       },
@@ -13218,6 +13300,37 @@
         "summary": "Suspend dispatch into a pool",
         "tags": [
           "dispatch-pools"
+        ]
+      }
+    },
+    "/api/dispatch/router-config": {
+      "get": {
+        "operationId": "getRouterConfig",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouterConfig"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "The router's {processingPools, queues} configuration document",
+        "tags": [
+          "dispatch"
         ]
       }
     },
