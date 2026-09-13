@@ -1234,9 +1234,10 @@ Ruled 2026-09-08 (owner):
 - The group is declared per route (`Routes.in(Group)`), as today.
 
 Open for a ruling before building:
-1. N Hikari pools (one per group) versus today's single pool with per-group semaphore lanes. Separate
-   pools give real isolation and independent sizing; they also multiply idle connections and make the
-   total against Postgres's `max_connections` the operator's sum to get right.
+1. **Ruled 2026-09-13: one Hikari pool per group.** Sizing proposal in `docs/spec/admission.md`
+   §11.3a (one budget per instance, shares by hold time, workers = pool by identity, bounded queues
+   with 503 + Retry-After, corrected by the queue metrics) — awaiting the owner's confirmation of the
+   default split.
 2. **Whether a non-transactional read releases its connection between statements.** Today `Admission`
    holds one connection per request and nested checkouts join it (the re-entrant handle), so a read
    doing eight statements holds a connection across the CPU between them — and that CPU is not small:

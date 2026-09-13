@@ -243,10 +243,11 @@ starve requests that need a different one.
 
 ### 11.3 Connection pools
 
-Owner's preference: one pool per group, sized per deployment, rather than one pool with per-group
-shares. Isolation is the point — a lane over a shared pool still lets one group's slow queries
-occupy connections another group needs, and a separate pool can later point at a read replica.
-The invariants stay derived, so the pool size remains the only number a deployment sets:
+**Ruled 2026-09-13 (owner): one pool per group**, sized per deployment, rather than one pool
+with per-group shares. Isolation is the point — a lane over a shared pool still lets one group's
+slow queries occupy connections another group needs, and a separate pool can later point at a
+read replica. The invariants stay derived, so the pool size remains the only number a deployment
+sets:
 
 - permits(group) = poolSize(group) — nobody ever waits inside HikariCP, where the wait is a timed
   park (§1, and the measurement in `../test-size/RESULTS.md`).
@@ -263,6 +264,53 @@ Sizing today is broken in both languages and must be fixed as part of this: Java
 `Database.DEFAULT_POOL_SIZE = 32` is a constant with no environment override, and Go never sets
 `MaxConnections` so pgxpool defaults to `max(4, NumCPU)`, which reads the host and ignores the CPU
 quota. Measured: 32 against 14 for the same deployment (`docs/backlog.md`).
+
+### 11.3a Sizing (proposal 2026-09-13, for the owner's confirmation)
+
+The difficulty dissolves once only one number is chosen per instance and everything else is
+derived from it or observed:
+
+1. **One number: the instance's connection budget `B`** — what this pod may hold against
+   Postgres. It comes from the database, not from demand: a Postgres connection is a backend
+   process, and throughput saturates at a few connections per database core, so
+   `pods × B ≤ max_connections − reserved` (§5's rule) and `B` is small. Today's 32 stays the
+   default `B`.
+2. **The split is a product default, expressed as shares of `B`**, not per-group absolutes:
+   API ½, BFF ¼, ingest/dispatch ¼; background subsystems (purger, outbox, scheduler, stream,
+   mail) a fixed small pool of 4 outside `B`'s request share; probes their own reservation
+   (§1); SSE none. A share is by *connection-hold time*, not request count — a group that holds
+   a connection across a whole transaction needs more than one that borrows per statement.
+   Every group's pool is at least 2. The per-group pool size is the accepted knob for a
+   deployment that knows better; nothing else is configurable.
+3. **Workers per group follow how the group holds a connection** (owner, 2026-09-13: the
+   numbers above size the *DB pools*; only transaction-bound work maps one worker to one
+   connection):
+   - **Transaction-bound** (use-case writes; the connection is held for the whole request):
+     workers = poolSize. A worker always finds a connection; the gate never waits.
+   - **Reads** (borrow per statement, release between — §11.4, now required by this rule):
+     workers = 2 × poolSize. The session profile put roughly half of a read's time off the
+     connection (jOOQ rendering ~20%, JWT verification ~30%), so two workers per connection
+     keeps the pool busy without deep queues at the gate; the untimed gate (§1) is what makes
+     the extra workers cheap to park.
+   - **Background** (outbox, stream, scheduler, purger, mail; mostly waiting on HTTP or
+     sleeping): each subsystem keeps its own concurrency setting over the shared background
+     pool of 4; connections are borrowed per statement, and many virtual threads per
+     connection is the normal shape.
+   - **NO_DB**: unbounded, as today. **SSE**: one virtual thread per subscriber, no pool.
+   Nothing here is a knob: the multipliers are product defaults tied to the measured profile;
+   the pool size per group is still the only number a deployment sets.
+4. **Orderly means bounded, not merely queued.** Each group's queue holds at most
+   `8 × workers` waiting requests (owner, 2026-09-13); beyond that the request is refused at
+   once with 503 and `Retry-After`, and every queued request carries a deadline on the event
+   loop's timer wheel (§4) so a flood fails fast on the saturated group and never touches the
+   others. The deadline bounds how long a request waits; the depth bounds how large a burst is
+   absorbed before refusing. A wrong split therefore shows up as 503s and queue wait on one
+   group, not as latency collapse everywhere — which is the property the owner asked for.
+5. **The split is corrected by observation, not guessed better.** The metrics ruled in
+   `docs/backlog.md` (queue depth, in-flight, queue wait per group; pool utilisation per pool)
+   give the one signal that matters: sustained queue wait on one group while another pool sits
+   idle means budget should move. That is an operator's monthly glance, not a design-time
+   calculation.
 
 ### 11.4 The read/write question (open)
 
@@ -294,3 +342,60 @@ exist and are registered. Missing, and needed before the sizing questions above 
 data rather than argument: **connection-hold time per request, per group**. Its ratio to request
 duration is the fraction that decides how much admission a pool can support, and it is the reading
 that says whether §11.4 was worth doing.
+
+### 11.7 Build plan (2026-09-13, all rulings taken; the Vert.x second attempt's phase P2a)
+
+Rulings in force: one pool per group (§11.3); sizing per §11.3a (one budget, shares by hold
+time, workers by kind, queue bound 8 × workers with 503 + `Retry-After`, deadlines); reads
+release between statements (§11.4, required by the 2-per-connection worker rule); SSE per §11.5
+(not built here — no SSE exists yet); one port; group declared per route.
+
+**Groups.** `io.flowcatalyst.http.Group` becomes: `DISPATCH` (what the message router calls:
+processing, settled, ingest — today's `DISPATCH` and `INGEST` merge), `BFF` (what the SPA calls
+under `/bff/`), `API_WRITE` (a route that runs a use case inside a transaction), `API_READ`
+(every other `/api/` route), `LOGIN`, `OIDC` (unchanged, CPU-bound), `NO_DB` (unchanged). A
+route declares its group at registration as today; the split of the API is by transaction
+span, so an API class that mixes reads and writes declares per route, not per class. Ungrouped
+`/api/` registrations default to `API_READ` and fail `LockfileCoverageTest`'s sibling check if
+they run a transaction — add a test that every route whose handler runs an `Operation`/`TxOperation`
+is declared `API_WRITE` (grep-level, by the adapter recording which routes opened a transaction
+during the suite is better if cheap).
+
+**Pools.** Four `GatedDataSource`s from one budget `B` (default 32, `FC_DB_POOL_SIZE` keeps
+overriding it): `API` (½ B, serves `API_READ`, `API_WRITE`, `LOGIN`, `OIDC`), `BFF` (¼ B),
+`DISPATCH` (¼ B), `BACKGROUND` (4, outside B; outbox, stream, scheduler, purger, mail, the
+router's own Postgres queues stay on their own URI-opened pools). Per-group override:
+`FC_DB_POOL_SIZE_<GROUP>`; that is the only knob. Probes keep their reservation on the API pool
+(§1). `Main`/`StartCommand` open the four and hand `Server` a `Pools` record instead of one
+`DataSource`; every subsystem receives the pool it belongs to, and the `Platform` registration
+receives the request-path pools by group. Postgres's `max_connections` guidance in
+`docs/spec/cutover.md` becomes `pods × (B + 4) ≤ max_connections − reserved`.
+
+**Workers.** `RequestWorkers` is the Vert.x adapter's dispatch for every grouped route:
+`API_WRITE` = API pool size; `API_READ` = 2 × API pool size; `BFF` = 2 × BFF pool size (BFF is
+reads; a BFF write, if any, declares `API_WRITE`); `DISPATCH` = DISPATCH pool size (each call
+runs a transaction); `LOGIN`/`OIDC` = processor count; `NO_DB` unbounded. Each group's queue is
+bounded at 8 × its workers; a request arriving at a full queue is answered 503 with
+`Retry-After: 1` from the event loop without a worker; every queued request carries a deadline
+(§4) on the loop's timer wheel. `fc_request_workers_busy`, `fc_request_queue_depth` and a new
+`fc_request_queue_wait_seconds` histogram, all labelled by group; `fc_db_gate_*` labelled by pool.
+
+**Reads release between statements.** `Admission`'s re-entrant handle (§10) pins one connection
+for the request; for `API_READ` and `BFF` the scope is opened in *per-statement* mode: a checkout
+is returned to the pool when the statement's connection closes, and the nested-acquire guard is
+not armed (there is nothing held to deadlock against). `API_WRITE` and `DISPATCH` keep the
+pinned mode. The gate acquisition per statement is untimed (§1). Measure at one core per §11.4's
+instruction and put the switches-per-request number in the report.
+
+**What is deleted.** `Budgets` (the per-group semaphore lanes) — superseded by the workers; the
+Javalin-only §11.1 text stays as history. The gate itself stays: reads contend on it by design.
+
+**Tests (each with a killed mutant).** Group declaration coverage as above; a full `DISPATCH`
+queue answers 503 with `Retry-After` while `API_READ` on the same server still answers (the
+isolation claim — mutant: one shared queue); `API_READ` workers = 2 × pool and `API_WRITE` = pool
+(mutant: swap); a read of N statements holds a connection for none of the CPU between them
+(assert the gate's held gauge returns to zero between statements — mutant: pinned mode); the
+write path still pins (a nested checkout is refused, as today); every subsystem runs on the
+`BACKGROUND` pool (assert by pool identity on a captured connection); a deadline fires on a
+queued request. `bench/real` round comparing the two-CPU throughput and one-core switches per
+request against the 2026-09-08 baseline, per the brief's §7.
