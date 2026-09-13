@@ -1740,6 +1740,12 @@ export type PermissionResponse = {
     permission: string;
 };
 
+export type PoolConfig = {
+    code: string;
+    concurrency: number;
+    rateLimitPerMinute?: number;
+};
+
 export type PortalAppListResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1970,6 +1976,13 @@ export type PublicAllowedResponse = {
     origins: Array<string>;
 };
 
+export type QueueConfig = {
+    connections: number;
+    queueName: string;
+    queueUri: string;
+    visibilityTimeout: number;
+};
+
 export type RawDispatchJobResponse = {
     attemptCount: number;
     attemptHistoryCount: number;
@@ -2189,6 +2202,15 @@ export type RotateOAuthClientSecretResponse = {
     clientId: string;
     clientSecret?: string;
     previousSecretExpiresAt?: string;
+};
+
+export type RouterConfig = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    processingPools: Array<PoolConfig>;
+    queues: Array<QueueConfig>;
 };
 
 export type ScheduledJobInstanceLogResponse = {
@@ -4350,6 +4372,11 @@ export type RotateOAuthClientSecretResponseWritable = {
     clientId: string;
     clientSecret?: string;
     previousSecretExpiresAt?: string;
+};
+
+export type RouterConfigWritable = {
+    processingPools: Array<PoolConfig>;
+    queues: Array<QueueConfig>;
 };
 
 export type ScheduledJobInstanceResponseWritable = {
@@ -7443,6 +7470,31 @@ export type SuspendDispatchPoolResponses = {
 };
 
 export type SuspendDispatchPoolResponse = SuspendDispatchPoolResponses[keyof SuspendDispatchPoolResponses];
+
+export type GetRouterConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/dispatch/router-config';
+};
+
+export type GetRouterConfigErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetRouterConfigError = GetRouterConfigErrors[keyof GetRouterConfigErrors];
+
+export type GetRouterConfigResponses = {
+    /**
+     * OK
+     */
+    200: RouterConfig;
+};
+
+export type GetRouterConfigResponse = GetRouterConfigResponses[keyof GetRouterConfigResponses];
 
 export type ListDocsData = {
     body?: never;
