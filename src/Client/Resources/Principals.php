@@ -89,9 +89,18 @@ class Principals
     /**
      * Create a new user principal.
      *
-     * Pass `enforcePasswordComplexity: false` when your app enforces its
-     * own password policy and only the platform's 2-character minimum
-     * should apply.
+     * `enforcePasswordComplexity` is accepted but not currently enforced
+     * by the platform on this endpoint — a supplied password always runs
+     * the full complexity policy.
+     *
+     * Set `sendInvitation: false` on `$request` when your application is
+     * taking over the invitation email itself (suppresses both the
+     * "set your password" invite and the "account created" welcome). Set
+     * `returnInviteLink: true` to have the platform mint the 72-hour
+     * set-password link and return it as `$principal->inviteLink` instead
+     * of emailing it (passwordless INTERNAL users only; always suppresses
+     * the platform's own invite email). The returned link is a live
+     * bearer credential — never log it.
      */
     public function createUser(CreateUserRequest $request): Principal
     {

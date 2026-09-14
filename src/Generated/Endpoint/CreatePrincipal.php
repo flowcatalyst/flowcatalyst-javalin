@@ -35,14 +35,14 @@ class CreatePrincipal extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoin
      * {@inheritdoc}
      *
      *
-     * @return null|\FlowCatalyst\Generated\Model\CreatedResponse|\FlowCatalyst\Generated\Model\ErrorModel
+     * @return null|\FlowCatalyst\Generated\Model\CreatePrincipalResponse|\FlowCatalyst\Generated\Model\ErrorModel
      */
     protected function transformResponseBody(\Psr\Http\Message\ResponseInterface $response, \Symfony\Component\Serializer\SerializerInterface $serializer, ?string $contentType = null)
     {
         $status = $response->getStatusCode();
         $body = (string) $response->getBody();
         if (is_null($contentType) === false && (201 === $status && mb_strpos(strtolower($contentType), 'application/json') !== false)) {
-            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\CreatedResponse', 'json');
+            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\CreatePrincipalResponse', 'json');
         }
         if (mb_strpos(strtolower($contentType), 'application/json') !== false) {
             return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\ErrorModel', 'json');

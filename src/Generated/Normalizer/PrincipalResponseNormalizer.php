@@ -110,6 +110,12 @@ class PrincipalResponseNormalizer implements DenormalizerInterface, NormalizerIn
         elseif (\array_key_exists('idpType', $data) && $data['idpType'] === null) {
             $object->setIdpType(null);
         }
+        if (\array_key_exists('inviteLink', $data) && $data['inviteLink'] !== null) {
+            $object->setInviteLink($data['inviteLink']);
+        }
+        elseif (\array_key_exists('inviteLink', $data) && $data['inviteLink'] === null) {
+            $object->setInviteLink(null);
+        }
         if (\array_key_exists('isAnchorUser', $data) && $data['isAnchorUser'] !== null) {
             $object->setIsAnchorUser($data['isAnchorUser']);
         }
@@ -185,6 +191,9 @@ class PrincipalResponseNormalizer implements DenormalizerInterface, NormalizerIn
         $dataArray['id'] = $data->getId();
         if ($data->isInitialized('idpType') && null !== $data->getIdpType()) {
             $dataArray['idpType'] = $data->getIdpType();
+        }
+        if ($data->isInitialized('inviteLink') && null !== $data->getInviteLink()) {
+            $dataArray['inviteLink'] = $data->getInviteLink();
         }
         $dataArray['isAnchorUser'] = $data->getIsAnchorUser();
         $dataArray['name'] = $data->getName();

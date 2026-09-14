@@ -39,11 +39,19 @@ class CreatePrincipalRequest extends \ArrayObject
      */
     protected $password;
     /**
+     * @var bool|null
+     */
+    protected $returnInviteLink;
+    /**
      * Principal scope (ANCHOR, PARTNER, CLIENT)
      *
      * @var string|null
      */
     protected $scope;
+    /**
+     * @var bool|null
+     */
+    protected $sendInvitation;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -157,6 +165,24 @@ class CreatePrincipalRequest extends \ArrayObject
         return $this;
     }
     /**
+     * @return bool|null
+     */
+    public function getReturnInviteLink(): ?bool
+    {
+        return $this->returnInviteLink;
+    }
+    /**
+     * @param bool|null $returnInviteLink
+     *
+     * @return self
+     */
+    public function setReturnInviteLink(?bool $returnInviteLink): self
+    {
+        $this->initialized['returnInviteLink'] = true;
+        $this->returnInviteLink = $returnInviteLink;
+        return $this;
+    }
+    /**
      * Principal scope (ANCHOR, PARTNER, CLIENT)
      *
      * @return string|null
@@ -176,6 +202,24 @@ class CreatePrincipalRequest extends \ArrayObject
     {
         $this->initialized['scope'] = true;
         $this->scope = $scope;
+        return $this;
+    }
+    /**
+     * @return bool|null
+     */
+    public function getSendInvitation(): ?bool
+    {
+        return $this->sendInvitation;
+    }
+    /**
+     * @param bool|null $sendInvitation
+     *
+     * @return self
+     */
+    public function setSendInvitation(?bool $sendInvitation): self
+    {
+        $this->initialized['sendInvitation'] = true;
+        $this->sendInvitation = $sendInvitation;
         return $this;
     }
 }

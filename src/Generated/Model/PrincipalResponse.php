@@ -55,6 +55,10 @@ class PrincipalResponse
      */
     protected $idpType;
     /**
+     * @var string|null
+     */
+    protected $inviteLink;
+    /**
      * @var bool|null
      */
     protected $isAnchorUser;
@@ -264,6 +268,24 @@ class PrincipalResponse
     {
         $this->initialized['idpType'] = true;
         $this->idpType = $idpType;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getInviteLink(): ?string
+    {
+        return $this->inviteLink;
+    }
+    /**
+     * @param string|null $inviteLink
+     *
+     * @return self
+     */
+    public function setInviteLink(?string $inviteLink): self
+    {
+        $this->initialized['inviteLink'] = true;
+        $this->inviteLink = $inviteLink;
         return $this;
     }
     /**

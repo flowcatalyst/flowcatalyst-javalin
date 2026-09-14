@@ -182,6 +182,8 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
         
         \FlowCatalyst\Generated\Model\CreatePrincipalRequest::class => \FlowCatalyst\Generated\Normalizer\CreatePrincipalRequestNormalizer::class,
         
+        \FlowCatalyst\Generated\Model\CreatePrincipalResponse::class => \FlowCatalyst\Generated\Normalizer\CreatePrincipalResponseNormalizer::class,
+        
         \FlowCatalyst\Generated\Model\CreateProcessRequest::class => \FlowCatalyst\Generated\Normalizer\CreateProcessRequestNormalizer::class,
         
         \FlowCatalyst\Generated\Model\CreateRoleRequest::class => \FlowCatalyst\Generated\Normalizer\CreateRoleRequestNormalizer::class,
@@ -628,6 +630,7 @@ class JaneObjectNormalizer implements DenormalizerInterface, NormalizerInterface
             \FlowCatalyst\Generated\Model\CreatePortalAppRequest::class => false,
             \FlowCatalyst\Generated\Model\CreatePortalAppResponse::class => false,
             \FlowCatalyst\Generated\Model\CreatePrincipalRequest::class => false,
+            \FlowCatalyst\Generated\Model\CreatePrincipalResponse::class => false,
             \FlowCatalyst\Generated\Model\CreateProcessRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateRoleRequest::class => false,
             \FlowCatalyst\Generated\Model\CreateScheduledJobRequest::class => false,

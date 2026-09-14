@@ -37,6 +37,12 @@ class CreatePrincipalRequestNormalizer implements DenormalizerInterface, Normali
         if (isset($data['$recursiveRef'])) {
             return new Reference($data['$recursiveRef'], $context['document-origin']);
         }
+        if (\array_key_exists('returnInviteLink', $data) && \is_int($data['returnInviteLink'])) {
+            $data['returnInviteLink'] = (bool) $data['returnInviteLink'];
+        }
+        if (\array_key_exists('sendInvitation', $data) && \is_int($data['sendInvitation'])) {
+            $data['sendInvitation'] = (bool) $data['sendInvitation'];
+        }
         if (\array_key_exists('$schema', $data) && $data['$schema'] !== null) {
             $object->setDollarSchema($data['$schema']);
             unset($data['$schema']);
@@ -79,12 +85,26 @@ class CreatePrincipalRequestNormalizer implements DenormalizerInterface, Normali
         elseif (\array_key_exists('password', $data) && $data['password'] === null) {
             $object->setPassword(null);
         }
+        if (\array_key_exists('returnInviteLink', $data) && $data['returnInviteLink'] !== null) {
+            $object->setReturnInviteLink($data['returnInviteLink']);
+            unset($data['returnInviteLink']);
+        }
+        elseif (\array_key_exists('returnInviteLink', $data) && $data['returnInviteLink'] === null) {
+            $object->setReturnInviteLink(null);
+        }
         if (\array_key_exists('scope', $data) && $data['scope'] !== null) {
             $object->setScope($data['scope']);
             unset($data['scope']);
         }
         elseif (\array_key_exists('scope', $data) && $data['scope'] === null) {
             $object->setScope(null);
+        }
+        if (\array_key_exists('sendInvitation', $data) && $data['sendInvitation'] !== null) {
+            $object->setSendInvitation($data['sendInvitation']);
+            unset($data['sendInvitation']);
+        }
+        elseif (\array_key_exists('sendInvitation', $data) && $data['sendInvitation'] === null) {
+            $object->setSendInvitation(null);
         }
         foreach ($data as $key => $value) {
             if (preg_match('/.*/', (string) $key)) {
@@ -109,7 +129,13 @@ class CreatePrincipalRequestNormalizer implements DenormalizerInterface, Normali
         if ($data->isInitialized('password') && null !== $data->getPassword()) {
             $dataArray['password'] = $data->getPassword();
         }
+        if ($data->isInitialized('returnInviteLink') && null !== $data->getReturnInviteLink()) {
+            $dataArray['returnInviteLink'] = $data->getReturnInviteLink();
+        }
         $dataArray['scope'] = $data->getScope();
+        if ($data->isInitialized('sendInvitation') && null !== $data->getSendInvitation()) {
+            $dataArray['sendInvitation'] = $data->getSendInvitation();
+        }
         foreach ($data as $key => $value) {
             if (preg_match('/.*/', (string) $key)) {
                 $dataArray[$key] = $value;

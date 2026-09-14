@@ -1821,7 +1821,7 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
      * @param null|\FlowCatalyst\Generated\Model\CreatePrincipalRequest $requestBody
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
-     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\CreatedResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\CreatePrincipalResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
      */
     public function createPrincipal(?\FlowCatalyst\Generated\Model\CreatePrincipalRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
     {
