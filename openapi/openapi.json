@@ -2731,14 +2731,44 @@
           "password": {
             "type": "string"
           },
+          "returnInviteLink": {
+            "type": "boolean"
+          },
           "scope": {
             "description": "Principal scope (ANCHOR, PARTNER, CLIENT)",
             "type": "string"
+          },
+          "sendInvitation": {
+            "type": "boolean"
           }
         },
         "required": [
           "email",
           "scope"
+        ],
+        "type": "object"
+      },
+      "CreatePrincipalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/CreatePrincipalResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inviteLink": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ],
         "type": "object"
       },
@@ -3083,6 +3113,9 @@
           "password": {
             "type": "string"
           },
+          "returnInviteLink": {
+            "type": "boolean"
+          },
           "scope": {
             "enum": [
               "ANCHOR",
@@ -3090,6 +3123,9 @@
               "CLIENT"
             ],
             "type": "string"
+          },
+          "sendInvitation": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -5472,6 +5508,9 @@
             "type": "string"
           },
           "idpType": {
+            "type": "string"
+          },
+          "inviteLink": {
             "type": "string"
           },
           "isAnchorUser": {
@@ -16813,7 +16852,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreatedResponse"
+                  "$ref": "#/components/schemas/CreatePrincipalResponse"
                 }
               }
             },

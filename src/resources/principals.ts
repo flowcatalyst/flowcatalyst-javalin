@@ -95,6 +95,24 @@ export class PrincipalsResource {
 
 	/**
 	 * Create a new user principal.
+	 *
+	 * `sendInvitation` (default true) controls whether the platform emails
+	 * the new user at all: a passwordless user gets the "set your password"
+	 * invite, a user created with a password gets the "account created"
+	 * welcome. Set to `false` when the calling application is taking over
+	 * the invitation itself — this suppresses BOTH emails.
+	 *
+	 * `returnInviteLink` (default false), when true, mints the 72-hour
+	 * "set your password" link and returns it as `inviteLink` on the
+	 * response instead of emailing it — only for a passwordless INTERNAL
+	 * user (a no-op, field absent, otherwise). `returnInviteLink: true`
+	 * ALWAYS suppresses the platform's own invite email, even when
+	 * `sendInvitation` is true or unset — the token can only be minted
+	 * once, so asking for the link back implies you're sending your own
+	 * email with it.
+	 *
+	 * `inviteLink` is a live 72-hour bearer credential — treat it exactly
+	 * like a password and never log it.
 	 */
 	createUser(data: CreateUserRequest): ResultAsync<PrincipalDto, SdkError> {
 		return this.client.request<PrincipalDto>((httpClient, headers) =>
