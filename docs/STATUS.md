@@ -48,9 +48,14 @@ p50 better than Go's on both, p99 worse at two CPUs (539 vs 112 ms — the
 default quarter-of-container heap is the first suspect), 10–13 context
 switches per request vs Go's 7 (the measured cost of per-statement reads,
 `admission.md` §11.4 — a ruling to take with the numbers). Still owed
-before a merge: the native image build and `conformance/`. Two decisions
-for the owner: reads pinned or per-statement, and an explicit `-Xmx` for
-the images (brief P5).
+before a merge: the native image build and `conformance/`. **Read path
+ruled 2026-09-14:** reads stay per-statement with twice-the-pool workers —
+the ungated general path — because a read pinning a connection while it
+does CPU work or an outbound call would block for nothing; transactions
+stay gated per request at pool size; if a second, gated read path is ever
+wanted it is a separate group, and one-way means ungated. The 10–13
+switches per request are the accepted cost. One decision left for the
+owner: an explicit `-Xmx` for the images (brief P5; the two-CPU p99).
 
 ## Service-account reach follows its client links (2026-09-13, owner go-ahead)
 
