@@ -930,6 +930,90 @@ class RouterApiTest {
         }
     }
 
+    @Test
+    @DisplayName("DELETE /warnings/old removes only warnings older than ?hours, by AGE not acknowledgement")
+    void clearOldWarningsIsAgeBasedRegardlessOfAcknowledgement() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolated = new WarningStore(clock);
+        var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
+                "v", "/router", null, null, null, null);
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-acked");
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "old-unacked");
+            var oldAckedId = isolated.snapshot().warnings().stream()
+                    .filter(n -> n.message().equals("old-acked")).findFirst().orElseThrow().id();
+            isolated.acknowledge(oldAckedId);
+
+            // Both "old" warnings are now 2h old; cutoff below is 1h, so both
+            // must go regardless that one is acked and the other is not.
+            clock.advance(Duration.ofHours(2));
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh-unacked");
+
+            var r = isolatedHttp.delete("/router/warnings/old?hours=1");
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("cleared").asLong())
+                    .as("Go CountResponse{cleared:n}: both old warnings, acked or not").isEqualTo(2);
+
+            // Assert the observable store contents, not the call.
+            var remaining = isolated.snapshot().warnings();
+            assertThat(remaining).hasSize(1);
+            assertThat(remaining.get(0).message()).isEqualTo("fresh-unacked");
+        }
+    }
+
+    @Test
+    @DisplayName("DELETE /warnings/old defaults ?hours to 8 when absent or <= 0 (Go: hours<=0 -> 8)")
+    void clearOldWarningsDefaultsHoursToEight() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolated = new WarningStore(clock);
+        var state = new RouterApi.State(null, new InFlightTracker(clock), isolated, null, null, null,
+                "v", "/router", null, null, null, null);
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "seven-hours-old");
+            clock.advance(Duration.ofHours(7));
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "fresh");
+
+            // No ?hours at all: default cutoff is 8h, so the 7h-old warning
+            // must survive.
+            var noParam = isolatedHttp.delete("/router/warnings/old");
+            assertThat(json(noParam).get("cleared").asLong()).isEqualTo(0);
+            assertThat(isolated.count()).isEqualTo(2);
+
+            // Push the older one past the 8h default cutoff and retry with
+            // an explicit non-positive hours, which Go also maps to 8.
+            clock.advance(Duration.ofHours(2));
+            var nonPositive = isolatedHttp.delete("/router/warnings/old?hours=0");
+            assertThat(json(nonPositive).get("cleared").asLong())
+                    .as("now 9h old, past the 8h default").isEqualTo(1);
+            assertThat(isolated.snapshot().warnings()).extracting(WarningStore.Notice::message)
+                    .containsExactly("fresh");
+        }
+    }
+
+    @Test
+    @DisplayName("DELETE /warnings empties the store unconditionally, acked or not")
+    void clearAllWarningsEmptiesStore() {
+        var isolated = new WarningStore(CLOCK);
+        var state = new RouterApi.State(null, new InFlightTracker(CLOCK), isolated, null, null, null,
+                "v", "/router", null, null, null, null);
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+            isolated.raise(Warnings.Severity.WARNING, "ROUTING", "one");
+            isolated.raise(Warnings.Severity.CRITICAL, "CONFIGURATION", "two");
+            var twoId = isolated.snapshot().warnings().stream()
+                    .filter(n -> n.message().equals("two")).findFirst().orElseThrow().id();
+            isolated.acknowledge(twoId);
+
+            var r = isolatedHttp.delete("/router/warnings");
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("cleared").asLong())
+                    .as("Go CountResponse{cleared:n}: every stored warning").isEqualTo(2);
+
+            // Assert the observable store contents, not the call.
+            assertThat(isolated.count()).isZero();
+            assertThat(json(isolatedHttp.get("/router/warnings"))).isEmpty();
+        }
+    }
+
     // ── Circuit breakers ─────────────────────────────────────────────────
 
     @Test

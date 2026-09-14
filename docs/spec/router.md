@@ -1495,13 +1495,13 @@ for the public paths (§9.7). "Mutating" = changes router state.
 | GET | `/monitoring/traffic-status` | — | `{enabled, mode ("alb-target-group"|"disabled"), targetGroupArn?, registered, lastChangedAt? (ms format), lastError?}` | |
 | GET | `/monitoring/stream-health`, `…/live`, `…/ready` | — | pass-through to the stream processor; without provider: `{enabled:false,status:"NOT_CONFIGURED",detail}` / 200 `{status:"NOT_CONFIGURED"}` | stream spec |
 | GET | `/warnings?severity=&category=&acknowledged=false` | — | `[WireWarning]` newest first (filters case-insens.; `acknowledged=false` → unacked only, anything else → all) | |
-| DELETE | `/warnings` | yes | `{cleared:n}` | |
+| DELETE | `/warnings` | yes | `{cleared:n}` | unconditional — removes every stored warning, acked or not (Go `clearAllWarnings`, `handlers_warnings.go:113-122`) |
 | POST | `/warnings/{id}/acknowledge` | yes | `{acknowledged:true}`; 404 | |
 | POST | `/warnings/acknowledge-all` | yes | `{acknowledged:n}` | |
 | GET | `/warnings/critical` | — | `[WireWarning]` (acked or not) | |
 | GET | `/warnings/unacknowledged` | — | `[WireWarning]` | |
 | GET | `/warnings/severity/{severity}` | — | `[WireWarning]` | |
-| DELETE | `/warnings/old?hours=8` | yes | `{cleared:n}` (`hours≤0 → 8`) | |
+| DELETE | `/warnings/old?hours=8` | yes | `{cleared:n}` (`hours≤0 → 8`) | age cutoff only (`createdAt` older than `hours`), regardless of acknowledged state — Go `clearOldWarnings` calling `WarningService.ClearOlderThan` (`handlers_warnings.go:176-187`, `warning.go:237-252`) |
 | GET | `/api/config` | — | `{version, warnings_total, warnings_critical}` — never secrets | |
 | POST | `/config/reload` | **yes** | §8.3 | |
 | POST | `/messages` `{id?, pool_code, mediation_type?, mediation_target, message_group_id?, high_priority?, dispatch_mode?, auth_token?, signing_secret?}` | **yes** (publishes) | 201 `{message_id, broker_message_id, pool_code, queue_identifier}`; 422 on missing required (huma schema); 502 on publisher/publish error; 503 no publisher | `pool_code` selects the *queue* named like it, else the alphabetically-first queue (§5 #61); id auto-UUID; defaults HTTP / IMMEDIATE |

@@ -62,6 +62,32 @@ class SchemaFingerprintTest {
                 .isGreaterThan(0);
     }
 
+    /// `normalizeConstraintDef` must canonicalise INDEX rows (a partial
+    /// index's `WHERE` clause) the same way it already does CONSTRAINT rows
+    /// — Postgres 18.4 vs 18.6 spell an `ANY (ARRAY[...])` predicate
+    /// differently (`idx_dispatch_jobs_blocked_groups`,
+    /// `idx_msg_scheduled_job_instances_active`): one casts the whole
+    /// literal array once, the other casts each element. Both spellings of
+    /// the same predicate must normalise to one identical string.
+    @Test
+    void normalizeConstraintDefCanonicalisesBothIndexArrayCastSpellings() {
+        String elementWiseCast =
+                "((status)::text = ANY (ARRAY[('FAILED'::character varying)::text, ('ERROR'::character varying)::text]))";
+        String wholeArrayCast =
+                "((status)::text = ANY ((ARRAY['FAILED'::character varying, 'ERROR'::character varying])::text[]))";
+
+        String normalizedElementWise = SchemaFingerprint.normalizeConstraintDef(elementWiseCast);
+        String normalizedWholeArray = SchemaFingerprint.normalizeConstraintDef(wholeArrayCast);
+
+        assertThat(normalizedElementWise)
+                .as("both spellings of the same predicate normalise to one canonical string")
+                .isEqualTo(normalizedWholeArray);
+        // Pin the actual shape too, not just their mutual equality — two
+        // spellings could otherwise both be normalised into some OTHER
+        // shared but wrong string and this assertion would still pass.
+        assertThat(normalizedElementWise).isEqualTo("((status) = ANY (ARRAY['FAILED', 'ERROR']))");
+    }
+
     /// Regenerates the fixture from `db/go-schema.sql` loaded into a fresh
     /// embedded database. Run with:
     ///

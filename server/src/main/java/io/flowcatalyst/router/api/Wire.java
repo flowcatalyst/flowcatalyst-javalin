@@ -96,6 +96,11 @@ public final class Wire {
     public record AcknowledgedCountResponse(long acknowledged) {
     }
 
+    /// `DELETE /warnings` and `DELETE /warnings/old` (Go `CountResponse`,
+    /// `dto.go:343-346`).
+    public record ClearedResponse(long cleared) {
+    }
+
     public record DashboardCircuitBreaker(String name, String state, long successfulCalls, long failedCalls,
                                           long rejectedCalls, double failureRate, long bufferedCalls,
                                           long bufferSize) {

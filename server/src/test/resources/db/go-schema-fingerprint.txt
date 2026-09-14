@@ -833,7 +833,7 @@ CONSTRAINT	webauthn_credentials	webauthn_credentials_principal_id_fkey	f	FOREIGN
 INDEX	app_application_openapi_specs	app_application_openapi_specs_application_id_version_key	CREATE UNIQUE INDEX app_application_openapi_specs_application_id_version_key ON public.app_application_openapi_specs USING btree (application_id, version)	true
 INDEX	app_application_openapi_specs	app_application_openapi_specs_pkey	CREATE UNIQUE INDEX app_application_openapi_specs_pkey ON public.app_application_openapi_specs USING btree (id)	true
 INDEX	app_application_openapi_specs	idx_app_openapi_app	CREATE INDEX idx_app_openapi_app ON public.app_application_openapi_specs USING btree (application_id, synced_at DESC)	true
-INDEX	app_application_openapi_specs	idx_app_openapi_one_current	CREATE UNIQUE INDEX idx_app_openapi_one_current ON public.app_application_openapi_specs USING btree (application_id) WHERE ((status)::text = 'CURRENT'::text)	true
+INDEX	app_application_openapi_specs	idx_app_openapi_one_current	CREATE UNIQUE INDEX idx_app_openapi_one_current ON public.app_application_openapi_specs USING btree (application_id) WHERE ((status) = 'CURRENT')	true
 INDEX	app_applications	app_applications_code_key	CREATE UNIQUE INDEX app_applications_code_key ON public.app_applications USING btree (code)	true
 INDEX	app_applications	app_applications_pkey	CREATE UNIQUE INDEX app_applications_pkey ON public.app_applications USING btree (id)	true
 INDEX	app_applications	idx_app_applications_active	CREATE INDEX idx_app_applications_active ON public.app_applications USING btree (active)	true
@@ -872,7 +872,7 @@ INDEX	iam_client_access_grants	idx_iam_client_access_grants_principal	CREATE IND
 INDEX	iam_client_access_grants	uq_iam_client_access_grants_principal_client	CREATE UNIQUE INDEX uq_iam_client_access_grants_principal_client ON public.iam_client_access_grants USING btree (principal_id, client_id)	true
 INDEX	iam_login_attempts	iam_login_attempts_pkey	CREATE UNIQUE INDEX iam_login_attempts_pkey ON ONLY public.iam_login_attempts USING btree (id, attempted_at)	true
 INDEX	iam_login_attempts	idx_iam_login_attempts_at	CREATE INDEX idx_iam_login_attempts_at ON ONLY public.iam_login_attempts USING btree (attempted_at)	true
-INDEX	iam_login_attempts	idx_iam_login_attempts_failure_throttle	CREATE INDEX idx_iam_login_attempts_failure_throttle ON ONLY public.iam_login_attempts USING btree (identifier, attempted_at) WHERE ((outcome)::text = 'FAILURE'::text)	true
+INDEX	iam_login_attempts	idx_iam_login_attempts_failure_throttle	CREATE INDEX idx_iam_login_attempts_failure_throttle ON ONLY public.iam_login_attempts USING btree (identifier, attempted_at) WHERE ((outcome) = 'FAILURE')	true
 INDEX	iam_login_attempts	idx_iam_login_attempts_identifier_at	CREATE INDEX idx_iam_login_attempts_identifier_at ON ONLY public.iam_login_attempts USING btree (identifier, attempted_at)	true
 INDEX	iam_login_attempts	idx_iam_login_attempts_identifier_ip_at	CREATE INDEX idx_iam_login_attempts_identifier_ip_at ON ONLY public.iam_login_attempts USING btree (identifier, ip_address, attempted_at)	true
 INDEX	iam_login_attempts	idx_iam_login_attempts_outcome	CREATE INDEX idx_iam_login_attempts_outcome ON ONLY public.iam_login_attempts USING btree (outcome)	true
@@ -952,9 +952,9 @@ INDEX	msg_dispatch_job_projection_feed	idx_msg_dj_projection_feed_in_progress	CR
 INDEX	msg_dispatch_job_projection_feed	idx_msg_dj_projection_feed_processed_at	CREATE INDEX idx_msg_dj_projection_feed_processed_at ON public.msg_dispatch_job_projection_feed USING btree (processed_at) WHERE (processed = 1)	true
 INDEX	msg_dispatch_job_projection_feed	idx_msg_dj_projection_feed_unprocessed	CREATE INDEX idx_msg_dj_projection_feed_unprocessed ON public.msg_dispatch_job_projection_feed USING btree (dispatch_job_id, id) WHERE (processed = 0)	true
 INDEX	msg_dispatch_job_projection_feed	msg_dispatch_job_projection_feed_pkey	CREATE UNIQUE INDEX msg_dispatch_job_projection_feed_pkey ON public.msg_dispatch_job_projection_feed USING btree (id)	true
-INDEX	msg_dispatch_jobs	idx_dispatch_jobs_blocked_groups	CREATE INDEX idx_dispatch_jobs_blocked_groups ON ONLY public.msg_dispatch_jobs USING btree (message_group, status) WHERE ((status)::text = ANY (ARRAY[('FAILED'::character varying)::text, ('ERROR'::character varying)::text]))	true
-INDEX	msg_dispatch_jobs	idx_dispatch_jobs_pending_poll	CREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at) WHERE ((status)::text = 'PENDING'::text)	true
-INDEX	msg_dispatch_jobs	idx_dispatch_jobs_stale_queued	CREATE INDEX idx_dispatch_jobs_stale_queued ON ONLY public.msg_dispatch_jobs USING btree (queued_at) WHERE ((status)::text = 'QUEUED'::text)	true
+INDEX	msg_dispatch_jobs	idx_dispatch_jobs_blocked_groups	CREATE INDEX idx_dispatch_jobs_blocked_groups ON ONLY public.msg_dispatch_jobs USING btree (message_group, status) WHERE ((status) = ANY (ARRAY['FAILED', 'ERROR']))	true
+INDEX	msg_dispatch_jobs	idx_dispatch_jobs_pending_poll	CREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at) WHERE ((status) = 'PENDING')	true
+INDEX	msg_dispatch_jobs	idx_dispatch_jobs_stale_queued	CREATE INDEX idx_dispatch_jobs_stale_queued ON ONLY public.msg_dispatch_jobs USING btree (queued_at) WHERE ((status) = 'QUEUED')	true
 INDEX	msg_dispatch_jobs	idx_msg_dispatch_jobs_dirty	CREATE INDEX idx_msg_dispatch_jobs_dirty ON ONLY public.msg_dispatch_jobs USING btree (created_at) WHERE ((projected_at IS NULL) OR (updated_at > projected_at))	true
 INDEX	msg_dispatch_jobs	msg_dispatch_jobs_pkey	CREATE UNIQUE INDEX msg_dispatch_jobs_pkey ON ONLY public.msg_dispatch_jobs USING btree (id, created_at)	true
 INDEX	msg_dispatch_jobs_read	idx_msg_dispatch_jobs_read_application	CREATE INDEX idx_msg_dispatch_jobs_read_application ON ONLY public.msg_dispatch_jobs_read USING btree (application)	true
@@ -1009,12 +1009,12 @@ INDEX	msg_processes	msg_processes_pkey	CREATE UNIQUE INDEX msg_processes_pkey ON
 INDEX	msg_scheduled_job_instance_logs	idx_msg_scheduled_job_instance_logs_instance	CREATE INDEX idx_msg_scheduled_job_instance_logs_instance ON ONLY public.msg_scheduled_job_instance_logs USING btree (instance_id, created_at)	true
 INDEX	msg_scheduled_job_instance_logs	idx_msg_scheduled_job_instance_logs_job	CREATE INDEX idx_msg_scheduled_job_instance_logs_job ON ONLY public.msg_scheduled_job_instance_logs USING btree (scheduled_job_id, created_at DESC)	true
 INDEX	msg_scheduled_job_instance_logs	msg_scheduled_job_instance_logs_pkey	CREATE UNIQUE INDEX msg_scheduled_job_instance_logs_pkey ON ONLY public.msg_scheduled_job_instance_logs USING btree (id, created_at)	true
-INDEX	msg_scheduled_job_instances	idx_msg_scheduled_job_instances_active	CREATE INDEX idx_msg_scheduled_job_instances_active ON ONLY public.msg_scheduled_job_instances USING btree (scheduled_job_id) WHERE ((status)::text = ANY (ARRAY[('QUEUED'::character varying)::text, ('IN_FLIGHT'::character varying)::text, ('DELIVERED'::character varying)::text]))	true
+INDEX	msg_scheduled_job_instances	idx_msg_scheduled_job_instances_active	CREATE INDEX idx_msg_scheduled_job_instances_active ON ONLY public.msg_scheduled_job_instances USING btree (scheduled_job_id) WHERE ((status) = ANY (ARRAY['QUEUED', 'IN_FLIGHT', 'DELIVERED']))	true
 INDEX	msg_scheduled_job_instances	idx_msg_scheduled_job_instances_client	CREATE INDEX idx_msg_scheduled_job_instances_client ON ONLY public.msg_scheduled_job_instances USING btree (client_id, created_at DESC)	true
 INDEX	msg_scheduled_job_instances	idx_msg_scheduled_job_instances_job	CREATE INDEX idx_msg_scheduled_job_instances_job ON ONLY public.msg_scheduled_job_instances USING btree (scheduled_job_id, created_at DESC)	true
 INDEX	msg_scheduled_job_instances	idx_msg_scheduled_job_instances_status	CREATE INDEX idx_msg_scheduled_job_instances_status ON ONLY public.msg_scheduled_job_instances USING btree (status, created_at)	true
 INDEX	msg_scheduled_job_instances	msg_scheduled_job_instances_pkey	CREATE UNIQUE INDEX msg_scheduled_job_instances_pkey ON ONLY public.msg_scheduled_job_instances USING btree (id, created_at)	true
-INDEX	msg_scheduled_jobs	idx_msg_scheduled_jobs_active_poll	CREATE INDEX idx_msg_scheduled_jobs_active_poll ON public.msg_scheduled_jobs USING btree (last_fired_at NULLS FIRST) WHERE ((status)::text = 'ACTIVE'::text)	true
+INDEX	msg_scheduled_jobs	idx_msg_scheduled_jobs_active_poll	CREATE INDEX idx_msg_scheduled_jobs_active_poll ON public.msg_scheduled_jobs USING btree (last_fired_at NULLS FIRST) WHERE ((status) = 'ACTIVE')	true
 INDEX	msg_scheduled_jobs	idx_msg_scheduled_jobs_application_id	CREATE INDEX idx_msg_scheduled_jobs_application_id ON public.msg_scheduled_jobs USING btree (application_id)	true
 INDEX	msg_scheduled_jobs	idx_msg_scheduled_jobs_client_id	CREATE INDEX idx_msg_scheduled_jobs_client_id ON public.msg_scheduled_jobs USING btree (client_id)	true
 INDEX	msg_scheduled_jobs	idx_msg_scheduled_jobs_code_per_client	CREATE UNIQUE INDEX idx_msg_scheduled_jobs_code_per_client ON public.msg_scheduled_jobs USING btree (client_id, code) WHERE (client_id IS NOT NULL)	true
@@ -1068,7 +1068,7 @@ INDEX	oauth_oidc_payloads	oauth_oidc_payloads_user_code_idx	CREATE INDEX oauth_o
 INDEX	portal_apps	portal_apps_pkey	CREATE UNIQUE INDEX portal_apps_pkey ON public.portal_apps USING btree (id)	true
 INDEX	portal_apps	uq_portal_apps_client_code	CREATE UNIQUE INDEX uq_portal_apps_client_code ON public.portal_apps USING btree (client_id, code)	true
 INDEX	portal_identities	idx_portal_identities_client_email_prefix	CREATE INDEX idx_portal_identities_client_email_prefix ON public.portal_identities USING btree (client_id, email text_pattern_ops)	true
-INDEX	portal_identities	idx_portal_identities_client_name_prefix	CREATE INDEX idx_portal_identities_client_name_prefix ON public.portal_identities USING btree (client_id, lower((name)::text) text_pattern_ops)	true
+INDEX	portal_identities	idx_portal_identities_client_name_prefix	CREATE INDEX idx_portal_identities_client_name_prefix ON public.portal_identities USING btree (client_id, lower((name)) text_pattern_ops)	true
 INDEX	portal_identities	idx_portal_identities_email	CREATE INDEX idx_portal_identities_email ON public.portal_identities USING btree (email)	true
 INDEX	portal_identities	portal_identities_pkey	CREATE UNIQUE INDEX portal_identities_pkey ON public.portal_identities USING btree (id)	true
 INDEX	portal_identities	uq_portal_identities_client_email	CREATE UNIQUE INDEX uq_portal_identities_client_email ON public.portal_identities USING btree (client_id, email)	true

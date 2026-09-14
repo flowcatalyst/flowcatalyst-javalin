@@ -240,4 +240,35 @@ public final class WarningStore implements Warnings {
             lock.unlock();
         }
     }
+
+    /// Removes every stored warning, acknowledged or not. Returns the number
+    /// removed. `DELETE /warnings` (Go `clearAllWarnings`,
+    /// `handlers_warnings.go:113-122`).
+    public int clearAll() {
+        lock.lock();
+        try {
+            int removed = warnings.size();
+            warnings.clear();
+            return removed;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /// Removes every warning older than `age`, acknowledged or not — a
+    /// blunt uniform-cutoff tool distinct from [#cleanup]'s severity-aware
+    /// sweep, and not used by it. Returns the number removed. `DELETE
+    /// /warnings/old` (Go `ClearOlderThan`, `warning.go:237-252`).
+    public int clearOlderThan(Duration age) {
+        var now = clock.instant();
+        long limitMinutes = age.toMinutes();
+        lock.lock();
+        try {
+            int before = warnings.size();
+            warnings.values().removeIf(w -> w.ageMinutes(now) > limitMinutes);
+            return before - warnings.size();
+        } finally {
+            lock.unlock();
+        }
+    }
 }

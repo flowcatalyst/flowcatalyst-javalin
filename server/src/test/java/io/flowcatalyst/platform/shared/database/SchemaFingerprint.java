@@ -60,7 +60,7 @@ public final class SchemaFingerprint {
                 JOIN pg_namespace n ON n.oid = cl.relnamespace
                 WHERE n.nspname = 'public' AND con.contype <> 'n'
                   AND NOT %s""".formatted(ignored("cl.relname")));
-        query(c, lines, "INDEX", """
+        queryIndexes(c, lines, """
                 SELECT i.tablename, i.indexname, i.indexdef, x.indisvalid::text
                 FROM pg_indexes i
                 JOIN pg_class ic ON ic.relname = i.indexname
@@ -92,16 +92,21 @@ public final class SchemaFingerprint {
         }
     }
 
-    // `pg_get_constraintdef` renders a `col IN ('A', 'B')` CHECK constraint
-    // differently depending on the exact PostgreSQL point release that
-    // originally parsed it: some cast the whole literal array to the
-    // comparison type once (`(ARRAY['A'::t, 'B'::t])::text[]`), others cast
-    // each element individually (`ARRAY[('A'::t)::text, ('B'::t)::text]`).
-    // Both are the same expression; only the deparse style differs. Go's
-    // captured fixture and the Java-migrated schema can legitimately be
-    // built by different minor Postgres versions (Go's embedded-postgres-go
-    // vs zonky's embedded-postgres for tests), so the definition text is
-    // normalised to one canonical form before comparison.
+    // `pg_get_constraintdef` (CONSTRAINT rows) and the `indexdef` column of
+    // `pg_indexes` (INDEX rows, e.g. a partial index's WHERE clause) render a
+    // `col IN ('A', 'B')`-shaped expression differently depending on the
+    // exact PostgreSQL point release that originally parsed it: some cast
+    // the whole literal array to the comparison type once
+    // (`(ARRAY['A'::t, 'B'::t])::text[]`), others cast each element
+    // individually (`ARRAY[('A'::t)::text, ('B'::t)::text]`). Both are the
+    // same expression; only the deparse style differs — e.g. 18.4 vs 18.6
+    // spell `idx_dispatch_jobs_blocked_groups`'s and
+    // `idx_msg_scheduled_job_instances_active`'s partial-index predicates
+    // differently. Go's captured fixture and the Java-migrated schema can
+    // legitimately be built by different minor Postgres versions (Go's
+    // embedded-postgres-go vs zonky's embedded-postgres for tests), so the
+    // definition text is normalised to one canonical form before comparison,
+    // for both row kinds.
     private static final Pattern CAST_SUFFIX = Pattern.compile("::text\\[\\]|::character varying|::text");
     private static final Pattern DOUBLE_WRAPPED_ARRAY = Pattern.compile("\\(\\(ARRAY(\\[[^\\]]*])\\)\\)");
     private static final Pattern PARENTHESISED_LITERAL = Pattern.compile("\\('([^']*)'\\)");
@@ -119,6 +124,20 @@ public final class SchemaFingerprint {
                 String def = normalizeConstraintDef(rs.getString(4));
                 out.add("CONSTRAINT" + '\t' + rs.getString(1) + '\t' + rs.getString(2) + '\t' + rs.getString(3)
                         + '\t' + def);
+            }
+        }
+    }
+
+    /// Same shape as [#query], but normalises the `indexdef` column (3rd
+    /// selected column: tablename, indexname, indexdef, indisvalid) the same
+    /// way [#queryConstraints] normalises `pg_get_constraintdef` — a partial
+    /// index's `WHERE` clause is exactly the same deparse-variance surface.
+    private static void queryIndexes(Connection c, List<String> out, String sql) throws SQLException {
+        try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                String def = normalizeConstraintDef(rs.getString(3));
+                out.add("INDEX" + '\t' + rs.getString(1) + '\t' + rs.getString(2) + '\t' + def
+                        + '\t' + rs.getString(4));
             }
         }
     }

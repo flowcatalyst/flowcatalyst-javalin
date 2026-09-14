@@ -19,9 +19,6 @@ import java.util.UUID;
 /// the plain surface; they overlap deliberately and share these handlers, so
 /// the two can never answer differently.
 ///
-/// `DELETE /warnings` and `DELETE /warnings/old` are absent:
-/// [WarningStore] has no bulk-remove, only `raise`/`acknowledge`/`cleanup`
-/// and the read accessors.
 final class WarningRoutes {
 
     /// Mounts this group. Called by [RouterApi#register].
@@ -31,14 +28,16 @@ final class WarningRoutes {
         routes.get(p + "/monitoring/warnings/unacknowledged", ctx -> unacknowledgedWarnings(ctx, s));
         routes.get(p + "/monitoring/warnings/severity/{severity}", ctx -> warningsBySeverity(ctx, s));
         routes.post(p + "/monitoring/warnings/{id}/acknowledge", ctx -> acknowledgeWarning(ctx, s));
-        
+
         // The plain surface. Same handlers, so the two cannot drift.
         routes.get(p + "/warnings", ctx -> listWarnings(ctx, s));
+        routes.delete(p + "/warnings", ctx -> clearAllWarnings(ctx, s));
         routes.post(p + "/warnings/{id}/acknowledge", ctx -> acknowledgeWarning(ctx, s));
         routes.post(p + "/warnings/acknowledge-all", ctx -> acknowledgeAllWarnings(ctx, s));
         routes.get(p + "/warnings/critical", ctx -> criticalWarnings(ctx, s));
         routes.get(p + "/warnings/unacknowledged", ctx -> unacknowledgedWarnings(ctx, s));
         routes.get(p + "/warnings/severity/{severity}", ctx -> warningsBySeverity(ctx, s));
+        routes.delete(p + "/warnings/old", ctx -> clearOldWarnings(ctx, s));
     }
 
     private static void monitoringWarnings(Exchange ctx, State s) {
@@ -109,6 +108,22 @@ final class WarningRoutes {
             }
         }
         ctx.json(new Wire.AcknowledgedCountResponse(n));
+    }
+
+    /// Unconditional — every stored warning, acked or not (Go
+    /// `clearAllWarnings`, `handlers_warnings.go:113-122`).
+    private static void clearAllWarnings(Exchange ctx, State s) {
+        ctx.json(new Wire.ClearedResponse(s.warnings().clearAll()));
+    }
+
+    /// `?hours=` age cutoff, acked or not; Go defaults to 8 when the param
+    /// is absent or `<=0` (Go `clearOldWarnings`, `handlers_warnings.go:176-187`).
+    private static void clearOldWarnings(Exchange ctx, State s) {
+        int hours = Http.queryInt(ctx, "hours", 0);
+        if (hours <= 0) {
+            hours = 8;
+        }
+        ctx.json(new Wire.ClearedResponse(s.warnings().clearOlderThan(Duration.ofHours(hours))));
     }
 
     /// `WARN` is an alias for `WARNING`; otherwise case-insensitive equality
