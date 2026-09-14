@@ -235,6 +235,11 @@
         <version>${prometheus.version}</version>
       </dependency>
       <dependency>
+        <groupId>io.prometheus</groupId>
+        <artifactId>prometheus-metrics-instrumentation-jvm</artifactId>
+        <version>${prometheus.version}</version>
+      </dependency>
+      <dependency>
         <groupId>redis.clients</groupId>
         <artifactId>jedis</artifactId>
         <version>${jedis.version}</version>

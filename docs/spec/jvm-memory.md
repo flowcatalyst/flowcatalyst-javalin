@@ -79,6 +79,31 @@ collector name(s) as the JVM reports them, `maxHeapMiB`
 collector from the container size. `JvmInfoTest` pins that the summary names
 at least one collector and a positive heap.
 
+### 2.1 `/metrics` series (2026-09-14)
+
+The one log line above answers "what did we fence"; it does not answer "are
+we close to the fence" over time — that needs a scrape, not a boot-time log
+line. `JvmMetricsRegistration.register` (`server/src/main/java/io/flowcatalyst/server/JvmMetricsRegistration.java`,
+called from `Server.start` alongside the application collectors — see
+`docs/audit/2026-09-14-observability-parity.md` §1 for the pre-existing 11)
+adds five JVM collectors to the metrics-port `PrometheusRegistry`:
+`jvm_memory_used_bytes`/`jvm_memory_max_bytes` (labeled `area="heap"` and
+`area="nonheap"`), `jvm_memory_pool_collection_used_bytes` — used space
+**after** the last collection, per pool; this is the alarm input, not
+`jvm_memory_used_bytes`, which can read high mid-allocation on a pool that
+would collect back down to nothing — `jvm_gc_collection_seconds` (a
+count+sum pair per collector — the time-spent-collecting signal), `jvm_threads_current`,
+and `jvm_buffer_pool_used_bytes{pool="direct"}` — the other half of §1's
+fence (`-XX:MaxDirectMemorySize`). Deliberately five named collectors, not
+`JvmMetrics.builder()`'s full bundle (class-loading/compilation/runtime-info
+add scrape noise this isn't the place to take on). Registration is
+defensive: an `IllegalArgumentException` (the same registry already carries
+these — a shared/default registry started twice) or any other
+`RuntimeException` (a platform missing the MXBean, e.g. native image) is
+caught per-collector and logged at WARN rather than failing startup — see
+`docs/deployments.md`'s Java-compatibility section for the sizing signal
+this feeds.
+
 ## 3. Verification (done 2026-09-14, `bench/real/RESULTS.md` round 16)
 
 Two CPUs, 2 GB, 200 connections, same day: Go 2,344 req/s / p99 102 ms;

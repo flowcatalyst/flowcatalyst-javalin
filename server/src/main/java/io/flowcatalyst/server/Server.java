@@ -518,6 +518,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 case Mode.Worker(var pools) -> pools.registerCollectors(registry);
                 default -> { }
             }
+            JvmMetricsRegistration.register(registry);
 
             // ── API listener ──────────────────────────────────────────────
             // Bound before the router's election (below): buildApiAndReaper

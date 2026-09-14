@@ -339,3 +339,16 @@ landed): the `DISPATCH_QUEUE_*` trio and `FLOWCATALYST_JWT_PUBLIC_KEY`
 (confirm Java's public-key derivation path actually works without ever
 reading the deployed public key material) next, then the smaller items
 (`FC_WEBAUTHN_RP_NAME`, `FC_STATIC_DIR`).
+
+### Sizing signal
+
+`docs/spec/jvm-memory.md` §1 fences the heap and direct memory off the
+container's `memory` (hard limit) — this task definition value is the only
+number an operator sets, and the JVM never asks for more. `docs/spec/jvm-memory.md`
+§2.1 puts the answer to "when do we need more memory" on the metrics-port
+`/metrics` scrape rather than only on an `OutOfMemoryError` stop reason,
+which by definition arrives after the container already died: raise the
+container's `memory` when `jvm_memory_pool_collection_used_bytes` for the
+old-generation pool exceeds ~75% of `jvm_memory_max_bytes{area="heap"}` for
+ten minutes, or when `rate(jvm_gc_collection_seconds_sum[5m])` exceeds 0.1
+(the JVM spending more than 6 seconds of every 5 minutes collecting).
