@@ -131,7 +131,12 @@ public final class RouterApi {
             version = version == null || version.isBlank() ? "dev" : version;
             prefix = prefix == null || prefix.isBlank() ? "/router" : prefix;
             mocks = mocks == null ? new MockCounters() : mocks;
-            poolMetrics = poolMetrics == null ? Map.of() : Map.copyOf(poolMetrics);
+            // A live view, never a copy: the collectors are created with the
+            // pools, after this State exists (first config fetch, reloads,
+            // synthesised pools). A copy here is what left every pool at zero
+            // deliveries on the dashboard and in Prometheus while the queue
+            // counters moved (staging, 2026-09-14).
+            poolMetrics = poolMetrics == null ? Map.of() : java.util.Collections.unmodifiableMap(poolMetrics);
         }
 
         /// Back-compat constructor for callers built before `/config/reload`

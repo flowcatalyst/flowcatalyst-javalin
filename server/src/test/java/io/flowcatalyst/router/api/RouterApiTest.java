@@ -728,6 +728,48 @@ class RouterApiTest {
         }
     }
 
+    /// Staging, 2026-09-14: every pool reported zero deliveries on the
+    /// dashboard and in Prometheus while the queue counters moved. The
+    /// collectors are created WITH the pools — after the API's State exists
+    /// (first config fetch, reloads, synthesised pools) — so the State must
+    /// hold a live view of the collector map, never a copy. This test builds
+    /// the State first and the pool second; the earlier tests register the
+    /// pool first and could never see the copy.
+    @Test
+    @DisplayName("GET /monitoring/pool-stats and /metrics see a pool (and its deliveries) created after the API was built")
+    void poolStatsSeeAPoolCreatedAfterTheApiWasBuilt() {
+        var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(clock);
+        var liveCollectors = new java.util.concurrent.ConcurrentHashMap<String, PoolMetricsCollector>();
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, clock, cfg -> {
+            liveCollectors.computeIfAbsent(cfg.code(), ignored -> new PoolMetricsCollector(clock));
+            return new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, liveCollectors.get(cfg.code()), clock);
+        });
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(clock), null, null, null,
+                "v", "/router", null, liveCollectors, null, null);
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+            assertThat(json(isolatedHttp.get("/router/monitoring/pool-stats")).has("LATE-POOL")).as("sanity: no pool yet").isFalse();
+
+            // The pool arrives the way it does in production: through the factory, after the API exists.
+            isolatedManager.reconfigure(new io.flowcatalyst.router.config.RouterConfig(
+                    List.of(new io.flowcatalyst.router.config.PoolSpec("LATE-POOL", 2, 0)), List.of()), queue -> {
+                throw new AssertionError("no queues in this config");
+            });
+            liveCollectors.get("LATE-POOL").recordSuccess(Duration.ofMillis(10));
+
+            var stats = json(isolatedHttp.get("/router/monitoring/pool-stats")).get("LATE-POOL");
+            assertThat(stats).as("mutant: the State copied the collector map").isNotNull();
+            assertThat(stats.get("totalProcessed").asLong()).isEqualTo(1);
+            assertThat(stats.get("totalSucceeded").asLong()).isEqualTo(1);
+
+            String prom = isolatedHttp.get("/router/metrics").body();
+            assertThat(prom).as("the Prometheus exporter reads the same live map")
+                    .contains("fc_messages_processed_total{pool=\"LATE-POOL\",success=\"true\"} 1");
+        } finally {
+            isolatedManager.pools().values().forEach(Pool::close);
+        }
+    }
+
     @Test
     @DisplayName("GET /monitoring/pool-stats reflects live activeWorkers, and availablePermits = concurrency - activeWorkers; {} with no manager wired")
     void poolStatsActiveWorkersAndAvailablePermits() throws InterruptedException {

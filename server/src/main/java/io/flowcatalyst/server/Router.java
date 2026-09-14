@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /// Composition root for the message router — the counterpart to [Platform].
@@ -87,7 +88,12 @@ public final class Router implements AutoCloseable {
     /// does not own its metrics — the monitoring API and the Prometheus
     /// exporter both read them, and neither should reach through a pool to
     /// get there.
-    private final Map<String, PoolMetricsCollector> poolMetrics = new ConcurrentHashMap<>();
+    /// This is the SAME map instance the pool factory writes into — never a
+    /// copy. Pools are created after this object exists (the first config
+    /// fetch, a reload, a synthesised `-DEFAULT-POOL`), so a snapshot taken
+    /// here would be empty for ever and every pool would report zero
+    /// deliveries while the queue counters moved (staging, 2026-09-14).
+    private final Map<String, PoolMetricsCollector> poolMetrics;
 
     /// The deployed-mode mediation transport's own Vert.x instance
     /// (`docs/spec/router-h2.md` §5) — `null` in dev mode, where the
@@ -121,7 +127,7 @@ public final class Router implements AutoCloseable {
         this.notifier = notifier;
         this.housekeeping = housekeeping;
         this.brokerStats = brokerStats;
-        this.poolMetrics.putAll(metrics);
+        this.poolMetrics = Objects.requireNonNull(metrics, "metrics");
         this.vertxMediationClient = vertxMediationClient;
     }
 
@@ -166,8 +172,11 @@ public final class Router implements AutoCloseable {
         };
     }
 
+    /// A live, read-only view: a pool created after this call is visible
+    /// through the returned map (the monitoring API and the Prometheus
+    /// exporter hold it for the life of the process).
     public Map<String, PoolMetricsCollector> poolMetrics() {
-        return Map.copyOf(poolMetrics);
+        return java.util.Collections.unmodifiableMap(poolMetrics);
     }
 
     public LeaderElection election() {
