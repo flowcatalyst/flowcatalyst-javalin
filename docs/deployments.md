@@ -223,6 +223,18 @@ before picking which behaviour Java must match.
 
 13 environment entries, 0 SSM/Secrets Manager secrets, **1 literal secret** — **13 variables total**.
 
+**Changed in the IaC on 2026-09-14** (`compute/index.ts` router task,
+`Pulumi.{nonprod,prod}.yaml`, `docs/fc-router-platform-credential.md` in the
+IaC repo): `FC_ROUTER_PLATFORM_URL=http://fc-platform:8080` (literal, the
+Service Connect alias the dispatch callback already uses); `FC_ROUTER_CLIENT_ID`
+/ `FC_ROUTER_CLIENT_SECRET` from SSM `/inhance/{env}/fc-router/{client-id,client-secret}`
+(the execution role's existing `parameter/inhance/{env}/*` grant covers them);
+`routerConfigUrl` gains `,http://fc-platform:8080/api/dispatch/router-config` in
+both stacks; the container's soft `memoryReservation` became a hard `memory`
+limit of 512 MB in both environments (owner ruling). The SSM parameters and
+the platform-side OAuth client are created by hand per environment — the
+procedure and the `aws ssm put-parameter` commands are in that IaC doc.
+
 ---
 
 ## Secrets committed as literals in the IaC
