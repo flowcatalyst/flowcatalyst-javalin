@@ -87,6 +87,24 @@ backlog item for the verification plan. The router task's IaC (uncommitted
 in `../inhance/iac`) also gained the hard 512 MB limit and the platform
 credential.
 
+**Drop-in pass, owner's request** (`docs/audit/2026-09-14-drop-in-pass.md`;
+five checks the same day against Go `f81fd5a` + working tree): parity
+**1,324 steps, 0 DIFF, 0 ERROR, 0 stale** (`9cd963f`; 13 invitation steps,
+22 Go-caught-up entries retired); route surface 188 Go / 184 Java, no
+method/listener mismatch; env audit ~108 reads joined; schema
+byte-identical; Java e2e **53/53**, Go 46/53 (all seven classified: three
+a Go nil-slice defect, one the pending `clientScoped` mirror, two the
+invitation spec's own mail-count assertion, one flake). Java fixed the
+same day: pool deliveries invisible on the dashboard/Prometheus
+(`061e91c`, from the owner's staging report), `DELETE /warnings` +
+`/warnings/old` and the fingerprint normaliser (`db5dd90`), the
+authenticator running for `NO_DB` requests (a warning per unknown `/api/*`
+hit), the invitation e2e assertions. **Two rulings owed:** the Teams batch
+interval (Java honours the IaC's 300 s, Go hard-codes 10 s) and the
+structured-log shape (Go flat slog vs Java logback nested — recommend Java
+adopts Go's shape before cutover). Go hand-off
+`docs/go-mirror/2026-09-14-drop-in-pass.md`.
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

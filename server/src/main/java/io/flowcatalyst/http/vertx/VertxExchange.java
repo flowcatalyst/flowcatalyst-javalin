@@ -1,6 +1,7 @@
 package io.flowcatalyst.http.vertx;
 
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.HttpCookie;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.vertx.core.buffer.Buffer;
@@ -29,6 +30,7 @@ final class VertxExchange implements Exchange {
     private static final String CONTENT_TYPE = "Content-Type";
 
     private final RoutingContext rc;
+    private final Group group;
     private final byte[] requestBody;
     private final boolean oversized;
     private final Map<String, Object> attributes = new HashMap<>();
@@ -42,10 +44,16 @@ final class VertxExchange implements Exchange {
     /// `oversized` means the request carried more than that and the body
     /// accessors answer 413 — lazily, exactly as Javalin's `maxRequestSize`,
     /// so a handler that checks `contentLength()` first still gets its say.
-    VertxExchange(RoutingContext rc, byte[] requestBody, boolean oversized) {
+    VertxExchange(RoutingContext rc, Group group, byte[] requestBody, boolean oversized) {
         this.rc = rc;
+        this.group = group;
         this.requestBody = requestBody;
         this.oversized = oversized;
+    }
+
+    @Override
+    public Group group() {
+        return group;
     }
 
     private byte[] requestBody() {

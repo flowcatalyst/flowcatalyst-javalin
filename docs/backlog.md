@@ -1535,3 +1535,18 @@ container's `cpu` shares from the same value; the same number also becomes
 the placement reservation (half an m7g.large). The platform and worker
 tasks have the same dead `cpu` config. Owner deferred on 2026-09-14; the
 edit is a three-file change, drafted and reverted.
+
+## Drop-in pass follow-ups (2026-09-14, `docs/audit/2026-09-14-drop-in-pass.md`)
+
+- **Ruling:** `NOTIFICATION_BATCH_INTERVAL` — the router task sets 300;
+  Go never reads it (20 msgs / 10 s hard-coded); Java honours it. Cutover
+  changes Teams batching from 10 s to 300 s unless the IaC is set to 10.
+- **Ruling:** structured-log shape — Go flat slog JSON (`time`, `level`,
+  `msg`, fields top-level) vs Java logback JSON (`timestamp`,
+  `formattedMessage`, nested `kvpList`, `loggerName`, `threadName`, `mdc`,
+  `throwable`). Every log query and alert parses one or the other.
+  Recommend a logback layout matching Go's shape before cutover (one unit).
+- fcdev: no `completion` subcommand (Go has one); version flag `-v` at the
+  root, `-V` on subcommands. Cosmetic.
+- Browser flow `platform/documentation` failed once at `E2E_RETRIES=0`,
+  passed on retry; cause not found.

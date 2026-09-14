@@ -87,6 +87,14 @@ test.describe("invitations", () => {
         await admin.close();
 
         // Fresh, never-authenticated page from here on.
+        // The observable proof of sendInvitation:false: by the time the user
+        // is at the login page, the platform has mailed this address NOTHING —
+        // neither the invite nor the welcome. (Asserted here, before any
+        // mail is legitimately expected; after the confirm both sides also
+        // send the "password changed" notice, so a total count at the end
+        // would be wrong, and Java's outbox delivers asynchronously.)
+        expect(await messagesTo(email)).toHaveLength(0);
+
         await page.goto("/auth/login");
         await page.getByLabel("Email address").fill(email);
         await page.getByRole("button", { name: "Continue" }).click();
@@ -108,10 +116,12 @@ test.describe("invitations", () => {
 
         await assertLandedSignedIn(page);
 
-        // Exactly one mail to this address ever: the setup mail just used.
-        // If sendInvitation:false had leaked the platform's own invite (or a
-        // welcome mail) on create, this would be 2.
-        expect(await messagesTo(email)).toHaveLength(1);
+        // Exactly one "Set your password" mail ever reached this address: the
+        // one the login page requested. A leaked platform invite on create
+        // would make this 2. (Other subjects — the post-confirm "password
+        // changed" notice — are expected and not counted.)
+        const setupMails = (await messagesTo(email)).filter((m) => m.subject === "Set your password");
+        expect(setupMails).toHaveLength(1);
     });
 
     test("embedded link: returnInviteLink:true returns a live set-password link and mails nothing", async ({ page, browser, baseURL }) => {
@@ -128,14 +138,18 @@ test.describe("invitations", () => {
         expect(createdBody.inviteLink!.startsWith(`${baseURL}/auth/set-password?token=`)).toBe(true);
         await admin.close();
 
+        // The platform mailed nothing for this address on create — the whole
+        // point of returning the link instead of sending it. Asserted before
+        // the confirm, which legitimately sends the "password changed" notice.
+        expect(await messagesTo(email)).toHaveLength(0);
+
         await page.goto(createdBody.inviteLink!);
         const confirmBody = await setPasswordAndConfirm(page, "Kyoto-Ferry-2291!");
         expect(confirmBody.sessionEstablished).toBe(true);
 
         await assertLandedSignedIn(page);
 
-        // The platform mailed nothing at all for this address — the whole
-        // point of returning the link instead of sending it.
-        expect(await messagesTo(email)).toHaveLength(0);
+        // Still no "Set your password" mail: the link was handed back, never sent.
+        expect((await messagesTo(email)).filter((m) => m.subject === "Set your password")).toHaveLength(0);
     });
 });

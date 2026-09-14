@@ -39,6 +39,13 @@ public interface Exchange {
     /// The request path, without the query string.
     String path();
 
+    /// The admission group this request was dispatched under
+    /// (`docs/spec/admission.md` §11.7): the matched route's group, or
+    /// `NO_DB` for the listener's own fallbacks (unmatched paths, the SPA
+    /// catch-all). A `NO_DB` request can never borrow a connection, so a
+    /// before-handler that needs the database must not run for it.
+    Group group();
+
     /// Upper-case HTTP method, e.g. `"GET"`.
     String method();
 

@@ -165,6 +165,13 @@ OpenAPI documents, the router's in-memory API, the 404 and failure paths) — no
 for. Result at two CPUs: 98% of Go's throughput with Go's spread (round 12). On the Javalin
 adapter nothing changes (its own thread model); `Budgets` still applies there.
 
+A `NO_DB` request can never borrow a connection (`Pools.forGroup` refuses the group by
+design), so **the authenticator does not run for it** (`Platform.authenticated`, 2026-09-14):
+none of those routes read a session, and before this rule a signed-in browser hitting an
+unknown `/api/*` path — the SPA catch-all — had its session lookup refused by that guard and
+logged a warning with a stack trace on every request. `Exchange.group()` carries the
+dispatched group so a before-handler can tell.
+
 Rules that follow: a bounded pool plus a request that calls back into the same listener is a
 deadlock — the in-process router→platform call in fcdev must not go through the main pool;
 queue depth is memory (a parked request holds its parsed body), and a bound on it is where

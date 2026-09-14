@@ -647,6 +647,17 @@ public final class Platform {
     /// routes Go registers outside the group.
     static Handler authenticated(Authenticator authenticator) {
         return ctx -> {
+            // A NO_DB request (the SPA catch-all answering an unknown /api/*
+            // path, the spec routes, the router's and metrics' own surfaces)
+            // can never borrow a connection, and none of those routes read
+            // a session — so the authenticator, whose session lookup needs
+            // the principal table, must not run for it. Before this check a
+            // signed-in browser hitting an unknown /api path made the lookup
+            // fail against the NO_DB pool guard and logged a warning with a
+            // stack trace per request (observability audit, 2026-09-14).
+            if (ctx.group() == io.flowcatalyst.http.Group.NO_DB) {
+                return;
+            }
             if (isPlatformPath(ctx) && !isPublicPath(ctx)) {
                 authenticator.handle(ctx);
             }

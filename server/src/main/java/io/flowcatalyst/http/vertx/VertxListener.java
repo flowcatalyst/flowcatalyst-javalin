@@ -363,7 +363,7 @@ public final class VertxListener implements AutoCloseable {
     /// then one hop back to the loop to write.
     private void runChain(RoutingContext rc, Context requestContext, Group group, Handler handler,
                           byte[] requestBody, boolean oversized) {
-        var x = new VertxExchange(rc, requestBody, oversized);
+        var x = new VertxExchange(rc, group, requestBody, oversized);
         Thread me = Thread.currentThread();
         var admission = new Admission(rc.request().path(), group);
         var deadlineFired = new AtomicBoolean();
