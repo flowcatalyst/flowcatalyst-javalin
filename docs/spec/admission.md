@@ -312,7 +312,7 @@ derived from it or observed:
    idle means budget should move. That is an operator's monthly glance, not a design-time
    calculation.
 
-### 11.4 The read/write question (open)
+### 11.4 The read/write question (ruled 2026-09-14: reads borrow per statement)
 
 A write holds one connection from `begin` to `commit` and cannot do otherwise. A read has no
 transaction, so each statement could take a different connection and give it back, which would
@@ -386,6 +386,19 @@ is returned to the pool when the statement's connection closes, and the nested-a
 not armed (there is nothing held to deadlock against). `API_WRITE` and `DISPATCH` keep the
 pinned mode. The gate acquisition per statement is untimed (§1). Measure at one core per §11.4's
 instruction and put the switches-per-request number in the report.
+
+**Ruled 2026-09-14 (owner), after the measurement.** Reads keep the per-statement mode and
+twice-the-pool workers. The number came in at 9.9 and 13.1 switches per request against Go's
+7.5 and 7.2 (`docs/vertx-migration-report.md` §"Phase 4"), and the owner first asked for one
+gate crossing per request; on seeing what that meant — a read that spends its time on CPU or
+on an outbound call would hold a database connection for nothing, and the worker rule assumed
+most of a read is database time, which is not known — the ruling was reversed the same hour.
+Reads are the **ungated general path**: bounded by their workers and queue, never by the
+pool; the gate is crossed per statement and the switches are the accepted cost. Transactions
+stay gated per request at pool size. If a gated, DB-heavy read path is ever wanted it is a
+separate group; with one read path, ungated is the default. `NO_DB` remains the path with no
+gate, no worker and no queue (proxy-shaped routes belong there; a wrong declaration fails
+loudly because the routed source refuses a `NO_DB` checkout).
 
 **What is deleted.** `Budgets` (the per-group semaphore lanes) — superseded by the workers; the
 Javalin-only §11.1 text stays as history. The gate itself stays: reads contend on it by design.
