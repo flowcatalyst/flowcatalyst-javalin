@@ -105,6 +105,20 @@ structured-log shape (Go flat slog vs Java logback nested — recommend Java
 adopts Go's shape before cutover). Go hand-off
 `docs/go-mirror/2026-09-14-drop-in-pass.md`.
 
+**Rulings taken the same evening:** (1) **logs** — Java's JSON lines take
+Go's flat slog shape (`docs/spec/logging.md`: `time` RFC 3339 with six
+fractional digits, `level`, `msg`, MDC and key-values at the top level,
+then the superset keys `logger`, `thread`, `err`, `stack`); `GoJsonEncoder`
+replaces logback's `JsonEncoder`, nine tests with nine mutants, the e2e
+mail parser reads one shape for both sides; (2) **fcdev** — `completion
+{bash|zsh}` added (picocli's script; fish/powershell answer an explicit
+error rather than Go's silent help), the stray `-V` removed from every
+subcommand so only the root has a version flag, as cobra does. (3) The
+router's CPU quota stays deferred (backlog). (4) SDKs: TypeScript and
+Laravel are being copied here with history (Go keeps its copies), the
+split workflows and `scripts/release.sh` ported; the Java SDK gets Go's
+bump-and-tag only — `docs/sdk-release-plan.md`.
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

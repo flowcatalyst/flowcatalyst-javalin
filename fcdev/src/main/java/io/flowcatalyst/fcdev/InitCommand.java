@@ -61,7 +61,7 @@ import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 /// no domain events, no audit rows (`CONVENTIONS.md` §3's documented
 /// exception for infrastructure bootstrap).
 @Command(name = "init", description = "Bootstrap a fresh local environment (admin user + default tenant + .env)",
-        mixinStandardHelpOptions = true, sortOptions = false)
+        sortOptions = false)
 public final class InitCommand implements Callable<Integer> {
 
     /// The embedded Postgres a running `fcdev start` exposes, unqualified by
@@ -69,6 +69,9 @@ public final class InitCommand implements Callable<Integer> {
     /// itself; `Database.newPool`'s JDBC translation doesn't need it).
     static final String DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:15432/flowcatalyst";
     static final String DEFAULT_API_BASE_URL = "http://localhost:8080";
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Spec
     CommandSpec spec;

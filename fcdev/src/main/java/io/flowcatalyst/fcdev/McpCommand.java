@@ -34,10 +34,13 @@ import java.util.concurrent.CountDownLatch;
 /// overriding a field whenever given — the same precedence Go's `runMCP`
 /// applies by assigning over `cfg` unconditionally when a flag is set.
 @Command(name = "mcp", description = "Run the FlowCatalyst MCP server (stdio by default; --http to listen)",
-        mixinStandardHelpOptions = true, sortOptions = false)
+        sortOptions = false)
 public final class McpCommand implements Callable<Integer> {
 
     private static final Logger LOG = LoggerFactory.getLogger(McpCommand.class);
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Option(names = "--http", paramLabel = "<addr>",
             description = "listen for streamable-HTTP MCP at this bind address (e.g. 127.0.0.1:8090); empty = stdio")

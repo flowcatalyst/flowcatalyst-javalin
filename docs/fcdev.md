@@ -323,7 +323,22 @@ replace is atomic.
 
 `fcdev 0.8.23` — the version comes from `fcdev/src/main/resources/VERSION`
 (a copy of the Go `cmd/fcdev/VERSION`); a release build can append a VCS
-revision with `-Dfcdev.vcs.revision=<sha>`.
+revision with `-Dfcdev.vcs.revision=<sha>`. Only the root command accepts a
+version flag (`-v`/`--version`); every subcommand accepts `-h`/`--help`
+alone, matching cobra (Go's `--version`/`-v` is likewise root-only —
+`fcdev start -v` is a usage error in Go too).
+
+### `fcdev completion <shell>`
+
+Prints a shell completion script to stdout: `bash` or `zsh` (one script,
+picocli's `AutoComplete.bash(...)`; zsh loads it via `autoload -U
+bashcompinit && bashcompinit`). Go's cobra additionally offers `fish` and
+`powershell` as their own sub-subcommands — picocli has no generator for
+either, so Java refuses them with exit 2 rather than faking a script.
+`fcdev completion` with no shell prints this command's help, exit 0 (same as
+Go). See `docs/spec/fcdev.md` §7a for the exact behaviour table, including
+the one deliberate divergence: an unrecognised shell name is exit 2 in Java,
+not Go's silent exit-0 help dump.
 
 ### Logging
 
@@ -374,8 +389,9 @@ PostgreSQL cannot start in the environment.
   unrelated query.
 - `--embedded-db-port 0` picks a free port (handy for tests); Go has no
   equivalent.
-- Every Go subcommand exists; the only exit-2 "not supported" path left is
-  `outbox create-table --db-type mongodb` (Mongo outbox on the backlog).
+- Every Go subcommand exists; the exit-2 "not supported" paths left are
+  `outbox create-table --db-type mongodb` (Mongo outbox on the backlog) and
+  `completion fish` / `completion powershell` (no picocli generator).
 
 ## 7. Not yet ported
 

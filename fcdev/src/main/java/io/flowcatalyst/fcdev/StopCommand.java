@@ -22,12 +22,15 @@ import java.util.concurrent.Callable;
 /// so they are printed as the protocol advances rather than rendered from a
 /// result value at the end.
 @Command(name = "stop", description = "Stop a running fcdev instance (graceful; also stops embedded Postgres)",
-        mixinStandardHelpOptions = true, sortOptions = false)
+        sortOptions = false)
 public final class StopCommand implements Callable<Integer> {
 
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(20);
     static final Duration POLL = Duration.ofMillis(150);
     static final Duration KILL_WAIT = Duration.ofSeconds(5);
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Option(names = "--pid-file", paramLabel = "<file>", description = "PID file written by `fcdev start` (FC_DEV_PID_FILE; default: ${DEFAULT-VALUE})")
     String pidFile;

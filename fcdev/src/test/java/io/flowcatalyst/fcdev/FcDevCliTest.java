@@ -47,7 +47,7 @@ class FcDevCliTest {
     void helpListsEveryGoSubcommand() {
         var r = run(Map.of(), "--help");
         assertThat(r.exit()).isZero();
-        for (var name : new String[]{"start", "stop", "init", "fresh", "mcp", "outbox", "db", "upgrade", "version"}) {
+        for (var name : new String[]{"start", "stop", "init", "fresh", "mcp", "outbox", "db", "upgrade", "version", "completion"}) {
             assertThat(r.out()).contains("  " + name);
         }
         for (var flag : new String[]{"--api-port", "--metrics-port", "--embedded-db", "--embedded-db-port", "--embedded-db-path",
@@ -127,5 +127,66 @@ class FcDevCliTest {
     @Test
     void unknownOptionIsAUsageError() {
         assertThat(run(Map.of(), "--bogus").exit()).isEqualTo(2);
+    }
+
+    /// `fcdev completion bash` / `fcdev completion zsh`: picocli's
+    /// `AutoComplete.bash(...)` script, rooted at "fcdev" and covering every
+    /// subcommand — that's the observable proof the generator actually walked
+    /// the real command tree, not just a static template (mutant: hand the
+    /// generator the "completion" subcommand instead of the root and this
+    /// still finds "fcdev" and "completion" in the output but drops "start"
+    /// and "version" — the assertion below on subcommand names would then fail).
+    @Test
+    void completionBashAndZshCoverTheWholeCommandTree() {
+        for (var shell : new String[]{"bash", "zsh"}) {
+            var r = run(Map.of(), "completion", shell);
+            assertThat(r.exit()).as(shell).isZero();
+            assertThat(r.out()).as(shell).contains("fcdev");
+            for (var name : new String[]{"start", "stop", "init", "fresh", "mcp", "outbox", "db", "upgrade", "version", "completion"}) {
+                assertThat(r.out()).as(shell + " / " + name).contains(name);
+            }
+        }
+    }
+
+    /// A bare `fcdev completion` mirrors Go exactly: cobra's completion
+    /// command has no `RunE`, so it is help-only — verified directly against
+    /// the Go binary (`go run ./cmd/fcdev completion`), exit 0, no error text.
+    @Test
+    void completionWithNoShellPrintsHelpNotAnError() {
+        var r = run(Map.of(), "completion");
+        assertThat(r.exit()).isZero();
+        assertThat(r.err()).isEmpty();
+        assertThat(r.out()).contains("completion");
+    }
+
+    /// Go's cobra supports `fish`/`powershell` as two more `completion`
+    /// sub-subcommands; picocli has no generator for either, so rather than
+    /// faking a script, an unsupported shell is a clear, distinct error
+    /// (exit 2) — never a script, and never Go's silent success.
+    @Test
+    void completionRefusesAnUnsupportedShell() {
+        var r = run(Map.of(), "completion", "fish");
+        assertThat(r.exit()).isEqualTo(2);
+        assertThat(r.err()).contains("fish").contains("not supported");
+        assertThat(r.out()).isEmpty();
+    }
+
+    /// The root keeps Go's own flag: `-v`/`--version` (lower-case), nowhere
+    /// else. Mutant: restore `mixinStandardHelpOptions = true` on any
+    /// subcommand and its `-V` would again print the version — this test
+    /// would then fail on that subcommand's line.
+    @Test
+    void onlyTheRootAcceptsAVersionFlag() {
+        var root = run(Map.of(), "--version");
+        assertThat(root.exit()).isZero();
+        assertThat(root.out()).contains("fcdev");
+
+        for (var args : new String[][]{{"start", "-V"}, {"stop", "-V"}, {"version", "-V"},
+                {"db", "-V"}, {"db", "upgrade", "-V"}, {"fresh", "-V"}, {"mcp", "-V"}, {"init", "-V"},
+                {"outbox", "-V"}, {"outbox", "create-table", "-V"}, {"upgrade", "-V"}, {"completion", "-V"}}) {
+            var r = run(Map.of(), args);
+            assertThat(r.exit()).as(String.join(" ", args)).isEqualTo(2);
+            assertThat(r.out()).as(String.join(" ", args)).doesNotContain(Version.current());
+        }
     }
 }

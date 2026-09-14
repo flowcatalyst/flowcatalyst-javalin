@@ -22,9 +22,17 @@ owner; until ruled on, the behaviour is kept as-is.
   `fcdev start --api-port 9000`.
 - Subcommands: `start`, `stop`, `init`†, `fresh`, `mcp`†, `outbox`†
   (+ `outbox create-table`†), `db` (+ `db upgrade`), `upgrade`†, `version`,
-  `help`. † = stubbed (§9). Every subcommand accepts `-h/--help`; the
-  subcommands additionally accept picocli's `-V/--version`; the root command
-  accepts `-h/--help` and `-v/--version` (lower-case `v`, Go parity).
+  `completion`, `help`. † = stubbed (§9). Every subcommand — including nested
+  ones (`db upgrade`, `outbox create-table`) — accepts `-h/--help` and
+  nothing else; only the root command accepts a version flag
+  (`-v`/`--version`, lower-case `v`, Go parity — §7a). Go parity: cobra adds
+  `--version`/`-v` only to the command whose `Version` field is set (the
+  root); every subcommand gets `-h/--help` alone (verified directly against
+  Go: `fcdev start -V` is `unknown shorthand flag: 'v' in -v`, exit 1).
+  Picocli's `mixinStandardHelpOptions` bundles help *and* version together,
+  so every subcommand here declares its own plain `-h/--help` option instead
+  of using that mixin — §8 used to record the resulting `-V` on every
+  subcommand as "cosmetic"; it is fixed, not just noted, as of this pass.
 - Logging is initialised **before** parsing, from the process environment:
   stderr, level `FC_LOG_LEVEL` (`debug|info|warn|error`, default `info`),
   format `FC_LOG_FORMAT` (`text|json`; default text on a TTY, JSON otherwise).
@@ -276,6 +284,37 @@ stamped into the jar at build time and is what the §3 guard compares against;
 a jar whose build stamping failed refuses to evaluate the guard
 (`fcdev-build.properties was not filtered`).
 
+## 7a. `fcdev completion <shell>`
+
+Go's cobra auto-registers a `completion` command (`main.go` never sets
+`CompletionOptions.DisableDefaultCmd`) with four sub-subcommands — `bash`,
+`zsh`, `fish`, `powershell` — one script generator each. Verified directly
+against the Go binary (`go run ./cmd/fcdev completion …`):
+
+| invocation | Go behaviour |
+|---|---|
+| `fcdev completion` (no shell) | prints the `completion` command's own help, **exit 0** — cobra's `completion` parent carries no `RunE`, so a non-runnable command with no further subcommand is a help request, not an error |
+| `fcdev completion <unknown>` (typo, or any name that isn't `bash`/`zsh`/`fish`/`powershell`) | **also** prints the same help, **exit 0** — the leftover arg is silently dropped; cobra never reaches an "unknown command" error here because the parent is non-runnable |
+| `fcdev completion bash` / `zsh` / `fish` / `powershell` | writes the shell's completion script to stdout, exit 0 |
+
+Java has one `completion` command taking the shell as a **positional**
+argument (`fcdev completion <shell>`) rather than four sub-subcommands —
+picocli's script generator (`picocli.AutoComplete.bash(name, CommandLine)`)
+only knows how to emit **one** script shape (a bash-syntax script that both
+bash and zsh can load — zsh needs `autoload -U bashcompinit && bashcompinit`
+first, the same fallback Go's own `completion zsh` help text mentions), so
+there is no picocli generator for fish or powershell to wrap. Rather than
+faking those two, Java diverges deliberately:
+
+| invocation | Java behaviour |
+|---|---|
+| `fcdev completion` (no shell) | prints this command's help, exit 0 — same as Go |
+| `fcdev completion bash` / `fcdev completion zsh` | prints `AutoComplete.bash("fcdev", <root CommandLine>)` to stdout — one script naming every registered subcommand, exit 0 |
+| `fcdev completion fish` / `fcdev completion powershell` / any other name | **exit 2** (fcdev's usage-error code, §1) and a stderr message naming the unsupported shell — Go's silent success here is treated as a Go quirk worth diverging from, not a contract worth reproducing (`docs/*` "correctness over conformance") |
+
+`fcdev completion --help` documents the two supported shells; it does not
+claim fish/powershell support the way Go's own `--help` output would.
+
 ## 8. Differences from the Go binary (visible ones)
 
 | difference | status |
@@ -283,8 +322,8 @@ a jar whose build stamping failed refuses to evaluate the guard
 | PG binaries bundled in the jar (~110 MB of ~168 MB) and extracted to `<cache>/flowcatalyst/embedded-pg/PG-<md5>`; Go downloads on first run into `<cache>/flowcatalyst/embedded-pg/bin` | **[owner?]** keep the fat jar (offline-capable, one artifact), or switch the JBang path to resolve only the host's `embedded-postgres-binaries-<os>-<arch>` artifact at install time so the jar shrinks to ~50 MB and the GitHub-Releases jar stays fat? |
 | `--embedded-db-port 0` / `--api-port 0` / `--metrics-port 0` bind a free port | **[owner?]** Java addition (tests rely on it). Keep? |
 | `fcdev upgrade` self-update | not ported; JBang `app install --force` is the upgrade path |
-| `-V` on subcommands (picocli standard) in addition to root `-v` | cosmetic |
 | Java cannot `setenv`: the "environment" the server and seeder see is a copy of the process env plus fcdev's additions; child processes (PG) see the real env | by construction |
+| `fcdev completion fish` / `fcdev completion powershell` error (exit 2) instead of Go's generated script; `fcdev completion <unknown>` errors (exit 2) instead of Go's silent help + exit 0 | deliberate — §7a. No picocli generator exists for fish/powershell, and faking one was rejected; the unknown-shell case is fixed alongside it since both go through the same validation |
 
 ## 9. Still stubbed
 

@@ -3,7 +3,6 @@ package io.flowcatalyst.server;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.encoder.JsonEncoder;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.ConsoleAppender;
@@ -23,10 +22,12 @@ import java.util.Map;
 /// Go always writes JSON. Here the default is JSON too, but
 /// `FC_LOG_FORMAT` (alias `LOG_FORMAT`) = `text` selects a readable pattern,
 /// and when neither is set and stderr is an interactive terminal the readable
-/// pattern is chosen automatically. The JSON shape is Logback's own
-/// [JsonEncoder] (timestamp, level, thread, logger, message, mdc, kvp,
-/// throwable) — the log *shape* is not a contract; the **field names** on MDC
-/// are ([MdcKeys]), so logs from both codebases aggregate in one pipeline.
+/// pattern is chosen automatically. The JSON shape IS a contract now
+/// (owner ruling 2026-09-14, `docs/spec/logging.md`): [GoJsonEncoder] emits
+/// the same flat shape Go's `slog.NewJSONHandler` does — `time`, `level`,
+/// `msg`, the MDC, the key-values, then the Java-only superset keys
+/// `logger`/`thread`/`err`/`stack` — so logs from both codebases aggregate
+/// in one pipeline on the same field names, MDC included ([MdcKeys]).
 ///
 /// Request code puts the trace fields on the MDC:
 ///
@@ -178,17 +179,8 @@ public final class Logging {
     }
 
     private static Encoder<ILoggingEvent> jsonEncoder(LoggerContext context) {
-        var enc = new JsonEncoder();
+        var enc = new GoJsonEncoder();
         enc.setContext(context);
-        enc.setWithSequenceNumber(false);
-        enc.setWithNanoseconds(false);
-        enc.setWithContext(false);
-        enc.setWithMessage(false);          // raw template — the formatted one is enough
-        enc.setWithArguments(false);
-        enc.setWithFormattedMessage(true);
-        enc.setWithMDC(true);
-        enc.setWithKVPList(true);
-        enc.setWithThrowable(true);
         enc.start();
         return enc;
     }

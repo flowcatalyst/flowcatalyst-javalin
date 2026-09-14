@@ -39,10 +39,13 @@ import java.util.concurrent.CountDownLatch;
 /// exported — an explicit environment variable always wins over the file
 /// ([DotEnv]).
 @Command(name = "outbox", description = "Standalone outbox poller against an external app DB → external platform",
-        mixinStandardHelpOptions = true, sortOptions = false, subcommands = {OutboxCommand.CreateTable.class})
+        sortOptions = false, subcommands = {OutboxCommand.CreateTable.class})
 public final class OutboxCommand implements Callable<Integer> {
 
     private static final Logger LOG = LoggerFactory.getLogger(OutboxCommand.class);
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Spec
     CommandSpec spec;
@@ -284,8 +287,11 @@ public final class OutboxCommand implements Callable<Integer> {
     /// raising it first), so it fails fast with a clear message rather than
     /// silently doing nothing.
     @Command(name = "create-table", description = "Create the outbox_messages table/collection in a consumer app's DB",
-            mixinStandardHelpOptions = true, sortOptions = false)
+            sortOptions = false)
     public static final class CreateTable implements Callable<Integer> {
+
+        @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+        boolean help;
 
         @Spec
         CommandSpec spec;

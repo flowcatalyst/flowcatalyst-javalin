@@ -23,9 +23,12 @@ import java.util.concurrent.Callable;
 
 /// `fcdev db` (Go `db.go`): embedded-database management. One subcommand,
 /// `upgrade`.
-@Command(name = "db", description = "Manage the embedded dev database", mixinStandardHelpOptions = true,
+@Command(name = "db", description = "Manage the embedded dev database",
         subcommands = {DbCommand.Upgrade.class})
 public final class DbCommand implements Callable<Integer> {
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Spec
     CommandSpec spec;
@@ -44,11 +47,14 @@ public final class DbCommand implements Callable<Integer> {
     /// initialise a fresh cluster, re-run migrations + seed. Stop
     /// `fcdev start` first.
     @Command(name = "upgrade", description = "Re-initialise the embedded Postgres onto the major version this fcdev embeds",
-            mixinStandardHelpOptions = true, sortOptions = false)
+            sortOptions = false)
     public static final class Upgrade implements Callable<Integer> {
 
         private static final Logger LOG = LoggerFactory.getLogger(Upgrade.class);
         static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
+
+        @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+        boolean help;
 
         @Option(names = "--embedded-db-port", paramLabel = "<port>", description = "embedded Postgres port (FC_EMBEDDED_DB_PORT; default: ${DEFAULT-VALUE})")
         int embeddedDbPort;

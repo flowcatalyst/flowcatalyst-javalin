@@ -51,13 +51,16 @@ import java.util.zip.ZipInputStream;
 /// shared `~/.m2` artifact or a JBang-managed cache entry would be wrong,
 /// and JBang already has its own upgrade path
 /// (`jbang app install --force …`).
-@Command(name = "upgrade", description = "Update fcdev to the latest release", mixinStandardHelpOptions = true,
+@Command(name = "upgrade", description = "Update fcdev to the latest release",
         sortOptions = false)
 public final class UpgradeCommand implements Callable<Integer> {
 
     static final String DEFAULT_REPO = "flowcatalyst/flowcatalyst";
     static final String DEFAULT_API_BASE = "https://api.github.com";
     static final String RELEASE_TAG_PREFIX = "fcdev/v";
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     @Spec
     CommandSpec spec;

@@ -22,10 +22,13 @@ import java.util.concurrent.Callable;
 /// self-contained (no need to leave `fcdev start` running). Refuses without
 /// `--yes`.
 @Command(name = "fresh", description = "Truncate every FlowCatalyst table (preserves schema)",
-        mixinStandardHelpOptions = true, sortOptions = false)
+        sortOptions = false)
 public final class FreshCommand implements Callable<Integer> {
 
     private static final Logger LOG = LoggerFactory.getLogger(FreshCommand.class);
+
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+    boolean help;
 
     /// The explicit list of FlowCatalyst tables `fresh` truncates — the same
     /// list, in the same order, as the Go `freshTables`. Anything not listed

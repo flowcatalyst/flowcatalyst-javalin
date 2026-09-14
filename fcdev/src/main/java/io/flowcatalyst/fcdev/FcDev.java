@@ -25,6 +25,7 @@ import java.util.concurrent.Callable;
 /// fcdev upgrade      update fcdev to the latest GitHub release
 /// fcdev init         bootstrap a local environment (admin, default client, application, .env)
 /// fcdev version      print the version
+/// fcdev completion   generate a shell completion script (bash, zsh)
 /// ```
 ///
 /// The root command carries the `start` flag set so `fcdev --api-port 9000`
@@ -48,6 +49,7 @@ import java.util.concurrent.Callable;
                 DbCommand.class,
                 UpgradeCommand.class,
                 VersionCommand.class,
+                CompletionCommand.class,
                 CommandLine.HelpCommand.class})
 public final class FcDev implements Callable<Integer> {
 

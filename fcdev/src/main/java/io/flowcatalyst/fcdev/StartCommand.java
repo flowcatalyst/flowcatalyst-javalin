@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -37,8 +38,11 @@ public final class StartCommand implements Callable<Integer> {
 
     /// `fcdev start`: the subcommand form.
     @Command(name = "start", description = "Run the dev monolith (identical to invoking fcdev with no subcommand)",
-            mixinStandardHelpOptions = true, sortOptions = false)
+            sortOptions = false)
     public static final class Sub implements Callable<Integer> {
+        @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
+        boolean help;
+
         @Mixin
         final StartOptions opts;
         private final DevEnv env;
