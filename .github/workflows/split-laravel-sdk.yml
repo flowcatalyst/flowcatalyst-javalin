@@ -1,0 +1,78 @@
+name: Split Laravel SDK
+
+# Ported from ../flowcatalyst-go/.github/workflows/split-laravel-sdk.yml
+# (docs/sdk-release-plan.md, docs/go-mirror/2026-09-14-sdk-copies.md). Fires
+# on `laravel-sdk/v*` (cut via `make release-laravel-sdk BUMP=patch`), splits
+# clients/laravel-sdk/ out of this repo with splitsh-lite, force-pushes it to
+# the standalone flowcatalyst/laravel-sdk repo (a pure source mirror —
+# Packagist reads the tag), and re-tags as plain vX.Y.Z.
+#
+# NOTE: the Go repo keeps an identical workflow, and both force-push the
+# same standalone `main` — only ONE repo may cut a given laravel-sdk/vX.Y.Z
+# tag, or the two pushes fight. Today the Go repo cuts them; move a tag
+# stream here deliberately (docs/go-mirror/2026-09-14-sdk-copies.md), and the
+# owner adds LARAVEL_SDK_TOKEN to this repo's Actions secrets first.
+
+on:
+  push:
+    tags:
+      - 'laravel-sdk/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create on target repo (e.g., v1.0.0). Leave empty to just sync main.'
+        required: false
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install splitsh-lite
+        run: |
+          curl -L https://github.com/splitsh/lite/releases/download/v1.0.1/lite_linux_amd64.tar.gz | tar xz
+          chmod +x splitsh-lite
+          sudo mv splitsh-lite /usr/local/bin/
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Split and Push
+        env:
+          TARGET_REPO: https://x-access-token:${{ secrets.LARAVEL_SDK_TOKEN }}@github.com/flowcatalyst/laravel-sdk.git
+        run: |
+          # Extract version from tag (laravel-sdk/v1.0.0 -> v1.0.0)
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#laravel-sdk/}"
+          elif [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION=""
+          fi
+
+          # Split the subtree
+          SHA=$(splitsh-lite --prefix=clients/laravel-sdk)
+          echo "Split SHA: $SHA"
+
+          # Add remote
+          git remote add sdk "$TARGET_REPO" || git remote set-url sdk "$TARGET_REPO"
+
+          # Push the split branch to main
+          git push sdk "$SHA:refs/heads/main" --force
+
+          # Push tag if we have a version
+          if [[ -n "$VERSION" ]]; then
+            git tag -f "$VERSION" "$SHA"
+            git push sdk "$VERSION" --force
+            echo "Tagged and pushed: $VERSION"
+          fi
+
+          echo "Successfully pushed to flowcatalyst/laravel-sdk"
