@@ -82,3 +82,17 @@ or ruled. The one operational gap that would surprise an operator on day
 one is the log shape (§2.2); the one behavioural change the IaC would cause
 is the Teams batch interval (§2.1). Both are decisions, not code, and both
 fit in an afternoon once decided.
+
+## 6. Re-run against Go `3f1d299` (same evening)
+
+The Go agent committed the invitation change (`50b8841`) and fixed the
+trusted-devices nil slice (`d31a9ff`), `clientScoped` on create
+(`cd2be87`), the two router intervals (`023cbee`), and took the two
+frontend files verbatim (`3f1d299`). Against that fixed commit:
+
+| Check | Result |
+|---|---|
+| Parity corpus | 1,324 steps, 0 DIFF, 0 ERROR; the `trusted-devices /devices` allow-list entry went stale and was retired (95 entries remain) |
+| Lockfile | Go HEAD's `api/openapi.lock.json` byte-identical to the vendored copy (stamped `3f1d299`) |
+| Frontend drift | none (Go took `openapi-ts.config.ts` and `watch-api.ts`) |
+| Browser suite | Java **53/53** (with the Go-shaped logs and the one-shape mail parser); Go **51/53** — the four earlier Go failures pass; two new Go-side: `platform/settings` "platform name persists after reload" (Go log: `aud_logs insert failed … event_type=platform:admin:platform-config:property-set … context canceled` — the audit row, and possibly the write, is lost when the client's request context is cancelled; handed off) and `platform/documentation` (the flake seen once on Java earlier, this time on Go; unexplained) |

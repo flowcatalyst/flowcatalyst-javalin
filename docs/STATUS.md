@@ -92,9 +92,11 @@ five checks the same day against Go `f81fd5a` + working tree): parity
 **1,324 steps, 0 DIFF, 0 ERROR, 0 stale** (`9cd963f`; 13 invitation steps,
 22 Go-caught-up entries retired); route surface 188 Go / 184 Java, no
 method/listener mismatch; env audit ~108 reads joined; schema
-byte-identical; Java e2e **53/53**, Go 46/53 (all seven classified: three
-a Go nil-slice defect, one the pending `clientScoped` mirror, two the
-invitation spec's own mail-count assertion, one flake). Java fixed the
+byte-identical; Java e2e **53/53**, Go 46/53 at first (seven classified) and **51/53 after
+Go's same-evening fixes** (`3f1d299`: nil slice, `clientScoped`, the two
+router intervals, the frontend files); parity re-run vs `3f1d299` 1,324 /
+0 DIFF; two Go-side flows left (audit row lost on a cancelled context;
+the docs-page flake). Java fixed the
 same day: pool deliveries invisible on the dashboard/Prometheus
 (`061e91c`, from the owner's staging report), `DELETE /warnings` +
 `/warnings/old` and the fingerprint normaliser (`db5dd90`), the

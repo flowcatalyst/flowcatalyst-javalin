@@ -64,13 +64,6 @@
   },
   {
     "scenario": "*",
-    "step": "trusted-devices",
-    "pointer": "/devices",
-    "reason": "an empty trusted-device list: Go serialises its nil slice as null, Java answers []",
-    "ruling": "CONVENTIONS.md section 2 (lists are never null; an empty list means none) — Go accident"
-  },
-  {
-    "scenario": "*",
     "step": "remove-totp-again",
     "pointer": "/status",
     "reason": "removing a 2FA method the user never had: Go answers 200 'removed', Java 404",

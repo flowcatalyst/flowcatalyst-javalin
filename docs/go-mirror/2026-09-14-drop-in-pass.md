@@ -1,5 +1,21 @@
 # Go hand-off — findings from the drop-in pass of 2026-09-14
 
+**Update, same evening:** items 1–4 below landed in Go (`d31a9ff`, `cd2be87`,
+`023cbee`, `50b8841`) and the frontend files in `3f1d299`; parity and the
+browser suite were re-run against `3f1d299` (audit §6). Two new items:
+
+7. **Audit row lost on a cancelled request context.** During the
+   platform-settings browser flow Go logged `aud_logs insert failed`,
+   `event_type=platform:admin:platform-config:property-set`, `err=timeout:
+   context already done: context canceled`, and the flow failed on the
+   reloaded value. The audit insert (and possibly the write) runs on the
+   request's context after the client may have gone; Java's UnitOfWork
+   writes aggregate + event + audit in one transaction. Worth a look at
+   which context the platform-config property-set uses for its audit write.
+8. **`clients/java-sdk` never received `docs/java-sdk-invitation-handover.md`.**
+   The Java repo's `sdk/` module did (createUser Javadoc, README section,
+   `PrincipalsResourceTest`); the Go copy is behind on all three.
+
 For the Go agent. Each item was found by comparing the Java platform with
 the Go working tree (`f81fd5a` plus the uncommitted invitation change) on
 2026-09-14; the full record is `docs/audit/2026-09-14-drop-in-pass.md` in
