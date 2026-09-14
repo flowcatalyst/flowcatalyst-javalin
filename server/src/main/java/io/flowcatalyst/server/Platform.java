@@ -354,8 +354,21 @@ public final class Platform {
         // Group.DISPATCH (admission.md §11.7): the router itself fetches this document —
         // over the routed source, which resolves to the DISPATCH physical pool for this
         // mount, exactly as pools.dispatch() would have.
+        // The settings are resolved PER REQUEST, never here: an SQS deployment
+        // without FC_DISPATCH_QUEUE_PREFIX must not stop the API tier booting —
+        // nothing on it publishes (owner, 2026-09-14; the scheduler role keeps
+        // its eager refusal in Server#schedulerPublisher). The route answers
+        // 503 DISPATCH_QUEUE_UNCONFIGURED until the settings are usable, and
+        // the boot says so once.
+        try {
+            DispatchQueueSettings.resolve(env);
+        } catch (IllegalStateException e) {
+            LOG.atWarn().setMessage("router-config document unavailable until the dispatch queue settings are fixed")
+                    .addKeyValue("reason", e.getMessage())
+                    .log();
+        }
         RouterConfigApi.register(routes.in(Group.DISPATCH), new RouterConfigApi.State(
-                new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))));
+                () -> new RouterConfigDocumentBuilder(pool, DispatchQueueSettings.resolve(env))));
         var roleRepo = new RoleRepository(pool);
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));

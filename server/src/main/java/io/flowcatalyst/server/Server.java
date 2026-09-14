@@ -590,15 +590,17 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// any branch is chosen** (`docs/spec/deployed-dispatch.md` §3 "Wiring").
     /// This method runs in BOTH platform and worker mode — `Server#start`
     /// calls it whenever `FC_SCHEDULER_ENABLED` is set and a pool exists,
-    /// regardless of `mode` — but [#dispatchRouterConfigFor] only resolves
-    /// [DispatchQueueSettings] in platform mode, for the served document. A
+    /// regardless of `mode`. It is the ONLY eager resolution: the platform's
+    /// served router-config document resolves the settings per request
+    /// (`RouterConfigApi.State` takes a supplier) and answers 503 when they
+    /// are unusable, so an API tier with `DISPATCH_QUEUE_TYPE=SQS` and no
+    /// prefix still boots — nothing on it publishes (owner, 2026-09-14). A
     /// worker (where `DISPATCH_SCHEDULER_ENABLED=true` actually lives in the
     /// real deployment) with a misconfigured SQS setup — `FC_DISPATCH_QUEUE_TYPE=SQS`
-    /// but no usable prefix/account/region — would otherwise never hit that
-    /// platform-only resolution and would silently fall through to the NOOP
-    /// publisher instead of refusing to start. Resolving here, unconditionally,
-    /// closes that gap: [DispatchQueueSettings#resolve]'s eager
-    /// `IllegalStateException` now fires at boot on a worker too.
+    /// but no usable prefix/account/region — must NOT fall through to the
+    /// NOOP publisher: resolving here, before any branch, makes
+    /// [DispatchQueueSettings#resolve]'s `IllegalStateException` fire at
+    /// boot on the one role that would otherwise publish to nonsense names.
     private static DispatchPublisher schedulerPublisher(Env env, DataSource pool) {
         DispatchQueueSettings settings = DispatchQueueSettings.resolve(env);
         if (settings.sqs()) {

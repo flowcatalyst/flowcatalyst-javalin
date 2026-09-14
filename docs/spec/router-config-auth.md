@@ -33,6 +33,15 @@ the MCP server already mints tokens this way (`TokenManager`).
   like the other `PlatformRoles`. Anchor-only, not client-delegable.
 - 401 without a token, 403 with a token lacking the permission, 404 for
   anything else under the prefix as today.
+- **503 `DISPATCH_QUEUE_UNCONFIGURED`** (2026-09-14) when the dispatch-queue
+  settings cannot be resolved — an SQS deployment without
+  `FC_DISPATCH_QUEUE_PREFIX`, or without an account id / region. The
+  settings are resolved **per request** (`RouterConfigApi.State` takes a
+  supplier), never at wiring: the API tier publishes nothing, so it must
+  boot regardless (owner ruling; the Go platform exited at boot on exactly
+  this, staging 2026-09-14). The scheduler role keeps its eager refusal
+  (`Server#schedulerPublisher`), since it would publish to nonsense names.
+  The boot logs one WARN naming the reason.
 
 ## 2. Router
 

@@ -16,6 +16,17 @@ browser suite were re-run against `3f1d299` (audit §6). Two new items:
    The Java repo's `sdk/` module did (createUser Javadoc, README section,
    `PrincipalsResourceTest`); the Go copy is behind on all three.
 
+9. **`FC_DISPATCH_QUEUE_PREFIX` must not stop the API tier booting.** Staging
+   2026-09-14: the Go platform exited with "FC_DISPATCH_QUEUE_PREFIX is
+   required when FC_DISPATCH_QUEUE_TYPE=SQS" although nothing on the API
+   tier publishes. Java's answer (`router-config-auth.md` §1): the platform
+   resolves the dispatch-queue settings per request of
+   `GET /api/dispatch/router-config` and answers 503
+   `DISPATCH_QUEUE_UNCONFIGURED` with the reason until they are usable,
+   logging one WARN at boot; only the scheduler role refuses to start,
+   because it would publish to nonsense queue names. Worth the same split
+   in Go so both sides boot the same set of roles from the same environment.
+
 For the Go agent. Each item was found by comparing the Java platform with
 the Go working tree (`f81fd5a` plus the uncommitted invitation change) on
 2026-09-14; the full record is `docs/audit/2026-09-14-drop-in-pass.md` in
