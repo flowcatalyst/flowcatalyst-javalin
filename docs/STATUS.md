@@ -24,9 +24,11 @@ Progress, 2026-09-11 evening:
 
 Owner ruling 2026-09-13: a deliberate second attempt at the listener move
 (`docs/vertx-migration-brief.md` §0; the 2026-09-08 reversion was about MCP
-and servlet libraries, not performance). Everything is on branch **`vertx-2`**
-(worktree `../flowcatalyst-javalin-vertx2`); **merge is the owner's call.**
-Report: `docs/vertx-migration-report.md` on the branch.
+and servlet libraries, not performance). Built on branch `vertx-2` and
+**merged into main at `da06195` (owner ruling 2026-09-14)**: Vert.x is the
+only HTTP stack again — API and metrics listener, MCP on its own Vert.x
+transport, Javalin and Jetty gone from the tree. Report:
+`docs/vertx-migration-report.md`.
 
 | Commit | Phase |
 |---|---|
