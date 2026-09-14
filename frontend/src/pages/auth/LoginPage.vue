@@ -14,7 +14,9 @@ import {
 	checkSession,
 	externalIdpRedirectUrl,
 	login,
+	oauthAuthorizeUrl,
 	redirectAfterLogin,
+	requestPasswordSetup,
 	type LoginResult,
 } from "@/api/auth";
 import { authenticateWithPasskey, isWebauthnSupported } from "@/api/webauthn";
@@ -22,7 +24,14 @@ import TwoFactorChallenge from "@/components/TwoFactorChallenge.vue";
 import TwoFactorSetup from "@/components/TwoFactorSetup.vue";
 import { getErrorMessage } from "@/utils/errors";
 
-type LoginStep = "email" | "password" | "redirecting" | "2fa" | "enroll";
+type LoginStep =
+	| "email"
+	| "password"
+	| "setup"
+	| "setupSent"
+	| "redirecting"
+	| "2fa"
+	| "enroll";
 
 type MfaChallenge = Extract<LoginResult, { status: "mfa_required" }>;
 type MfaEnroll = Extract<LoginResult, { status: "enrollment_required" }>;
@@ -103,6 +112,11 @@ const onCheckEmail = handleEmailSubmit(async (values) => {
 			// Forward OIDC-interaction / OAuth round-trip context to the IdP
 			// login URL (shared helper — see api/auth.ts).
 			window.location.href = externalIdpRedirectUrl(result.loginUrl);
+		} else if (result.authMethod === "internal" && result.passwordSetupRequired) {
+			// App-created internal user who has never set a password: we
+			// never accept a new password inline — email them a
+			// mailbox-proving set-password link instead.
+			step.value = "setup";
 		} else {
 			step.value = "password";
 		}
@@ -137,6 +151,38 @@ async function onSubmitPassword() {
 		// "ok" → login() already established the session and redirected.
 	} catch {
 		// Error is handled by AuthStore
+	} finally {
+		isSubmitting.value = false;
+	}
+}
+
+async function onRequestPasswordSetup() {
+	if (isSubmitting.value) return;
+
+	isSubmitting.value = true;
+	authStore.setError(null);
+
+	try {
+		// Only forward a redirect when the page was entered as an OAuth
+		// round-trip (?oauth=true) — the rebuilt /oauth/authorize?... URL is
+		// what sends the user back into the calling application once they've
+		// set their password. Same field list / getter shape as every other
+		// oauthAuthorizeUrl call site (see api/auth.ts, router/guards.ts).
+		const redirectUri =
+			route.query["oauth"] === "true"
+				? oauthAuthorizeUrl((field) => {
+						const value = route.query[field];
+						return typeof value === "string" ? value : null;
+					})
+				: undefined;
+		await requestPasswordSetup(currentEmail.value, redirectUri);
+		step.value = "setupSent";
+	} catch (e: unknown) {
+		// Silent-success endpoint — an error here means the request itself
+		// failed (network/5xx), not that the account doesn't exist.
+		authStore.setError(
+			getErrorMessage(e, "Could not send the email — please try again."),
+		);
 	} finally {
 		isSubmitting.value = false;
 	}
@@ -217,11 +263,15 @@ async function onPasskeyLogin() {
               ? 'Sign in to your account'
               : step === 'password'
                 ? 'Enter your password'
-                : step === '2fa'
-                  ? 'Verify it\'s you'
-                  : step === 'enroll'
-                    ? 'Set up two-factor authentication'
-                    : 'Redirecting...'
+                : step === 'setup'
+                  ? 'Create your password'
+                  : step === 'setupSent'
+                    ? 'Check your email'
+                    : step === '2fa'
+                      ? 'Verify it\'s you'
+                      : step === 'enroll'
+                        ? 'Set up two-factor authentication'
+                        : 'Redirecting...'
           }}
         </h2>
 
@@ -330,6 +380,51 @@ async function onPasskeyLogin() {
             @click="onPasskeyLogin"
           />
         </form>
+
+        <!-- Password setup step: internal user created by an application,
+             invite email suppressed — first time signing in, no password
+             set yet. We never accept a new password inline here; the
+             emailed link is what proves mailbox ownership. -->
+        <div v-if="step === 'setup'" class="login-form">
+          <div class="email-display">
+            <div class="email-info">
+              <div class="email-avatar">
+                {{ currentEmail.charAt(0).toUpperCase() }}
+              </div>
+              <span class="email-text">{{ currentEmail }}</span>
+            </div>
+            <button type="button" class="change-email-btn" @click="onChangeEmail">
+              Use a different email
+            </button>
+          </div>
+
+          <p class="form-description">
+            This is your first time signing in. We'll email you a link to
+            create your password — this confirms it's really you.
+          </p>
+
+          <Button
+            type="button"
+            label="Email me a link"
+            :loading="isSubmitting"
+            class="w-full"
+            @click="onRequestPasswordSetup"
+          />
+        </div>
+
+        <!-- Password setup link sent -->
+        <div v-if="step === 'setupSent'" class="login-form">
+          <div class="success-banner">
+            <p>
+              We sent a link to <strong>{{ currentEmail }}</strong>. Open it
+              on this device to create your password. The link expires in 72
+              hours.
+            </p>
+          </div>
+          <button type="button" class="change-email-btn" @click="onChangeEmail">
+            Back to sign in
+          </button>
+        </div>
 
         <!-- 2FA challenge step -->
         <TwoFactorChallenge
@@ -505,6 +600,13 @@ async function onPasskeyLogin() {
   font-size: 14px;
   font-weight: 500;
   color: #334e68;
+}
+
+.form-description {
+  color: #627d98;
+  font-size: 14px;
+  margin: 0;
+  line-height: 1.6;
 }
 
 .field-hint {

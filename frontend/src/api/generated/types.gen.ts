@@ -1025,11 +1025,22 @@ export type CreatePrincipalRequest = {
     idpType?: string;
     name?: string;
     password?: string;
+    returnInviteLink?: boolean;
     /**
      * Principal scope (ANCHOR, PARTNER, CLIENT)
      */
     scope: string;
+    sendInvitation?: boolean;
     [key: string]: unknown;
+};
+
+export type CreatePrincipalResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    id: string;
+    inviteLink?: string;
 };
 
 export type CreateProcessRequest = {
@@ -1175,7 +1186,9 @@ export type CreateUserRequest = {
     enforcePasswordComplexity?: boolean;
     name: string;
     password?: string;
+    returnInviteLink?: boolean;
     scope?: 'ANCHOR' | 'PARTNER' | 'CLIENT';
+    sendInvitation?: boolean;
     [key: string]: unknown;
 };
 
@@ -1892,6 +1905,7 @@ export type PrincipalResponse = {
     hasDeveloperCredential: boolean;
     id: string;
     idpType?: string;
+    inviteLink?: string;
     isAnchorUser: boolean;
     name: string;
     roles: Array<string>;
@@ -3705,11 +3719,18 @@ export type CreatePrincipalRequestWritable = {
     idpType?: string;
     name?: string;
     password?: string;
+    returnInviteLink?: boolean;
     /**
      * Principal scope (ANCHOR, PARTNER, CLIENT)
      */
     scope: string;
+    sendInvitation?: boolean;
     [key: string]: unknown;
+};
+
+export type CreatePrincipalResponseWritable = {
+    id: string;
+    inviteLink?: string;
 };
 
 export type CreateProcessRequestWritable = {
@@ -3827,7 +3848,9 @@ export type CreateUserRequestWritable = {
     enforcePasswordComplexity?: boolean;
     name: string;
     password?: string;
+    returnInviteLink?: boolean;
     scope?: 'ANCHOR' | 'PARTNER' | 'CLIENT';
+    sendInvitation?: boolean;
     [key: string]: unknown;
 };
 
@@ -4216,6 +4239,7 @@ export type PrincipalResponseWritable = {
     hasDeveloperCredential: boolean;
     id: string;
     idpType?: string;
+    inviteLink?: string;
     isAnchorUser: boolean;
     name: string;
     roles: Array<string>;
@@ -9547,10 +9571,10 @@ export type CreatePrincipalResponses = {
     /**
      * Created
      */
-    201: CreatedResponse;
+    201: CreatePrincipalResponse;
 };
 
-export type CreatePrincipalResponse = CreatePrincipalResponses[keyof CreatePrincipalResponses];
+export type CreatePrincipalResponse2 = CreatePrincipalResponses[keyof CreatePrincipalResponses];
 
 export type BulkImportUsersData = {
     body: BulkImportRequestWritable;

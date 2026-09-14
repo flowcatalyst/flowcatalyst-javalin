@@ -8,10 +8,13 @@ import {
 	normalizeClientParam,
 	useLoginThemeStore,
 } from "@/stores/loginTheme";
+import { useAuthStore } from "@/stores/auth";
+import { landingPath } from "@/stores/permissions";
 import {
 	validateResetToken,
 	confirmPasswordReset,
 	setPostAuthRedirect,
+	checkSession,
 } from "@/api/auth";
 
 // Invite framing: the same page serves first-time invites (route
@@ -24,6 +27,7 @@ import { passwordPolicyError } from "@/utils/passwordPolicy";
 const route = useRoute();
 const router = useRouter();
 const themeStore = useLoginThemeStore();
+const authStore = useAuthStore();
 
 onMounted(async () => {
 	await themeStore.loadTheme(normalizeClientParam(route.query["client"]));
@@ -37,7 +41,8 @@ type PageState =
 	| "form"
 	| "submitting"
 	| "enroll"
-	| "portalDone";
+	| "portalDone"
+	| "redirecting";
 
 const pageState = ref<PageState>("loading");
 const isInvite = computed(() => route.name === "set-password");
@@ -142,6 +147,17 @@ const onSubmit = handleSubmit(async (values) => {
 			window.location.assign(result.redirectUri);
 			return;
 		}
+		if (result.sessionEstablished) {
+			// Platform invite, no redirect stashed, no 2FA required: the
+			// server already set the session cookie. Load the full session
+			// (permissions, clientId, roles) so landingPath resolves
+			// correctly, then go straight in — there's no login page to
+			// bounce back to in this flow.
+			pageState.value = "redirecting";
+			await checkSession();
+			await router.replace(landingPath(authStore.user));
+			return;
+		}
 		if (result.portal) {
 			// A portal identity with no redirect must NOT land on the
 			// platform login — it cannot sign portal users in.
@@ -230,6 +246,15 @@ const onSubmit = handleSubmit(async (values) => {
         <template v-else-if="pageState === 'enroll'">
           <h2 class="login-title">Set up two-factor authentication</h2>
           <TwoFactorSetup :enroll-token="enrollToken" :allowed-methods="enrollMethods" />
+        </template>
+
+        <!-- Session already established server-side (invite, no 2FA) -->
+        <template v-else-if="pageState === 'redirecting'">
+          <h2 class="login-title">Password set</h2>
+          <div class="loading-state">
+            <div class="spinner"></div>
+            <p>Your password is set. Taking you to your account...</p>
+          </div>
         </template>
 
         <!-- Portal identity finished with no redirect configured -->

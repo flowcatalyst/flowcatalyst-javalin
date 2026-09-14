@@ -54,6 +54,11 @@ export interface DomainCheckResponse {
 	authMethod: "internal" | "external";
 	loginUrl?: string;
 	idpIssuer?: string;
+	// Only ever set alongside authMethod:"internal": the account exists, is a
+	// password account, and has never had a password set (e.g. an app-created
+	// user whose invite email was suppressed). The login page must route to
+	// the password-setup step instead of asking for a password.
+	passwordSetupRequired?: boolean;
 }
 
 function mapLoginResponseToUser(response: LoginResponse): User {
@@ -273,6 +278,24 @@ export async function requestPasswordReset(email: string): Promise<void> {
 	});
 }
 
+// requestPasswordSetup emails a set-password link to a user who has never
+// had a password (see DomainCheckResponse.passwordSetupRequired). We never
+// accept a new password inline here — the emailed link is what proves
+// mailbox ownership. Always resolves 200 (silent success; never reveals
+// whether the account exists). redirectUri, when present, must be a
+// same-site relative URL (the rebuilt /oauth/authorize?... URL) so the
+// server can hand the user back to the calling application once they've set
+// their password.
+export async function requestPasswordSetup(
+	email: string,
+	redirectUri?: string,
+): Promise<{ message: string }> {
+	return authFetch<{ message: string }>("/password-setup/request", {
+		method: "POST",
+		body: JSON.stringify({ email, redirectUri }),
+	});
+}
+
 export async function validateResetToken(
 	token: string,
 ): Promise<{
@@ -302,6 +325,11 @@ export interface ConfirmPasswordResetResult {
 	// Marks a PORTAL-identity confirm: with no redirectUri the page must not
 	// bounce to the platform login (it cannot sign portal users in).
 	portal?: boolean;
+	// True when the server has already set the fc_session cookie as part of
+	// this confirm (invite flows only, and only when no 2FA is required).
+	// The page is signed in and should go straight to the landing page
+	// rather than bouncing to /auth/login.
+	sessionEstablished?: boolean;
 }
 
 export async function confirmPasswordReset(
