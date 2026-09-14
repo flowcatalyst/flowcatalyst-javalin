@@ -331,6 +331,18 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
+        // Logged once, before anything binds, so the collector and the
+        // heap/direct-memory ceilings docker/jvm-opts.sh fenced are visible
+        // in the task's log rather than inferred from the container size
+        // (docs/spec/jvm-memory.md §2).
+        JvmInfo.Summary jvm = JvmInfo.summary();
+        LOG.atInfo().setMessage("jvm memory")
+                .addKeyValue("collectors", jvm.collectors())
+                .addKeyValue("max_heap_mib", jvm.maxHeapMiB())
+                .addKeyValue("max_direct_mib", jvm.maxDirectMiB())
+                .addKeyValue("processors", jvm.processors())
+                .log();
+
         // Every background subsystem below (scheduler, outbox, stream,
         // scheduled-job scheduler, purger, mail sender — and the router's own
         // housekeeping, `Router.build`'s dataSource) runs on `pools.background()`,

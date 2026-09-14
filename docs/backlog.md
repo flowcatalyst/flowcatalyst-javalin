@@ -1512,3 +1512,15 @@ server change silently tests yesterday's binary unless
 2026-09-14). Fix: rebuild when any tracked file under `server/`, `fcdev/`,
 `sdk/`, `usecase/` is newer than the jar (or always rebuild — the reactor
 package is ~1 min), and say which in the run banner.
+
+## The two-CPU p99 tail is admission queueing, not memory (2026-09-14)
+
+`bench/real/RESULTS.md` round 16: at 2 CPUs / 200 connections Java's p50 is
+ahead of Go (66 vs 84 ms) while its p99 is five times Go's (~550 vs 102 ms),
+and the tail does not move with the heap ceiling (512 MiB → 1,740 MiB) or
+show up in GC pauses (max 13.5 ms). That shape is a queue: the per-group
+request workers (`admission.md` §11.7, reads at twice the pool) hold requests
+while Go's goroutine-per-request lets them contend on the DB pool directly.
+Worth a measured look before cutover (verification plan Phase 2/3): the
+worker multiplier for reads, or the queue's ordering, decides the tail the
+SPA sees under load. Not a tuning knob — a design measurement.

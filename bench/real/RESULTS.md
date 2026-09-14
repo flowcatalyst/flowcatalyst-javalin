@@ -401,3 +401,32 @@ cutover rather than its purpose.
 Pool sizes as shipped: Java `Database.DEFAULT_POOL_SIZE = 32` (constant, no env override), Go never
 sets `MaxConnections` so pgxpool defaults to `max(4, NumCPU)` = 14 in this container. Neither is
 deployment-settable — see `docs/backlog.md`.
+
+## Round 16 — the container memory fence (2026-09-14, `docs/spec/jvm-memory.md`)
+
+Same rig as the final table (2 CPUs, 2 GB, 60 s warm-up), 200 connections, all three
+runs the same day. The Java image now derives `-Xmx`/`-XX:MaxDirectMemorySize` from the
+cgroup limit at start (`docker/jvm-opts.sh`: limit minus max(192 MiB, 15%)); the
+"default" row opts out through `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25`, i.e. the
+JVM's own quarter-of-container ergonomics, same image.
+
+| server | heap ceiling | req/s | share of Go | p50 | p99 | memory after run |
+|---|---:|---:|---:|---:|---:|---:|
+| Go (`bench-real-go`, 7-day-old image) | — | 2,344 | 100% | 84 ms | 102 ms | 37 MB |
+| Java 25, JVM default (25%) | 512 MiB | 2,543 | 108% | 68 ms | 507 ms | 475 MB |
+| Java 25, fence | 1,740 MiB (+153 MiB direct) | 2,623 | 112% | 66 ms | 584 ms | 542 MB |
+| Java 25, fence + `-Xlog:gc` | 1,740 MiB | 2,597 | 111% | 66 ms | 565 ms | 488 MB |
+
+- The fence does what the spec says in a real container: the task log reads
+  `jvm-opts: limit 2147483648 bytes -> -Xmx1740m -XX:MaxDirectMemorySize=153m`, then
+  `jvm memory collectors=[G1 …] max_heap_mib=1740 max_direct_mib=153 processors=2`.
+- **The p99 tail is not the heap and not the collector.** The earlier suspicion (final
+  table: "the default quarter-of-container heap is the first suspect") is falsified: a
+  3.4× larger ceiling moved nothing, and G1 never used it — the committed heap sat at
+  ~317 MB throughout, with 987 young pauses over the 75 s run, max 13.5 ms, 2% of wall
+  time, remarks under 4 ms. A 500 ms p99 behind a 66 ms p50 at 200 connections on two
+  cores is queueing, which points at the request-worker admission queues
+  (`admission.md` §11.7) — the owner-ruled design, and a question for the verification
+  plan, not for the memory fence.
+- Throughput and median are ahead of Go in every Java row; the fence costs nothing and
+  removes the per-task heap knob. Adopted as the image default.

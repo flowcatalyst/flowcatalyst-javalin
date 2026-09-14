@@ -71,6 +71,22 @@ deterministic here (two builds byte-identical). Hand-off for the Go agent:
 `docs/go-mirror/2026-09-14-frontend-source-shared.md`. The e2e runner's Go
 scratch build is unchanged. `tools/sync-frontend.sh` is gone.
 
+**JVM memory fence in the image** (`docs/spec/jvm-memory.md`, owner
+rulings 2026-09-14: the task's hard `memory` limit is the only number an
+operator sets; no collector pinned — ZGC rejected on the 2026-09-06
+measurements; the cap follows the container minus a reserve of
+max(192 MiB, 15%)): `docker/jvm-opts.sh` + `docker/entrypoint.sh` in the
+`Dockerfile` and the bench image, `JvmInfo` logged by `Server.start`
+(collector, heap, direct, processors), `JvmOptsScriptTest` (the table
+from 512 MiB to 256 GiB, the no-limit and opt-out cases; the 15%→25%
+mutant killed). **Round 16 bench** (2 CPUs, 2 GB, 200 conns, same day): Go
+2,344 / p99 102 ms; Java default 2,543 / 507 ms; Java fenced 2,623 /
+584 ms — the fence is correct and free, and the p99 tail is **not** heap or
+GC (G1 sat at ~317 MB, pauses ≤ 13.5 ms) but admission queueing, now a
+backlog item for the verification plan. The router task's IaC (uncommitted
+in `../inhance/iac`) also gained the hard 512 MB limit and the platform
+credential.
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

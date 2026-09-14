@@ -51,6 +51,10 @@ RUN apk add --no-cache ca-certificates wget \
  && adduser -D -u 10001 flowcatalyst
 COPY --from=build /jre /opt/jre
 COPY --from=build /fc-server.jar /usr/local/lib/fc-server.jar
+# docs/spec/jvm-memory.md: fences -Xmx/-XX:MaxDirectMemorySize to the
+# container's cgroup limit before java starts (JVM ergonomics default a
+# quarter of the container, wrong at both ends of the size range).
+COPY --chmod=0755 docker/jvm-opts.sh docker/entrypoint.sh /usr/local/bin/
 USER flowcatalyst
 ENV JAVA_HOME=/opt/jre \
     PATH=/opt/jre/bin:$PATH
@@ -68,8 +72,8 @@ EXPOSE 8080 9090
 # healthcheck instead of one probing a port nothing is listening on.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD sh -c 'wget -q -O /dev/null "http://127.0.0.1:${FC_API_PORT:-${API_PORT:-${PORT:-8080}}}/health" || exit 1'
-# --enable-preview: the build compiles with preview features on (CONVENTIONS §8).
-# --enable-native-access: the HTTP/3 connector's quiche binding uses the FFM API
-# (docs/spec/http-transport.md); without the flag the JDK warns that restricted
-# methods "will be blocked in a future release".
-ENTRYPOINT ["java", "--enable-preview", "--enable-native-access=ALL-UNNAMED", "-jar", "/usr/local/lib/fc-server.jar"]
+# entrypoint.sh derives the memory fence (docs/spec/jvm-memory.md) and then
+# execs java with --enable-preview/--enable-native-access — see that file for
+# why those two flags are there; kept out of this ENTRYPOINT so the fence can
+# run first and so java stays PID 1 (exec, no shell left running).
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

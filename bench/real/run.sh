@@ -48,6 +48,7 @@ prepare() {
 images() {
   echo "-- building images"
   cp "$root"/server/target/flowcatalyst-server-*-exec.jar "$here/flowcatalyst-server-exec.jar"
+  cp "$root"/docker/jvm-opts.sh "$root"/docker/entrypoint.sh "$here"/
   cp /tmp/fc-server-linux "$here/fc-server-linux"
   docker build -q -t bench-real-java -f "$here/Dockerfile.java" "$here" >/dev/null
   docker build -q -t bench-real-go -f "$here/Dockerfile.go" "$here" >/dev/null
