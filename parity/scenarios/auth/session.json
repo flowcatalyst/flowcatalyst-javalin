@@ -19,6 +19,46 @@
       "expect": { "status": 200 },
       "capture": { "sess": "cookie:fc_session" } },
 
+    { "id": "create-passwordless-check-domain-target",
+      "why": "app-managed-invitations §2: a principal created passwordless (no password given) is awaitingPasswordSetup and check-domain must flag it",
+      "request": { "method": "POST", "path": "/api/principals",
+                   "body": { "email": "parity-passwordless-${run}@example.test", "name": "Parity Passwordless CheckDomain",
+                             "scope": "CLIENT", "clientId": "${client.id}" } },
+      "expect": { "status": 201 } },
+
+    { "id": "check-domain-passwordless-awaiting-setup",
+      "why": "app-managed-invitations §2: an internal user with no password set answers passwordSetupRequired:true, never false, never alongside authMethod:external",
+      "request": { "method": "POST", "path": "/auth/check-domain",
+                   "body": { "email": "parity-passwordless-${run}@example.test" } } },
+
+    { "id": "create-with-password-check-domain-target",
+      "why": "the negative case: a principal created with a password is never awaitingPasswordSetup",
+      "request": { "method": "POST", "path": "/api/principals",
+                   "body": { "email": "parity-haspassword-${run}@example.test", "name": "Parity HasPassword CheckDomain",
+                             "scope": "CLIENT", "clientId": "${client.id}", "password": "Correct-Harness-Battery-4471" } },
+      "expect": { "status": 201 } },
+
+    { "id": "check-domain-with-password-no-flag",
+      "why": "app-managed-invitations §2: passwordSetupRequired is absent (never false) once the user has a password",
+      "request": { "method": "POST", "path": "/auth/check-domain",
+                   "body": { "email": "parity-haspassword-${run}@example.test" } } },
+
+    { "id": "password-setup-request-eligible",
+      "why": "app-managed-invitations §3: the fixed silent-200 body for an eligible (passwordless internal) address",
+      "request": { "method": "POST", "path": "/auth/password-setup/request",
+                   "body": { "email": "parity-passwordless-${run}@example.test" } },
+      "expect": { "status": 200 } },
+
+    { "id": "password-setup-request-ineligible",
+      "why": "app-managed-invitations §3: the same fixed 200 for a user who already has a password — no account-existence or eligibility signal leaks",
+      "request": { "method": "POST", "path": "/auth/password-setup/request",
+                   "body": { "email": "parity-haspassword-${run}@example.test" } },
+      "expect": { "status": 200 } },
+
+    { "id": "password-setup-request-bad-body",
+      "why": "app-managed-invitations §3 table row 1: a non-object JSON body (the scenario format cannot send syntactically malformed JSON, so this exercises the same body()==null branch PasswordResetApi#passwordSetupRequest guards) is 400 INVALID_BODY on both sides",
+      "request": { "method": "POST", "path": "/auth/password-setup/request", "body": "not-an-object" } },
+
     { "id": "auth-me", "request": { "method": "GET", "path": "/auth/me" } },
     { "id": "api-me", "request": { "method": "GET", "path": "/api/me" } },
     { "id": "login-history",

@@ -165,6 +165,32 @@
     { "id": "confinement-list-hides-other-tenant",
       "why": "the list must be client-scoped for a non-anchor caller — the confinement target must not appear",
       "request": { "method": "GET", "path": "/api/principals" },
-      "unordered": ["/principals"] }
+      "unordered": ["/principals"] },
+
+    { "id": "relogin-as-admin",
+      "why": "the confinement block above signed in as the second tenant's admin; the invitation steps below need the anchor session back, and creating principals needs admin auth",
+      "request": { "method": "POST", "path": "/auth/login",
+                   "body": { "email": "${admin.email}", "password": "${admin.password}" } },
+      "expect": { "status": 200 } },
+
+    { "id": "invite-create-with-link",
+      "why": "app-managed-invitations §1: POST /api/principals with returnInviteLink:true on a passwordless create answers CreatePrincipalResponse{id, inviteLink} (status unchanged at 201)",
+      "request": { "method": "POST", "path": "/api/principals",
+                   "body": { "email": "parity-pcore-invite-${run}@example.test", "name": "Parity Core Invite Principal",
+                             "scope": "CLIENT", "clientId": "${client.id}", "returnInviteLink": true } },
+      "expect": { "status": 201 },
+      "capture": { "coreInviteId": "/id", "coreInviteLink": "/inviteLink", "coreInviteToken": "param:/inviteLink?token" } },
+
+    { "id": "invite-confirm-establishes-session",
+      "why": "app-managed-invitations §4: confirming that INVITE token on a domain without 2FA signs the user in inline — sessionEstablished:true and a Set-Cookie fc_session the way login's does. This step's Set-Cookie overwrites the runner's cookie jar with the new user's session, so it must stay last in this file.",
+      "request": { "method": "POST", "path": "/auth/password-reset/confirm",
+                   "body": { "token": "${coreInviteToken}", "password": "Correct-Harness-Battery-5591" } },
+      "expect": { "status": 200 },
+      "capture": { "inviteSess": "cookie:fc_session" } },
+
+    { "id": "invite-confirm-session-authenticates-me",
+      "why": "the cookie the confirm step just set must actually authenticate, not merely be present",
+      "request": { "method": "GET", "path": "/auth/me" },
+      "expect": { "status": 200 } }
   ]
 }

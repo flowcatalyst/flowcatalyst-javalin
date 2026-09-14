@@ -78,6 +78,7 @@
   "POST /auth/logout",
   "POST /auth/password-reset/confirm",
   "POST /auth/password-reset/request",
+  "POST /auth/password-setup/request",
   "POST /auth/refresh",
   "POST /auth/webauthn/authenticate/begin",
   "POST /auth/webauthn/authenticate/complete",

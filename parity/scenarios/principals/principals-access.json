@@ -128,6 +128,22 @@
                              "password": "Correct-Harness-Battery-2381", "scope": "CLIENT", "clientId": "${client.id}" } },
       "capture": { "sdkUserId": "/id" } },
 
+    { "id": "create-user-no-invite",
+      "why": "app-managed-invitations §1: sendInvitation:false on a passwordless createUser suppresses all platform mail; without returnInviteLink the response carries no inviteLink key",
+      "request": { "method": "POST", "path": "/api/principals/users",
+                   "body": { "email": "parity-noinvite-${run}@example.test", "name": "Parity No Invite User",
+                             "scope": "CLIENT", "clientId": "${client.id}", "sendInvitation": false } },
+      "expect": { "status": 200 },
+      "capture": { "noInviteUserId": "/id" } },
+
+    { "id": "create-user-return-invite-link",
+      "why": "app-managed-invitations §1: returnInviteLink on a passwordless createUser mints the 72h INVITE token and returns it as inviteLink; the token is a random value, captured the way portal.json's inviteUrl/inviteToken pair is (the auto-capture in Runner#autoCapture already masks the whole inviteLink field since its name matches .*Link, so the extra explicit capture here is only to pull the raw token out for reuse)",
+      "request": { "method": "POST", "path": "/api/principals/users",
+                   "body": { "email": "parity-returninvite-${run}@example.test", "name": "Parity Return Invite User",
+                             "scope": "CLIENT", "clientId": "${client.id}", "returnInviteLink": true } },
+      "expect": { "status": 200 },
+      "capture": { "returnInviteUserId": "/id", "returnInviteLink": "/inviteLink", "returnInviteToken": "param:/inviteLink?token" } },
+
     { "id": "bulk-import-users",
       "request": { "method": "POST", "path": "/api/principals/bulk-import",
                    "body": { "clientId": "${client.id}",
