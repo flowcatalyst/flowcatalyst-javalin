@@ -1,0 +1,460 @@
+# @flowcatalyst/sdk
+
+Official TypeScript/JavaScript SDK for FlowCatalyst platform.
+
+## Installation
+
+```bash
+npm install @flowcatalyst/sdk
+# or
+yarn add @flowcatalyst/sdk
+# or
+bun add @flowcatalyst/sdk
+```
+
+## Local development with `fcdev`
+
+For local work you need a FlowCatalyst control plane to talk to.
+`fcdev` is the official one-binary dev environment — bundled
+PostgreSQL, platform API, message router, scheduler, and frontend
+in a single process.
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/flowcatalyst/flowcatalyst/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/flowcatalyst/flowcatalyst/main/install.ps1 | iex
+
+fcdev          # starts API on http://localhost:8080
+```
+
+If you publish events via the **outbox pattern**, you also need
+`fcdev outbox` running as a sidecar — it polls your app's
+`outbox_messages` table and forwards events to the platform:
+
+```bash
+# In your project directory (where this SDK is installed):
+
+# Once: write FC_OUTBOX_DB_URL / FC_OUTBOX_API_URL / FC_OUTBOX_TOKEN
+# into ./.env (0600 perms; no secrets on argv or shell history).
+fcdev outbox init
+
+# Daily: reads .env, auto-creates the `outbox_messages` table on
+# first run, then polls.
+fcdev outbox poll
+```
+
+The SDK's own migration at
+[`migrations/postgresql/001_create_outbox_messages.sql`](migrations/postgresql/001_create_outbox_messages.sql)
+and `fcdev outbox poll`'s built-in `CREATE TABLE IF NOT EXISTS`
+produce the same schema, so it doesn't matter which one runs first.
+
+Complete reference: run `fcdev --help`, or see the
+[FlowCatalyst repository](https://github.com/flowcatalyst/flowcatalyst).
+
+## Usage
+
+```typescript
+import { FlowCatalystClient } from '@flowcatalyst/sdk';
+
+// Initialize the client (client_credentials — a service account)
+const client = new FlowCatalystClient({
+  baseUrl: 'http://localhost:8080',
+  clientId: 'your_client_id',
+  clientSecret: 'your_client_secret',
+});
+
+// All methods return a neverthrow ResultAsync — no thrown errors
+const result = await client.eventTypes().list();
+result.match(
+  (eventTypes) => console.log('Event types:', eventTypes.items),
+  (error) => console.error('Error:', error.type, error.message),
+);
+
+// Create a new event type
+const created = await client.eventTypes().create({
+  code: 'orders:fulfillment:order:created',
+  name: 'Order Created',
+  description: 'Fired when a new order is placed',
+});
+
+// Create a subscription
+const subscription = await client.subscriptions().create({
+  code: 'notify-warehouse',
+  name: 'Notify Warehouse',
+  eventTypes: [{ eventTypeCode: 'orders:fulfillment:order:created' }],
+  endpoint: 'https://myapp.com/webhooks',
+});
+```
+
+## API Reference
+
+### FlowCatalystClient
+
+#### Constructor
+
+```typescript
+new FlowCatalystClient(config: FlowCatalystConfig)
+```
+
+**Config options** — two authentication modes:
+
+- Client credentials (service account):
+  - `baseUrl` (required): Base URL of the FlowCatalyst platform
+  - `clientId` / `clientSecret` (required): OAuth client credentials
+  - `tokenUrl` (optional): Custom token endpoint (default: `{baseUrl}/oauth/token`)
+- User token (you already hold an access token):
+  - `baseUrl` (required)
+  - `accessToken` (required): the token, or a (sync/async) function returning the current one
+
+Both modes also accept `timeout` (ms, default 30000), `retryAttempts`
+(default 3), `retryDelay` (ms, default 100), and `routerBaseUrl` (message
+router host for `client.router()`, defaults to `baseUrl`).
+
+#### Resources
+
+The API surface hangs off resource accessors, each wrapping the generated
+typed client with auth, retries, and neverthrow results:
+
+- `client.eventTypes()` — `list()`, `get(id)`, `getByCode(code)`, `create(...)`, `update(...)`, `addSchemaVersion(...)`, `archive(id)`, `sync(...)`
+- `client.subscriptions()`, `client.dispatchPools()`, `client.connections()`, `client.processes()`
+- `client.roles()`, `client.permissions()`, `client.applications()`, `client.clients()`, `client.principals()`, `client.me()`
+- `client.scheduledJobs()`, `client.auditLogs()`, `client.router()`, `client.definitions()`
+
+Anything not covered by a resource class is available through the generated
+functions (importable from the package root or the `api` namespace), passed
+through `client.request()` for auth + retries:
+
+```typescript
+import { api } from '@flowcatalyst/sdk';
+
+const result = await client.request((httpClient, headers) =>
+  api.listDispatchJobs({ client: httpClient, headers, query: { status: 'FAILED' } }),
+);
+```
+
+## Syncing Definitions
+
+Declare your application's roles, permissions, event types, subscriptions,
+dispatch pools, and principals in code, then push them to the platform with
+a single call:
+
+```typescript
+import { FlowCatalystClient, sync } from "@flowcatalyst/sdk";
+
+const definitions = sync
+  .defineApplication("orders")
+  .withRoles([{ name: "admin", displayName: "Administrator" }])
+  .withEventTypes([
+    { code: "orders:fulfillment:shipment:shipped", name: "Shipment Shipped" },
+  ])
+  .build();
+
+await client.definitions().sync(definitions);
+```
+
+See **[docs/syncing-definitions.md](./docs/syncing-definitions.md)** for the
+full structure guide — how to name roles, the 4-part permission format,
+event-type code conventions, subscription modes, dispatch pool sizing, and
+principal management.
+
+## Fastify integration
+
+If you're running a Fastify app, `@flowcatalyst/sdk/fastify` is a drop-in
+plugin that handles both the browser OIDC flow (redirect + encrypted
+session cookie) and Bearer-token validation for API callers — exposing the
+same `request.principal` on both. Roles come from the FlowCatalyst access
+token; permissions are resolved locally from a catalogue you declare in code.
+
+Optional peer dependencies: `fastify@^5`, `@fastify/cookie`, `jose`. Install
+the ones you need:
+
+```bash
+pnpm add fastify @fastify/cookie jose
+```
+
+```typescript
+import Fastify from "fastify";
+import {
+  flowcatalystAuth,
+  defineRbac,
+  generateSessionSecret,
+} from "@flowcatalyst/sdk/fastify";
+
+const rbac = defineRbac()
+  .role("operant:admin").grants("operant:*")
+  .role("operant:viewer").grants("operant:read")
+  .role("support").grants("ticket:*")
+  .build();
+
+const app = Fastify();
+
+await app.register(flowcatalystAuth, {
+  baseUrl: "https://platform.example.com",
+  clientId: process.env.FC_CLIENT_ID!,
+  clientSecret: process.env.FC_CLIENT_SECRET!,
+  cookie: { secret: process.env.SESSION_SECRET! }, // 32B base64url
+  rbac,
+});
+
+// Web route: 302s to /auth/login if no session cookie.
+app.get("/dashboard", { preHandler: app.fc.requireSession() }, async (req) => {
+  return { hello: req.principal!.name };
+});
+
+// API route: 401 JSON if no valid Bearer token.
+app.post("/api/orders", { preHandler: app.fc.requireBearer() }, async (req) => {
+  if (!req.principal!.hasPermissionTo(["operant:write"])) {
+    throw app.httpErrors.forbidden();
+  }
+  // ...
+});
+
+// Either: redirects browsers, 401s machines.
+app.get("/api/me", { preHandler: app.fc.requireAuth() }, async (req) => ({
+  id: req.principal!.id,
+  roles: req.principal!.roles,
+  permissions: req.principal!.hasAnyPermissionTo(["operant:read"]),
+}));
+```
+
+Generate a session secret with `node -e "console.log(require('@flowcatalyst/sdk/fastify').generateSessionSecret())"`.
+
+Other useful options: `scope` (default `openid profile email`),
+`expectedAudience`, `sessionStore`, `routes` (override the default
+`/auth/{login,callback,logout}` paths), `publicBaseUrl`, and `portal` —
+set `portal: true` when the app is a customer portal, so logins enter
+through the platform's portal identity plane (`/portal/authorize`) instead
+of the standard authorize endpoint (see [Portal identities](#portal-identities)).
+
+`client` names the FlowCatalyst client (its URL-safe slug, e.g. `"acme"`)
+whose login branding the sign-in pages should wear — logo, colours, brand
+name and footer, configured under **Clients → Login Branding**. A
+per-request `?client=` on the login route overrides it. It is purely
+cosmetic: it does not affect who may sign in or what they may access, and
+an unrecognised value falls back to the platform-wide theme. Ignored in
+`portal` mode, which has its own login surface.
+
+### Principal helpers
+
+`request.principal` is the same shape for cookie and Bearer callers:
+
+```typescript
+principal.id;                                    // "prn_..." or service principal id
+principal.scope;                                 // "anchor" | "partner" | "client"
+principal.clients;                               // ["clt_abc", ...] or ["*"] for anchors
+principal.roles;                                 // ["operant:admin", ...]
+principal.applications;                          // ["operant", ...]
+principal.mechanism;                             // "session" | "bearer"
+
+principal.hasRole("operant:admin");              // single
+principal.hasRoles(["a", "b"]);                  // ALL
+principal.hasAnyRole(["a", "b"]);                // ANY
+principal.hasPermissionTo(["operant:read"]);     // ALL (wildcard-aware)
+principal.hasAnyPermissionTo(["a", "b"]);        // ANY (wildcard-aware)
+principal.isAnchor();
+principal.canAccessClient("clt_abc");
+
+principal.sessionData;                           // app's bag, persisted in the session
+```
+
+Permission wildcards use `:` as separator with `*` as a suffix at any
+segment boundary. `operant:*` matches `operant:read` and `operant:reports:export`;
+`*` matches anything. Mid-string globs (e.g. `operant:r*`) are not supported.
+
+### Custom post-auth logic
+
+The plugin doesn't expose a special hook — once it has populated
+`request.principal`, register a normal Fastify `preHandler` to enrich it
+or enforce app-specific checks:
+
+```typescript
+app.addHook("preHandler", async (req) => {
+  if (!req.principal) return;
+  const user = await db.user.upsert({
+    where: { fcId: req.principal.id },
+    update: { lastSeenAt: new Date() },
+    create: { fcId: req.principal.id, email: req.principal.email },
+  });
+  req.principal.sessionData.localUserId = user.id;
+});
+```
+
+For cookie sessions, anything you write to `principal.sessionData` from a
+post-auth hook is **not** persisted automatically — the session is read
+from the store on each request. Persist via `app.fc.logout` / re-issue if
+you need a write path; or use the `PgSessionStore` / `RedisSessionStore`
+backends if you need mutable server-side state.
+
+### Logout
+
+Default is local-only — clear the session cookie. To also terminate the
+OIDC session at the platform, redirect to FlowCatalyst's logout page:
+
+```typescript
+app.post("/auth/logout", async (req, reply) => {
+  await app.fc.logout(req, reply, {
+    redirectTo: "https://platform.example.com/logout",
+  });
+});
+```
+
+### Server-side session storage
+
+The default `CookieSessionStore` puts the encrypted session in the cookie
+itself — zero infra, but limited to ~4KB. Swap to Postgres or Redis once
+you want to store more per-session data or revoke sessions server-side:
+
+```typescript
+import { PgSessionStore, initSessionSchema } from "@flowcatalyst/sdk/fastify";
+import pg from "pg";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+await initSessionSchema(pool);
+
+await app.register(flowcatalystAuth, {
+  // ...
+  sessionStore: new PgSessionStore({
+    executor: pool,
+    cookieName: "fc_session",
+    cookieOptions: {
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 60 * 60 * 8,
+    },
+  }),
+});
+```
+
+`RedisSessionStore` follows the same shape against an ioredis-compatible
+client. With a server-side store, the cookie contains an opaque session id
+only and the payload (including any size of `sessionData`) lives in the
+backend.
+
+## Using with Effect
+
+If your project uses [Effect](https://effect.website/), the SDK ships an
+optional Effect-flavored surface at `@flowcatalyst/sdk/effect/usecase` that
+gives the write path (events, dispatch jobs, audit logs) compile-time
+invariant guarantees — a use case that doesn't go through `UnitOfWork`
+fails to compile, not at runtime. Effect is an optional peer dependency:
+the default neverthrow surface is unchanged for everyone else.
+
+See **[docs/effect-usage.md](./docs/effect-usage.md)** for the full
+worked example, layer wiring, error handling with `Effect.catchTag`, and
+testing with `TestUnitOfWork`.
+
+## Portal identities
+
+Portal users (`ptu_…`) are a separate end-user population from platform
+users — customers of a client, invited per client, with no platform SSO
+reuse. The generated portal-user functions are re-exported from the package
+root; pass them through `client.request()`:
+
+```typescript
+import { FlowCatalystClient, ensurePortalUser, listPortalUsers } from '@flowcatalyst/sdk';
+
+// Invite (idempotent): returns identityId, created/invited flags, inviteUrl
+const ensured = await client.request((c, headers) =>
+  ensurePortalUser({
+    client: c, headers,
+    body: { clientId, email: 'pat@customer.example', returnInviteLink: true },
+  }),
+);
+
+const users = await client.request((c, headers) =>
+  listPortalUsers({ client: c, headers, query: { clientId } }));
+```
+
+`activatePortalUser`, `deactivatePortalUser`, and `deletePortalUser` cover
+the rest of the lifecycle, and the Fastify plugin's `portal: true` option
+handles the browser login flow. All credential UX (login page, invites,
+self-service forgot-password) is platform-hosted — the portal app never
+implements any of it. Full walkthrough:
+[docs/portal-implementation-guide.md](../../docs/portal-implementation-guide.md).
+
+## TypeScript Support
+
+This SDK is written in TypeScript and provides full type definitions. All API responses are properly typed, and every generated wire type is re-exported from the package root.
+
+```typescript
+import type { EventTypeResponse, SubscriptionResponse, DispatchJobResponse } from '@flowcatalyst/sdk';
+```
+
+## Error Handling
+
+All API methods return a [neverthrow](https://github.com/supermacro/neverthrow)
+`ResultAsync` — errors are values, not exceptions:
+
+```typescript
+const result = await client.eventTypes().list();
+
+result.match(
+  (eventTypes) => console.log('Event types:', eventTypes.items),
+  (error) => console.error('API Error:', error.type, error.message),
+);
+
+// Or use guards
+if (result.isOk()) {
+  console.log(result.value.items);
+}
+```
+
+Error variants (`error.type`): `missing_credentials`, `invalid_credentials`,
+`token_expired`, `token_fetch_failed`, `network`, `timeout`, `http_error`,
+`validation`, `not_found`, `forbidden`, `conflict`, `rate_limited`.
+
+## AI Agent Access (MCP Server)
+
+If you're using an AI coding agent (Claude Code, Cursor, Windsurf, etc.), you can give it read-only access to your FlowCatalyst event types, schemas, and subscriptions via the MCP server. This lets the agent explore your event catalog and generate typed code for you.
+
+### Quick setup (Claude Code)
+
+```bash
+claude mcp add flowcatalyst -- npx @flowcatalyst/mcp-server
+```
+
+### Quick setup (Cursor / Windsurf / Claude Desktop)
+
+Add to your MCP config file (`.cursor/mcp.json`, Claude Desktop config, etc.):
+
+```json
+{
+  "mcpServers": {
+    "flowcatalyst": {
+      "command": "npx",
+      "args": ["@flowcatalyst/mcp-server"],
+      "env": {
+        "FLOWCATALYST_URL": "https://your-instance.flowcatalyst.io",
+        "FLOWCATALYST_CLIENT_ID": "svc_abc123",
+        "FLOWCATALYST_CLIENT_SECRET": "your_secret"
+      }
+    }
+  }
+}
+```
+
+You need a service account with the `AI Agent Read-Only` role. See the [MCP server README](../mcp-server/README.md) for full details.
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Watch mode
+npm run dev
+
+# Type check
+npm run lint
+```
+
+## License
+
+Apache-2.0

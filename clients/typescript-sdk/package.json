@@ -1,0 +1,96 @@
+{
+	"name": "@flowcatalyst/sdk",
+	"version": "0.11.19",
+	"description": "TypeScript/JavaScript SDK for FlowCatalyst platform",
+	"keywords": [
+		"event-driven",
+		"flowcatalyst",
+		"messaging",
+		"sdk",
+		"typescript"
+	],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yourusername/flowcatalyst.git",
+		"directory": "clients/typescript-sdk"
+	},
+	"files": [
+		"dist",
+		"migrations",
+		"README.md"
+	],
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./effect": {
+			"types": "./dist/effect/index.d.ts",
+			"import": "./dist/effect/index.js"
+		},
+		"./effect/usecase": {
+			"types": "./dist/effect/usecase/index.d.ts",
+			"import": "./dist/effect/usecase/index.js"
+		},
+		"./usecase": {
+			"types": "./dist/usecase/index.d.ts",
+			"import": "./dist/usecase/index.js"
+		},
+		"./fastify": {
+			"types": "./dist/fastify/index.d.ts",
+			"import": "./dist/fastify/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"generate": "openapi-ts",
+		"generate:live": "OPENAPI_LIVE=true openapi-ts",
+		"prebuild": "pnpm run generate",
+		"test": "node --import tsx --test --test-reporter=spec 'tests/**/*.test.ts'",
+		"lint": "tsc --noEmit",
+		"clean": "rm -rf dist src/generated"
+	},
+	"dependencies": {
+		"fastify-plugin": "^5.1.0",
+		"neverthrow": "^8.1.1"
+	},
+	"peerDependencies": {
+		"@fastify/cookie": "^11.0.0",
+		"effect": "^4.0.0-beta.70",
+		"fastify": "^5.0.0",
+		"jose": "^5.0.0 || ^6.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@fastify/cookie": {
+			"optional": true
+		},
+		"effect": {
+			"optional": true
+		},
+		"fastify": {
+			"optional": true
+		},
+		"jose": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@fastify/cookie": "^11.0.0",
+		"@hey-api/openapi-ts": "^0.91.1",
+		"@types/node": "^22.0.0",
+		"effect": "^4.0.0-beta.70",
+		"fastify": "^5.0.0",
+		"jose": "^6.0.0",
+		"tsx": "^4.22.3",
+		"typescript": "^6.0.0"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}

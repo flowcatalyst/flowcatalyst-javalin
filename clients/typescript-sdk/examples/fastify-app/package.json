@@ -1,0 +1,20 @@
+{
+	"name": "@flowcatalyst-examples/fastify-app",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "tsx src/server.ts"
+	},
+	"dependencies": {
+		"@fastify/cookie": "^11.0.0",
+		"@flowcatalyst/sdk": "file:../..",
+		"fastify": "^5.0.0",
+		"jose": "^6.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"tsx": "^4.22.3",
+		"typescript": "^6.0.0"
+	}
+}
