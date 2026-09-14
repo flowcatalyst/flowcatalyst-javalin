@@ -386,7 +386,7 @@ the Authenticator group (LE:138-148, WR:83-92).
 
 | # | Method path | Auth | Request | Success | Errors | Cite |
 |---|---|---|---|---|---|---|
-| A1 | `POST /auth/check-domain` | none | `{"email"}` | 200 `{"authMethod":"internal"\|"external","loginUrl"?,"idpIssuer"?}`; `loginUrl = "/auth/oidc/login?domain=" + encodeURI(domain)` (custom encoder keeps `@-_.~`, `%XX` else) | 400 `INVALID_JSON`; 400 `EMAIL_REQUIRED`; malformed/unknown domain → 200 internal (deliberately no leak) | LE:152-206, LE:686-741 |
+| A1 | `POST /auth/check-domain` | none | `{"email"}` | 200 `{"authMethod":"internal"\|"external","loginUrl"?,"idpIssuer"?,"passwordSetupRequired"?}` (the flag only with `internal`, for an account awaiting password setup — `app-managed-invitations.md` §2); `loginUrl = "/auth/oidc/login?domain=" + encodeURI(domain)` (custom encoder keeps `@-_.~`, `%XX` else) | 400 `INVALID_JSON`; 400 `EMAIL_REQUIRED`; malformed/unknown domain → 200 internal (deliberately no leak) | LE:152-206, LE:686-741 |
 | A2 | `GET /auth/check-domain?email=` | none | query | 200 `{"domain","authMethod":"INTERNAL"\|"OIDC","providerId"?,"authorizationUrl"?}`; `providerId` set for **any** mapped IdP type, `authorizationUrl = issuer.trimRight('/')+"/authorize"` whenever issuer set — legacy shape | never errors | LE:208-245 |
 | A3 | `POST /auth/login` | none | `{"email","password","rememberMe"}` (`rememberMe` parsed, **unused**) | 200 `loginResponse` (§6.1a) + `Set-Cookie fc_session`; or 200 2FA challenge (§7.1) | see §7.1 table | LE:333-487 |
 | A4 | `POST /auth/logout` | none (accepts stale cookie) | — | 204, `Set-Cookie fc_session=; Max-Age=-1` same attrs | never | LE:565-576 |

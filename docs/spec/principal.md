@@ -333,6 +333,9 @@ Anchors skip all of it.
 accounts, OIDC users (`externalIdentity` or provider `OIDC`) and blank
 emails; no password + invite emailer → `sendInvite`; otherwise
 `notifier.accountCreated(email)`. Both are no-op implementations today (§12).
+Since 2026-09-14 the create bodies carry `sendInvitation` / `returnInviteLink`
+and the precedence in `app-managed-invitations.md` §1 sits in front of this
+rule; `POST /api/principals` answers `CreatePrincipalResponse{id, inviteLink?}`.
 
 **Bulk import** — per row, sequential, own transactions; statuses: `error`
 (blank/`@`-less email, blank name, duplicate email in file, role bounding
@@ -411,7 +414,7 @@ DESC`); roles / grants hydrated in one `IN` query each.
 | Interface | Methods | Today |
 |---|---|---|
 | `PasswordResetEmailer` | `sendResetEmail(principal, reset2fa)` | `notConfigured()` → `EMAILER_NOT_CONFIGURED` |
-| `InviteEmailer` | `sendInvite(principal)` | logging no-op |
+| `InviteEmailer` | `sendInvite(principal)`, `inviteLink(principal)` (mint, no mail — `app-managed-invitations.md` §1) | logging no-op / throws |
 | `Notifier` | `accountCreated(email)`, `twoFactorReset(email)` | logging no-op |
 | `MfaService` | `confirmedMethods(principalId)`, `resetAll(principalId)` | `notConfigured()` → empty / `MFA_NOT_CONFIGURED` |
 | `AnchorDomains` | `contains(domain)` | jOOQ read of `tnt_anchor_domains` (belongs to the auth aggregate) |

@@ -954,6 +954,12 @@ re-registers (`:142-147`).
 
 ## 8. Password reset, invites, approvals
 
+2026-09-14, `app-managed-invitations.md`: `POST /auth/password-setup/request`
+(§3 there) mints the ordinary INVITE token for an account awaiting password
+setup, and an INVITE confirm that finishes `ok` on a domain without 2FA also
+sets the session cookie and answers `sessionEstablished:true` (§4 there — a
+step 13 after §8.4's table).
+
 ### 8.1 Token minting (the `principalEmailer`) [C-behaviour]
 
 `passwordreset/api/api.go:201-337`. Every mint first **deletes all tokens of
