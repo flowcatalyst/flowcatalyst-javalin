@@ -20,6 +20,38 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## The Vert.x second attempt — built and measured on branch `vertx-2` (2026-09-13/14)
+
+Owner ruling 2026-09-13: a deliberate second attempt at the listener move
+(`docs/vertx-migration-brief.md` §0; the 2026-09-08 reversion was about MCP
+and servlet libraries, not performance). Everything is on branch **`vertx-2`**
+(worktree `../flowcatalyst-javalin-vertx2`); **merge is the owner's call.**
+Report: `docs/vertx-migration-report.md` on the branch.
+
+| Commit | Phase |
+|---|---|
+| `d02475f` | Vert.x listener restored from `f892f38^`, reconciled with main; MCP kept on its own Jetty for the moment |
+| `12b01ce` | Admission part A: routes declare DISPATCH / BFF / API_WRITE / API_READ / LOGIN / OIDC / NO_DB; four pools from one budget (API ½, BFF ¼, DISPATCH ¼, BACKGROUND 4); background subsystems on their own pool |
+| `3565581` | Admission part B: the pool is chosen by the request's group; PINNED vs PER_STATEMENT modes; `RequestWorkers` sized by kind (writes 1×, reads 2×, LOGIN/OIDC = cores); queues bounded at 8× with 503 + `Retry-After` from the loop and a queued-request deadline; `Budgets` deleted; metrics by group and pool |
+| `289f480` | MCP on a Vert.x streamable-HTTP transport (own listener, HTTP/1.1, Origin/Host allow-list derived from the listener's own address); Javalin and Jetty removed from the tree |
+| `0d69a9f` | the bench round (`CONNS` knob on the rig) and the report's verification section |
+
+Verified after every phase, uncontended: server suite green from clean
+(4,036 at the end), fcdev 108, **parity 1,311 steps, 0 DIFF, 0 ERROR
+against the clean Go `e87b88d` export — byte-identical under the new
+listener**, Java e2e 51/51 (2.2 min). **Measured** (`bench/real`, 60 s
+warm-up): at 1,000 connections the branch refuses the flood as ruled (97%
+of responses 503 `OVERLOADED`, admitted work 2,176 req/s at two CPUs,
+memory bounded); at 200 connections, under the bound, **2,573 req/s vs Go's
+2,196 at two CPUs (117%)** and **1,311 vs 1,325 on one pinned core (99%)**,
+p50 better than Go's on both, p99 worse at two CPUs (539 vs 112 ms — the
+default quarter-of-container heap is the first suspect), 10–13 context
+switches per request vs Go's 7 (the measured cost of per-statement reads,
+`admission.md` §11.4 — a ruling to take with the numbers). Still owed
+before a merge: the native image build and `conformance/`. Two decisions
+for the owner: reads pinned or per-statement, and an explicit `-Xmx` for
+the images (brief P5).
+
 ## Service-account reach follows its client links (2026-09-13, owner go-ahead)
 
 `docs/spec/service-account-reach.md`, the second half of the ruling: a
