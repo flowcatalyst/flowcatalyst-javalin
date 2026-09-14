@@ -102,10 +102,10 @@ run() {
   # wrk sends -H verbatim; the servers want "Cookie: value" with the space, hence the array.
   local WRK=(docker run --rm --network $NET --cpuset-cpus=2-9 --ulimit nofile=65536:65536 bench-wrk wrk -H "Cookie: $cookie")
   # WARMUP seconds (default 10). A JVM on one CPU is still JIT-compiling after 10 s; use 60.
-  local warm; warm=$("${WRK[@]}" -t8 -c1000 -d${WARMUP:-10}s "http://$ip:8080$endpoint" | grep -E 'Requests/sec' | awk '{print $2}')
+  local warm; warm=$("${WRK[@]}" -t8 -c${CONNS:-1000} -d${WARMUP:-10}s "http://$ip:8080$endpoint" | grep -E 'Requests/sec' | awk '{print $2}')
   sleep 1
   local before; before=$(snap)
-  local res; res=$("${WRK[@]}" -t8 -c1000 -d10s --latency "http://$ip:8080$endpoint")
+  local res; res=$("${WRK[@]}" -t8 -c${CONNS:-1000} -d10s --latency "http://$ip:8080$endpoint")
   local after; after=$(snap)
   local requests; requests=$(echo "$res" | grep -E '^ +[0-9]+ requests in' | awk '{print $1}')
   {

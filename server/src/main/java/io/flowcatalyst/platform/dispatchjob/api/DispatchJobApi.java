@@ -23,6 +23,7 @@ import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Handler;
 import io.flowcatalyst.http.Routes;
 
@@ -84,13 +85,14 @@ public final class DispatchJobApi {
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     /// The literal segments are registered before `{id}` so they win.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         // Registered BEFORE registerAt so this literal segment wins over registerAt's `{id}`.
         Handler listRaw = Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW_RAW));
         routes.get("/api/dispatch-jobs/raw", listRaw); // SDK alias of list-raw (Laravel client)
         Handler byEvent = Auth.scoped(ctx -> byEvent(ctx, s));
         routes.get("/api/dispatch-jobs/by-event/{eventId}", byEvent); // SDK alias of event/{eventId}
-        registerAt(routes, "/api/dispatch-jobs", s);
-        routes.post("/api/dispatch-jobs/{id}/complete", Auth.scoped(ctx -> complete(ctx, s)));
+        registerAt(routes, "/api/dispatch-jobs", s, Group.API_WRITE);
+        write.post("/api/dispatch-jobs/{id}/complete", Auth.scoped(ctx -> complete(ctx, s)));
     }
 
     /// Mounts `list` / `list-raw` / `filter-options` / `event/{eventId}` /
@@ -98,17 +100,25 @@ public final class DispatchJobApi {
     /// under `prefix` (`/api/dispatch-jobs` for the SDK surface,
     /// `/bff/dispatch-jobs` for the SPA — bff spec §8, Go `registerBFF`). The
     /// SDK-only aliases and `/{id}/complete` are not part of the BFF surface
-    /// and stay in [#register].
+    /// and stay in [#register]. `/bff/dispatch-jobs` carries `Group.BFF`
+    /// throughout (the caller wraps `routes`), so this overload never
+    /// re-marks `requeue`/`{id}/cancel` there — only [#register]'s `/api/`
+    /// mount does, via [#registerAt(Routes,String,State,Group)].
     public static void registerAt(Routes routes, String prefix, State s) {
+        registerAt(routes, prefix, s, null);
+    }
+
+    private static void registerAt(Routes routes, String prefix, State s, Group writeGroup) {
+        Routes write = writeGroup != null ? routes.in(writeGroup) : routes;
         routes.get(prefix, Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW)));
         routes.get(prefix + "/list-raw", Auth.scoped(ctx -> list(ctx, s, DISPATCH_JOB_VIEW_RAW)));
         routes.get(prefix + "/filter-options", Auth.scoped(ctx -> filterOptions(ctx, s)));
         routes.get(prefix + "/event/{eventId}", Auth.scoped(ctx -> byEvent(ctx, s)));
-        routes.post(prefix + "/requeue", Auth.scoped(ctx -> requeue(ctx, s)));
+        write.post(prefix + "/requeue", Auth.scoped(ctx -> requeue(ctx, s)));
         routes.get(prefix + "/{id}", Auth.scoped(ctx -> getById(ctx, s, DISPATCH_JOB_VIEW)));
         routes.get(prefix + "/{id}/raw", Auth.scoped(ctx -> getById(ctx, s, DISPATCH_JOB_VIEW_RAW)));
         routes.get(prefix + "/{id}/attempts", Auth.scoped(ctx -> attempts(ctx, s)));
-        routes.post(prefix + "/{id}/cancel", Auth.scoped(ctx -> cancel(ctx, s)));
+        write.post(prefix + "/{id}/cancel", Auth.scoped(ctx -> cancel(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

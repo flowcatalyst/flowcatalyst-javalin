@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -61,14 +62,15 @@ public final class DispatchPoolApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/dispatch-pools", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/dispatch-pools", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/dispatch-pools", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/dispatch-pools/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/dispatch-pools/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/dispatch-pools/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
-        routes.post("/api/dispatch-pools/{id}/suspend", Auth.scoped(ctx -> suspend(ctx, s)));
-        routes.post("/api/dispatch-pools/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
-        routes.delete("/api/dispatch-pools/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/dispatch-pools/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post("/api/dispatch-pools/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
+        write.post("/api/dispatch-pools/{id}/suspend", Auth.scoped(ctx -> suspend(ctx, s)));
+        write.post("/api/dispatch-pools/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
+        write.delete("/api/dispatch-pools/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -102,7 +103,10 @@ public final class LoginApi {
     public static void register(Routes routes, State s) {
         routes.post("/auth/check-domain", ctx -> checkDomain(ctx, s));
         routes.get("/auth/check-domain", ctx -> checkDomainLegacy(ctx, s));
-        routes.post("/auth/login", ctx -> login(ctx, s));
+        // Group.LOGIN (admission.md §11.7 part B follow-up): verifies the password —
+        // PasswordHash.verify on the real path, PasswordHash.equalizeTiming on the
+        // not-found path — the Argon2 cost this group's budget exists to protect.
+        routes.in(Group.LOGIN).post("/auth/login", ctx -> login(ctx, s));
         routes.post("/auth/logout", ctx -> logout(ctx, s));
         routes.get("/auth/me", Auth.scoped(ctx -> me(ctx, s)));
         routes.get("/auth/login-history", Auth.scoped(ctx -> loginHistory(ctx, s)));

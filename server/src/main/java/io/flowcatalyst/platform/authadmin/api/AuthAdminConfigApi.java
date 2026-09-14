@@ -27,6 +27,7 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -84,19 +85,20 @@ public final class AuthAdminConfigApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/anchor-domains", Auth.scoped(ctx -> listAnchorDomains(ctx, s)));
-        routes.post("/api/anchor-domains", Auth.scoped(ctx -> createAnchorDomain(ctx, s)));
-        routes.put("/api/anchor-domains/{id}", Auth.scoped(ctx -> updateAnchorDomain(ctx, s)));
-        routes.delete("/api/anchor-domains/{id}", Auth.scoped(ctx -> deleteAnchorDomain(ctx, s)));
+        write.post("/api/anchor-domains", Auth.scoped(ctx -> createAnchorDomain(ctx, s)));
+        write.put("/api/anchor-domains/{id}", Auth.scoped(ctx -> updateAnchorDomain(ctx, s)));
+        write.delete("/api/anchor-domains/{id}", Auth.scoped(ctx -> deleteAnchorDomain(ctx, s)));
 
         routes.get("/api/auth-configs", Auth.scoped(ctx -> listAuthConfigs(ctx, s)));
-        routes.post("/api/auth-configs", Auth.scoped(ctx -> createAuthConfig(ctx, s)));
-        routes.put("/api/auth-configs/{id}", Auth.scoped(ctx -> updateAuthConfig(ctx, s)));
-        routes.delete("/api/auth-configs/{id}", Auth.scoped(ctx -> deleteAuthConfig(ctx, s)));
+        write.post("/api/auth-configs", Auth.scoped(ctx -> createAuthConfig(ctx, s)));
+        write.put("/api/auth-configs/{id}", Auth.scoped(ctx -> updateAuthConfig(ctx, s)));
+        write.delete("/api/auth-configs/{id}", Auth.scoped(ctx -> deleteAuthConfig(ctx, s)));
 
         routes.get("/api/idp-role-mappings", Auth.scoped(ctx -> listIdpRoleMappings(ctx, s)));
-        routes.post("/api/idp-role-mappings", Auth.scoped(ctx -> createIdpRoleMapping(ctx, s)));
-        routes.delete("/api/idp-role-mappings/{id}", Auth.scoped(ctx -> deleteIdpRoleMapping(ctx, s)));
+        write.post("/api/idp-role-mappings", Auth.scoped(ctx -> createIdpRoleMapping(ctx, s)));
+        write.delete("/api/idp-role-mappings/{id}", Auth.scoped(ctx -> deleteIdpRoleMapping(ctx, s)));
     }
 
     // ── Anchor domains ───────────────────────────────────────────────────────

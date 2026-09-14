@@ -18,6 +18,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -69,14 +70,15 @@ public final class EmailDomainMappingApi {
     /// lockfile's. Literal segments are registered before the `{id}` routes
     /// so they take precedence (spec §3).
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/email-domain-mappings", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/email-domain-mappings", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/email-domain-mappings", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/email-domain-mappings/lookup", Auth.scoped(ctx -> lookup(ctx, s)));
         routes.get("/api/email-domain-mappings/by-domain/{domain}", Auth.scoped(ctx -> getByDomain(ctx, s)));
         routes.get("/api/email-domain-mappings/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/email-domain-mappings/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/email-domain-mappings/{id}/move-provider", Auth.scoped(ctx -> moveProvider(ctx, s)));
-        routes.delete("/api/email-domain-mappings/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/email-domain-mappings/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post("/api/email-domain-mappings/{id}/move-provider", Auth.scoped(ctx -> moveProvider(ctx, s)));
+        write.delete("/api/email-domain-mappings/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

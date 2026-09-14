@@ -24,6 +24,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,20 +77,29 @@ public final class TwoFactorApi {
     }
 
     public static void register(Routes routes, State s) {
+        // Group.LOGIN (admission.md §11.7 part B follow-up): every route below that
+        // actually verifies a second factor — TOTP (Totp.validate, inside both
+        // Mfa#verifyTotp and Mfa#confirmTotpEnrollment: the first code, at enrolment,
+        // still checks it against the pending secret) or an email PIN (Mfa#verifyPin,
+        // inside both Mfa#verifyLoginEmailPin and Mfa#confirmEmailEnrollment) or a
+        // recovery code (Mfa#verifyRecoveryCode). "begin"/status/list/remove routes
+        // never verify a credential and stay at the API_READ default.
+        Routes verify = routes.in(Group.LOGIN);
+
         // ── public: gated by a pending / enrol MfaToken, not a session ──────
-        routes.post("/auth/2fa/verify", ctx -> verify(ctx, s));
+        verify.post("/auth/2fa/verify", ctx -> verify(ctx, s));
         routes.post("/auth/2fa/challenge/email", ctx -> challengeEmail(ctx, s));
         routes.post("/auth/2fa/enroll/totp/begin", ctx -> enrollTotpBegin(ctx, s));
-        routes.post("/auth/2fa/enroll/totp/confirm", ctx -> enrollTotpConfirm(ctx, s));
+        verify.post("/auth/2fa/enroll/totp/confirm", ctx -> enrollTotpConfirm(ctx, s));
         routes.post("/auth/2fa/enroll/email/begin", ctx -> enrollEmailBegin(ctx, s));
-        routes.post("/auth/2fa/enroll/email/confirm", ctx -> enrollEmailConfirm(ctx, s));
+        verify.post("/auth/2fa/enroll/email/confirm", ctx -> enrollEmailConfirm(ctx, s));
 
         // ── self-service: session-gated (Profile screen) ────────────────────
         routes.get("/auth/2fa/status", Auth.scoped(ctx -> status(ctx, s)));
         routes.post("/auth/2fa/methods/totp/begin", Auth.scoped(ctx -> selfTotpBegin(ctx, s)));
-        routes.post("/auth/2fa/methods/totp/confirm", Auth.scoped(ctx -> selfTotpConfirm(ctx, s)));
+        verify.post("/auth/2fa/methods/totp/confirm", Auth.scoped(ctx -> selfTotpConfirm(ctx, s)));
         routes.post("/auth/2fa/methods/email/begin", Auth.scoped(ctx -> selfEmailBegin(ctx, s)));
-        routes.post("/auth/2fa/methods/email/confirm", Auth.scoped(ctx -> selfEmailConfirm(ctx, s)));
+        verify.post("/auth/2fa/methods/email/confirm", Auth.scoped(ctx -> selfEmailConfirm(ctx, s)));
         routes.delete("/auth/2fa/methods/{method}", Auth.scoped(ctx -> removeMethod(ctx, s)));
         routes.post("/auth/2fa/recovery-codes/regenerate", Auth.scoped(ctx -> regenerateRecoveryCodes(ctx, s)));
         routes.get("/auth/2fa/trusted-devices", Auth.scoped(ctx -> listTrustedDevices(ctx, s)));

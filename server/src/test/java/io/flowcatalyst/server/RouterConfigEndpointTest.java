@@ -70,7 +70,7 @@ class RouterConfigEndpointTest {
         // (ServerTest#specAndSpaAreServedFromTheApiListener) — that would
         // mask exactly the absence this test wants to prove on the metrics
         // listener side.
-        running = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Server.Spa.none(),
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(),
                 new PrometheusRegistry()).start();
     }
 

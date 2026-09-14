@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -72,11 +73,12 @@ public final class IdentityProviderApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/identity-providers", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/identity-providers", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/identity-providers", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/identity-providers/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/identity-providers/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/identity-providers/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/identity-providers/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/identity-providers/{id}", Auth.scoped(ctx -> delete(ctx, s)));
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────

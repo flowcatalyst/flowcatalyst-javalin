@@ -15,12 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Pins `docs/spec/http-seam.md` §4 rows 1-9 (row 10, `NoFrameworkLeakTest`,
-/// lands in a later unit) through the Javalin adapter under test —
-/// `TestHttp.routes(...)`, the JDK `HttpClient`, no shortcuts through the
-/// adapter's internals. Javalin/Jetty is the only concrete subclass
-/// (`JavalinSeamContractTest`) since the Vert.x listener cutover was
-/// reverted 2026-09-08 (`docs/vertx-plan.md` closing section).
+/// Pins `docs/spec/http-seam.md` §4 rows 1-9 (row 10 is `NoFrameworkLeakTest`)
+/// through the Vert.x adapter under test — `TestHttp.routes(...)`, the JDK
+/// `HttpClient`, no shortcuts through the adapter's internals.
 abstract class SeamContract {
 
     protected static TestHttp app;
@@ -34,8 +31,8 @@ abstract class SeamContract {
     /// handler and the after filter on `/seam/thread`, for row 8.
     private static final List<Thread> THREADS = new CopyOnWriteArrayList<>();
 
-    static void start(TestHttp.Adapter adapter) {
-        app = TestHttp.routes(adapter, Budgets.derived(), routes -> {
+    static void start() {
+        app = TestHttp.routes(routes -> {
             // The three exception mappers a real bootstrap site would
             // install through `HttpError` — reproduced here as a fixture so
             // this test does not depend on that (out-of-scope, unedited)
@@ -303,7 +300,7 @@ abstract class SeamContract {
         try (var fixture = TestHttp.routes(routes -> {
             routes.get("/fixture/a", ctx -> ctx.result("a"));
             routes.in(Group.LOGIN).post("/fixture/b", ctx -> ctx.result("b"));
-            routes.in(Group.INGEST).put("/fixture/c", ctx -> { });
+            routes.in(Group.DISPATCH).put("/fixture/c", ctx -> { });
             routes.delete("/fixture/d", ctx -> { });
             routes.before(ctx -> { });
             routes.after(ctx -> { });
@@ -313,7 +310,7 @@ abstract class SeamContract {
             assertThat(regs).containsExactlyInAnyOrder(
                     new RouteRegistry.Registration("GET", "/fixture/a", null),
                     new RouteRegistry.Registration("POST", "/fixture/b", Group.LOGIN),
-                    new RouteRegistry.Registration("PUT", "/fixture/c", Group.INGEST),
+                    new RouteRegistry.Registration("PUT", "/fixture/c", Group.DISPATCH),
                     new RouteRegistry.Registration("DELETE", "/fixture/d", null));
         }
     }

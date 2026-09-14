@@ -109,13 +109,18 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
 
     private Connection checkout(Lane lane) throws SQLException {
         Admission admission = Admission.currentOrNull();
-        if (admission != null && admission.held() > 0) {
+        if (admission != null && admission.mode() == Admission.Mode.PINNED && admission.held() > 0) {
             // Re-entrant checkout: a request has one connection. A repository read inside a
             // transaction-scoped operation joins the transaction the outer checkout holds
             // (it sees the transaction's own writes, as it must) instead of taking a second
             // connection — which under a full gate is a deadlock, the case the corpus hit at
             // five sites on 2026-09-06. The handle's close() releases nothing and it may not
             // commit, roll back or change auto-commit: the outer owns the transaction.
+            //
+            // PER_STATEMENT scopes (API_READ, BFF — admission.md §11.7 part B) never take
+            // this branch: nothing is pinned to join, and every checkout — however many are
+            // concurrently outstanding — goes through the ordinary path below and is
+            // returned to the pool independently when its own Connection closes.
             Connection outer = admission.heldConnections().get(0);
             Connection pooled = outer instanceof GatedConnection g ? g.delegate() : outer;
             return new GatedConnection(pooled, () -> { }, false);
@@ -149,20 +154,32 @@ public final class GatedDataSource implements DataSource, AutoCloseable {
         return gated;
     }
 
-    /// `fc_db_gate_waiting{lane}` and `fc_db_gate_held{lane}`.
-    public MultiCollector collector() {
+    /// `fc_db_gate_waiting{pool,lane}` and `fc_db_gate_held{pool,lane}`, `pool`
+    /// naming which of [io.flowcatalyst.platform.shared.database.Pools]'s four
+    /// physical sources this gate is (`api` / `bff` / `dispatch` / `background`)
+    /// so the two group-sized gates on the request path — and the background
+    /// one — are distinguishable in the same registry (`docs/spec/admission.md`
+    /// §11.7).
+    public MultiCollector collector(String poolName) {
+        java.util.Objects.requireNonNull(poolName, "poolName");
         return () -> {
             var w = GaugeSnapshot.builder().name("fc_db_gate_waiting")
-                    .help("Callers parked (untimed) on the pool gate, by lane.");
+                    .help("Callers parked (untimed) on the pool gate, by pool and lane.");
             var h = GaugeSnapshot.builder().name("fc_db_gate_held")
-                    .help("Pool-gate permits currently held, by lane.");
+                    .help("Pool-gate permits currently held, by pool and lane.");
             for (Lane lane : new Lane[] {ordinary, probes}) {
-                var labels = Labels.of("lane", lane.name);
+                var labels = Labels.of("pool", poolName, "lane", lane.name);
                 w.dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().labels(labels).value(lane.waiting.get()).build());
                 h.dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().labels(labels).value(lane.held.get()).build());
             }
             return MetricSnapshots.builder().metricSnapshot(w.build()).metricSnapshot(h.build()).build();
         };
+    }
+
+    /// Back-compat for a single-pool caller (fcdev one-off commands, tests):
+    /// names the series `"default"`.
+    public MultiCollector collector() {
+        return collector("default");
     }
 
     @Override

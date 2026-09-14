@@ -33,6 +33,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -85,20 +86,21 @@ public final class ScheduledJobApi {
     /// lockfile's. The literal segments (`by-code`, `instances`) are
     /// registered before `{id}` so they win.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/scheduled-jobs", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/scheduled-jobs", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/scheduled-jobs", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/scheduled-jobs/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
         routes.get("/api/scheduled-jobs/instances/{instanceId}", Auth.scoped(ctx -> getInstance(ctx, s)));
         routes.get("/api/scheduled-jobs/instances/{instanceId}/logs", Auth.scoped(ctx -> listInstanceLogs(ctx, s)));
         routes.post("/api/scheduled-jobs/instances/{instanceId}/log", Auth.scoped(ctx -> writeInstanceLog(ctx, s)));
         routes.post("/api/scheduled-jobs/instances/{instanceId}/complete", Auth.scoped(ctx -> completeInstance(ctx, s)));
         routes.get("/api/scheduled-jobs/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/scheduled-jobs/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/scheduled-jobs/{id}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.post("/api/scheduled-jobs/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
-        routes.post("/api/scheduled-jobs/{id}/resume", Auth.scoped(ctx -> resume(ctx, s)));
-        routes.post("/api/scheduled-jobs/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
-        routes.post("/api/scheduled-jobs/{id}/fire", Auth.scoped(ctx -> fireNow(ctx, s)));
+        write.put("/api/scheduled-jobs/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/scheduled-jobs/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.post("/api/scheduled-jobs/{id}/pause", Auth.scoped(ctx -> pause(ctx, s)));
+        write.post("/api/scheduled-jobs/{id}/resume", Auth.scoped(ctx -> resume(ctx, s)));
+        write.post("/api/scheduled-jobs/{id}/archive", Auth.scoped(ctx -> archive(ctx, s)));
+        write.post("/api/scheduled-jobs/{id}/fire", Auth.scoped(ctx -> fireNow(ctx, s)));
         routes.get("/api/scheduled-jobs/{id}/instances", Auth.scoped(ctx -> listInstances(ctx, s)));
     }
 

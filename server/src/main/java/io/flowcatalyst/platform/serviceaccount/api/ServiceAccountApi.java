@@ -37,6 +37,7 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -114,25 +115,26 @@ public final class ServiceAccountApi {
     /// Mounts the endpoints; paths, methods and status codes are the
     /// lockfile's. The two alias pairs (spec §3) share one handler each.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/service-accounts", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/service-accounts", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/service-accounts", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/service-accounts/code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
         routes.get("/api/service-accounts/{id}", Auth.scoped(ctx -> getById(ctx, s)));
-        routes.put("/api/service-accounts/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.post("/api/service-accounts/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
-        routes.delete("/api/service-accounts/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/service-accounts/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.post("/api/service-accounts/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s)));
+        write.delete("/api/service-accounts/{id}", Auth.scoped(ctx -> delete(ctx, s)));
         routes.get("/api/service-accounts/{id}/roles", Auth.scoped(ctx -> listRoles(ctx, s)));
-        routes.put("/api/service-accounts/{id}/roles", Auth.scoped(ctx -> assignRoles(ctx, s)));
+        write.put("/api/service-accounts/{id}/roles", Auth.scoped(ctx -> assignRoles(ctx, s)));
 
         Handler regenerateAuthToken = Auth.scoped(ctx -> regenerateAuthToken(ctx, s));
-        routes.post("/api/service-accounts/{id}/regenerate-token", regenerateAuthToken);
-        routes.post("/api/service-accounts/{id}/regenerate-auth-token", regenerateAuthToken);
+        write.post("/api/service-accounts/{id}/regenerate-token", regenerateAuthToken);
+        write.post("/api/service-accounts/{id}/regenerate-auth-token", regenerateAuthToken);
 
         Handler regenerateSigningSecret = Auth.scoped(ctx -> regenerateSigningSecret(ctx, s));
-        routes.post("/api/service-accounts/{id}/regenerate-secret", regenerateSigningSecret);
-        routes.post("/api/service-accounts/{id}/regenerate-signing-secret", regenerateSigningSecret);
+        write.post("/api/service-accounts/{id}/regenerate-secret", regenerateSigningSecret);
+        write.post("/api/service-accounts/{id}/regenerate-signing-secret", regenerateSigningSecret);
 
-        routes.post("/api/service-accounts/{id}/token", Auth.scoped(ctx -> mintToken(ctx, s)));
+        write.post("/api/service-accounts/{id}/token", Auth.scoped(ctx -> mintToken(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

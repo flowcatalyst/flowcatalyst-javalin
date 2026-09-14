@@ -19,6 +19,7 @@ import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -68,13 +69,14 @@ public final class PlatformConfigApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/platform-config/{app}", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> get(ctx, s)));
-        routes.put("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> set(ctx, s)));
-        routes.delete("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> set(ctx, s)));
+        write.delete("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> delete(ctx, s)));
         routes.get("/api/platform-config/{app}/access", Auth.scoped(ctx -> listAccess(ctx, s)));
-        routes.post("/api/platform-config/{app}/access", Auth.scoped(ctx -> grant(ctx, s)));
-        routes.delete("/api/platform-config/access/{id}", Auth.scoped(ctx -> revoke(ctx, s)));
+        write.post("/api/platform-config/{app}/access", Auth.scoped(ctx -> grant(ctx, s)));
+        write.delete("/api/platform-config/access/{id}", Auth.scoped(ctx -> revoke(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

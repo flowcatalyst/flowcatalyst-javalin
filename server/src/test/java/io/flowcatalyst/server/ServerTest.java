@@ -31,7 +31,7 @@ class ServerTest {
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
-        running = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Frontend.embeddedOrNone(), new PrometheusRegistry()).start();
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Frontend.embeddedOrNone(), new PrometheusRegistry()).start();
     }
 
     @AfterAll
@@ -117,7 +117,7 @@ class ServerTest {
                 // FC_DISPATCH_QUEUE_PREFIX deliberately unset: DispatchQueueSettings.resolve
                 // refuses to start rather than compose a queue literally named "FC-{env}-...".
         ));
-        var server = new Server(env, new Server.Mode.Worker(TestPg.dataSource()), Server.Spa.none(), new PrometheusRegistry());
+        var server = new Server(env, new Server.Mode.Worker(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(), new PrometheusRegistry());
 
         assertThatThrownBy(server::start)
                 .isInstanceOf(IllegalStateException.class)
@@ -131,7 +131,7 @@ class ServerTest {
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
-        var server = new Server(env, new Server.Mode.Platform(TestPg.dataSource()), Frontend.embeddedOrNone(), new PrometheusRegistry());
+        var server = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Frontend.embeddedOrNone(), new PrometheusRegistry());
         var oneOff = server.start();
         try {
             assertThat(oneOff.dispatchJobReaperClosed()).isFalse();

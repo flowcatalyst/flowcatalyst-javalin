@@ -26,6 +26,53 @@ transports exist in Go (stdio for `fcdev mcp`, streamable HTTP in
 `fc-server`); the server unit ships streamable HTTP, `fcdev mcp` adds stdio
 later (`backlog.md` fcdev stubs).
 
+**Transport (`docs/vertx-migration-brief.md` phase 3, 2026-09-1x):** streamable
+HTTP is served by `io.flowcatalyst.mcp.VertxStreamableServerTransportProvider`,
+this repo's own `io.modelcontextprotocol.spec.McpStreamableServerTransportProvider`
+implementation over vertx-web — not the MCP SDK's servlet-based
+`HttpServletStreamableServerTransportProvider`, which needed Javalin/Jetty on
+the classpath for MCP alone (the reason the first Vert.x cutover was
+reverted, `docs/vertx-plan.md` §9). Javalin and Jetty are gone from every
+`pom.xml`. `McpServer` owns its own, single-event-loop `Vertx` instance and
+`HttpServer` on `FC_MCP_BIND:FC_MCP_PORT` — its own listener, as above, never
+the API/metrics listener's. The provider is modelled line by line on the
+SDK's servlet transport (its mcp-core 2.0.1 sources): same `POST`
+(JSON-RPC in; a single JSON response for `initialize`, an SSE response
+stream for every other request), `GET` (the standalone SSE listening
+stream, `Mcp-Session-Id` required, `Last-Event-ID` resume), `DELETE`
+(session end), the same `Mcp-Session-Id` response header and error
+statuses/bodies, and the SDK's own `ServerTransportSecurityValidator`
+Origin/Host checks (reused directly — that type has no servlet dependency).
+One difference: the provider's own default configures
+`DefaultServerTransportSecurityValidator` with empty allow-lists, where the
+servlet-based `McpServer` left it at `NOOP` (no check at all) — but `McpServer`
+never runs the provider on that bare default. It builds the validator with
+`deriveSecurityValidator`, **derived, never a separate knob**: the allowed
+Origins are `http://`/`https://` for `localhost`, `127.0.0.1`, `[::1]` and
+whatever `FC_MCP_BIND` resolved to, each on the listener's own actual bound
+port — every address a same-machine client, including a browser-based MCP
+client sending a real `Origin` header, could legitimately use to reach this
+exact listener — and the same host set becomes the allowed `Host` values too.
+A request with no `Origin` header (every non-browser MCP client) is
+unaffected either way; one carrying an `Origin` that isn't in that derived
+set is refused (`403`), closing a DNS-rebinding gap the old, servlet-based
+transport left wide open (`NOOP`) without introducing a configuration
+surface. h2c is off on this listener (`HttpServerOptions#setHttp2ClearTextEnabled(false)`,
+unlike the API listener) for a related reason: HTTP/2 carries no literal
+`Host` header (only the `:authority` pseudo-header, which Vert.x does not
+synthesize a `Host` entry from), so an h2c-upgraded connection would look
+like every request is missing its `Host` header and get refused `421` by
+the derived validator's `Host` check — MCP was always documented as
+HTTP/1.1-only (§1), this just makes the listener actually enforce it. Every
+request's JSON-RPC handling (which may call the platform over HTTP through
+`PlatformClient`) runs on a virtual thread, never the Vert.x event loop;
+every response write is marshalled back onto the request's own `Context`
+with `runOnContext`, the pattern `io.flowcatalyst.http.vertx.VertxListener`
+uses for the API listener. The platform's Jackson 3 mapper
+(`platform/shared/json/Json#MAPPER`, wrapped in `mcp-json-jackson3`'s
+`JacksonMcpJsonMapper`) is what the SDK serialises with — never Vert.x's own
+Jackson-2-based `JsonObject` on this wire path.
+
 Platform URL: `FLOWCATALYST_URL` → `FC_MCP_PLATFORM_URL` →
 `http://localhost:<FC_API_PORT>`. Credentials: `FLOWCATALYST_CLIENT_ID` /
 `FLOWCATALYST_CLIENT_SECRET`; when **both** are unset, the credentials file
@@ -92,4 +139,15 @@ and query, `get_schema`'s fallback and its "none" error, the capabilities
 bundle with a 404 on roles tolerated, pretty-printed JSON, a platform 500
 becoming a tool error; `McpServerTest`: `/health` 200, `/mcp` initialises
 a session over streamable HTTP with the SDK's own client and lists the 12
-tools and 9 resources by name, the listener binds to `FC_MCP_BIND` only.
+tools and 9 resources by name, the listener binds to `FC_MCP_BIND` only, an
+`Origin` matching the listener's own address (`http://localhost:<port>`) is
+accepted, and an unrelated `Origin` is refused (403);
+`VertxStreamableServerTransportProviderTest` drives the wire protocol
+directly with a raw `HttpClient` (no SDK client) against a provider wired
+with the same `deriveSecurityValidator`: the initialize handshake
+returns a `Mcp-Session-Id` header, `tools/list` over the session answers a
+JSON-RPC response inside the SSE stream, a `GET` listening stream receives
+a `notifyClients` broadcast as an SSE event, `DELETE` ends the session and a
+subsequent `POST` with that id is refused (404), an `Origin` matching the
+listener's own address is accepted (200), and an unrelated `Origin` is
+refused (403).

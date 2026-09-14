@@ -28,12 +28,7 @@
     <!-- tools.jackson (3.x); jackson-annotations alone stays on its original
          com.fasterxml.jackson.core coordinate, which Jackson 3 never renamed. -->
     <jackson.version>3.1.5</jackson.version>
-    <javalin.version>7.2.3</javalin.version>
     <vertx.version>5.1.7</vertx.version>
-    <!-- The exact Jetty version Javalin 7.2.3 brings (javalin-parent-7.2.3.pom
-         line ~105); pinned here too so the HTTP/2 artifacts below cannot
-         drift from what Javalin's own jetty-server is. -->
-    <jetty.version>12.1.12</jetty.version>
     <jooq.version>3.21.7</jooq.version>
     <hikaricp.version>7.1.0</hikaricp.version>
     <flyway.version>13.3.0</flyway.version>
@@ -50,17 +45,12 @@
     <maven.compiler.failOnWarning>true</maven.compiler.failOnWarning>
     <awssdk.version>2.54.2</awssdk.version>
     <jnats.version>2.26.2</jnats.version>
-    <caffeine.version>3.2.4</caffeine.version>
     <zonky.version>2.2.2</zonky.version>
     <zonky-binaries.version>18.4.0</zonky-binaries.version>
     <picocli.version>4.7.7</picocli.version>
     <mcp.version>2.0.1</mcp.version>
-    <json-schema-validator.version>3.0.7</json-schema-validator.version>
-    <mongodb.version>5.10.0</mongodb.version>
     <mysql.version>26.7.0</mysql.version>
-    <angus-mail.version>2.0.5</angus-mail.version>
     <zxing.version>3.5.4</zxing.version>
-    <hdrhistogram.version>2.2.2</hdrhistogram.version>
     <junit.version>5.13.4</junit.version>
     <assertj.version>3.27.7</assertj.version>
     <h2.version>2.4.240</h2.version>
@@ -73,18 +63,6 @@
         <groupId>tools.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
         <version>${jackson.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-      <!-- HTTP/2 (h2c/h2) connectors on the server listeners
-           (docs/spec/http-transport.md): pins every org.eclipse.jetty* artifact
-           to the exact version Javalin 7.2.3 already brings via jetty-server,
-           so the http2/alpn add-ons below never drift from it. HTTP/3 (QUIC)
-           was dropped, owner ruling 2026-09-08. -->
-      <dependency>
-        <groupId>org.eclipse.jetty</groupId>
-        <artifactId>jetty-bom</artifactId>
-        <version>${jetty.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -133,15 +111,17 @@
         <version>${project.version}</version>
       </dependency>
 
-      <!-- HTTP -->
-      <dependency>
-        <groupId>io.javalin</groupId>
-        <artifactId>javalin</artifactId>
-        <version>${javalin.version}</version>
-      </dependency>
+      <!-- HTTP: Vert.x is the API/metrics listener AND the MCP listener
+           (docs/spec/vertx-listener.md; docs/spec/mcp.md) — Javalin/Jetty
+           are gone from the tree (docs/vertx-migration-brief.md Phase 3). -->
       <dependency>
         <groupId>io.vertx</groupId>
         <artifactId>vertx-core</artifactId>
+        <version>${vertx.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-web</artifactId>
         <version>${vertx.version}</version>
       </dependency>
       <dependency>
@@ -197,11 +177,6 @@
         <groupId>io.zonky.test</groupId>
         <artifactId>embedded-postgres</artifactId>
         <version>${zonky.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.mongodb</groupId>
-        <artifactId>mongodb-driver-sync</artifactId>
-        <version>${mongodb.version}</version>
       </dependency>
       <dependency>
         <groupId>com.mysql</groupId>
@@ -260,11 +235,6 @@
         <version>${prometheus.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.hdrhistogram</groupId>
-        <artifactId>HdrHistogram</artifactId>
-        <version>${hdrhistogram.version}</version>
-      </dependency>
-      <dependency>
         <groupId>redis.clients</groupId>
         <artifactId>jedis</artifactId>
         <version>${jedis.version}</version>
@@ -275,16 +245,6 @@
         <version>${jnats.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.github.ben-manes.caffeine</groupId>
-        <artifactId>caffeine</artifactId>
-        <version>${caffeine.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.angus</groupId>
-        <artifactId>angus-mail</artifactId>
-        <version>${angus-mail.version}</version>
-      </dependency>
-      <dependency>
         <groupId>info.picocli</groupId>
         <artifactId>picocli</artifactId>
         <version>${picocli.version}</version>
@@ -293,11 +253,6 @@
         <groupId>io.modelcontextprotocol.sdk</groupId>
         <artifactId>mcp</artifactId>
         <version>${mcp.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.networknt</groupId>
-        <artifactId>json-schema-validator</artifactId>
-        <version>${json-schema-validator.version}</version>
       </dependency>
 
       <!-- Test -->

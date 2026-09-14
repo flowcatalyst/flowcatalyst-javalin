@@ -153,11 +153,16 @@ EOF
 - **Pods:** 1 CPU for small, low-throughput deployments; 2 CPUs for serious work,
   then scale horizontally. With the pool gate the Java stack is at Go's throughput at
   every size measured; 2 CPUs buys the tail, 4 buys nothing further.
-- **The pool is 32 connections per pod, fixed**, not derived from cores, and it is the
-  design's only number. It is Postgres's budget: `pods × 32 ≤ max_connections −
-  superuser_reserved_connections` (Postgres defaults 100 and 3). Past about three pods,
-  raise `max_connections` (each idle backend costs a few MB) or front Postgres with
-  PgBouncer in transaction mode (then `prepareThreshold=0` for pgjdbc).
+- **The pool is four physical pools per pod now** (`docs/spec/admission.md` §11.7,
+  "groups and pools"): `API` + `BFF` + `DISPATCH` share one budget `B` (32 by
+  default, half/quarter/quarter), and `BACKGROUND` is a fixed 4 outside `B`. The
+  Postgres-connection guidance is therefore `pods × (B + 4) ≤ max_connections −
+  superuser_reserved_connections` (Postgres defaults 100 and 3) — `B` is still not
+  derived from cores, and it is still the one number a deployment sets
+  (`FC_DB_POOL_SIZE`; `FC_DB_POOL_SIZE_API` / `_BFF` / `_DISPATCH` / `_BACKGROUND`
+  override one pool at a time). Past about three pods, raise `max_connections`
+  (each idle backend costs a few MB) or front Postgres with PgBouncer in
+  transaction mode (then `prepareThreshold=0` for pgjdbc).
 - **`FC_HTTP`**: gone. There was briefly a `javalin`/`vertx` flag during the Vert.x
   listener cutover (2026-09-08); the owner reverted the cutover the same day
   (`docs/vertx-plan.md` closing section) and Javalin/Jetty is again the only

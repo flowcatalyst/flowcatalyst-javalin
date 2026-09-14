@@ -13,14 +13,14 @@ import io.flowcatalyst.platform.mail.MailService;
 import io.flowcatalyst.platform.purger.Purger;
 import io.flowcatalyst.http.RouteRegistry;
 import io.flowcatalyst.http.Routes;
+import io.flowcatalyst.http.vertx.VertxListener;
 import java.util.function.Consumer;
-import io.flowcatalyst.platform.shared.database.GatedDataSource;
+import io.flowcatalyst.platform.shared.database.Pools;
 import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.login.AuthAlarms;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
-import io.flowcatalyst.http.javalin.JavalinJsonMapper;
 import io.flowcatalyst.mcp.McpConfig;
 import io.flowcatalyst.mcp.McpServer;
 import io.flowcatalyst.mcp.PlatformClient;
@@ -33,7 +33,6 @@ import io.flowcatalyst.router.queue.postgres.PostgresQueue;
 import io.flowcatalyst.router.standby.LeaderElection;
 import io.flowcatalyst.router.standby.RedisLockStore;
 import io.flowcatalyst.stream.StreamProcessor;
-import io.javalin.Javalin;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,19 +87,24 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// What the instance runs, and therefore whether it owns a database pool.
     public sealed interface Mode permits Mode.Platform, Mode.Worker, Mode.RouterOnly {
 
-        /// The platform API is served from `pool`; any enabled DB-backed
-        /// background subsystem shares it.
-        record Platform(DataSource pool) implements Mode {
+        /// The platform API is served from `pools.api()`/`pools.bff()`/
+        /// `pools.dispatch()` (by route group, `docs/spec/admission.md`
+        /// §11.7); every enabled DB-backed background subsystem shares
+        /// `pools.background()`.
+        record Platform(Pools pools) implements Mode {
             public Platform {
-                Objects.requireNonNull(pool, "pool");
+                Objects.requireNonNull(pools, "pools");
             }
         }
 
         /// DB-backed background subsystems (scheduler, stream, outbox …)
-        /// without the platform API — the worker tier.
-        record Worker(DataSource pool) implements Mode {
+        /// without the platform API — the worker tier. Only `pools.background()`
+        /// is ever used (no request path exists in this mode), but the whole
+        /// [Pools] travels together with [Platform] so [Main]/`StartCommand`
+        /// open one set of four pools per process, not two.
+        record Worker(Pools pools) implements Mode {
             public Worker {
-                Objects.requireNonNull(pool, "pool");
+                Objects.requireNonNull(pools, "pools");
             }
         }
 
@@ -157,7 +161,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private final DispatchJobReaper dispatchJobReaper;
         private final MailSender mailSender;
         private final OutboxProcessor outboxProcessor;
-        private final Javalin outboxAdminApi;
+        private final OutboxAdminApi.Running outboxAdminApi;
         private final AutoCloseable outboxLeaderResource;
         private final StreamProcessor streamProcessor;
         private final AutoCloseable streamLeaderResource;
@@ -170,7 +174,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         private Running(ApiListener api, Metrics.Running metrics, Router router, DispatchJobReaper dispatchJobReaper,
                          MailSender mailSender, DispatchScheduler scheduler, AutoCloseable schedulerLeaderResource,
                          AutoCloseable schedulerPublisherResource,
-                         OutboxProcessor outboxProcessor, Javalin outboxAdminApi, AutoCloseable outboxLeaderResource,
+                         OutboxProcessor outboxProcessor, OutboxAdminApi.Running outboxAdminApi, AutoCloseable outboxLeaderResource,
                          StreamProcessor streamProcessor, AutoCloseable streamLeaderResource,
                          ScheduledJobScheduler scheduledJobScheduler, AutoCloseable scheduledJobLeaderResource,
                          Purger purger, McpServer.Running mcp) {
@@ -327,9 +331,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     public Running start() {
+        // Every background subsystem below (scheduler, outbox, stream,
+        // scheduled-job scheduler, purger, mail sender — and the router's own
+        // housekeeping, `Router.build`'s dataSource) runs on `pools.background()`,
+        // never a request-path pool (admission.md §11.7).
         DataSource dbPool = switch (mode) {
-            case Mode.Platform(var pool) -> pool;
-            case Mode.Worker(var pool) -> pool;
+            case Mode.Platform(var pools) -> pools.background();
+            case Mode.Worker(var pools) -> pools.background();
             // RouterOnly's pool is null in the ordinary case (R4 removed the
             // fixed single-queue branch that used to need one here) — either
             // way this is exactly the pool the router (and only the router)
@@ -409,7 +417,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
 
             OutboxProcessor outboxProcessor = null;
-            Javalin outboxAdminApi = null;
+            OutboxAdminApi.Running outboxAdminApi = null;
             AutoCloseable outboxLeaderResource = null;
             if (env.outboxEnabled()) {
                 if (dbPool == null) {
@@ -484,16 +492,18 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             // to the OutboxMailService; this is the other half, the background sender that
             // delivers through the SMTP-or-logging transport. Platform mode only.
             MailSender mailSender = null;
-            if (mode instanceof Mode.Platform(var pool)) {
-                mailSender = MailSender.start(pool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
+            if (mode instanceof Mode.Platform) {
+                // pools.background() via `dbPool` (admission.md §11.7's BACKGROUND list
+                // names the mail sender explicitly), not the API pool.
+                mailSender = MailSender.start(dbPool, MailService.fromEnv(env.reader()), Clock.systemUTC(),
                         MailSender.DEFAULT_INTERVAL);
                 registry.register(mailSender.collector());
             }
             registry.register(AuthAlarms.collector());
             if (router != null) registry.register(router.mediationHttpVersionCollector());
             switch (mode) {
-                case Mode.Platform(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
-                case Mode.Worker(var pool) when pool instanceof GatedDataSource g -> registry.register(g.collector());
+                case Mode.Platform(var pools) -> pools.registerCollectors(registry);
+                case Mode.Worker(var pools) -> pools.registerCollectors(registry);
                 default -> { }
             }
 
@@ -676,15 +686,12 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     }
 
     /// The dispatch-job reaper [Platform#register] starts is a background
-    /// resource, not a route — it has to escape the `Javalin.create` lambda
-    /// below by some path other than the `Javalin` it returns, hence this
-    /// pair rather than a bare `Javalin`. `registry` is the seam
-    /// [RouteRegistry] [io.flowcatalyst.http.javalin.JavalinAdapter#install]
+    /// resource, not a route — it has to escape the `configure` lambda below
+    /// by some path other than the [RouteRegistry] it returns, hence this
+    /// pair. `registry` is the seam [RouteRegistry] [VertxListener.Prepared#registry]
     /// hands back, so [io.flowcatalyst.server.LockfileCoverageTest] can
-    /// enumerate registrations without walking Javalin internals.
-    /// The bound API listener — Javalin/Jetty, the only implementation
-    /// (`docs/spec/http-seam.md`; the Vert.x listener cutover was reverted
-    /// 2026-09-08, `docs/vertx-plan.md` closing section).
+    /// enumerate registrations without walking Vert.x internals.
+    /// The bound API listener (`docs/spec/vertx-listener.md`).
     interface ApiListener {
         int port();
 
@@ -705,7 +712,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             routes.get("/health", health(mode)::handle);
 
             switch (mode) {
-                case Mode.Platform(var pool) -> reaperHolder[0] = new Platform(env, pool, loadSigningKeys()).register(routes);
+                case Mode.Platform(var pools) -> reaperHolder[0] = new Platform(env, pools, loadSigningKeys()).register(routes);
                 case Mode.Worker _, Mode.RouterOnly _ -> {
                     // no platform API on this instance
                 }
@@ -740,32 +747,35 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
             }
         };
-        RouteRegistry[] registryHolder = new RouteRegistry[1];
-        Javalin api = Javalin.create(cfg -> {
-            cfg.startup.showJavalinBanner = false;
-            cfg.concurrency.useVirtualThreads = true;
-            cfg.jsonMapper(new JavalinJsonMapper());
-            cfg.jetty.modifyServer(server -> server.setStopTimeout(SHUTDOWN_GRACE.toMillis()));
-            io.flowcatalyst.server.transport.Listeners.install(cfg.jetty, env);
-            var routes = io.flowcatalyst.http.javalin.JavalinAdapter.install(cfg);
-            registryHolder[0] = routes;
-            configure.accept(routes);
-        });
+        // Per-group request-path workers, derived from the four physical pools
+        // (admission.md §11.7 "Workers"). RouterOnly has no [Pools] and every route it
+        // registers is NO_DB (the router's own API/dashboard, health), so it needs no
+        // worker pool for any real group at all.
+        var workers = switch (mode) {
+            case Mode.Platform(var pools) -> io.flowcatalyst.http.RequestWorkers.derived(pools);
+            case Mode.Worker(var pools) -> io.flowcatalyst.http.RequestWorkers.derived(pools);
+            case Mode.RouterOnly _ -> io.flowcatalyst.http.RequestWorkers.of(java.util.Map.of());
+        };
+        registry.register(workers.collector());
+        var options = new VertxListener.Options("0.0.0.0", env.apiPort(), true,
+                java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(130), SHUTDOWN_GRACE, workers,
+                io.flowcatalyst.server.transport.Listeners.resolve(env));
+        var prepared = VertxListener.prepare(options, configure);
         ApiStarter starter = port -> {
-            api.start(port);
+            var listener = prepared.listen();
             return new ApiListener() {
                 @Override
                 public int port() {
-                    return api.port();
+                    return listener.port();
                 }
 
                 @Override
                 public void stop() {
-                    api.stop();
+                    listener.close();
                 }
             };
         };
-        return new ApiAndReaper(starter, registryHolder[0], reaperHolder[0]);
+        return new ApiAndReaper(starter, prepared.registry(), reaperHolder[0]);
     }
 
     private SigningKeys loadSigningKeys() {
@@ -780,10 +790,10 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     /// login-attempt partitions the backoff store writes into are missing.
     private static Health health(Mode mode) {
         return switch (mode) {
-            case Mode.Platform(var pool) -> {
-                // Probes take from the gate's reserved lane so readiness stays truthful
-                // when the ordinary permits are all held (admission.md §1).
-                var attempts = new LoginAttemptRepository(pool instanceof GatedDataSource g ? g.forProbes() : pool);
+            case Mode.Platform(var pools) -> {
+                // Probes take from the API pool's reserved lane so readiness stays
+                // truthful when its ordinary permits are all held (admission.md §1, §11.3).
+                var attempts = new LoginAttemptRepository(pools.api().forProbes());
                 yield new Health(List.of(new Health.Check("loginAttemptPartitions", () -> {
                     var missing = attempts.missingQuarterlyPartitions(Instant.now());
                     return missing.isEmpty() ? "" : "missing partitions: " + String.join(", ", missing);

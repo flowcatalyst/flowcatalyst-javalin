@@ -11,19 +11,9 @@ import io.flowcatalyst.router.pool.JdkTransport;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
-import org.eclipse.jetty.alpn.server.ALPNServerConnectionFactory;
-import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
-import org.eclipse.jetty.io.Content;
-import org.eclipse.jetty.server.Handler;
-import org.eclipse.jetty.server.HttpConfiguration;
-import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SslConnectionFactory;
-import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.ssl.SslContextFactory;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.net.PfxOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,6 +30,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,12 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// target that cannot negotiate h2, and records the negotiated version
 /// (`fc_router_mediation_http_version_total`).
 ///
-/// **Why the end-to-end cases use TLS+ALPN, not cleartext h2c** (both
-/// fixtures come from `server/transport`'s own connector wiring —
-/// [Listeners.tls] and [Listeners.h2c] respectively): every real mediation
-/// call is a POST carrying a body (§3's `buildRequest`). Verified
-/// empirically while writing this suite — a bare cleartext
-/// `HTTP2CServerConnectionFactory` listener (mirroring [Listeners.h2c])
+/// **Why the end-to-end cases use TLS+ALPN, not cleartext h2c**: every real
+/// mediation call is a POST carrying a body (§3's `buildRequest`). Verified
+/// empirically while writing this suite — a bare cleartext h2c listener
 /// never upgrades a `java.net.http.HttpClient` request to h2 when that
 /// request carries a body, even on a second request over the same reused
 /// connection; the client silently keeps the connection on HTTP/1.1
@@ -61,11 +49,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// cleartext h2c fixture unable to distinguish "pinned 1.1" from "defaulted
 /// to prefer 2 but silently never got there" for this mediator's request
 /// shape — a test built on it would pass even with `.version(...)` deleted.
-/// TLS+ALPN (mirroring [Listeners.tls], the same pattern `TlsAlpnTest`
-/// uses) negotiates the version during the TLS handshake, before any body
-/// is sent, so it reaches HTTP/2 on the very first bodied POST — confirmed
-/// the same way, empirically — which is what makes it able to actually pin
-/// the claim.
+/// TLS+ALPN (the same pattern `TlsAlpnTest` uses against the real server)
+/// negotiates the version during the TLS handshake, before any body is
+/// sent, so it reaches HTTP/2 on the very first bodied POST — confirmed the
+/// same way, empirically — which is what makes it able to actually pin the
+/// claim. The fixture itself is a bare Vert.x `HttpServer` (`setSsl(true)`,
+/// `setUseAlpn(true)`), a test-only "arbitrary HTTP/2-over-TLS target" —
+/// this class is on `NoFrameworkLeakTest`'s Vert.x allow-list for exactly
+/// that reason, not because it is part of the seam.
 ///
 /// [#defaultClientPinsTheRequestedVersion] additionally pins the exact
 /// `.version(devMode ? HTTP_1_1 : HTTP_2)` builder call directly (no
@@ -83,13 +74,13 @@ class HttpMediatorVersionTest {
             Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
     private static final String KEYSTORE_PASSWORD = "changeit";
 
-    private org.eclipse.jetty.server.Server jettyServer;
+    private Vertx vertx;
     private HttpServer legacyServer;
 
     @AfterEach
     void stop() throws Exception {
-        if (jettyServer != null) {
-            jettyServer.stop();
+        if (vertx != null) {
+            vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
         }
         if (legacyServer != null) {
             legacyServer.stop(0);
@@ -217,39 +208,24 @@ class HttpMediatorVersionTest {
                 .build();
     }
 
-    /// The same connector shape `Listeners.tls()` installs (TLS 1.2/1.3
-    /// with ALPN -> h2, http/1.1), built from a keystore generated the same
-    /// way `TlsAlpnTest` does (`keytool` off `java.home`, no `openssl`
-    /// dependency in tests).
+    /// The same shape the real TLS listener serves (TLS 1.2/1.3 with ALPN ->
+    /// h2, http/1.1), built from a keystore generated the same way
+    /// `TlsAlpnTest` does (`keytool` off `java.home`, no `openssl`
+    /// dependency in tests) — a bare Vert.x `HttpServer`, not the seam, as
+    /// this class's doc explains.
     private int startTlsAlpnServer(Path dir) throws Exception {
         Path keystore = dir.resolve("fc.p12");
         generateKeystore(keystore);
 
-        var scf = new SslContextFactory.Server();
-        scf.setKeyStorePath(keystore.toString());
-        scf.setKeyStorePassword(KEYSTORE_PASSWORD);
-
-        jettyServer = new org.eclipse.jetty.server.Server();
-        var httpConfig = new HttpConfiguration();
-        httpConfig.addCustomizer(new SecureRequestCustomizer());
-        var connector = new ServerConnector(jettyServer,
-                new SslConnectionFactory(scf, "alpn"),
-                new ALPNServerConnectionFactory("h2", "http/1.1"),
-                new HTTP2ServerConnectionFactory(httpConfig),
-                new HttpConnectionFactory(httpConfig));
-        connector.setPort(0);
-        jettyServer.addConnector(connector);
-        jettyServer.setHandler(new Handler.Abstract() {
-            @Override
-            public boolean handle(Request request, Response response, Callback callback) throws Exception {
-                Content.Source.consumeAll(request);
-                response.setStatus(200);
-                callback.succeeded();
-                return true;
-            }
-        });
-        jettyServer.start();
-        return connector.getLocalPort();
+        vertx = Vertx.vertx();
+        var options = new HttpServerOptions()
+                .setSsl(true)
+                .setUseAlpn(true)
+                .setKeyCertOptions(new PfxOptions().setPath(keystore.toString()).setPassword(KEYSTORE_PASSWORD));
+        var server = vertx.createHttpServer(options).requestHandler(request ->
+                request.body().onComplete(body -> request.response().setStatusCode(200).end()));
+        server.listen(0).toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
+        return server.actualPort();
     }
 
     private static void generateKeystore(Path keystore) throws Exception {

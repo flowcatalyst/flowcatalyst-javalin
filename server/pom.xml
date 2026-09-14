@@ -22,17 +22,18 @@
       <artifactId>flowcatalyst-usecase</artifactId>
     </dependency>
 
-    <!-- HTTP -->
-    <dependency>
-      <groupId>io.javalin</groupId>
-      <artifactId>javalin</artifactId>
-    </dependency>
-    <!-- The router's outbound h2c mediation client only (VertxTransport/VertxMediationClient,
-         docs/spec/router-h2.md §5): core, never web — Vert.x is no longer a listener
-         (the cutover was reverted 2026-09-08, docs/vertx-plan.md closing section). -->
+    <!-- HTTP: Vert.x is the API/metrics listener (docs/spec/vertx-listener.md) —
+         core + web, ever; HTTP/2 (h2c on the plain API listener, h2 over TLS with
+         ALPN via Vert.x's own ALPN support) needs nothing beyond these two.
+         HTTP/3 was Jetty/quiche-only and is dropped (docs/vertx-plan.md Q6,
+         closed 2026-09-08). -->
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-web</artifactId>
     </dependency>
     <dependency>
       <groupId>io.vertx</groupId>
@@ -44,30 +45,6 @@
       <artifactId>vertx-codegen-json</artifactId>
       <scope>provided</scope>
     </dependency>
-
-    <!-- HTTP/2 (h2c on the plain API listener, h2 over TLS with ALPN):
-         docs/spec/http-transport.md. HTTP/3 (QUIC) was dropped (owner ruling
-         2026-09-08). Versions come from the jetty-bom import in the parent
-         pom, pinned to the exact Jetty release Javalin 7.2.3 already brings. -->
-    <dependency>
-      <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>jetty-http2-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-alpn-server</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-alpn-java-server</artifactId>
-    </dependency>
-    <dependency>
-      <!-- Jetty's HTTP/2 client (test scope): the prior-knowledge h2c probe in Http2Test. -->
-      <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>jetty-http2-client-transport</artifactId>
-      <scope>test</scope>
-    </dependency>
-
     <!-- JSON -->
     <dependency>
       <groupId>tools.jackson.core</groupId>
@@ -199,10 +176,6 @@
     </dependency>
 
     <dependency>
-      <groupId>com.github.ben-manes.caffeine</groupId>
-      <artifactId>caffeine</artifactId>
-    </dependency>
-    <dependency>
       <groupId>io.prometheus</groupId>
       <artifactId>prometheus-metrics-core</artifactId>
     </dependency>
@@ -211,14 +184,14 @@
       <artifactId>prometheus-metrics-exposition-formats</artifactId>
     </dependency>
 
-    <!-- MCP server: `mcp` pulls in mcp-core (the streamable-HTTP servlet transport,
-         HttpServletStreamableServerTransportProvider, mounted on Javalin's embedded
-         Jetty via JettyConfig#modifyServletContextHandler — see McpServer) and
-         mcp-json-jackson3. jakarta.servlet-api itself comes from Javalin's own
-         Jetty EE10 dependency (6.0.0); mcp-core compiles against 6.1.0 but only
-         as `provided` (so it is not pulled in transitively) — the Servlet API's
-         core surface (HttpServlet/HttpServletRequest/Response) is unchanged
-         between 6.0 and 6.1, so Javalin's 6.0.0 satisfies it at runtime. -->
+    <!-- MCP server: `mcp` pulls in mcp-core (McpStreamableServerTransportProvider,
+         McpStreamableServerSession, the SDK's protocol machinery — see
+         io.flowcatalyst.mcp.VertxStreamableServerTransportProvider, our own
+         implementation over vertx-web, never the SDK's servlet transport) and
+         mcp-json-jackson3 (JacksonMcpJsonMapper, wired to the platform's own
+         Jackson 3 mapper, platform/shared/json/Json#MAPPER). jakarta.servlet-api
+         is `provided` scope in mcp-core's own POM, so it is never pulled in
+         transitively and never appears on this module's classpath. -->
     <dependency>
       <groupId>io.modelcontextprotocol.sdk</groupId>
       <artifactId>mcp</artifactId>

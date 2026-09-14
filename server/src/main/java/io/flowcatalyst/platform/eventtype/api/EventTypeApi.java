@@ -22,6 +22,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Handler;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
@@ -61,15 +62,16 @@ public final class EventTypeApi {
 
     /// Mounts the endpoints; paths, methods and status codes are the lockfile's.
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/event-types", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/event-types", Auth.scoped(ctx -> create(ctx, s)));
+        write.post("/api/event-types", Auth.scoped(ctx -> create(ctx, s)));
         routes.get("/api/event-types/{id}", Auth.scoped(ctx -> getById(ctx, s)));
         routes.get("/api/event-types/by-code/{code}", Auth.scoped(ctx -> getByCode(ctx, s)));
-        routes.put("/api/event-types/{id}", Auth.scoped(ctx -> update(ctx, s)));
-        routes.delete("/api/event-types/{id}", Auth.scoped(ctx -> delete(ctx, s)));
+        write.put("/api/event-types/{id}", Auth.scoped(ctx -> update(ctx, s)));
+        write.delete("/api/event-types/{id}", Auth.scoped(ctx -> delete(ctx, s)));
         Handler addSchema = Auth.scoped(ctx -> addSchema(ctx, s));
-        routes.post("/api/event-types/{id}/versions", addSchema);
-        routes.post("/api/event-types/{id}/schemas", addSchema); // historical alias, SPA clients still use it
+        write.post("/api/event-types/{id}/versions", addSchema);
+        write.post("/api/event-types/{id}/schemas", addSchema); // historical alias, SPA clients still use it
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

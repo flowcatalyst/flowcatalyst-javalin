@@ -312,7 +312,7 @@ derived from it or observed:
    idle means budget should move. That is an operator's monthly glance, not a design-time
    calculation.
 
-### 11.4 The read/write question (open)
+### 11.4 The read/write question (ruled 2026-09-14: reads borrow per statement)
 
 A write holds one connection from `begin` to `commit` and cannot do otherwise. A read has no
 transaction, so each statement could take a different connection and give it back, which would
@@ -387,6 +387,19 @@ not armed (there is nothing held to deadlock against). `API_WRITE` and `DISPATCH
 pinned mode. The gate acquisition per statement is untimed (§1). Measure at one core per §11.4's
 instruction and put the switches-per-request number in the report.
 
+**Ruled 2026-09-14 (owner), after the measurement.** Reads keep the per-statement mode and
+twice-the-pool workers. The number came in at 9.9 and 13.1 switches per request against Go's
+7.5 and 7.2 (`docs/vertx-migration-report.md` §"Phase 4"), and the owner first asked for one
+gate crossing per request; on seeing what that meant — a read that spends its time on CPU or
+on an outbound call would hold a database connection for nothing, and the worker rule assumed
+most of a read is database time, which is not known — the ruling was reversed the same hour.
+Reads are the **ungated general path**: bounded by their workers and queue, never by the
+pool; the gate is crossed per statement and the switches are the accepted cost. Transactions
+stay gated per request at pool size. If a gated, DB-heavy read path is ever wanted it is a
+separate group; with one read path, ungated is the default. `NO_DB` remains the path with no
+gate, no worker and no queue (proxy-shaped routes belong there; a wrong declaration fails
+loudly because the routed source refuses a `NO_DB` checkout).
+
 **What is deleted.** `Budgets` (the per-group semaphore lanes) — superseded by the workers; the
 Javalin-only §11.1 text stays as history. The gate itself stays: reads contend on it by design.
 
@@ -399,3 +412,24 @@ write path still pins (a nested checkout is refused, as today); every subsystem 
 `BACKGROUND` pool (assert by pool identity on a captured connection); a deadline fires on a
 queued request. `bench/real` round comparing the two-CPU throughput and one-core switches per
 request against the 2026-09-08 baseline, per the brief's §7.
+
+**The pool is chosen by the request, not by the handler class (part B, 2026-09-13).** Part A
+found that most `/bff/**` routes are the same handler classes mounted twice, holding
+repositories built over one captured `DataSource`, so a BFF request still drew from the API
+pool. Threading a pool into every class per mount would fight that (correct) sharing. Instead
+`Pools.routed()` is a `DataSource` whose `getConnection()` resolves the pool from the current
+request's group — `Admission.CURRENT` carries the `Group` the adapter set at entry — and every
+request-path repository is built over it. Outside a request (background code, which holds its
+explicit pool) the routed source is never used; a checkout with no scope bound is a programming
+error and throws. Part A's per-pool repository copies for dispatch and the dashboard BFF are
+undone in favour of the routed source, so one repository instance serves every mount and still
+lands on the right pool. `Admission` also carries the group's **mode**: `PINNED` (`API_WRITE`,
+`DISPATCH`, `LOGIN`, `OIDC`: one connection for the request, nested checkouts join it, the guard
+armed) or `PER_STATEMENT` (`API_READ`, `BFF`: every checkout goes to the pool and back, no
+pinning, guard not armed). The mode is a property of the group, derived, never configured.
+
+**Part B landed 2026-09-13** (`docs/vertx-migration-report.md` §"Phase 2b — workers, queues,
+routed pools"): `Pools.routed()`, `Admission` carrying the request's `Group`/`Mode`,
+`RequestWorkers.derived(Pools)` sized per §11.3a, bounded queues (8× workers) with `503`
+`OVERLOADED` + `Retry-After: 1`, a queued-request deadline armed at enqueue (not only once a
+worker starts running the chain), the four new/relabelled metrics, and `Budgets`' deletion.

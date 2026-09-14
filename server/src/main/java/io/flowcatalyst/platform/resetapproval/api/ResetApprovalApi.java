@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
+import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,9 +54,10 @@ public final class ResetApprovalApi {
     }
 
     public static void register(Routes routes, State s) {
+        Routes write = routes.in(Group.API_WRITE);
         routes.get("/api/reset-approvals", Auth.scoped(ctx -> list(ctx, s)));
-        routes.post("/api/reset-approvals/{id}/approve", Auth.scoped(ctx -> approve(ctx, s)));
-        routes.post("/api/reset-approvals/{id}/deny", Auth.scoped(ctx -> deny(ctx, s)));
+        write.post("/api/reset-approvals/{id}/approve", Auth.scoped(ctx -> approve(ctx, s)));
+        write.post("/api/reset-approvals/{id}/deny", Auth.scoped(ctx -> deny(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────

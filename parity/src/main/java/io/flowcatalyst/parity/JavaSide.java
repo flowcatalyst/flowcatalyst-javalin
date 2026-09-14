@@ -5,11 +5,11 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.FileAppender;
-import io.flowcatalyst.platform.shared.database.GatedDataSource;
 import io.flowcatalyst.platform.seed.Seeder;
-import io.flowcatalyst.platform.shared.database.Database;
 import io.flowcatalyst.platform.shared.database.Migrator;
+import io.flowcatalyst.platform.shared.database.Pools;
 import io.flowcatalyst.server.Env;
+import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.server.Server;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.LoggerFactory;
@@ -41,12 +41,12 @@ public final class JavaSide implements Side {
 
     private final Server.Running running;
     private final String baseUrl;
-    private final GatedDataSource pool;
+    private final Pools pools;
 
-    private JavaSide(Server.Running running, String baseUrl, GatedDataSource pool) {
+    private JavaSide(Server.Running running, String baseUrl, Pools pools) {
         this.running = running;
         this.baseUrl = baseUrl;
-        this.pool = pool;
+        this.pools = pools;
     }
 
     /// Migrates and seeds `databaseUrl` (a fresh clone — the adoption path,
@@ -66,12 +66,15 @@ public final class JavaSide implements Side {
         env.put("FC_EXTERNAL_BASE_URL", baseUrl);
         env.put("FC_WEBAUTHN_ORIGINS", baseUrl);
 
-        GatedDataSource pool = Database.newPool(databaseUrl, Math.max(4, Runtime.getRuntime().availableProcessors()));
-        Migrator.migrate(pool);
-        new Seeder(pool).run();
+        // The four per-group pools a real boot opens (admission.md §11.7),
+        // sized from the same budget Main uses; migration and seeding run on
+        // the API pool exactly as StartCommand's do.
+        Pools pools = Pools.open(databaseUrl, new EnvReader(env));
+        Migrator.migrate(pools.api());
+        new Seeder(pools.api()).run();
 
         Env envRecord = Env.load(env);
-        Server.Running running = new Server(envRecord, new Server.Mode.Platform(pool), Server.Spa.none(),
+        Server.Running running = new Server(envRecord, new Server.Mode.Platform(pools), Server.Spa.none(),
                 new PrometheusRegistry()).start();
 
         int actualPort = running.apiPort();
@@ -80,7 +83,7 @@ public final class JavaSide implements Side {
                     "Java bound port {} but FC_JWT_ISSUER was set for {} (a race for the free port) — "
                             + "tokens will carry the wrong issuer", actualPort, port);
         }
-        return new JavaSide(running, baseUrl, pool);
+        return new JavaSide(running, baseUrl, pools);
     }
 
     @Override
@@ -91,7 +94,7 @@ public final class JavaSide implements Side {
     @Override
     public void stop() {
         running.stop();
-        pool.close();
+        pools.close();
     }
 
     private static int freePort() {
