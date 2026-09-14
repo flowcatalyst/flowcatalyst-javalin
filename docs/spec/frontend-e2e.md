@@ -35,9 +35,10 @@ Three things the wire comparison cannot see:
   reads.
 - The SPA build under test is **the same on both sides**: Go embeds
   `frontend/dist` from its tree at `go build`; Java embeds
-  `server/src/main/resources/frontend`, refreshed by
-  `tools/sync-frontend.sh` (an out-of-tree Vite build of the Go repo's
-  `frontend/src`, stamped with the source commit in
+  `server/src/main/resources/frontend`, refreshed by `make frontend`
+  (an out-of-tree Vite build of this repo's own `frontend/src` — the SPA
+  source lives here since 2026-09-14, `docs/go-mirror/2026-09-14-frontend-source-shared.md`),
+  stamped with the source commit in
   `server/src/main/resources/frontend.source-commit`, outside the served tree). The runner fetches `/index.html` from both
   sides and compares the bytes — Vite's asset hashes are content hashes, so
   one source gives one document — and refuses to run when they differ: a

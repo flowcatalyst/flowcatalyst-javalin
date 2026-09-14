@@ -23,7 +23,7 @@ MVN := mvn
 NO_EMPTY := -Dsurefire.failIfNoSpecifiedTests=false
 
 .DEFAULT_GOAL := help
-.PHONY: help test test-router test-db test-one verify native native-server jar run stop init fresh clean toolchain
+.PHONY: help test test-router test-db test-one verify native native-server jar run stop init fresh clean toolchain frontend
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -95,3 +95,8 @@ fresh: ## Truncate every FlowCatalyst table (keeps the schema)
 
 clean: ## Remove every target/
 	$(MVN) clean
+
+# ── frontend ─────────────────────────────────────────────────────────────
+
+frontend: ## Rebuild the embedded SPA from ./frontend into server/src/main/resources/frontend
+	tools/build-frontend.sh

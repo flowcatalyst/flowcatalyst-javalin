@@ -3,8 +3,8 @@
 Prerequisites: Node 24 + pnpm, Go 1.27+ (builds Go's `fcdev` out of
 `../flowcatalyst-go`, read-only), a JDK (`JAVA_HOME`, or `mise where java`),
 `openssl` on `PATH`. Run `pnpm install && pnpm exec playwright install
-chromium` once, and `../tools/sync-frontend.sh` before a run whose Java SPA
-might be stale.
+chromium` once, and `make frontend` (from the repo root) before a run whose
+Java SPA might be stale.
 
 - `pnpm e2e:go` / `pnpm e2e:java` — the suite against one side (each starts
   its own `fcdev`, runs, tears down).

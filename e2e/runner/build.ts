@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 export const JAVA_REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 
 /// The Go repo (READ-ONLY — never written to). Sibling of the Java repo by
-/// convention (`tools/sync-frontend.sh`'s own default), overridable with
+/// convention (`tools/frontend-drift.sh`'s own default), overridable with
 /// `E2E_GO_REPO` for a differently-laid-out checkout.
 export function goRepoRoot(): string {
     return process.env.E2E_GO_REPO ?? path.resolve(JAVA_REPO_ROOT, "..", "flowcatalyst-go");
@@ -26,9 +26,10 @@ export function goRepoRoot(): string {
 /// the first Go run exercised a stale SPA while the (hash-blanking) gate
 /// said the sides matched. The build therefore happens in a scratch **copy**
 /// of the Go tree whose `frontend/dist` is the Java side's embedded copy
-/// (`server/src/main/resources/frontend`, the out-of-tree Vite build of the
-/// same source that `tools/sync-frontend.sh` refreshes): both binaries then
-/// serve byte-identical SPAs, and the Go tree is never written to.
+/// (`server/src/main/resources/frontend`, the out-of-tree Vite build that
+/// `make frontend` (`tools/build-frontend.sh`) refreshes from this repo's
+/// own `frontend/src`): both binaries then serve byte-identical SPAs, and
+/// the Go tree is never written to.
 /// `E2E_GO_EMBED_TREE_SPA=1` builds in place instead (the tree's own dist).
 let goBuildPromise: Promise<string> | null = null;
 
@@ -51,7 +52,7 @@ export function buildGoFcdev(scratchDir: string): Promise<string> {
                 repo + "/", buildDir + "/"]);
             const spa = path.join(JAVA_REPO_ROOT, "server", "src", "main", "resources", "frontend");
             if (!existsSync(path.join(spa, "index.html"))) {
-                throw new Error(`buildGoFcdev: no embedded SPA at ${spa} — run tools/sync-frontend.sh first`);
+                throw new Error(`buildGoFcdev: no embedded SPA at ${spa} — run make frontend first`);
             }
             await execFileAsync("rsync", ["-a", "--delete", spa + "/", path.join(buildDir, "frontend", "dist") + "/"]);
             console.log(`>> go build: scratch copy of ${repo} with the Java-synced SPA as frontend/dist`);

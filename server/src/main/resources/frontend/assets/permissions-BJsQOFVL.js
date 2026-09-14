@@ -1,0 +1,1 @@
+import{b as s}from"./index-OD-uN29f.js";const n={list(e){const o=e?`?application=${encodeURIComponent(e)}`:"";return s(`/roles/permissions${o}`)},get(e){return s(`/roles/permissions/${encodeURIComponent(e)}`)},create(e){return s("/roles/permissions",{method:"POST",body:JSON.stringify(e)})}};export{n as p};
