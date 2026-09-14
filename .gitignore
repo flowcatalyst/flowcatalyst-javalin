@@ -39,3 +39,11 @@ server/dependency-reduced-pom.xml
 e2e/node_modules
 e2e/test-results
 e2e/playwright-report
+
+# Frontend (source lives here since 2026-09-14)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+frontend/components.d.ts
+frontend/vite.config.d.ts

@@ -218,8 +218,8 @@ Java work the rulings created, plus one owner requirement, in build order:
   (rest + threshold 1.0); then triage per spec §9 — **all done 2026-09-06: the corpus is 1,145 steps, 0 DIFF, 0 ERROR; the frontend e2e is 49 flows green on Java.** ~~Frontend end-to-end
   design~~ **Designed 2026-09-05** (`docs/spec/frontend-e2e.md`: Playwright
   against both sides, ~40 flows in nine groups, three Sonnet briefs after
-  the parity harness lands); `tools/sync-frontend.sh` keeps the embedded
-  SPA current. ~~Cutover + rollback rehearsal design~~ **Designed
+  the parity harness lands); `make frontend` (`tools/build-frontend.sh`)
+  keeps the embedded SPA current. ~~Cutover + rollback rehearsal design~~ **Designed
   2026-09-05** (`docs/spec/cutover.md`: gates, nine timed steps, rollback
   drill each rehearsal, env-parity script). Build order now: parity
   harness → S1/S2/S3 → e2e runner + flows → rehearsal ×3 on staging.
