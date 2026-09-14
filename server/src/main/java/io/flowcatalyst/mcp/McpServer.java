@@ -1,29 +1,62 @@
 package io.flowcatalyst.mcp;
 
-import io.javalin.Javalin;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.server.McpSyncServer;
-import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
+import io.modelcontextprotocol.server.transport.DefaultServerTransportSecurityValidator;
+import io.modelcontextprotocol.server.transport.ServerTransportSecurityValidator;
+import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.ext.web.Router;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntSupplier;
 
 /// The MCP server subsystem: streamable HTTP at `/mcp` (POST + GET-as-SSE +
 /// DELETE) and `GET /health` → 200, on its own `FC_MCP_BIND:FC_MCP_PORT`
-/// listener — a second, dedicated [Javalin] instance, the same shape as
-/// [io.flowcatalyst.outbox.OutboxAdminApi] (`docs/spec/mcp.md` §1). One
-/// [McpSyncServer] — and therefore one [PlatformClient] — is shared across
-/// every request; the tool/resource catalogue is stateless.
+/// listener — its own, single-event-loop [Vertx] instance and [HttpServer],
+/// the same shape as [io.flowcatalyst.http.vertx.VertxMediationClient]'s
+/// "own instance, never the API listener's" (`docs/vertx-migration-brief.md`
+/// phase 3 — neither the API listener nor the mediation client exposes its
+/// `Vertx`, so there is nothing to share; see the migration report's "shared
+/// Vertx instance" note). One [McpSyncServer] — and therefore one
+/// [PlatformClient] — is shared across every request; the tool/resource
+/// catalogue is stateless.
 ///
-/// The Java MCP SDK ships its streamable-HTTP server transport as a plain
-/// [jakarta.servlet.http.HttpServlet]
-/// ([HttpServletStreamableServerTransportProvider], living in `mcp-core` as
-/// of SDK 2.0.1 — the once-separate `server-servlet` artifact stopped
-/// publishing after 0.18.4, folded into `mcp-core` for the 2.x rewrite),
-/// which mounts cleanly on the Jetty Javalin already embeds via
-/// [io.javalin.config.JettyConfig#modifyServletContextHandler] — no second
-/// HTTP stack, no reactive adapter.
+/// The transport is [VertxStreamableServerTransportProvider], this repo's own
+/// implementation of the MCP SDK's `McpStreamableServerTransportProvider`
+/// over vertx-web (`docs/spec/mcp.md` §1) — replacing the SDK's
+/// servlet-based `HttpServletStreamableServerTransportProvider`, which needed
+/// Javalin/Jetty on the classpath for MCP alone. That dependency is gone from
+/// the tree as of this phase.
+///
+/// The transport's security validator (Origin/Host — `docs/spec/mcp.md` §1)
+/// is **derived**, never a knob (`CLAUDE.md` "no tuning; defaults are the
+/// product"): [#deriveSecurityValidator] builds it from nothing but the
+/// listener's own bound address — `localhost`, `127.0.0.1`, `[::1]`, and
+/// whatever `host` (`FC_MCP_BIND`) resolved to, each with the listener's
+/// actual bound port, `http://` and `https://` both. Those are every address
+/// a client on this same machine — including a browser-based MCP client
+/// sending a real `Origin` header — could legitimately use to reach this
+/// exact listener; anything else with an `Origin` header stays refused
+/// (`403`), and a request with no `Origin` header at all is unaffected
+/// either way. The provider's own default (`DefaultServerTransportSecurityValidator`
+/// with empty allow-lists — see [VertxStreamableServerTransportProvider.Builder])
+/// would refuse a legitimate same-machine browser client outright, which is
+/// what this method exists to fix.
 ///
 /// `io.modelcontextprotocol.server.McpServer` (the SDK's builder entry
 /// point) shares this class's simple name; every reference to it below is
@@ -53,34 +86,49 @@ public final class McpServer {
 
     /// A started MCP listener.
     public static final class Running {
-        private final Javalin app;
+        private final Vertx vertx;
+        private final HttpServer httpServer;
         private final McpSyncServer mcpServer;
+        private final int port;
 
-        private Running(Javalin app, McpSyncServer mcpServer) {
-            this.app = app;
+        private Running(Vertx vertx, HttpServer httpServer, McpSyncServer mcpServer, int port) {
+            this.vertx = vertx;
+            this.httpServer = httpServer;
             this.mcpServer = mcpServer;
+            this.port = port;
         }
 
         public int port() {
-            return app.port();
+            return port;
         }
 
-        /// Test-only visibility hook: the underlying [Javalin] app, so
-        /// [McpServerTest] can inspect the bound Jetty connector directly.
-        Javalin app() {
-            return app;
-        }
-
-        /// Stops accepting new connections (Jetty drains in-flight requests
-        /// within [#STOP_TIMEOUT], the same as every other listener — see
-        /// [io.flowcatalyst.server.Server.Running#stop]), then closes the MCP
-        /// server's sessions and the transport's keep-alive scheduler.
+        /// Stops accepting new connections (the listener drains in-flight
+        /// requests within [#STOP_TIMEOUT], the same as every other listener —
+        /// see [io.flowcatalyst.server.Server.Running#stop]), then closes the
+        /// MCP server's sessions/transport (which shuts down the transport
+        /// provider's virtual-thread executor too — see
+        /// [VertxStreamableServerTransportProvider#closeGracefully]), then
+        /// this listener's own [Vertx] instance.
         public void stop() {
-            app.stop();
+            try {
+                httpServer.shutdown(STOP_TIMEOUT).toCompletionStage().toCompletableFuture()
+                        .get(STOP_TIMEOUT.toMillis() + 1000, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException | TimeoutException e) {
+                LOG.warn("closing the MCP listener did not complete cleanly", e);
+            }
             try {
                 mcpServer.closeGracefully();
             } catch (RuntimeException e) {
                 LOG.warn("closing the MCP server failed", e);
+            }
+            try {
+                vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException | TimeoutException e) {
+                LOG.warn("closing the MCP listener's Vert.x instance did not complete cleanly", e);
             }
         }
     }
@@ -92,7 +140,26 @@ public final class McpServer {
         Objects.requireNonNull(host, "host");
         Objects.requireNonNull(serverVersion, "serverVersion");
 
-        var transportProvider = HttpServletStreamableServerTransportProvider.builder().build();
+        // One event loop, the same sizing io.flowcatalyst.http.vertx.VertxListener
+        // and VertxMediationClient use for their own, equally dedicated instances.
+        Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(1));
+
+        // The actual bound port is not known until httpServer.listen() succeeds
+        // below (this overload is also called with port 0 — an ephemeral port —
+        // by every test); deriveSecurityValidator reads this lazily on every
+        // request rather than baking a port in now, so the validator installed
+        // into the provider below is already correct for whatever port the
+        // listener ends up bound to. No request can arrive before #listen()
+        // completes, so by the time boundPort.set(actualPort) below has NOT
+        // yet run, nothing has validated headers against it either.
+        var boundPort = new AtomicInteger(port);
+        var transportProvider = VertxStreamableServerTransportProvider.builder(vertx)
+                // The platform's one configured Jackson 3 mapper
+                // (platform/shared/json/Json#MAPPER) — never Vert.x's own
+                // Jackson-2-based JsonObject/Json on this wire path.
+                .jsonMapper(new JacksonMcpJsonMapper((JsonMapper) Json.MAPPER))
+                .securityValidator(deriveSecurityValidator(host, boundPort::get))
+                .build();
         McpSyncServer mcpServer = io.modelcontextprotocol.server.McpServer.sync(transportProvider)
                 .serverInfo("flowcatalyst", serverVersion)
                 .instructions(INSTRUCTIONS)
@@ -101,23 +168,81 @@ public final class McpServer {
                 .resourceTemplates(McpResources.templates(platform))
                 .build();
 
-        var app = Javalin.create(cfg -> {
-            cfg.startup.showJavalinBanner = false;
-            cfg.jetty.modifyServletContextHandler(handler -> {
-                var holder = handler.addServlet(transportProvider, "/mcp");
-                // The transport provider declares @WebServlet(asyncSupported = true)
-                // (it holds the streamable-HTTP connection open via AsyncContext),
-                // but that annotation is only honoured by web.xml/annotation-driven
-                // deployment — registering an existing instance programmatically
-                // needs this set explicitly or every request 500s.
-                holder.setAsyncSupported(true);
-            });
-            cfg.routes.get("/health", ctx -> ctx.status(200));
-        });
-        app.start(host, port);
+        Router router = Router.router(vertx);
+        transportProvider.mount(router);
+        router.route(HttpMethod.GET, "/health").handler(rc -> rc.response().setStatusCode(200).end());
+
+        // h2c off: MCP serves plain HTTP/1.1 only (server/pom.xml's dependency
+        // comment already says so), and HTTP/2 has no literal Host header (only
+        // the :authority pseudo-header, which Vert.x does not synthesize one
+        // from) — deriveSecurityValidator's Host check would see every request
+        // as missing its Host header and refuse it with 421 otherwise. Found by
+        // VertxStreamableServerTransportProviderTest/McpServerTest: the JDK
+        // HttpClient's default HTTP_2 version upgrades a cleartext connection
+        // to h2c whenever the server accepts it (Vert.x's own default).
+        HttpServer httpServer = vertx.createHttpServer(new HttpServerOptions().setHost(host).setPort(port)
+                        .setHttp2ClearTextEnabled(false))
+                .requestHandler(router);
+        try {
+            httpServer.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while binding the MCP listener", e);
+        } catch (ExecutionException | TimeoutException e) {
+            vertx.close();
+            throw new IllegalStateException("binding the MCP listener on " + host + ":" + port,
+                    e.getCause() != null ? e.getCause() : e);
+        }
+
+        int actualPort = httpServer.actualPort();
+        boundPort.set(actualPort);
         LOG.atInfo().setMessage("mcp server listening")
-                .addKeyValue("addr", host + ":" + port)
+                .addKeyValue("addr", host + ":" + actualPort)
                 .log();
-        return new Running(app, mcpServer);
+        return new Running(vertx, httpServer, mcpServer, actualPort);
+    }
+
+    /// Derives the transport's Origin/Host allow-list from the listener's own
+    /// bound address (`docs/spec/mcp.md` §1) — never a separate knob. The only
+    /// inputs are what the listener already knows: `bindHost` (`FC_MCP_BIND`)
+    /// and `boundPort` (the listener's actual bound port, read lazily since it
+    /// is not known until after `httpServer.listen()` succeeds — every real
+    /// request necessarily arrives after that, so the lazy read is never
+    /// stale for one). `localhost`, `127.0.0.1` and `[::1]` are always
+    /// included alongside `bindHost` (deduplicated when `bindHost` is already
+    /// one of those, e.g. the default `127.0.0.1`) — every address a
+    /// same-machine client, including a browser-based MCP client sending a
+    /// real `Origin` header, could legitimately use to reach this exact
+    /// listener, both `http://` and `https://`. Anything else carrying an
+    /// `Origin` header is refused (`403`); a request with no `Origin` header
+    /// is unaffected either way (`ServerTransportSecurityValidator`'s own
+    /// rule, unchanged). The same host set becomes the allowed `Host` values
+    /// too, since [DefaultServerTransportSecurityValidator] enforces a `Host`
+    /// check once any are configured.
+    ///
+    /// Package-private: [VertxStreamableServerTransportProviderTest] calls
+    /// this directly to exercise the same derivation against the transport
+    /// provider without going through the platform-client/tool-catalogue
+    /// machinery the rest of [#start] needs.
+    static ServerTransportSecurityValidator deriveSecurityValidator(String bindHost, IntSupplier boundPort) {
+        Objects.requireNonNull(bindHost, "bindHost");
+        Objects.requireNonNull(boundPort, "boundPort");
+        return headers -> derivedValidatorFor(bindHost, boundPort.getAsInt()).validateHeaders(headers);
+    }
+
+    private static ServerTransportSecurityValidator derivedValidatorFor(String bindHost, int port) {
+        Set<String> hosts = new LinkedHashSet<>();
+        hosts.add("localhost");
+        hosts.add("127.0.0.1");
+        hosts.add("[::1]");
+        hosts.add(bindHost);
+
+        var builder = DefaultServerTransportSecurityValidator.builder();
+        for (String host : hosts) {
+            builder.allowedOrigin("http://" + host + ":" + port);
+            builder.allowedOrigin("https://" + host + ":" + port);
+            builder.allowedHost(host + ":" + port);
+        }
+        return builder.build();
     }
 }

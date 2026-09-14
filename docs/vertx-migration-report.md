@@ -464,3 +464,296 @@ JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am test -Dtest='io.flowcatalyst.f
   list was the five OAuth-provider routes plus `/auth/refresh`, not the platform's own
   OIDC-client surface; admission.md §2's original text ("OIDC: `/auth/oidc/**`, portal SSO
   callback") is broader than what landed here. Left as a further judgment call if wanted.
+
+## Phase 3 — MCP on Vert.x, Javalin/Jetty removed
+
+Goal (`docs/vertx-migration-brief.md` §1/P2, the reason the 2026-09-08 cutover was
+reverted, §0): move `io.flowcatalyst.mcp.McpServer`'s streamable-HTTP transport off the
+MCP SDK's servlet-based `HttpServletStreamableServerTransportProvider` and its private
+Javalin/Jetty listener onto Vert.x, then delete Javalin and Jetty from the tree entirely.
+
+### What was built
+
+- `server/src/main/java/io/flowcatalyst/mcp/VertxStreamableServerTransportProvider.java`
+  (new): this repo's own `io.modelcontextprotocol.spec.McpStreamableServerTransportProvider`
+  implementation over vertx-web, modelled line by line on the SDK's
+  `HttpServletStreamableServerTransportProvider` (mcp-core 2.0.1 sources, read from
+  `~/.m2/.../mcp-core-2.0.1-sources.jar` before writing a line of this). `mount(Router)`
+  registers `POST`/`GET`/`DELETE` on `/mcp`. Every JSON-RPC dispatch (which may call the
+  platform over HTTP through `PlatformClient`/`McpTools`) runs on a virtual thread from a
+  dedicated `Executors.newVirtualThreadPerTaskExecutor()`, never the event loop; every
+  response write hops back with `Context#runOnContext`, the same dispatch pattern
+  `io.flowcatalyst.http.vertx.VertxListener` uses for the API listener. A session's SSE
+  transport (`VertxStreamableMcpSessionTransport`) blocks its calling (always virtual)
+  thread on a `CountDownLatch` until its write has been handed to the loop, so
+  `sendMessage`'s `Mono` keeps the SDK's "completes when sent" contract even though the
+  actual `HttpServerResponse` write must happen on the loop.
+- `server/src/main/java/io/flowcatalyst/mcp/McpServer.java` (rewritten): builds its own,
+  single-event-loop `Vertx` instance and `HttpServer` on `FC_MCP_BIND:FC_MCP_PORT` (own
+  listener, per `docs/spec/mcp.md` §1 — unchanged), mounts the new provider plus
+  `GET /health` on a `Router`, wires the platform's Jackson 3 mapper
+  (`platform/shared/json/Json#MAPPER`) into the SDK via `mcp-json-jackson3`'s
+  `JacksonMcpJsonMapper`. `start(...)`/`Running#port()`/`Running#stop()` keep the exact
+  same signatures every caller (`Server.java`) already used, so no composition-root change
+  was needed there. `Running#stop()` keeps the original shutdown order: close the listener
+  (drain), then `mcpServer.closeGracefully()` (closes sessions and — via the SDK's own
+  `McpAsyncServer#closeGracefully → transportProvider.closeGracefully()` chain — shuts down
+  the provider's virtual-thread executor), then this listener's own `Vertx`.
+- `server/src/test/java/io/flowcatalyst/mcp/McpServerTest.java`: same three tests, same
+  assertions, now exercised over the Vert.x transport (see "Protocol behaviours" below for
+  the one test whose *implementation* had to change).
+- `server/src/test/java/io/flowcatalyst/mcp/VertxStreamableServerTransportProviderTest.java`
+  (new): drives the wire protocol directly with a raw `java.net.http.HttpClient` — see
+  "New tests" below.
+- `server/src/test/java/io/flowcatalyst/http/NoFrameworkLeakTest.java`: the Javalin scan
+  lost its `McpServer.java` allow-list entry and is now a plain "zero references anywhere"
+  assertion; it also gained a Jetty scan (there was none before — Jetty was only ever
+  reachable transitively through Javalin, so nothing scanned for it directly). The Vert.x
+  scan's allow-list gained `io/flowcatalyst/mcp/` alongside the existing
+  `io/flowcatalyst/http/vertx/` prefix.
+- `docs/spec/mcp.md` §1: a new paragraph on the transport; §5: the new test's coverage.
+- `server/native-config/reachability-metadata.json`,
+  `fcdev/native-config/reachability-metadata.json`: every entry naming
+  `org.eclipse.jetty.*`, `io.javalin`, or `jakarta.servlet.*` removed (types, resource
+  globs, and resource bundles) — 24/25 total entries out of ~2,000 lines each; everything
+  else untouched. Verified with `grep -ic "jetty\|javalin\|servlet\|websocket"` → `0` on
+  both files after the edit, and `python3 -c "import json; json.load(...)"` to confirm both
+  are still well-formed JSON.
+
+### Protocol behaviours reproduced (and the two deliberate differences)
+
+Reproduced 1:1 with the servlet transport: `POST` (JSON-RPC in; a single JSON response for
+`initialize`, an SSE response stream — `text/event-stream`, one `message` event — for every
+other request, matching `session.responseStream(...)`'s own `.then(transport.closeGracefully())`
+which ends the stream once the response completes); `GET` (the standalone SSE listening
+stream, `Mcp-Session-Id` required, `Last-Event-ID` replay); `DELETE` (session end, `405` when
+`disallowDelete`); the `Mcp-Session-Id` response header on `initialize`; the SDK's own
+`ServerTransportSecurityValidator`/`DefaultServerTransportSecurityValidator`/
+`ServerTransportSecurityException` types **reused directly** (they are public, mcp-core
+classes with no servlet dependency — no reimplementation needed) for Origin/Host validation
+and its exact `403`/`421` status codes; the same `McpError` JSON envelope and status codes
+for every bad-request/not-found/internal-error path; `notifyClients`/`notifyClient`;
+`closeGracefully`.
+
+Two deliberate differences from the servlet transport, both explained in the new class's
+Javadoc:
+
+1. **The `requestURI.endsWith(mcpEndpoint)` check has no equivalent.** The servlet maps one
+   instance under a configurable path, so it re-checks the suffix on every request;
+   vertx-web's `Router#route(HttpMethod, String)` already only invokes the handler for an
+   exact match on `mcpEndpoint`, so the check would be dead code here.
+2. **The default security validator is stricter, not equal.** `McpServer.java` built the
+   servlet transport with `.builder().build()` — no security validator set, which defaults
+   to `ServerTransportSecurityValidator.NOOP` (accepts everything, no Origin/Host check at
+   all). This provider's builder defaults to
+   `DefaultServerTransportSecurityValidator.builder().build()` — empty allow-lists, but
+   **not** equivalent to NOOP: an *absent* `Origin` header (every non-browser MCP client,
+   including the SDK's own `HttpClientStreamableHttpTransport`) still passes unaffected,
+   but a *present* `Origin` header is rejected (`403`) unless allow-listed. Closes a
+   DNS-rebinding gap the old transport left open, for free, with nothing to configure.
+   Recorded here per CLAUDE.md "correctness over conformance": Go/the old Java transport is
+   evidence of what was done, not of what is right.
+
+One real bug this surfaced and fixed: `setSseHeaders` originally carried a
+`Connection: keep-alive` header (copied from the servlet reference, where it is
+meaningless-but-harmless). Vert.x's `HttpServerOptions` accepts h2c **by default**
+(`DEFAULT_HTTP2_CLEAR_TEXT_ENABLED = true`) and HTTP/2 forbids hop-by-hop headers like
+`Connection` outright (RFC 7540 §8.1.2.2); the JDK `HttpClient` (default version `HTTP_2`)
+upgraded every test connection to h2c and then rejected the whole response as malformed
+(`java.net.ProtocolException: malformed response: Prohibited header name 'connection'`).
+Found by `VertxStreamableServerTransportProviderTest`'s `tools/list` and GET tests, both of
+which failed with that exact exception on the first run. Fixed by dropping the header
+(HTTP/1.1 keep-alive is already the default; nothing depended on it).
+
+### Discrepancy against the brief: no shared `Vertx` instance to reuse
+
+The brief (P1 item 2) says to "reuse the one `Vertx` instance the API listener shares with
+`VertxMediationClient`". The code disagrees with that premise, and the code wins
+(brief's own rule): `VertxListener.prepare` and `VertxMediationClient.start` each call
+`Vertx.vertx(...)` and construct their **own**, separate instance — `Router.java`'s own
+comment on `VertxMediationClient.start()` explains why: "the listener may not even be
+Vert.x — so it has something of its own to close on shutdown." Neither class exposes a
+`Vertx` accessor, so there is nothing to thread through even if the premise held. `McpServer`
+follows the same established convention: its own, single-event-loop `Vertx` instance,
+exactly as `VertxMediationClient` builds its own — never the API listener's.
+
+### New tests
+
+`VertxStreamableServerTransportProviderTest` drives the provider directly with a raw
+`HttpClient` (no MCP SDK client — the SDK client is what `McpServerTest` already exercises):
+
+- `initializeHandshakeReturnsASessionId` — `POST /mcp` with an `initialize` request asserts
+  `200` and a present `Mcp-Session-Id` response header. **Mutant**: comment out
+  `response.putHeader(HttpHeaders.MCP_SESSION_ID, sessionId)` in `handleInitialize` →
+  `Expecting Optional to contain a value but it was empty` (this test), plus three more
+  tests that build on `initializeSession()` failing the same way, plus
+  `McpServerTest.aRealStreamableHttpSessionListsExactlyTheTwelveToolsAndNineResourcesByName`
+  erroring out entirely (`Client failed to initialize by explicit API call` — the real SDK
+  client can't proceed without the header either). Confirmed, reverted.
+- `toolsListOverTheSessionAnswersJson` — a `tools/list` request over the session asserts the
+  SSE stream's `data:` line parses as JSON with a non-empty `result.tools` array — the
+  observable effect (a real tool list came back), not "a response was sent."
+- `getOpensSseStreamAndANotifyClientsBroadcastArrivesAsEvent` — opens the `GET` listening
+  stream, then calls `provider.notifyClients(...)` directly and asserts the broadcast
+  arrives as an SSE `data:` event on that stream, retrying the broadcast (safe: a
+  `notifyClients` call ahead of the listening-stream registration is a caught, logged
+  `MissingMcpTransportSession` error, never a delivery) until it lands rather than
+  sleeping a fixed duration — deterministic without depending on Vert.x's header-flush
+  timing (SSE headers are not flushed until the first write, so there is no
+  "connection established" signal to block on). This test is also why
+  `handleGetOnVirtualThread` registers `session.listeningStream(transport)` **before**
+  scheduling the headers `runOnContext` task, not after: registration is synchronous on the
+  virtual thread and must complete before anything client-visible happens, or a broadcast
+  that raced the client's own connect could be silently dropped by a real client with no
+  retry of its own.
+- `deleteEndsTheSessionAndASubsequentPostWithThatIdIsRefused` — `DELETE` asserts `200`, then
+  a subsequent `POST` with that same `Mcp-Session-Id` asserts `404` — the session is
+  actually gone from the map, not just "the delete method was invoked."
+- `aRequestWithABadOriginIsRefusedExactlyAsTheDefaultValidatorRefusesIt` — an `initialize`
+  `POST` carrying `Origin: http://evil.example.com` asserts `403`. **Mutant**: comment out
+  the `securityValidator.validateHeaders(headers)` try/catch in `handlePost` → `expected:
+  403 but was: 200` (exactly and only this test fails — the other four still pass).
+  Confirmed, reverted.
+
+`McpServerTest.theListenerIsBoundToTheConfiguredHostOnly` needed a different
+*implementation* (Vert.x's `HttpServer` exposes no bound-address accessor the way Jetty's
+`ServerConnector#getHost()` did), not a different behaviour: it now asserts that binding a
+**second** `HttpServer` to the exact same `127.0.0.1:port` fails — proof the configured host
+is actually occupied, arguably stronger than reading a field back. **Mutant**: drop
+`.setHost(host)` from `McpServer#start`'s `HttpServerOptions` → `Expecting code to raise a
+throwable` (the second bind succeeds because the real listener bound to `0.0.0.0` instead).
+Confirmed, reverted.
+
+### Dependency diff
+
+Removed (actual `<dependency>` declarations, not just version pins):
+
+| Artifact | From | Why |
+|---|---|---|
+| `io.javalin:javalin` | root `pom.xml` (dependencyManagement + `javalin.version` property), `server/pom.xml` | MCP's own listener was its last user |
+| `com.github.ben-manes.caffeine:caffeine` | root `pom.xml` (dependencyManagement + `caffeine.version` property), `server/pom.xml` | brief P5 candidate; grep for `Caffeine`/`com.github.benmanes.caffeine` across every `.java` file: **zero matches** |
+
+Jetty was never a direct dependency — it rode in transitively via `io.javalin:javalin`'s own
+`jetty-server`; removing Javalin removes it automatically. `jakarta.servlet-api` (from
+mcp-core, `provided` scope in mcp-core's own POM) was never on this module's compile or
+runtime classpath even before this phase — nothing to remove there.
+
+Root `pom.xml` also dropped the now-fully-unused `dependencyManagement` pins and version
+properties for four of the brief's other five P5 candidates — **not because this phase
+adds new callers to grep, but because they were already dead**: `org.mongodb:mongodb-driver-sync`,
+`org.eclipse.angus:angus-mail`, `com.networknt:json-schema-validator`,
+`org.hdrhistogram:HdrHistogram` were pinned in `dependencyManagement` but **never had an
+actual `<dependency>` declaration in any module's POM** — grepping `pom.xml`/`server/pom.xml`/
+`fcdev/pom.xml` for their `<artifactId>` outside `dependencyManagement` confirms zero. They
+were not on any classpath already; this just deletes the leftover pins. Source grep for each
+(`MongoClient`, `com.mongodb`; `jakarta.mail`, `javax.mail`; `JsonSchemaFactory`,
+`com.networknt`; `org.HdrHistogram`, bare `Histogram` — the latter's hits are all
+`io.prometheus.metrics.model.snapshots.Histogram*`, unrelated) also confirmed zero.
+
+**Kept**: `com.mysql:mysql-connector-j` (`fcdev/pom.xml`) — the sixth P5 candidate, but a
+grep for `com.mysql.cj`/`mysql` in `.java` sources shows it genuinely used:
+`fcdev/src/main/java/io/flowcatalyst/fcdev/OutboxCommand.java`'s `createMysql` connects via
+`DriverManager.getConnection(jdbcUrl)` against a `jdbc:mysql://` URL built by
+`MysqlJdbcUrl.java` — no import needed (JDBC driver discovery is `META-INF/services`-based),
+but a real, tested (`CreateTableCommandTest`) caller.
+
+### Follow-up — the security validator's allow-list is derived, not empty
+
+The provider's own bare default (`DefaultServerTransportSecurityValidator` with empty
+allow-lists) refuses *any* request carrying an `Origin` header, including a legitimate
+browser-based MCP client on the same machine sending `Origin: http://localhost:<port>` — and
+there was no way to allow it. Per `CLAUDE.md` "no tuning; defaults are the product," the fix
+is derived from what the listener already knows, not a new env var:
+
+- `McpServer.deriveSecurityValidator(bindHost, boundPort)` (package-private, new) builds the
+  allow-list from nothing but the listener's own bound address: `localhost`, `127.0.0.1`,
+  `[::1]`, and whatever `host` (`FC_MCP_BIND`) resolved to, each with the listener's *actual*
+  bound port, `http://` and `https://` origins both, plus the same host set as allowed `Host`
+  values (`DefaultServerTransportSecurityValidator` enforces a `Host` check once any are
+  configured). `boundPort` is an `IntSupplier` reading an `AtomicInteger` set only after
+  `httpServer.listen()` succeeds — the actual port is unknown at provider-construction time
+  (this method is also called with port `0`, an ephemeral port, by every test) and no request
+  can arrive before `listen()` completes, so the lazy read is never stale for a real one.
+  `McpServer#start` wires it in; the provider's own bare default is otherwise unchanged (still
+  what `VertxStreamableServerTransportProviderTest`'s bad-origin mutant exercises).
+- A real bug this surfaced: enabling the `Host` check exposed that Vert.x's `HttpServer`
+  accepts h2c **by default**, and the JDK `HttpClient`'s default `HTTP_2` version upgrades every
+  cleartext connection to it — but HTTP/2 has no literal `Host` header (only the `:authority`
+  pseudo-header, which Vert.x does not synthesize a `Host` entry from), so every request looked
+  like it was missing `Host` and got refused `421`. Every MCP test failed this way on the first
+  run after wiring the derived validator in. Fixed by `.setHttp2ClearTextEnabled(false)` on the
+  MCP `HttpServerOptions` (in both `McpServer#start` and the test's own listener setup) — MCP
+  was always documented as HTTP/1.1-only (`docs/spec/mcp.md` §1); this just makes the listener
+  enforce it, which also makes `Host` validation reliable.
+
+New/changed tests:
+
+- `McpServerTest.anOriginMatchingTheListenersOwnAddressIsAccepted` — through the real
+  `McpServer.start()` wiring, `Origin: http://localhost:<port>` on the initialize `POST`
+  answers `200`. **Mutant**: comment out `.securityValidator(deriveSecurityValidator(...))` in
+  `McpServer#start` → `expected: 200 but was: 403` (this test only; the sibling refusal test
+  stays green). Confirmed, reverted.
+- `McpServerTest.aRequestWithAnUnrelatedOriginIsRefused` — the same real wiring, `Origin:
+  http://evil.example.com` still answers `403`.
+- `VertxStreamableServerTransportProviderTest`'s `@BeforeEach` now wires the provider with
+  `McpServer.deriveSecurityValidator("127.0.0.1", boundPort::get)` (same `AtomicInteger`-after-
+  `listen()` pattern) instead of the provider's bare default, so every test in the class
+  exercises the real rule; `aRequestWithABadOriginIsRefusedExactlyAsTheDefaultValidatorRefusesIt`
+  needed no change (`evil.example.com` still isn't allow-listed). New:
+  `anOriginMatchingTheListenersOwnAddressIsAccepted` — `Origin: http://localhost:<port>`
+  answers `200`. **Mutant**: revert `@BeforeEach` to the provider's bare default →
+  `expected: 200 but was: 403` (this test only, confirmed, reverted).
+
+```
+JAVA_TOOL_OPTIONS="-Xmx2g" JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dtest='McpServerTest,VertxStreamableServerTransportProviderTest,NoFrameworkLeakTest,StructuredLoggingTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+**McpServerTest 5/5, VertxStreamableServerTransportProviderTest 6/6, NoFrameworkLeakTest 2/2,
+StructuredLoggingTest 2/2 — all green.**
+
+### Suites
+
+```
+JAVA_TOOL_OPTIONS="-Xmx2g" JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dtest='McpServerTest,VertxStreamableServerTransportProviderTest,NoFrameworkLeakTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+**10/10 new+touched tests green** (3 `McpServerTest` + 5 `VertxStreamableServerTransportProviderTest`
++ 2 `NoFrameworkLeakTest`). First run caught two real issues before this passed clean: the
+h2c/`Connection`-header bug above, and `StructuredLoggingTest` flagging twelve
+`LOG.error("… {}", e.getMessage())`-style calls in the new provider — converted to the
+repo's fluent `LOG.atError().setMessage(...).addKeyValue(...).setCause(e).log()` form.
+
+```
+JAVA_TOOL_OPTIONS="-Xmx2g" JAVA_HOME=$(mise where java) mvn -q -pl server -am test -Dsurefire.timeout=900
+```
+**4036 tests, 0 failures, 0 errors, 1 skipped** (4033 before the Origin/Host follow-up + 3 new tests).
+
+```
+JAVA_TOOL_OPTIONS="-Xmx2g" JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am test -Dtest='io.flowcatalyst.fcdev.*Test' -Dsurefire.failIfNoSpecifiedTests=false -Dsurefire.timeout=900
+```
+**108 tests, 0 failures, 0 errors** (the `DefaultPostgresBinaryResolver`/zonky
+"No postgres binaries found" ERROR-level log lines in this run are pre-existing noise from
+fcdev's Maven-Central binary resolution path, not test failures — every test passed).
+
+```
+JAVA_TOOL_OPTIONS="-Xmx2g" JAVA_HOME=$(mise where java) mvn -q -pl fcdev -am package -DskipTests
+```
+Shaded jar builds clean; `jar tf … | grep -icE "^io/javalin|^org/eclipse/jetty"` → `0` —
+confirmed no Javalin/Jetty classes reach the fcdev fat jar.
+
+### Not done in this unit
+
+- Native-image build (`-Pnative`) for `server`/`fcdev` was explicitly out of scope
+  ("Do not run the native build") — the reachability-metadata edits are believed correct
+  (every removed entry named `org.eclipse.jetty`/`io.javalin`/`jakarta.servlet`, nothing
+  else touched) but not verified by an actual native build in this unit.
+- `parity/`, `conformance/`, `e2e/` were explicitly out of scope ("Do NOT commit, do NOT run
+  parity or e2e").
+- `fcdev`'s `--mcp` default / `StartIntegrationTest` / `DevDispatchRouterConfigIntegrationTest`
+  were covered by the full `io.flowcatalyst.fcdev.*Test` run above rather than run
+  individually by name; confirmed passing individually too: `McpCommandTest` 4/4,
+  `StartIntegrationTest` 4/4, `DevDispatchRouterConfigIntegrationTest` 2/2. Checked
+  `--mcp`'s default per the brief: `StartOptions.java` — `@Option(names = "--mcp", …)`
+  reads `FC_MCP_ENABLED` with default `false` (`docs/spec/mcp.md` §1), unchanged by this
+  phase; `McpServer.start(...)`'s signature is identical to before, so `StartCommand`'s
+  wiring of it needed no edit at all. `McpCommand`/`McpCommandTest` (fcdev's stdio
+  `fcdev mcp` subcommand) are a separate transport from this phase's streamable-HTTP one
+  and were not touched.
