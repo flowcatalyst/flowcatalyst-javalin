@@ -1524,3 +1524,14 @@ while Go's goroutine-per-request lets them contend on the DB pool directly.
 Worth a measured look before cutover (verification plan Phase 2/3): the
 worker multiplier for reads, or the queue's ordering, decides the tail the
 SPA sees under load. Not a tuning knob — a design measurement.
+
+## fc-router CPU is unbounded in ECS (2026-09-14, owner: leave for now)
+
+`compute/index.ts` declares `routerCpu` (256) but never applies it, so the
+router task definition reads `cpu: 0` — no quota, no shares. Pinning one core
+on the EC2 launch type means task-level `cpu: "1024"` (a hard CFS quota
+under the agent's default `ECS_ENABLE_TASK_CPU_MEM_LIMIT=true`) plus the
+container's `cpu` shares from the same value; the same number also becomes
+the placement reservation (half an m7g.large). The platform and worker
+tasks have the same dead `cpu` config. Owner deferred on 2026-09-14; the
+edit is a three-file change, drafted and reverted.
