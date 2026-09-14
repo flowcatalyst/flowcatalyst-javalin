@@ -11,7 +11,8 @@ operationally and behaviourally identical to Go, as deployments and not just
 as programs: deployment inventory → env/startup parity per role →
 observability → router sequence harness → non-HTTP subsystems → shadow run →
 cutover rehearsal. Owner smoke test of the UI (portal users) on 2026-09-11:
-fine. Last synced Go commit: `466dc11`.
+fine. Last synced Go commit: `f81fd5a` (lockfile + SPA source, 2026-09-14;
+the last parity corpus run was against `e87b88d` — re-run owed).
 
 Progress, 2026-09-11 evening:
 - **Phase 0 done.** `docs/deployments.md`, taken from `../inhance/iac`, covers
@@ -20,6 +21,65 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+## Application-managed invitations ported; the SPA source lives here (2026-09-14)
+
+**Owner's stated direction, 2026-09-14:** the move to the Java version is
+close, and before it a thorough drop-in check — identical behaviour unless
+agreed, same APIs, same environment variables, same UI. That is
+`docs/verification-plan.md` (phases 0–6, Phase 0 done); the next session
+starts there, with today's two units as the first sync gate.
+
+**Invitations** (`docs/spec/app-managed-invitations.md`; Go's change was
+still uncommitted on `f81fd5a`, so ported from the Go working tree):
+`8fa8c07` spec, `42c6c8d` sdk (vendored spec refreshed, Javadoc, README
+patterns, `PrincipalsResourceTest`), `14e2c2f` server — `sendInvitation` /
+`returnInviteLink` on both create bodies with the returnInviteLink-wins
+precedence, `CreatePrincipalResponse{id, inviteLink?}`, check-domain's
+`passwordSetupRequired` (internal branch only, read-only behind the login
+backoff budget), `POST /auth/password-setup/request` (public, silent 200,
+safe-relative redirect only), and an INVITE confirm that finishes `ok` on a
+domain without 2FA sets `fc_session` with login's issuer/flags/TTL and
+answers `sessionEstablished:true`. `Principal.awaitingPasswordSetup()` is the
+one eligibility definition. Lockfile re-vendored from Go `f81fd5a` (+`GET
+/api/dispatch/router-config`, +4 schemas; `LockfileTest` 187/254).
+Evidence: the counting-fake principal tests, the cookie authenticating
+`GET /auth/me`, the token row's purpose and 72 h TTL, the attempt-row count
+under backoff — mutants per spec §7; **server 4,056 from clean**, lockfile
+coverage 254/254; SPA generated types regenerate byte-identical from the
+new lockfile; **Java e2e 53/53** with the two new flows in
+`e2e/tests/invitations.spec.ts` (login-detected: the create mails nothing,
+the login page offers "Create your password", the mailed link sets the
+password and lands the user signed in on `/profile` with `fc_session`,
+surviving a reload, exactly one mail ever; embedded link: `inviteLink`
+redeems the same way and zero mails). Owed: **parity vs Go once Go commits
+the change** (no corpus run possible against a working tree), the Go e2e
+column, and the backlog question on the invite sign-in recording no
+login-attempt row. Found on the way: the e2e runner reuses a cached
+`fcdev/target/*.jar` with no staleness check (`docs/backlog.md`).
+
+**Frontend source moved** (owner rulings: import with history; both repos
+hold it for now): `24c3fb9` merges `frontend-import` — `git subtree` of the
+Go repo's frontend-only split (103 commits, split in a scratch clone; the Go
+tree untouched) at `frontend/`, the working-tree login/reset page change on
+top, Go's embed glue dropped, `make frontend` (`tools/build-frontend.sh`)
+builds the embedded copy from this repo and stamps this repo's commit,
+`tools/frontend-drift.sh` against the Go copy (expected drift today: only
+`openapi-ts.config.ts`, which now resolves either repo's lockfile, and
+`scripts/watch-api.ts`, which pointed at a path in neither repo),
+`tools/pull-frontend-from-go.sh` for when Go moves first. Vite builds are
+deterministic here (two builds byte-identical). Hand-off for the Go agent:
+`docs/go-mirror/2026-09-14-frontend-source-shared.md`. The e2e runner's Go
+scratch build is unchanged. `tools/sync-frontend.sh` is gone.
+
+**fcdev router provisioning checked** (owner question): `fcdev start`
+bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
+`platform:router` role + `client_credentials` grant on every boot
+(`RouterClientBootstrap`, `DevBootstrap.bootstrapRouterCredentials`), the
+router mints a token against its own API listener and fetches
+`/api/dispatch/router-config`; `DevDispatchRouterConfigIntegrationTest`
+(2 tests, a real `StartCommand` boot, consumer up inside the 3 s window)
+green on 2026-09-14.
+
 ## The Vert.x second attempt — built and measured on branch `vertx-2` (2026-09-13/14)
 
 Owner ruling 2026-09-13: a deliberate second attempt at the listener move

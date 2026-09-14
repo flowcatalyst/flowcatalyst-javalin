@@ -1502,3 +1502,13 @@ no `iam_login_attempts` row for that sign-in, so `/auth/login-history` and
 the backoff timeline never see it; Java mirrors Go. Owner question: should
 the invite sign-in record a SUCCESS attempt (type `PASSWORD`? a new type?)
 so the history is complete? Both sides change together.
+
+## The e2e runner reuses a stale fcdev jar (2026-09-14)
+
+`e2e/runner/build.ts` `buildJavaFcdev` reuses any existing
+`fcdev/target/*.jar` without comparing it to the source; a run after a
+server change silently tests yesterday's binary unless
+`E2E_FORCE_JAVA_BUILD=1` is set (it cost an hour of false-bug chasing on
+2026-09-14). Fix: rebuild when any tracked file under `server/`, `fcdev/`,
+`sdk/`, `usecase/` is newer than the jar (or always rebuild — the reactor
+package is ~1 min), and say which in the run banner.
