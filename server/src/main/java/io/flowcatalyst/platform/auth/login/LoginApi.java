@@ -117,10 +117,14 @@ public final class LoginApi {
     record CheckDomainRequest(String email) {
     }
 
-    /// `{authMethod: "internal"|"external", loginUrl?, idpIssuer?}` — a
-    /// malformed or unknown domain answers `internal` so nothing leaks.
-    record CheckDomainResponse(String authMethod, String loginUrl, String idpIssuer) {
-        static final CheckDomainResponse INTERNAL = new CheckDomainResponse("internal", null, null);
+    /// `{authMethod: "internal"|"external", loginUrl?, idpIssuer?,
+    /// passwordSetupRequired?}` — a malformed or unknown domain answers
+    /// `internal` so nothing leaks. `passwordSetupRequired`
+    /// (app-managed-invitations §2) is present, and `true`, only when the
+    /// account is awaiting password setup; never `false`, never alongside
+    /// `external`.
+    record CheckDomainResponse(String authMethod, String loginUrl, String idpIssuer,
+                               @JsonInclude(JsonInclude.Include.NON_NULL) Boolean passwordSetupRequired) {
     }
 
     private static void checkDomain(Exchange ctx, State s) {
@@ -131,17 +135,47 @@ public final class LoginApi {
         }
         Optional<String> domain = domainOf(email);
         if (domain.isEmpty()) {
-            ctx.json(CheckDomainResponse.INTERNAL);
+            ctx.json(internalResponse(ctx, s, email));
             return;
         }
         Optional<IdentityProvider> idp = mappedProvider(s, domain.get());
         if (idp.isEmpty() || idp.get().type() != IdentityProviderType.OIDC) {
-            ctx.json(CheckDomainResponse.INTERNAL);
+            ctx.json(internalResponse(ctx, s, email));
             return;
         }
         // The domain, not the e-mail, so the local part never rides the redirect chain.
         ctx.json(new CheckDomainResponse("external", "/auth/oidc/login?domain=" + encodeUri(domain.get()),
-                idp.get().oidcIssuerUrl()));
+                idp.get().oidcIssuerUrl(), null));
+    }
+
+    private static CheckDomainResponse internalResponse(Exchange ctx, State s, String email) {
+        return new CheckDomainResponse("internal", null, null, passwordSetupRequired(ctx, s, email));
+    }
+
+    /// app-managed-invitations §2: a UX hint, not a security decision —
+    /// every failure (blank email, a denied backoff check, an unknown
+    /// principal, a lookup exception) omits the flag rather than answering
+    /// `false`.
+    private static Boolean passwordSetupRequired(Exchange ctx, State s, String rawEmail) {
+        try {
+            String email = rawEmail.trim().toLowerCase(Locale.ROOT);
+            if (email.isEmpty()) {
+                return null;
+            }
+            if (s.backoff() != null) {
+                BackoffCheck.Decision d = s.backoff().check(email, ClientIp.of(ctx), s.clock().instant());
+                if (!d.allowed()) {
+                    return null;
+                }
+            }
+            Optional<Principal> p = s.principals().findByEmail(email);
+            if (p.isEmpty()) {
+                return null;
+            }
+            return p.get().awaitingPasswordSetup() ? Boolean.TRUE : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /// The legacy query shape: `providerId` for any mapped IdP type; never

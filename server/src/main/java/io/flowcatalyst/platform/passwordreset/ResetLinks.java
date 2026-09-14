@@ -77,6 +77,7 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
     }
 
     /// The invite link without a mail — the admin hands it over.
+    @Override
     public String inviteLink(Principal p) {
         return setPasswordLink(mint(p.id(), ResetToken.Purpose.INVITE, false, false, null));
     }

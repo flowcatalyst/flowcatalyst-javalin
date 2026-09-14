@@ -1,9 +1,11 @@
 package io.flowcatalyst.platform.passwordreset;
 
 import io.flowcatalyst.platform.auth.grant.GrantStore;
+import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
+import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
 import io.flowcatalyst.platform.notify.Notifications;
 import io.flowcatalyst.platform.principal.PasswordPolicy;
@@ -47,10 +49,14 @@ public final class PasswordResetApi {
     static final String SYSTEM_ACTOR = "system";
 
     /// @param requireStrongFactorForReset ruling I-Q19: false — a user without TOTP gets a token, not an approval
+    /// @param issuer nullable together with `cookie` (as `LoginApi.State.attempts`/`backoff`); `null` = the
+    ///               confirm route never signs anyone in (today's behaviour, and what every existing test
+    ///               constructs) — app-managed-invitations §4
+    /// @param cookie the session cookie the login route uses; must never drift from it — see `Platform`
     public record State(ResetLinks links, ResetTokenRepository tokens, PrincipalRepository principals, UnitOfWork uow,
                         Mfa mfa, MfaToken mfaTokens, DomainPolicy.Evaluator policy, GrantStore grants,
                         Notifications notices, PortalPasswords portal, ApprovalQueue approvals,
-                        boolean requireStrongFactorForReset, Clock clock) {
+                        boolean requireStrongFactorForReset, Clock clock, TokenIssuer issuer, SessionCookie cookie) {
         public State {
             Objects.requireNonNull(links, "links");
             Objects.requireNonNull(tokens, "tokens");
@@ -64,6 +70,7 @@ public final class PasswordResetApi {
             Objects.requireNonNull(portal, "portal");
             Objects.requireNonNull(approvals, "approvals");
             Objects.requireNonNull(clock, "clock");
+            if ((issuer == null) != (cookie == null)) throw new IllegalArgumentException("issuer and cookie go together");
         }
     }
 
@@ -72,6 +79,7 @@ public final class PasswordResetApi {
 
     public static void register(Routes routes, State s) {
         routes.post("/auth/password-reset/request", ctx -> request(ctx, s));
+        routes.post("/auth/password-setup/request", ctx -> passwordSetupRequest(ctx, s));
         routes.get("/auth/password-reset/validate", ctx -> validate(ctx, s));
         // Group.LOGIN (admission.md §11.7 part B follow-up): password-reset completion —
         // verifies a TOTP factor (Mfa#verifyTotp) when the token requires one, then
@@ -132,6 +140,59 @@ public final class PasswordResetApi {
                     .setCause(e)
                     .log(); // the token still exists
         }
+    }
+
+    // ── password-setup/request (app-managed-invitations §3) ─────────────────
+
+    /// The login-detected pattern's other half of `request`: same
+    /// never-reveal-existence shape, a different fixed message, and it is
+    /// eligible only for a passwordless INTERNAL user awaiting setup.
+    static void passwordSetupRequest(Exchange ctx, State s) {
+        JsonNode body = body(ctx);
+        if (body == null) {
+            HttpError.write(ctx, 400, "INVALID_BODY", "malformed request body", Map.of());
+            return;
+        }
+        String email = body.path("email").asString("").trim().toLowerCase(Locale.ROOT);
+        String redirectUri = body.path("redirectUri").asString(null);
+        try {
+            tryIssuePasswordSetupInvite(s, email, redirectUri);
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("password setup request suppressed error")
+                    .addKeyValue("domain", domainOf(email))
+                    .setCause(e)
+                    .log();
+        }
+        ctx.status(200).json(Map.of("message", "If your account needs a password, we've emailed you a link to create it."));
+    }
+
+    /// §3: nothing for a blank, unknown, already-set-up or non-internal
+    /// address; otherwise the ordinary 72-hour INVITE token, carrying a
+    /// redirect only when it is a safe same-site relative path.
+    static void tryIssuePasswordSetupInvite(State s, String email, String redirectUri) {
+        if (email.isEmpty()) {
+            return;
+        }
+        Optional<Principal> found = s.principals().findByEmail(email);
+        if (found.isEmpty() || !found.get().awaitingPasswordSetup()) {
+            return;
+        }
+        if (!s.policy().evaluate(email).internal()) {
+            return;
+        }
+        s.links().sendInviteRedirect(found.get(), safeRelativeRedirect(redirectUri));
+    }
+
+    /// §3 step 4: kept only when it starts with exactly one `/`, not `//`,
+    /// not `/\`; anything else (absolute URL, scheme, bare host, empty,
+    /// `null`) is dropped silently — the same rule `OidcBridgeApi#landing`
+    /// applies to `returnUrl`, restated here rather than shared across
+    /// packages for one two-line predicate.
+    static String safeRelativeRedirect(String uri) {
+        if (uri != null && uri.startsWith("/") && !uri.startsWith("//") && !uri.startsWith("/\\")) {
+            return uri;
+        }
+        return null;
     }
 
     // ── validate ───────────────────────────────────────────────────────────
@@ -244,7 +305,48 @@ public final class PasswordResetApi {
         LOG.atInfo().setMessage("password reset completed")
                 .addKeyValue("principal", token.principalId())
                 .log();
-        ctx.status(200).json(postResetTwoFactor(s, token));
+        Map<String, Object> out = postResetTwoFactor(s, token);
+        // app-managed-invitations §4: the principal branch only — the portal
+        // branch (confirmPortal) returns before this point and never mints.
+        if (shouldAttemptSessionMint(token.purpose(), (String) out.get("status"), s.issuer() != null)) {
+            maybeEstablishSession(ctx, s, token, out);
+        }
+        ctx.status(200).json(out);
+    }
+
+    /// §4: pure — `wired` is whether `State.issuer`/`cookie` are set. RESET
+    /// keeps today's UX (never signs in here); `enrollment_required` mints
+    /// its own session when enrolment completes, not this one.
+    static boolean shouldAttemptSessionMint(ResetToken.Purpose purpose, String status, boolean wired) {
+        return wired && purpose == ResetToken.Purpose.INVITE && "ok".equals(status);
+    }
+
+    /// §4: re-read the principal (absent → nothing); a domain requiring 2FA
+    /// never mints here (would bypass the challenge); a mint failure is
+    /// logged and leaves the user to sign in normally — the password write
+    /// already succeeded either way.
+    private static void maybeEstablishSession(Exchange ctx, State s, ResetToken token, Map<String, Object> out) {
+        // Best-effort end to end: the password write already succeeded, so a
+        // failing principal re-read, policy lookup or mint must not turn the
+        // 200 into a 500 — the user simply signs in normally.
+        try {
+            Optional<Principal> found = s.principals().findById(token.principalId());
+            if (found.isEmpty()) {
+                return;
+            }
+            Principal p = found.get();
+            if (s.policy().evaluate(p.email()).requires2fa()) {
+                return;
+            }
+            String sessionToken = s.issuer().sessionToken(p.id(), p.email());
+            s.cookie().set(ctx, sessionToken);
+            out.put("sessionEstablished", true);
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("session mint after password setup failed")
+                    .addKeyValue("principal", token.principalId())
+                    .setCause(e)
+                    .log();
+        }
     }
 
     /// §8.4 `postResetTwoFactor`: clear the factors when the token says so,

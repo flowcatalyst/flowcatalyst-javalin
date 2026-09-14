@@ -61,7 +61,6 @@ import io.flowcatalyst.platform.principal.operations.UpdateCommand;
 import io.flowcatalyst.platform.principal.operations.UpdateUser;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
-import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.apicommon.StatusChangeResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -106,7 +105,7 @@ import static io.flowcatalyst.platform.shared.auth.Permission.USER_VIEW;
 /// | Method | Path | Status |
 /// |---|---|---|
 /// | GET | `/api/principals` | 200 [PrincipalListResponse] |
-/// | POST | `/api/principals` | 201 [CreatedResponse] |
+/// | POST | `/api/principals` | 201 [CreatePrincipalResponse] |
 /// | POST | `/api/principals/users` | 200 [PrincipalResponse] |
 /// | POST | `/api/principals/bulk-import` | 200 [BulkImportResponse] |
 /// | POST | `/api/principals/sync` | 200 [SyncUsersResponse] |
@@ -325,8 +324,10 @@ public final class PrincipalApi {
         requireClientScopeForNonAnchor(ac, req.scope());
         Checks.requireUserAdmin(ac, req.clientId());
         var event = CreateUser.of(s.repo()).run(s.uow(), req.toCommand(), Auth.executionContext());
-        s.repo().findById(event.userId()).ifPresent(p -> notifyNewUser(s, p, req.password()));
-        ctx.status(201).json(new CreatedResponse(event.userId()));
+        String inviteLink = s.repo().findById(event.userId())
+                .map(p -> notifyNewUser(s, p, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault()))
+                .orElse(null);
+        ctx.status(201).json(new CreatePrincipalResponse(event.userId(), inviteLink));
     }
 
     /// The SDK create-user endpoint (spec §7): scope derived from the request
@@ -368,8 +369,8 @@ public final class PrincipalApi {
                     .run(s.uow(), new GrantClientAccessCommand(event.userId(), derived.clientId()), ec);
         }
         Principal created = principal(s, event.userId());
-        notifyNewUser(s, created, req.password());
-        ctx.json(PrincipalResponse.from(created));
+        String inviteLink = notifyNewUser(s, created, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault());
+        ctx.json(PrincipalResponse.from(created, null, inviteLink));
     }
 
     /// CSV onboarding under one client (spec §7): each row its own
@@ -434,7 +435,7 @@ public final class PrincipalApi {
                 return new BulkImportResult(row, email, "created", "created, but roles not applied: " + e.error().message());
             }
         }
-        s.repo().findById(userId).ifPresent(p -> notifyNewUser(s, p, null));
+        s.repo().findById(userId).ifPresent(p -> notifyNewUser(s, p, null, true, false));
         return new BulkImportResult(row, email, "created", null);
     }
 
@@ -744,15 +745,41 @@ public final class PrincipalApi {
         return List.copyOf(out);
     }
 
-    /// Best-effort onboarding mail (spec §7): nothing for service accounts,
-    /// federated users or blank emails; a passwordless account gets the
+    /// Best-effort onboarding mail and app-managed invitations
+    /// (app-managed-invitations.md §1): nothing for service accounts,
+    /// federated users or blank emails. `returnInviteLink && passwordless`
+    /// mints and returns the set-password link instead of mailing anything —
+    /// best-effort, and it never falls through to the platform's own mail
+    /// even when `sendInvitation` is true (each mint invalidates the
+    /// previous token, so a second mail would break the link just
+    /// returned). Otherwise `!sendInvitation` suppresses all platform mail
+    /// (invite and welcome alike); else a passwordless account gets the
     /// "set your password" invite, one created with a password the welcome.
-    private static void notifyNewUser(State s, Principal p, String password) {
-        if (p.userIdentity() == null || p.isFederated()) return;
+    /// The invite link is never logged.
+    private static String notifyNewUser(State s, Principal p, String password, boolean sendInvitation, boolean returnInviteLink) {
+        if (p.userIdentity() == null || p.isFederated()) return null;
         String email = p.email() == null ? "" : p.email().trim();
-        if (email.isEmpty()) return;
+        if (email.isEmpty()) return null;
+        boolean passwordless = password == null || password.isEmpty();
+        if (returnInviteLink && passwordless) {
+            try {
+                return s.inviteEmailer().inviteLink(p);
+            } catch (RuntimeException e) {
+                LOG.atWarn().setMessage("invite link mint failed")
+                        .addKeyValue("principal", p.id())
+                        .setCause(e)
+                        .log();
+                return null;
+            }
+        }
+        if (!sendInvitation) {
+            LOG.atInfo().setMessage("invite suppressed by caller")
+                    .addKeyValue("principal", p.id())
+                    .log();
+            return null;
+        }
         try {
-            if (password == null || password.isEmpty()) {
+            if (passwordless) {
                 s.inviteEmailer().sendInvite(p);
             } else {
                 s.notifier().accountCreated(email);
@@ -763,6 +790,7 @@ public final class PrincipalApi {
                     .setCause(e)
                     .log();
         }
+        return null;
     }
 
     /// The list query (spec §3): every parameter optional, matched in memory.
@@ -840,10 +868,20 @@ public final class PrincipalApi {
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
 
-    /// Body of `POST /api/principals`.
-    public record CreatePrincipalRequest(String email, String name, String scope, String clientId, String password, String idpType) {
+    /// Body of `POST /api/principals`. `sendInvitation` absent means `true`;
+    /// `returnInviteLink` absent means `false` (app-managed-invitations §1).
+    public record CreatePrincipalRequest(String email, String name, String scope, String clientId, String password, String idpType,
+                                         Boolean sendInvitation, Boolean returnInviteLink) {
         public CreateCommand toCommand() {
             return new CreateCommand(email, name, scope, clientId, password, idpType);
+        }
+
+        boolean sendInvitationOrDefault() {
+            return sendInvitation == null || sendInvitation;
+        }
+
+        boolean returnInviteLinkOrDefault() {
+            return Boolean.TRUE.equals(returnInviteLink);
         }
 
         @Override
@@ -852,9 +890,19 @@ public final class PrincipalApi {
         }
     }
 
-    /// Body of `POST /api/principals/users`; `enforcePasswordComplexity` is accepted and ignored (spec §3).
+    /// Body of `POST /api/principals/users`; `enforcePasswordComplexity` is
+    /// accepted and ignored (spec §3). `sendInvitation` absent means `true`;
+    /// `returnInviteLink` absent means `false` (app-managed-invitations §1).
     public record CreateUserRequest(String email, String name, String password, String scope, String clientId,
-                                    Boolean enforcePasswordComplexity) {
+                                    Boolean enforcePasswordComplexity, Boolean sendInvitation, Boolean returnInviteLink) {
+        boolean sendInvitationOrDefault() {
+            return sendInvitation == null || sendInvitation;
+        }
+
+        boolean returnInviteLinkOrDefault() {
+            return Boolean.TRUE.equals(returnInviteLink);
+        }
+
         @Override
         public String toString() {
             return "CreateUserRequest[email=" + email + ", scope=" + scope + ", clientId=" + clientId + ", password=***]";
@@ -955,7 +1003,11 @@ public final class PrincipalApi {
     }
 
     /// The wire shape of a principal (spec §3): flat, roles as names, never a
-    /// hash or secret. `twoFactorMethods` only on the by-id read with an MFA service.
+    /// hash or secret. `twoFactorMethods` only on the by-id read with an MFA
+    /// service; `inviteLink` (app-managed-invitations §1) only on the
+    /// `POST /api/principals/users` response when a link was minted — every
+    /// other `from(...)` caller (list, by-id, update, PARTNER-merge return)
+    /// leaves it `null`. Never logged or included in a `toString`.
     public record PrincipalResponse(
             String id,
             String type,
@@ -972,13 +1024,18 @@ public final class PrincipalApi {
             Instant updatedAt,
             boolean hasDeveloperCredential,
             Instant developerCredentialUpdatedAt,
-            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<String> twoFactorMethods) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<String> twoFactorMethods,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String inviteLink) {
 
         public static PrincipalResponse from(Principal p) {
-            return from(p, null);
+            return from(p, null, null);
         }
 
         public static PrincipalResponse from(Principal p, List<String> twoFactorMethods) {
+            return from(p, twoFactorMethods, null);
+        }
+
+        static PrincipalResponse from(Principal p, List<String> twoFactorMethods, String inviteLink) {
             var u = p.userIdentity();
             return new PrincipalResponse(p.id(), p.type().name(), p.scope().name(), p.clientId(), p.name(), p.active(),
                     u == null ? null : u.email(),
@@ -986,7 +1043,7 @@ public final class PrincipalApi {
                     p.roleNames(), p.scope().isAnchor(), p.assignedClients(), p.createdAt(), p.updatedAt(),
                     p.hasDeveloperSecret(),
                     u == null || !u.hasDeveloperSecret() ? null : u.devClientSecretUpdatedAt(),
-                    twoFactorMethods);
+                    twoFactorMethods, inviteLink);
         }
     }
 
@@ -998,6 +1055,14 @@ public final class PrincipalApi {
     }
 
     public record PrincipalVersionResponse(Instant updatedAt) {
+    }
+
+    /// Body of `POST /api/principals` (spec app-managed-invitations §1): a
+    /// dedicated record rather than the shared `CreatedResponse`, which many
+    /// unrelated creates reuse. `inviteLink` set only when the caller passed
+    /// `returnInviteLink:true` on a passwordless INTERNAL create. Never
+    /// logged or included in a `toString`.
+    public record CreatePrincipalResponse(String id, @JsonInclude(JsonInclude.Include.NON_NULL) String inviteLink) {
     }
 
     /// One role assignment row; `id` is synthetic (`{principalId}-role-{index}`) for a stable UI key.

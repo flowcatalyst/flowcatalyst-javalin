@@ -7,7 +7,11 @@ import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
+import io.flowcatalyst.platform.passwordreset.ResetLinks;
+import io.flowcatalyst.platform.passwordreset.ResetToken;
+import io.flowcatalyst.platform.passwordreset.ResetTokenRepository;
 import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
+import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.AnchorDomains;
 import io.flowcatalyst.platform.principal.operations.DeveloperSecrets;
@@ -15,6 +19,7 @@ import io.flowcatalyst.platform.principal.InviteEmailer;
 import io.flowcatalyst.platform.principal.MfaService;
 import io.flowcatalyst.platform.principal.Notifier;
 import io.flowcatalyst.platform.principal.PasswordResetEmailer;
+import io.flowcatalyst.platform.publicapi.EmailTheme;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -34,6 +39,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -61,6 +68,55 @@ class PrincipalApiTest {
     private static String userInA;
     private static String userInB;
     private static TestHttp http;
+
+    /// A counting fake (`docs/spec/app-managed-invitations.md` §7): counts
+    /// `sendInvite`/`inviteLink` calls separately so a test can assert which
+    /// branch of the precedence fired, and can be told to throw on the next
+    /// mint to pin the best-effort failure path.
+    private static final class CountingInviteEmailer implements InviteEmailer {
+        final String link = "https://example.test/auth/set-password?token=fake-" + UUID.randomUUID();
+        int sendInviteCalls;
+        int inviteLinkCalls;
+        RuntimeException throwOnInviteLink;
+
+        @Override
+        public void sendInvite(Principal p) {
+            sendInviteCalls++;
+        }
+
+        @Override
+        public String inviteLink(Principal p) {
+            inviteLinkCalls++;
+            if (throwOnInviteLink != null) throw throwOnInviteLink;
+            return link;
+        }
+
+        void reset() {
+            sendInviteCalls = 0;
+            inviteLinkCalls = 0;
+            throwOnInviteLink = null;
+        }
+    }
+
+    private static final class CountingNotifier implements Notifier {
+        int accountCreatedCalls;
+
+        @Override
+        public void accountCreated(String email) {
+            accountCreatedCalls++;
+        }
+
+        @Override
+        public void twoFactorReset(String email) {
+        }
+
+        void reset() {
+            accountCreatedCalls = 0;
+        }
+    }
+
+    private static final CountingInviteEmailer INVITES = new CountingInviteEmailer();
+    private static final CountingNotifier NOTIFIER = new CountingNotifier();
 
     private static String[] anchor() {
         return new String[] {
@@ -101,7 +157,7 @@ class PrincipalApiTest {
                 new EmailDomainMappingRepository(TestPg.dataSource()),
                 new IdentityProviderRepository(TestPg.dataSource()),
                 AnchorDomains.inDatabase(TestPg.dataSource()),
-                PasswordResetEmailer.notConfigured(), InviteEmailer.logging(), Notifier.logging(),
+                PasswordResetEmailer.notConfigured(), INVITES, NOTIFIER,
                 MfaService.notConfigured(), DeveloperSecrets.unconfigured(), UOW);
 
         var keys = SigningKeys.generateEphemeral();
@@ -377,5 +433,160 @@ class PrincipalApiTest {
         assertThat(http.get("/api/principals/prn_nosuchid0000/version", a).statusCode()).isEqualTo(404);
         assertThat(json(http.get("/api/principals/prn_nosuchid0000", a)).get("error").asText())
                 .isEqualTo("Principal_NOT_FOUND");
+    }
+
+    // ── App-managed invitations (spec app-managed-invitations.md §1, §7) ────
+
+    @Test
+    @DisplayName("default passwordless create-user sends the platform invite and returns no link")
+    void defaultPasswordlessCreateUserSendsInvite() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email = "flag-default-" + RUN + "@example.test";
+        var r = http.post("/api/principals/users",
+                "{\"email\":\"" + email + "\",\"name\":\"Flag Default\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\"}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(INVITES.sendInviteCalls).as("mutant: flags defaulting wrong way").isEqualTo(1);
+        assertThat(INVITES.inviteLinkCalls).isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).isZero();
+        assertThat(json(r).has("inviteLink")).as("mutant: inviteLink key present when nothing was minted").isFalse();
+    }
+
+    @Test
+    @DisplayName("sendInvitation:false suppresses all platform mail, passwordless or with a password")
+    void sendInvitationFalseSuppressesAllMail() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String pwless = "flag-suppress-pwless-" + RUN + "@example.test";
+        var r1 = http.post("/api/principals/users",
+                "{\"email\":\"" + pwless + "\",\"name\":\"S1\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\",\"sendInvitation\":false}", anchor());
+        assertThat(r1.statusCode()).as(r1.body()).isEqualTo(200);
+        assertThat(INVITES.sendInviteCalls).isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).as("mutant: the welcome escapes the suppression").isZero();
+
+        String withPassword = "flag-suppress-pw-" + RUN + "@example.test";
+        var r2 = http.post("/api/principals/users",
+                "{\"email\":\"" + withPassword + "\",\"name\":\"S2\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"password\":\"correct horse battery staple\",\"sendInvitation\":false}", anchor());
+        assertThat(r2.statusCode()).as(r2.body()).isEqualTo(200);
+        assertThat(INVITES.sendInviteCalls).isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).as("mutant: the welcome escapes the suppression").isZero();
+    }
+
+    @Test
+    @DisplayName("returnInviteLink:true mints and returns the fake's link instead of mailing, with or without sendInvitation")
+    void returnInviteLinkMintsInsteadOfMailing() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email1 = "flag-link-" + RUN + "@example.test";
+        var r1 = http.post("/api/principals/users",
+                "{\"email\":\"" + email1 + "\",\"name\":\"L1\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\",\"returnInviteLink\":true}", anchor());
+        assertThat(r1.statusCode()).as(r1.body()).isEqualTo(200);
+        assertThat(json(r1).get("inviteLink").asText()).as("mutant: precedence inverted").isEqualTo(INVITES.link);
+        assertThat(INVITES.sendInviteCalls).as("mutant: the platform mail also sent").isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).isZero();
+
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email2 = "flag-link-suppressed-" + RUN + "@example.test";
+        var r2 = http.post("/api/principals/users",
+                "{\"email\":\"" + email2 + "\",\"name\":\"L2\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"sendInvitation\":false}", anchor());
+        assertThat(r2.statusCode()).as(r2.body()).isEqualTo(200);
+        assertThat(json(r2).get("inviteLink").asText()).as("the platform's own invite is never sent on this branch, even when sendInvitation is true — and here it's false too")
+                .isEqualTo(INVITES.link);
+        assertThat(INVITES.sendInviteCalls).isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).isZero();
+    }
+
+    @Test
+    @DisplayName("returnInviteLink:true with a password never mints; the welcome still sends")
+    void returnInviteLinkWithPasswordNeverMints() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email = "flag-link-pw-" + RUN + "@example.test";
+        var r = http.post("/api/principals/users",
+                "{\"email\":\"" + email + "\",\"name\":\"LP\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"password\":\"correct horse battery staple\",\"returnInviteLink\":true}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).has("inviteLink")).as("mutant: minting for a user with a password").isFalse();
+        assertThat(INVITES.inviteLinkCalls).isZero();
+        assertThat(NOTIFIER.accountCreatedCalls).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a mint failure is best-effort: 200, no link, and it never falls through to the platform's own mail")
+    void mintFailureIsBestEffortAndNeverFallsThrough() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        INVITES.throwOnInviteLink = new RuntimeException("mint blew up");
+        try {
+            String email = "flag-link-fail-" + RUN + "@example.test";
+            var r = http.post("/api/principals/users",
+                    "{\"email\":\"" + email + "\",\"name\":\"LF\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\",\"returnInviteLink\":true}", anchor());
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).has("inviteLink")).as("mutant: link leaks despite the mint failing").isFalse();
+            assertThat(INVITES.sendInviteCalls).as("mutant: best-effort falling through to the mail").isZero();
+        } finally {
+            INVITES.throwOnInviteLink = null;
+        }
+    }
+
+    @Test
+    @DisplayName("POST /api/principals answers exactly {id} normally and {id, inviteLink} when the flag mints")
+    void createPrincipalResponseShapeMatchesTheFlag() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email1 = "flag-cp-plain-" + RUN + "@example.test";
+        var r1 = http.post("/api/principals", "{\"email\":\"" + email1 + "\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\"}", anchor());
+        assertThat(r1.statusCode()).isEqualTo(201);
+        assertThat(json(r1).propertyNames()).as("mutant: null still emitted").containsExactly("id");
+
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email2 = "flag-cp-link-" + RUN + "@example.test";
+        var r2 = http.post("/api/principals",
+                "{\"email\":\"" + email2 + "\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA + "\",\"returnInviteLink\":true}", anchor());
+        assertThat(r2.statusCode()).isEqualTo(201);
+        assertThat(json(r2).propertyNames()).as("mutant: CreatedResponse still answered").containsExactly("id", "inviteLink");
+        assertThat(json(r2).get("inviteLink").asText()).isEqualTo(INVITES.link);
+    }
+
+    @Test
+    @DisplayName("returnInviteLink mints a real, redeemable 72h INVITE token via ResetLinks")
+    void returnInviteLinkMintsARealRedeemableToken() {
+        var tokens = new ResetTokenRepository(TestPg.dataSource());
+        var links = new ResetLinks(tokens, mail -> { }, () -> EmailTheme.defaults("Acme"), "http://localhost:8080", Clock.systemUTC());
+        var realState = new PrincipalApi.State(REPO,
+                new ClientAccessGrantRepository(TestPg.dataSource()),
+                new RoleRepository(TestPg.dataSource()),
+                new ApplicationRepository(TestPg.dataSource()),
+                new ClientConfigRepository(TestPg.dataSource()),
+                CLIENTS,
+                new EmailDomainMappingRepository(TestPg.dataSource()),
+                new IdentityProviderRepository(TestPg.dataSource()),
+                AnchorDomains.inDatabase(TestPg.dataSource()),
+                PasswordResetEmailer.notConfigured(), links, Notifier.logging(),
+                MfaService.notConfigured(), DeveloperSecrets.unconfigured(), UOW);
+        var keys = SigningKeys.generateEphemeral();
+        var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
+        var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            PrincipalApi.register(routes, realState);
+        })) {
+            String email = "flag-real-link-" + RUN + "@example.test";
+            var r = h.post("/api/principals/users",
+                    "{\"email\":\"" + email + "\",\"name\":\"RealLink\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                            + "\",\"returnInviteLink\":true}", anchor());
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            String link = json(r).get("inviteLink").asText();
+            assertThat(link).as("mutant: interface method not minting").contains("/auth/set-password?token=");
+            String raw = link.substring(link.indexOf("token=") + "token=".length());
+            var token = tokens.findByHash(ResetToken.hash(raw)).orElseThrow(() -> new AssertionError("no token stored for the returned link"));
+            assertThat(token.purpose()).as("mutant: interface method not minting").isEqualTo(ResetToken.Purpose.INVITE);
+            assertThat(token.isExpired(Instant.now())).isFalse();
+        }
     }
 }

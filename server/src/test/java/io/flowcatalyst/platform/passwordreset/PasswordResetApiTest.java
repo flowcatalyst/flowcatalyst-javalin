@@ -1,13 +1,16 @@
 package io.flowcatalyst.platform.passwordreset;
 
+import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshToken;
+import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
 import io.flowcatalyst.platform.auth.mfa.MailSender;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaRepository;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.mfa.Totp;
+import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomain;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
@@ -20,8 +23,12 @@ import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
 import io.flowcatalyst.platform.mail.Mail;
 import io.flowcatalyst.platform.notify.Notifications;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.publicapi.EmailTheme;
 import io.flowcatalyst.platform.shared.TestHttp;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
@@ -120,7 +127,7 @@ class PasswordResetApiTest {
                 GRANTS, NOTICES, new PortalPasswords() {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, ApprovalQueue.none(), false, MOVABLE);
+                }, ApprovalQueue.none(), false, MOVABLE, null, null);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             PasswordResetApi.register(routes, state);
@@ -366,6 +373,238 @@ class PasswordResetApiTest {
             PORTAL.set(PortalPasswords.notWired());
             DB.deleteFrom(IAM_PASSWORD_RESET_TOKENS).where(IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.eq(identityId)).execute();
         }
+    }
+
+    // ── password-setup/request (app-managed-invitations §3) ─────────────────
+
+    @Test
+    void passwordSetupRequestIssuesAnInviteOnlyForAnEligiblePasswordlessInternalUser() {
+        String email = "setup-" + RUN + "@example.com";
+        String pid = user(email, null, null);
+        SENT.clear();
+        var r = http.post("/auth/password-setup/request", Json.write(Map.of("email", email.toUpperCase(Locale.ROOT))));
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(json(r).get("message").asString())
+                .isEqualTo("If your account needs a password, we've emailed you a link to create it.");
+        assertThat(SENT).hasSize(1);
+        assertThat(SENT.getFirst().subject()).isEqualTo("Set your password");
+        assertThat(SENT.getFirst().html()).contains(BASE + "/auth/set-password?token=");
+        var token = TOKENS.findByHash(ResetToken.hash(linkToken(SENT.getFirst()))).orElseThrow();
+        assertThat(token.principalId()).as("mutant: eligibility wrong").isEqualTo(pid);
+        assertThat(token.purpose()).as("mutant: purpose wrong").isEqualTo(ResetToken.Purpose.INVITE);
+        assertThat(Duration.between(token.createdAt(), token.expiresAt())).isEqualTo(Duration.ofHours(72));
+
+        assertThat(http.post("/auth/password-setup/request", "not json").statusCode()).isEqualTo(400);
+        assertThat(json(http.post("/auth/password-setup/request", "not json")).get("error").asString()).isEqualTo("INVALID_BODY");
+    }
+
+    @Test
+    void passwordSetupRequestIsSilentForIneligibleAddressesButAlwaysAnswersTheSame200() {
+        String withPassword = "setup-pw-" + RUN + "@example.com";
+        user(withPassword, PasswordHash.hash(OLD_PASSWORD), null);
+
+        String oidcDomain = "setup-oidc-" + RUN + ".example";
+        var oidcIdp = IdentityProvider.create("idp-setup-oidc-" + RUN, "Okta " + RUN, IdentityProviderType.OIDC)
+                .withOidc("https://okta." + RUN + ".example", "client-" + RUN, null, false, null);
+        var oidcMapping = EmailDomainMapping.create(EmailDomain.parse(oidcDomain), oidcIdp.id(), ScopeType.ANCHOR);
+        UOW.inTransaction(tx -> { IDPS.persist(oidcIdp, tx.dbTx()); MAPPINGS.persist(oidcMapping, tx.dbTx()); return null; });
+        String oidcMapped = "setup-oidc-" + RUN + "@" + oidcDomain;
+        String oidcMappedId = user(oidcMapped, null, null); // passwordless, but the domain signs in through its IdP
+
+        try {
+            SENT.clear();
+            for (String email : List.of(withPassword, oidcMapped, "nobody-setup-" + RUN + "@example.com")) {
+                var r = http.post("/auth/password-setup/request", Json.write(Map.of("email", email)));
+                assertThat(r.statusCode()).as(email).isEqualTo(200);
+                assertThat(json(r).get("message").asString()).as(email)
+                        .isEqualTo("If your account needs a password, we've emailed you a link to create it.");
+            }
+            assertThat(SENT).as("mutant: leak or over-issue").isEmpty();
+            assertThat(DB.fetchCount(IAM_PASSWORD_RESET_TOKENS, IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.eq(oidcMappedId)))
+                    .as("no token for an SSO-mapped, otherwise-eligible account").isZero();
+        } finally {
+            DB.deleteFrom(TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS).where(TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS.EMAIL_DOMAIN_MAPPING_ID.eq(oidcMapping.id())).execute();
+            DB.deleteFrom(TNT_EMAIL_DOMAIN_MAPPINGS).where(TNT_EMAIL_DOMAIN_MAPPINGS.ID.eq(oidcMapping.id())).execute();
+            DB.deleteFrom(OAUTH_IDENTITY_PROVIDERS).where(OAUTH_IDENTITY_PROVIDERS.ID.eq(oidcIdp.id())).execute();
+        }
+    }
+
+    @Test
+    void passwordSetupRequestKeepsASafeRelativeRedirectAndDropsAnythingElseStoredAsNull() {
+        String safeEmail = "setup-redirect-safe-" + RUN + "@example.com";
+        user(safeEmail, null, null);
+        SENT.clear();
+        http.post("/auth/password-setup/request", Json.write(Map.of("email", safeEmail, "redirectUri", "/dashboard")));
+        String raw = linkToken(SENT.getFirst());
+        assertThat(TOKENS.findByHash(ResetToken.hash(raw)).orElseThrow().redirectUri())
+                .as("mutant: open redirect — a safe path is dropped too").isEqualTo("/dashboard");
+
+        int i = 0;
+        for (String unsafe : List.of("//evil.example", "https://evil.example", "/\\evil.example", "not-a-path")) {
+            String email = "setup-redirect-" + RUN + "-" + (i++) + "@example.com";
+            user(email, null, null);
+            SENT.clear();
+            http.post("/auth/password-setup/request", Json.write(Map.of("email", email, "redirectUri", unsafe)));
+            String r2 = linkToken(SENT.getFirst());
+            assertThat(TOKENS.findByHash(ResetToken.hash(r2)).orElseThrow().redirectUri())
+                    .as("mutant: open redirect — kept an unsafe value: " + unsafe).isNull();
+        }
+    }
+
+    // ── confirm: session establishment (app-managed-invitations §4) ─────────
+
+    private static PasswordResetApi.State sessionState(TokenIssuer issuer, SessionCookie cookie) {
+        return new PasswordResetApi.State(LINKS, TOKENS, PRINCIPALS, UOW, MFA, MFA_TOKENS, new DomainPolicy.Evaluator(MAPPINGS),
+                GRANTS, NOTICES, new PortalPasswords() {
+                    @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
+                    @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
+                }, ApprovalQueue.none(), false, MOVABLE, issuer, cookie);
+    }
+
+    /// Pins the whole §4 wire: the cookie's own attributes, its `Max-Age`
+    /// equal to the minting issuer's TTL, `sessionEstablished:true` in the
+    /// body, and — the real proof, not just a header — the cookie actually
+    /// authenticates a follow-up request through the ordinary Authenticator.
+    @Test
+    void confirmOfAnInviteTokenWithoutTwoFactorMintsASessionThatAuthenticatesGetAuthMe() {
+        String email = "session-" + RUN + "@example.com";
+        String pid = user(email, null, null);
+        SENT.clear();
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+        String raw = linkToken(SENT.getFirst());
+
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        var verifier = new JwtVerifier(new JwtVerifier.Config(BASE, new JwtVerifier.RsaKeys(KEYS.publicKey())));
+        var authenticator = new Authenticator(verifier, new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS)), Authenticator.Config.of(false));
+
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/auth/me", authenticator);
+            routes.get("/auth/me", Auth.scoped(ctx -> ctx.json(Map.of("principalId", Auth.current().principalId()))));
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).get("sessionEstablished").asBoolean()).as("mutant: mint skipped").isTrue();
+            String cookieHeader = r.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_session="))
+                    .findFirst().orElseThrow(() -> new AssertionError("no fc_session cookie in " + r.headers().map()));
+            assertThat(cookieHeader).contains("Path=/").contains("HttpOnly").contains("SameSite=Lax")
+                    .as("mutant: wrong TTL").contains("Max-Age=" + TokenIssuer.SESSION_TTL_SECONDS);
+
+            String pair = cookieHeader.substring(0, cookieHeader.indexOf(';'));
+            var me = h.get("/auth/me", "Cookie", pair);
+            assertThat(me.statusCode()).as(me.body()).isEqualTo(200);
+            assertThat(json(me).get("principalId").asString()).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void confirmOfAResetTokenNeverMintsASessionEvenWhenWired() {
+        String email = "session-reset-" + RUN + "@example.com";
+        user(email, PasswordHash.hash(OLD_PASSWORD), null);
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            SENT.clear();
+            h.post("/auth/password-reset/request", Json.write(Map.of("email", email)));
+            String raw = linkToken(SENT.getFirst());
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).has("sessionEstablished")).as("mutant: purpose gate removed").isFalse();
+            assertThat(r.headers().firstValue("set-cookie")).as("no session cookie for a RESET token").isEmpty();
+        }
+    }
+
+    @Test
+    void confirmOfAnInviteWithATwoFactorRequiredDomainNeverMintsASession() {
+        String email = "session-2fa-" + RUN + "@" + strictDomain;
+        String pid = user(email, null, null);
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            SENT.clear();
+            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+            String raw = linkToken(SENT.getFirst());
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).get("status").asString()).isEqualTo("enrollment_required");
+            assertThat(json(r).has("sessionEstablished")).as("mutant: 2FA bypass").isFalse();
+            assertThat(r.headers().firstValue("set-cookie")).isEmpty();
+        }
+    }
+
+    /// The `status == "ok"` path above never even reaches `maybeEstablishSession`
+    /// for a domain that requires 2FA (`postResetTwoFactor` already answers
+    /// `enrollment_required` when the account has no confirmed factor) — so
+    /// that test alone cannot pin the defence-in-depth check *inside*
+    /// `maybeEstablishSession`. This one forces `status == "ok"` on a
+    /// 2FA-required domain by enrolling the factor first (a re-invited,
+    /// already-enrolled user), so the only thing standing between the
+    /// invite and a live session is that inner check.
+    @Test
+    void confirmOfAnInviteNeverMintsWhenTheDomainRequiresTwoFactorEvenForAnAlreadyEnrolledUser() {
+        String email = "session-2fa-enrolled-" + RUN + "@" + strictDomain;
+        String pid = user(email, null, null);
+        enrolTotp(pid);
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            SENT.clear();
+            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+            String raw = linkToken(SENT.getFirst());
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).get("status").asString()).as("sanity: status is ok, not enrollment_required, here").isEqualTo("ok");
+            assertThat(json(r).has("sessionEstablished")).as("mutant: the inner requires2fa() check dropped").isFalse();
+            assertThat(r.headers().firstValue("set-cookie")).isEmpty();
+        }
+    }
+
+    @Test
+    void confirmNeverMintsASessionWhenTheStateIsUnwired() {
+        String email = "session-unwired-" + RUN + "@example.com";
+        String pid = user(email, null, null);
+        SENT.clear();
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+        String raw = linkToken(SENT.getFirst());
+        // `http` above is built on the shared `state`, whose issuer/cookie are null.
+        var r = http.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).has("sessionEstablished")).as("mutant: null-safety — minted anyway").isFalse();
+        assertThat(r.headers().firstValue("set-cookie")).isEmpty();
+    }
+
+    // ── unit tables ───────────────────────────────────────────────────────
+
+    @Test
+    void shouldAttemptSessionMintTable() {
+        assertThat(PasswordResetApi.shouldAttemptSessionMint(ResetToken.Purpose.INVITE, "ok", true)).isTrue();
+        assertThat(PasswordResetApi.shouldAttemptSessionMint(ResetToken.Purpose.INVITE, "ok", false)).as("not wired").isFalse();
+        assertThat(PasswordResetApi.shouldAttemptSessionMint(ResetToken.Purpose.RESET, "ok", true)).as("wrong purpose").isFalse();
+        assertThat(PasswordResetApi.shouldAttemptSessionMint(ResetToken.Purpose.INVITE, "enrollment_required", true)).as("wrong status").isFalse();
+        assertThat(PasswordResetApi.shouldAttemptSessionMint(ResetToken.Purpose.INVITE, null, true)).as("null status").isFalse();
+    }
+
+    @Test
+    void safeRelativeRedirectTable() {
+        assertThat(PasswordResetApi.safeRelativeRedirect("/dashboard")).isEqualTo("/dashboard");
+        assertThat(PasswordResetApi.safeRelativeRedirect("/a/b?x=1")).isEqualTo("/a/b?x=1");
+        assertThat(PasswordResetApi.safeRelativeRedirect("//evil.example")).isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect("/\\evil.example")).isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect("https://evil.example")).isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect("evil.example")).isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect("")).isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect(null)).isNull();
     }
 
     // ── helpers ────────────────────────────────────────────────────────────

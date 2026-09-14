@@ -369,6 +369,76 @@ class LoginApiTest {
         assertThat(json(missing).get("error").asString()).isEqualTo("EMAIL_REQUIRED");
     }
 
+    // ── check-domain: passwordSetupRequired (app-managed-invitations §2) ────
+
+    /// Pins: the flag is present and `true` only for an eligible (active,
+    /// passwordless, internal, not federated) account — never `false`, and
+    /// never present on the `external` branch even for an otherwise-eligible
+    /// account on an SSO-mapped domain.
+    @Test
+    void checkDomainReportsPasswordSetupRequiredOnlyForAnEligiblePasswordlessAccount() {
+        String eligible = "setup-" + RUN + "@example.com";
+        String eligibleId = principal(eligible, null);
+        String inactive = "inactive-" + RUN + "@example.com";
+        String inactiveId = principal(inactive, null);
+        DB.update(IAM_PRINCIPALS).set(IAM_PRINCIPALS.ACTIVE, false).where(IAM_PRINCIPALS.ID.eq(inactiveId)).execute();
+        try {
+            var eligibleBody = http.post("/auth/check-domain", "{\"email\":\"" + eligible + "\"}", "Content-Type", "application/json");
+            assertThat(json(eligibleBody).toString()).as("exactly authMethod + passwordSetupRequired, mutant: flag never set")
+                    .isEqualTo("{\"authMethod\":\"internal\",\"passwordSetupRequired\":true}");
+
+            var withPassword = http.post("/auth/check-domain", "{\"email\":\"" + userEmail + "\"}", "Content-Type", "application/json");
+            assertThat(json(withPassword).has("passwordSetupRequired")).as("a password is already set, mutant: predicate wrong / emits false").isFalse();
+
+            var inactiveBody = http.post("/auth/check-domain", "{\"email\":\"" + inactive + "\"}", "Content-Type", "application/json");
+            assertThat(json(inactiveBody).has("passwordSetupRequired")).as("inactive account").isFalse();
+
+            var unknown = http.post("/auth/check-domain", "{\"email\":\"nobody-setup-" + RUN + "@example.com\"}", "Content-Type", "application/json");
+            assertThat(json(unknown).has("passwordSetupRequired")).as("unknown address").isFalse();
+
+            // A passwordless (otherwise-eligible) account on the SSO-mapped domain: if the
+            // flag's computation ever ran on the external branch this would observe it.
+            String ssoEligible = "sso-eligible-" + RUN + "@" + ssoDomain;
+            String ssoEligibleId = principal(ssoEligible, null);
+            try {
+                var external = http.post("/auth/check-domain", "{\"email\":\"" + ssoEligible + "\"}", "Content-Type", "application/json");
+                assertThat(json(external).get("authMethod").asString()).isEqualTo("external");
+                assertThat(json(external).has("passwordSetupRequired")).as("mutant: flag leaks onto the external branch").isFalse();
+            } finally {
+                DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(ssoEligibleId)).execute();
+            }
+        } finally {
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.in(eligibleId, inactiveId)).execute();
+            DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.IDENTIFIER.in(eligible, inactive, "nobody-setup-" + RUN + "@example.com")).execute();
+        }
+    }
+
+    /// Pins: a backoff-locked (identifier, ip) pair omits the flag for an
+    /// otherwise-eligible account, and check-domain itself never writes a
+    /// login-attempt row (`BackoffCheck#check` is read-only).
+    @Test
+    void checkDomainOmitsPasswordSetupRequiredWhenThePairIsBackedOffAndRecordsNothing() {
+        var policy = new BackoffPolicy(1, 300, 300, 3600, 100, 900);
+        String email = "cd-backoff-" + RUN + "@example.com";
+        String id = principal(email, null);
+        try (var tight = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            LoginApi.register(routes, state(ATTEMPTS, new BackoffCheck(ATTEMPTS, policy), MfaChallenge.none()));
+        })) {
+            assertThat(tight.post("/auth/login", body(email, "wrong"), "Content-Type", "application/json").statusCode()).isEqualTo(401);
+            assertThat(tight.post("/auth/login", body(email, "wrong"), "Content-Type", "application/json").statusCode()).isEqualTo(401);
+            int before = attempts(email);
+
+            var locked = tight.post("/auth/check-domain", "{\"email\":\"" + email + "\"}", "Content-Type", "application/json");
+            assertThat(locked.statusCode()).isEqualTo(200);
+            assertThat(json(locked).has("passwordSetupRequired")).as("mutant: limiter not consulted here").isFalse();
+            assertThat(attempts(email)).as("mutant: check-domain records an attempt row").isEqualTo(before);
+        } finally {
+            DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.IDENTIFIER.eq(email)).execute();
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(id)).execute();
+        }
+    }
+
     @Test
     void legacyCheckDomainKeepsItsShapeButNeverFabricatesAnAuthorizationUrl() {
         var r = http.get("/auth/check-domain?email=x@" + ssoDomain);

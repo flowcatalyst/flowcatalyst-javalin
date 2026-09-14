@@ -1493,3 +1493,12 @@ auto-grant apply to `USER` principals only (a service account holds exactly
 its roles' permissions), or should service accounts be created with a
 narrower scope? Either way the parity corpus should gain a step proving a
 provisioned service account is refused an admin route.
+
+## Invite confirm signs the user in without a login-attempt row (2026-09-14)
+
+`app-managed-invitations.md` §4: a `POST /auth/password-reset/confirm` of an
+INVITE token on a domain without 2FA now sets `fc_session` itself. Go writes
+no `iam_login_attempts` row for that sign-in, so `/auth/login-history` and
+the backoff timeline never see it; Java mirrors Go. Owner question: should
+the invite sign-in record a SUCCESS attempt (type `PASSWORD`? a new type?)
+so the history is complete? Both sides change together.

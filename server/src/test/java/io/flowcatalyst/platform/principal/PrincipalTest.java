@@ -298,6 +298,43 @@ class PrincipalTest {
         assertThat(Principal.newUser(EMAIL, UserScope.ANCHOR).toPartner("clt_x").grantClientIds()).containsExactly("clt_x");
     }
 
+    // ── awaitingPasswordSetup (spec app-managed-invitations.md §2) ──────────
+
+    private static Principal awaitingCase(boolean active, PrincipalType type, String passwordHash, String provider, ExternalIdentity external) {
+        Instant now = Instant.now();
+        UserIdentity identity = type == PrincipalType.SERVICE ? null
+                : new UserIdentity("a@b.io", provider, null, passwordHash, null, null, null);
+        return new Principal("prn_x", type, UserScope.CLIENT, null, null, "n", active, identity,
+                type == PrincipalType.SERVICE ? "sa_1" : null, List.of(), List.of(), List.of(), true, external, now, now);
+    }
+
+    /// The nine Go cases (`Principal.awaitingPasswordSetup`, spec §2/§3):
+    /// every axis of the predicate flipped independently, plus the two cases
+    /// the spec calls out explicitly — a non-OIDC provider label is still
+    /// eligible, and the check is the exact-null test on `passwordHash`, not
+    /// blank-or-null.
+    @Test
+    void awaitingPasswordSetupTable() {
+        assertThat(awaitingCase(true, PrincipalType.USER, null, null, null).awaitingPasswordSetup())
+                .as("baseline: active, passwordless, internal, not federated").isTrue();
+        assertThat(awaitingCase(false, PrincipalType.USER, null, null, null).awaitingPasswordSetup())
+                .as("mutant: active dropped from the predicate — inactive account").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.SERVICE, null, null, null).awaitingPasswordSetup())
+                .as("mutant: isUser()/userIdentity!=null dropped — a service principal").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.USER, "$argon2id$hash", null, null).awaitingPasswordSetup())
+                .as("mutant: passwordHash==null dropped — a password is already set").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.USER, null, "OIDC", null).awaitingPasswordSetup())
+                .as("mutant: isFederated() dropped — an OIDC-provider user").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.USER, null, null, new ExternalIdentity("okta", "sub1")).awaitingPasswordSetup())
+                .as("mutant: isFederated() dropped — an external identity regardless of provider label").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.USER, null, "LEGACY_IMPORT", null).awaitingPasswordSetup())
+                .as("spec: a non-OIDC provider label is still eligible — mutant: any non-null provider treated as federated").isTrue();
+        assertThat(awaitingCase(false, PrincipalType.USER, null, "OIDC", null).awaitingPasswordSetup())
+                .as("inactive AND federated together").isFalse();
+        assertThat(awaitingCase(true, PrincipalType.USER, "", null, null).awaitingPasswordSetup())
+                .as("mutant: passwordHash.isBlank() used instead of == null — an empty (not null) hash").isFalse();
+    }
+
     @Test
     void reachesClientIsHomeOrGrant() {
         var p = new Principal("prn_1", PrincipalType.USER, UserScope.PARTNER, null, null, "n", true, UserIdentity.of("a@b.io"), null,

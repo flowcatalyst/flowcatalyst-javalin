@@ -16,9 +16,12 @@ class LockfileTest {
         // updatePortalApp, deletePortalApp — ensurePortalUser/listPortalUsers extended
         // in place, no new path. +1 path / +1 operation at the 13e80c9 re-vendor:
         // assignUnassignedPortalUsers (`POST /api/portal-apps/{id}/assign-unassigned`).
-        assertThat(lock.pathCount()).isEqualTo(186);
+        // +1 path / +1 operation at the f81fd5a re-vendor: `GET /api/dispatch/router-config`
+        // (`router-config-auth.md` R3′, until then a Java-first route outside the lockfile);
+        // the same re-vendor added the CreatePrincipalResponse schema (`app-managed-invitations.md`).
+        assertThat(lock.pathCount()).isEqualTo(187);
         var ops = lock.operations();
-        assertThat(ops).hasSize(253);
+        assertThat(ops).hasSize(254);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");

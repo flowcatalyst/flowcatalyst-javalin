@@ -329,9 +329,13 @@ public final class Platform {
         var resetLinks = new ResetLinks(resetTokenRepo, mail, mfaBranding::emailTheme, env.jwtIssuer(), Clock.systemUTC());
         var resetApprovalRepo = new ResetApprovalRepository(pool);
         var resetApprovalQueue = new ResetApprovalQueue(resetApprovalRepo, loginPrincipalRepo, notices, uow, env.jwtIssuer());
+        // The confirm route signs an invited user in on success (app-managed-invitations §4):
+        // the same tokenIssuer and a SessionCookie built from the same cookiesSecure/TTL the
+        // login route uses above — the two cookies must never drift.
         PasswordResetApi.register(routes, new PasswordResetApi.State(resetLinks, resetTokenRepo, loginPrincipalRepo, uow, mfa,
                 mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, portalPasswords,
-                resetApprovalQueue, false, Clock.systemUTC()));
+                resetApprovalQueue, false, Clock.systemUTC(), tokenIssuer,
+                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds())));
         // /oauth/authorize and /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
@@ -681,7 +685,7 @@ public final class Platform {
                 || p.equals("/auth/2fa/verify") || p.equals("/auth/2fa/challenge/email")
                 || p.equals("/auth/2fa/enroll/totp/begin") || p.equals("/auth/2fa/enroll/totp/confirm")
                 || p.equals("/auth/2fa/enroll/email/begin") || p.equals("/auth/2fa/enroll/email/confirm")
-                || p.startsWith("/auth/password-reset/")
+                || p.startsWith("/auth/password-reset/") || p.equals("/auth/password-setup/request")
                 || p.equals("/auth/webauthn/authenticate/begin") || p.equals("/auth/webauthn/authenticate/complete")
                 || p.startsWith("/portal/")
                 || p.startsWith("/api/public/") || p.equals("/api/config/platform")

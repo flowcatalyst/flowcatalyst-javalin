@@ -130,6 +130,14 @@ public record Principal(
         return externalIdentity != null || (userIdentity != null && userIdentity.isOidc());
     }
 
+    /// Login-detected app-managed invitation (spec `app-managed-invitations.md`
+    /// §2): an active, non-federated user with no password set yet — the
+    /// single definition §2 (check-domain) and §3 (password-setup/request)
+    /// both read, so neither re-derives it.
+    public boolean awaitingPasswordSetup() {
+        return active && isUser() && userIdentity != null && userIdentity.passwordHash() == null && !isFederated();
+    }
+
     public boolean hasRole(String roleName) {
         return roles.stream().anyMatch(ra -> ra.role().equals(roleName));
     }
