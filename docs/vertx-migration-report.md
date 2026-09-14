@@ -757,3 +757,68 @@ confirmed no Javalin/Jetty classes reach the fcdev fat jar.
   wiring of it needed no edit at all. `McpCommand`/`McpCommandTest` (fcdev's stdio
   `fcdev mcp` subcommand) are a separate transport from this phase's streamable-HTTP one
   and were not touched.
+
+## Phase 4 — verification and measurement (orchestrator, 2026-09-14)
+
+Branch `vertx-2`: `d02475f` (phase 1), `12b01ce` and `3565581` (P2a parts A and B),
+`289f480` (phase 3). Every phase was verified by the orchestrator in this worktree,
+uncontended, after the agent's own run: the server suite from `clean` (4,010 → 4,019 →
+4,028 → 4,036 as the phases added tests; one router timing test failed once during the
+Mac's overnight maintenance sleep and passes alone in 13 s), fcdev 108, parity against a
+clean export of Go `e87b88d` (its working tree does not compile mid-edit) — **1,311 steps,
+0 DIFF, 0 ERROR after every phase, byte-identical under the new listener** — and the Java
+e2e 51/51 (two e2e runs of 17 and 9.5 minutes were the machine suspending; the signature
+is a multi-minute gap in fcdev's own log plus Hikari's "clock leap" on every pool, and
+the same suite runs in 2.2 minutes under `caffeinate -dims`). The OpenAPI lock is
+unchanged against `main`; `tools/jooq-verify.sh` is green. **Not run:** the native
+image (`-Pnative`; GraalVM needs more memory than this machine had free during the
+session) and `conformance/` (the Go-runner mediation check; nothing in these phases
+touched mediation). Both are owed before a merge.
+
+### `bench/real`, the brief's §7 (2026-09-14, same rig, same seed, back to back)
+
+Rig as in `RESULTS.md`: one container each on Docker, Postgres pinned away, wrk on cpus
+2–9, 60 s warm-up, 10 s measured, `GET /api/event-types` under a cookie session. The rig
+gained a `CONNS` knob (default 1,000, the historical shape). The branch's exec jar in the
+same `Dockerfile.java` (no explicit `-Xmx`, as every earlier Java row; the JVM takes a
+quarter of the container). Go image: the same `bench-real-go` the 2026-09-08 rows used.
+
+**At 1,000 connections the branch refuses the flood, as ruled.** 758,277 of 780,033
+responses at two CPUs were `503 OVERLOADED` with `Retry-After: 1`: the API-read queue
+holds 8 × 30 workers, and wrk never backs off, so the number wrk prints (77,844 req/s) is
+rejection throughput. Admitted work: 2,176 successful requests/s at two CPUs and 953 on
+one pinned core, with memory bounded (507 MB at 2 GB, 402 MB at 1 GB) — the "does not go
+crazy" property, measured. Go at 1,000 connections: 2,481 req/s, p99 471 ms; 1,392 and
+p99 753 ms on one core. The two shapes are not comparable as capacity because the branch
+spends CPU on the refusals; they are comparable as behaviour under a flood.
+
+**At 200 connections (under the bound, every response a 200) the branch is at or above
+Go:**
+
+| shape | branch req/s | Go req/s | share | branch p50 / p99 | Go p50 / p99 | memory after | switches/request |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2 CPUs, 2 GB | 2,573 | 2,196 | **117%** | 67 / 539 ms | 90 / 112 ms | 453 vs 69 MB | 9.9 vs 7.5 |
+| 1 pinned core, 1 GB | 1,311 | 1,325 | **99%** | 136 / 210 ms | 149 / 172 ms | 403 vs 42 MB | 13.1 vs 7.2 |
+
+Read against the 2026-09-08 final table (Java 93–96% of Go at two CPUs, 64–69% at one
+core, both at 1,000 connections): throughput is no longer the gap. Two things are:
+
+- **The two-CPU p99 (539 ms against Go's 112 ms)** while p50 is better than Go's. The
+  median says the admitted path is faster; the tail says something periodic stalls it —
+  the JVM's collector on a quarter-of-container heap is the first suspect (memory after
+  the run is 453 MB with nothing bounding it), the JIT the second. The brief's P5 item
+  (an explicit `-Xmx`) was not applied to the bench image so the row stays comparable
+  with the earlier rows; it is the next measurement to take.
+- **Context switches per request: 9.9 and 13.1 against Go's 7.5 and 7.2**, where the
+  first attempt's pinned reads measured 0.82 on the `/hello` rig. This is §11.4's
+  question answered with data: per-statement reads cross the untimed gate once per
+  statement (about eight per request here) instead of once per request, and each
+  crossing is a park and an unpark. It costs nothing visible in throughput at either
+  shape, and it is what lets two read workers share one connection; but if the
+  one-core switch count matters more than the worker ratio, reads should pin again
+  (`Group#mode()` is the one line). That is a ruling to take with these numbers, not a
+  defect.
+
+Memory: the branch holds 400–450 MB where Go holds 40–70 MB. The brief's §1 says the
+capped-heap rows were confirmation runs, not the target; the bench image runs with the
+JVM default, and the P5 `-Xmx` decision is still open.
