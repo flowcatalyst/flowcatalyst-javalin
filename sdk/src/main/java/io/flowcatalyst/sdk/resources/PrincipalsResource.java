@@ -95,7 +95,29 @@ public final class PrincipalsResource {
         return filtered;
     }
 
-    /** Create a new user principal. */
+    /**
+     * Create a new user principal.
+     *
+     * <p>{@code sendInvitation} (default {@code true}) controls whether the
+     * platform emails the new user at all: a passwordless user gets the
+     * "set your password" invite, a user created with a password gets the
+     * "account created" welcome. Set to {@code false} when the calling
+     * application is taking over the invitation itself — this suppresses
+     * BOTH emails. Ignored for service accounts and OIDC/federated users,
+     * who never get platform email anyway.
+     *
+     * <p>{@code returnInviteLink} (default {@code false}), when {@code true},
+     * mints the 72-hour "set your password" link and returns it as {@code
+     * inviteLink} on the response instead of emailing it — only for a
+     * passwordless INTERNAL user (a no-op, field left absent, otherwise).
+     * {@code returnInviteLink: true} ALWAYS suppresses the platform's own
+     * invite email, even when {@code sendInvitation} is true or unset — the
+     * token can only be minted once, so asking for the link back implies
+     * you're sending your own email with it.
+     *
+     * <p>{@code inviteLink} is a live 72-hour bearer credential — treat it
+     * exactly like a password and never log it.
+     */
     public PrincipalResponse createUser(CreateUserRequest data) {
         return transport.post("/api/principals/users", data, PrincipalResponse.class);
     }

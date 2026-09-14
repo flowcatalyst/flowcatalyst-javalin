@@ -84,6 +84,42 @@ driver.withTransaction(tx -> {
 Event `type`s and dispatch-job `code`s must be fully qualified
 `application:subdomain:aggregate:action` strings — the SDK rejects bare codes.
 
+## Creating users and invitations
+
+`principals().createUser(...)` accepts two optional flags that control who
+sends the "set your password" mail. Prefer pattern 1 when you want the user
+to land back inside your own application.
+
+**1. Login-detected (recommended).** Create the user with `sendInvitation:
+false` and send your own email that links to your application. The platform
+detects the passwordless account at the hosted login and handles password
+creation itself, then returns the user to your stored OAuth redirect.
+
+```java
+PrincipalResponse user = client.principals().createUser(new CreateUserRequest()
+        .email("new.user@example.com")
+        .name("New User")
+        .sendInvitation(false));
+// Send your own "welcome" email now, linking to your app.
+```
+
+**2. Embedded link.** Create the user with `returnInviteLink: true` and read
+`inviteLink` from the response to embed in your own email. The user sets a
+password on the platform and lands on the platform's own landing page.
+`returnInviteLink: true` always suppresses the platform's own invite email,
+even when `sendInvitation` is left at its default — the token can only be
+minted once, so asking for the link back means you are taking over delivery.
+
+```java
+PrincipalResponse user = client.principals().createUser(new CreateUserRequest()
+        .email("new.user@example.com")
+        .name("New User")
+        .returnInviteLink(true));
+String inviteLink = user.getInviteLink();
+// Embed inviteLink in your own email; never log it or store it in plaintext —
+// it is a live 72-hour bearer credential, exactly like a password.
+```
+
 ## Declaring definitions
 
 Programmatically:
