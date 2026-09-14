@@ -23,7 +23,7 @@ MVN := mvn
 NO_EMPTY := -Dsurefire.failIfNoSpecifiedTests=false
 
 .DEFAULT_GOAL := help
-.PHONY: help test test-router test-db test-one verify native native-server jar run stop init fresh clean toolchain frontend
+.PHONY: help test test-router test-db test-one verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -100,3 +100,31 @@ clean: ## Remove every target/
 
 frontend: ## Rebuild the embedded SPA from ./frontend into server/src/main/resources/frontend
 	tools/build-frontend.sh
+
+# ── SDKs ─────────────────────────────────────────────────────────────────
+# The TS + Laravel client SDKs (clients/) and the Java SDK (sdk/) all
+# generate from one document: server/src/main/resources/openapi/openapi.lock.json
+# IS the spec, so sdk-spec only copies it — no dump step, unlike Go's
+# `go run ./tools/dump-spec`. Releases tag <sdk>/vX.Y.Z; the split-*-sdk
+# workflows mirror TS/Laravel to their standalone repos (docs/sdk-release-plan.md).
+
+sdk-spec: ## Copy the OpenAPI lockfile into each SDK's openapi/openapi.json
+	cp server/src/main/resources/openapi/openapi.lock.json clients/typescript-sdk/openapi/openapi.json
+	cp server/src/main/resources/openapi/openapi.lock.json clients/laravel-sdk/openapi/openapi.json
+	cp server/src/main/resources/openapi/openapi.lock.json sdk/openapi/openapi.json
+
+sdk-generate: sdk-spec ## Regenerate the TS + Laravel SDK clients from the spec
+	cd clients/typescript-sdk && pnpm install --frozen-lockfile && pnpm run generate && pnpm run build
+	cd clients/laravel-sdk && XDEBUG_MODE=off composer install --no-interaction && XDEBUG_MODE=off php scripts/prepare-openapi.php && XDEBUG_MODE=off vendor/bin/jane-openapi generate --config-file=jane-openapi.php
+
+build-java-sdk: ## Build + test the Java SDK through the reactor (sdk/README.md)
+	$(MVN) -q -pl sdk -am verify
+
+release-ts-sdk: ## Cut a TypeScript SDK release: BUMP=… (bumps package.json, tags typescript-sdk/vX.Y.Z)
+	scripts/release.sh ts "$(BUMP)"
+
+release-laravel-sdk: ## Cut a Laravel SDK release: BUMP=… (tags laravel-sdk/vX.Y.Z)
+	scripts/release.sh laravel "$(BUMP)"
+
+release-java-sdk: ## Cut a Java SDK release: BUMP=… (bumps sdk/VERSION, tags java-sdk/vX.Y.Z)
+	scripts/release.sh java "$(BUMP)"

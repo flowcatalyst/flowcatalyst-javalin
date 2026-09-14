@@ -1,7 +1,8 @@
 # SDK release pipeline for this repo
 
-Status: plan, 2026-09-14 (owner asked: "split out the SDKs and send them to
-the SDK repos"). Decisions in §4; nothing built until they are made.
+Status: decided and built, 2026-09-14 (owner asked: "split out the SDKs and
+send them to the SDK repos"). §1–§3 are the analysis; §4 the rulings and
+what exists now.
 
 ## 1. What exists today
 
@@ -62,11 +63,40 @@ version-from-tag step), plus the owner's actions: two secrets, one new repo
 (if the Java source mirror is wanted), and the Go-side retirement of the
 split workflows and `clients/`.
 
-## 4. Decisions
+## 4. Decisions and what was built (2026-09-14)
 
-1. Move TypeScript and Laravel into this repo now (recommended, mirrors the
-   frontend ruling), or leave them in Go until cutover?
-2. Java SDK delivery: GitHub Packages artifact (recommended), a source
-   mirror repo, or both?
-3. The Go repo retires `clients/` and the split workflows on the same day
-   (required for 1; a hand-off note is written for the Go agent).
+Owner rulings, superseding the §3 estimate and the §4 questions originally
+posed here:
+
+1. **TypeScript and Laravel moved into this repo**, with history, exactly as
+   proposed (`clients/typescript-sdk`, `clients/laravel-sdk` — subtree-split
+   from Go `3f1d299`, done in an earlier unit). Both repos hold these SDK
+   sources for now; the Go repo has not retired its copies or split
+   workflows yet — see `docs/go-mirror/2026-09-14-sdk-copies.md` for the
+   tag-ownership rule this implies and the hand-off note for the Go agent.
+2. **Java SDK: version bump + tag only. No mirror, no artifact.** The
+   proposal above (GitHub Packages + optional source mirror) is *not* what
+   was built — the owner ruled the Java SDK gets the same treatment Go's
+   `clients/java-sdk` already had: a `VERSION` file, `scripts/release.sh
+   java <bump>` bumps it and tags `java-sdk/vX.Y.Z`, and that's the whole
+   release. No `distributionManagement`, no publish workflow, no
+   `flowcatalyst/java-sdk` source repo. `sdk/VERSION` was seeded at `0.0.4`
+   (Go's last `java-sdk/v*` tag) so the tag stream stays monotonic across
+   the move — same intent as the proposal above, achieved the simple way.
+   Unlike the TS/Laravel `VERSION` files, `sdk/VERSION` does **not** track
+   the module's Maven `<version>` — `sdk/` is versioned by this repo's
+   Maven reactor (currently a `-SNAPSHOT`), and `scripts/release.sh` does
+   not touch `sdk/pom.xml`.
+3. **Built:** `make sdk-spec` / `make sdk-generate` (Makefile), ported
+   `scripts/release.sh` (kinds `ts`, `laravel`, `java`; no `dev` kind — see
+   the script's own header for why), `split-typescript-sdk.yml` /
+   `split-laravel-sdk.yml` (ported from Go's, no Java equivalent),
+   `tools/sdk-drift.sh`, and the root `.gitignore` entries for
+   `clients/*/{node_modules,dist,vendor}/`.
+4. **Still open:** the owner adds `TYPESCRIPT_SDK_TOKEN` and
+   `LARAVEL_SDK_TOKEN` to this repo's Actions secrets before either split
+   workflow can run for real. The Go repo keeps its copies and workflows
+   (owner ruling: leave Go intact); the only rule is that a given
+   `<sdk>/vX.Y.Z` tag is cut from ONE repo — today that is Go — because
+   both workflows force-push the same standalone `main`. Moving a tag
+   stream here is a deliberate switch, not a side effect of this unit.

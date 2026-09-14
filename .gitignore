@@ -47,3 +47,11 @@ frontend/.vite/
 frontend/*.tsbuildinfo
 frontend/components.d.ts
 frontend/vite.config.d.ts
+
+# Client SDKs (source lives here since 2026-09-14 — docs/sdk-release-plan.md,
+# docs/go-mirror/2026-09-14-sdk-copies.md). Each folder also carries its own
+# .gitignore (clients/laravel-sdk's covers vendor/ + composer.lock already);
+# these are belt-and-braces so a build in either folder never shows as dirty.
+clients/*/node_modules/
+clients/*/dist/
+clients/*/vendor/

@@ -1,0 +1,93 @@
+# Laravel / PHP
+/vendor/
+composer.lock
+*.cache
+.env
+.env.backup
+.env.production.local
+Homestead.json
+Homestead.yaml
+auth.json
+npm-debug.log
+yarn-error.log
+/.vagrant
+/storage/*.key
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+
+# PHPUnit
+.phpunit.result.cache
+.phpunit.cache/
+phpunit.xml
+
+# PHP CS Fixer
+.php-cs-fixer.cache
+.php_cs.cache
+
+# PHPStan
+phpstan.neon
+phpstan-baseline.neon
+
+# Psalm
+psalm.xml
+
+# Coverage
+/coverage/
+.coverage
+clover.xml
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# IDEs - JetBrains (PhpStorm, IntelliJ, WebStorm)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDEs - VS Code
+.vscode/
+*.code-workspace
+
+# IDEs - Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# IDEs - Eclipse / PDT
+.project
+.buildpath
+.settings/
+.classpath
+
+# IDEs - NetBeans
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# IDEs - Vim / Neovim
+*.swp
+*.swo
+*~
+Session.vim
+.netrwhist
+tags
+
+# IDEs - Emacs
+*~
+\#*\#
+.#*
+*.elc
+
+# IDEs - Zed
+.zed/
+
+# Project-specific
+openapi-processed.json
