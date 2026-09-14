@@ -1,0 +1,247 @@
+/* Base styles */
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	/* 12.6px base scales every rem-based PrimeVue token down ~10% from the
+	   previous 14px (and ~21% from the browser default 16px). Pairs with the
+	   FlowCatalystPreset density tokens in main.ts. */
+	font-size: 12.6px;
+	font-family:
+		"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+		"Helvetica Neue", Arial, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	background: #f8fafc;
+	color: #1e293b;
+}
+
+/* Typography */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	margin: 0;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+/* Page layout utilities */
+.page-container {
+	/* Full width - no max-width constraint for data-heavy pages */
+}
+
+.page-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	margin-bottom: 16px;
+}
+
+.page-title {
+	font-size: 24px;
+	font-weight: 600;
+	color: #102a43;
+}
+
+.page-subtitle {
+	color: #627d98;
+	margin-top: 4px;
+	font-size: 14px;
+}
+
+/* Card styling */
+.fc-card {
+	background: white;
+	border-radius: 8px;
+	border: 1px solid #e2e8f0;
+	padding: 16px;
+}
+
+/* Utility classes */
+.w-full {
+	width: 100%;
+}
+
+/* Code segment styling (for event type codes) */
+.code-display {
+	font-family: "SF Mono", "Consolas", monospace;
+	font-size: 13px;
+}
+
+.code-segment {
+	padding: 2px 4px;
+	border-radius: 3px;
+}
+
+.code-segment.app {
+	background: #dbeafe;
+	color: #1d4ed8;
+}
+
+.code-segment.subdomain {
+	background: #dcfce7;
+	color: #15803d;
+}
+
+.code-segment.aggregate {
+	background: #fef3c7;
+	color: #b45309;
+}
+
+.code-segment.event {
+	background: #f3e8ff;
+	color: #7c3aed;
+}
+
+.code-separator {
+	color: #94a3b8;
+	margin: 0 1px;
+}
+
+/* FlowCatalyst brand colors */
+:root {
+	--fc-navy-50: #f0f4f8;
+	--fc-navy-100: #d9e2ec;
+	--fc-navy-200: #bcccdc;
+	--fc-navy-300: #9fb3c8;
+	--fc-navy-400: #829ab1;
+	--fc-navy-500: #627d98;
+	--fc-navy-600: #486581;
+	--fc-navy-700: #334e68;
+	--fc-navy-800: #243b53;
+	--fc-navy-900: #102a43;
+	--fc-navy-950: #0a1929;
+
+	--fc-accent-50: #e6f6ff;
+	--fc-accent-100: #bae3ff;
+	--fc-accent-200: #7cc4fa;
+	--fc-accent-300: #47a3f3;
+	--fc-accent-400: #2186eb;
+	--fc-accent-500: #0967d2;
+	--fc-accent-600: #0552b5;
+	--fc-accent-700: #03449e;
+	--fc-accent-800: #01337d;
+	--fc-accent-900: #002159;
+
+}
+
+/* PrimeVue customizations */
+.p-button {
+	font-weight: 500;
+}
+
+.p-datatable .p-datatable-thead > tr > th {
+	background: #f8fafc;
+	color: #334e68;
+	font-weight: 600;
+}
+
+.p-tag {
+	font-size: 12px;
+}
+
+/* Reserve the scrollbar gutter so modal drawers (blockScroll toggles body
+   overflow) don't reflow the page by the scrollbar width on open/close */
+html {
+	scrollbar-gutter: stable;
+}
+
+/* Rows that open the record drawer on click */
+.p-datatable .clickable-row {
+	cursor: pointer;
+}
+
+/* PrimeVue's blockScroll also pads the body by the scrollbar width — with the
+   gutter permanently reserved above, that padding would narrow the content by
+   ~15px on every drawer open (the "judder"). Neutralize it. */
+body.p-overflow-hidden {
+	padding-right: 0 !important;
+}
+
+/* Form layout kit (FcFormField / FcFormSection / FcDetailField) */
+.fc-form {
+	max-width: 900px;
+}
+
+.fc-form-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px 20px;
+}
+
+.fc-detail-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px 20px;
+}
+
+.fc-span-2 {
+	grid-column: 1 / -1;
+}
+
+/* Collapse to one column in narrow containers (FcFormSection bodies are
+   container roots — this is what makes the same markup work inside drawers) */
+@container (max-width: 640px) {
+	.fc-form-grid,
+	.fc-detail-grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+@media (max-width: 640px) {
+	.fc-form-grid,
+	.fc-detail-grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+.fc-field-label {
+	display: block;
+	font-size: 13px;
+	font-weight: 500;
+	color: #475569;
+	margin-bottom: 4px;
+}
+
+.fc-required {
+	color: #dc2626;
+}
+
+.fc-field-help {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+	color: #64748b;
+}
+
+.fc-field-error {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+	color: #dc2626;
+}
+
+.fc-detail-value {
+	font-size: 14px;
+	color: #1e293b;
+	overflow-wrap: break-word;
+}
+
+/* Inputs fill their form field */
+.fc-form-field .p-inputtext,
+.fc-form-field .p-select,
+.fc-form-field .p-multiselect,
+.fc-form-field .p-inputnumber,
+.fc-form-field .p-textarea,
+.fc-form-field .p-autocomplete {
+	width: 100%;
+}
