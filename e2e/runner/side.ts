@@ -114,6 +114,23 @@ export async function startSide(side: Side): Promise<RunningSide> {
         // set-if-unset) — not overridden here, matching how Go/Java's own
         // fcdev also sets its dev defaults itself rather than the runner
         // doing it on their behalf.
+        //
+        // NOT setting LOG_FORMAT=json here, deliberately, despite it being
+        // the one thing standing between mail.ts's parser and a working
+        // mail-from-log path on this side (see `docs/parity/e2e-run-1.md`
+        // "Mail-from-log path" for the full trace, incl. a real captured
+        // JSON mail line proving the shape is otherwise exactly right).
+        // e2e run #1 tried it and found it makes the full suite *worse*
+        // right now: with JSON logs on, `auth.spec.ts`'s "forgot password"
+        // test can finally find its mail and drive a real password reset
+        // through to completion, but then fails at the very next
+        // assertion (the pre-existing UNAUTHORIZED-vs-"invalid
+        // credentials" gap) *before* its cleanup step restores
+        // ADMIN_PASSWORD — permanently changing the shared admin's
+        // password for the rest of the run and cascading a login-page
+        // bounce into every other spec that reuses it. Land this only
+        // once that restore path is hardened (or the message gap closes)
+        // — not as a silent side effect of a runner env default.
     }
 
     const launcher = await resolveLauncher(side, scratchDir);
