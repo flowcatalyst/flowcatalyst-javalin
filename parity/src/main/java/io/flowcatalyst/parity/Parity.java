@@ -100,7 +100,17 @@ public final class Parity {
                 // directly here too.
                 rustEnv.put("FC_JWT_PRIVATE_KEY_PATH", jwtKeyPath.toString());
                 rustEnv.put("FC_JWT_PUBLIC_KEY_PATH", jwtPublicKeyPath.toString());
-                left = SubprocessSide.start("rust", rustBinaries.fcServer(), rustEnv, config.reportDir().resolve("rust.log"));
+                // Rust's webauthn-rs rejects a bare-IP rp_id against a
+                // non-HTTPS origin ("rp_id is not an effective_domain of
+                // rp_origin") — Go's/Java's webauthn stacks tolerate
+                // ParityEnv.baseEnv()'s FC_WEBAUTHN_RP_ID=127.0.0.1, Rust's
+                // does not. "localhost" host here (matching
+                // SubprocessSide.start's own baseUrl) plus this RP ID
+                // override keep origin/RP-id consistent for the Rust side
+                // only — same fix scripts/spec-diff.sh (Rust worktree)
+                // already carries for its own standalone fc-server boot.
+                rustEnv.put("FC_WEBAUTHN_RP_ID", "localhost");
+                left = SubprocessSide.start("rust", "localhost", rustBinaries.fcServer(), rustEnv, config.reportDir().resolve("rust.log"));
                 leftIds = rustSeed.ids();
             } else {
                 Map<String, String> goEnv = new LinkedHashMap<>(sideEnv);

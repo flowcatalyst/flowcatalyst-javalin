@@ -54,20 +54,30 @@ public final class SubprocessSide implements Side {
         return start("go", serverBinary, env, logFile);
     }
 
+    /// [#start(String, String, Path, Map, Path)] with the host every
+    /// pre-existing call site (Go, Java) already used: `"127.0.0.1"`.
+    public static SubprocessSide start(String label, Path serverBinary, Map<String, String> env, Path logFile) {
+        return start(label, "127.0.0.1", serverBinary, env, logFile);
+    }
+
     /// Starts `serverBinary` with `env` overlaid onto the harness process's
     /// own environment (`putAll`, not a replacement — a subprocess still
     /// needs its normal runtime environment, `PATH`/`HOME`/`TMPDIR`, none of
     /// which the harness's `env` map carries), a freshly-picked
     /// `FC_API_PORT`, an ephemeral `FC_METRICS_PORT`, and
     /// `FC_JWT_ISSUER` / `FC_EXTERNAL_BASE_URL` / `FC_WEBAUTHN_ORIGINS` set to
-    /// this side's own base URL (spec §2: "each side's own", "origin differs
-    /// per side"). Blocks until `/health` answers 200 or [#HEALTH_BUDGET]
-    /// elapses.
+    /// this side's own base URL, built from `host` (spec §2: "each side's
+    /// own", "origin differs per side"). `host` exists because Rust's
+    /// `webauthn-rs` (unlike Go's/Java's webauthn stacks) rejects a bare-IP
+    /// origin against `FC_WEBAUTHN_RP_ID` — the Rust caller passes
+    /// `"localhost"` and sets a matching RP ID; every other call site keeps
+    /// `"127.0.0.1"` via the 4-arg overload above, unchanged. Blocks until
+    /// `/health` answers 200 or [#HEALTH_BUDGET] elapses.
     ///
     /// @throws IllegalStateException the binary never became healthy; `logFile` holds its stderr/stdout
-    public static SubprocessSide start(String label, Path serverBinary, Map<String, String> env, Path logFile) {
+    public static SubprocessSide start(String label, String host, Path serverBinary, Map<String, String> env, Path logFile) {
         int port = freePort();
-        String baseUrl = "http://127.0.0.1:" + port;
+        String baseUrl = "http://" + host + ":" + port;
 
         Map<String, String> merged = new LinkedHashMap<>(env);
         merged.put("FC_API_PORT", String.valueOf(port));

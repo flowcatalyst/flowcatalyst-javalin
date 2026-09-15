@@ -80,8 +80,16 @@ public final class RustSeed {
                 "--admin-password", Seed.ADMIN_PASSWORD,
                 "--code", Seed.APP_CODE,
                 "--name", Seed.APP_NAME,
-                "--root", root.toString(),
-                "--no-oauth-client");
+                "--root", root.toString());
+        // No --no-oauth-client: the java side of every parity run —
+        // including RUST_JAVA — is seeded by Go's fcdev init (Seed.build,
+        // untouched by this lane), not by Java's own InitCommand, and Go's
+        // fcdev init unconditionally mints a service account + confidential
+        // OAuth client (flowcatalyst-go/cmd/fcdev/init.go, no flag gates
+        // it). Passing --no-oauth-client here left the Rust fixture with
+        // neither — an asymmetry the harness itself introduced, not a real
+        // product difference. Rust's init now runs its full default path,
+        // matching Go's shape.
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
         Map<String, String> env = pb.environment();
         env.put("FLOWCATALYST_APP_KEY", appKeyBase64);
