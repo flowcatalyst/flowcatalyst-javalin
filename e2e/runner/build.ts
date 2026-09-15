@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -108,4 +108,49 @@ export async function resolveJavaHome(): Promise<string> {
     if (process.env.JAVA_HOME) return process.env.JAVA_HOME;
     const { stdout } = await execFileAsync("mise", ["where", "java"]);
     return stdout.trim();
+}
+
+/// The Rust repo (read-only — never written to; a fresh `cargo build`
+/// writes only under `--target-dir`, out of the tree). Sibling of the Java
+/// repo by convention, matching [goRepoRoot]'s own default — overridable
+/// with `E2E_RUST_REPO` for a differently-laid-out checkout. L1 lane of
+/// `docs/java-parity-plan.md`.
+export function rustRepoRoot(): string {
+    return process.env.E2E_RUST_REPO ?? process.env.PARITY_RUST_SRC ?? path.resolve(JAVA_REPO_ROOT, "..", "flowcatalyst-rust");
+}
+
+/// `cargo build --release --bin fc-dev --target-dir <scratchDir>/rust-target`,
+/// with the binary written OUT of the Rust tree (`--target-dir`, never the
+/// default in-tree `target/`). Cached per process, exactly like
+/// [buildGoFcdev]. `FC_SKIP_FRONTEND_BUILD=1` mirrors
+/// `.github/workflows/ci.yml`'s convention — fc-dev's `build.rs` needs a
+/// non-empty `frontend/dist` to embed via rust-embed, not a real bundle,
+/// for e2e purposes (the e2e suite exercises the API, not the Rust SPA's
+/// own bundling).
+let rustBuildPromise: Promise<string> | null = null;
+
+export function buildRustFcdev(scratchDir: string): Promise<string> {
+    if (rustBuildPromise) return rustBuildPromise;
+    rustBuildPromise = (async () => {
+        const repo = rustRepoRoot();
+        if (!existsSync(repo)) {
+            throw new Error(`buildRustFcdev: Rust repo not found at ${repo} (set E2E_RUST_REPO or PARITY_RUST_SRC)`);
+        }
+        const targetDir = path.join(scratchDir, "rust-target");
+        const frontendDist = path.join(repo, "frontend", "dist");
+        if (!existsSync(path.join(frontendDist, "index.html"))) {
+            mkdirSync(frontendDist, { recursive: true });
+            writeFileSync(path.join(frontendDist, "index.html"), "<!doctype html><title>stub</title>");
+        }
+        const started = Date.now();
+        await execFileAsync("cargo", ["build", "--release", "--bin", "fc-dev", "--target-dir", targetDir], {
+            cwd: repo,
+            env: { ...process.env, FC_SKIP_FRONTEND_BUILD: "1" },
+            maxBuffer: 64 * 1024 * 1024,
+        });
+        const out = path.join(targetDir, "release", "fc-dev");
+        console.log(`>> cargo build --release --bin fc-dev done in ${Date.now() - started}ms -> ${out}`);
+        return out;
+    })();
+    return rustBuildPromise;
 }

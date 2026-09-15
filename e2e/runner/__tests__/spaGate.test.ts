@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideSpaGate } from "../spaGate.js";
+import { decideSpaGate, decideRouteAllowlistGate } from "../spaGate.js";
 
 describe("decideSpaGate", () => {
     it("proceeds when the bytes match", () => {
@@ -40,6 +40,35 @@ describe("asset hashes are part of the comparison", () => {
         const b = '<script type="module" src="/assets/index-vE2h-lD0.js"></script><link href="/assets/index-Bq2x_9Zk.css">';
         expect(decideSpaGate(a, b, "89b195e", false).matched).toBe(false);
         expect(decideSpaGate(a, a, "89b195e", false).matched).toBe(true);
+    });
+});
+
+describe("decideRouteAllowlistGate", () => {
+    const allowlist = { shared: ["/dashboard", "/applications"], javaOnly: ["/portal/login"] };
+
+    it("proceeds when every shared route is reachable", () => {
+        const result = decideRouteAllowlistGate({ "/dashboard": true, "/applications": true }, allowlist);
+        expect(result.ok).toBe(true);
+        expect(result.unreachable).toEqual([]);
+        expect(result.skipped).toEqual(["/portal/login"]);
+    });
+
+    it("fails when a shared route is unreachable", () => {
+        const result = decideRouteAllowlistGate({ "/dashboard": true, "/applications": false }, allowlist);
+        expect(result.ok).toBe(false);
+        expect(result.unreachable).toEqual(["/applications"]);
+        expect(result.message).toContain("/applications");
+    });
+
+    it("treats a route missing from the reachability map as unreachable", () => {
+        const result = decideRouteAllowlistGate({ "/dashboard": true }, allowlist);
+        expect(result.ok).toBe(false);
+        expect(result.unreachable).toEqual(["/applications"]);
+    });
+
+    it("never checks javaOnly routes", () => {
+        const result = decideRouteAllowlistGate({ "/dashboard": true, "/applications": true }, allowlist);
+        expect(result.checked).not.toContain("/portal/login");
     });
 });
 

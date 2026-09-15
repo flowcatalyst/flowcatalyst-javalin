@@ -1,7 +1,7 @@
 package io.flowcatalyst.parity;
 
 /// One running instance the [Runner] talks to over HTTP (parity-harness
-/// spec §1): the Go `fc-server` subprocess ([GoSide]), or the in-process
+/// spec §1): a `fc-server` subprocess ([SubprocessSide]), or the in-process
 /// Java [io.flowcatalyst.server.Server] ([JavaSide]).
 public interface Side {
 

@@ -65,4 +65,54 @@ class ParityRunTest {
 
         assertThat(report.scenarios()).as("at least the S0 smoke scenario should have run").isNotEmpty();
     }
+
+    /// As above, but Rust-vs-Java (L1 lane, `docs/java-parity-plan.md` §3):
+    /// skipped unless `PARITY_RUST_SRC` or `PARITY_RUST_BIN_DIR` is set,
+    /// AND `PARITY_GO_SRC`/`PARITY_GO_BIN_DIR` (Seed.build's Go/Java
+    /// pipeline runs regardless of which pair is under test — see
+    /// `Parity.run`'s class doc). Same pinned assertion: the harness
+    /// itself must not break a step: an actual Rust/Java disagreement is
+    /// `DIFF`, not `ERROR`, and is expected in volume until the later
+    /// lanes (L2+) close the gaps `docs/java-parity-plan.md` §1.1 lists.
+    @Test
+    void theHarnessRunsAgainstRealRustWithoutBreaking() {
+        Assumptions.assumeTrue(System.getenv("PARITY_RUST_SRC") != null || System.getenv("PARITY_RUST_BIN_DIR") != null,
+                "set PARITY_RUST_SRC or PARITY_RUST_BIN_DIR to run the real Rust/Java parity comparison");
+        Assumptions.assumeTrue(System.getenv("PARITY_GO_SRC") != null || System.getenv("PARITY_GO_BIN_DIR") != null,
+                "a Rust-vs-Java run still needs PARITY_GO_SRC or PARITY_GO_BIN_DIR — Java's own fixtures come from "
+                        + "Go's fcdev init (Seed.build), untouched by this lane");
+
+        var config = new Parity.Config(
+                System.getenv("PARITY_GO_SRC"),
+                System.getenv("PARITY_GO_BIN_DIR"),
+                System.getenv("PARITY_RUST_SRC"),
+                System.getenv("PARITY_RUST_BIN_DIR"),
+                Parity.Sides.RUST_JAVA,
+                Path.of("scenarios"),
+                System.getenv("PARITY_ONLY"),
+                Path.of("target/parity-report-rust"),
+                Path.of("surface.json"),
+                Path.of("expected-diffs.json"));
+
+        Report report = Parity.run(config);
+
+        for (ScenarioResult scenario : report.scenarios()) {
+            for (StepResult step : scenario.steps()) {
+                if (step.status() == StepStatus.ERROR) {
+                    LOG.error("scenario '{}' step '{}' broke: {}", scenario.scenarioName(), step.stepId(), step.error());
+                }
+                if (step.status() == StepStatus.DIFF) {
+                    LOG.info("scenario '{}' step '{}': {} unaccepted diff(s) — see target/parity-report-rust/report.md",
+                            scenario.scenarioName(), step.stepId(), step.unaccepted().size());
+                }
+            }
+        }
+
+        assertThat(report.scenarios())
+                .flatExtracting(ScenarioResult::steps)
+                .as("no step should ERROR — that means the harness (not Rust-vs-Java parity) broke")
+                .noneMatch(s -> s.status() == StepStatus.ERROR);
+
+        assertThat(report.scenarios()).as("at least the S0 smoke scenario should have run").isNotEmpty();
+    }
 }

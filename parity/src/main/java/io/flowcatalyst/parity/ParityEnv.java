@@ -7,7 +7,7 @@ import java.util.Map;
 /// The one environment map handed to both sides (parity-harness spec §2,
 /// minus the per-side fields — `FC_DATABASE_URL`, `FC_API_PORT`,
 /// `FC_JWT_ISSUER`/`FC_EXTERNAL_BASE_URL`, `FC_WEBAUTHN_ORIGINS` — which
-/// [GoSide] / [JavaSide] each fill in for themselves).
+/// [SubprocessSide] / [JavaSide] each fill in for themselves).
 public final class ParityEnv {
 
     private ParityEnv() {

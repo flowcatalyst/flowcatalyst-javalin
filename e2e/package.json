@@ -8,6 +8,7 @@
     "e2e": "tsx scripts/run-one.ts",
     "e2e:go": "E2E_SIDE=go tsx scripts/run-one.ts",
     "e2e:java": "E2E_SIDE=java tsx scripts/run-one.ts",
+    "e2e:rust": "E2E_SIDE=rust tsx scripts/run-rust.ts",
     "e2e:both": "tsx scripts/run-both.ts",
     "test:unit": "vitest run"
   },

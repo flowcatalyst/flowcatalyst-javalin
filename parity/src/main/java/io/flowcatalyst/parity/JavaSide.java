@@ -32,7 +32,7 @@ import java.util.Map;
 /// Those two are in tension: `Env` is built once, before `Server#start`
 /// binds the (ephemeral, with `0`) listener, so the issuer baked into every
 /// minted token would have to be a port nobody has picked yet. This picks a
-/// free port up front — exactly as [GoSide] already must — and passes that
+/// free port up front — exactly as [SubprocessSide] already must — and passes that
 /// *number* as `FC_API_PORT` instead of the literal `0`, so the issuer is
 /// correct from the first token. [Server.Running#apiPort()] is asserted to
 /// agree, so a genuine race (another process grabbing the port between the

@@ -136,7 +136,7 @@ public final class Seed {
 
         Map<String, String> env = ParityEnv.baseEnv(jwtKeyPath, appKeyBase64, ADMIN_EMAIL, ADMIN_PASSWORD);
         env.put("FC_DATABASE_URL", seedUrl);
-        GoSide seedServer = GoSide.start(binaries.fcServer(), env, logDir.resolve("go-seed.log"));
+        SubprocessSide seedServer = SubprocessSide.start(binaries.fcServer(), env, logDir.resolve("go-seed.log"));
         Duration seedStartDuration = seedServer.startDuration();
         seedServer.stop();
         Duration seedStopDuration = seedServer.stopDuration();

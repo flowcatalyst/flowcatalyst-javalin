@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { freePorts } from "./ports.js";
-import { generateJwtSigningKey, generateAppKey, sharedEnv } from "./env.js";
+import { generateJwtSigningKey, generateJwtPublicKey, generateAppKey, sharedEnv } from "./env.js";
 import { waitForHealth } from "./health.js";
-import { buildGoFcdev, buildJavaFcdev, goRepoRoot, resolveJavaHome, JAVA_REPO_ROOT } from "./build.js";
+import { buildGoFcdev, buildJavaFcdev, buildRustFcdev, goRepoRoot, rustRepoRoot, resolveJavaHome, JAVA_REPO_ROOT } from "./build.js";
 import type { RunningSide, Side } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -19,8 +19,13 @@ export const ADMIN_EMAIL = "e2e-admin@example.com";
 export const ADMIN_PASSWORD = "Tromso-Nebula-7734!";
 
 /// `fcdev`'s two flag surfaces (`docs/spec/fcdev-commands.md`): the `start`
-/// flags both binaries mirror exactly, plus `init`'s own flags. Built here
-/// so `side.ts` is the one place that knows the exact CLI shape.
+/// flags every binary mirrors exactly (Go, Java, and — since the L1 lane of
+/// `docs/java-parity-plan.md` — Rust's `bin/fc-dev`), plus `init`'s own
+/// flags. Built here so `side.ts` is the one place that knows the exact CLI
+/// shape. One shared implementation, not per-side: all three binaries'
+/// `start` subcommands take the identical flag set by design (that
+/// agreement is itself part of what this lane's Rust changes establish —
+/// see `docs/parity/l1.md`), so a per-side branch would just be dead code.
 function startArgs(opts: { apiPort: number; metricsPort: number; embeddedDbPort: number; embeddedDbPath: string; pidFile: string }): string[] {
     return [
         "start",
@@ -58,6 +63,10 @@ async function resolveLauncher(side: Side, scratchDir: string): Promise<Launcher
         const bin = await buildGoFcdev(scratchDir);
         return { command: bin, baseArgs: [] };
     }
+    if (side === "rust") {
+        const bin = await buildRustFcdev(scratchDir);
+        return { command: bin, baseArgs: [] };
+    }
     const jar = await buildJavaFcdev();
     const javaHome = await resolveJavaHome();
     // The router module ships a preview-feature class (structured
@@ -92,6 +101,20 @@ export async function startSide(side: Side): Promise<RunningSide> {
     };
     delete env.FC_SMTP_HOST;
     delete env.SMTP_HOST;
+
+    if (side === "rust") {
+        // Pre-L0 (`docs/java-parity-plan.md` §3): Rust doesn't read
+        // FC_JWT_SIGNING_KEY_PATH yet, only its own two-file env names.
+        // Once L0 lands the alias this becomes redundant but harmless —
+        // both point at the same key.
+        env.FC_JWT_PRIVATE_KEY_PATH = jwtSigningKeyPath;
+        env.FC_JWT_PUBLIC_KEY_PATH = await generateJwtPublicKey(jwtSigningKeyPath, scratchDir);
+        // FC_AUTH_ALLOW_TEST_HEADERS / FC_DEFAULT_BROKER are Rust
+        // `fc-dev start`'s own dev defaults (bin/fc-dev/src/main.rs,
+        // set-if-unset) — not overridden here, matching how Go/Java's own
+        // fcdev also sets its dev defaults itself rather than the runner
+        // doing it on their behalf.
+    }
 
     const launcher = await resolveLauncher(side, scratchDir);
     const logPath = path.join(TEST_RESULTS_DIR, `${side}.log`);
@@ -133,6 +156,13 @@ export async function startSide(side: Side): Promise<RunningSide> {
     // ── fcdev init, against the same embedded database ──────────────────
     const databaseUrl = `postgresql://postgres:postgres@localhost:${embeddedDbPort}/flowcatalyst?sslmode=disable`;
     appendFileSync(logPath, `\n>> running ${side} fcdev init\n`);
+    // Rust's `init` defaults --embedded-db=true (it starts its OWN embedded
+    // Postgres unless told otherwise — bin/fc-dev/src/init.rs), which would
+    // otherwise ignore the --database-url above and try to bind the same
+    // embedded-pg port `start` already holds. Only the init call needs this
+    // override; `start`'s own `env` (above) must keep starting the embedded
+    // instance.
+    const initEnv = side === "rust" ? { ...env, FC_EMBEDDED_DB: "false" } : env;
     try {
         const initArgv = [...launcher.baseArgs, ...initArgs({
             databaseUrl,
@@ -141,7 +171,7 @@ export async function startSide(side: Side): Promise<RunningSide> {
             adminEmail: ADMIN_EMAIL,
             adminPassword: ADMIN_PASSWORD,
         })];
-        const { stdout, stderr } = await execFileAsync(launcher.command, initArgv, { env, maxBuffer: 16 * 1024 * 1024 });
+        const { stdout, stderr } = await execFileAsync(launcher.command, initArgv, { env: initEnv, maxBuffer: 16 * 1024 * 1024 });
         appendFileSync(logPath, stdout);
         if (stderr) appendFileSync(logPath, stderr);
     } catch (e) {
@@ -175,4 +205,4 @@ export async function startSide(side: Side): Promise<RunningSide> {
     };
 }
 
-export { goRepoRoot, JAVA_REPO_ROOT };
+export { goRepoRoot, rustRepoRoot, JAVA_REPO_ROOT };

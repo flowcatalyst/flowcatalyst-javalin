@@ -17,52 +17,70 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-/// The Go `fc-server` subprocess (parity-harness spec §1): stdout/stderr to
-/// `go.log`, readiness = `GET /health` = 200 within 60 s, stop = SIGTERM
-/// (`Process.destroy()`), then `destroyForcibly` if it has not exited.
-public final class GoSide implements Side {
+/// A `fc-server` subprocess (parity-harness spec §1), generalised from the
+/// original `GoSide` so the same launch/health/stop machinery drives the Go
+/// binary and the Rust `fc-server` binary alike: stdout/stderr to
+/// `<label>.log`, readiness = `GET /health` = 200 within 60 s, stop =
+/// SIGTERM (`Process.destroy()`), then `destroyForcibly` if it has not
+/// exited.
+///
+/// `label` is used only in log messages and exceptions (`"go"`, `"rust"`,
+/// …) — the class has no other per-binary behaviour, since both fc-servers
+/// speak the exact same startup contract (env-configured port, `/health`).
+public final class SubprocessSide implements Side {
 
-    private static final Logger LOG = LoggerFactory.getLogger(GoSide.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SubprocessSide.class);
     private static final Duration HEALTH_BUDGET = Duration.ofSeconds(60);
     private static final Duration STOP_GRACE = Duration.ofSeconds(15);
 
+    private final String label;
     private final Process process;
     private final String baseUrl;
     private final Duration startDuration;
     private Duration stopDuration = Duration.ZERO;
 
-    private GoSide(Process process, String baseUrl, Duration startDuration) {
+    private SubprocessSide(String label, Process process, String baseUrl, Duration startDuration) {
+        this.label = label;
         this.process = process;
         this.baseUrl = baseUrl;
         this.startDuration = startDuration;
     }
 
-    /// Starts `fcServerBinary` with `env` overlaid onto the harness process's
-    /// own environment (`putAll`, not a replacement — a Go binary still needs
-    /// its normal runtime environment, `PATH`/`HOME`/`TMPDIR`, none of which
-    /// the harness's `env` map carries), a freshly-picked `FC_API_PORT`, an
-    /// ephemeral `FC_METRICS_PORT`, and
+    /// Starts `serverBinary` labelled `"go"` — the shape every pre-existing
+    /// call site (`Seed`, `Parity`) already used before this class was
+    /// generalised from `GoSide`. Prefer [#start(String, Path, Map, Path)]
+    /// for a non-Go binary so logs and error messages name it correctly.
+    public static SubprocessSide start(Path serverBinary, Map<String, String> env, Path logFile) {
+        return start("go", serverBinary, env, logFile);
+    }
+
+    /// Starts `serverBinary` with `env` overlaid onto the harness process's
+    /// own environment (`putAll`, not a replacement — a subprocess still
+    /// needs its normal runtime environment, `PATH`/`HOME`/`TMPDIR`, none of
+    /// which the harness's `env` map carries), a freshly-picked
+    /// `FC_API_PORT`, an ephemeral `FC_METRICS_PORT`, and
     /// `FC_JWT_ISSUER` / `FC_EXTERNAL_BASE_URL` / `FC_WEBAUTHN_ORIGINS` set to
     /// this side's own base URL (spec §2: "each side's own", "origin differs
     /// per side"). Blocks until `/health` answers 200 or [#HEALTH_BUDGET]
     /// elapses.
     ///
-    /// @throws IllegalStateException Go never became healthy; `logFile` holds its stderr/stdout
-    public static GoSide start(Path fcServerBinary, Map<String, String> env, Path logFile) {
+    /// @throws IllegalStateException the binary never became healthy; `logFile` holds its stderr/stdout
+    public static SubprocessSide start(String label, Path serverBinary, Map<String, String> env, Path logFile) {
         int port = freePort();
         String baseUrl = "http://127.0.0.1:" + port;
 
         Map<String, String> merged = new LinkedHashMap<>(env);
         merged.put("FC_API_PORT", String.valueOf(port));
-        // An ephemeral metrics listener, as JavaSide has: Go's default :9090
-        // collides with any fcdev/fc-server already running on the machine,
-        // and fc-server exits when a listener fails to bind.
+        // An ephemeral metrics listener, as JavaSide has: the binary's
+        // default metrics port collides with any fcdev/fc-server already
+        // running on the machine, and fc-server exits when a listener
+        // fails to bind.
         merged.put("FC_METRICS_PORT", "0");
         merged.put("FC_JWT_ISSUER", baseUrl);
         merged.put("FC_EXTERNAL_BASE_URL", baseUrl);
         merged.put("FC_WEBAUTHN_ORIGINS", baseUrl);
 
-        ProcessBuilder pb = new ProcessBuilder(fcServerBinary.toString())
+        ProcessBuilder pb = new ProcessBuilder(serverBinary.toString())
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.to(logFile.toFile()));
         pb.environment().putAll(merged);
@@ -72,23 +90,27 @@ public final class GoSide implements Side {
         try {
             process = pb.start();
         } catch (IOException e) {
-            throw new UncheckedIOException("start " + fcServerBinary, e);
+            throw new UncheckedIOException("start " + serverBinary, e);
         }
         boolean healthy = pollHealth(baseUrl);
         Duration startDuration = Duration.between(t0, Instant.now());
         if (!healthy) {
             process.destroyForcibly();
             throw new IllegalStateException(
-                    "Go fc-server did not answer GET " + baseUrl + "/health with 200 within " + HEALTH_BUDGET
+                    label + " fc-server did not answer GET " + baseUrl + "/health with 200 within " + HEALTH_BUDGET
                             + " — see " + logFile);
         }
-        LOG.info("Go fc-server healthy at {} after {}", baseUrl, startDuration);
-        return new GoSide(process, baseUrl, startDuration);
+        LOG.info("{} fc-server healthy at {} after {}", label, baseUrl, startDuration);
+        return new SubprocessSide(label, process, baseUrl, startDuration);
     }
 
     @Override
     public String baseUrl() {
         return baseUrl;
+    }
+
+    public String label() {
+        return label;
     }
 
     public Duration startDuration() {
@@ -106,7 +128,7 @@ public final class GoSide implements Side {
         process.destroy();
         try {
             if (!process.waitFor(STOP_GRACE.toSeconds(), TimeUnit.SECONDS)) {
-                LOG.warn("Go fc-server did not exit within {} of SIGTERM; killing", STOP_GRACE);
+                LOG.warn("{} fc-server did not exit within {} of SIGTERM; killing", label, STOP_GRACE);
                 process.destroyForcibly();
                 process.waitFor(10, TimeUnit.SECONDS);
             }

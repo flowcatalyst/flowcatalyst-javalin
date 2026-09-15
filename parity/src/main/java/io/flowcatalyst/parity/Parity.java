@@ -28,8 +28,30 @@ public final class Parity {
 
     private static final Logger LOG = LoggerFactory.getLogger(Parity.class);
 
-    public record Config(String goSrc, String goBinDir, Path scenariosDir, String onlyGlob, Path reportDir,
+    /// Which pair the harness runs (L1 lane, `docs/java-parity-plan.md`
+    /// §3): `GO_JAVA` is the original, default pair; `RUST_JAVA` reuses the
+    /// same two-sided [Diff]/[Report] with Rust as the "left" side (the
+    /// `go`-named fields throughout — [DiffEntry#go()], [StepResult#goRecord()],
+    /// `ReportWriter`'s `go=` column — hold the Rust side's data in that
+    /// case; a third, three-way column is a later nicety, not this lane's
+    /// job. See `docs/parity/l1.md` for why this was kept mechanical rather
+    /// than renamed to `left`/`right` throughout.)
+    public enum Sides {
+        GO_JAVA, RUST_JAVA
+    }
+
+    public record Config(String goSrc, String goBinDir, String rustSrc, String rustBinDir, Sides sides,
+                          Path scenariosDir, String onlyGlob, Path reportDir,
                           Path surfaceFile, Path expectedDiffsFile) {
+        public Config {
+            if (sides == null) sides = Sides.GO_JAVA;
+        }
+
+        /// Convenience for the original 7-arg shape (every call site before this lane) — Go-vs-Java, no Rust flags.
+        public Config(String goSrc, String goBinDir, Path scenariosDir, String onlyGlob, Path reportDir,
+                      Path surfaceFile, Path expectedDiffsFile) {
+            this(goSrc, goBinDir, null, null, Sides.GO_JAVA, scenariosDir, onlyGlob, reportDir, surfaceFile, expectedDiffsFile);
+        }
     }
 
     private Parity() {
@@ -48,40 +70,70 @@ public final class Parity {
             throw new UncheckedIOException("create scratch dir", e);
         }
         try (EmbeddedPg pg = EmbeddedPg.start()) {
+            // The Go/Java seeding pipeline (Seed.build) always runs, even
+            // for a Rust-vs-Java comparison: Java's own scenario fixtures
+            // (the admin/client/app Seed.ADMIN_EMAIL etc. name) come from
+            // Go's `fcdev init`, not from Java's own Seeder — this lane
+            // does not touch that pipeline (plan §3 L1: "keep Go/Java
+            // seeding untouched"), it just doesn't start a GoSide when
+            // Rust is the side under test.
             GoBinaries binaries = GoBinaries.resolve(scratch, config.goSrc(), config.goBinDir());
 
             Path jwtKeyPath = scratch.resolve("jwt-signing-key.pem");
-            RsaKeys.generatePkcs8Pem(jwtKeyPath);
+            Path jwtPublicKeyPath = scratch.resolve("jwt-signing-key.pub.pem");
+            RsaKeys.generatePkcs8Pem(jwtKeyPath, jwtPublicKeyPath);
             String appKey = Encryption.generateKey();
 
             Seed.Result seed = Seed.build(binaries, pg, scratch, jwtKeyPath, appKey, config.reportDir());
             Map<String, String> sideEnv = ParityEnv.baseEnv(jwtKeyPath, appKey, Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD);
 
-            Map<String, String> goEnv = new LinkedHashMap<>(sideEnv);
-            goEnv.put("FC_DATABASE_URL", seed.goUrl());
-            GoSide go = GoSide.start(binaries.fcServer(), goEnv, config.reportDir().resolve("go.log"));
+            Side left;
+            Seed.Ids leftIds;
+            if (config.sides() == Sides.RUST_JAVA) {
+                RustBinaries rustBinaries = RustBinaries.resolve(scratch, config.rustSrc(), config.rustBinDir());
+                RustSeed.Result rustSeed = RustSeed.build(rustBinaries, pg, scratch, jwtKeyPath, jwtPublicKeyPath,
+                        appKey, config.reportDir());
+                Map<String, String> rustEnv = new LinkedHashMap<>(sideEnv);
+                rustEnv.put("FC_DATABASE_URL", rustSeed.rustUrl());
+                // Pre-L0: Rust doesn't read FC_JWT_SIGNING_KEY_PATH yet
+                // (plan §3 L0), so its own two-file env names are set
+                // directly here too.
+                rustEnv.put("FC_JWT_PRIVATE_KEY_PATH", jwtKeyPath.toString());
+                rustEnv.put("FC_JWT_PUBLIC_KEY_PATH", jwtPublicKeyPath.toString());
+                left = SubprocessSide.start("rust", rustBinaries.fcServer(), rustEnv, config.reportDir().resolve("rust.log"));
+                leftIds = rustSeed.ids();
+            } else {
+                Map<String, String> goEnv = new LinkedHashMap<>(sideEnv);
+                goEnv.put("FC_DATABASE_URL", seed.goUrl());
+                left = SubprocessSide.start("go", binaries.fcServer(), goEnv, config.reportDir().resolve("go.log"));
+                leftIds = seed.ids();
+            }
 
             JavaSide javaSide;
             try {
                 javaSide = JavaSide.start(seed.javaUrl(), sideEnv, config.reportDir().resolve("java.log"));
             } catch (RuntimeException e) {
-                go.stop();
+                left.stop();
                 throw e;
             }
 
             try {
-                return runScenarios(config, seed, go, javaSide);
+                return runScenarios(config, leftIds, seed.ids(), left, javaSide);
             } finally {
                 javaSide.stop();
-                go.stop();
-                LOG.info("Go fc-server for the run: start {} stop {}", go.startDuration(), go.stopDuration());
+                left.stop();
+                if (left instanceof SubprocessSide sub) {
+                    LOG.info("{} fc-server for the run: start {} stop {}", sub.label(), sub.startDuration(), sub.stopDuration());
+                }
             }
         } finally {
             deleteRecursively(scratch);
         }
     }
 
-    private static Report runScenarios(Config config, Seed.Result seed, GoSide go, JavaSide javaSide) {
+    /// @param leftIds  the "left" side's own client/app/admin ids (Go's, from `seed`, or Rust's, from `seed_rust`)
+    /// @param javaIds  Java's own ids — always `seed`'s (Seed.build's pipeline, untouched by this lane)
+    private static Report runScenarios(Config config, Seed.Ids leftIds, Seed.Ids javaIds, Side left, JavaSide javaSide) {
         List<ScenarioLoader.Loaded> scenarios = ScenarioLoader.load(config.scenariosDir(), config.onlyGlob());
         String run = randomToken();
         ExpectedDiffs expected = config.expectedDiffsFile() != null
@@ -96,10 +148,10 @@ public final class Parity {
         for (ScenarioLoader.Loaded loaded : scenarios) {
             Scenario scenario = loaded.scenario();
             LOG.info("running scenario {}", scenario.name());
-            Vars goVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId(), goRunLabels);
-            Vars javaVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, seed.ids().clientId(), seed.ids().appId(), seed.ids().adminId(), javaRunLabels);
+            Vars goVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, leftIds.clientId(), leftIds.appId(), leftIds.adminId(), goRunLabels);
+            Vars javaVars = new Vars(Seed.ADMIN_EMAIL, Seed.ADMIN_PASSWORD, run, javaIds.clientId(), javaIds.appId(), javaIds.adminId(), javaRunLabels);
 
-            Runner.RunResult goRun = new Runner(go.baseUrl()).run(scenario, goVars);
+            Runner.RunResult goRun = new Runner(left.baseUrl()).run(scenario, goVars);
             Runner.RunResult javaRun = new Runner(javaSide.baseUrl()).run(scenario, javaVars);
             allRequested.addAll(goRun.requested());
             allRequested.addAll(javaRun.requested());
@@ -108,7 +160,7 @@ public final class Parity {
             for (int i = 0; i < scenario.steps().size(); i++) {
                 Step step = scenario.steps().get(i);
                 stepResults.add(compareStep(scenario, step, goRun.steps().get(i), javaRun.steps().get(i),
-                        goVars, javaVars, go.baseUrl(), javaSide.baseUrl(), expected));
+                        goVars, javaVars, left.baseUrl(), javaSide.baseUrl(), expected));
             }
 
             List<Lockfile.Operation> lockfileOps = Lockfile.load(Json.MAPPER).operations();

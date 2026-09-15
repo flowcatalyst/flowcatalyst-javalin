@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 /// The SPA gate (spec §1): before any test runs, fetch `/index.html` from
 /// both sides and compare the bytes. Vite's asset hashes are content
@@ -73,4 +74,79 @@ export async function runSpaGate(
 ): Promise<SpaGateResult> {
     const [goHtml, javaHtml] = await Promise.all([fetchIndexHtml(goBaseUrl), fetchIndexHtml(javaBaseUrl)]);
     return decideSpaGate(goHtml, javaHtml, javaSourceCommit, allowMismatch);
+}
+
+// ── Rust route allow-list gate ───────────────────────────────────────────
+//
+// The Rust SPA is a fork of Java's (docs/java-parity-plan.md §4.1), so its
+// /index.html bytes can never match Java's — `decideSpaGate` above would
+// refuse every Rust run. This is E2E_SIDE=rust's replacement: instead of a
+// byte comparison, `e2e/rust-routes-allowlist.json` names the client
+// routes both SPAs actually serve ("shared") and the ones only Java has
+// yet ("javaOnly", documented rather than silently missing).
+
+export interface RouteAllowlist {
+    /// Client routes present in both SPAs — checked reachable before the
+    /// suite runs.
+    shared: string[];
+    /// Client routes only Java's SPA has (portal identities, docs, …) —
+    /// never checked; listed so a skipped Java-only spec against the Rust
+    /// side has a documented reason instead of looking like a silent gap.
+    javaOnly: string[];
+}
+
+export interface RouteAllowlistGateResult {
+    /// Whether every `shared` route answered (HTTP status < 500 — a client
+    /// route renders through the SPA fallback, so any non-server-error
+    /// status means the Rust binary served *something* for it; the actual
+    /// screen assertions are each spec's job, not the gate's).
+    ok: boolean;
+    checked: string[];
+    unreachable: string[];
+    skipped: string[];
+    message: string;
+}
+
+/// The pure decision (unit-testable without a network): given each
+/// `shared` route's reachability (`true` = answered, `false` = did not),
+/// decide whether the run may proceed.
+export function decideRouteAllowlistGate(
+    reachable: Record<string, boolean>,
+    allowlist: RouteAllowlist,
+): RouteAllowlistGateResult {
+    const checked = [...allowlist.shared];
+    const unreachable = checked.filter((route) => reachable[route] !== true);
+    const ok = unreachable.length === 0;
+    const message = ok
+        ? `route allow-list gate: ${checked.length} shared route(s) reachable; ${allowlist.javaOnly.length} Java-only route(s) skipped (see e2e/rust-routes-allowlist.json).`
+        : `route allow-list gate: ${unreachable.length}/${checked.length} shared route(s) unreachable: ${unreachable.join(", ")}`;
+    return { ok, checked, unreachable, skipped: allowlist.javaOnly, message };
+}
+
+/// Loads and parses `e2e/rust-routes-allowlist.json` (or any path — tests
+/// pass a fixture).
+export async function loadRouteAllowlist(path: string): Promise<RouteAllowlist> {
+    const text = await readFile(path, "utf8");
+    const parsed = JSON.parse(text) as { shared?: unknown; javaOnly?: unknown };
+    const shared = Array.isArray(parsed.shared) ? parsed.shared.filter((s): s is string => typeof s === "string") : [];
+    const javaOnly = Array.isArray(parsed.javaOnly) ? parsed.javaOnly.filter((s): s is string => typeof s === "string") : [];
+    return { shared, javaOnly };
+}
+
+/// Fetches every `allowlist.shared` route against `baseUrl` (a client-side
+/// route, so any non-5xx response means the SPA fallback served
+/// `index.html` for it — vue-router then renders client-side) and decides.
+export async function runRouteAllowlistGate(baseUrl: string, allowlist: RouteAllowlist): Promise<RouteAllowlistGateResult> {
+    const reachable: Record<string, boolean> = {};
+    await Promise.all(
+        allowlist.shared.map(async (route) => {
+            try {
+                const res = await fetch(new URL(route, baseUrl));
+                reachable[route] = res.status < 500;
+            } catch {
+                reachable[route] = false;
+            }
+        }),
+    );
+    return decideRouteAllowlistGate(reachable, allowlist);
 }

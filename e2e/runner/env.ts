@@ -22,6 +22,17 @@ export async function generateJwtSigningKey(scratchDir: string): Promise<string>
     return out;
 }
 
+/// The X.509 SubjectPublicKeyInfo public key matching `privateKeyPath`
+/// (L1 lane, `docs/java-parity-plan.md` §3): Rust doesn't derive its
+/// public key from `FC_JWT_SIGNING_KEY_PATH` yet (that's L0's job — see
+/// `FC_JWT_PRIVATE_KEY_PATH`/`FC_JWT_PUBLIC_KEY_PATH` in `side.ts`), so the
+/// e2e runner writes the public half itself, next to the private one.
+export async function generateJwtPublicKey(privateKeyPath: string, scratchDir: string): Promise<string> {
+    const out = path.join(scratchDir, "jwt-signing-key.pub.pem");
+    await execFileAsync("openssl", ["pkey", "-in", privateKeyPath, "-pubout", "-out", out]);
+    return out;
+}
+
 /// 32 random bytes, standard base64 with padding — `FLOWCATALYST_APP_KEY`'s
 /// wire shape (`Encryption.generateKey()`'s reading, mirrored here so the
 /// e2e run doesn't depend on either binary to mint one).
