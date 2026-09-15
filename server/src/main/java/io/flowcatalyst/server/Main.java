@@ -140,6 +140,18 @@ public final class Main {
 
         var running = new Server(env, mode, spa, PrometheusRegistry.defaultRegistry).start();
 
+        // FC_EXIT_AFTER_START (docs/spec/jvm-memory.md §1a): the Dockerfile's
+        // AOT training run starts the server exactly as it would in
+        // production, then needs a clean process exit rather than a server
+        // that runs forever — JEP 514 writes the AOT cache at JVM exit. No
+        // System.exit(0) here: returning from main with no other non-daemon
+        // threads running already exits 0, and that's what lets this same
+        // path be exercised in-process from a test.
+        if (env.exitAfterStart()) {
+            exitAfterStart(env, running, dbSecretRefreshers, pools);
+            return;
+        }
+
         Pools poolsToClose = pools;
         List<DbSecretRefresher> dbSecretRefreshersToClose = dbSecretRefreshers;
         Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("shutdown").unstarted(() -> {
@@ -149,6 +161,29 @@ public final class Main {
             if (poolsToClose != null) poolsToClose.close();
         }));
         running.awaitStop();
+    }
+
+    /// `FC_EXIT_AFTER_START`'s whole effect: log once the server is up
+    /// (naming the same roles the "starting fc-server" line above did — the
+    /// Dockerfile build log's proof that the image the training ran against
+    /// is the image that ships), then tear everything back down exactly as
+    /// the ordinary shutdown hook would, synchronously, so [#main] can return
+    /// with nothing left running. Package-private so a test can drive it
+    /// against a real [Server.Running] without needing to fake the process
+    /// environment [Env#load()] reads.
+    static void exitAfterStart(Env env, Server.Running running, List<DbSecretRefresher> dbSecretRefreshers, Pools pools) {
+        LOG.atInfo().setMessage("training run complete")
+                .addKeyValue("platform", env.platformEnabled())
+                .addKeyValue("router", env.routerEnabled())
+                .addKeyValue("scheduler", env.schedulerEnabled())
+                .addKeyValue("stream", env.streamEnabled())
+                .addKeyValue("outbox", env.outboxEnabled())
+                .addKeyValue("mcp", env.mcpEnabled())
+                .addKeyValue("standby", env.standbyEnabled())
+                .log();
+        running.stop();
+        dbSecretRefreshers.forEach(DbSecretRefresher::close);
+        if (pools != null) pools.close();
     }
 
     /// Whether this instance needs a Postgres pool at all: any DB-backed

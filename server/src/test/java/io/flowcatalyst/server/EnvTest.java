@@ -35,6 +35,7 @@ class EnvTest {
         assertThat(env.streamEnabled()).isFalse();
         assertThat(env.outboxEnabled()).isFalse();
         assertThat(env.mcpEnabled()).isFalse();
+        assertThat(env.exitAfterStart()).as("only ever true in the Dockerfile's AOT training run").isFalse();
 
         assertThat(env.routerHttpPrefix()).isEqualTo("/router");
         assertThat(env.defaultBroker()).isEmpty();
@@ -216,6 +217,20 @@ class EnvTest {
         assertThat(env.platformEnabled()).as("set-but-unparseable primary bool yields the default, not the alias").isTrue();
         assertThat(env.outboxBlockOnError()).isTrue();
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
+    }
+
+    /// `FC_EXIT_AFTER_START` (docs/spec/jvm-memory.md §1a): plain boolean
+    /// parse, no alias — pins both that the accepted vocabulary works and
+    /// that an unparseable value falls back to the documented default
+    /// (false), the same as every other bare `e.bool(...)` field.
+    @Test
+    void exitAfterStartParsesAsAPlainBooleanWithNoAlias() {
+        assertThat(load().exitAfterStart()).isFalse();
+        assertThat(load("FC_EXIT_AFTER_START", "true").exitAfterStart()).isTrue();
+        assertThat(load("FC_EXIT_AFTER_START", "1").exitAfterStart()).isTrue();
+        assertThat(load("FC_EXIT_AFTER_START", "false").exitAfterStart()).isFalse();
+        assertThat(load("FC_EXIT_AFTER_START", "not-a-bool").exitAfterStart())
+                .as("unparseable falls back to the default, not to some alias").isFalse();
     }
 
     @Test

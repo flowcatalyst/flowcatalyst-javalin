@@ -47,10 +47,14 @@ prepare() {
 
 images() {
   echo "-- building images"
-  cp "$root"/server/target/flowcatalyst-server-*-exec.jar "$here/flowcatalyst-server-exec.jar"
-  cp "$root"/docker/jvm-opts.sh "$root"/docker/entrypoint.sh "$here"/
+  # bench-real-java is the product image itself (docs/spec/jvm-memory.md
+  # §1a) — jlink runtime, the -Xmx/-direct fence, -XX:+UseCompactObjectHeaders,
+  # the build stage's AOT training run — built straight from the root
+  # Dockerfile so the bench measures exactly what ships, not a jar dropped
+  # onto a stock JRE. This does its own `mvn package` inside the Docker
+  # build (several minutes); no local exec-jar copy needed for it any more.
   cp /tmp/fc-server-linux "$here/fc-server-linux"
-  docker build -q -t bench-real-java -f "$here/Dockerfile.java" "$here" >/dev/null
+  docker build -q -t bench-real-java -f "$root/Dockerfile" "$root" >/dev/null
   docker build -q -t bench-real-go -f "$here/Dockerfile.go" "$here" >/dev/null
   if [ -f "$root/server/target/fc-server" ] && file "$root/server/target/fc-server" | grep -q ELF; then
     cp "$root/server/target/fc-server" "$here/fc-server-native"

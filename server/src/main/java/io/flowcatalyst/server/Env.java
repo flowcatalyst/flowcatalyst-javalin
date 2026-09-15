@@ -113,6 +113,14 @@ public record Env(
         boolean outboxEnabled,
         // `FC_MCP_ENABLED`, default false.
         boolean mcpEnabled,
+        // `FC_EXIT_AFTER_START`, default false: build-time only, the image's
+        // AOT training run (`docs/spec/jvm-memory.md` §1a). When true,
+        // [Main#main] starts every enabled subsystem exactly as normal, logs
+        // `training run complete` once the server is up, then stops it and
+        // returns — giving JEP 514's one-step AOT training a clean process
+        // exit instead of a server that runs forever. Never set outside the
+        // Dockerfile's training `RUN` step.
+        boolean exitAfterStart,
 
         // ── router mount / broker / dispatch callback ──────────────────────
         // `FC_ROUTER_HTTP_PREFIX`, default `/router`.
@@ -420,6 +428,7 @@ public record Env(
                 e.boolAlias("FC_STREAM_PROCESSOR_ENABLED", "STREAM_PROCESSOR_ENABLED", false),
                 e.boolAlias("FC_OUTBOX_ENABLED", "OUTBOX_PROCESSOR_ENABLED", false),
                 e.bool("FC_MCP_ENABLED", false),
+                e.bool("FC_EXIT_AFTER_START", false),
 
                 e.or("FC_ROUTER_HTTP_PREFIX", "/router"),
                 e.or("FC_DEFAULT_BROKER", ""),

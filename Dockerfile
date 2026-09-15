@@ -41,6 +41,29 @@ RUN MODS=$(jdeps --ignore-missing-deps --multi-release 25 --print-module-deps /f
           --output /jre \
  && /jre/bin/java -version
 
+# AOT training run (docs/spec/jvm-memory.md §1a, JEP 514): one step — the
+# cache is written to /fc-server.aot at JVM exit (FC_EXIT_AFTER_START, see
+# Main.java). Trains with /jre/bin/java against this exact /fc-server.jar,
+# the SAME runtime the runtime stage copies below, because the cache is tied
+# to the precise JDK build and classpath: training against a different JRE
+# or jar would just be rejected at boot (a warning, never a failure — see
+# entrypoint.sh) and the whole point of the training run is to have a cache
+# that is actually used. Router-only: this build has no database, so only
+# the classes a router-only boot touches are in the cache — platform-mode
+# (API/identity) classes are not, though the entrypoint still applies the
+# cache for every role since a partial cache still helps, it just doesn't
+# cover everything a platform boot loads. A future training pass with an
+# embedded Postgres (FC_PLATFORM_ENABLED=true against a throwaway database)
+# could extend coverage to those classes too. No fence flags here — the
+# fence (docker/jvm-opts.sh) only derives -Xmx/-XX:MaxDirectMemorySize,
+# which do not affect what ends up in the cache — but
+# -XX:+UseCompactObjectHeaders IS here, because that one changes object
+# layout and MUST match the runtime flag exactly (entrypoint.sh) or the
+# cache is rejected.
+RUN FC_EXIT_AFTER_START=true FC_PLATFORM_ENABLED=false FC_ROUTER_ENABLED=true FC_API_PORT=0 FC_METRICS_PORT=0 FC_LOG_FORMAT=json \
+      /jre/bin/java -XX:+UseCompactObjectHeaders -XX:AOTCacheOutput=/fc-server.aot --enable-preview --enable-native-access=ALL-UNNAMED -jar /fc-server.jar \
+ && test -s /fc-server.aot
+
 # ── Stage 2 — runtime ──────────────────────────────────────────────────────
 # Bare Alpine (not a JRE image): the jlink runtime above is the JRE. wget for
 # a self-contained HEALTHCHECK; ca-certificates for outbound TLS (SQS/Secrets
@@ -55,6 +78,10 @@ COPY --from=build /fc-server.jar /usr/local/lib/fc-server.jar
 # container's cgroup limit before java starts (JVM ergonomics default a
 # quarter of the container, wrong at both ends of the size range).
 COPY --chmod=0755 docker/jvm-opts.sh docker/entrypoint.sh /usr/local/bin/
+# docs/spec/jvm-memory.md §1a: the AOT cache the build stage's training run
+# produced, tied to the exact /jre + /fc-server.jar above. entrypoint.sh
+# passes -XX:AOTCache=... only when this file exists.
+COPY --from=build /fc-server.aot /usr/local/lib/fc-server.aot
 USER flowcatalyst
 ENV JAVA_HOME=/opt/jre \
     PATH=/opt/jre/bin:$PATH

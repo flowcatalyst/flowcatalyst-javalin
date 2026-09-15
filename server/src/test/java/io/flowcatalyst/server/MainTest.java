@@ -1,11 +1,16 @@
 package io.flowcatalyst.server;
 
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.net.Socket;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Pins [Main#needsDb] / [Main#needsMigrateAndSeed]: which deployments get a
 /// database pool at all, and which of those additionally run Flyway +
@@ -106,5 +111,32 @@ class MainTest {
         var e = env("FC_ROUTER_ENABLED", "true", "FC_DEFAULT_BROKER", "postgres");
         assertThat(Main.needsDb(e)).isTrue();
         assertThat(Main.needsMigrateAndSeed(e)).isTrue();
+    }
+
+    /// `FC_EXIT_AFTER_START` (docs/spec/jvm-memory.md §1a, the Dockerfile's
+    /// AOT training run): [Main#exitAfterStart] is the whole post-boot
+    /// effect `Main#main` runs on that path — this pins that it actually
+    /// tears the server down, not merely that the log line fires and the
+    /// method returns. A mutant that no-ops `running.stop()` (logs, then
+    /// falls straight through) would still pass a test that only checked the
+    /// method returned; only a live socket to the API listener — connectable
+    /// before the call, refused after — proves the listener actually stopped
+    /// accepting connections.
+    @Test
+    void exitAfterStartActuallyStopsTheServer() throws Exception {
+        var e = env("FC_EXIT_AFTER_START", "true", "FC_PLATFORM_ENABLED", "false",
+                "FC_ROUTER_ENABLED", "true", "FC_API_PORT", "0", "FC_METRICS_PORT", "0");
+        var running = new Server(e, Server.Mode.routerOnly(), Server.Spa.none(), new PrometheusRegistry()).start();
+        int apiPort = running.apiPort();
+        // Sanity: the listener really is up before exitAfterStart runs, so the
+        // refusal below is caused by the stop, not by the port never having
+        // been open in the first place.
+        new Socket("127.0.0.1", apiPort).close();
+
+        Main.exitAfterStart(e, running, List.of(), null);
+
+        assertThatThrownBy(() -> new Socket("127.0.0.1", apiPort).close())
+                .as("the API listener must actually stop accepting connections, not just log that it would")
+                .isInstanceOf(IOException.class);
     }
 }

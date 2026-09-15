@@ -121,6 +121,18 @@ Laravel are being copied here with history (Go keeps its copies), the
 split workflows and `scripts/release.sh` ported; the Java SDK gets Go's
 bump-and-tag only — `docs/sdk-release-plan.md`.
 
+**Compact object headers + Leyden AOT cache** (owner ruling 2026-09-15,
+`docs/spec/jvm-memory.md` §1a): `-XX:+UseCompactObjectHeaders` always;
+the image build runs the server once router-only under
+`FC_EXIT_AFTER_START` (new, `Main.exitAfterStart`, pinned by `MainTest`
+through a refused socket) with `-XX:AOTCacheOutput`, and the entrypoint
+adds `-XX:AOTCache` when the file ships; the bench now builds the product
+`Dockerfile`. Measured at a 512 MB limit, router-only: startup to
+listening 0.53–0.69 s → 0.32 s, RSS at 15 s ~100 MB → ~80 MB; `-Xlog:aot`
+shows the cache opened with compact headers on. Platform-mode classes are
+not in the cache yet (the build has no database) — follow-up in §1a.
+GraalVM (JIT) is deferred until GraalJS functions need it.
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

@@ -1,8 +1,10 @@
 # JVM memory in the container image
 
-Status: spec + owner rulings, 2026-09-14. Applies to the `fc-server` image
+Status: spec + owner rulings, 2026-09-14 (§0–3); compact object headers and
+the AOT cache ruled 2026-09-15 (§1a). Applies to the `fc-server` image
 (`Dockerfile`) in every role — API tier, worker, router — and to the bench
-rig's image (`bench/real/Dockerfile.java`), so what is measured is what is
+rig's image, which since §1a is built from that same `Dockerfile` (not a
+separate `bench/real/Dockerfile.java`), so what is measured is what is
 deployed. `fcdev`'s native binary is not a JVM and is untouched.
 
 ## 0. Rulings
@@ -69,6 +71,79 @@ instead of the cgroup files. `JvmOptsScriptTest` runs the script against
 files holding 512 MiB, 1 GiB, 4 GiB, 256 GiB, `max`, the v1 sentinel, and a
 missing path, and against each of the three opt-out `JAVA_TOOL_OPTIONS`
 values, asserting the exact flag strings of the table above (or emptiness).
+
+## 1a. Compact object headers and the AOT cache
+
+Owner ruling 2026-09-15: turn on two JDK 25 features in the shipped image,
+both opt-in.
+
+**Compact object headers** (`-XX:+UseCompactObjectHeaders`, a JDK 25 product
+feature): every object header shrinks from 12 to 8 bytes. Pure win on a
+64-bit heap — smaller objects, less GC work per byte of live data — with no
+counterpart flag needed at training time versus runtime *except* that it
+must be the same everywhere the AOT cache below is read, because it changes
+object layout. Passed unconditionally in `docker/entrypoint.sh`, ahead of
+everything else the entrypoint adds.
+
+**Leyden's AOT cache** (JEP 514): a `-XX:AOTCacheOutput=<path>` run records
+loaded classes, linked bytecode and (with `-XX:+AOTClassLinking`, the
+default under `AOTCacheOutput`) resolved constant-pool entries; a later
+`-XX:AOTCache=<path>` run maps that file in at startup instead of doing the
+class-loading and linking work again. This is JEP 514's *one-step* training
+— the cache is written when the training JVM exits normally, no separate
+"assemble" step — which is why the Dockerfile's training run is a single
+`RUN` that starts the server, waits for it to finish booting, and exits.
+
+- **The training run** (Dockerfile build stage, after jlink): runs
+  `/jre/bin/java -XX:+UseCompactObjectHeaders -XX:AOTCacheOutput=/fc-server.aot
+  --enable-preview --enable-native-access=ALL-UNNAMED -jar /fc-server.jar`
+  with `FC_EXIT_AFTER_START=true FC_PLATFORM_ENABLED=false
+  FC_ROUTER_ENABLED=true FC_API_PORT=0 FC_METRICS_PORT=0 FC_LOG_FORMAT=json`.
+  `FC_EXIT_AFTER_START` (`Env.exitAfterStart`, read like every other bare
+  `FC_*` boolean, no alias) makes `Main` start the server exactly as a real
+  boot would, log `training run complete` naming the roles it started, then
+  stop it and return — a clean exit 0 once JEP 514 has written the cache,
+  rather than a server that runs forever inside a `RUN` step. The build then
+  asserts `test -s /fc-server.aot` so a training run that silently produced
+  nothing fails the image build instead of shipping a cache-less image that
+  looks fine.
+- **Why `/jre/bin/java` and this exact `/fc-server.jar`**: the AOT cache is
+  tied to the precise JDK build (its class library, its internal layouts)
+  and to the classpath/module path that produced it. `/jre` at this point in
+  the build is the *same* jlink runtime the runtime stage copies verbatim,
+  and `/fc-server.jar` is the exact jar that ships — training against
+  anything else (a different JDK image, a jar built differently) would
+  produce a cache the runtime JVM rejects.
+- **Router-only coverage**: this build stage has no database, so only the
+  classes a router-only boot touches make it into the cache — platform/API
+  (identity, OIDC, the Vue SPA route) classes are not trained. The
+  entrypoint still passes `-XX:AOTCache=...` unconditionally for every role
+  (a partial cache still helps the classes it does cover), but a platform
+  deployment's boot is only partly warmed by it today. A later training pass
+  with `FC_PLATFORM_ENABLED=true` against a throwaway embedded Postgres
+  could extend the cache to those classes too; not done here.
+- **No fence flags in the training run**: `docker/jvm-opts.sh` only derives
+  `-Xmx`/`-XX:MaxDirectMemorySize`, neither of which affects what classes get
+  loaded or how they're linked, so leaving them out of training changes
+  nothing about the cache's content — simpler than deriving a fence for a
+  container that may not even be memory-limited during the build.
+- **The matching rule**: the runtime JVM only *uses* an `-XX:AOTCache=` file
+  when it is running the same JDK build, the same classpath/module path, and
+  the same `-XX:+UseCompactObjectHeaders` setting as the training run that
+  produced it (`-Xlog:aot` confirms this per the JDK 25 docs: cache
+  validation checks a recorded fingerprint of the JDK version, the class
+  path/module path, and a handful of "must match" JVM flags including object
+  header shape). Every one of those is held fixed here by construction: same
+  `/jre`, same jar, same entrypoint-supplied compact-headers flag.
+- **A mismatch degrades, it never fails the boot**: per JEP 514, if the
+  runtime JVM cannot use the cache — wrong JDK build, wrong classpath, a
+  flag mismatch — it logs a warning (visible with `-Xlog:aot`) and falls
+  back to loading/linking classes the normal way, exactly as if
+  `-XX:AOTCache` had not been passed at all. `docker/entrypoint.sh` relies on
+  this: it passes `-XX:AOTCache=/usr/local/lib/fc-server.aot` whenever that
+  file exists, with no verification step of its own, because a bad cache is
+  self-correcting at the JVM level rather than a boot-time failure to guard
+  against.
 
 ## 2. Visibility
 

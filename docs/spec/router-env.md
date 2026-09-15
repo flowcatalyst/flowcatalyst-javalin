@@ -72,6 +72,7 @@ active/active against the same queues.
 | `AUTH_MODE`, `FC_ROUTER_AUTH_USER`/`AUTH_BASIC_USERNAME`, `FC_ROUTER_AUTH_PASS`/`AUTH_BASIC_PASSWORD` | resolved in `fc_router::api::AuthConfig::from_env` (not `main.rs`) — `AUTH_MODE=NONE` (or unset) disables BasicAuth on the router surface | same three names, same `NONE` behaviour, already implemented before this brief (`Env.routerAuthMode`/`routerAuthUser`/`routerAuthPass`) | `NONE` |
 | `FC_PLATFORM_ENABLED`, `PLATFORM_ENABLED` *(Java-only)* | n/a — the Rust binary IS the router, it has no platform/API-tier toggle | selects whether the platform (identity/API) subsystem runs in this unified binary (`Env.platformEnabled`) | `true` |
 | `FC_ROUTER_ENABLED`, `MESSAGE_ROUTER_ENABLED` *(Java-only)* | n/a — same reason | selects whether the router subsystem runs (`Env.routerEnabled`) — must be `true` for this drop-in | `false` |
+| `FC_EXIT_AFTER_START` *(Java-only)* | n/a | build-time only: the image's AOT training run (`docs/spec/jvm-memory.md` §1a) — starts every enabled subsystem normally, logs `training run complete`, then stops and returns (`Env.exitAfterStart`, `Main#exitAfterStart`). Never set on a real deployment | `false` |
 
 ## Report cross-reference
 
