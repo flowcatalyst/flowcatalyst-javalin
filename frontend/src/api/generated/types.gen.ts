@@ -894,6 +894,10 @@ export type CreateIdentityProviderRequest = {
      */
     code: string;
     /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
+    /**
      * Display name
      */
     name: string;
@@ -2898,6 +2902,10 @@ export type UpdateIdentityProviderRequest = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;
@@ -3615,6 +3623,10 @@ export type CreateIdentityProviderRequestWritable = {
      * IDP code (e.g. internal, entra)
      */
     code: string;
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
     /**
      * Display name
      */
@@ -4741,6 +4753,10 @@ export type UpdateIdentityProviderRequestWritable = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;

@@ -2388,6 +2388,14 @@
             "description": "IDP code (e.g. internal, entra)",
             "type": "string"
           },
+          "mappingScope": {
+            "description": "Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.",
+            "enum": [
+              "ANCHOR",
+              "CLIENT"
+            ],
+            "type": "string"
+          },
           "name": {
             "description": "Display name",
             "type": "string"
@@ -8378,6 +8386,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "mappingScope": {
+            "description": "Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.",
+            "enum": [
+              "ANCHOR",
+              "CLIENT"
+            ],
+            "type": "string"
           },
           "name": {
             "type": "string"

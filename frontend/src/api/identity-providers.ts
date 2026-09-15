@@ -9,6 +9,12 @@ import type {
 // docs/frontend-api-types-adoption.md on SDK coordination).
 export type IdentityProviderType = "INTERNAL" | "OIDC";
 
+// Scope of the domain mappings created/linked by this request. Required
+// whenever the request would create a NEW domain mapping (server: 400
+// MAPPING_SCOPE_REQUIRED). See docs product ruling 2026-09-15: the scope
+// must never silently fall through to ANCHOR.
+export type MappingScope = "ANCHOR" | "CLIENT";
+
 // Response types alias the generated contract (api/openapi.lock.json) so
 // `vue-tsc` fails on backend drift. Aliased under the historical names so
 // pages keep their imports.
@@ -30,6 +36,9 @@ export interface CreateIdentityProviderRequest {
 	// Linked on mappings that are new or have no primary client yet; an
 	// existing client link is never overwritten.
 	primaryClientId?: string;
+	// Required whenever allowedEmailDomains would create a new domain
+	// mapping. CLIENT requires primaryClientId; ANCHOR forbids it.
+	mappingScope?: MappingScope;
 	syncRolesFromIdp?: boolean;
 	allowedRoleIds?: string[];
 }
@@ -45,6 +54,9 @@ export interface UpdateIdentityProviderRequest {
 	// mapped/claimed; removals fall back to internal auth (password).
 	allowedEmailDomains?: string[];
 	primaryClientId?: string;
+	// Required whenever allowedEmailDomains would create a new domain
+	// mapping. CLIENT requires primaryClientId; ANCHOR forbids it.
+	mappingScope?: MappingScope;
 	syncRolesFromIdp?: boolean;
 	allowedRoleIds?: string[];
 }
@@ -66,10 +78,14 @@ export const identityProvidersApi = {
 	// Unlike most create endpoints (which return `{ id }`), the backend
 	// deliberately returns the full provider on 201 so the SPA can render it
 	// without a re-fetch (see CreateIdentityProviderResponses in the spec).
-	create(data: CreateIdentityProviderRequest): Promise<IdentityProvider> {
+	create(
+		data: CreateIdentityProviderRequest,
+		opts?: { suppressGlobalErrorToast?: boolean },
+	): Promise<IdentityProvider> {
 		return apiFetch("/identity-providers", {
 			method: "POST",
 			body: JSON.stringify(data),
+			...opts,
 		});
 	},
 
@@ -78,10 +94,12 @@ export const identityProvidersApi = {
 	update(
 		id: string,
 		data: UpdateIdentityProviderRequest,
+		opts?: { suppressGlobalErrorToast?: boolean },
 	): Promise<IdentityProvider> {
 		return apiFetch(`/identity-providers/${id}`, {
 			method: "PUT",
 			body: JSON.stringify(data),
+			...opts,
 		});
 	},
 

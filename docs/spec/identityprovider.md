@@ -97,6 +97,10 @@ is untouched, not `false`).
 | Create | `type` parses to `OIDC` and `oidcIssuerUrl` blank | `OIDC_ISSUER_REQUIRED` |
 | Create | `type` parses to `OIDC` and `oidcClientId` blank | `OIDC_CLIENT_ID_REQUIRED` |
 | Create / Update | any listed email domain (after normalisation, blanks skipped) is not DNS-like: no `.`, or contains ` `, `/`, `@` | `INVALID_EMAIL_DOMAIN` |
+| Create / Update | `primaryClientId` (non-blank after trim) given without `mappingScope` | `MAPPING_SCOPE_REQUIRED` "mappingScope is required when primaryClientId is set" |
+| Create / Update | `mappingScope` given and not `ANCHOR` / `CLIENT` (case-insensitive parse; `PARTNER` is refused — partner mappings are managed on the email-domain page) | `INVALID_MAPPING_SCOPE` |
+| Create / Update | `mappingScope: CLIENT` with no non-blank `primaryClientId` | `PRIMARY_CLIENT_REQUIRED` |
+| Create / Update | `mappingScope: ANCHOR` with a `primaryClientId` | `PRIMARY_CLIENT_NOT_ALLOWED` |
 | Update | `id` blank | `ID_REQUIRED` |
 | Update | `name` supplied but blank | `NAME_REQUIRED` |
 | Delete | `id` blank | `ID_REQUIRED` |
@@ -120,30 +124,50 @@ store the same form.
 ### Create (one transaction, `TxOperation` → `CreateResult`)
 
 1. Another IdP with the same `code` → 409 `CODE_EXISTS` "Identity provider with code '<code>' already exists".
-2. Persist the IdP (`allowedRoleIds` from the command, `[]` when absent) and emit `created`; audit `CreateCommand`.
-3. For each normalised domain, **map it** (below); collect `domainsCreated` / `domainsClaimed`.
+2. **Require a scope for new domains** (owner ruling 2026-09-15, Go
+   `c05e1ed`): when `mappingScope` is absent and any normalised domain has
+   no mapping yet → 400 `MAPPING_SCOPE_REQUIRED` "mappingScope is required:
+   domain '<d>' has no mapping yet; choose ANCHOR or CLIENT". Checked
+   **before any row is written**, so a failing request leaves nothing
+   behind. A missing scope is legal only when every listed domain already
+   routes somewhere (claims and no-op links need no choice).
+3. Persist the IdP (`allowedRoleIds` from the command, `[]` when absent) and emit `created`; audit `CreateCommand`.
+4. For each normalised domain, **map it** (below); collect `domainsCreated` / `domainsClaimed` / `domainsLinked`.
 
-`CreateResult`: `identityProviderId, code, domainsCreated[], domainsClaimed[]`.
+`CreateResult`: `identityProviderId, code, domainsCreated[], domainsClaimed[], domainsLinked[]`
+(`domainsLinked`: domains whose mapping gained a primary client from this
+request — a new CLIENT-scoped mapping, or an existing one, claimed or
+already routed here, that had no client; a claimed-and-linked domain is in
+both lists). Not on the wire: the handler answers the reloaded
+`IdentityProviderResponse`.
 
 ### Update (one transaction, `TxOperation` → `UpdateResult`)
 
 1. Load by id → 404 `IdentityProvider_NOT_FOUND`.
 2. Apply the non-null fields (`name` trimmed; `allowedRoleIds` replaced wholesale when supplied — `[]` clears; `code` and `type` immutable); persist; emit `updated`; audit `UpdateCommand`.
-3. `allowedEmailDomains` **absent** → done (mappings untouched).
+3. `allowedEmailDomains` **absent** → done (mappings untouched). A
+   removal-only update (the set shrinks) needs no `mappingScope`.
 4. Otherwise it is the **desired set** of domains routed to this IdP:
+   - **require a scope for new domains** exactly as Create step 2, before any write;
    - the current set is read **before** any change (every mapping whose `identity_provider_id` is this IdP);
-   - each desired domain is **mapped** (below) → `domainsCreated` / `domainsClaimed`;
+   - each desired domain is **mapped** (below) → `domainsCreated` / `domainsClaimed` / `domainsLinked`;
    - unless this IdP **is** the internal provider (`code=internal`), every current domain not in the desired set is **released**: its mapping is moved to the internal provider (looked up by code; missing → 500 `SEED` "internal identity provider missing; cannot release domain '<d>'") — the mapping and its client / 2FA config survive, only the routing changes; `domainsReleased` += domain; `usersReset` += users converted (below). Deleting a mapping outright stays an explicit act on the email-domain page.
 
-`UpdateResult`: `identityProviderId, code, domainsCreated[], domainsClaimed[], domainsReleased[], usersReset`.
+`UpdateResult`: `identityProviderId, code, domainsCreated[], domainsClaimed[], domainsLinked[], domainsReleased[], usersReset`.
 
 ### Mapping one domain to an IdP (`mapDomain`) — shared by create and update
 
+The scope of a **new** mapping is the request's explicit `mappingScope`,
+never derived from whether a client was given (owner ruling 2026-09-15;
+before it, a missing client silently meant `ANCHOR`). A mapping's existing
+scope is never changed here, and an existing primary client is never
+overwritten.
+
 | Existing mapping for the domain | Effect | Reported as |
 |---|---|---|
-| none | new mapping: `scopeType` = `CLIENT` when `primaryClientId` given else `ANCHOR`, `primaryClientId` from the command, no grants, 2FA off; emits the mapping aggregate's `created` | `created` |
-| routes to this IdP already | nothing | — |
-| routes elsewhere | `primaryClientId` filled **only when** the command gives one **and** the mapping has none (an existing client link is never overwritten); then **moved** to this IdP (below) | `claimed` |
+| none | new mapping with the request's `mappingScope`; `primaryClientId` set only when the scope is `CLIENT`; no grants, 2FA off; emits the mapping aggregate's `created` | `created` (+ `linked` when `CLIENT`) |
+| routes to this IdP already | scope untouched; when the command gives a `primaryClientId` **and** the mapping has none, link it, persist, emit the mapping aggregate's `updated` (audited under this command) — the "edit later" fix: a provider created with ANCHOR domains can have a client linked from its edit form | `linked`, else — |
+| routes elsewhere | scope untouched; `primaryClientId` filled **only when** the command gives one **and** the mapping has none; then **moved** to this IdP (below) | `claimed` (+ `linked` when the client was filled) |
 
 ### Moving a mapping to a target IdP — the email-domain mapping aggregate's rule, applied here
 

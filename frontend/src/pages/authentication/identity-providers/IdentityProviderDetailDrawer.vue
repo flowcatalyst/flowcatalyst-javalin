@@ -5,8 +5,11 @@ import { useRoute } from "vue-router";
 import {
 	identityProvidersApi,
 	type IdentityProvider,
+	type MappingScope,
 } from "@/api/identity-providers";
+import { ApiError } from "@/api/client";
 import { rolesApi, type Role } from "@/api/roles";
+import { clientsApi, type Client } from "@/api/clients";
 import { getErrorMessage } from "@/utils/errors";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
@@ -36,12 +39,96 @@ const editForm = ref({
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
 	syncRolesFromIdp: false,
+	// The provider does not store a scope — every edit starts unselected
+	// (see resetEditForm). Sent only when the user makes a choice.
+	mappingScope: null as MappingScope | null,
+	primaryClientId: null as string | null,
 });
 const newAllowedDomain = ref("");
+
+// Error codes the server returns for a missing/invalid domain-mapping scope
+// choice (400s) — surfaced inline near the scope field, not a generic toast.
+const MAPPING_SCOPE_ERROR_CODES = new Set([
+	"MAPPING_SCOPE_REQUIRED",
+	"PRIMARY_CLIENT_REQUIRED",
+	"PRIMARY_CLIENT_NOT_ALLOWED",
+]);
+const scopeError = ref<string | null>(null);
+
+const mappingScopeOptions = [
+	{
+		label: "Anchor",
+		value: "ANCHOR",
+		description: "Platform admin - access to all clients",
+	},
+	{
+		label: "Client",
+		value: "CLIENT",
+		description: "Bound to a single client",
+	},
+];
 
 // Role allow-list picker: [availableRoles, selectedRoles].
 const allRoles = ref<Role[]>([]);
 const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
+
+// Optional client linked on domains that don't have one yet.
+const clients = ref<Client[]>([]);
+const filteredClients = ref<Client[]>([]);
+const selectedClient = ref<Client | null>(null);
+
+function searchClients(event: { query: string }) {
+	const query = event.query.toLowerCase();
+	filteredClients.value = clients.value.filter(
+		(c) =>
+			c.name.toLowerCase().includes(query) ||
+			c.identifier.toLowerCase().includes(query),
+	);
+}
+
+function onClientSelect(event: { value: Client }) {
+	editForm.value.primaryClientId = event.value.id;
+}
+
+function clearClient() {
+	editForm.value.primaryClientId = null;
+	selectedClient.value = null;
+}
+
+// A scope choice is only meaningful once there's at least one domain
+// routed here.
+const showScopeChoice = computed(
+	() => editForm.value.allowedEmailDomains.length > 0,
+);
+// Domains being added that aren't already on the provider — these would
+// create a NEW domain mapping, so the server requires an explicit scope.
+const newlyAddedDomains = computed(() => {
+	const existing = new Set(provider.value?.allowedEmailDomains || []);
+	return editForm.value.allowedEmailDomains.filter((d) => !existing.has(d));
+});
+const scopeRequired = computed(
+	() => showScopeChoice.value && newlyAddedDomains.value.length > 0,
+);
+
+// Client forbidden without Anchor, required with Client — clear the client
+// the moment the choice changes away from Client, and drop any stale
+// server error once the user edits either field.
+watch(
+	() => editForm.value.mappingScope,
+	(value) => {
+		if (value !== "CLIENT") {
+			editForm.value.primaryClientId = null;
+			selectedClient.value = null;
+		}
+		scopeError.value = null;
+	},
+);
+watch(
+	() => editForm.value.primaryClientId,
+	() => {
+		scopeError.value = null;
+	},
+);
 
 const { dirty, markClean, reset: resetDirty } = useDirtyForm(() => ({
 	...editForm.value,
@@ -75,6 +162,13 @@ const isValid = computed(() => {
 		if (!editForm.value.oidcIssuerUrl.trim()) return false; // Always required for OIDC
 		if (!editForm.value.oidcClientId.trim()) return false;
 	}
+	if (scopeRequired.value && !editForm.value.mappingScope) return false;
+	if (
+		editForm.value.mappingScope === "CLIENT" &&
+		!editForm.value.primaryClientId
+	) {
+		return false;
+	}
 	return true;
 });
 
@@ -100,12 +194,14 @@ async function loadProvider(providerId: string) {
 	showDeleteDialog.value = false;
 	newAllowedDomain.value = "";
 	try {
-		const [providerData, rolesResponse] = await Promise.all([
+		const [providerData, rolesResponse, clientsResponse] = await Promise.all([
 			identityProvidersApi.get(providerId),
 			rolesApi.list(),
+			clientsApi.list(),
 		]);
 		provider.value = providerData;
 		allRoles.value = rolesResponse.items;
+		clients.value = clientsResponse.clients;
 		resetEditForm();
 	} catch (e) {
 		provider.value = null;
@@ -127,7 +223,13 @@ function resetEditForm() {
 			oidcIssuerPattern: provider.value.oidcIssuerPattern || "",
 			allowedEmailDomains: [...(provider.value.allowedEmailDomains || [])],
 			syncRolesFromIdp: provider.value.syncRolesFromIdp ?? false,
+			// The provider doesn't store a scope, so every (re)edit starts
+			// with nothing selected — never inferred/preselected.
+			mappingScope: null,
+			primaryClientId: null,
 		};
+		selectedClient.value = null;
+		scopeError.value = null;
 		const allowedRoleIds = new Set(provider.value.allowedRoleIds || []);
 		rolePickerModel.value = [
 			allRoles.value.filter((r) => !allowedRoleIds.has(r.id)),
@@ -190,12 +292,20 @@ async function applyChanges() {
 	showReleaseDialog.value = false;
 	saving.value = true;
 	saveError.value = null;
+	scopeError.value = null;
 
 	try {
 		const updateData: Record<string, unknown> = {
 			name: editForm.value.name.trim(),
 			allowedEmailDomains: editForm.value.allowedEmailDomains,
 		};
+
+		if (editForm.value.mappingScope) {
+			updateData["mappingScope"] = editForm.value.mappingScope;
+			if (editForm.value.mappingScope === "CLIENT") {
+				updateData["primaryClientId"] = editForm.value.primaryClientId;
+			}
+		}
 
 		if (provider.value.type === "OIDC") {
 			updateData["oidcIssuerUrl"] = editForm.value.oidcIssuerUrl.trim() || null;
@@ -216,6 +326,9 @@ async function applyChanges() {
 		const updated = await identityProvidersApi.update(
 			provider.value.id,
 			updateData,
+			// Handled inline near the scope field below — don't also fire
+			// the global red banner.
+			{ suppressGlobalErrorToast: true },
 		);
 		provider.value = updated;
 		isEditing.value = false;
@@ -223,7 +336,11 @@ async function applyChanges() {
 		toast.success("Success", "Identity provider updated successfully");
 		emit("changed");
 	} catch (e: unknown) {
-		saveError.value = getErrorMessage(e, "Failed to update identity provider");
+		if (e instanceof ApiError && MAPPING_SCOPE_ERROR_CODES.has(e.code ?? "")) {
+			scopeError.value = e.message;
+		} else {
+			saveError.value = getErrorMessage(e, "Failed to update identity provider");
+		}
 	} finally {
 		saving.value = false;
 	}
@@ -494,34 +611,93 @@ function getTypeSeverity(type: string) {
         </template>
 
         <!-- Edit mode -->
-        <div v-else class="field">
-          <div class="domain-input">
-            <InputText
-              v-model="newAllowedDomain"
-              placeholder="example.com"
-              class="flex-grow"
-              @keyup.enter="addAllowedDomain"
-            />
-            <Button
-              icon="pi pi-plus"
-              :disabled="!newAllowedDomain.trim()"
-              @click="addAllowedDomain"
-            />
+        <div v-else class="field-stack">
+          <div class="field">
+            <div class="domain-input">
+              <InputText
+                v-model="newAllowedDomain"
+                placeholder="example.com"
+                class="flex-grow"
+                @keyup.enter="addAllowedDomain"
+              />
+              <Button
+                icon="pi pi-plus"
+                :disabled="!newAllowedDomain.trim()"
+                @click="addAllowedDomain"
+              />
+            </div>
+            <div v-if="editForm.allowedEmailDomains.length > 0" class="domain-list">
+              <Chip
+                v-for="domain in editForm.allowedEmailDomains"
+                :key="domain"
+                :label="domain"
+                removable
+                @remove="removeAllowedDomain(domain)"
+              />
+            </div>
+            <small class="field-help">
+              The set of domains routed to this provider. Added domains are
+              mapped (or re-linked from their current provider); removed domains
+              fall back to internal password authentication.
+            </small>
           </div>
-          <div v-if="editForm.allowedEmailDomains.length > 0" class="domain-list">
-            <Chip
-              v-for="domain in editForm.allowedEmailDomains"
-              :key="domain"
-              :label="domain"
-              removable
-              @remove="removeAllowedDomain(domain)"
-            />
+
+          <div v-if="showScopeChoice" class="field">
+            <label for="editMappingScope"
+              >Domain scope<span v-if="scopeRequired"> *</span></label
+            >
+            <Select
+              id="editMappingScope"
+              v-model="editForm.mappingScope"
+              :options="mappingScopeOptions"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Choose a scope"
+              class="w-full"
+              :invalid="!!scopeError"
+            >
+              <template #option="slotProps">
+                <div class="type-option">
+                  <span class="type-label">{{ slotProps.option.label }}</span>
+                  <span class="type-description">{{ slotProps.option.description }}</span>
+                </div>
+              </template>
+            </Select>
+            <small v-if="scopeError" class="p-error">{{ scopeError }}</small>
+            <small v-else class="field-help">
+              Choose Client and pick a client to link it to domains that
+              don't have one yet. Existing links and scopes are not changed.
+              <template v-if="scopeRequired">
+                Required: a new domain was added and needs an explicit
+                scope — it never falls back to Anchor.
+              </template>
+            </small>
           </div>
-          <small class="field-help">
-            The set of domains routed to this provider. Added domains are
-            mapped (or re-linked from their current provider); removed domains
-            fall back to internal password authentication.
-          </small>
+
+          <div v-if="editForm.mappingScope === 'CLIENT'" class="field">
+            <label for="editPrimaryClient">Primary Client *</label>
+            <div class="client-select">
+              <AutoComplete
+                id="editPrimaryClient"
+                v-model="selectedClient"
+                :suggestions="filteredClients"
+                optionLabel="name"
+                placeholder="Search for a client..."
+                @complete="searchClients"
+                @item-select="onClientSelect"
+              />
+              <Button
+                v-if="selectedClient"
+                icon="pi pi-times"
+                text
+                @click="clearClient"
+              />
+            </div>
+            <small class="field-help">
+              Linked on domains listed above that don't have a primary
+              client yet. Existing client links are never overwritten.
+            </small>
+          </div>
         </div>
       </FcFormSection>
     </template>
@@ -689,6 +865,33 @@ function getTypeSeverity(type: string) {
 }
 
 .flex-grow {
+  flex: 1;
+}
+
+.type-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.type-option .type-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.type-option .type-description {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.client-select {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.client-select .p-autocomplete {
   flex: 1;
 }
 

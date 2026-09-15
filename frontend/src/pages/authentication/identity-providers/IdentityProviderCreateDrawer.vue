@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import {
 	identityProvidersApi,
 	type CreateIdentityProviderRequest,
 	type IdentityProviderType,
+	type MappingScope,
 } from "@/api/identity-providers";
+import { ApiError } from "@/api/client";
 import { clientsApi, type Client } from "@/api/clients";
 import { rolesApi, type Role } from "@/api/roles";
 import { getErrorMessage } from "@/utils/errors";
@@ -31,10 +33,37 @@ const form = ref({
 	oidcIssuerPattern: "",
 	allowedEmailDomains: [] as string[],
 	primaryClientId: null as string | null,
+	mappingScope: null as MappingScope | null,
 	syncRolesFromIdp: false,
 });
 
 const newAllowedDomain = ref("");
+
+// Error codes the server returns for a missing/invalid domain-mapping scope
+// choice (400s) — surfaced inline near the scope field, not a generic toast.
+const MAPPING_SCOPE_ERROR_CODES = new Set([
+	"MAPPING_SCOPE_REQUIRED",
+	"PRIMARY_CLIENT_REQUIRED",
+	"PRIMARY_CLIENT_NOT_ALLOWED",
+]);
+const scopeError = ref<string | null>(null);
+
+const mappingScopeOptions = [
+	{
+		label: "Anchor",
+		value: "ANCHOR",
+		description: "Platform admin - access to all clients",
+	},
+	{
+		label: "Client",
+		value: "CLIENT",
+		description: "Bound to a single client",
+	},
+];
+
+// A scope choice is only meaningful once there's at least one domain to
+// apply it to; nothing is preselected.
+const showScopeChoice = computed(() => form.value.allowedEmailDomains.length > 0);
 
 // Role allow-list picker: [availableRoles, selectedRoles]. Which platform
 // roles this provider may confer via role sync; empty = no restriction.
@@ -45,6 +74,25 @@ const rolePickerModel = ref<[Role[], Role[]]>([[], []]);
 const clients = ref<Client[]>([]);
 const filteredClients = ref<Client[]>([]);
 const selectedClient = ref<Client | null>(null);
+
+// Anchor forbids a primary client — clear it the moment the choice changes
+// away from Client.
+watch(
+	() => form.value.mappingScope,
+	(value) => {
+		if (value !== "CLIENT") {
+			form.value.primaryClientId = null;
+			selectedClient.value = null;
+		}
+		scopeError.value = null;
+	},
+);
+watch(
+	() => form.value.primaryClientId,
+	() => {
+		scopeError.value = null;
+	},
+);
 
 onMounted(async () => {
 	try {
@@ -118,6 +166,12 @@ const isValid = computed(() => {
 		if (!form.value.oidcClientId.trim()) return false;
 		if (!form.value.oidcIssuerUrl.trim()) return false; // Always required for OIDC
 	}
+	if (showScopeChoice.value) {
+		if (!form.value.mappingScope) return false;
+		if (form.value.mappingScope === "CLIENT" && !form.value.primaryClientId) {
+			return false;
+		}
+	}
 	return true;
 });
 
@@ -144,6 +198,7 @@ async function createProvider() {
 
 	loading.value = true;
 	error.value = null;
+	scopeError.value = null;
 
 	try {
 		const requestData: CreateIdentityProviderRequest = {
@@ -154,7 +209,13 @@ async function createProvider() {
 				form.value.allowedEmailDomains.length > 0
 					? form.value.allowedEmailDomains
 					: undefined,
-			primaryClientId: form.value.primaryClientId ?? undefined,
+			mappingScope: showScopeChoice.value
+				? (form.value.mappingScope ?? undefined)
+				: undefined,
+			primaryClientId:
+				form.value.mappingScope === "CLIENT"
+					? (form.value.primaryClientId ?? undefined)
+					: undefined,
 			...(form.value.type === "OIDC"
 				? {
 						syncRolesFromIdp: form.value.syncRolesFromIdp,
@@ -178,7 +239,11 @@ async function createProvider() {
 				: {}),
 		};
 
-		const created = await identityProvidersApi.create(requestData);
+		const created = await identityProvidersApi.create(requestData, {
+			// Handled inline near the scope field below — don't also fire
+			// the global red banner.
+			suppressGlobalErrorToast: true,
+		});
 		toast.success(
 			"Success",
 			`Identity provider "${created.name}" created successfully`,
@@ -186,7 +251,11 @@ async function createProvider() {
 		emit("changed");
 		replaceToDetail(created.id);
 	} catch (e: unknown) {
-		error.value = getErrorMessage(e, "Failed to create identity provider");
+		if (e instanceof ApiError && MAPPING_SCOPE_ERROR_CODES.has(e.code ?? "")) {
+			scopeError.value = e.message;
+		} else {
+			error.value = getErrorMessage(e, "Failed to create identity provider");
+		}
 	} finally {
 		loading.value = false;
 	}
@@ -358,15 +427,41 @@ async function createProvider() {
           </small>
         </div>
 
-        <div class="field">
-          <label for="primaryClient">Primary Client</label>
+        <div v-if="showScopeChoice" class="field">
+          <label for="mappingScope">Domain scope *</label>
+          <Select
+            id="mappingScope"
+            v-model="form.mappingScope"
+            :options="mappingScopeOptions"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="Choose a scope"
+            class="w-full"
+            :invalid="!!scopeError"
+          >
+            <template #option="slotProps">
+              <div class="type-option">
+                <span class="type-label">{{ slotProps.option.label }}</span>
+                <span class="type-description">{{ slotProps.option.description }}</span>
+              </div>
+            </template>
+          </Select>
+          <small v-if="scopeError" class="p-error">{{ scopeError }}</small>
+          <small v-else class="field-help">
+            Required because domains are listed above. Every new domain
+            mapping needs an explicit scope — it never falls back to Anchor.
+          </small>
+        </div>
+
+        <div v-if="form.mappingScope === 'CLIENT'" class="field">
+          <label for="primaryClient">Primary Client *</label>
           <div class="client-select">
             <AutoComplete
               id="primaryClient"
               v-model="selectedClient"
               :suggestions="filteredClients"
               optionLabel="name"
-              placeholder="Search for a client (optional)..."
+              placeholder="Search for a client..."
               @complete="searchClients"
               @item-select="onClientSelect"
             />
