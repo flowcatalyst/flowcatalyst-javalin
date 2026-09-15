@@ -15,9 +15,16 @@
                    "body": { "code": "parity-idp-${run}", "name": "Parity Identity Provider", "type": "OIDC",
                              "oidcIssuerUrl": "https://login.example.test/v2.0", "oidcClientId": "parity-cid",
                              "oidcClientSecretRef": "plain-secret", "oidcMultiTenant": false,
-                             "allowedEmailDomains": ["parity-idp-${run}.example.test"] } },
+                             "allowedEmailDomains": ["parity-idp-${run}.example.test"], "mappingScope": "ANCHOR" } },
       "expect": { "status": 201 },
       "capture": { "idpId": "/id" } },
+
+    { "id": "create-fresh-domain-without-mapping-scope",
+      "why": "owner ruling 2026-09-15: the scope of a brand-new email-domain mapping is an explicit choice — a create that would map a fresh domain without naming ANCHOR or CLIENT is refused (MAPPING_SCOPE_REQUIRED) before any row is written",
+      "request": { "method": "POST", "path": "/api/identity-providers",
+                   "body": { "code": "parity-idp-noscope-${run}", "name": "Parity No Scope Provider", "type": "INTERNAL",
+                             "oidcMultiTenant": false, "allowedEmailDomains": ["parity-idp-noscope-${run}.example.test"] } },
+      "expect": { "status": 400 } },
 
     { "id": "get-created",
       "request": { "method": "GET", "path": "/api/identity-providers/${idpId}" } },

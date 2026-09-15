@@ -33,6 +33,7 @@ public final class CreateIdentityProvider {
                         UseCaseException.requireNonBlank(cmd.oidcClientId(), "OIDC_CLIENT_ID_REQUIRED", "OIDC IDPs require oidcClientId");
                     }
                     DomainRouting.normalise(cmd.allowedEmailDomains());
+                    DomainRouting.validateScope(cmd.mappingScope(), cmd.primaryClientId());
                 })
                 // Identity providers are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
@@ -41,6 +42,11 @@ public final class CreateIdentityProvider {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Identity provider with code '" + cmd.code() + "' already exists");
                     }
+                    // Already restricted to legal values in Validate above.
+                    var resolved = DomainRouting.validateScope(cmd.mappingScope(), cmd.primaryClientId());
+                    var domains = DomainRouting.normalise(cmd.allowedEmailDomains());
+                    routing.requireScopeForNewDomains(domains, resolved.scope()); // before any row is written
+
                     IdentityProvider ip = IdentityProvider.create(cmd.code(), cmd.name(), IdentityProviderType.parseWire(cmd.type()))
                             .withOidc(cmd.oidcIssuerUrl(), cmd.oidcClientId(), cmd.oidcClientSecretRef(), cmd.oidcMultiTenant(), cmd.oidcIssuerPattern())
                             .withRoleSync(cmd.syncRolesFromIdp(), cmd.allowedRoleIds());
@@ -48,14 +54,14 @@ public final class CreateIdentityProvider {
 
                     var created = new ArrayList<String>();
                     var claimed = new ArrayList<String>();
-                    for (var domain : DomainRouting.normalise(cmd.allowedEmailDomains())) {
-                        switch (routing.mapDomain(scoped, ip, domain, cmd.primaryClientId(), ec, cmd)) {
-                            case CREATED -> created.add(domain.value());
-                            case CLAIMED -> claimed.add(domain.value());
-                            case UNCHANGED -> { }
-                        }
+                    var linked = new ArrayList<String>();
+                    for (var domain : domains) {
+                        var mr = routing.mapDomain(scoped, ip, domain, resolved.scope(), resolved.primaryClientId(), ec, cmd);
+                        if (mr.created()) created.add(domain.value());
+                        if (mr.claimed()) claimed.add(domain.value());
+                        if (mr.linked()) linked.add(domain.value());
                     }
-                    return new CreateResult(ip.id(), ip.code(), created, claimed);
+                    return new CreateResult(ip.id(), ip.code(), created, claimed, linked);
                 });
     }
 }

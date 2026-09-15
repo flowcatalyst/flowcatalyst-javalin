@@ -81,7 +81,8 @@ are omitted when `null`; the two lists are always present.
 
 `CreateIdentityProviderRequest`: `code, name, type, oidcIssuerUrl?,
 oidcClientId?, oidcClientSecretRef?, oidcMultiTenant, oidcIssuerPattern?,
-allowedEmailDomains?, primaryClientId?, syncRolesFromIdp?, allowedRoleIds?`.
+allowedEmailDomains?, mappingScope? ("ANCHOR" | "CLIENT", lockfile enum),
+primaryClientId?, syncRolesFromIdp?, allowedRoleIds?`.
 `UpdateIdentityProviderRequest`: the same minus `code`/`type`, every field
 optional (`null` = untouched; an absent `oidcMultiTenant` / `syncRolesFromIdp`
 is untouched, not `false`).
@@ -98,7 +99,7 @@ is untouched, not `false`).
 | Create | `type` parses to `OIDC` and `oidcClientId` blank | `OIDC_CLIENT_ID_REQUIRED` |
 | Create / Update | any listed email domain (after normalisation, blanks skipped) is not DNS-like: no `.`, or contains ` `, `/`, `@` | `INVALID_EMAIL_DOMAIN` |
 | Create / Update | `primaryClientId` (non-blank after trim) given without `mappingScope` | `MAPPING_SCOPE_REQUIRED` "mappingScope is required when primaryClientId is set" |
-| Create / Update | `mappingScope` given and not `ANCHOR` / `CLIENT` (case-insensitive parse; `PARTNER` is refused — partner mappings are managed on the email-domain page) | `INVALID_MAPPING_SCOPE` |
+| Create / Update | `mappingScope` given and not `ANCHOR` / `CLIENT` (`PARTNER` is refused — partner mappings are managed on the email-domain page). The lockfile enum already refuses any other value at the schema gate on both sides, so over HTTP this code is reachable only for `PARTNER`; the operation itself accepts either case, Go's parser is exact — invisible on the wire | `INVALID_MAPPING_SCOPE` |
 | Create / Update | `mappingScope: CLIENT` with no non-blank `primaryClientId` | `PRIMARY_CLIENT_REQUIRED` |
 | Create / Update | `mappingScope: ANCHOR` with a `primaryClientId` | `PRIMARY_CLIENT_NOT_ALLOWED` |
 | Update | `id` blank | `ID_REQUIRED` |

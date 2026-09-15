@@ -143,6 +143,7 @@ public final class IdentityProviderApi {
             boolean oidcMultiTenant,
             String oidcIssuerPattern,
             List<String> allowedEmailDomains,
+            String mappingScope,
             String primaryClientId,
             boolean syncRolesFromIdp,
             List<String> allowedRoleIds) {
@@ -150,7 +151,7 @@ public final class IdentityProviderApi {
         /// The command, with the secret already in its at-rest form (spec §5).
         public CreateCommand toCommand(ClientSecretEncryption secrets) {
             return new CreateCommand(code, name, type, oidcIssuerUrl, oidcClientId, secrets.atRest(oidcClientSecretRef),
-                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, primaryClientId, syncRolesFromIdp, allowedRoleIds);
+                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds);
         }
     }
 
@@ -163,6 +164,7 @@ public final class IdentityProviderApi {
             Boolean oidcMultiTenant,
             String oidcIssuerPattern,
             List<String> allowedEmailDomains,
+            String mappingScope,
             String primaryClientId,
             Boolean syncRolesFromIdp,
             List<String> allowedRoleIds) {
@@ -170,7 +172,7 @@ public final class IdentityProviderApi {
         /// The command, with the secret already in its at-rest form (spec §5).
         public UpdateCommand toCommand(String id, ClientSecretEncryption secrets) {
             return new UpdateCommand(id, name, oidcIssuerUrl, oidcClientId, secrets.atRest(oidcClientSecretRef),
-                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, primaryClientId, syncRolesFromIdp, allowedRoleIds);
+                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds);
         }
     }
 

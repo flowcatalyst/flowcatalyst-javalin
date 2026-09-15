@@ -140,7 +140,7 @@ class IdentityProviderApiTest {
     @Test
     void createReturnsTheFullProviderThenReadByIdAndInList() {
         var created = http.post("/api/identity-providers", oidcBody(code("api-crt"), "\"plain-secret\"",
-                ",\"allowedEmailDomains\":[\"" + domain("API-Crt").toUpperCase(Locale.ROOT) + "\"],\"syncRolesFromIdp\":true,\"allowedRoleIds\":[\"rol_a\"]"), ANCHOR);
+                ",\"allowedEmailDomains\":[\"" + domain("API-Crt").toUpperCase(Locale.ROOT) + "\"],\"mappingScope\":\"ANCHOR\",\"syncRolesFromIdp\":true,\"allowedRoleIds\":[\"rol_a\"]"), ANCHOR);
         assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
         assertThat(created.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
         var c = json(created);
@@ -225,7 +225,7 @@ class IdentityProviderApiTest {
         assertThat(gone.statusCode()).isEqualTo(404);
         assertThat(json(gone).get("error").asText()).isEqualTo("IdentityProvider_NOT_FOUND");
 
-        String mapped = create(http, oidcBody(code("api-delguard"), null, ",\"allowedEmailDomains\":[\"" + domain("api-delguard") + "\"]"));
+        String mapped = create(http, oidcBody(code("api-delguard"), null, ",\"allowedEmailDomains\":[\"" + domain("api-delguard") + "\"],\"mappingScope\":\"ANCHOR\""));
         var blocked = http.delete("/api/identity-providers/" + mapped, ANCHOR);
         assertThat(blocked.statusCode()).isEqualTo(409);
         assertThat(json(blocked).get("error").asText()).isEqualTo("DOMAINS_STILL_MAPPED");
@@ -255,6 +255,43 @@ class IdentityProviderApiTest {
         var unknown = http.put("/api/identity-providers/idp_doesnotexist1", "{\"name\":\"X\"}", ANCHOR);
         assertThat(unknown.statusCode()).isEqualTo(404);
         assertThat(json(unknown).get("error").asText()).isEqualTo("IdentityProvider_NOT_FOUND");
+    }
+
+    /// Owner ruling 2026-09-15 (spec §4): `mappingScope` on the wire reaches
+    /// the command and drives the mapping's actual scope — never a silent
+    /// ANCHOR default — and a request that would create a mapping without
+    /// choosing one is a 400 carrying the code, with nothing persisted.
+    @Test
+    void mappingScopeOnTheWireDrivesTheMappingAndAMissingScopeIsA400() {
+        var noScope = http.post("/api/identity-providers", oidcBody(code("api-noscope"), null,
+                ",\"allowedEmailDomains\":[\"" + domain("api-noscope") + "\"]"), ANCHOR);
+        assertThat(noScope.statusCode()).isEqualTo(400);
+        assertThat(json(noScope).get("error").asText()).isEqualTo("MAPPING_SCOPE_REQUIRED");
+        assertThat(repo.findByCode(code("api-noscope"))).as("nothing persisted on a rolled-back create").isEmpty();
+
+        var clientId = "clt_apicrtclient";
+        String id = create(http, oidcBody(code("api-clientscope"), null,
+                ",\"allowedEmailDomains\":[\"" + domain("api-clientscope") + "\"],\"mappingScope\":\"CLIENT\",\"primaryClientId\":\"" + clientId + "\""));
+        var got = json(http.get("/api/identity-providers/" + id, ANCHOR));
+        assertThat(got.get("allowedEmailDomains")).extracting(JsonNode::asText).containsExactly(domain("api-clientscope"));
+
+        // PARTNER is rejected at the schema layer (the lockfile's mappingScope enum is ANCHOR|CLIENT only,
+        // spec §4); INVALID_MAPPING_SCOPE from the operation itself is exercised at the operations layer.
+
+        var clientNoScope = http.post("/api/identity-providers", oidcBody(code("api-clientnoscope"), null,
+                ",\"primaryClientId\":\"clt_apinoscopeclient\""), ANCHOR);
+        assertThat(clientNoScope.statusCode()).isEqualTo(400);
+        assertThat(json(clientNoScope).get("error").asText()).isEqualTo("MAPPING_SCOPE_REQUIRED");
+
+        var anchorWithClient = http.post("/api/identity-providers", oidcBody(code("api-anchorclient"), null,
+                ",\"mappingScope\":\"ANCHOR\",\"primaryClientId\":\"clt_apianchorclient\""), ANCHOR);
+        assertThat(anchorWithClient.statusCode()).isEqualTo(400);
+        assertThat(json(anchorWithClient).get("error").asText()).isEqualTo("PRIMARY_CLIENT_NOT_ALLOWED");
+
+        var clientNoPrimary = http.post("/api/identity-providers", oidcBody(code("api-clientnoprimary"), null,
+                ",\"mappingScope\":\"CLIENT\""), ANCHOR);
+        assertThat(clientNoPrimary.statusCode()).isEqualTo(400);
+        assertThat(json(clientNoPrimary).get("error").asText()).isEqualTo("PRIMARY_CLIENT_REQUIRED");
     }
 
     @Test

@@ -15,6 +15,7 @@ import java.util.List;
 /// @param oidcMultiTenant     `null` = unchanged
 /// @param oidcIssuerPattern   `null` = unchanged
 /// @param allowedEmailDomains the **desired set** of domains routed to this provider; `null` = mappings untouched (spec §4)
+/// @param mappingScope        `ANCHOR` | `CLIENT`, required whenever a listed domain has no mapping yet (owner ruling 2026-09-15, spec §4); a removal-only update needs none; has no effect on a domain's existing scope
 /// @param primaryClientId     client to link on mappings that are new or not yet linked; `null` = none
 /// @param syncRolesFromIdp    `null` = unchanged
 /// @param allowedRoleIds      replaces the restriction; `[]` clears it; `null` = unchanged
@@ -27,6 +28,7 @@ public record UpdateCommand(
         Boolean oidcMultiTenant,
         String oidcIssuerPattern,
         List<String> allowedEmailDomains,
+        String mappingScope,
         String primaryClientId,
         Boolean syncRolesFromIdp,
         List<String> allowedRoleIds) {

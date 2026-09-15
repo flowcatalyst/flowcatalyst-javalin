@@ -133,6 +133,16 @@ shows the cache opened with compact headers on. Platform-mode classes are
 not in the cache yet (the build has no database) — follow-up in §1a.
 GraalVM (JIT) is deferred until GraalJS functions need it.
 
+**Explicit mapping scope on identity providers** (Go `c05e1ed`, hand-off
+`docs/java-handoff-2026-09-15-idp-mapping-scope.md` in the Go tree; spec
+`identityprovider.md` §4): create/update take `mappingScope` (ANCHOR |
+CLIENT); four validation codes; the scope-required check runs before any
+write; a client can be linked onto an already-routed mapping ("edit later"
+fix, emits the mapping's `updated`); results gain `domainsLinked`. Synced
+the same day: frontend drawers verbatim, lockfile, SDK versions 0.11.20 /
+0.10.18, embedded SPA rebuilt. **Parity vs Go `c05e1ed`: 1,325 steps, 0
+DIFF, 0 ERROR** (a scope-required step added).
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

@@ -51,7 +51,10 @@ public final class JvmMetricsRegistration {
             // IllegalArgumentException: already registered on this (shared/default)
             // registry. Anything else: no such MXBean on this platform (native image).
             // Either way the scrape just carries one fewer series — never a boot failure.
-            LOG.warn("skipping {} registration on the Prometheus registry", name, e);
+            LOG.atWarn().setMessage("skipping a JVM collector on the Prometheus registry")
+                    .addKeyValue("collector", name)
+                    .setCause(e)
+                    .log();
         }
     }
 }

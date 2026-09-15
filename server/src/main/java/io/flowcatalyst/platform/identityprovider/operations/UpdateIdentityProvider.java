@@ -38,33 +38,41 @@ public final class UpdateIdentityProvider {
                         UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name cannot be empty");
                     }
                     DomainRouting.normalise(cmd.allowedEmailDomains());
+                    DomainRouting.validateScope(cmd.mappingScope(), cmd.primaryClientId());
                 })
                 // Identity providers are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((scoped, cmd, ec) -> {
-                    IdentityProvider ip = Access.byId(repo, cmd.id()).update(new IdentityProvider.Changes(
+                    IdentityProvider existing = Access.byId(repo, cmd.id());
+                    // Already restricted to legal values in Validate above.
+                    var resolved = DomainRouting.validateScope(cmd.mappingScope(), cmd.primaryClientId());
+                    List<EmailDomain> domains = cmd.allowedEmailDomains() == null ? null : DomainRouting.normalise(cmd.allowedEmailDomains());
+                    if (domains != null) {
+                        routing.requireScopeForNewDomains(domains, resolved.scope()); // before any row is written
+                    }
+
+                    IdentityProvider ip = existing.update(new IdentityProvider.Changes(
                             cmd.name(), cmd.oidcIssuerUrl(), cmd.oidcClientId(), cmd.oidcClientSecretRef(),
                             cmd.oidcMultiTenant(), cmd.oidcIssuerPattern(), cmd.syncRolesFromIdp(), cmd.allowedRoleIds()));
                     scoped.commit(ip, repo, IdentityProviderUpdated.of(ec, ip), cmd);
 
                     var created = new ArrayList<String>();
                     var claimed = new ArrayList<String>();
+                    var linked = new ArrayList<String>();
                     var released = new ArrayList<String>();
                     int usersReset = 0;
-                    if (cmd.allowedEmailDomains() == null) {
-                        return new UpdateResult(ip.id(), ip.code(), created, claimed, released, usersReset);
+                    if (domains == null) {
+                        return new UpdateResult(ip.id(), ip.code(), created, claimed, linked, released, usersReset);
                     }
 
-                    var desired = DomainRouting.normalise(cmd.allowedEmailDomains());
-                    Set<String> desiredSet = desired.stream().map(EmailDomain::value).collect(toSet());
+                    Set<String> desiredSet = domains.stream().map(EmailDomain::value).collect(toSet());
                     var current = routing.routedTo(ip.id()); // read before any change
 
-                    for (var domain : desired) {
-                        switch (routing.mapDomain(scoped, ip, domain, cmd.primaryClientId(), ec, cmd)) {
-                            case CREATED -> created.add(domain.value());
-                            case CLAIMED -> claimed.add(domain.value());
-                            case UNCHANGED -> { }
-                        }
+                    for (var domain : domains) {
+                        var mr = routing.mapDomain(scoped, ip, domain, resolved.scope(), resolved.primaryClientId(), ec, cmd);
+                        if (mr.created()) created.add(domain.value());
+                        if (mr.claimed()) claimed.add(domain.value());
+                        if (mr.linked()) linked.add(domain.value());
                     }
 
                     // Removals fall back to the internal provider — unless this *is* the internal provider.
@@ -77,7 +85,7 @@ public final class UpdateIdentityProvider {
                             released.add(m.emailDomain());
                         }
                     }
-                    return new UpdateResult(ip.id(), ip.code(), created, claimed, released, usersReset);
+                    return new UpdateResult(ip.id(), ip.code(), created, claimed, linked, released, usersReset);
                 });
     }
 

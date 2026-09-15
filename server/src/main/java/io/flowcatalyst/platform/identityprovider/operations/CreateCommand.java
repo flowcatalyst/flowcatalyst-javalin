@@ -16,6 +16,7 @@ import java.util.List;
 /// @param oidcMultiTenant     multi-tenant issuer flag
 /// @param oidcIssuerPattern   issuer regex, optional
 /// @param allowedEmailDomains domains to route to the new provider (created or claimed); `null` = none
+/// @param mappingScope        `ANCHOR` | `CLIENT`, required whenever a listed domain has no mapping yet (owner ruling 2026-09-15, spec §4); has no effect on a domain's existing scope
 /// @param primaryClientId     client to link on mappings that are new or not yet linked; `null` = none
 /// @param syncRolesFromIdp    reconcile `IDP_SYNC` roles at login
 /// @param allowedRoleIds      roles the provider may confer; `null` / empty = no restriction
@@ -29,6 +30,7 @@ public record CreateCommand(
         boolean oidcMultiTenant,
         String oidcIssuerPattern,
         List<String> allowedEmailDomains,
+        String mappingScope,
         String primaryClientId,
         boolean syncRolesFromIdp,
         List<String> allowedRoleIds) {

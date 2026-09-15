@@ -89,12 +89,16 @@ class IdentityProviderOperationsTest {
     }
 
     private static CreateCommand internalCommand(String code, String name) {
-        return new CreateCommand(code, name, "INTERNAL", null, null, null, false, null, null, null, false, null);
+        return new CreateCommand(code, name, "INTERNAL", null, null, null, false, null, null, null, null, false, null);
     }
 
+    /// `mappingScope` is derived for the fixture's convenience (never by
+    /// production code, spec §4): ANCHOR when no client is given, CLIENT
+    /// when one is, `null` when there are no domains to map.
     private static CreateCommand oidcCommand(String code, List<String> domains, String primaryClientId) {
+        String scope = domains.isEmpty() ? null : (primaryClientId != null ? "CLIENT" : "ANCHOR");
         return new CreateCommand(code, code, "OIDC", "https://login." + code + ".example.com/v2.0", code + "-client-id",
-                null, false, null, domains, primaryClientId, false, null);
+                null, false, null, domains, scope, primaryClientId, false, null);
     }
 
     private static CreateResult createInternal(String code, String name) {
@@ -126,7 +130,7 @@ class IdentityProviderOperationsTest {
     }
 
     private static UpdateCommand domainsOnly(String id, List<String> domains) {
-        return new UpdateCommand(id, null, null, null, null, null, null, domains, null, null, null);
+        return new UpdateCommand(id, null, null, null, null, null, null, domains, null, null, null, null);
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {
@@ -197,12 +201,13 @@ class IdentityProviderOperationsTest {
         var cmd = new CreateCommand(code("idpoidc"), "IdP Create Happy", "OIDC",
                 "https://login.idpcrt.example.com/v2.0", "idpcrt-client-id", "encrypted:AAAA", true, "https://login\\.idpcrt\\.example\\.com/.*",
                 List.of(domain("IDPOIDC-A").toUpperCase(Locale.ROOT), " " + domain("idpoidc-b") + " ", domain("idpoidc-b"), ""),
-                null, true, List.of("rol_idpcrtrole1"));
+                "ANCHOR", null, true, List.of("rol_idpcrtrole1"));
         var res = runAsAnchor(CreateIdentityProvider.of(repo, mappings), cmd);
 
         assertThat(res.domainsCreated()).as("lower-cased, trimmed, de-duplicated, blanks skipped")
                 .containsExactly(domain("idpoidc-a"), domain("idpoidc-b"));
         assertThat(res.domainsClaimed()).isEmpty();
+        assertThat(res.domainsLinked()).isEmpty();
 
         var got = reload(res.identityProviderId());
         assertThat(got.type()).isEqualTo(IdentityProviderType.OIDC);
@@ -242,6 +247,8 @@ class IdentityProviderOperationsTest {
                 List.of(domain("idpclaim-hasclient"), domain("idpclaim-noclient"), domain("idpclaim-fresh")), newClient));
         assertThat(res.domainsCreated()).containsExactly(domain("idpclaim-fresh"));
         assertThat(res.domainsClaimed()).containsExactly(domain("idpclaim-hasclient"), domain("idpclaim-noclient"));
+        assertThat(res.domainsLinked()).as("the already-cliented mapping keeps its link untouched; the unclaimed and fresh mappings get linked")
+                .containsExactlyInAnyOrder(domain("idpclaim-noclient"), domain("idpclaim-fresh"));
 
         var kept = mapping(domain("idpclaim-hasclient"));
         assertThat(kept.identityProviderId()).isEqualTo(res.identityProviderId());
@@ -263,12 +270,16 @@ class IdentityProviderOperationsTest {
 
     static Stream<Arguments> malformedCreateCommands() {
         return Stream.of(
-                Arguments.of("blank code", new CreateCommand("  ", "X", "INTERNAL", null, null, null, false, null, null, null, false, null), "CODE_REQUIRED"),
-                Arguments.of("missing name", new CreateCommand("idpcrt-noname", null, "INTERNAL", null, null, null, false, null, null, null, false, null), "NAME_REQUIRED"),
-                Arguments.of("oidc without issuer", new CreateCommand("idpcrt-noissuer", "X", "OIDC", null, "c", null, false, null, null, null, false, null), "OIDC_ISSUER_REQUIRED"),
-                Arguments.of("oidc without client id", new CreateCommand("idpcrt-noclient", "X", "OIDC", "https://i", " ", null, false, null, null, null, false, null), "OIDC_CLIENT_ID_REQUIRED"),
-                Arguments.of("bad domain", new CreateCommand("idpcrt-baddomain", "X", "INTERNAL", null, null, null, false, null, List.of("nodot"), null, false, null), "INVALID_EMAIL_DOMAIN"),
-                Arguments.of("domain with slash", new CreateCommand("idpcrt-baddomain2", "X", "INTERNAL", null, null, null, false, null, List.of("a.b/c"), null, false, null), "INVALID_EMAIL_DOMAIN"));
+                Arguments.of("blank code", new CreateCommand("  ", "X", "INTERNAL", null, null, null, false, null, null, null, null, false, null), "CODE_REQUIRED"),
+                Arguments.of("missing name", new CreateCommand("idpcrt-noname", null, "INTERNAL", null, null, null, false, null, null, null, null, false, null), "NAME_REQUIRED"),
+                Arguments.of("oidc without issuer", new CreateCommand("idpcrt-noissuer", "X", "OIDC", null, "c", null, false, null, null, null, null, false, null), "OIDC_ISSUER_REQUIRED"),
+                Arguments.of("oidc without client id", new CreateCommand("idpcrt-noclient", "X", "OIDC", "https://i", " ", null, false, null, null, null, null, false, null), "OIDC_CLIENT_ID_REQUIRED"),
+                Arguments.of("bad domain", new CreateCommand("idpcrt-baddomain", "X", "INTERNAL", null, null, null, false, null, List.of("nodot"), null, null, false, null), "INVALID_EMAIL_DOMAIN"),
+                Arguments.of("domain with slash", new CreateCommand("idpcrt-baddomain2", "X", "INTERNAL", null, null, null, false, null, List.of("a.b/c"), null, null, false, null), "INVALID_EMAIL_DOMAIN"),
+                Arguments.of("CLIENT scope without primaryClientId", new CreateCommand("idpcrt-clientnoprimary", "X", "INTERNAL", null, null, null, false, null, null, "CLIENT", null, false, null), "PRIMARY_CLIENT_REQUIRED"),
+                Arguments.of("ANCHOR scope with primaryClientId", new CreateCommand("idpcrt-anchorwithclient", "X", "INTERNAL", null, null, null, false, null, null, "ANCHOR", "cli_idpcrtanchor", false, null), "PRIMARY_CLIENT_NOT_ALLOWED"),
+                Arguments.of("PARTNER mappingScope rejected", new CreateCommand("idpcrt-partnerscope", "X", "INTERNAL", null, null, null, false, null, null, "PARTNER", "cli_idpcrtpartner", false, null), "INVALID_MAPPING_SCOPE"),
+                Arguments.of("primaryClientId without mappingScope", new CreateCommand("idpcrt-clientnoscope", "X", "INTERNAL", null, null, null, false, null, null, null, "cli_idpcrtnoscope", false, null), "MAPPING_SCOPE_REQUIRED"));
     }
 
     @ParameterizedTest(name = "{0} → {2}")
@@ -285,17 +296,46 @@ class IdentityProviderOperationsTest {
                 .hasMessageContaining("Identity provider with code '" + code("idpdup") + "' already exists");
     }
 
+    /// Owner ruling 2026-09-15 (spec §4 "Require a scope for new domains"): a
+    /// create with a brand-new domain and no `mappingScope` fails — and
+    /// because this is a `TxOperation`, the whole transaction rolls back:
+    /// neither the IdP row nor any mapping is left behind.
+    @Test
+    void createWithAFreshDomainAndNoMappingScopeRollsBackTheWholeTransaction() {
+        assertUseCaseError(() -> runAsAnchor(CreateIdentityProvider.of(repo, mappings),
+                        new CreateCommand(code("idpcrt-noscope"), "X", "INTERNAL", null, null, null, false, null,
+                                List.of(domain("idpcrt-noscope")), null, null, false, null)),
+                UseCaseError.Validation.class, "MAPPING_SCOPE_REQUIRED");
+
+        assertThat(repo.findByCode(code("idpcrt-noscope"))).as("IdP row must not survive a rolled-back create").isEmpty();
+        assertThat(mappings.findByEmailDomain(domain("idpcrt-noscope"))).as("mapping must not survive a rolled-back create").isEmpty();
+    }
+
+    /// spec §4: a `CLIENT`-scoped create links the client on the fresh
+    /// mapping and reports it `domainsLinked`.
+    @Test
+    void createWithClientScopeLinksTheNewMapping() {
+        var res = runAsAnchor(CreateIdentityProvider.of(repo, mappings), oidcCommand(code("idpcrt-client"), List.of(domain("idpcrt-client")), "clt_idpcrtclient"));
+        assertThat(res.domainsCreated()).containsExactly(domain("idpcrt-client"));
+        assertThat(res.domainsLinked()).as("a new CLIENT-scoped mapping is reported linked").containsExactly(domain("idpcrt-client"));
+
+        var m = mapping(domain("idpcrt-client"));
+        assertThat(m.scopeType()).isEqualTo(ScopeType.CLIENT);
+        assertThat(m.primaryClientId()).isEqualTo("clt_idpcrtclient");
+    }
+
     // ── Update ─────────────────────────────────────────────────────────────
 
     @Test
     void updateAppliesTheSuppliedFieldsAndMapsNewDomains() {
         var seeded = createInternal(code("idpupd"), "Before");
         var res = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(seeded.identityProviderId(), "  After  ",
-                "https://login.idpupd.example.com", null, null, true, null, List.of(domain("idpupd")), null, true, List.of("rol_idpupdrole1")));
+                "https://login.idpupd.example.com", null, null, true, null, List.of(domain("idpupd")), "ANCHOR", null, true, List.of("rol_idpupdrole1")));
         assertThat(res.identityProviderId()).isEqualTo(seeded.identityProviderId());
         assertThat(res.code()).isEqualTo(code("idpupd"));
         assertThat(res.domainsCreated()).containsExactly(domain("idpupd"));
         assertThat(res.domainsClaimed()).isEmpty();
+        assertThat(res.domainsLinked()).isEmpty();
         assertThat(res.domainsReleased()).isEmpty();
         assertThat(res.usersReset()).isZero();
 
@@ -340,10 +380,51 @@ class IdentityProviderOperationsTest {
     void updateWithoutADomainListLeavesMappingsAlone() {
         var seeded = createOidc(code("idpupd-nil"), List.of(domain("idpupd-nil")));
         var res = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(seeded.identityProviderId(), "Renamed",
-                null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null));
         assertThat(res.domainsReleased()).isEmpty();
         assertThat(mapping(domain("idpupd-nil")).identityProviderId()).isEqualTo(seeded.identityProviderId());
         assertThat(reload(seeded.identityProviderId()).name()).isEqualTo("Renamed");
+    }
+
+    /// Adding a brand-new domain on update requires a `mappingScope`, exactly like create.
+    @Test
+    void updateWithANewDomainAndNoMappingScopeFails() {
+        var seeded = createInternal(code("idpupd-noscope"), "No Scope");
+        assertUseCaseError(() -> runAsAnchor(UpdateIdentityProvider.of(repo, mappings),
+                        domainsOnly(seeded.identityProviderId(), List.of(domain("idpupd-noscope-new")))),
+                UseCaseError.Validation.class, "MAPPING_SCOPE_REQUIRED");
+        assertThat(reload(seeded.identityProviderId()).allowedEmailDomains()).as("the failed update changed nothing").isEmpty();
+    }
+
+    /// Regression for the owner's 2026-09-15 ruling: a `primaryClientId`
+    /// supplied on update must link onto a mapping that was created without
+    /// one, even though the domain already routes to this provider — the
+    /// "edit later" fix (before it, `mapDomain` returned early for an
+    /// already-routed domain and never applied the client). The mapping's
+    /// scope is untouched, and a second update with a different client must
+    /// not overwrite the link already made.
+    @Test
+    void updateLinksAClientOntoAnAlreadyRoutedDomainWithoutChangingItsScope() {
+        var seeded = createOidc(code("idpupd-link"), List.of(domain("idpupd-link")));
+        var primaryClient = "clt_idpupdlink";
+
+        var res = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(seeded.identityProviderId(), null,
+                null, null, null, null, null, List.of(domain("idpupd-link")), "CLIENT", primaryClient, null, null));
+        assertThat(res.domainsLinked()).containsExactly(domain("idpupd-link"));
+        assertThat(res.domainsCreated()).isEmpty();
+        assertThat(res.domainsClaimed()).isEmpty();
+
+        var linked = mapping(domain("idpupd-link"));
+        assertThat(linked.primaryClientId()).isEqualTo(primaryClient);
+        assertThat(linked.scopeType()).as("linking a client must not change the mapping's existing scope").isEqualTo(ScopeType.ANCHOR);
+        assertThat(eventsOn(EmailDomainMappingEvents.subjectFor(linked.id()), EmailDomainMappingEvents.UPDATED)).hasSize(1);
+
+        // A second update with a different client must not overwrite the existing link.
+        var other = "clt_idpupdlinkother";
+        var res2 = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(seeded.identityProviderId(), null,
+                null, null, null, null, null, List.of(domain("idpupd-link")), "CLIENT", other, null, null));
+        assertThat(res2.domainsLinked()).as("already linked, nothing to do").isEmpty();
+        assertThat(mapping(domain("idpupd-link")).primaryClientId()).as("an existing client is never overwritten").isEqualTo(primaryClient);
     }
 
     /// Spec §4: releasing a domain converts its OIDC-provisioned users back to
@@ -386,10 +467,14 @@ class IdentityProviderOperationsTest {
 
     static Stream<Arguments> badUpdateCommands() {
         return Stream.of(
-                Arguments.of("missing id", new UpdateCommand(null, "X", null, null, null, null, null, null, null, null, null), UseCaseError.Validation.class, "ID_REQUIRED"),
-                Arguments.of("blank name when supplied", new UpdateCommand("idp_doesnotexist1", "  ", null, null, null, null, null, null, null, null, null), UseCaseError.Validation.class, "NAME_REQUIRED"),
-                Arguments.of("bad domain", new UpdateCommand("idp_doesnotexist1", null, null, null, null, null, null, List.of("no dot"), null, null, null), UseCaseError.Validation.class, "INVALID_EMAIL_DOMAIN"),
-                Arguments.of("unknown id", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, null, null, null), UseCaseError.NotFound.class, "IdentityProvider_NOT_FOUND"));
+                Arguments.of("missing id", new UpdateCommand(null, "X", null, null, null, null, null, null, null, null, null, null), UseCaseError.Validation.class, "ID_REQUIRED"),
+                Arguments.of("blank name when supplied", new UpdateCommand("idp_doesnotexist1", "  ", null, null, null, null, null, null, null, null, null, null), UseCaseError.Validation.class, "NAME_REQUIRED"),
+                Arguments.of("bad domain", new UpdateCommand("idp_doesnotexist1", null, null, null, null, null, null, List.of("no dot"), null, null, null, null), UseCaseError.Validation.class, "INVALID_EMAIL_DOMAIN"),
+                Arguments.of("unknown id", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, null, null, null, null), UseCaseError.NotFound.class, "IdentityProvider_NOT_FOUND"),
+                Arguments.of("CLIENT scope without primaryClientId", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, "CLIENT", null, null, null), UseCaseError.Validation.class, "PRIMARY_CLIENT_REQUIRED"),
+                Arguments.of("ANCHOR scope with primaryClientId", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, "ANCHOR", "cli_idpupdanchor", null, null), UseCaseError.Validation.class, "PRIMARY_CLIENT_NOT_ALLOWED"),
+                Arguments.of("PARTNER mappingScope rejected", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, "PARTNER", "cli_idpupdpartner", null, null), UseCaseError.Validation.class, "INVALID_MAPPING_SCOPE"),
+                Arguments.of("primaryClientId without mappingScope", new UpdateCommand("idp_doesnotexist1", "X", null, null, null, null, null, null, null, "cli_idpupdnoscope", null, null), UseCaseError.Validation.class, "MAPPING_SCOPE_REQUIRED"));
     }
 
     @ParameterizedTest(name = "{0} → {3}")
@@ -403,7 +488,7 @@ class IdentityProviderOperationsTest {
     @Test
     void deleteRemovesTheRowItsRolesAndEmits() {
         var seeded = runAsAnchor(CreateIdentityProvider.of(repo, mappings),
-                new CreateCommand(code("idpdel"), "Doomed", "INTERNAL", null, null, null, false, null, null, null, true, List.of("rol_x")));
+                new CreateCommand(code("idpdel"), "Doomed", "INTERNAL", null, null, null, false, null, null, null, null, true, List.of("rol_x")));
 
         var ev = runAsAnchor(DeleteIdentityProvider.of(repo), new DeleteCommand(seeded.identityProviderId()));
         assertThat(ev.identityProviderId()).isEqualTo(seeded.identityProviderId());
