@@ -154,7 +154,14 @@ export async function startSide(side: Side): Promise<RunningSide> {
     }
 
     // ── fcdev init, against the same embedded database ──────────────────
-    const databaseUrl = `postgresql://postgres:postgres@localhost:${embeddedDbPort}/flowcatalyst?sslmode=disable`;
+    // Rust's embedded Postgres pins its bootstrap password to "flowcatalyst"
+    // (bin/fc-dev/src/main.rs: "Pin the password so the data dir and the
+    // connection URL stay consistent across restarts"), not "postgres" —
+    // Go's and Java's embedded Postgres both use "postgres", which is why
+    // this was never side-branched before e2e run #0 exercised the rust
+    // side against a real binary (docs/parity/e2e-run-0.md).
+    const embeddedDbPassword = side === "rust" ? "flowcatalyst" : "postgres";
+    const databaseUrl = `postgresql://postgres:${embeddedDbPassword}@localhost:${embeddedDbPort}/flowcatalyst?sslmode=disable`;
     appendFileSync(logPath, `\n>> running ${side} fcdev init\n`);
     // Rust's `init` defaults --embedded-db=true (it starts its OWN embedded
     // Postgres unless told otherwise — bin/fc-dev/src/init.rs), which would

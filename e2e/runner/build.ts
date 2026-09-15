@@ -129,9 +129,27 @@ export function rustRepoRoot(): string {
 /// own bundling).
 let rustBuildPromise: Promise<string> | null = null;
 
+/// `E2E_RUST_FCDEV_BIN`: skip the build entirely and use this prebuilt
+/// binary (e2e run #0, `docs/parity/e2e-run-0.md`) — a cold `cargo build
+/// --release` against a fresh `--target-dir` duplicates the whole
+/// dependency graph, which is both slow (~15-30 min) and, on a disk shared
+/// with a dozen other lane worktrees' `target/`s, a real space risk. A
+/// prebuilt `fc-dev` (debug is fine — the e2e suite exercises behaviour,
+/// not perf) from the caller's own worktree build reuses that worktree's
+/// already-warm incremental cache instead. Existence-checked once here so
+/// a typo'd path fails fast with a clear message rather than a confusing
+/// spawn ENOENT deep in `startSide`.
 export function buildRustFcdev(scratchDir: string): Promise<string> {
     if (rustBuildPromise) return rustBuildPromise;
     rustBuildPromise = (async () => {
+        const override = process.env.E2E_RUST_FCDEV_BIN;
+        if (override) {
+            if (!existsSync(override)) {
+                throw new Error(`buildRustFcdev: E2E_RUST_FCDEV_BIN=${override} does not exist`);
+            }
+            console.log(`>> using prebuilt rust fc-dev: ${override}`);
+            return override;
+        }
         const repo = rustRepoRoot();
         if (!existsSync(repo)) {
             throw new Error(`buildRustFcdev: Rust repo not found at ${repo} (set E2E_RUST_REPO or PARITY_RUST_SRC)`);
