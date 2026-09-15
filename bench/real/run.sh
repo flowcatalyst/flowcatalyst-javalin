@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
-# The plan §8 runtime comparison, real server vs Go, one container each under a CPU quota.
+# The plan §8 runtime comparison, real server vs Go vs Rust, one container each under a CPU
+# quota (default) or pinned to one core (round-9 protocol, see below).
 #
-#   bench/real/run.sh prepare            # postgres + seed (Java fcdev init), builds both images
+#   RUST_SRC=<path-to-flowcatalyst-rust> bench/real/run.sh prepare
+#       # postgres + seed (Go fcdev, then Java fcdev, then Go fcdev again, then Rust fc-dev
+#       # if RUST_SRC is set — see prepare()'s comment for the exact order), builds every image
 #   bench/real/run.sh run <label> <image> <cpu-args> [env=value ...]
 #
 # `run`: starts the server container with the given docker cpu args (e.g. "--cpus=1"),
 # logs in once through POST /auth/login, then drives GET /api/event-types (cookie session:
 # a DB round trip for the session plus the list query, the browser path) with wrk for a
-# 10 s warm-up and a 10 s measured run at 1,000 connections; snapshots every OS thread's
-# context-switch counters before and after the measured run; records memory from
-# `docker stats`. Results land in bench/real/results/<label>.log.
+# WARMUP-second warm-up and a RUN_S-second measured run (both default 10 s) at 1,000
+# connections; snapshots every OS thread's context-switch counters before and after the
+# measured run; records memory from `docker stats`. Results land in bench/real/results/<label>.log.
+#
+# Pinned-core mode (test-size RESULTS.md round 9: a CFS quota is not a core — pin instead):
+#   CPUSET=1 pins the server to that core (--cpuset-cpus=1), overriding whatever <cpu-args>
+#     was passed on the command line (the positional arg is still required; CPUSET wins).
+#   PG_CPUSET=10-13 moves Postgres off the server's core(s) with `docker update` before the
+#     server starts. wrk always runs on --cpuset-cpus=2-9 regardless of either variable.
+#   Both are unset by default, so the existing --cpus=N quota mode (already documented
+#     elsewhere) is unchanged unless you opt in. Example, one command per leg:
+#       CPUSET=1 PG_CPUSET=10-13 bench/real/run.sh run rust bench-real-rust --cpuset-cpus=1
 set -u
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
 out=$here/results; mkdir -p "$out"
@@ -42,6 +54,26 @@ prepare() {
   # Go init may already have completed on the first pass (Go HEAD b422466 does); the second
   # pass is then a no-op or an "already exists", either way the seed is complete.
   echo "-- Go fcdev init (second pass)"; "${goinit[@]}" >"$out/seed-go2.log" 2>&1 || grep -q -i 'already exist' "$out/seed-go2.log" || { tail -20 "$out/seed-go2.log"; exit 1; }
+  # RUST_SRC (optional): a flowcatalyst-rust checkout/worktree, used as the build context
+  # for bench-real-rust (Dockerfile.rust builds fc-server AND fc-dev). Mirrors the Go/Java
+  # order above: run Rust's own `fc-dev init` against the SAME already-migrated-and-seeded
+  # `fc` database as a fourth, idempotent pass — by the time L0-L6 land, Rust's schema and
+  # seed rows are expected to line up with Go/Java's, so this should be a no-op that only
+  # fills in whatever Rust-specific rows fc-dev's init adds (or errors "already exists",
+  # tolerated the same way the Go/Java passes above do). `--no-oauth-client` matches the
+  # parity harness's seed shape (Java's fcdev init doesn't mint one either — see fc-dev's
+  # own flag doc in bin/fc-dev/src/init.rs). Runs over the Docker network, not the host
+  # port, since there is no local Rust binary the way there is a local Go binary/Java jar.
+  if [ -n "${RUST_SRC:-}" ]; then
+    echo "-- building bench-real-rust (fc-server + fc-dev, for fc-dev init)"
+    docker build -q -t bench-real-rust -f "$here/Dockerfile.rust" "$RUST_SRC" >/dev/null
+    echo "-- Rust fc-dev init"
+    docker run --rm --network $NET --entrypoint /app/fc-dev -e FLOWCATALYST_APP_KEY="$FLOWCATALYST_APP_KEY" \
+        bench-real-rust init --yes --database-url "postgresql://pg:pg@$(pg_ip):5432/fc" \
+        --admin-email "$ADMIN" --admin-password "$PASS" --code bench --name Bench --root /tmp \
+        --no-oauth-client >"$out/seed-rust.log" 2>&1 \
+        || grep -qi 'already exists\|duplicate key' "$out/seed-rust.log" || { tail -20 "$out/seed-rust.log"; exit 1; }
+  fi
   images
 }
 
@@ -60,11 +92,22 @@ images() {
     cp "$root/server/target/fc-server" "$here/fc-server-native"
     docker build -q -t bench-real-native -f "$here/Dockerfile.native" "$here" >/dev/null && echo "   + bench-real-native (GraalVM native image)"
   fi
-  echo "prepared: postgres at $(pg_ip), images bench-real-java / bench-real-go"
+  if [ -n "${RUST_SRC:-}" ]; then
+    docker build -q -t bench-real-rust -f "$here/Dockerfile.rust" "$RUST_SRC" >/dev/null && echo "   + bench-real-rust (RUST_SRC=$RUST_SRC)"
+  fi
+  echo "prepared: postgres at $(pg_ip), images bench-real-java / bench-real-go${RUST_SRC:+ / bench-real-rust}"
 }
 
 run() {
   local label=$1 image=$2 cpuargs=$3; shift 3
+  # CPUSET=<n or range>: pinned-core mode (round 9) — overrides whatever cpuargs was passed
+  # positionally with --cpuset-cpus=$CPUSET. Unset (default): cpuargs is used as-is, i.e. the
+  # existing --cpus=N quota mode, unchanged.
+  [ -n "${CPUSET:-}" ] && cpuargs="--cpuset-cpus=$CPUSET"
+  # PG_CPUSET=<n or range>: move Postgres off the server's core(s) before it starts, per
+  # RESULTS.md round 9 ("pin the server, pin Postgres away"). No-op (default) leaves Postgres
+  # on the quota-shared cores exactly as every already-documented run has it.
+  [ -n "${PG_CPUSET:-}" ] && docker update --cpuset-cpus="$PG_CPUSET" "$PG" >/dev/null 2>&1
   local name="bench-real-$label"
   docker rm -f "$name" >/dev/null 2>&1
   # whatever still holds the rig's server address goes too (a failed earlier run)
@@ -77,7 +120,8 @@ run() {
   envs=(-e FC_DATABASE_URL="postgresql://pg:pg@$(pg_ip):5432/fc" -e FC_API_PORT=8080 -e FC_METRICS_PORT=9090
               -e FC_PLATFORM_ENABLED=true -e FC_ROUTER_ENABLED=false -e FC_SCHEDULER_ENABLED=false
               -e FC_SCHEDULED_JOB_ENABLED=false -e FC_STREAM_PROCESSOR_ENABLED=false -e FC_OUTBOX_ENABLED=false
-              -e FC_MCP_ENABLED=false -e FC_STANDBY_ENABLED=false -e FC_RATE_LIMIT_DISABLE=1)
+              -e FC_MCP_ENABLED=false -e FC_STANDBY_ENABLED=false -e FC_RATE_LIMIT_DISABLE=1
+              -e FLOWCATALYST_APP_KEY="${FLOWCATALYST_APP_KEY:-}")
   fi
   for kv in "$@"; do envs+=(-e "$kv"); done
   # A fixed address on the rig's own network, so the issuer/base URL is known before start.
@@ -110,7 +154,7 @@ run() {
   local warm; warm=$("${WRK[@]}" -t8 -c${CONNS:-1000} -d${WARMUP:-10}s "http://$ip:8080$endpoint" | grep -E 'Requests/sec' | awk '{print $2}')
   sleep 1
   local before; before=$(snap)
-  local res; res=$("${WRK[@]}" -t8 -c${CONNS:-1000} -d10s --latency "http://$ip:8080$endpoint")
+  local res; res=$("${WRK[@]}" -t8 -c${CONNS:-1000} -d${RUN_S:-10}s --latency "http://$ip:8080$endpoint")
   local after; after=$(snap)
   local requests; requests=$(echo "$res" | grep -E '^ +[0-9]+ requests in' | awk '{print $1}')
   {
@@ -143,5 +187,7 @@ case ${1:-} in
   prepare) prepare ;;
   images) images ;;
   run) shift; run "$@" ;;
-  *) echo "usage: $0 prepare | run <label> <image> <cpu-args> [ENV=value ...]"; exit 2 ;;
+  *) echo "usage: $0 prepare | images | run <label> <image> <cpu-args> [ENV=value ...]"
+     echo "       env: RUST_SRC=<path> (prepare/images), CPUSET=<n>, PG_CPUSET=<n-m>, WARMUP=<s>, RUN_S=<s> (run)"
+     exit 2 ;;
 esac

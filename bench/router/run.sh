@@ -8,6 +8,22 @@
 #
 # ENV=v args starting with SINK_ are passed to the sink container; everything else is passed
 # to the server container (in addition to the fixed router-only env below).
+#
+# Pinned-core mode (test-size RESULTS.md round 9), same variables as bench/real/run.sh:
+#   CPUSET=<n or range> pins the router container (--cpuset-cpus=$CPUSET), overriding the
+#     positional <cpu-args> (still required on the command line; CPUSET wins when set).
+#   PG_CPUSET=<n or range> moves Postgres (and, if running, LocalStack/NATS — whichever
+#     container is actually acting as the broker for this BROKER=) off the pinned core(s)
+#     with `docker update`, before the router starts. The sink, LocalStack, NATS and the
+#     probers already run on --cpuset-cpus=2-9 unconditionally (unaffected either way).
+#   Both unset by default: the existing <cpu-args> quota mode is unchanged.
+#   "Warm-up window": this rig measures a full-queue drain, not a sustained request rate, so
+#     there is no separate warm-up phase inside one call the way bench/real's wrk warm-up is —
+#     the router process itself is started fresh per `run` invocation (see the `docker rm -f
+#     "$sname"` below). Get a warm-up window by invoking `run` twice: once with a small
+#     TOTAL_MESSAGES as a throwaway pass (discard its .log), then again with the real
+#     TOTAL_MESSAGES for the measured pass — TOTAL_MESSAGES and TIMEOUT_S are already the
+#     window-size parameters (see below); see bench/README-parity.md for the exact commands.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 out=$here/results; mkdir -p "$out"
@@ -341,6 +357,9 @@ run() {
   echo $$ > "$lock/pid"
   trap 'rm -rf "$lock"' EXIT
   local label=$1 image=$2 cpuargs=$3; shift 3
+  # CPUSET/PG_CPUSET: pinned-core mode (round 9) — see the header comment. cpuargs override
+  # happens here, once, so every use of $cpuargs below (including the summary line) sees it.
+  [ -n "${CPUSET:-}" ] && cpuargs="--cpuset-cpus=$CPUSET"
   local sname="bench-router-srv-$label" kname="bench-router-sink"
 
   fail() {
@@ -487,6 +506,14 @@ run() {
   if [ "$BROKER" = sqs ]; then
     fixed+=(-e AWS_ENDPOINT_URL_SQS="http://$LOCALSTACK_IP:4566" -e AWS_ENDPOINT_URL="http://$LOCALSTACK_IP:4566"
         -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_REGION=us-east-1)
+  fi
+  # PG_CPUSET (pinned-core mode): move whichever container is acting as the broker off the
+  # router's pinned core(s) before the router starts — $PG always (postgres is also the
+  # bench/real Postgres, worth pinning away regardless of BROKER=), plus $LOCALSTACK/$NATS
+  # when this run actually started them. docker update on a container that isn't running
+  # errors; suppressed, since not every broker is present on every run.
+  if [ -n "${PG_CPUSET:-}" ]; then
+    for c in $PG $LOCALSTACK $NATS; do docker update --cpuset-cpus="$PG_CPUSET" "$c" >/dev/null 2>&1; done
   fi
   # bench-real-java's image now carries --enable-preview --enable-native-access=ALL-UNNAMED
   # on its own ENTRYPOINT (orchestrator rebuild); no JAVA_TOOL_OPTIONS workaround needed here.

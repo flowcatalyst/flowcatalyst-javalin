@@ -1,0 +1,37 @@
+# The Rust platform leg (fc-server) plus its dev-seed CLI (fc-dev), from a flowcatalyst-rust
+# checkout given as build context — NOT this repo:
+#
+#   docker build -f bench/real/Dockerfile.rust -t bench-real-rust <path-to-flowcatalyst-rust>
+#
+# (bench/real/run.sh's prepare()/images() do this for you when RUST_SRC is set.)
+#
+# Two stages on images already present locally (rust:1-bookworm, debian:bookworm-slim) — same
+# shape as bench/router/Dockerfile.rust: no cargo-chef, so no extra image pull and no
+# dependency-cache layer, which that file's own header argues is fine for a one-off bench
+# build. fc-server's default features are empty (the `alb` feature is opt-in and unused here),
+# so `--no-default-features` on this single combined build is inert for it and only affects
+# fc-dev, whose default `embedded-db` feature would otherwise try to start fc-dev's own
+# embedded Postgres instead of talking to --database-url — the one thing bench/real/run.sh's
+# fc-dev init call needs to NOT happen (it already has a real Postgres on the bench network,
+# same as the Go/Java `fcdev init` passes in prepare()'s comment).
+#
+# `migrations/` is a real build dependency, not just runtime data: fc-platform's
+# crates/fc-platform/src/shared/database.rs embeds every migration file at compile time via
+# `include_str!("../../../../migrations/...")`, so it has to be present at the same relative
+# path it occupies in the real checkout — hence the explicit COPY below, on top of `crates`
+# and `bin` (which bench/router/Dockerfile.rust already copies for the same reason: workspace
+# member resolution needs every crate/bin Cargo.toml the two binaries transitively depend on,
+# even ones neither binary itself builds).
+FROM rust:1-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY bin ./bin
+COPY migrations ./migrations
+RUN cargo build --release -p fc-server -p fc-dev --no-default-features
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/fc-server /app/fc-server
+COPY --from=builder /app/target/release/fc-dev /app/fc-dev
+EXPOSE 8080
+ENTRYPOINT ["/app/fc-server"]
