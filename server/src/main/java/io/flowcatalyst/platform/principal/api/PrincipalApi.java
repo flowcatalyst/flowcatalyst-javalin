@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfig;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
-import io.flowcatalyst.platform.auth.oauth.RedirectUriMatcher;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
@@ -12,8 +11,6 @@ import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
-import io.flowcatalyst.platform.oauthclient.OAuthClient;
-import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.AnchorDomains;
 import io.flowcatalyst.platform.principal.ClientAccessGrant;
 import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
@@ -85,6 +82,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -147,7 +146,6 @@ public final class PrincipalApi {
             AnchorDomains anchorDomains,
             PasswordResetEmailer passwordEmailer,
             InviteEmailer inviteEmailer,
-            OAuthClientRepository oauthClients,
             Notifier notifier,
             MfaService mfa,
             DeveloperSecrets developerSecrets,
@@ -164,7 +162,6 @@ public final class PrincipalApi {
             Objects.requireNonNull(anchorDomains, "anchorDomains");
             Objects.requireNonNull(passwordEmailer, "passwordEmailer");
             Objects.requireNonNull(inviteEmailer, "inviteEmailer");
-            Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(notifier, "notifier");
             Objects.requireNonNull(mfa, "mfa");
             Objects.requireNonNull(developerSecrets, "developerSecrets");
@@ -328,7 +325,7 @@ public final class PrincipalApi {
         var req = ctx.bodyAsClass(CreatePrincipalRequest.class);
         requireClientScopeForNonAnchor(ac, req.scope());
         Checks.requireUserAdmin(ac, req.clientId());
-        String inviteRedirect = resolveInviteRedirect(s, ac, req.inviteRedirectUri());
+        String inviteRedirect = resolveInviteRedirect(req.inviteRedirectUri());
         var event = CreateUser.of(s.repo()).run(s.uow(), req.toCommand(), Auth.executionContext());
         String inviteLink = s.repo().findById(event.userId())
                 .map(p -> notifyNewUser(s, p, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault(), inviteRedirect))
@@ -354,7 +351,7 @@ public final class PrincipalApi {
 
         requireClientScopeForNonAnchor(ac, derived.scope().name());
         Checks.requireUserAdmin(ac, derived.clientId());
-        String inviteRedirect = resolveInviteRedirect(s, ac, req.inviteRedirectUri());
+        String inviteRedirect = resolveInviteRedirect(req.inviteRedirectUri());
         ExecutionContext ec = Auth.executionContext();
 
         if (derived.scope() == UserScope.PARTNER) {
@@ -802,35 +799,36 @@ public final class PrincipalApi {
         return null;
     }
 
-    /// `inviteRedirectUri` validation (app-managed-invitations.md §1a): runs
-    /// after the user-admin check and before any write, so a refused
-    /// redirect leaves nothing behind. `raw` null/blank → `null` (no
-    /// redirect). Otherwise the trimmed uri is accepted iff some OAuth
-    /// client reachable by the caller — active, not portal, allows
-    /// `authorization_code`, and either application-less for an
-    /// all-applications caller or one of its application ids reaches the
-    /// caller — has it among its `redirectUris` per [RedirectUriMatcher]
-    /// (wildcards included); otherwise 400 `INVITE_REDIRECT_URI_INVALID`.
-    private static String resolveInviteRedirect(State s, AuthContext ac, String raw) {
+    /// `inviteRedirectUri` validation (app-managed-invitations.md §1a): where
+    /// the calling application wants the invitee sent after set-password —
+    /// usually its own home page, which then starts its own sign-in. Runs
+    /// after the user-admin check and before any write, so a refused value
+    /// leaves nothing behind. `raw` null/blank → `null` (no redirect).
+    /// Otherwise the trimmed value must be an absolute `http`/`https` URL with
+    /// a host and no userinfo — so no `javascript:`/`data:` URLs and no
+    /// `https://trusted@evil` host confusion; otherwise 400
+    /// `INVITE_REDIRECT_URI_INVALID`. Deliberately NOT tied to OAuth redirect
+    /// URIs: it is set by an authenticated caller already allowed to create
+    /// the user and stored on the invite token rather than read from the
+    /// link, so the set-password page is not an open redirect.
+    static String resolveInviteRedirect(String raw) {
         if (raw == null || raw.isBlank()) return null;
         String uri = raw.trim();
-        boolean accepted = s.oauthClients().findAll().stream()
-                .filter(PrincipalApi::isReachableLoginClient)
-                .filter(c -> reachableByCaller(c, ac))
-                .anyMatch(c -> RedirectUriMatcher.matches(uri, c.redirectUris()));
-        if (!accepted) {
-            throw UseCaseException.validation("INVITE_REDIRECT_URI_INVALID",
-                    "inviteRedirectUri must match a registered redirect URI of a login OAuth client for an application you can access");
+        URI u;
+        try {
+            u = new URI(uri);
+        } catch (URISyntaxException e) {
+            u = null;
+        }
+        boolean ok = u != null
+                && u.getScheme() != null
+                && (u.getScheme().equalsIgnoreCase("https") || u.getScheme().equalsIgnoreCase("http"))
+                && u.getRawAuthority() != null && !u.getRawAuthority().isEmpty()
+                && u.getRawUserInfo() == null;
+        if (!ok) {
+            throw UseCaseException.validation("INVITE_REDIRECT_URI_INVALID", "inviteRedirectUri must be an absolute http or https URL");
         }
         return uri;
-    }
-
-    private static boolean isReachableLoginClient(OAuthClient c) {
-        return c.active() && !c.isPortal() && c.allowsGrant("authorization_code");
-    }
-
-    private static boolean reachableByCaller(OAuthClient c, AuthContext ac) {
-        return c.applicationIds().isEmpty() ? ac.allApplications() : c.applicationIds().stream().anyMatch(ac::canAccessApplication);
     }
 
     /// The list query (spec §3): every parameter optional, matched in memory.

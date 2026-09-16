@@ -116,12 +116,9 @@ export class PrincipalsResource {
 	 *
 	 * `inviteRedirectUri` sends the invitee to your application once they
 	 * have set their password (and enrolled 2FA, if their domain requires
-	 * it); their platform session is already established, so your
-	 * `/oauth/authorize` sign-in goes straight through. It applies to both
-	 * the platform-sent invite email and `returnInviteLink`. It must match a
-	 * redirect URI registered on a login OAuth client of an application the
-	 * caller can access (the `/oauth/authorize` matching rule, wildcards
-	 * included) — otherwise the request fails with
+	 * it) — any absolute http(s) URL, typically your app's own page, which
+	 * then starts sign-in as usual. It applies to both the platform-sent
+	 * invite email and `returnInviteLink`. A malformed value fails with
 	 * `INVITE_REDIRECT_URI_INVALID` and no user is created.
 	 */
 	createUser(data: CreateUserRequest): ResultAsync<PrincipalDto, SdkError> {

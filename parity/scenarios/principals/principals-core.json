@@ -182,11 +182,11 @@
       "capture": { "coreInviteId": "/id", "coreInviteLink": "/inviteLink", "coreInviteToken": "param:/inviteLink?token" } },
 
     { "id": "invite-redirect-uri-invalid",
-      "why": "app-managed-invitations §1a: an inviteRedirectUri that matches no reachable OAuth client's redirect URI is refused before any write — 400 INVITE_REDIRECT_URI_INVALID, not a silently dropped value",
+      "why": "app-managed-invitations §1a: a malformed inviteRedirectUri (not an absolute http(s) URL) is refused before any write — 400 INVITE_REDIRECT_URI_INVALID, not a silently dropped value",
       "request": { "method": "POST", "path": "/api/principals/users",
                    "body": { "email": "parity-pcore-badredirect-${run}@example.test", "name": "Parity Core Bad Redirect",
                              "scope": "CLIENT", "clientId": "${client.id}", "returnInviteLink": true,
-                             "inviteRedirectUri": "https://not-registered.example/callback" } },
+                             "inviteRedirectUri": "javascript:alert(1)" } },
       "expect": { "status": 400 } },
 
     { "id": "invite-confirm-establishes-session",

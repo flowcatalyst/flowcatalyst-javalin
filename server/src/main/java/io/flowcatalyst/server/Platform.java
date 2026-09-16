@@ -468,15 +468,11 @@ public final class Platform {
                 new AuditLogRepository(pool), clientRepo, applicationRepo);
         IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);
-        // Shared with the oauthclient/portal wiring below (~line 506) — a single instance, never
-        // one built per surface (docs/spec/app-managed-invitations.md §1a needs it here too, to
-        // validate `inviteRedirectUri` against the same reachable-client rules `/oauth/authorize` uses).
-        var oauthClientRepo = new OAuthClientRepository(pool, applicationRepo);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
         // the developer client-secret is encrypted under the app key from `env`, like the IdP secrets above.
         PrincipalApi.register(routes, new PrincipalApi.State(principalRepo, new ClientAccessGrantRepository(pool), roleRepo,
                 applicationRepo, new ClientConfigRepository(pool), clientRepo, emailDomainMappingRepo, identityProviderRepo,
-                AnchorDomains.inDatabase(pool), resetLinks, resetLinks, oauthClientRepo, notices,
+                AnchorDomains.inDatabase(pool), resetLinks, resetLinks, notices,
                 mfa,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()).map(DeveloperSecrets::withEncryption).orElseGet(DeveloperSecrets::unconfigured),
                 uow));
@@ -507,6 +503,7 @@ public final class Platform {
         // portalAppId on OAuth-client create/update — read-only from this surface's view.
         // Registered in Go's wire_routes.go order — right after serviceaccount, ahead of
         // the /oauth/* token routes that do not exist yet (Phase 3, still TODO above).
+        var oauthClientRepo = new OAuthClientRepository(pool, applicationRepo);
         var portalAppRepo = new PortalAppRepository(pool);
         OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
                 Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), portalAppRepo));

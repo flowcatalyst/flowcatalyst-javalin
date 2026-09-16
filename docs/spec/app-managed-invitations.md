@@ -1,7 +1,8 @@
 # Application-managed invitations (create-user flags + first-login password setup)
 
-Status: spec, 2026-09-14; §1a `inviteRedirectUri` added 2026-09-16 from Go `5ce1668`
-(`resolveInviteRedirect`, `inviteRedirectClientReachable`, `invite_redirect_pg_test.go`). Source of the behaviour: the Go working tree on
+Status: spec, 2026-09-14; §1a `inviteRedirectUri` added 2026-09-16 from Go `5ce1668`, rule
+relaxed to any absolute http(s) URL the same day from Go `0e07df6`
+(`resolveInviteRedirect`, `invite_redirect_pg_test.go`). Source of the behaviour: the Go working tree on
 2026-09-14 (uncommitted on top of `f81fd5a`; handover
 `../flowcatalyst-go/docs/java-sdk-invitation-handover.md`), files
 `internal/platform/principal/api/{api,dto}.go`,
@@ -27,7 +28,7 @@ password" invite. Two patterns:
 2. **Embedded link.** Create the user with `returnInviteLink:true`, read
    `inviteLink` from the response and embed it in your own mail. The user
    sets a password on the platform and is signed in. Pass `inviteRedirectUri`
-   (one of your login client's redirect URIs) to send them back to your
+   (e.g. your application's home page) to send them back to your
    application afterwards; without it they land on the platform's landing
    page.
 
@@ -45,7 +46,7 @@ validation refuses the unknown keys.
 |---|---|---|
 | `sendInvitation` | `true` | `false` suppresses **all** platform mail for the new user: neither the invite (passwordless) nor the "account created" welcome (password supplied). Ignored for service accounts and federated/OIDC users, who never get mail. |
 | `returnInviteLink` | `false` | `true` mints the 72-hour invite token and returns the set-password link as `inviteLink`. Only for a passwordless INTERNAL user; absent when a password was supplied or the user is federated. |
-| `inviteRedirectUri` | absent | Where the invitee goes once the password is set (and 2FA enrolled where the domain requires it), with their platform session already established — normally the calling application, whose `/oauth/authorize` then goes straight through. Rides on the INVITE token, so both delivery modes honour it. Validated **before any write** (§1a); ignored when no invite is minted (a password was supplied, the user is federated, or `sendInvitation:false` without `returnInviteLink`). Added 2026-09-16 (Go `5ce1668`). |
+| `inviteRedirectUri` | absent | Where the invitee goes once the password is set (and 2FA enrolled where the domain requires it), with their platform session already established — normally the calling application's own page, which then starts its sign-in as usual. **Any absolute `http`/`https` URL**; it is not an OAuth redirect URI. Rides on the INVITE token, so both delivery modes honour it. Validated **before any write** (§1a); ignored when no invite is minted (a password was supplied, the user is federated, or `sendInvitation:false` without `returnInviteLink`). Added 2026-09-16 (Go `5ce1668`, relaxed to any absolute URL in Go `0e07df6`). |
 
 **Precedence** (`notifyNewUser(state, principal, password, sendInvitation, returnInviteLink, inviteRedirect) → String|null`; `inviteRedirect` is the already-validated URI or `null` and is handed to whichever mint fires — `inviteLink(p, inviteRedirect)` on step 3, `sendInvite(p, inviteRedirect)` on step 5):
 
@@ -66,36 +67,32 @@ validation refuses the unknown keys.
 
 Bulk import always calls with `(true, false)` — the CSV surface gains no flags.
 
-### 1a. `inviteRedirectUri` validation (`resolveInviteRedirect(state, ac, raw) → String|null`)
+### 1a. `inviteRedirectUri` validation (`resolveInviteRedirect(raw) → String|null`)
 
 Runs in both create handlers **after** the user-admin check and **before**
-the PARTNER-merge lookup and the `CreateUser` write, so a refused redirect
+the PARTNER-merge lookup and the `CreateUser` write, so a refused value
 leaves nothing behind — no user, no token, no mail. Bulk import never
 receives one (`null`).
 
 1. `raw` null or blank after trim → `null` (no redirect).
-2. Otherwise `uri = raw.trim()`. It is accepted iff some OAuth client
-   (`OAuthClientRepository.findAll()`) is **reachable** for the caller and
-   `RedirectUriMatcher.matches(uri, client.redirectUris())` — the one matcher
-   `/oauth/authorize` uses, wildcards included. The accepted value is the
-   trimmed `uri`, never the registered pattern.
-3. A client is reachable when it is `active`, is **not** a portal client
-   (`isPortal()` false), allows the `authorization_code` grant
-   (`allowsGrant`, so an empty grant list never qualifies), and:
-   - its `applicationIds` is empty → only for a caller with
-     `allApplications`;
-   - otherwise → some id satisfies `ac.canAccessApplication(id)`.
-4. No reachable client matches → 400 `INVITE_REDIRECT_URI_INVALID`
-   `inviteRedirectUri must match a registered redirect URI of a login OAuth
-   client for an application you can access` (a `usecase` Validation error,
-   like the other create-user 400s).
+2. Otherwise `uri = raw.trim()` must parse as an absolute URL whose scheme is
+   `http` or `https` (case-insensitive), with a non-empty authority (host) and
+   **no userinfo**. The accepted value is the trimmed `uri`.
+3. Anything else → 400 `INVITE_REDIRECT_URI_INVALID`
+   `inviteRedirectUri must be an absolute http or https URL` (a `usecase`
+   Validation error, like the other create-user 400s). Refused by
+   construction: a relative path, a scheme-less or scheme-relative value,
+   `javascript:` / `data:` / any non-web scheme, a URL with embedded
+   credentials (`https://trusted@evil.test`), a scheme with no host.
 
-Why these limits: the allow-list is admin-registered OAuth configuration, so
-the set-password page can never become an open redirect; and an
-application-scoped service account can only send its invitees to its own
-applications. `machine-to-machine` (`client_credentials`) clients and portal
-login clients never qualify even when their URIs match. The repository is a
-required `State` member — there is no unwired mode.
+Why this is enough (Go `0e07df6`, 2026-09-16, replacing the earlier rule
+that tied the value to OAuth redirect URIs): the redirect is set by an
+authenticated caller already allowed to create the user, and it is stored on
+the invite token rather than read back from the link — whoever holds the link
+cannot change it — so the set-password page is not an open redirect. The
+value is the application's own page, not an OAuth `redirect_uri`, so the
+`/oauth/authorize` allow-list was the wrong shape for it. No repository is
+involved; the check is pure.
 
 Downstream is already in place: `ResetToken.redirectUri` is stored at mint,
 `POST /auth/password-reset/confirm` echoes it as `redirectUri` on both the
@@ -240,13 +237,12 @@ Principal API (real HTTP + DB, a counting `InviteEmailer`/`Notifier` fake):
 | the fake's `inviteLink` throws: 200, no `inviteLink` key, `sendInvite` 0 | best-effort falling through to the mail |
 | `POST /api/principals` with the flag: body exactly `{id, inviteLink}`; without: exactly `{id}` | `CreatedResponse` still answered; `null` emitted |
 | a real `ResetLinks.inviteLink` answers a link whose token `GET /auth/password-reset/validate` reports valid with purpose INVITE (or via `ResetTokenRepository`) | interface method not minting |
-| `inviteRedirectUri` matching a wildcard URI of a login client of the caller's application (caller `X-FC-Test-Applications: appA`, not all-applications), with `returnInviteLink:true`: 200 with `inviteLink`, and the fake received exactly the trimmed URI | redirect dropped on the mint path; pattern returned instead of the URI |
-| the same URI with the platform invite (no `returnInviteLink`): the fake's `sendInvite` received the URI | redirect dropped on the mail path |
-| a real `ResetLinks` mint with a redirect: the token row's `redirect_uri` equals the URI | `ResetLinks` passing `null` |
-| each of: another application's login client, a `client_credentials` client, a client linked to no application, a portal client, an unregistered URL, a relative path → 400 `INVITE_REDIRECT_URI_INVALID` **and** `findByEmail` is empty afterwards | any reachability clause dropped; validation after the write |
-| an all-applications caller: the other application's and the unlinked client's URIs accepted; the portal client's still refused | unlinked-client rule inverted; portal exclusion missing |
-| `inviteRedirectUri: "  "`: 200, the fake received `null` | blank treated as a URI |
-| `POST /api/principals` with an unregistered URI: 400, no user | the flag only wired on `/users` |
+| `inviteRedirectUri` set to an absolute https URL with surrounding whitespace, with `returnInviteLink:true`: 200 with `inviteLink`, and the fake received exactly the trimmed URL | redirect dropped on the mint path; not trimmed |
+| a plain `http://localhost:5173/...` URL with the platform invite (no `returnInviteLink`): the fake's `sendInvite` received the URL | redirect dropped on the mail path; `http` refused |
+| a real `ResetLinks` mint with a redirect: the token row's `redirect_uri` equals the URL | `ResetLinks` passing `null` |
+| each of: a relative path, no scheme, scheme-relative `//host`, `javascript:`, `data:`, `ftp:`, embedded credentials, `https:///path` → 400 `INVITE_REDIRECT_URI_INVALID` **and** `findByEmail` is empty afterwards | any clause of step 2 dropped; validation after the write |
+| `inviteRedirectUri: "  "`: 200, the fake received `null` | blank treated as a URL |
+| `POST /api/principals` with `javascript:alert(1)`: 400, no user | the field only wired on `/users` |
 
 Login API:
 
