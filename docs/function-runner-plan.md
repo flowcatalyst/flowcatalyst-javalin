@@ -138,6 +138,12 @@ orchestrator; that is the isolation model for JVM functions and it is written do
 
 ## 6. Wasm runtime (Chicory)
 
+> **Correction 2026-09-17:** Chicory has been released under the Bytecode Alliance as **Endive 1.0** (a fork of
+> Dylibso's Chicory with a Cranelift native-code backend at build time, called via FFI). Target Endive, not Chicory:
+> it carries foundation governance equal to wasmtime's and appears to be moving towards component-model support.
+> The Extism ABI guidance below still applies until Endive's component support is confirmed.
+
+
 - **Why Chicory:** pure Java, no native library, runs inside the same host process, and it is the
   runtime under Extism's Java host SDK. Its interpreter is slow; its compiler mode (wasm → JVM
   bytecode at load) is what makes it usable — enable it, measure it.
