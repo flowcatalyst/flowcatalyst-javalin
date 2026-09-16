@@ -101,9 +101,8 @@ class Principals
      * of emailing it (passwordless INTERNAL users only; always suppresses
      * the platform's own invite email). The returned link is a live
      * bearer credential — never log it. Set `inviteRedirectUri` to send the
-     * invitee to your application after they set their password; it must
-     * match a redirect URI of one of your application's login OAuth
-     * clients (see CreateUserRequest).
+     * invitee to your application (any absolute http(s) URL) after they
+     * set their password.
      */
     public function createUser(CreateUserRequest $request): Principal
     {

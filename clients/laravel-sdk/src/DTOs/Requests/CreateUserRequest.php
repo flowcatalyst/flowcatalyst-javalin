@@ -38,13 +38,11 @@ namespace FlowCatalyst\DTOs\Requests;
  * credential — treat it exactly like a password and never log it.
  *
  * `inviteRedirectUri` sends the invitee to your application once they have
- * set their password (and enrolled 2FA, if their domain requires it); their
- * platform session is already established, so your OIDC sign-in goes
- * straight through. It applies to both the platform-sent invite email and
- * `returnInviteLink`. It must match a redirect URI registered on a login
- * OAuth client of an application the caller can access (the
- * `/oauth/authorize` matching rule, wildcards included) — otherwise the
- * create is rejected with INVITE_REDIRECT_URI_INVALID and no user is made.
+ * set their password (and enrolled 2FA, if their domain requires it) — any
+ * absolute http(s) URL, typically your app's own page, which then starts
+ * sign-in as usual. It applies to both the platform-sent invite email and
+ * `returnInviteLink`. A malformed value is rejected with
+ * INVITE_REDIRECT_URI_INVALID and no user is created.
  */
 final class CreateUserRequest
 {
