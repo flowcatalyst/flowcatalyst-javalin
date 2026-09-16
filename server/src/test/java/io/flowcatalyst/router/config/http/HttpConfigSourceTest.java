@@ -178,6 +178,58 @@ class HttpConfigSourceTest {
     }
 
     @Test
+    @DisplayName("a refusal (403) fails the URL on the first attempt — the retry budget is never spent on it")
+    void aRefusalIsNotRetried() {
+        var requests = new AtomicInteger();
+        var server = startServer(exchange -> {
+            requests.incrementAndGet();
+            respondStatus(exchange, 403);
+        });
+
+        var src = source(List.of(urlOf(server)), 4, Duration.ofMillis(20), Duration.ofSeconds(5));
+        var result = src.fetch();
+
+        assertThat(result).isEmpty();
+        assertThat(requests.get()).as("mutant: 403 treated as retryable").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a refusing URL does not hold the healthy URLs' configuration back")
+    void aRefusingUrlDoesNotHoldTheOthersBack() {
+        var refused = new AtomicInteger();
+        var refusing = startServer(exchange -> {
+            refused.incrementAndGet();
+            respondStatus(exchange, 404);
+        });
+        var healthy = startServer(exchange -> respondOk(exchange, configWithQueue("postgres://healthy/db", 10)));
+
+        // 12 attempts 2 s apart: a retried refusal would cost at least 22 s
+        // before fetch() could return anything at all.
+        var src = source(List.of(urlOf(refusing), urlOf(healthy)), 12, Duration.ofSeconds(2), Duration.ofSeconds(5));
+        long started = System.nanoTime();
+        var result = src.fetch();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().queues()).extracting(q -> q.queueUri()).containsExactly("postgres://healthy/db");
+        assertThat(refused.get()).isEqualTo(1);
+        assertThat(elapsed).as("mutant: the healthy source waited on the refusal's retries").isLessThan(Duration.ofSeconds(2));
+    }
+
+    @Test
+    @DisplayName("retryable statuses: 5xx, 408/425/429, and a 401 only when the request carried a token")
+    void retryableStatusClassification() {
+        for (int status : new int[] {500, 502, 503, 504, 408, 425, 429}) {
+            assertThat(HttpConfigSource.retryableStatus(status, false)).as("%d", status).isTrue();
+        }
+        assertThat(HttpConfigSource.retryableStatus(401, true)).as("401 with a token: re-mint and retry").isTrue();
+        assertThat(HttpConfigSource.retryableStatus(401, false)).as("401 without a token cannot change").isFalse();
+        for (int status : new int[] {400, 403, 404, 405, 410, 422}) {
+            assertThat(HttpConfigSource.retryableStatus(status, true)).as("%d", status).isFalse();
+        }
+    }
+
+    @Test
     @DisplayName("stops retrying as soon as an attempt succeeds")
     void stopsRetryingOnSuccess() {
         var requests = new AtomicInteger();

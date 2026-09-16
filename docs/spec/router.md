@@ -1400,8 +1400,24 @@ scheduler publishes to the same synthesised queue (`server/subsystems.go:96-110`
   dropped (`TestNewConfigSourceParsesCommaSeparated`).
 - Every URL is fetched **in parallel**; each URL independently retries up to
   **12 attempts with 5 s between** (`fetchWithRetry`); a single attempt is a
-  `GET` with a 10 s client timeout; any status ≥300 or JSON decode failure is
-  an attempt failure. Worst case one `Fetch` takes ≈ 12×10 s + 11×5 s ≈ 3 min.
+  `GET` with a 10 s client timeout; a transport failure, a JSON decode failure
+  or a **retryable** status is an attempt failure. Worst case one `Fetch`
+  takes ≈ 12×10 s + 11×5 s ≈ 3 min.
+- **Refusals are not retried** (Go `da64e71`, 2026-09-16): a status the next
+  attempt cannot change fails the URL at once, so the other URLs' configuration
+  applies straight away — `fetch()` applies nothing until every URL has
+  finished, and twelve retries of a 403 held every healthy source back for a
+  minute on every poll. Retryable: any 5xx, 408, 425, 429, and a 401 on a
+  request that carried a token (the token was just invalidated; the next
+  attempt re-mints). Everything else — 403, 404, any other 4xx, a 401 on a
+  request that carried **no** token — is a refusal, logged once as
+  `config fetch: refused; not retrying` with the status. A 401/403 on an
+  unauthenticated request also carries a `hint` field naming
+  `FC_ROUTER_PLATFORM_URL` + `FC_ROUTER_CLIENT_ID`/`FC_ROUTER_CLIENT_SECRET`.
+- Every successful apply logs `router configuration applied` with `pools`,
+  `queues`, `consumers_started`, `consumers_stopped`, `failed_queues` — the
+  first apply included, so a router that is running reads differently from
+  one still waiting on its sources.
 - Successes are collected **in URL order**; if **all** fail → error; a
   partial failure is logged per URL and tolerated.
 - Merge (`mergeConfigs`): a single source passes through unchanged; with

@@ -372,14 +372,30 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
     }
 
     /// Up to [#maxAttempts] attempts, [#retryInterval] apart, for one URL.
+    /// A **refusal** — an answer the next attempt cannot change (`docs/spec/router.md`
+    /// §8.1: 403, 404, any other 4xx bar the retryable few, or a 401 on a request
+    /// that carried no token) — fails the URL at once instead of burning the
+    /// budget on it: `fetch()` applies nothing until every URL has finished, so
+    /// twelve retries of a 403 would hold every healthy source back for a
+    /// minute on every poll (staging, 2026-09-16).
     private FetchOutcome fetchWithRetry(String url) throws InterruptedException {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            var config = attemptOnce(url);
-            if (config.isPresent()) {
-                return new FetchOutcome.Success(config.get());
-            }
-            if (attempt < maxAttempts) {
-                Thread.sleep(retryInterval);
+            switch (attemptOnce(url)) {
+                case Attempt.Ok ok -> {
+                    return new FetchOutcome.Success(ok.config());
+                }
+                case Attempt.Refused refused -> {
+                    log.atWarn().setMessage("config fetch: refused; not retrying")
+                            .addKeyValue("url", url)
+                            .addKeyValue("status", refused.status())
+                            .log();
+                    return new FetchOutcome.Failure(url);
+                }
+                case Attempt.Retry ignored -> {
+                    if (attempt < maxAttempts) {
+                        Thread.sleep(retryInterval);
+                    }
+                }
             }
         }
         log.atWarn().setMessage("config fetch: failed")
@@ -389,14 +405,15 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         return new FetchOutcome.Failure(url);
     }
 
-    /// One GET, decoded as a [RouterConfig]. Empty on any attempt failure —
-    /// a non-2xx/3xx-exclusive status ("≥300"), a transport failure, or a
-    /// body that isn't valid JSON for the shape (§8.1). [InterruptedException]
+    /// One GET, decoded as a [RouterConfig]. [Attempt.Retry] on a transport
+    /// failure, a retryable status ([#retryableStatus]) or a body that isn't
+    /// valid JSON for the shape; [Attempt.Refused] on a status another
+    /// attempt cannot change (§8.1). [InterruptedException]
     /// is the one outcome that is never swallowed here: [HttpClient#send]
     /// declares it directly, and letting it propagate is what makes
     /// cancellation-by-interruption work at this blocking point
     /// (CONVENTIONS §8).
-    private Optional<RouterConfig> attemptOnce(String url) throws InterruptedException {
+    private Attempt attemptOnce(String url) throws InterruptedException {
         boolean authorized = carriesAuthTo(url);
 
         HttpRequest.Builder builder;
@@ -409,7 +426,7 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                     .addKeyValue("url", url)
                     .setCause(e)
                     .log();
-            return Optional.empty();
+            return new Attempt.Retry();
         }
 
         if (authorized) {
@@ -422,7 +439,7 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
                 // exception out of fetch(); R-B's retry loop keeps working.
                 firstOfStreak(log.atWarn().setMessage("config fetch attempt failed: token mint failed")
                         .addKeyValue("url", url), url, e).log();
-                return Optional.empty();
+                return new Attempt.Retry();
             }
             builder.header("Authorization", "Bearer " + token);
         }
@@ -434,7 +451,7 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
         } catch (IOException e) {
             firstOfStreak(log.atWarn().setMessage("config fetch attempt failed")
                     .addKeyValue("url", url), url, e).log();
-            return Optional.empty();
+            return new Attempt.Retry();
         }
 
         if (authorized && response.statusCode() == 401) {
@@ -444,20 +461,61 @@ public final class HttpConfigSource implements RouterServer.ConfigSource {
             tokenManager.invalidate();
         }
 
-        if (response.statusCode() >= 300) {
-            log.atWarn().setMessage("config fetch attempt failed")
+        int status = response.statusCode();
+        if (status >= 300) {
+            var event = log.atWarn().setMessage("config fetch attempt failed")
                     .addKeyValue("url", url)
-                    .addKeyValue("status", response.statusCode())
-                    .log();
-            return Optional.empty();
+                    .addKeyValue("status", status);
+            if (!authorized && (status == 401 || status == 403)) {
+                // The one refusal an operator can fix from the log line alone
+                // (`docs/spec/router-config-auth.md` §2).
+                event.addKeyValue("hint", UNAUTHENTICATED_HINT);
+            }
+            event.log();
+            return retryableStatus(status, authorized) ? new Attempt.Retry() : new Attempt.Refused(status);
         }
 
         try {
-            return Optional.of(Json.MAPPER.readValue(response.body(), RouterConfig.class));
+            return new Attempt.Ok(Json.MAPPER.readValue(response.body(), RouterConfig.class));
         } catch (JacksonException e) {
             firstOfStreak(log.atWarn().setMessage("config fetch attempt failed: invalid JSON")
                     .addKeyValue("url", url), url, e).log();
-            return Optional.empty();
+            return new Attempt.Retry();
+        }
+    }
+
+    /// Whether another attempt could plausibly get a different answer:
+    /// server-side and throttling failures (5xx, 408, 425, 429), and a 401 on
+    /// an authenticated request — the rejected token was just invalidated, so
+    /// the next attempt mints a fresh one. Every other client error — a 403
+    /// for a missing permission or credential, a 404 for a wrong URL — answers
+    /// the same way until someone changes the deployment (§8.1).
+    static boolean retryableStatus(int status, boolean authenticated) {
+        if (status >= 500) return true;
+        return switch (status) {
+            case 408, 425, 429 -> true;
+            case 401 -> authenticated;
+            default -> false;
+        };
+    }
+
+    /// What a 401/403 answered to a request that carried no token means for
+    /// the deployment, spelled out where the operator is already looking.
+    static final String UNAUTHENTICATED_HINT = "sent without credentials: a platform's /api/dispatch/router-config needs "
+            + "FC_ROUTER_PLATFORM_URL set to that platform plus FC_ROUTER_CLIENT_ID/FC_ROUTER_CLIENT_SECRET";
+
+    /// One attempt's outcome — an expected result, not an exception
+    /// (CONVENTIONS §8).
+    private sealed interface Attempt {
+        record Ok(RouterConfig config) implements Attempt {
+        }
+
+        /// Worth another attempt after [#retryInterval].
+        record Retry() implements Attempt {
+        }
+
+        /// Answered with a status the next attempt cannot change.
+        record Refused(int status) implements Attempt {
         }
     }
 

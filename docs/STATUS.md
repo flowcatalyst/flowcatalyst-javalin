@@ -162,6 +162,20 @@ stays 0.0.4 until we cut a tag), `ResetPasswordPage.vue` + API types,
 embedded SPA rebuilt. **Parity vs Go `0e07df6`: 1,326 steps, 0 DIFF, 0
 ERROR** (a malformed-redirect step added to `principals-core`).
 
+**A refusing config source no longer holds the others back** (Go `da64e71`,
+2026-09-16; spec `router.md` §8.1): `HttpConfigSource` classifies a
+response — 5xx, 408/425/429 and a 401 on an authenticated request are
+retried on the 12×5 s budget as before; 403, 404, any other 4xx and a 401
+without a token are **refusals** that fail the URL on the first attempt, so
+the healthy URLs' configuration applies at once instead of waiting a minute
+on every poll (what made the staging router look dead behind a 403 from the
+platform document). A 401/403 on an unauthenticated request logs a `hint`
+naming `FC_ROUTER_PLATFORM_URL` + `FC_ROUTER_CLIENT_ID`/`_SECRET`. Every
+apply now logs `router configuration applied` with pool/queue/consumer
+counts, the first one included. Tests: refusal on first attempt, refusing
+URL costs the healthy one nothing (elapsed < one retry interval), the
+classification table; the every-4xx-retryable mutant killed by all three.
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

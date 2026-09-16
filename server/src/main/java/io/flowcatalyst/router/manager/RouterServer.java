@@ -394,6 +394,16 @@ public final class RouterServer implements AutoCloseable {
             return Optional.empty();
         }
         var result = manager.reconfigure(config, consumerFactory);
+        // Logged on every apply — the first one included — so a router that is
+        // running reads differently in the logs from one still waiting on its
+        // sources (a successful apply used to log nothing at all).
+        log.atInfo().setMessage("router configuration applied")
+                .addKeyValue("pools", config.processingPools().size())
+                .addKeyValue("queues", config.queues().size())
+                .addKeyValue("consumers_started", result.consumersStarted())
+                .addKeyValue("consumers_stopped", result.consumersStopped())
+                .addKeyValue("failed_queues", result.failedQueues().size())
+                .log();
         if (!result.complete()) {
             // Running with less than the configuration asks for is an
             // operator-visible condition, not a log line: some queues are

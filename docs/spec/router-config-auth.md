@@ -73,8 +73,11 @@ the MCP server already mints tokens this way (`TokenManager`).
   cached token so the next attempt re-mints; it is otherwise an ordinary
   `>= 300` attempt failure.
 - Without credentials the router fetches unauthenticated, exactly as today —
-  a platform-served URL then answers 401 on every attempt, which R-B retries
-  and the CONFIGURATION warning reports.
+  a platform-served URL then answers 401 (403 once the anchor gate runs
+  first). Since 2026-09-16 (`router.md` §8.1) that is a **refusal**: the URL
+  fails at once with a `hint` naming the three settings, the other URLs apply
+  without waiting, the CONFIGURATION warning reports it, and R-B's next poll
+  tries again.
 
 ## 3. fcdev
 
