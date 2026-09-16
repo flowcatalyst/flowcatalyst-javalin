@@ -1,12 +1,17 @@
 package io.flowcatalyst.platform.principal.api;
 
+import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
+import io.flowcatalyst.platform.oauthclient.ClientType;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.passwordreset.ResetLinks;
 import io.flowcatalyst.platform.passwordreset.ResetToken;
 import io.flowcatalyst.platform.passwordreset.ResetTokenRepository;
@@ -41,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -62,6 +68,8 @@ class PrincipalApiTest {
     private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final PrincipalRepository REPO = new PrincipalRepository(TestPg.dataSource());
     private static final ClientRepository CLIENTS = new ClientRepository(TestPg.dataSource());
+    private static final ApplicationRepository APPLICATIONS = new ApplicationRepository(TestPg.dataSource());
+    private static final OAuthClientRepository OAUTH_CLIENTS = new OAuthClientRepository(TestPg.dataSource(), APPLICATIONS);
 
     private static String clientA;
     private static String clientB;
@@ -69,24 +77,40 @@ class PrincipalApiTest {
     private static String userInB;
     private static TestHttp http;
 
+    // ── app-managed-invitations §1a fixtures (inviteRedirectUri) ────────────
+
+    private static String appA;
+    private static String appB;
+    private static final String APP_A_LOGIN_REDIRECT = "https://*.app-a-%s.test/callback";
+    private static final String APP_B_LOGIN_REDIRECT = "https://app-b-%s.test/callback";
+    private static final String APP_A_MACHINE_REDIRECT = "https://machine-%s.test/cb";
+    private static final String UNLINKED_LOGIN_REDIRECT = "https://unlinked-%s.test/cb";
+    private static final String PORTAL_LOGIN_REDIRECT = "https://portal-%s.test/cb";
+
     /// A counting fake (`docs/spec/app-managed-invitations.md` §7): counts
     /// `sendInvite`/`inviteLink` calls separately so a test can assert which
     /// branch of the precedence fired, and can be told to throw on the next
-    /// mint to pin the best-effort failure path.
+    /// mint to pin the best-effort failure path. Also records the last
+    /// redirect URI each method received, so a test can pin that a validated
+    /// `inviteRedirectUri` (§1a) actually rides on the mint.
     private static final class CountingInviteEmailer implements InviteEmailer {
         final String link = "https://example.test/auth/set-password?token=fake-" + UUID.randomUUID();
         int sendInviteCalls;
         int inviteLinkCalls;
         RuntimeException throwOnInviteLink;
+        String lastSendInviteRedirect;
+        String lastInviteLinkRedirect;
 
         @Override
-        public void sendInvite(Principal p) {
+        public void sendInvite(Principal p, String redirectUri) {
             sendInviteCalls++;
+            lastSendInviteRedirect = redirectUri;
         }
 
         @Override
-        public String inviteLink(Principal p) {
+        public String inviteLink(Principal p, String redirectUri) {
             inviteLinkCalls++;
+            lastInviteLinkRedirect = redirectUri;
             if (throwOnInviteLink != null) throw throwOnInviteLink;
             return link;
         }
@@ -95,6 +119,8 @@ class PrincipalApiTest {
             sendInviteCalls = 0;
             inviteLinkCalls = 0;
             throwOnInviteLink = null;
+            lastSendInviteRedirect = null;
+            lastInviteLinkRedirect = null;
         }
     }
 
@@ -143,6 +169,19 @@ class PrincipalApiTest {
                 Authenticator.TEST_PERMISSIONS, permissions};
     }
 
+    /// An anchor caller restricted to one application — not all-applications
+    /// (`docs/spec/app-managed-invitations.md` §1a, §7): `anchor()` plus the
+    /// applications header explicitly, so `ac.isAnchor()` is true (the user-admin
+    /// gate passes) but `ac.canAccessApplication` only reaches `applicationId`.
+    private static String[] appScoped(String applicationId) {
+        return new String[] {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:*:*:*",
+                Authenticator.TEST_APPLICATIONS, applicationId,
+                Authenticator.TEST_ALL_APPLICATIONS, "false"};
+    }
+
     @BeforeAll
     static void start() {
         clientA = seedClient("pa" + RUN);
@@ -157,7 +196,7 @@ class PrincipalApiTest {
                 new EmailDomainMappingRepository(TestPg.dataSource()),
                 new IdentityProviderRepository(TestPg.dataSource()),
                 AnchorDomains.inDatabase(TestPg.dataSource()),
-                PasswordResetEmailer.notConfigured(), INVITES, NOTIFIER,
+                PasswordResetEmailer.notConfigured(), INVITES, OAUTH_CLIENTS, NOTIFIER,
                 MfaService.notConfigured(), DeveloperSecrets.unconfigured(), UOW);
 
         var keys = SigningKeys.generateEphemeral();
@@ -171,6 +210,54 @@ class PrincipalApiTest {
 
         userInA = createUser("ua", clientA);
         userInB = createUser("ub", clientB);
+
+        seedOAuthClientFixtures();
+    }
+
+    /// The five OAuth clients app-managed-invitations §1a/§7 exercise:
+    /// an app-A login client (wildcard redirect), an app-B login client, an
+    /// app-A `client_credentials` client, a login client linked to no
+    /// application, and a portal login client on app A.
+    private static void seedOAuthClientFixtures() {
+        appA = app("pia-" + RUN);
+        appB = app("pib-" + RUN);
+
+        var appALogin = OAuthClient.create("pia-login-" + RUN, "App A Login", ClientType.PUBLIC)
+                .withRedirectUris(List.of(APP_A_LOGIN_REDIRECT.formatted(RUN)))
+                .withGrantTypes(List.of("authorization_code"))
+                .withApplicationIds(List.of(appA));
+        var appBLogin = OAuthClient.create("pib-login-" + RUN, "App B Login", ClientType.PUBLIC)
+                .withRedirectUris(List.of(APP_B_LOGIN_REDIRECT.formatted(RUN)))
+                .withGrantTypes(List.of("authorization_code"))
+                .withApplicationIds(List.of(appB));
+        var appAMachine = OAuthClient.create("pia-machine-" + RUN, "App A Machine", ClientType.CONFIDENTIAL)
+                .withRedirectUris(List.of(APP_A_MACHINE_REDIRECT.formatted(RUN)))
+                .withGrantTypes(List.of("client_credentials"))
+                .withApplicationIds(List.of(appA));
+        var unlinkedLogin = OAuthClient.create("pi-unlinked-" + RUN, "Unlinked Login", ClientType.PUBLIC)
+                .withRedirectUris(List.of(UNLINKED_LOGIN_REDIRECT.formatted(RUN)))
+                .withGrantTypes(List.of("authorization_code"));
+        var portalLogin = OAuthClient.create("pi-portal-" + RUN, "Portal Login", ClientType.PUBLIC)
+                .withRedirectUris(List.of(PORTAL_LOGIN_REDIRECT.formatted(RUN)))
+                .withGrantTypes(List.of("authorization_code"))
+                .withApplicationIds(List.of(appA))
+                .withPortalAndApiAccess("cli_" + RUN, false);
+
+        for (OAuthClient c : List.of(appALogin, appBLogin, appAMachine, unlinkedLogin, portalLogin)) {
+            UOW.inTransaction(tx -> {
+                OAUTH_CLIENTS.persist(c, tx.dbTx());
+                return null;
+            });
+        }
+    }
+
+    private static String app(String code) {
+        var a = Application.create(ApplicationType.APPLICATION, code, code);
+        UOW.inTransaction(tx -> {
+            APPLICATIONS.persist(a, tx.dbTx());
+            return null;
+        });
+        return a.id();
     }
 
     @AfterAll
@@ -566,7 +653,7 @@ class PrincipalApiTest {
                 new EmailDomainMappingRepository(TestPg.dataSource()),
                 new IdentityProviderRepository(TestPg.dataSource()),
                 AnchorDomains.inDatabase(TestPg.dataSource()),
-                PasswordResetEmailer.notConfigured(), links, Notifier.logging(),
+                PasswordResetEmailer.notConfigured(), links, OAUTH_CLIENTS, Notifier.logging(),
                 MfaService.notConfigured(), DeveloperSecrets.unconfigured(), UOW);
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
@@ -588,5 +675,157 @@ class PrincipalApiTest {
             assertThat(token.purpose()).as("mutant: interface method not minting").isEqualTo(ResetToken.Purpose.INVITE);
             assertThat(token.isExpired(Instant.now())).isFalse();
         }
+    }
+
+    // ── inviteRedirectUri validation (spec app-managed-invitations.md §1a, §7) ──
+
+    @Test
+    @DisplayName("inviteRedirectUri matching a wildcard URI of the caller's application's login client rides on the minted link")
+    void inviteRedirectUriWildcardMatchRidesOnTheMintedLink() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String uri = "https://demo.app-a-" + RUN + ".test/callback";
+        String email = "redirect-wildcard-link-" + RUN + "@example.test";
+        var r = http.post("/api/principals/users",
+                "{\"email\":\"" + email + "\",\"name\":\"RW\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"" + uri + "\"}", appScoped(appA));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("inviteLink").asText()).as("mutant: redirect dropped on the mint path").isEqualTo(INVITES.link);
+        assertThat(INVITES.lastInviteLinkRedirect).as("mutant: pattern returned instead of the trimmed URI").isEqualTo(uri);
+    }
+
+    @Test
+    @DisplayName("inviteRedirectUri also rides on the platform's own invite mail when returnInviteLink is not set")
+    void inviteRedirectUriRidesOnThePlatformInviteMail() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String uri = "https://demo.app-a-" + RUN + ".test/callback";
+        String email = "redirect-mail-" + RUN + "@example.test";
+        var r = http.post("/api/principals/users",
+                "{\"email\":\"" + email + "\",\"name\":\"RM\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"inviteRedirectUri\":\"" + uri + "\"}", appScoped(appA));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(INVITES.sendInviteCalls).isEqualTo(1);
+        assertThat(INVITES.lastSendInviteRedirect).as("mutant: redirect dropped on the mail path").isEqualTo(uri);
+    }
+
+    @Test
+    @DisplayName("a real ResetLinks mint with a redirect stores it on the token row")
+    void realResetLinksMintStoresTheRedirectOnTheToken() {
+        var tokens = new ResetTokenRepository(TestPg.dataSource());
+        var links = new ResetLinks(tokens, mail -> { }, () -> EmailTheme.defaults("Acme"), "http://localhost:8080", Clock.systemUTC());
+        var realState = new PrincipalApi.State(REPO,
+                new ClientAccessGrantRepository(TestPg.dataSource()),
+                new RoleRepository(TestPg.dataSource()),
+                new ApplicationRepository(TestPg.dataSource()),
+                new ClientConfigRepository(TestPg.dataSource()),
+                CLIENTS,
+                new EmailDomainMappingRepository(TestPg.dataSource()),
+                new IdentityProviderRepository(TestPg.dataSource()),
+                AnchorDomains.inDatabase(TestPg.dataSource()),
+                PasswordResetEmailer.notConfigured(), links, OAUTH_CLIENTS, Notifier.logging(),
+                MfaService.notConfigured(), DeveloperSecrets.unconfigured(), UOW);
+        var keys = SigningKeys.generateEphemeral();
+        var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
+        var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            PrincipalApi.register(routes, realState);
+        })) {
+            String uri = "https://demo.app-a-" + RUN + ".test/callback";
+            String email = "redirect-real-token-" + RUN + "@example.test";
+            var r = h.post("/api/principals/users",
+                    "{\"email\":\"" + email + "\",\"name\":\"RT\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                            + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"" + uri + "\"}", appScoped(appA));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            String link = json(r).get("inviteLink").asText();
+            String raw = link.substring(link.indexOf("token=") + "token=".length());
+            var token = tokens.findByHash(ResetToken.hash(raw)).orElseThrow(() -> new AssertionError("no token stored for the returned link"));
+            assertThat(token.redirectUri()).as("mutant: ResetLinks passing null instead of the redirect").isEqualTo(uri);
+        }
+    }
+
+    @Test
+    @DisplayName("every reachability clause is enforced: 400 INVITE_REDIRECT_URI_INVALID and no user created")
+    void everyReachabilityClauseIsEnforced() {
+        var appScopedA = appScoped(appA);
+        record Case(String label, String uri) {
+        }
+        List<Case> cases = List.of(
+                new Case("another application's login client", "https://app-b-" + RUN + ".test/callback"),
+                new Case("a client_credentials client", "https://machine-" + RUN + ".test/cb"),
+                new Case("a client linked to no application (caller not all-applications)", "https://unlinked-" + RUN + ".test/cb"),
+                new Case("a portal client", "https://portal-" + RUN + ".test/cb"),
+                new Case("an unregistered URL", "https://not-registered.example/callback"),
+                new Case("a relative path", "/dashboard"));
+        int i = 0;
+        for (Case c : cases) {
+            String email = "redirect-bad-" + (i++) + "-" + RUN + "@example.test";
+            var r = http.post("/api/principals/users",
+                    "{\"email\":\"" + email + "\",\"name\":\"Bad\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                            + "\",\"inviteRedirectUri\":\"" + c.uri() + "\"}", appScopedA);
+            assertThat(r.statusCode()).as("%s: body was %s", c.label(), r.body()).isEqualTo(400);
+            assertThat(json(r).get("error").asText()).as(c.label()).isEqualTo("INVITE_REDIRECT_URI_INVALID");
+            assertThat(REPO.findByEmail(email)).as("%s: no user must be created", c.label()).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("an all-applications caller reaches another application's and the unlinked client's redirects, but never the portal client's")
+    void allApplicationsCallerReachesEveryLoginClientButNeverThePortalOne() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String appBUri = "https://app-b-" + RUN + ".test/callback";
+        String r1email = "redirect-allapps-appb-" + RUN + "@example.test";
+        var r1 = http.post("/api/principals/users",
+                "{\"email\":\"" + r1email + "\",\"name\":\"AA1\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"" + appBUri + "\"}", anchor());
+        assertThat(r1.statusCode()).as("another application's login client — mutant: unlinked-client rule inverted").isEqualTo(200);
+        assertThat(INVITES.lastInviteLinkRedirect).isEqualTo(appBUri);
+
+        INVITES.reset();
+        NOTIFIER.reset();
+        String unlinkedUri = "https://unlinked-" + RUN + ".test/cb";
+        String r2email = "redirect-allapps-unlinked-" + RUN + "@example.test";
+        var r2 = http.post("/api/principals/users",
+                "{\"email\":\"" + r2email + "\",\"name\":\"AA2\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"" + unlinkedUri + "\"}", anchor());
+        assertThat(r2.statusCode()).as("unlinked client — mutant: unlinked-client rule inverted").isEqualTo(200);
+        assertThat(INVITES.lastInviteLinkRedirect).isEqualTo(unlinkedUri);
+
+        String portalUri = "https://portal-" + RUN + ".test/cb";
+        String r3email = "redirect-allapps-portal-" + RUN + "@example.test";
+        var r3 = http.post("/api/principals/users",
+                "{\"email\":\"" + r3email + "\",\"name\":\"AA3\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"inviteRedirectUri\":\"" + portalUri + "\"}", anchor());
+        assertThat(r3.statusCode()).as("mutant: portal exclusion missing").isEqualTo(400);
+        assertThat(json(r3).get("error").asText()).isEqualTo("INVITE_REDIRECT_URI_INVALID");
+        assertThat(REPO.findByEmail(r3email)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a blank inviteRedirectUri is treated as absent, not as a URI")
+    void blankInviteRedirectUriIsTreatedAsAbsent() {
+        INVITES.reset();
+        NOTIFIER.reset();
+        String email = "redirect-blank-" + RUN + "@example.test";
+        var r = http.post("/api/principals/users",
+                "{\"email\":\"" + email + "\",\"name\":\"Blank\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"  \"}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(INVITES.lastInviteLinkRedirect).as("mutant: blank treated as a URI").isNull();
+    }
+
+    @Test
+    @DisplayName("POST /api/principals also validates inviteRedirectUri: an unregistered URI is 400 and creates no user")
+    void createPrincipalAlsoValidatesInviteRedirectUri() {
+        String email = "redirect-createprincipal-bad-" + RUN + "@example.test";
+        var r = http.post("/api/principals",
+                "{\"email\":\"" + email + "\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"returnInviteLink\":true,\"inviteRedirectUri\":\"https://not-registered.example/callback\"}", anchor());
+        assertThat(r.statusCode()).as("mutant: the flag only wired on /users — body was %s", r.body()).isEqualTo(400);
+        assertThat(json(r).get("error").asText()).isEqualTo("INVITE_REDIRECT_URI_INVALID");
+        assertThat(REPO.findByEmail(email)).isEmpty();
     }
 }

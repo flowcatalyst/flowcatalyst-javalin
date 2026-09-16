@@ -325,13 +325,13 @@ class PasswordResetApiTest {
         String email = "invite-" + RUN + "@example.com";
         String pid = user(email, null, null);
         SENT.clear();
-        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
         assertThat(SENT.getFirst().subject()).isEqualTo("Set your password");
         assertThat(SENT.getFirst().html()).contains("Welcome to Acme").contains(BASE + "/auth/set-password?token=");
         var t = TOKENS.findByHash(ResetToken.hash(linkToken(SENT.getFirst()))).orElseThrow();
         assertThat(t.purpose()).isEqualTo(ResetToken.Purpose.INVITE);
         assertThat(Duration.between(t.createdAt(), t.expiresAt())).isEqualTo(Duration.ofHours(72));
-        assertThat(LINKS.inviteLink(PRINCIPALS.findById(pid).orElseThrow())).startsWith(BASE + "/auth/set-password?token=");
+        assertThat(LINKS.inviteLink(PRINCIPALS.findById(pid).orElseThrow(), null)).startsWith(BASE + "/auth/set-password?token=");
         assertThat(DB.fetchCount(IAM_PASSWORD_RESET_TOKENS, IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.eq(pid))).as("one live token").isEqualTo(1);
 
         // A portal subject: validate says portal; confirm needs the portal plane.
@@ -470,7 +470,7 @@ class PasswordResetApiTest {
         String email = "session-" + RUN + "@example.com";
         String pid = user(email, null, null);
         SENT.clear();
-        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
         String raw = linkToken(SENT.getFirst());
 
         var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
@@ -530,7 +530,7 @@ class PasswordResetApiTest {
             PasswordResetApi.register(routes, sessionState(issuer, cookie));
         })) {
             SENT.clear();
-            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
             String raw = linkToken(SENT.getFirst());
             var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
             assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -560,7 +560,7 @@ class PasswordResetApiTest {
             PasswordResetApi.register(routes, sessionState(issuer, cookie));
         })) {
             SENT.clear();
-            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+            LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
             String raw = linkToken(SENT.getFirst());
             var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
             assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -575,7 +575,7 @@ class PasswordResetApiTest {
         String email = "session-unwired-" + RUN + "@example.com";
         String pid = user(email, null, null);
         SENT.clear();
-        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow());
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
         String raw = linkToken(SENT.getFirst());
         // `http` above is built on the shared `state`, whose issuer/cookie are null.
         var r = http.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));

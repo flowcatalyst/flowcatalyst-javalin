@@ -74,6 +74,13 @@ class CreateUserRequestNormalizer implements DenormalizerInterface, NormalizerIn
         elseif (\array_key_exists('enforcePasswordComplexity', $data) && $data['enforcePasswordComplexity'] === null) {
             $object->setEnforcePasswordComplexity(null);
         }
+        if (\array_key_exists('inviteRedirectUri', $data) && $data['inviteRedirectUri'] !== null) {
+            $object->setInviteRedirectUri($data['inviteRedirectUri']);
+            unset($data['inviteRedirectUri']);
+        }
+        elseif (\array_key_exists('inviteRedirectUri', $data) && $data['inviteRedirectUri'] === null) {
+            $object->setInviteRedirectUri(null);
+        }
         if (\array_key_exists('name', $data) && $data['name'] !== null) {
             $object->setName($data['name']);
             unset($data['name']);
@@ -125,6 +132,9 @@ class CreateUserRequestNormalizer implements DenormalizerInterface, NormalizerIn
         $dataArray['email'] = $data->getEmail();
         if ($data->isInitialized('enforcePasswordComplexity') && null !== $data->getEnforcePasswordComplexity()) {
             $dataArray['enforcePasswordComplexity'] = $data->getEnforcePasswordComplexity();
+        }
+        if ($data->isInitialized('inviteRedirectUri') && null !== $data->getInviteRedirectUri()) {
+            $dataArray['inviteRedirectUri'] = $data->getInviteRedirectUri();
         }
         $dataArray['name'] = $data->getName();
         if ($data->isInitialized('password') && null !== $data->getPassword()) {

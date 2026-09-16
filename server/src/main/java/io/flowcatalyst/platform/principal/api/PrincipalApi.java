@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ClientConfig;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
+import io.flowcatalyst.platform.auth.oauth.RedirectUriMatcher;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
@@ -11,6 +12,8 @@ import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.AnchorDomains;
 import io.flowcatalyst.platform.principal.ClientAccessGrant;
 import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
@@ -144,6 +147,7 @@ public final class PrincipalApi {
             AnchorDomains anchorDomains,
             PasswordResetEmailer passwordEmailer,
             InviteEmailer inviteEmailer,
+            OAuthClientRepository oauthClients,
             Notifier notifier,
             MfaService mfa,
             DeveloperSecrets developerSecrets,
@@ -160,6 +164,7 @@ public final class PrincipalApi {
             Objects.requireNonNull(anchorDomains, "anchorDomains");
             Objects.requireNonNull(passwordEmailer, "passwordEmailer");
             Objects.requireNonNull(inviteEmailer, "inviteEmailer");
+            Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(notifier, "notifier");
             Objects.requireNonNull(mfa, "mfa");
             Objects.requireNonNull(developerSecrets, "developerSecrets");
@@ -323,9 +328,10 @@ public final class PrincipalApi {
         var req = ctx.bodyAsClass(CreatePrincipalRequest.class);
         requireClientScopeForNonAnchor(ac, req.scope());
         Checks.requireUserAdmin(ac, req.clientId());
+        String inviteRedirect = resolveInviteRedirect(s, ac, req.inviteRedirectUri());
         var event = CreateUser.of(s.repo()).run(s.uow(), req.toCommand(), Auth.executionContext());
         String inviteLink = s.repo().findById(event.userId())
-                .map(p -> notifyNewUser(s, p, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault()))
+                .map(p -> notifyNewUser(s, p, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault(), inviteRedirect))
                 .orElse(null);
         ctx.status(201).json(new CreatePrincipalResponse(event.userId(), inviteLink));
     }
@@ -348,6 +354,7 @@ public final class PrincipalApi {
 
         requireClientScopeForNonAnchor(ac, derived.scope().name());
         Checks.requireUserAdmin(ac, derived.clientId());
+        String inviteRedirect = resolveInviteRedirect(s, ac, req.inviteRedirectUri());
         ExecutionContext ec = Auth.executionContext();
 
         if (derived.scope() == UserScope.PARTNER) {
@@ -369,7 +376,7 @@ public final class PrincipalApi {
                     .run(s.uow(), new GrantClientAccessCommand(event.userId(), derived.clientId()), ec);
         }
         Principal created = principal(s, event.userId());
-        String inviteLink = notifyNewUser(s, created, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault());
+        String inviteLink = notifyNewUser(s, created, req.password(), req.sendInvitationOrDefault(), req.returnInviteLinkOrDefault(), inviteRedirect);
         ctx.json(PrincipalResponse.from(created, null, inviteLink));
     }
 
@@ -435,7 +442,7 @@ public final class PrincipalApi {
                 return new BulkImportResult(row, email, "created", "created, but roles not applied: " + e.error().message());
             }
         }
-        s.repo().findById(userId).ifPresent(p -> notifyNewUser(s, p, null, true, false));
+        s.repo().findById(userId).ifPresent(p -> notifyNewUser(s, p, null, true, false, null));
         return new BulkImportResult(row, email, "created", null);
     }
 
@@ -755,15 +762,17 @@ public final class PrincipalApi {
     /// returned). Otherwise `!sendInvitation` suppresses all platform mail
     /// (invite and welcome alike); else a passwordless account gets the
     /// "set your password" invite, one created with a password the welcome.
-    /// The invite link is never logged.
-    private static String notifyNewUser(State s, Principal p, String password, boolean sendInvitation, boolean returnInviteLink) {
+    /// The invite link is never logged. `inviteRedirect` is the
+    /// already-validated redirect (or `null`) and rides on whichever mint
+    /// fires (§1a).
+    private static String notifyNewUser(State s, Principal p, String password, boolean sendInvitation, boolean returnInviteLink, String inviteRedirect) {
         if (p.userIdentity() == null || p.isFederated()) return null;
         String email = p.email() == null ? "" : p.email().trim();
         if (email.isEmpty()) return null;
         boolean passwordless = password == null || password.isEmpty();
         if (returnInviteLink && passwordless) {
             try {
-                return s.inviteEmailer().inviteLink(p);
+                return s.inviteEmailer().inviteLink(p, inviteRedirect);
             } catch (RuntimeException e) {
                 LOG.atWarn().setMessage("invite link mint failed")
                         .addKeyValue("principal", p.id())
@@ -780,7 +789,7 @@ public final class PrincipalApi {
         }
         try {
             if (passwordless) {
-                s.inviteEmailer().sendInvite(p);
+                s.inviteEmailer().sendInvite(p, inviteRedirect);
             } else {
                 s.notifier().accountCreated(email);
             }
@@ -791,6 +800,37 @@ public final class PrincipalApi {
                     .log();
         }
         return null;
+    }
+
+    /// `inviteRedirectUri` validation (app-managed-invitations.md §1a): runs
+    /// after the user-admin check and before any write, so a refused
+    /// redirect leaves nothing behind. `raw` null/blank → `null` (no
+    /// redirect). Otherwise the trimmed uri is accepted iff some OAuth
+    /// client reachable by the caller — active, not portal, allows
+    /// `authorization_code`, and either application-less for an
+    /// all-applications caller or one of its application ids reaches the
+    /// caller — has it among its `redirectUris` per [RedirectUriMatcher]
+    /// (wildcards included); otherwise 400 `INVITE_REDIRECT_URI_INVALID`.
+    private static String resolveInviteRedirect(State s, AuthContext ac, String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String uri = raw.trim();
+        boolean accepted = s.oauthClients().findAll().stream()
+                .filter(PrincipalApi::isReachableLoginClient)
+                .filter(c -> reachableByCaller(c, ac))
+                .anyMatch(c -> RedirectUriMatcher.matches(uri, c.redirectUris()));
+        if (!accepted) {
+            throw UseCaseException.validation("INVITE_REDIRECT_URI_INVALID",
+                    "inviteRedirectUri must match a registered redirect URI of a login OAuth client for an application you can access");
+        }
+        return uri;
+    }
+
+    private static boolean isReachableLoginClient(OAuthClient c) {
+        return c.active() && !c.isPortal() && c.allowsGrant("authorization_code");
+    }
+
+    private static boolean reachableByCaller(OAuthClient c, AuthContext ac) {
+        return c.applicationIds().isEmpty() ? ac.allApplications() : c.applicationIds().stream().anyMatch(ac::canAccessApplication);
     }
 
     /// The list query (spec §3): every parameter optional, matched in memory.
@@ -871,7 +911,7 @@ public final class PrincipalApi {
     /// Body of `POST /api/principals`. `sendInvitation` absent means `true`;
     /// `returnInviteLink` absent means `false` (app-managed-invitations §1).
     public record CreatePrincipalRequest(String email, String name, String scope, String clientId, String password, String idpType,
-                                         Boolean sendInvitation, Boolean returnInviteLink) {
+                                         Boolean sendInvitation, Boolean returnInviteLink, String inviteRedirectUri) {
         public CreateCommand toCommand() {
             return new CreateCommand(email, name, scope, clientId, password, idpType);
         }
@@ -894,7 +934,8 @@ public final class PrincipalApi {
     /// accepted and ignored (spec §3). `sendInvitation` absent means `true`;
     /// `returnInviteLink` absent means `false` (app-managed-invitations §1).
     public record CreateUserRequest(String email, String name, String password, String scope, String clientId,
-                                    Boolean enforcePasswordComplexity, Boolean sendInvitation, Boolean returnInviteLink) {
+                                    Boolean enforcePasswordComplexity, Boolean sendInvitation, Boolean returnInviteLink,
+                                    String inviteRedirectUri) {
         boolean sendInvitationOrDefault() {
             return sendInvitation == null || sendInvitation;
         }

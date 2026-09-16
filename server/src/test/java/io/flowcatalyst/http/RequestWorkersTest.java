@@ -118,16 +118,21 @@ class RequestWorkersTest {
     void aFullQueueIsRefusedWithoutRunningTheTaskAndCountsAsRejected() throws Exception {
         // bound = 8 * size; size=1 -> bound 8. One busy worker + 8 queued fills it exactly.
         try (var w = RequestWorkers.of(Map.of(Group.API_WRITE, 1))) {
+            var started = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var ran = new java.util.concurrent.atomic.AtomicInteger();
             assertThat(w.submit(Group.API_WRITE, () -> {
                 ran.incrementAndGet();
+                started.countDown();
                 try {
                     release.await();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
             })).isTrue();
+            // Until the worker has dequeued the blocking task it still occupies a
+            // queue slot, and the eighth fill below would be the one refused.
+            assertThat(started.await(5, java.util.concurrent.TimeUnit.SECONDS)).as("worker picked up the busy task").isTrue();
             for (int i = 0; i < 8; i++) {
                 assertThat(w.submit(Group.API_WRITE, ran::incrementAndGet)).isTrue();
             }

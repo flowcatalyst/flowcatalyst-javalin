@@ -33,6 +33,10 @@ class CreatePrincipalRequest extends \ArrayObject
     /**
      * @var string|null
      */
+    protected $inviteRedirectUri;
+    /**
+     * @var string|null
+     */
     protected $name;
     /**
      * @var string|null
@@ -126,6 +130,24 @@ class CreatePrincipalRequest extends \ArrayObject
     {
         $this->initialized['idpType'] = true;
         $this->idpType = $idpType;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getInviteRedirectUri(): ?string
+    {
+        return $this->inviteRedirectUri;
+    }
+    /**
+     * @param string|null $inviteRedirectUri
+     *
+     * @return self
+     */
+    public function setInviteRedirectUri(?string $inviteRedirectUri): self
+    {
+        $this->initialized['inviteRedirectUri'] = true;
+        $this->inviteRedirectUri = $inviteRedirectUri;
         return $this;
     }
     /**

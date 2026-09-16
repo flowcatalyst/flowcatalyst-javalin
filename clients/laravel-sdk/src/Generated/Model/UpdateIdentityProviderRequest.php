@@ -29,6 +29,12 @@ class UpdateIdentityProviderRequest extends \ArrayObject
      */
     protected $allowedRoleIds;
     /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     *
+     * @var string|null
+     */
+    protected $mappingScope;
+    /**
      * @var string|null
      */
     protected $name;
@@ -122,6 +128,28 @@ class UpdateIdentityProviderRequest extends \ArrayObject
     {
         $this->initialized['allowedRoleIds'] = true;
         $this->allowedRoleIds = $allowedRoleIds;
+        return $this;
+    }
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     *
+     * @return string|null
+     */
+    public function getMappingScope(): ?string
+    {
+        return $this->mappingScope;
+    }
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     *
+     * @param string|null $mappingScope
+     *
+     * @return self
+     */
+    public function setMappingScope(?string $mappingScope): self
+    {
+        $this->initialized['mappingScope'] = true;
+        $this->mappingScope = $mappingScope;
         return $this;
     }
     /**

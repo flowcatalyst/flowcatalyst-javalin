@@ -36,6 +36,15 @@ namespace FlowCatalyst\DTOs\Requests;
  * the platform never sends its own invite email in that case, since the
  * link can only be minted once. The returned link is a live bearer
  * credential — treat it exactly like a password and never log it.
+ *
+ * `inviteRedirectUri` sends the invitee to your application once they have
+ * set their password (and enrolled 2FA, if their domain requires it); their
+ * platform session is already established, so your OIDC sign-in goes
+ * straight through. It applies to both the platform-sent invite email and
+ * `returnInviteLink`. It must match a redirect URI registered on a login
+ * OAuth client of an application the caller can access (the
+ * `/oauth/authorize` matching rule, wildcards included) — otherwise the
+ * create is rejected with INVITE_REDIRECT_URI_INVALID and no user is made.
  */
 final class CreateUserRequest
 {
@@ -48,6 +57,7 @@ final class CreateUserRequest
         public readonly ?string $scope = null,
         public readonly ?bool $sendInvitation = null,
         public readonly ?bool $returnInviteLink = null,
+        public readonly ?string $inviteRedirectUri = null,
     ) {}
 
     /**
@@ -76,6 +86,9 @@ final class CreateUserRequest
         }
         if ($this->returnInviteLink !== null) {
             $payload['returnInviteLink'] = $this->returnInviteLink;
+        }
+        if ($this->inviteRedirectUri !== null) {
+            $payload['inviteRedirectUri'] = $this->inviteRedirectUri;
         }
         return $payload;
     }

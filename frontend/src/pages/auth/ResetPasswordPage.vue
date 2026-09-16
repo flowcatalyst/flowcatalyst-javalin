@@ -133,8 +133,8 @@ const onSubmit = handleSubmit(async (values) => {
 		);
 		if (result.status === "enrollment_required" && result.enrollToken) {
 			// Domain requires 2FA — set it up before finishing. TwoFactorSetup
-			// completes the session and redirects on its own; a portal
-			// invite's server-validated redirect is stashed for it to follow.
+			// completes the session and redirects on its own; an invite's
+			// server-validated redirect is stashed for it to follow.
 			if (result.redirectUri) setPostAuthRedirect(result.redirectUri);
 			enrollToken.value = result.enrollToken;
 			enrollMethods.value = result.allowedMethods ?? [];
@@ -142,8 +142,11 @@ const onSubmit = handleSubmit(async (values) => {
 			return;
 		}
 		if (result.redirectUri) {
-			// Portal invite: chain straight back into the portal's OAuth login
-			// (the redirect was validated server-side at invite time).
+			// Invite redirect (a portal's OAuth login, or the application that
+			// created the user via inviteRedirectUri) — validated server-side
+			// when the invite was minted. A platform session, when one was
+			// just established, lets that application's sign-in go straight
+			// through.
 			window.location.assign(result.redirectUri);
 			return;
 		}

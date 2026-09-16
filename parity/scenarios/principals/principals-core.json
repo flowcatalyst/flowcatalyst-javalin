@@ -181,6 +181,14 @@
       "expect": { "status": 201 },
       "capture": { "coreInviteId": "/id", "coreInviteLink": "/inviteLink", "coreInviteToken": "param:/inviteLink?token" } },
 
+    { "id": "invite-redirect-uri-invalid",
+      "why": "app-managed-invitations §1a: an inviteRedirectUri that matches no reachable OAuth client's redirect URI is refused before any write — 400 INVITE_REDIRECT_URI_INVALID, not a silently dropped value",
+      "request": { "method": "POST", "path": "/api/principals/users",
+                   "body": { "email": "parity-pcore-badredirect-${run}@example.test", "name": "Parity Core Bad Redirect",
+                             "scope": "CLIENT", "clientId": "${client.id}", "returnInviteLink": true,
+                             "inviteRedirectUri": "https://not-registered.example/callback" } },
+      "expect": { "status": 400 } },
+
     { "id": "invite-confirm-establishes-session",
       "why": "app-managed-invitations §4: confirming that INVITE token on a domain without 2FA signs the user in inline — sessionEstablished:true and a Set-Cookie fc_session the way login's does. This step's Set-Cookie overwrites the runner's cookie jar with the new user's session, so it must stay last in this file.",
       "request": { "method": "POST", "path": "/auth/password-reset/confirm",

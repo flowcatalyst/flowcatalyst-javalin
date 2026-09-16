@@ -894,6 +894,10 @@ export type CreateIdentityProviderRequest = {
      */
     code: string;
     /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
+    /**
      * Display name
      */
     name: string;
@@ -914,7 +918,7 @@ export type CreateIdentityProviderRequest = {
      * IDP type (INTERNAL or OIDC)
      */
     type: string;
-    [key: string]: unknown | string | Array<string> | Array<string> | boolean | undefined;
+    [key: string]: unknown | string | Array<string> | Array<string> | 'ANCHOR' | 'CLIENT' | boolean | undefined;
 };
 
 export type CreateIdpRoleMappingRequest = {
@@ -1023,6 +1027,7 @@ export type CreatePrincipalRequest = {
     clientId?: string;
     email: string;
     idpType?: string;
+    inviteRedirectUri?: string;
     name?: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -1184,6 +1189,7 @@ export type CreateUserRequest = {
     clientId?: string;
     email: string;
     enforcePasswordComplexity?: boolean;
+    inviteRedirectUri?: string;
     name: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -2898,6 +2904,10 @@ export type UpdateIdentityProviderRequest = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;
@@ -2909,7 +2919,7 @@ export type UpdateIdentityProviderRequest = {
      */
     primaryClientId?: string;
     syncRolesFromIdp?: boolean;
-    [key: string]: unknown | string | Array<string> | Array<string> | boolean | undefined;
+    [key: string]: unknown | string | Array<string> | Array<string> | 'ANCHOR' | 'CLIENT' | boolean | undefined;
 };
 
 export type UpdateMappingRequest = {
@@ -3616,6 +3626,10 @@ export type CreateIdentityProviderRequestWritable = {
      */
     code: string;
     /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
+    /**
      * Display name
      */
     name: string;
@@ -3636,7 +3650,7 @@ export type CreateIdentityProviderRequestWritable = {
      * IDP type (INTERNAL or OIDC)
      */
     type: string;
-    [key: string]: unknown | Array<string> | Array<string> | string | boolean | undefined;
+    [key: string]: unknown | Array<string> | Array<string> | string | 'ANCHOR' | 'CLIENT' | boolean | undefined;
 };
 
 export type CreateIdpRoleMappingRequestWritable = {
@@ -3717,6 +3731,7 @@ export type CreatePrincipalRequestWritable = {
     clientId?: string;
     email: string;
     idpType?: string;
+    inviteRedirectUri?: string;
     name?: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -3846,6 +3861,7 @@ export type CreateUserRequestWritable = {
     clientId?: string;
     email: string;
     enforcePasswordComplexity?: boolean;
+    inviteRedirectUri?: string;
     name: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -4741,6 +4757,10 @@ export type UpdateIdentityProviderRequestWritable = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    /**
+     * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
+     */
+    mappingScope?: 'ANCHOR' | 'CLIENT';
     name?: string;
     oidcClientId?: string;
     oidcClientSecretRef?: string;
@@ -4752,7 +4772,7 @@ export type UpdateIdentityProviderRequestWritable = {
      */
     primaryClientId?: string;
     syncRolesFromIdp?: boolean;
-    [key: string]: unknown | Array<string> | Array<string> | string | boolean | undefined;
+    [key: string]: unknown | Array<string> | Array<string> | 'ANCHOR' | 'CLIENT' | string | boolean | undefined;
 };
 
 export type UpdateMappingRequestWritable = {

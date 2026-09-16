@@ -2733,6 +2733,9 @@
           "idpType": {
             "type": "string"
           },
+          "inviteRedirectUri": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -3114,6 +3117,9 @@
           },
           "enforcePasswordComplexity": {
             "type": "boolean"
+          },
+          "inviteRedirectUri": {
+            "type": "string"
           },
           "name": {
             "type": "string"

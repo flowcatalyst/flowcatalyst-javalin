@@ -1027,6 +1027,7 @@ export type CreatePrincipalRequest = {
     clientId?: string;
     email: string;
     idpType?: string;
+    inviteRedirectUri?: string;
     name?: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -1188,6 +1189,7 @@ export type CreateUserRequest = {
     clientId?: string;
     email: string;
     enforcePasswordComplexity?: boolean;
+    inviteRedirectUri?: string;
     name: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -3729,6 +3731,7 @@ export type CreatePrincipalRequestWritable = {
     clientId?: string;
     email: string;
     idpType?: string;
+    inviteRedirectUri?: string;
     name?: string;
     password?: string;
     returnInviteLink?: boolean;
@@ -3858,6 +3861,7 @@ export type CreateUserRequestWritable = {
     clientId?: string;
     email: string;
     enforcePasswordComplexity?: boolean;
+    inviteRedirectUri?: string;
     name: string;
     password?: string;
     returnInviteLink?: boolean;

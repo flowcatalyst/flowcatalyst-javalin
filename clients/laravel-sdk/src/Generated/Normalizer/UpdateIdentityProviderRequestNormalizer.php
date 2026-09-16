@@ -72,6 +72,13 @@ class UpdateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
         elseif (\array_key_exists('allowedRoleIds', $data) && $data['allowedRoleIds'] === null) {
             $object->setAllowedRoleIds(null);
         }
+        if (\array_key_exists('mappingScope', $data) && $data['mappingScope'] !== null) {
+            $object->setMappingScope($data['mappingScope']);
+            unset($data['mappingScope']);
+        }
+        elseif (\array_key_exists('mappingScope', $data) && $data['mappingScope'] === null) {
+            $object->setMappingScope(null);
+        }
         if (\array_key_exists('name', $data) && $data['name'] !== null) {
             $object->setName($data['name']);
             unset($data['name']);
@@ -151,6 +158,9 @@ class UpdateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
                 $values_1[] = $value_1;
             }
             $dataArray['allowedRoleIds'] = $values_1;
+        }
+        if ($data->isInitialized('mappingScope') && null !== $data->getMappingScope()) {
+            $dataArray['mappingScope'] = $data->getMappingScope();
         }
         if ($data->isInitialized('name') && null !== $data->getName()) {
             $dataArray['name'] = $data->getName();

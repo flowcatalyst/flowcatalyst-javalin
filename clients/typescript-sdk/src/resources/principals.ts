@@ -113,6 +113,16 @@ export class PrincipalsResource {
 	 *
 	 * `inviteLink` is a live 72-hour bearer credential — treat it exactly
 	 * like a password and never log it.
+	 *
+	 * `inviteRedirectUri` sends the invitee to your application once they
+	 * have set their password (and enrolled 2FA, if their domain requires
+	 * it); their platform session is already established, so your
+	 * `/oauth/authorize` sign-in goes straight through. It applies to both
+	 * the platform-sent invite email and `returnInviteLink`. It must match a
+	 * redirect URI registered on a login OAuth client of an application the
+	 * caller can access (the `/oauth/authorize` matching rule, wildcards
+	 * included) — otherwise the request fails with
+	 * `INVITE_REDIRECT_URI_INVALID` and no user is created.
 	 */
 	createUser(data: CreateUserRequest): ResultAsync<PrincipalDto, SdkError> {
 		return this.client.request<PrincipalDto>((httpClient, headers) =>

@@ -71,6 +71,13 @@ class CreatePrincipalRequestNormalizer implements DenormalizerInterface, Normali
         elseif (\array_key_exists('idpType', $data) && $data['idpType'] === null) {
             $object->setIdpType(null);
         }
+        if (\array_key_exists('inviteRedirectUri', $data) && $data['inviteRedirectUri'] !== null) {
+            $object->setInviteRedirectUri($data['inviteRedirectUri']);
+            unset($data['inviteRedirectUri']);
+        }
+        elseif (\array_key_exists('inviteRedirectUri', $data) && $data['inviteRedirectUri'] === null) {
+            $object->setInviteRedirectUri(null);
+        }
         if (\array_key_exists('name', $data) && $data['name'] !== null) {
             $object->setName($data['name']);
             unset($data['name']);
@@ -122,6 +129,9 @@ class CreatePrincipalRequestNormalizer implements DenormalizerInterface, Normali
         $dataArray['email'] = $data->getEmail();
         if ($data->isInitialized('idpType') && null !== $data->getIdpType()) {
             $dataArray['idpType'] = $data->getIdpType();
+        }
+        if ($data->isInitialized('inviteRedirectUri') && null !== $data->getInviteRedirectUri()) {
+            $dataArray['inviteRedirectUri'] = $data->getInviteRedirectUri();
         }
         if ($data->isInitialized('name') && null !== $data->getName()) {
             $dataArray['name'] = $data->getName();

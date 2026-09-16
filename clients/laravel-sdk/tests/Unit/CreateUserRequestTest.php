@@ -63,4 +63,18 @@ final class CreateUserRequestTest extends TestCase
         self::assertTrue($payload['sendInvitation']);
         self::assertFalse($payload['returnInviteLink']);
     }
+
+    public function test_invite_redirect_uri_only_emitted_when_set(): void
+    {
+        $absent = (new CreateUserRequest(email: 'a@example.com', name: 'Alice'))->toArray();
+        self::assertArrayNotHasKey('inviteRedirectUri', $absent);
+
+        $set = (new CreateUserRequest(
+            email: 'a@example.com',
+            name: 'Alice',
+            returnInviteLink: true,
+            inviteRedirectUri: 'https://app.example.com/auth/callback',
+        ))->toArray();
+        self::assertSame('https://app.example.com/auth/callback', $set['inviteRedirectUri']);
+    }
 }

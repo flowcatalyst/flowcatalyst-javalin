@@ -143,6 +143,25 @@ the same day: frontend drawers verbatim, lockfile, SDK versions 0.11.20 /
 0.10.18, embedded SPA rebuilt. **Parity vs Go `c05e1ed`: 1,325 steps, 0
 DIFF, 0 ERROR** (a scope-required step added).
 
+**Invitees can be sent back to the calling application** (Go `5ce1668`,
+2026-09-16; spec `app-managed-invitations.md` §1a): `POST /api/principals`
+and `POST /api/principals/users` take an optional `inviteRedirectUri`,
+validated **before any write** with the `/oauth/authorize` matcher against
+the redirect URIs of OAuth clients the caller can reach (active, non-portal,
+`authorization_code`, serving an application the caller can access;
+application-less clients only for all-applications callers); anything else
+is 400 `INVITE_REDIRECT_URI_INVALID` and no user exists afterwards. The URI
+rides on the INVITE token for both delivery modes (`InviteEmailer` methods
+take it; `ResetLinks` mints with it), and the existing confirm → SPA redirect
+path carries the user home. `PrincipalApi.State` gains the
+`OAuthClientRepository` (one instance shared with the OAuth-client wiring).
+Synced verbatim from Go: lockfile (source `5ce1668`, 187 paths / 254
+operations unchanged), TS + Laravel SDK sources and versions 0.11.22 /
+0.10.20 (Go also bumped its own `java-sdk` copy to 0.0.6; ours stays 0.0.4
+until we cut a tag), `ResetPasswordPage.vue` + API types, embedded SPA
+rebuilt. **Parity vs Go `5ce1668`: 1,326 steps, 0 DIFF, 0 ERROR** (an
+unregistered-redirect step added to `principals-core`).
+
 **fcdev router provisioning checked** (owner question): `fcdev start`
 bootstraps the `fcdev-router` OAuth client + SERVICE/ANCHOR principal +
 `platform:router` role + `client_credentials` grant on every boot

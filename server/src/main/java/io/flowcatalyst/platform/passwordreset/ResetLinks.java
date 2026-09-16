@@ -61,8 +61,8 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
     }
 
     @Override
-    public void sendInvite(Principal p) {
-        sendInviteRedirect(p, null);
+    public void sendInvite(Principal p, String redirectUri) {
+        sendInviteRedirect(p, redirectUri);
     }
 
     public void sendInviteRedirect(Principal p, String redirectUri) {
@@ -78,8 +78,8 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
 
     /// The invite link without a mail — the admin hands it over.
     @Override
-    public String inviteLink(Principal p) {
-        return setPasswordLink(mint(p.id(), ResetToken.Purpose.INVITE, false, false, null));
+    public String inviteLink(Principal p, String redirectUri) {
+        return setPasswordLink(mint(p.id(), ResetToken.Purpose.INVITE, false, false, redirectUri));
     }
 
     // ── portal plane ───────────────────────────────────────────────────────
