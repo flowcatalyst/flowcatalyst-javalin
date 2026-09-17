@@ -146,14 +146,18 @@ class OidcTokenManager implements TokenProviderInterface
             $token = $body['access_token'];
             $expiresIn = $body['expires_in'] ?? 3600;
 
-            // Cache with 60 second buffer before expiry
-            $expiry = time() + $expiresIn - 60;
+            // Cache with a 60 second buffer before expiry, but never let a
+            // short-lived token (expires_in <= 60) cache for zero/negative
+            // seconds and refetch on every call: fall back to 90% of the
+            // token's lifetime, floored at 1 second.
+            $ttl = max(max($expiresIn - 60, (int) ($expiresIn * 0.9)), 1);
+            $expiry = time() + $ttl;
 
             // Store in Laravel cache
             $this->cache->put($this->cacheKey, [
                 'token' => $token,
                 'expiry' => $expiry,
-            ], $expiresIn - 60);
+            ], $ttl);
 
             // Store in memory
             $this->cachedToken = $token;
