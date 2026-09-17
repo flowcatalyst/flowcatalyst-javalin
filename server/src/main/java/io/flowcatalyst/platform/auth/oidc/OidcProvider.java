@@ -9,6 +9,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
 import io.flowcatalyst.platform.shared.json.Json;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.JsonNode;
 
 import java.io.IOException;
@@ -25,6 +26,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -61,6 +63,9 @@ public final class OidcProvider {
 
     public static final String SCOPES = "openid profile email";
 
+    private static final TypeReference<Map<String, Object>> PAYLOAD_TYPE = new TypeReference<>() {
+    };
+
     public sealed interface Verification permits Verified, Rejected {
     }
 
@@ -68,6 +73,19 @@ public final class OidcProvider {
     }
 
     public record Rejected(String reason) implements Verification {
+    }
+
+    /// What the code exchange returned: `idToken` empty when the IdP
+    /// answered without one; `accessToken` empty when the response carried
+    /// none. Neither string is logged or stored raw — the bridge decodes
+    /// `accessToken` (unverified, spec `docs/spec/oidc-logged-in-event.md`)
+    /// into the `UserLoggedIn` event's `federatedClaims.accessToken` and
+    /// discards the string itself.
+    public record ExchangeResult(Optional<String> idToken, Optional<String> accessToken) {
+        public ExchangeResult {
+            Objects.requireNonNull(idToken, "idToken");
+            Objects.requireNonNull(accessToken, "accessToken");
+        }
     }
 
     /// A token endpoint that did not hand back a usable response.
@@ -121,11 +139,12 @@ public final class OidcProvider {
 
     // ── finish ─────────────────────────────────────────────────────────────
 
-    /// The `id_token` from the code exchange; empty when the IdP answered
-    /// without one. Client authentication is `client_secret_basic`, with
-    /// one retry as `client_secret_post` when the IdP refuses the header
-    /// (what `golang.org/x/oauth2`'s auto-detection did in Go).
-    public Optional<String> exchange(String code, String codeVerifier, String redirectUri) throws ExchangeException {
+    /// The `id_token` and `access_token` from the code exchange, each empty
+    /// when the IdP's response did not carry one. Client authentication is
+    /// `client_secret_basic`, with one retry as `client_secret_post` when
+    /// the IdP refuses the header (what `golang.org/x/oauth2`'s
+    /// auto-detection did in Go).
+    public ExchangeResult exchange(String code, String codeVerifier, String redirectUri) throws ExchangeException {
         String form = "grant_type=authorization_code&code=" + enc(code) + "&redirect_uri=" + enc(redirectUri)
                 + "&code_verifier=" + enc(codeVerifier) + "&client_id=" + enc(config.clientId());
         HttpResponse<String> r = post(form, true);
@@ -137,10 +156,40 @@ public final class OidcProvider {
         }
         try {
             JsonNode body = Json.MAPPER.readTree(r.body());
-            JsonNode id = body.get("id_token");
-            return id == null || !id.isString() || id.asString().isEmpty() ? Optional.empty() : Optional.of(id.asString());
+            return new ExchangeResult(stringField(body, "id_token"), stringField(body, "access_token"));
         } catch (RuntimeException e) {
             throw new ExchangeException("token endpoint answered a body that is not JSON", e);
+        }
+    }
+
+    private static Optional<String> stringField(JsonNode body, String name) {
+        JsonNode v = body.get(name);
+        return v == null || !v.isString() || v.asString().isEmpty() ? Optional.empty() : Optional.of(v.asString());
+    }
+
+    /// The access token's payload, decoded **without** signature
+    /// verification (spec `docs/spec/oidc-logged-in-event.md`): `{}` unless
+    /// the token is a three-part JWT whose middle part is base64url-encoded
+    /// JSON — an opaque access token is common and is not an error. Never
+    /// used for anything but the `UserLoggedIn` event's informational
+    /// `federatedClaims.accessToken`; nothing here is verified or trusted.
+    public static Map<String, Object> decodeUnverifiedPayload(String accessToken) {
+        if (accessToken == null || accessToken.isEmpty()) {
+            return Map.of();
+        }
+        String[] parts = accessToken.split("\\.", -1);
+        if (parts.length != 3) {
+            return Map.of();
+        }
+        try {
+            byte[] json = Base64.getUrlDecoder().decode(parts[1]);
+            JsonNode node = Json.MAPPER.readTree(json);
+            if (!node.isObject()) {
+                return Map.of();
+            }
+            return Json.MAPPER.readValue(json, PAYLOAD_TYPE);
+        } catch (RuntimeException e) {
+            return Map.of();
         }
     }
 

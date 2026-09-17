@@ -6,6 +6,7 @@ import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.PlainJWT;
 import com.nimbusds.jwt.SignedJWT;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
@@ -29,6 +30,7 @@ import io.flowcatalyst.platform.principal.RoleAssignment;
 import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.seed.PlatformEventSchemas;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
@@ -64,6 +66,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -120,6 +123,9 @@ class OidcBridgeTest {
     private static final AtomicReference<Boolean> OMIT_ID_TOKEN = new AtomicReference<>(false);
     private static final AtomicReference<Map<String, String>> LAST_TOKEN_FORM = new AtomicReference<>();
     private static final AtomicReference<String> LAST_TOKEN_AUTH = new AtomicReference<>();
+    /// The next `access_token` the fake token endpoint returns; `null` keeps
+    /// the default opaque `"x"` (spec `docs/spec/oidc-logged-in-event.md` T3).
+    private static final AtomicReference<String> NEXT_ACCESS_TOKEN = new AtomicReference<>();
 
     // ── fixtures ──────────────────────────────────────────────────────────
     private static String oidcDomain;        // single-tenant, ANCHOR, role sync on, secret set
@@ -159,14 +165,15 @@ class OidcBridgeTest {
                 }
                 LAST_TOKEN_FORM.set(form);
                 LAST_TOKEN_AUTH.set(ctx.header("Authorization"));
+                String accessToken = NEXT_ACCESS_TOKEN.get() == null ? "x" : NEXT_ACCESS_TOKEN.get();
                 if (OMIT_ID_TOKEN.get()) {
-                    ctx.json(Map.of("access_token", "x", "token_type", "Bearer"));
+                    ctx.json(Map.of("access_token", accessToken, "token_type", "Bearer"));
                     return;
                 }
                 var jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(SIGN_WITH_ROGUE_KEY.get() ? "rogue" : idpKey.getKeyID()).build(),
                         NEXT_CLAIMS.get().build());
                 jwt.sign(new RSASSASigner(SIGN_WITH_ROGUE_KEY.get() ? rogueKey : idpKey));
-                ctx.json(Map.of("access_token", "x", "token_type", "Bearer", "id_token", jwt.serialize()));
+                ctx.json(Map.of("access_token", accessToken, "token_type", "Bearer", "id_token", jwt.serialize()));
             });
         });
         idpBase = "http://localhost:" + idp.port();
@@ -506,6 +513,115 @@ class OidcBridgeTest {
         }
     }
 
+    // ── UserLoggedIn event (spec docs/spec/oidc-logged-in-event.md) ─────────
+
+    @Test
+    void aSuccessfulOidcLoginEmitsExactlyOneLoggedInEventWithTheMethodAndProviderCode() {
+        String email = "login-evt-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+
+        String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
+        JsonNode data = onlyLoggedInEvent(userId);
+        assertThat(data.path("userId").asString()).isEqualTo(userId);
+        assertThat(data.path("loginMethod").asString()).isEqualTo("OIDC");
+        assertThat(data.path("identityProviderCode").asString()).isEqualTo("idp-oidc-" + RUN);
+    }
+
+    @Test
+    void federatedClaimsIdTokenCarriesACustomClaimAndNeverTheNonce() {
+        String email = "claim-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email).claim("department", "engineering");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+
+        String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
+        JsonNode idToken = onlyLoggedInEvent(userId).path("federatedClaims").path("idToken");
+        assertThat(idToken.path("department").asString()).as("a custom claim the fake IdP issued").isEqualTo("engineering");
+        assertThat(idToken.has("nonce")).as("nonce is JOSE plumbing, never carried into the event").isFalse();
+    }
+
+    @Test
+    void federatedClaimsAccessTokenIsTheJwtPayloadOrEmptyForAnOpaqueToken() throws Exception {
+        String jwtEmail = "at-jwt-" + RUN + "@" + oidcDomain;
+        emails.add(jwtEmail);
+        var jwtAccessToken = new PlainJWT(new JWTClaimsSet.Builder().claim("scope", "widgets:read").build());
+        NEXT_ACCESS_TOKEN.set(jwtAccessToken.serialize());
+        try {
+            Map<String, String> q = begin("domain=" + oidcDomain);
+            idTokenFor(q, jwtEmail);
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+            String userId = PRINCIPALS.findByEmail(jwtEmail).orElseThrow().id();
+            JsonNode accessToken = onlyLoggedInEvent(userId).path("federatedClaims").path("accessToken");
+            assertThat(accessToken.path("scope").asString()).isEqualTo("widgets:read");
+        } finally {
+            NEXT_ACCESS_TOKEN.set(null);
+        }
+
+        String opaqueEmail = "at-opaque-" + RUN + "@" + oidcDomain;
+        emails.add(opaqueEmail);
+        Map<String, String> q2 = begin("domain=" + oidcDomain);
+        idTokenFor(q2, opaqueEmail); // the fixture's default access_token, "x", is opaque
+        var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c");
+        assertThat(r2.statusCode()).as(r2.body()).isEqualTo(302);
+        String opaqueUserId = PRINCIPALS.findByEmail(opaqueEmail).orElseThrow().id();
+        JsonNode accessToken = onlyLoggedInEvent(opaqueUserId).path("federatedClaims").path("accessToken");
+        assertThat(accessToken.properties()).as("an opaque access token decodes to {}").isEmpty();
+    }
+
+    @Test
+    void flowcatalystClaimsRolesAndApplicationsReflectThisLoginsIdpRoleSync() {
+        String email = "claims-role-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email).claim("roles", List.of("Reader-" + RUN));
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+
+        String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
+        JsonNode claims = onlyLoggedInEvent(userId).path("flowcatalystClaims");
+        assertThat(strings(claims.path("roles"))).as("granted by this login's own IdP role sync").contains(roleAllowed);
+        assertThat(strings(claims.path("applications"))).as("the prefix before ':' in " + roleAllowed)
+                .contains(roleAllowed.substring(0, roleAllowed.indexOf(':')));
+        assertThat(strings(claims.path("clients"))).as("ANCHOR scope ⇒ the wildcard").containsExactly("*");
+    }
+
+    @Test
+    void aFailedLoginEmitsNoLoggedInEvent() {
+        String email = "nomatch-" + RUN + "@" + oidcDomain;
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email).claim("nonce", "not-the-nonce");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(json(r).get("error").asString()).isEqualTo("NONCE_MISMATCH");
+
+        assertThat(DB.fetch("SELECT id FROM msg_events WHERE type = ? AND data::text LIKE ?",
+                "platform:iam:user:logged-in", "%" + email + "%"))
+                .as("no login event for a login that never succeeded")
+                .isEmpty();
+    }
+
+    @Test
+    void theStoredEventValidatesAgainstTheSeededSchema() {
+        String email = "schema-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email).claim("department", "engineering").claim("roles", List.of("Reader-" + RUN));
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+
+        String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
+        JsonNode data = onlyLoggedInEvent(userId);
+        JsonNode schema = PlatformEventSchemas.all().get("platform:iam:user:logged-in");
+        assertThat(schema).as("platform:iam:user:logged-in must be seeded").isNotNull();
+        assertThat(schemaErrors(schema, data, "$")).as("stored event data vs its seeded schema").isEmpty();
+    }
+
     // ── /auth/oidc/session/end ─────────────────────────────────────────────
 
     @Test
@@ -584,6 +700,111 @@ class OidcBridgeTest {
 
     private static JsonNode json(HttpResponse<String> r) {
         return Json.MAPPER.readTree(r.body());
+    }
+
+    /// The one `platform:iam:user:logged-in` event stored for `userId` —
+    /// fails loudly if there isn't exactly one (T1's own assertion doubles
+    /// as the fixture every other UserLoggedIn test builds on).
+    private static JsonNode onlyLoggedInEvent(String userId) {
+        var rows = DB.fetch("SELECT data::text AS data FROM msg_events WHERE type = ? AND subject = ?",
+                "platform:iam:user:logged-in", "platform.user." + userId);
+        assertThat(rows).as("exactly one platform:iam:user:logged-in event for " + userId).hasSize(1);
+        return Json.MAPPER.readTree(rows.getFirst().get("data", String.class));
+    }
+
+    private static List<String> strings(JsonNode array) {
+        var out = new ArrayList<String>();
+        array.forEach(n -> out.add(n.asString()));
+        return out;
+    }
+
+    // ── a minimal structural draft-07 checker (T6) ──────────────────────────
+    //
+    // Only the keywords PlatformEventSchemas actually uses — type (plain or
+    // the [t, "null"] nullable pair), properties, required,
+    // additionalProperties, items, enum, oneOf — read straight off the seeded
+    // schema JsonNode, never a hand-duplicated list of expected fields, so a
+    // schema that starts requiring a different key genuinely fails this.
+
+    private static List<String> schemaErrors(JsonNode schema, JsonNode data, String path) {
+        var errors = new ArrayList<String>();
+        if (schema.has("oneOf")) {
+            for (JsonNode sub : schema.get("oneOf")) {
+                if (schemaErrors(sub, data, path).isEmpty()) {
+                    return List.of();
+                }
+            }
+            errors.add(path + ": matched none of oneOf");
+            return errors;
+        }
+        JsonNode typeNode = schema.get("type");
+        if (typeNode != null) {
+            var types = new ArrayList<String>();
+            if (typeNode.isArray()) {
+                typeNode.forEach(t -> types.add(t.stringValue()));
+            } else {
+                types.add(typeNode.stringValue());
+            }
+            if (types.stream().noneMatch(t -> matchesType(t, data))) {
+                errors.add(path + ": expected type " + types + ", got " + data.getNodeType());
+                return errors;
+            }
+        }
+        if (schema.has("enum")) {
+            boolean ok = false;
+            for (JsonNode e : schema.get("enum")) {
+                if (e.equals(data)) ok = true;
+            }
+            if (!ok) errors.add(path + ": value not in enum");
+        }
+        if (data.isObject()) {
+            JsonNode required = schema.get("required");
+            if (required != null) {
+                for (JsonNode req : required) {
+                    if (!data.has(req.stringValue())) {
+                        errors.add(path + "." + req.stringValue() + ": required property missing");
+                    }
+                }
+            }
+            JsonNode props = schema.get("properties");
+            var known = new HashSet<String>();
+            if (props != null) {
+                for (var e : props.properties()) {
+                    known.add(e.getKey());
+                    if (data.has(e.getKey())) {
+                        errors.addAll(schemaErrors(e.getValue(), data.get(e.getKey()), path + "." + e.getKey()));
+                    }
+                }
+            }
+            JsonNode additional = schema.get("additionalProperties");
+            if (additional != null && additional.isBoolean() && !additional.booleanValue()) {
+                for (var e : data.properties()) {
+                    if (!known.contains(e.getKey())) {
+                        errors.add(path + "." + e.getKey() + ": additional property not allowed");
+                    }
+                }
+            }
+        } else if (data.isArray() && schema.has("items")) {
+            JsonNode items = schema.get("items");
+            int i = 0;
+            for (JsonNode item : data) {
+                errors.addAll(schemaErrors(items, item, path + "[" + i + "]"));
+                i++;
+            }
+        }
+        return errors;
+    }
+
+    private static boolean matchesType(String t, JsonNode n) {
+        return switch (t) {
+            case "object" -> n.isObject();
+            case "array" -> n.isArray();
+            case "string" -> n.isString();
+            case "boolean" -> n.isBoolean();
+            case "integer", "number" -> n.isNumber();
+            case "null" -> n.isNull();
+            default -> false;
+        };
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────

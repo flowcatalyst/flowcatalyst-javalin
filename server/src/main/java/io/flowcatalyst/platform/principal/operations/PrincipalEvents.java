@@ -7,6 +7,7 @@ import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 
 import java.util.List;
+import java.util.Map;
 
 /// The principal aggregate's domain events (spec §8): the type strings,
 /// the source, the subject/group builders and one record per event. Every
@@ -37,6 +38,7 @@ public final class PrincipalEvents {
     public static final String CLIENT_ACCESS_REVOKED = "platform:iam:user:client-access-revoked";
     public static final String DEVELOPER_CREDENTIAL_SET = "platform:iam:user:developer-credential-set";
     public static final String DEVELOPER_CREDENTIAL_REVOKED = "platform:iam:user:developer-credential-revoked";
+    public static final String USER_LOGGED_IN = "platform:iam:user:logged-in";
     public static final String PRINCIPALS_SYNCED = "platform:iam:principals:synced";
 
     private PrincipalEvents() {
@@ -244,6 +246,71 @@ public final class PrincipalEvents {
         @Override
         public Object data() {
             return new UserOnly(userId);
+        }
+    }
+
+    /// `platform.user.{id}` — [UserLoggedIn]'s subject, deliberately the
+    /// "user" vocabulary rather than [#subjectFor(String)]'s "principal":
+    /// it matches the event type's own name (`platform:iam:user:logged-in`),
+    /// spec `docs/spec/oidc-logged-in-event.md`.
+    private static EventMetadata loggedInMetadata(ExecutionContext ec, String userId) {
+        String subject = EventConventions.buildSubject("platform", "user", userId);
+        return EventMetadata.of(ec, USER_LOGGED_IN, SOURCE, subject)
+                .withMessageGroup(EventConventions.buildMessageGroup("platform", "user", userId));
+    }
+
+    /// Emitted once, after a successful **OIDC** login's session token is
+    /// minted (spec `docs/spec/oidc-logged-in-event.md`) — password, 2FA and
+    /// passkey logins never emit this. Best-effort: a failure to emit is
+    /// logged and swallowed by the caller so the login itself never fails
+    /// because of it.
+    public record UserLoggedIn(EventMetadata metadata, String userId, String email, String loginMethod,
+                               String identityProviderCode, FlowcatalystClaims flowcatalystClaims,
+                               FederatedClaims federatedClaims) implements DomainEvent {
+
+        public static final String LOGIN_METHOD_OIDC = "OIDC";
+
+        public static UserLoggedIn of(ExecutionContext ec, String userId, String email, String identityProviderCode,
+                                      FlowcatalystClaims flowcatalystClaims, FederatedClaims federatedClaims) {
+            return new UserLoggedIn(loggedInMetadata(ec, userId), userId, email, LOGIN_METHOD_OIDC, identityProviderCode,
+                    flowcatalystClaims, federatedClaims);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(userId, email, loginMethod, identityProviderCode, flowcatalystClaims, federatedClaims);
+        }
+
+        private record Data(String userId, String email, String loginMethod, String identityProviderCode,
+                            FlowcatalystClaims flowcatalystClaims, FederatedClaims federatedClaims) {
+        }
+    }
+
+    /// [UserLoggedIn]'s FlowCatalyst claims: `roles` is the principal's role
+    /// set **after** this login's IdP role sync (the caller re-reads the
+    /// principal — never the pre-sync copy); `clients` is `["*"]` for an
+    /// anchor-scope principal, else its assigned (granted) client ids;
+    /// `applications` is the distinct, sorted set of role-name prefixes
+    /// before each role's first `:` (a role with no `:` contributes none).
+    public record FlowcatalystClaims(String email, String type, List<String> roles, List<String> clients,
+                                     List<String> applications) {
+        public FlowcatalystClaims {
+            roles = roles == null ? List.of() : List.copyOf(roles);
+            clients = clients == null ? List.of() : List.copyOf(clients);
+            applications = applications == null ? List.of() : List.copyOf(applications);
+        }
+    }
+
+    /// [UserLoggedIn]'s federated claims: the verified id_token's full claim
+    /// set (`idToken`, minus `nonce`/`at_hash`/`c_hash` — the OIDC bridge's
+    /// `IdTokenClaims` already strips them) and the access token's payload
+    /// decoded **without** verification (`accessToken`, `{}` for an opaque
+    /// token, see `OidcProvider.decodeUnverifiedPayload`). The raw token
+    /// strings never appear here.
+    public record FederatedClaims(Map<String, Object> idToken, Map<String, Object> accessToken) {
+        public FederatedClaims {
+            idToken = idToken == null ? Map.of() : Map.copyOf(idToken);
+            accessToken = accessToken == null ? Map.of() : Map.copyOf(accessToken);
         }
     }
 

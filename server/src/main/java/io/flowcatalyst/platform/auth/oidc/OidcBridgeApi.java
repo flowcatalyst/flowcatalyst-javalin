@@ -15,10 +15,15 @@ import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.principal.operations.CreateCommand;
 import io.flowcatalyst.platform.principal.operations.CreatePortalUser;
 import io.flowcatalyst.platform.principal.operations.CreatePortalUserCommand;
 import io.flowcatalyst.platform.principal.operations.CreateUser;
+import io.flowcatalyst.platform.principal.operations.OidcLogin;
+import io.flowcatalyst.platform.principal.operations.PrincipalEvents.FederatedClaims;
+import io.flowcatalyst.platform.principal.operations.PrincipalEvents.FlowcatalystClaims;
+import io.flowcatalyst.platform.principal.operations.RecordOidcLogin;
 import io.flowcatalyst.platform.principal.operations.SyncIdpRoles;
 import io.flowcatalyst.platform.principal.operations.SyncIdpRolesCommand;
 import io.flowcatalyst.platform.role.RoleRepository;
@@ -44,6 +49,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 /// The OIDC bridge, employee plane (`docs/spec/auth-identity.md` §4 with
 /// the §0.5 rulings): `GET /auth/oidc/login` starts a handshake and 302s
@@ -237,9 +243,9 @@ public final class OidcBridgeApi {
             mapping = r.mapping();
         }
 
-        Optional<String> idToken;
+        OidcProvider.ExchangeResult tokens;
         try {
-            idToken = provider.exchange(code, state.codeVerifier(), callbackUrl(ctx, s));
+            tokens = provider.exchange(code, state.codeVerifier(), callbackUrl(ctx, s));
         } catch (OidcProvider.ExchangeException e) {
             LOG.atWarn().setMessage("oidc code exchange failed")
                     .addKeyValue("issuer", provider.config().issuerUrl())
@@ -248,12 +254,12 @@ public final class OidcBridgeApi {
             HttpError.write(ctx, 500, "OIDC_EXCHANGE", "code exchange failed", Map.of());
             return;
         }
-        if (idToken.isEmpty()) {
+        if (tokens.idToken().isEmpty()) {
             HttpError.write(ctx, 400, "NO_ID_TOKEN", "IDP did not return id_token", Map.of());
             return;
         }
         IdTokenClaims claims;
-        switch (provider.verifyIdToken(idToken.get())) {
+        switch (provider.verifyIdToken(tokens.idToken().get())) {
             case OidcProvider.Rejected rej -> {
                 // Ruling Q3: the reason is for the log, not the browser.
                 LOG.atWarn().setMessage("oidc id_token rejected")
@@ -347,8 +353,50 @@ public final class OidcBridgeApi {
             HttpError.write(ctx, 500, "SESSION_MINT_FAILED", "session mint failed", Map.of());
             return;
         }
+        // spec docs/spec/oidc-logged-in-event.md: after the mint succeeds, before the
+        // redirect — a login that actually succeeded — and best-effort: a failure here
+        // must never change the login's outcome.
+        emitLoggedIn(s, principal, email, idp.id(), idp.code(), claims, tokens.accessToken().orElse(null));
         s.cookie().set(ctx, token);
         ctx.redirect(landing(state), 302);
+    }
+
+    /// Emits [io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserLoggedIn]
+    /// (spec `docs/spec/oidc-logged-in-event.md`) — OIDC logins only, never
+    /// the portal flow (which returns earlier) or a failed one (every error
+    /// branch above already returned). The principal is re-read so
+    /// `flowcatalystClaims.roles` reflects this login's IdP role sync, not
+    /// the copy loaded before it. Best-effort: logged and swallowed.
+    private static void emitLoggedIn(State s, Principal loggedIn, String email, String identityProviderId,
+                                     String identityProviderCode, IdTokenClaims claims, String accessToken) {
+        try {
+            Principal fresh = s.principals().findById(loggedIn.id()).orElse(loggedIn);
+            List<String> roles = fresh.roleNames();
+            List<String> clients = fresh.scope() == UserScope.ANCHOR ? List.of(Principal.ANCHOR_CLIENT_WILDCARD) : fresh.assignedClients();
+            var flowcatalystClaims = new FlowcatalystClaims(email, "USER", roles, clients, applicationPrefixesOf(roles));
+            var federatedClaims = new FederatedClaims(claims.rawClaims(), OidcProvider.decodeUnverifiedPayload(accessToken));
+            RecordOidcLogin.of(fresh.id(), identityProviderCode, flowcatalystClaims, federatedClaims)
+                    .run(s.uow(), new OidcLogin(email, identityProviderId), ExecutionContext.of(fresh.id()));
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("failed to emit UserLoggedIn event (login still succeeded)")
+                    .addKeyValue("principal", loggedIn.id())
+                    .setCause(e)
+                    .log();
+        }
+    }
+
+    /// The distinct, sorted `app` prefixes of every `app:role` name (spec
+    /// `docs/spec/oidc-logged-in-event.md`); a role with no `:` contributes
+    /// nothing.
+    static List<String> applicationPrefixesOf(List<String> roles) {
+        var prefixes = new TreeSet<String>();
+        for (String role : roles) {
+            int i = role.indexOf(':');
+            if (i > 0) {
+                prefixes.add(role.substring(0, i));
+            }
+        }
+        return List.copyOf(prefixes);
     }
 
     /// The employee-plane JIT (§4.7): the mapping that drove the login is
