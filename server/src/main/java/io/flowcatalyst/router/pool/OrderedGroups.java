@@ -179,9 +179,22 @@ final class OrderedGroups {
             // restores the broker's authority over it. This is not the Q1
             // ruling in disguise: BLOCK_ON_ERROR and NEXT_ON_ERROR govern what
             // a TERMINAL failure does to the group, and a deferral is not one.
-            case RETRY_IN_PLACE -> head.attempts() + 1 >= Pool.MAX_IN_PIPELINE_ATTEMPTS
-                    ? new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()))
-                    : new HeadFailure.RetryHead(head);
+            //
+            // R1 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
+            // a Deferred outcome naming a delay skips the budget entirely and
+            // returns the group on its FIRST occurrence — the target told us
+            // exactly how long to wait, so there is nothing to learn from
+            // retrying it here first, and the broker is where that wait
+            // belongs. A Deferred with no delay (delaySeconds == 0) falls
+            // through unchanged to the budget below, same as a RateLimited.
+            case RETRY_IN_PLACE -> {
+                if (outcome instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
+                    yield new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
+                }
+                yield head.attempts() + 1 >= Pool.MAX_IN_PIPELINE_ATTEMPTS
+                        ? new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()))
+                        : new HeadFailure.RetryHead(head);
+            }
             case RETURN_TO_BROKER ->
                     new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
             // R-57: terminal on the first attempt. NEXT_ON_ERROR carries on

@@ -1,6 +1,8 @@
 package io.flowcatalyst.router.queue.sqs;
 
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityRequest;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityResponse;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageResponse;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
@@ -27,11 +29,13 @@ final class FakeSqsClient implements SqsClient {
     private final List<ReceiveMessageRequest> receiveRequests = new ArrayList<>();
     private final List<DeleteMessageRequest> deleteRequests = new ArrayList<>();
     private final List<GetQueueAttributesRequest> attributesRequests = new ArrayList<>();
+    private final List<ChangeMessageVisibilityRequest> changeVisibilityRequests = new ArrayList<>();
 
     private Supplier<RuntimeException> receiveError;
     private RuntimeException deleteError;
     private Map<QueueAttributeName, String> attributes;
     private Supplier<RuntimeException> attributesError;
+    private RuntimeException changeVisibilityError;
 
     void enqueueReceive(ReceiveMessageResponse response) {
         receiveResponses.addLast(response);
@@ -43,6 +47,10 @@ final class FakeSqsClient implements SqsClient {
 
     void failDeleteWith(RuntimeException error) {
         this.deleteError = error;
+    }
+
+    void failChangeVisibilityWith(RuntimeException error) {
+        this.changeVisibilityError = error;
     }
 
     void queueAttributes(Map<QueueAttributeName, String> attributes) {
@@ -76,6 +84,10 @@ final class FakeSqsClient implements SqsClient {
         return deleteRequests;
     }
 
+    List<ChangeMessageVisibilityRequest> changeVisibilityRequests() {
+        return changeVisibilityRequests;
+    }
+
     List<GetQueueAttributesRequest> attributesRequests() {
         return attributesRequests;
     }
@@ -99,6 +111,15 @@ final class FakeSqsClient implements SqsClient {
             throw deleteError;
         }
         return DeleteMessageResponse.builder().build();
+    }
+
+    @Override
+    public ChangeMessageVisibilityResponse changeMessageVisibility(ChangeMessageVisibilityRequest request) {
+        changeVisibilityRequests.add(request);
+        if (changeVisibilityError != null) {
+            throw changeVisibilityError;
+        }
+        return ChangeMessageVisibilityResponse.builder().build();
     }
 
     @Override

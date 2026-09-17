@@ -849,6 +849,16 @@ Prometheus rather than busy-but-suppressed. **Q53.**
 Mapping to the wire-visible queue actions: **Ack** on 5, 7, 2″, 9; **Nack**
 on 8; nothing on 2′, 3b-flush, 6-cancel(IMMEDIATE), 10.
 
+**A deferral with a delay skips state 6 — a deliberate Java/Go difference
+(owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md` R1/R2).**
+A `Deferred` outcome carrying `delaySeconds > 0` no longer enters
+**Retrying / in backoff** at all: on its first occurrence it goes straight
+from state 4 (**Delivering**) to state 8 (**Nacked**), with `delay` set to
+exactly the requested `delaySeconds` — no `RetryPolicy` curve, no 60 s cap —
+for both the unordered path and the ordered-head path. A `Deferred` with
+`delaySeconds == 0` is unchanged and still enters state 6 on the existing
+`DEFERRED` curve, same as a `RateLimited` (429) outcome.
+
 ### 4.2 Tracker `Register` outcomes — `router/inflight.go:56-84`
 
 | Incoming copy vs. tracker | Outcome | Side effect |
@@ -1156,6 +1166,18 @@ the rate-limited counter only).
 | rate-limiter wait cancelled | (no outcome) | — | — | — | retry floor 5 s | (rateLimited if bucket was empty) | `pool.go:764-775` |
 | panic during mediation | (no outcome) | — | — | — | retry after 10 s | — | `pool.go:728-738` |
 
+**RULED (owner, 2026-09-17): a deferral with a delay is handed back, not
+retried in memory** (`docs/spec/router-deferral-handback.md`). The
+`Deferred` row above is Go's behaviour — the deferred curve, floored at N,
+capped at 60 s, retried in the pipeline with the entry kept and marked
+retrying. Java keeps that curve only for `delaySeconds == 0`; when the
+target names a delay, Java nacks once with exactly that delay (reason
+`"deferred"`) instead of retrying in place — see `Pool#runImmediate`
+(unordered) and `OrderedGroups#onHeadFailure` / `Pool#handleHeadFailure`
+(ordered head, which also carries the head's real delay rather than the
+fixed 10 s `ReturnGroup` delay — R2). No cap, no curve: a target asking for
+600 s gets 600 s, not ten in-pipeline attempts ~60 s apart.
+
 Effective per-attempt time budget for a dead 5xx target in prod:
 3 × (≤15 min) + 1 s + 2 s inside one `Mediate`, then ≥30 s pool backoff,
 repeated forever (no max attempts, no dead-letter) until the target answers
@@ -1280,7 +1302,7 @@ in the tree**.
 | Build | AWS region taken from the queue URL host (`sqs.<region>.amazonaws.com`), else SDK default chain; `Identifier()` = `queueName` or last URL segment; visibility = cfg or 30 when 0; long-poll 20 s |
 | Poll | `ReceiveMessage(Max=min(n,10), VisibilityTimeout, WaitTimeSeconds=20, all system & message attributes)`; empty → `nil,nil`. Per message: if `MessageId` is in the pending-delete map (acked within 15 min) → `DeleteMessage` immediately, skip; parse body JSON → `Message` (malformed/empty → `Ack` it, skip); remember `receipt → MessageId`; return `{ReceiptHandle, BrokerMessageID=MessageId, QueueIdentifier=name}`; `polled += n` |
 | Ack | forget `receipt`, `pendingDelete[MessageId]=now`; `DeleteMessage(receipt)`; `acked++` only on success |
-| Nack / Defer | **no-op** (counters only): the message stays invisible until its visibility timeout lapses, then is redelivered and deduped by the tracker (`sqs.go:256-276`). `delay` ignored by design |
+| Nack / Defer | **no-op** (counters only): the message stays invisible until its visibility timeout lapses, then is redelivered and deduped by the tracker (`sqs.go:256-276`). `delay` ignored by design — **Java differs, see below (owner ruling 2026-09-17)** |
 | ExtendVisibility | `ChangeMessageVisibility(secs)` (never called) |
 | Publish | `SendMessage(body=JSON(Message), MessageGroupId if set)`; **no `MessageDeduplicationId`** (a FIFO queue must have content-based dedup on, or publishes fail); returns `MessageId` |
 | PublishBatch | chunks of 10, entry ids = index; returns successes; error on any failed entry |
@@ -1325,6 +1347,27 @@ outcome (`ConsumerBuild.Missing`, `RouterManager.ConsumerFactory`):
 Postgres and NATS queues are always treated as existing — this ruling is SQS-
 specific, matching where Integral's lazy-creation behaviour actually lives.
 
+**Nack honours the delay — a deliberate Java/Go difference (owner ruling
+2026-09-17, `docs/spec/router-deferral-handback.md`).** Go's `Nack`/`Defer`
+are a no-op beyond their counters because Go retries a failing message
+in-process and never releases it to the broker while doing so — shortening
+SQS's own visibility timeout here would race that in-memory retry against a
+broker-driven redelivery of the same message. Java's pool now hands a
+deferral naming a delay straight back to the broker on its first occurrence
+(R1/R2, §4.1, §6.5) instead of retrying it in memory, so by the time
+`SqsQueue#nack` runs the router has already given up ownership —
+`QueueBroker#nack` removes the tracker entry before the call ever reaches
+here — and a redelivery once the delay elapses is a fresh delivery, not a
+concurrent duplicate. `SqsQueue#nack` now calls `ChangeMessageVisibility
+(queueUrl, receiptHandle, seconds)`: `seconds` is `delay` in whole seconds
+(`null`/negative → 0), clamped to SQS's 12-hour ceiling measured from the
+original poll (`receiptToMessageId` records when each outstanding receipt
+was polled; a receipt not found there — pruned, or never recorded — gets the
+full 12 hours). Best-effort per the `Acknowledger` contract: a failure (a
+stale receipt, `ReceiptHandleIsInvalid`) is logged at WARN and swallowed,
+and the message returns at its natural visibility timeout — the same
+outcome the old no-op always had. `nacked` still counts every call.
+
 ### 7.3 Postgres — `queue/postgres/postgres.go`
 
 The Java backend now connects from the queue URI like Go's `pgxpool.New(ctx,
@@ -1353,8 +1396,8 @@ CREATE INDEX IF NOT EXISTS idx_queue_visible
 | Aspect | Behaviour |
 |---|---|
 | Identity | `Identifier()` = `queueName`; one `pgxpool` per consumer and another per publisher |
-| Poll (claim) | `now`, `newVisibleAt = now + visibility` (cfg seconds, ≤0 → 30 s), one `pollUUID` per call. Claim set = rows of this queue with `visible_at <= now` for which **no other row of the same group key `COALESCE(message_group_id, id)` is visible (`visible_at <= now`) and earlier by `(created_at, id)`**, ordered by `(created_at, id)`, `LIMIT n`, `FOR UPDATE SKIP LOCKED`; claimed rows get `receipt_handle = pollUUID||':'||id`, `visible_at = newVisibleAt`, `receive_count+1`; returns `(id, payload)` → `{ReceiptHandle=pollUUID:id, BrokerMessageID=id, QueueIdentifier=name}`. A malformed payload **fails the whole poll** (`postgres.go:171-173`) — the row stays claimed until visibility lapses, then fails again (poison). **load-bearing or accident?** |
-| Ordering consequence | at most one message per group **per poll**; a claimed head (invisible) does **not** block its successors on the *next* poll, so cross-poll group ordering is not enforced by the broker |
+| Poll (claim) | `now`, `newVisibleAt = now + visibility` (cfg seconds, ≤0 → 30 s), one `pollUUID` per call. Claim set = rows of this queue with `visible_at <= now` for which **no other row of the same group key `COALESCE(message_group_id, id)` is visible (`visible_at <= now`) and earlier by `(created_at, id)`**, ordered by `(created_at, id)`, `LIMIT n`, `FOR UPDATE SKIP LOCKED`; claimed rows get `receipt_handle = pollUUID||':'||id`, `visible_at = newVisibleAt`, `receive_count+1`; returns `(id, payload)` → `{ReceiptHandle=pollUUID:id, BrokerMessageID=id, QueueIdentifier=name}`. A malformed payload **fails the whole poll** (`postgres.go:171-173`) — the row stays claimed until visibility lapses, then fails again (poison). **load-bearing or accident?** Java adds a second eligibility clause — **see below (owner ruling 2026-09-17)** |
+| Ordering consequence | at most one message per group **per poll**; a claimed head (invisible) does **not** block its successors on the *next* poll, so cross-poll group ordering is not enforced by the broker — **Java differs for a head returned with a delay, see below (owner ruling 2026-09-17)** |
 | Ack | `DELETE … WHERE receipt_handle=$1 AND queue_name=$2`; 0 rows → error "receipt handle not found" |
 | Nack / Defer | `receipt_handle=NULL, visible_at=now+delay` (nil → 0) |
 | ExtendVisibility | `visible_at = now + secs` (never called) |
@@ -1364,6 +1407,28 @@ CREATE INDEX IF NOT EXISTS idx_queue_visible
 | Healthy | `Ping` with 2 s timeout (never called) |
 | Stop | set stopped; close the pool |
 | Dedup interplay | broker id == app id → redeliveries always classify as `Redelivery`; `ExternalRequeue` impossible |
+
+**A returned (nacked-with-a-delay) head blocks its group across polls — a
+deliberate Java/Go difference (owner ruling 2026-09-17,
+`docs/spec/router-deferral-handback.md` R4).** Go's claim eligibility (and
+Java's, until now) only ever checked for an earlier row that is currently
+**visible** — a claimed, in-flight head never blocked its successors on a
+later poll either, so "cross-poll group ordering is not enforced" was
+equally true of both states. But a head **returned with a delay** (R1/R2:
+nacked rather than retried in memory) sits between those two states — not
+visible yet, but not claimed either — and the old rule let its successors
+overtake it, exactly the ordering violation an ordered group exists to
+prevent. Java's claim CTE gains a second `NOT EXISTS`: a row is ineligible
+while an earlier row of the same group key is `receipt_handle IS NULL AND
+visible_at > now` — nacked, not yet visible. A **claimed** earlier row
+(`receipt_handle IS NOT NULL`) still does not block, unchanged from today;
+only a nacked-with-delay row does. Pinned by
+`PostgresQueueTest#delayedHeadBlocksOnlyItsOwnGroupsSuccessor` (a delayed
+head blocks its group, not another group or an ungrouped row),
+`#claimedHeadStillDoesNotBlockItsGroup` (today's behaviour for a live claim
+is unchanged), and `#delayedHeadComesBackBeforeItsGroup` (once the delay
+elapses, the returned head is claimed first, not overtaken by its own
+successor).
 
 Default-broker bootstrap (`server/run.go:305-334,357-386`): when
 `FLOWCATALYST_CONFIG_URL` is empty and `FC_DEFAULT_BROKER=postgres`, the

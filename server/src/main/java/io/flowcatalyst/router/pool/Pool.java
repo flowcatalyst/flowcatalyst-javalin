@@ -376,10 +376,15 @@ public final class Pool implements AutoCloseable {
 
     /// One IMMEDIATE message, retried in place for as long as it takes.
     ///
-    /// Retryable outcomes **never touch the broker** here (§3.6): the message
-    /// stays inside the pipeline, which is what keeps its position and its
-    /// attempt count. That is the invariant Go's guardrail test pins, and it
-    /// is deliberately *not* how ordered heads behave — see [#runDrainer].
+    /// Most retryable outcomes **never touch the broker** here (§3.6): the
+    /// message stays inside the pipeline, which is what keeps its position
+    /// and its attempt count. That is the invariant Go's guardrail test pins,
+    /// and it is deliberately *not* how ordered heads behave — see
+    /// [#runDrainer]. Two outcomes are handed back at once instead: a target
+    /// this process could not reach at all (unchanged, §3.6 item 5), and —
+    /// owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md` R1 —
+    /// a deferral naming a delay, which goes straight to the broker with
+    /// that exact delay rather than being retried in memory.
     private void runImmediate(QueuedMessage initial) {
         var message = initial;
         while (true) {
@@ -413,6 +418,18 @@ public final class Pool implements AutoCloseable {
                 return;
             }
             var failure = (Attempt.Failed) attempt;
+
+            // R1 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
+            // a deferral that named a delay goes straight back to the broker on
+            // its first occurrence — the exact delay asked for, no RetryPolicy
+            // curve, no 60 s cap. A deferral with no delay (delaySeconds == 0)
+            // falls through unchanged to the existing in-memory DEFERRED curve
+            // below: the target didn't ask for anything specific, so there is
+            // nothing here to hand back early.
+            if (failure.outcome() instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
+                broker.nack(message, Duration.ofSeconds(deferred.delaySeconds()), "deferred");
+                return;
+            }
             var delay = backoffFor(message, failure.outcome());
 
             // Nothing was learned about the message — the target could not be
@@ -574,9 +591,19 @@ public final class Pool implements AutoCloseable {
                 yield sleepBackoff(group, backoffFor(retry.head(), outcome));
             }
             case HeadFailure.ReturnGroup returned -> {
-                // The target is down. Nothing here is wrong; the broker holds
-                // them until it or the target gives way.
-                broker.nack(returned.head(), REJECTED_NACK_DELAY, "target-unavailable");
+                // R2 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
+                // the head carries its REAL delay — the exact deferral it asked
+                // for (R1), or the same backoff the unordered path would use
+                // for this outcome — never the fixed REJECTED_NACK_DELAY.
+                // Siblings are untried and carry no information about the
+                // outcome, so they keep the fixed delay regardless.
+                if (outcome instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
+                    broker.nack(returned.head(), Duration.ofSeconds(deferred.delaySeconds()), "deferred");
+                } else {
+                    // The target is down. Nothing here is wrong; the broker
+                    // holds it until it or the target gives way.
+                    broker.nack(returned.head(), backoffFor(returned.head(), outcome), "target-unavailable");
+                }
                 returned.siblings().forEach(sibling ->
                         broker.nack(sibling, REJECTED_NACK_DELAY, "target-unavailable"));
                 yield false;

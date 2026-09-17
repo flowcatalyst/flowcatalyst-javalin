@@ -440,6 +440,109 @@ class PostgresQueueTest {
         }
     }
 
+    // --- R4: a delayed group head blocks its group (owner ruling 2026-09-17) --
+
+    @Test
+    @DisplayName("T9: a group head nacked with a delay blocks its own group's successor, but not another group or an ungrouped row")
+    void delayedHeadBlocksOnlyItsOwnGroupsSuccessor() throws InterruptedException {
+        String queue = freshQueue();
+        String group = "grp-" + UUID.randomUUID();
+        String m1 = "m1-" + UUID.randomUUID();
+        long now = Instant.now().getEpochSecond();
+        insert(queue, m1, group, io.flowcatalyst.platform.shared.json.Json.write(message(m1, group)), now, now);
+
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
+            var first = (Consumer.PollResult.Delivered) consumer.poll(10);
+            QueuedMessage claimed = first.messages().stream()
+                    .filter(m -> m.brokerMessageId().equals(m1)).findFirst().orElseThrow();
+
+            consumer.nack(claimed, Duration.ofSeconds(600));
+
+            // Published only now: before the group's rule mattered, they
+            // would already have been claimed by the first poll above.
+            String m2 = "m2-" + UUID.randomUUID();
+            String otherGroup = "other-grp-" + UUID.randomUUID();
+            String otherGroupRow = "other-" + UUID.randomUUID();
+            String ungroupedRow = "ungrouped-" + UUID.randomUUID();
+            insert(queue, m2, group, io.flowcatalyst.platform.shared.json.Json.write(message(m2, group)), now, now + 1);
+            insert(queue, otherGroupRow, otherGroup,
+                    io.flowcatalyst.platform.shared.json.Json.write(message(otherGroupRow, otherGroup)), now, now);
+            insert(queue, ungroupedRow, null,
+                    io.flowcatalyst.platform.shared.json.Json.write(message(ungroupedRow, null)), now, now);
+
+            var second = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(second.messages()).extracting(QueuedMessage::brokerMessageId)
+                    .as("m2 is behind a head nacked with a delay; another group and an ungrouped row are unaffected")
+                    .containsExactlyInAnyOrder(otherGroupRow, ungroupedRow);
+        }
+    }
+
+    @Test
+    @DisplayName("T10: a claimed (not nacked) head still does not block its group — today's behaviour, unchanged")
+    void claimedHeadStillDoesNotBlockItsGroup() throws InterruptedException {
+        String queue = freshQueue();
+        String group = "grp-" + UUID.randomUUID();
+        String m1 = "m1-" + UUID.randomUUID();
+        String m2 = "m2-" + UUID.randomUUID();
+        long now = Instant.now().getEpochSecond();
+        insert(queue, m1, group, io.flowcatalyst.platform.shared.json.Json.write(message(m1, group)), now, now);
+        insert(queue, m2, group, io.flowcatalyst.platform.shared.json.Json.write(message(m2, group)), now, now + 1);
+
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
+            var first = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(first.messages()).singleElement().extracting(QueuedMessage::brokerMessageId).isEqualTo(m1);
+
+            // m1 stays claimed (receipt_handle set) — never nacked. A CLAIMED,
+            // invisible head does not block its group on a later poll.
+            var second = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(second.messages()).singleElement().extracting(QueuedMessage::brokerMessageId).isEqualTo(m2);
+        }
+    }
+
+    @Test
+    @DisplayName("T11: once a delayed head becomes visible again, it is claimed first, not overtaken by its own group")
+    void delayedHeadComesBackBeforeItsGroup() throws InterruptedException {
+        String queue = freshQueue();
+        String group = "grp-" + UUID.randomUUID();
+        String m1 = "m1-" + UUID.randomUUID();
+        String m2 = "m2-" + UUID.randomUUID();
+        long now = Instant.now().getEpochSecond();
+        insert(queue, m1, group, io.flowcatalyst.platform.shared.json.Json.write(message(m1, group)), now, now);
+
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
+            var first = (Consumer.PollResult.Delivered) consumer.poll(10);
+            QueuedMessage claimed = first.messages().getFirst();
+            consumer.nack(claimed, Duration.ofSeconds(600));
+            insert(queue, m2, group, io.flowcatalyst.platform.shared.json.Json.write(message(m2, group)), now, now + 1);
+
+            // The delay has not elapsed: m2 stays blocked (T9).
+            var stillBlocked = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(stillBlocked.messages()).isEmpty();
+
+            // The delay has elapsed — moved directly rather than waiting it
+            // out, since the assertion is about ORDER, not timing.
+            setVisibleAt(queue, m1, now - 10);
+
+            var afterVisible = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(afterVisible.messages()).singleElement()
+                    .extracting(QueuedMessage::brokerMessageId)
+                    .as("the returned head comes back first — not overtaken by its own successor")
+                    .isEqualTo(m1);
+        }
+    }
+
+    private static void setVisibleAt(String queue, String id, long visibleAt) {
+        try (Connection conn = DS.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "UPDATE queue_messages SET visible_at = ? WHERE queue_name = ? AND id = ?")) {
+            ps.setLong(1, visibleAt);
+            ps.setString(2, queue);
+            ps.setString(3, id);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     @Test
     @DisplayName("concurrent consumers never claim the same message twice")
     void concurrentConsumersDoNotDoubleClaim() throws InterruptedException {

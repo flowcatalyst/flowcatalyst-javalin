@@ -357,20 +357,57 @@ class SqsQueueTest {
         return deleteFailures(captured).stream().filter(e -> e.getThrowableProxy() != null).toList();
     }
 
-    // --- nack -----------------------------------------------------------------
+    // --- nack: honours the delay (R3, owner ruling 2026-09-17) ----------------
 
     @Test
-    @DisplayName("nack is a no-op beyond the counter — it never deletes or changes visibility")
-    void nackIsANoOp() throws InterruptedException {
+    @DisplayName("T6: nack changes the message's visibility to the requested delay, and never deletes")
+    void nackChangesVisibilityToTheRequestedDelay() throws InterruptedException {
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"))
                 .build());
         SqsQueue sqs = queue();
         QueuedMessage qm = delivered(sqs.poll(10)).get(0);
 
-        sqs.nack(qm, Duration.ofSeconds(5));
+        sqs.nack(qm, Duration.ofSeconds(600));
 
+        assertThat(client.changeVisibilityRequests()).singleElement().satisfies(r -> {
+            assertThat(r.receiptHandle()).isEqualTo("receipt-1");
+            assertThat(r.visibilityTimeout()).isEqualTo(600);
+        });
         assertThat(client.deleteRequests()).isEmpty();
+        assertThat(sqs.metrics()).get().extracting(QueueMetrics::nacked).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("T7: the delay is clamped to SQS's 12-hour ceiling, measured from the original poll")
+    void nackClampsToTwelveHoursSinceTheOriginalPoll() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"))
+                .build());
+        SqsQueue sqs = queue();
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        clock.advance(Duration.ofSeconds(200));
+
+        sqs.nack(qm, Duration.ofSeconds(50_000));
+
+        assertThat(client.changeVisibilityRequests()).singleElement()
+                .extracting(r -> r.visibilityTimeout())
+                .as("43200 - 200s already elapsed since the poll, not the raw 50,000s requested")
+                .isEqualTo(43_200 - 200);
+    }
+
+    @Test
+    @DisplayName("T8: nack never throws when ChangeMessageVisibility fails, and still counts")
+    void nackNeverThrowsOnChangeVisibilityFailure() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"))
+                .build());
+        SqsQueue sqs = queue();
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        client.failChangeVisibilityWith(SdkClientException.create("boom"));
+
+        sqs.nack(qm, Duration.ofSeconds(30)); // must not throw
+
         assertThat(sqs.metrics()).get().extracting(QueueMetrics::nacked).isEqualTo(1L);
     }
 

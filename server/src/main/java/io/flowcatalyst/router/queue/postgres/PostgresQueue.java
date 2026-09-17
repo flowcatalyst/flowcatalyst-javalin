@@ -43,10 +43,15 @@ import java.util.concurrent.atomic.AtomicLong;
 /// One SQL statement (a `WITH … FOR UPDATE SKIP LOCKED` claim CTE feeding an
 /// `UPDATE … RETURNING`) both selects and claims a batch, so two consumers
 /// racing the same table never claim the same row. Eligibility is
-/// `visible_at <= now` and "earliest visible row in its group
-/// (`COALESCE(message_group_id, id)`)" — a claimed (invisible) head does not
-/// block its successors on a *later* poll, so cross-poll group ordering is
-/// not enforced by the broker (§7.3 "Ordering consequence").
+/// `visible_at <= now` and "earliest eligible row in its group
+/// (`COALESCE(message_group_id, id)`)" — a **claimed** (invisible, still
+/// holding a receipt handle) head does not block its successors on a *later*
+/// poll, so an in-flight claim's cross-poll ordering is still not enforced
+/// by the broker (§7.3 "Ordering consequence"). A **returned** head does:
+/// since R4 (owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md`),
+/// a row nacked with a delay (`receipt_handle IS NULL AND visible_at > now`)
+/// also blocks its group's later rows until it becomes visible again or is
+/// claimed — a deliberate Java/Go difference; Go's claim has no such clause.
 public final class PostgresQueue implements Consumer, Publisher {
 
     private static final Logger log = LoggerFactory.getLogger(PostgresQueue.class);
@@ -64,6 +69,21 @@ public final class PostgresQueue implements Consumer, Publisher {
                         WHERE e.queue_name = m.queue_name
                           AND COALESCE(e.message_group_id, e.id) = COALESCE(m.message_group_id, m.id)
                           AND e.visible_at <= ?
+                          AND (e.created_at < m.created_at
+                               OR (e.created_at = m.created_at AND e.id < m.id))
+                     )
+                 AND NOT EXISTS (
+                       -- R4 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
+                       -- an earlier row of the same group returned with a
+                       -- delay (nacked — receipt_handle cleared — but not yet
+                       -- visible) blocks this one. A CLAIMED earlier row
+                       -- (receipt_handle IS NOT NULL) is deliberately excluded
+                       -- here — that case is unchanged (see class doc).
+                       SELECT 1 FROM queue_messages e
+                        WHERE e.queue_name = m.queue_name
+                          AND COALESCE(e.message_group_id, e.id) = COALESCE(m.message_group_id, m.id)
+                          AND e.receipt_handle IS NULL
+                          AND e.visible_at > ?
                           AND (e.created_at < m.created_at
                                OR (e.created_at = m.created_at AND e.id < m.id))
                      )
@@ -268,10 +288,11 @@ public final class PostgresQueue implements Consumer, Publisher {
             ps.setString(1, queueName);
             ps.setLong(2, now);
             ps.setLong(3, now);
-            ps.setInt(4, max);
-            ps.setString(5, receipt);
-            ps.setLong(6, newVisibleAt);
-            ps.setString(7, queueName);
+            ps.setLong(4, now);
+            ps.setInt(5, max);
+            ps.setString(6, receipt);
+            ps.setLong(7, newVisibleAt);
+            ps.setString(8, queueName);
 
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {

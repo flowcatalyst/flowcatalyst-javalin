@@ -133,6 +133,13 @@ class OrderedGroupsTest {
     ///
     /// The old `targetUnavailable()` default returned `false` for all three,
     /// so that is precisely what happened.
+    ///
+    /// `Deferred` here carries `delaySeconds == 0` — a target that asked for
+    /// more time but named no specific delay, which R1 (owner ruling
+    /// 2026-09-17, `docs/spec/router-deferral-handback.md`) leaves on this
+    /// same budget-then-return path. A `Deferred` naming a delay is a
+    /// different case entirely — [#deferredWithADelayReturnsTheGroupImmediately]
+    /// — since R1 returns it on the FIRST attempt, not after the budget.
     @ParameterizedTest(name = "{0} at attempt 2 never ACKs the group")
     @MethodSource("neverRan")
     @DisplayName("an outcome that never ran the message cannot consume the group")
@@ -169,8 +176,32 @@ class OrderedGroupsTest {
                 Arguments.of("CircuitOpen", new MediationOutcome.CircuitOpen(30), true),
                 // Our own limiter deferred it; the target never heard of it.
                 Arguments.of("RateLimited", new MediationOutcome.RateLimited(5), false),
-                // The target answered "not now" (429 / Retry-After).
-                Arguments.of("Deferred", new MediationOutcome.Deferred(429, 5, "slow down"), false));
+                // The target answered "ack:false" but named no delay — R1
+                // leaves this case on the ordinary budget-then-return path.
+                Arguments.of("Deferred(no delay)", new MediationOutcome.Deferred(200, 0, "not ready"), false));
+    }
+
+    @Test
+    @DisplayName("R1: a deferral naming a delay returns the group on the FIRST attempt, not after the budget")
+    void deferredWithADelayReturnsTheGroupImmediately() {
+        // The owner ruling this pins (2026-09-17,
+        // docs/spec/router-deferral-handback.md): unlike every other
+        // RETRY_IN_PLACE outcome, a Deferred carrying delaySeconds > 0 never
+        // occupies the head's retry budget at all — the target told us
+        // exactly how long to wait, so the group goes back to the broker on
+        // attempt zero.
+        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
+        var head = groups.pollHead("orders").orElseThrow();
+        assertThat(head.attempts()).isZero();
+
+        var failure = groups.onHeadFailure(head, new MediationOutcome.Deferred(200, 600, "come back later"));
+
+        assertThat(failure)
+                .as("RetryHead here would mean the mutant that restores the in-memory retry survived")
+                .isInstanceOf(HeadFailure.ReturnGroup.class);
+        var returned = (HeadFailure.ReturnGroup) failure;
+        assertThat(returned.head()).isEqualTo(head);
+        assertThat(returned.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
     }
 
     @Test

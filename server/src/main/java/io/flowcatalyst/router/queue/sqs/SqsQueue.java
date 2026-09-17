@@ -12,6 +12,7 @@ import org.slf4j.spi.LoggingEventBuilder;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
@@ -69,6 +70,11 @@ public final class SqsQueue implements Consumer {
     static final int RECEIPT_MAP_PRUNE_THRESHOLD = 1000;
 
     static final int DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 30;
+
+    /// SQS's own ceiling on a message's total invisibility, in whole seconds
+    /// (12 hours) — [#nack]'s clamp (R3, owner ruling 2026-09-17,
+    /// `docs/spec/router-deferral-handback.md`).
+    static final long MAX_VISIBILITY_SECONDS = 43_200;
 
     /// AWS's maximum `WaitTimeSeconds` — also the router's expected poll
     /// block time (`docs/spec/router.md` §3.2).
@@ -415,23 +421,66 @@ public final class SqsQueue implements Consumer {
         }
     }
 
-    /// Deliberately a no-op beyond the counter (§7.2 Nack/Defer row). The
-    /// router retries failed messages in-process — it keeps a failing
-    /// message in its group's pipeline with its own backoff rather than
-    /// releasing it back to the broker — so this must NOT shorten SQS's
-    /// visibility timeout. Doing so would let SQS redeliver the message (to
-    /// this consumer or another replica) while the router is still retrying
-    /// it in memory, producing a concurrent duplicate delivery. Instead the
-    /// message simply stays invisible until its own visibility timeout
-    /// lapses naturally; any redelivery that follows is either deduplicated
-    /// by broker `MessageId` upstream (the in-flight tracker swaps the fresh
-    /// receipt handle onto the copy it is already tracking) or, once this
-    /// consumer has since acked the message, short-circuited by
-    /// [#pendingDelete] in [#poll]. `delay` is ignored by design; the
-    /// counter exists for observability only.
+    /// Honours the delay via `ChangeMessageVisibility` (R3, owner ruling
+    /// 2026-09-17, `docs/spec/router-deferral-handback.md`).
+    ///
+    /// This used to be a no-op: the router retried a failing message
+    /// in-process, keeping it in its group's pipeline with its own backoff
+    /// rather than releasing it to the broker, so shortening SQS's own
+    /// visibility timeout here would have let SQS redeliver the message
+    /// while this process was still retrying it — a concurrent duplicate.
+    /// That is no longer the shape of every call site: a deferral naming a
+    /// delay (R1/R2) is now handed back on its *first* occurrence rather
+    /// than retried, and every [io.flowcatalyst.router.pool.Broker#nack]
+    /// call is a hand-back regardless — [io.flowcatalyst.router.manager.QueueBroker#nack]
+    /// removes the tracker entry before this method ever runs. By the time
+    /// this call happens the router has already given up ownership, so a
+    /// redelivery once the delay elapses is a fresh delivery, not a
+    /// duplicate of a retry still running here.
+    ///
+    /// `delay` is floored at zero and clamped to [#MAX_VISIBILITY_SECONDS],
+    /// measured from when this consumer first polled the receipt (SQS counts
+    /// its own ceiling from the original receive, not from this call) —
+    /// [#receiptToMessageId] carries that instant; a receipt already pruned
+    /// or never recorded gets the full ceiling. Best-effort, per the
+    /// [io.flowcatalyst.router.queue.Acknowledger] contract: a failure (a
+    /// stale receipt, `ReceiptHandleIsInvalid`) is logged at WARN and
+    /// swallowed, and the message returns at its natural visibility timeout —
+    /// the same outcome this method always had. `nacked` counts every call
+    /// whether or not the broker confirmed it, same as [#ack].
     @Override
     public void nack(QueuedMessage message, Duration delay) {
-        nacked.incrementAndGet();
+        try {
+            long seconds = (delay == null || delay.isNegative()) ? 0 : delay.toSeconds();
+            long clamped = Math.min(seconds, remainingVisibilitySeconds(message.receiptHandle()));
+            client.changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
+                    .queueUrl(queueUrl)
+                    .receiptHandle(message.receiptHandle())
+                    .visibilityTimeout((int) clamped)
+                    .build());
+        } catch (RuntimeException e) {
+            transportFailure("sqs ChangeMessageVisibility failed", e).addKeyValue("message_id", message.id()).log();
+        } finally {
+            nacked.incrementAndGet();
+        }
+    }
+
+    /// How much of SQS's [#MAX_VISIBILITY_SECONDS] ceiling `receiptHandle`
+    /// has left, counted from when it was polled. A receipt not currently in
+    /// [#receiptToMessageId] (pruned, or never recorded because the delivery
+    /// carried no `MessageId`) gets the full ceiling — there is nothing here
+    /// to say it should be any shorter.
+    private long remainingVisibilitySeconds(String receiptHandle) {
+        Instant polledAt;
+        synchronized (mapLock) {
+            var mapping = receiptToMessageId.get(receiptHandle);
+            polledAt = mapping == null ? null : mapping.polledAt();
+        }
+        if (polledAt == null) {
+            return MAX_VISIBILITY_SECONDS;
+        }
+        long elapsed = Duration.between(polledAt, Instant.now(clock)).toSeconds();
+        return Math.max(0, MAX_VISIBILITY_SECONDS - elapsed);
     }
 
     @Override

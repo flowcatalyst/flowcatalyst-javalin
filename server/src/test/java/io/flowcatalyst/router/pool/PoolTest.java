@@ -101,14 +101,17 @@ class PoolTest {
         // §3.6's invariant, and the one Go's guardrail test pins: a retryable
         // outcome keeps the message here, holding its place and its attempt
         // count, rather than racing our retry against a redelivery.
-        // Deferred, not ErrorProcess: ErrorProcess is now always
-        // RETURN_TO_BROKER (R-57 moved the 5xx-that-retries-in-place
-        // boundary to ErrorConfig.rejected, which is terminal on one
-        // attempt instead). Deferred is still a RETRY_IN_PLACE outcome, so
-        // it still pins this invariant.
+        // RateLimited, not ErrorProcess or a delay-bearing Deferred:
+        // ErrorProcess is now always RETURN_TO_BROKER (R-57 moved the
+        // 5xx-that-retries-in-place boundary to ErrorConfig.rejected, which
+        // is terminal on one attempt instead), and a Deferred naming a delay
+        // is now handed back on its first occurrence (R1, owner ruling
+        // 2026-09-17, docs/spec/router-deferral-handback.md) rather than
+        // retried here. RateLimited is still a RETRY_IN_PLACE outcome that
+        // R1 does not touch, so it still pins this invariant.
         mediator.script("m1",
-                new MediationOutcome.Deferred(200, 30, "not ready"),
-                new MediationOutcome.Deferred(200, 30, "not ready"),
+                new MediationOutcome.RateLimited(30),
+                new MediationOutcome.RateLimited(30),
                 MediationOutcome.Success.of(200));
 
         pool(4, 0).submit(immediate("m1"));
@@ -116,7 +119,61 @@ class PoolTest {
         await(() -> broker.acked.contains("m1"));
         assertThat(broker.nacked).isEmpty();
         assertThat(mediator.attempts("m1")).isEqualTo(3);
-        assertThat(metrics.transients.get()).isEqualTo(2);
+        assertThat(metrics.rateLimited.get()).isEqualTo(2);
+    }
+
+    // ── Deferral hand-back (R1/R2, docs/spec/router-deferral-handback.md) ──
+
+    @Test
+    @DisplayName("T1: an IMMEDIATE deferral with a delay is handed back once, promptly, with that exact delay")
+    void deferralWithDelayIsHandedBackOnce() {
+        // If this ever regressed to the old in-memory retry, the mediator
+        // would be called ten times (MAX_IN_PIPELINE_ATTEMPTS) before any
+        // nack — "exactly one call" is the assertion that pins R1's "on its
+        // first occurrence", not just "eventually nacked".
+        mediator.answer("m1", new MediationOutcome.Deferred(200, 600, "come back later"));
+
+        pool(4, 0).submit(immediate("m1"));
+
+        await(() -> broker.nacked.containsKey("m1"));
+        assertThat(mediator.attempts("m1")).isOne();
+        assertThat(broker.nacked.get("m1")).isEqualTo(Duration.ofSeconds(600));
+        assertThat(broker.nackReasons.get("m1")).isEqualTo("deferred");
+        assertThat(broker.acked).isEmpty();
+    }
+
+    @Test
+    @DisplayName("T2: the deferral delay is not routed through backoffFor's 60 s cap")
+    void deferralDelayIsNotCapped() {
+        // FAST's DEFERRED curve caps at 2ms in this suite — if the delay were
+        // routed through backoffFor (the RetryPolicy curve) instead of used
+        // verbatim, this would come back as that tiny capped value, not 600s.
+        mediator.answer("m1", new MediationOutcome.Deferred(200, 600, "come back later"));
+
+        pool(4, 0).submit(immediate("m1"));
+
+        await(() -> broker.nacked.containsKey("m1"));
+        assertThat(broker.nacked.get("m1"))
+                .as("the exact requested delay, uncapped and uncurved")
+                .isEqualTo(Duration.ofSeconds(600));
+    }
+
+    @Test
+    @DisplayName("T3: a deferral with no delay is unchanged — still retried in memory on the DEFERRED curve")
+    void deferralWithNoDelayIsUnchanged() {
+        // R1 only changes delaySeconds > 0. delaySeconds == 0 must still take
+        // more than one mediation call before any nack — the pre-existing
+        // in-pipeline retry — or this assertion would see a premature nack.
+        mediator.script("m1",
+                new MediationOutcome.Deferred(200, 0, "not ready"),
+                new MediationOutcome.Deferred(200, 0, "not ready"),
+                MediationOutcome.Success.of(200));
+
+        pool(4, 0).submit(immediate("m1"));
+
+        await(() -> broker.acked.contains("m1"));
+        assertThat(mediator.attempts("m1")).isEqualTo(3);
+        assertThat(broker.nacked).isEmpty();
     }
 
     @Test
@@ -429,6 +486,46 @@ class PoolTest {
         assertThat(broker.acked).isEmpty();
         // Straight back, without spending the rejection budget first.
         assertThat(mediator.attempts("m0")).isOne();
+    }
+
+    @Test
+    @DisplayName("T5: an ordered ReturnGroup for an unavailable target uses the backoff delay, not the fixed 10s")
+    void orderedReturnGroupUsesBackoffDelay() {
+        // FAST's delivery curve at the head's first attempt is its own first
+        // within-burst spacing (1ms) — any value other than the fixed
+        // REJECTED_NACK_DELAY (10s) pins that backoffFor is actually being
+        // consulted for the head, rather than a hard-coded delay.
+        mediator.always("m0", new MediationOutcome.ErrorProcess(503, 30, "unavailable"));
+        var p = pool(2, 0);
+
+        p.submit(ordered("g", "m0", DispatchMode.BLOCK_ON_ERROR));
+
+        await(() -> broker.nacked.containsKey("m0"));
+        assertThat(broker.nacked.get("m0"))
+                .as("backoffFor's own delivery-curve value, not the fixed REJECTED_NACK_DELAY")
+                .isEqualTo(Duration.ofMillis(1))
+                .isNotEqualTo(Pool.REJECTED_NACK_DELAY);
+    }
+
+    @Test
+    @DisplayName("T4: an ordered head's deferral with a delay returns the whole group with the head's real delay")
+    void orderedHeadDeferralReturnsGroupWithRealDelay() {
+        // Exactly one mediation call, ever: restoring the old RetryHead path
+        // (or reverting the head's nack to REJECTED_NACK_DELAY) both survive
+        // a weaker assertion — this pins the delay AND the single call AND
+        // that the siblings never got a chance to run.
+        mediator.answer("m0", new MediationOutcome.Deferred(200, 600, "come back later"));
+        var p = pool(2, 0);
+
+        IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+
+        await(() -> broker.nacked.size() == 3);
+        assertThat(mediator.attempts("m0")).isOne();
+        assertThat(broker.acked).isEmpty();
+        assertThat(broker.nacked.get("m0")).isEqualTo(Duration.ofSeconds(600));
+        assertThat(broker.nacked.get("m1")).isEqualTo(Pool.REJECTED_NACK_DELAY);
+        assertThat(broker.nacked.get("m2")).isEqualTo(Pool.REJECTED_NACK_DELAY);
+        assertThat(mediator.delivered).as("siblings are never delivered").containsOnly("m0");
     }
 
     @Test
