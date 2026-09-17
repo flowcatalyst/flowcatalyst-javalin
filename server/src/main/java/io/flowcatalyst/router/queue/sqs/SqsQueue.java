@@ -281,6 +281,14 @@ public final class SqsQueue implements Consumer {
         return identifier;
     }
 
+    /// True (R5, `docs/spec/router-deferral-handback.md`): [#nack]'s
+    /// `ChangeMessageVisibility` call (R3) really does hold the message back
+    /// for `delay`.
+    @Override
+    public boolean honoursDelayedReturn() {
+        return true;
+    }
+
     @Override
     public PollResult poll(int max) throws InterruptedException {
         if (stopped) {

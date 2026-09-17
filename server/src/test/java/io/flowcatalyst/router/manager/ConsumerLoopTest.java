@@ -547,6 +547,11 @@ class ConsumerLoopTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     };
 
     /// Keeps the pool at capacity for as long as the test needs it.
@@ -762,6 +767,11 @@ class ConsumerLoopTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public Optional<QueueMetrics> metrics() {
             return Optional.empty();
         }
@@ -834,6 +844,11 @@ class ConsumerLoopTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override

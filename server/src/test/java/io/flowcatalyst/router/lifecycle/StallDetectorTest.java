@@ -197,6 +197,11 @@ class StallDetectorTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
             if (failing) {
                 throw new IllegalStateException("broker unreachable");

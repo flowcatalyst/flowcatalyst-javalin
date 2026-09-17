@@ -137,6 +137,11 @@ class RouterEventsTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
     }

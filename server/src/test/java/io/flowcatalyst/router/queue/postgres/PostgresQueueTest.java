@@ -544,6 +544,14 @@ class PostgresQueueTest {
     }
 
     @Test
+    @DisplayName("T14: Postgres answers true — a nack here really does hold the row back, and R4 blocks its group")
+    void honoursDelayedReturnIsTrue() throws InterruptedException {
+        try (PostgresQueue consumer = new PostgresQueue(DS, freshQueue(), Duration.ofSeconds(30))) {
+            assertThat(consumer.honoursDelayedReturn()).isTrue();
+        }
+    }
+
+    @Test
     @DisplayName("concurrent consumers never claim the same message twice")
     void concurrentConsumersDoNotDoubleClaim() throws InterruptedException {
         String queue = freshQueue();

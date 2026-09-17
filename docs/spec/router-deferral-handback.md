@@ -80,8 +80,34 @@ The claim eligibility gains one condition: a row is not claimable while an
   are unchanged. Only a nacked-with-delay row blocks.
 - Ungrouped rows are their own group key, so they are unaffected.
 
-### R5 — NATS: no code change in this unit
-Findings recorded for the owner (decision pending): JetStream here is one
+### R5 — NATS keeps the in-memory deferral (owner ruling 2026-09-17, second unit)
+R1's hand-back applies only when the message's broker **honours a delayed
+return**. NATS does not, so on NATS a `Deferred` with a delay keeps the
+pre-R1 behaviour: in-memory retry on the `DEFERRED` curve and its
+`MAX_IN_PIPELINE_ATTEMPTS` budget, both paths.
+
+- `Consumer` gains an **abstract** member (no default — CLAUDE.md: every
+  backend must have an opinion), e.g. `boolean honoursDelayedReturn()`:
+  `SqsQueue` true, `PostgresQueue` true, `NatsQueue` false. Every other
+  implementation (test fakes included) must answer explicitly.
+- `pool/Broker` gains an **abstract** `boolean honoursDelayedReturn(QueuedMessage)`;
+  `QueueBroker` answers from the message's consumer (by `queueId`); an
+  unregistered queue answers `false` (keep it in memory rather than nack
+  into a skipped hand-back).
+- R1's condition on both paths becomes `delaySeconds > 0 &&
+  broker.honoursDelayedReturn(message)`. How `OrderedGroups.onHeadFailure`
+  learns it is the implementer's choice (parameter or pre-decided by `Pool`).
+- R2 is unchanged: when a NATS head's budget is exhausted and the group is
+  returned, a delay-bearing deferral's head still carries its exact delay.
+
+| # | Assert | Mutant |
+|---|---|---|
+| T12 | unordered: broker answers `false`, target defers 600 s → more than one mediation call before any nack, and no nack on the first deferral | drop `honoursDelayedReturn` from the condition |
+| T13 | ordered: broker answers `false`, head defers 600 s → `RetryHead` on attempt 0 (not `ReturnGroup`) | same |
+| T14 | `NatsQueue` answers `false`; `SqsQueue` and `PostgresQueue` answer `true`; `QueueBroker` answers from the message's consumer and `false` for an unregistered queue | flip NATS to `true`; `QueueBroker` returning a constant |
+
+#### Findings behind R5 (recorded 2026-09-17)
+JetStream here is one
 durable WorkQueue consumer with `max-ack-pending` 1000 and no per-group
 subject, so the broker enforces **no** group ordering — a delayed head's
 successors are delivered regardless (already true of every nack today). And

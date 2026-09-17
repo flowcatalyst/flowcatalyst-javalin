@@ -330,6 +330,11 @@ class DeliverySeamTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
             nacked.put(message.receiptHandle(), delay);
         }

@@ -149,9 +149,20 @@ final class OrderedGroups {
 
     /// Decides — and applies — what a failed head does to its group.
     ///
-    /// @param head    the message just attempted, carrying the attempts
-    ///                already made
-    /// @param outcome what the delivery reported
+    /// @param head                 the message just attempted, carrying the
+    ///                             attempts already made
+    /// @param outcome              what the delivery reported
+    /// @param honoursDelayedReturn whether the broker that will receive a
+    ///                             hand-back actually honours the delay on
+    ///                             it — R5 (owner ruling 2026-09-17,
+    ///                             `docs/spec/router-deferral-handback.md`,
+    ///                             second unit). `false` (NATS) keeps a
+    ///                             delay-bearing [MediationOutcome.Deferred]
+    ///                             on the ordinary budget-then-return path
+    ///                             below, same as a `Deferred` naming no
+    ///                             delay; `true` (SQS/Postgres) is R1's
+    ///                             skip-the-budget hand-back on the first
+    ///                             attempt.
     ///
     /// Unavailability skips straight to returning the group: no number of
     /// retries makes a down target reachable, and the broker is the better
@@ -162,7 +173,7 @@ final class OrderedGroups {
     /// "retry" (ErrorProcess, 502/503/504) versus "give up" (ErrorConfig,
     /// REJECTED) before the pool ever sees the outcome, rather than this
     /// method re-deciding it by counting attempts.
-    HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome) {
+    HeadFailure onHeadFailure(QueuedMessage head, MediationOutcome outcome, boolean honoursDelayedReturn) {
         return switch (outcome.disposition()) {
             // Nothing was learned about the message, or the target is fine
             // and asked us to wait. The group keeps its head — but not for
@@ -186,9 +197,13 @@ final class OrderedGroups {
             // exactly how long to wait, so there is nothing to learn from
             // retrying it here first, and the broker is where that wait
             // belongs. A Deferred with no delay (delaySeconds == 0) falls
-            // through unchanged to the budget below, same as a RateLimited.
+            // through unchanged to the budget below, same as a RateLimited —
+            // and so does a delay-bearing Deferred whose broker does NOT
+            // honour a delayed return (R5: NATS) — nothing is gained by
+            // handing it back if the wait will not actually happen.
             case RETRY_IN_PLACE -> {
-                if (outcome instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
+                if (outcome instanceof MediationOutcome.Deferred deferred
+                        && deferred.delaySeconds() > 0 && honoursDelayedReturn) {
                     yield new HeadFailure.ReturnGroup(head, takeAndReleaseGroup(head.group()));
                 }
                 yield head.attempts() + 1 >= Pool.MAX_IN_PIPELINE_ATTEMPTS

@@ -148,6 +148,11 @@ class MissingQueueReconfigureTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     };
 
     private static final class RecordingWarnings implements Warnings {

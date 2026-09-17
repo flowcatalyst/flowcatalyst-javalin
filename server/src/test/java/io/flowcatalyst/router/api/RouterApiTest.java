@@ -83,6 +83,11 @@ class RouterApiTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     };
 
     private static WarningStore warnings;
@@ -647,6 +652,11 @@ class RouterApiTest {
 
         @Override
         public void release(QueuedMessage message) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
         }
         };
         var isolatedTracker = new InFlightTracker(CLOCK);
@@ -2106,6 +2116,11 @@ class RouterApiTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public Optional<QueueMetrics> metrics() {
             return Optional.ofNullable(queueMetrics);
         }
@@ -2225,6 +2240,11 @@ class RouterApiTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public Optional<QueueMetrics> metrics() {
             return Optional.empty();
         }
@@ -2260,6 +2280,11 @@ class RouterApiTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override

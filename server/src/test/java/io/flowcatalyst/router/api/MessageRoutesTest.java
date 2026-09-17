@@ -352,6 +352,11 @@ class MessageRoutesTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public Optional<QueueMetrics> metrics() {
             return Optional.empty();
         }

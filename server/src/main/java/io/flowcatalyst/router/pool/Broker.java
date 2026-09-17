@@ -83,4 +83,18 @@ public interface Broker {
     default boolean owns(QueuedMessage message) {
         return true;
     }
+
+    /// Whether a [#nack] of `message` will actually be honoured by the
+    /// backend that delivered it — R5 (owner ruling 2026-09-17,
+    /// `docs/spec/router-deferral-handback.md`, second unit).
+    ///
+    /// Deliberately **abstract, no default**: a caller deciding whether to
+    /// hand a deferral straight back to the broker (R1) or keep retrying it
+    /// in memory needs a real answer, and a wrong default is invisible until
+    /// the one backend that disagrees hits it in production. [QueueBroker]
+    /// answers from `message`'s own consumer; an implementation with no
+    /// concept of a backend (nothing to ask) has to pick a side explicitly
+    /// too — `false` is the safe one, since it only ever keeps a message in
+    /// memory rather than nacking it into a hand-back nothing is honouring.
+    boolean honoursDelayedReturn(QueuedMessage message);
 }

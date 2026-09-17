@@ -269,6 +269,15 @@ public final class PostgresQueue implements Consumer, Publisher {
         return queueName;
     }
 
+    /// True (R5, `docs/spec/router-deferral-handback.md`): [#nack]'s
+    /// `visible_at` update really does hold the row back for `delay`, and R4
+    /// additionally blocks a delayed group head's successors from claiming
+    /// ahead of it.
+    @Override
+    public boolean honoursDelayedReturn() {
+        return true;
+    }
+
     @Override
     public PollResult poll(int max) throws InterruptedException {
         if (Thread.interrupted()) {

@@ -411,6 +411,12 @@ class SqsQueueTest {
         assertThat(sqs.metrics()).get().extracting(QueueMetrics::nacked).isEqualTo(1L);
     }
 
+    @Test
+    @DisplayName("T14: SQS answers true — a nack here really does hold the message back")
+    void honoursDelayedReturnIsTrue() {
+        assertThat(queue().honoursDelayedReturn()).isTrue();
+    }
+
     // --- a queue that does not exist yet (owner ruling 2026-09-11) --------
 
     @Test

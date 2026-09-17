@@ -425,8 +425,13 @@ public final class Pool implements AutoCloseable {
             // curve, no 60 s cap. A deferral with no delay (delaySeconds == 0)
             // falls through unchanged to the existing in-memory DEFERRED curve
             // below: the target didn't ask for anything specific, so there is
-            // nothing here to hand back early.
-            if (failure.outcome() instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
+            // nothing here to hand back early. R5 (same doc, second unit):
+            // handing back is only correct when the broker that delivered this
+            // message actually honours the delay (SQS/Postgres) — NATS does
+            // not, so a delay-bearing deferral on NATS also falls through to
+            // the in-memory curve, the pre-R1 behaviour.
+            if (failure.outcome() instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0
+                    && broker.honoursDelayedReturn(message)) {
                 broker.nack(message, Duration.ofSeconds(deferred.delaySeconds()), "deferred");
                 return;
             }
@@ -579,7 +584,13 @@ public final class Pool implements AutoCloseable {
     }
 
     private boolean handleHeadFailure(String group, QueuedMessage message, MediationOutcome outcome) {
-        var failure = groups.onHeadFailure(message, outcome);
+        // R5 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md,
+        // second unit): OrderedGroups decides RetryHead vs ReturnGroup for a
+        // delay-bearing Deferred based on whether the broker that will get
+        // the hand-back actually honours the delay — asked once here rather
+        // than threading the broker itself into a class that otherwise never
+        // touches it.
+        var failure = groups.onHeadFailure(message, outcome, broker.honoursDelayedReturn(message));
         capacityChanged();
         decided(group, message, outcome, failure);
         return switch (failure) {

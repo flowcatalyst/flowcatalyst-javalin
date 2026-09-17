@@ -351,6 +351,19 @@ public final class NatsQueue implements Consumer {
         return identifier;
     }
 
+    /// False (R5, owner ruling 2026-09-17,
+    /// `docs/spec/router-deferral-handback.md`): this stream is one durable
+    /// WorkQueue consumer with `max-ack-pending` 1000 and no per-group
+    /// subject, so the broker enforces no group ordering — a nack never
+    /// blocks a delayed head's successors the way R4 blocks Postgres — and
+    /// each hand-back spends one of `max-deliver`'s limited redeliveries.
+    /// Deliberately unchanged from pre-R1 behaviour: a delay-bearing
+    /// deferral stays on the in-memory `DEFERRED` retry curve.
+    @Override
+    public boolean honoursDelayedReturn() {
+        return false;
+    }
+
     @Override
     public PollResult poll(int max) throws InterruptedException {
         if (Thread.interrupted()) {

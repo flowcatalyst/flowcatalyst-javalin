@@ -177,6 +177,31 @@ class PoolTest {
     }
 
     @Test
+    @DisplayName("T12: a deferral with a delay is NOT handed back when the broker does not honour a delayed return")
+    void deferralWithDelayStaysInMemoryWhenBrokerDoesNotHonourIt() {
+        // R5 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md,
+        // second unit): honoursDelayedReturn=false is the NATS shape. If R1's
+        // condition dropped that check, this would nack "m1" for 600s on the
+        // very first attempt and never call the mediator again — the same
+        // shape T1 pins for the SQS/Postgres case, deliberately inverted here.
+        broker.honoursDelayedReturn = false;
+        mediator.script("m1",
+                new MediationOutcome.Deferred(200, 600, "come back later"),
+                new MediationOutcome.Deferred(200, 600, "come back later"),
+                MediationOutcome.Success.of(200));
+
+        pool(4, 0).submit(immediate("m1"));
+
+        await(() -> broker.acked.contains("m1"));
+        assertThat(mediator.attempts("m1"))
+                .as("more than one mediation call before any nack: the deferral stayed in memory")
+                .isEqualTo(3);
+        assertThat(broker.nacked)
+                .as("never handed back to the broker at all")
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("an unexpected exception is a retry, not a lost message")
     void unexpectedExceptionRetries() {
         // The policy Go's panic recovery guarded, kept without the
@@ -1129,6 +1154,11 @@ class PoolTest {
         /// flips this to simulate a rival broker copy having claimed the
         /// message since route time.
         volatile boolean owns = true;
+        /// R5 (`docs/spec/router-deferral-handback.md`): true unless a test
+        /// says otherwise — SQS/Postgres both honour a nack's delay, and
+        /// that is the ordinary case this suite otherwise exercises. T12/T13
+        /// flip this to simulate NATS, which does not.
+        volatile boolean honoursDelayedReturn = true;
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
@@ -1175,6 +1205,11 @@ class PoolTest {
         @Override
         public void release(QueuedMessage message) {
             tracker.remove(message.id());
+        }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return honoursDelayedReturn;
         }
     }
 

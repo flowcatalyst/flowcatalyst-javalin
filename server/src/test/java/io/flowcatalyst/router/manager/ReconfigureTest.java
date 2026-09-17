@@ -369,6 +369,11 @@ class ReconfigureTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     }
 
     private static final Mediator MEDIATOR = (message, recordFailure) -> MediationOutcome.Success.of(200);
@@ -384,6 +389,11 @@ class ReconfigureTest {
 
         @Override
         public void release(QueuedMessage message) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
         }
     };
 
@@ -412,6 +422,11 @@ class ReconfigureTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override

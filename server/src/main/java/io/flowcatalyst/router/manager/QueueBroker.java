@@ -129,6 +129,18 @@ public final class QueueBroker implements Broker {
         tracker.markRetrying(message.id());
     }
 
+    /// Answers from `message`'s own consumer (R5, owner ruling 2026-09-17,
+    /// `docs/spec/router-deferral-handback.md`).
+    ///
+    /// An unregistered queue (deregistered by a reconfigure) answers `false`
+    /// — keep the message in memory rather than nack it into a hand-back
+    /// nothing is there to honour.
+    @Override
+    public boolean honoursDelayedReturn(QueuedMessage message) {
+        var consumer = consumers.apply(message.queueId());
+        return consumer != null && consumer.honoursDelayedReturn();
+    }
+
     @Override
     public boolean owns(QueuedMessage message) {
         // Layer 2, the process-time backstop (`docs/spec/router.md` §2.1

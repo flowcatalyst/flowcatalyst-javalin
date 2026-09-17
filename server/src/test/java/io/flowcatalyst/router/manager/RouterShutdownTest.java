@@ -117,6 +117,11 @@ class RouterShutdownTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
                 },
                 PoolMetrics.NO_OP, clock);
 
@@ -210,6 +215,11 @@ class RouterShutdownTest {
         }
 
         @Override
+        public boolean honoursDelayedReturn() {
+            return true;
+        }
+
+        @Override
         public Optional<QueueMetrics> metrics() {
             return Optional.empty();
         }
@@ -295,6 +305,11 @@ class RouterShutdownTest {
 
         @Override
         public void release(QueuedMessage message) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
         }
                 },
                 PoolMetrics.NO_OP, clock);

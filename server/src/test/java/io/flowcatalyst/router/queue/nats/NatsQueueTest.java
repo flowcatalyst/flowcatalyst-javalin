@@ -492,6 +492,12 @@ class NatsQueueTest {
         assertThat(queue.nacked.get()).isZero();
     }
 
+    @Test
+    @DisplayName("T14: NATS answers false — a delay-bearing deferral must stay on the in-memory retry curve")
+    void honoursDelayedReturnIsFalse() {
+        assertThat(testQueue().honoursDelayedReturn()).isFalse();
+    }
+
     // --- metrics without a broker ------------------------------------------
 
     @Test

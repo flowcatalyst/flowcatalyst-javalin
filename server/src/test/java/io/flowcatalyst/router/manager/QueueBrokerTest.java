@@ -117,6 +117,33 @@ class QueueBrokerTest {
         assertThat(localTracker.freshestHandle("m-s1")).contains("S1:9");
     }
 
+    // ── R5: honoursDelayedReturn (docs/spec/router-deferral-handback.md) ──
+
+    @Test
+    @DisplayName("T14: honoursDelayedReturn answers from the message's own consumer, and false for an unregistered queue")
+    void honoursDelayedReturnAnswersFromTheConsumer() {
+        var fakeConsumer = new FakeConsumer("queue-1");
+        var localBroker = new QueueBroker(Map.of("queue-1", fakeConsumer), tracker, clock);
+        var message = message("m1", "b1");
+
+        // Not a hardcoded constant: the SAME queue id answers differently as
+        // its own consumer's opinion changes.
+        fakeConsumer.honoursDelayedReturn = true;
+        assertThat(localBroker.honoursDelayedReturn(message)).isTrue();
+
+        fakeConsumer.honoursDelayedReturn = false;
+        assertThat(localBroker.honoursDelayedReturn(message)).isFalse();
+
+        // A queue with no registered consumer at all — deregistered, or
+        // never known — keeps the message in memory rather than nacking it
+        // into a hand-back nothing is there to honour.
+        var unregistered = QueuedMessage.of(
+                new Message("m2", "", null, null, MediationType.HTTP, "https://x.test/h",
+                        null, false, DispatchMode.IMMEDIATE),
+                "b2", "receipt-b2", "no-such-queue");
+        assertThat(localBroker.honoursDelayedReturn(unregistered)).isFalse();
+    }
+
     // ── R-26/X-11: lingering consumers ─────────────────────────────────
 
     @Test
@@ -171,6 +198,11 @@ class QueueBrokerTest {
                 @Override
                 public void release(QueuedMessage message) {
                 }
+
+                @Override
+                public boolean honoursDelayedReturn(QueuedMessage message) {
+                    return true;
+                }
             };
 
     private static QueuedMessage message(String id, String brokerId) {
@@ -209,6 +241,13 @@ class QueueBrokerTest {
         public void nack(QueuedMessage message, Duration delay) {
         }
 
+        volatile boolean honoursDelayedReturn = true;
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return honoursDelayedReturn;
+        }
+
         @Override
         public java.util.Optional<io.flowcatalyst.router.queue.QueueMetrics> metrics() {
             return java.util.Optional.empty();
@@ -240,6 +279,11 @@ class QueueBrokerTest {
         @Override
         public boolean ack(QueuedMessage message) {
             ackedReceipts.add(message.receiptHandle());
+            return true;
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
             return true;
         }
 

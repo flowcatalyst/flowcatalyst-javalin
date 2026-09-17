@@ -545,6 +545,11 @@ class RouterManagerTest {
             @Override
             public void release(QueuedMessage message) {
             }
+
+            @Override
+            public boolean honoursDelayedReturn(QueuedMessage message) {
+                return true;
+            }
         };
         var deadDrainerPool = new Pool(new Pool.Config("G-POOL", 4, 0), slowBackoff, selfInterrupting, noOp,
                 PoolMetrics.NO_OP, clock);
@@ -684,6 +689,11 @@ class RouterManagerTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
             };
             return new RecordingPool(
                     new Pool(new Pool.Config(code, 4, 0), mediator, noOp, PoolMetrics.NO_OP, Clock.systemUTC()),
@@ -759,6 +769,11 @@ class RouterManagerTest {
         @Override
         public void nack(QueuedMessage message, Duration delay) {
             nacked.put(message.id(), delay);
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override

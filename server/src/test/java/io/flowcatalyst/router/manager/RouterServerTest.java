@@ -80,6 +80,11 @@ class RouterServerTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
         };
         return new RouterManager(tracker, warnings, clock, config -> {
             var pool = new Pool(config, mediator, recording, PoolMetrics.NO_OP, clock);
@@ -904,6 +909,11 @@ class RouterServerTest {
         @Override
         public void release(QueuedMessage message) {
         }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     };
 
     private static final class FakeStore implements LockStore {
@@ -969,6 +979,11 @@ class RouterServerTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override
@@ -1051,6 +1066,11 @@ class RouterServerTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+        }
+
+        @Override
+        public boolean honoursDelayedReturn() {
+            return true;
         }
 
         @Override

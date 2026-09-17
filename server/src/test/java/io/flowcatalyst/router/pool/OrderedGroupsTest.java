@@ -95,7 +95,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
         var head = groups.pollHead("orders").orElseThrow();
 
-        assertThat(groups.onHeadFailure(head, rejected()))
+        assertThat(groups.onHeadFailure(head, rejected(), true))
                 .as("a fresh head (zero attempts) still goes straight to the per-mode decision")
                 .isEqualTo(new HeadFailure.Continue(head));
     }
@@ -107,7 +107,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(head, rejected());
+        var disposition = groups.onHeadFailure(head, rejected(), true);
 
         assertThat(disposition).isEqualTo(new HeadFailure.Continue(head));
         assertThat(drainIds("orders")).containsExactly("b", "c");
@@ -118,7 +118,7 @@ class OrderedGroupsTest {
     void immediateRejectedIsContinueToo() {
         var head = message("orders", "a", DispatchMode.IMMEDIATE);
 
-        assertThat(groups.onHeadFailure(head, rejected()))
+        assertThat(groups.onHeadFailure(head, rejected(), true))
                 .isEqualTo(new HeadFailure.Continue(head));
     }
 
@@ -150,7 +150,7 @@ class OrderedGroupsTest {
             var head = groups.pollHead("orders").orElseThrow();
             var spent = head.retrying().retrying();
 
-            var failure = groups.onHeadFailure(spent, outcome);
+            var failure = groups.onHeadFailure(spent, outcome, true);
 
             if (returnsToBroker) {
                 // Handed back for redelivery: still on the broker, in order.
@@ -194,7 +194,7 @@ class OrderedGroupsTest {
         var head = groups.pollHead("orders").orElseThrow();
         assertThat(head.attempts()).isZero();
 
-        var failure = groups.onHeadFailure(head, new MediationOutcome.Deferred(200, 600, "come back later"));
+        var failure = groups.onHeadFailure(head, new MediationOutcome.Deferred(200, 600, "come back later"), true);
 
         assertThat(failure)
                 .as("RetryHead here would mean the mutant that restores the in-memory retry survived")
@@ -202,6 +202,28 @@ class OrderedGroupsTest {
         var returned = (HeadFailure.ReturnGroup) failure;
         assertThat(returned.head()).isEqualTo(head);
         assertThat(returned.siblings().stream().map(QueuedMessage::id)).containsExactly("b", "c");
+    }
+
+    @Test
+    @DisplayName("T13: a deferral naming a delay does NOT return the group when the broker does not honour a delayed return")
+    void deferredWithADelayKeepsTheHeadWhenBrokerDoesNotHonourIt() {
+        // R5 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md,
+        // second unit): honoursDelayedReturn=false is the NATS shape — a
+        // hand-back is not actually honoured, so R1's skip-the-budget
+        // shortcut must not fire. If the condition dropped this flag (the
+        // named mutant), this would come back ReturnGroup on attempt zero,
+        // exactly like the `true` case above.
+        offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
+        var head = groups.pollHead("orders").orElseThrow();
+        assertThat(head.attempts()).isZero();
+
+        var failure = groups.onHeadFailure(head, new MediationOutcome.Deferred(200, 600, "come back later"), false);
+
+        assertThat(failure)
+                .as("ReturnGroup here would mean the mutant that ignores honoursDelayedReturn survived")
+                .isEqualTo(new HeadFailure.RetryHead(head));
+        // The siblings are undisturbed — the group was never returned.
+        assertThat(drainIds("orders")).containsExactly("b", "c");
     }
 
     @Test
@@ -216,14 +238,14 @@ class OrderedGroupsTest {
         var deferring = new MediationOutcome.RateLimited(5);
 
         // Within budget the group keeps its head, which is the normal case.
-        assertThat(groups.onHeadFailure(head, deferring))
+        assertThat(groups.onHeadFailure(head, deferring, true))
                 .isEqualTo(new HeadFailure.RetryHead(head));
 
         var spent = head;
         for (int i = 0; i < Pool.MAX_IN_PIPELINE_ATTEMPTS - 1; i++) {
             spent = spent.retrying();
         }
-        var failure = groups.onHeadFailure(spent, deferring);
+        var failure = groups.onHeadFailure(spent, deferring, true);
 
         assertThat(failure).isInstanceOf(HeadFailure.ReturnGroup.class);
         var returned = (HeadFailure.ReturnGroup) failure;
@@ -238,7 +260,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(head, rejected());
+        var disposition = groups.onHeadFailure(head, rejected(), true);
 
         assertThat(disposition).isInstanceOf(HeadFailure.BlockGroup.class);
         var blocked = (HeadFailure.BlockGroup) disposition;
@@ -255,7 +277,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(head, unavailable(503));
+        var disposition = groups.onHeadFailure(head, unavailable(503), true);
 
         assertThat(disposition).isInstanceOf(HeadFailure.ReturnGroup.class);
         var returned = (HeadFailure.ReturnGroup) disposition;
@@ -277,7 +299,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.NEXT_ON_ERROR, "a", "b");
         var head = groups.pollHead("orders").orElseThrow();
 
-        assertThat(groups.onHeadFailure(head, new MediationOutcome.ErrorConnection(30, "refused")))
+        assertThat(groups.onHeadFailure(head, new MediationOutcome.ErrorConnection(30, "refused"), true))
                 .isInstanceOf(HeadFailure.ReturnGroup.class);
     }
 
@@ -290,7 +312,7 @@ class OrderedGroupsTest {
         offerAll("orders", DispatchMode.BLOCK_ON_ERROR, "a", "b", "c");
         var head = groups.pollHead("orders").orElseThrow();
 
-        groups.onHeadFailure(head, rejected());
+        groups.onHeadFailure(head, rejected(), true);
 
         assertThat(groups.buffered()).isZero();
         assertThat(groups.groupCount()).isZero();
@@ -303,7 +325,7 @@ class OrderedGroupsTest {
         groups.offer(message("orders", "a", DispatchMode.BLOCK_ON_ERROR));
         var head = groups.pollHead("orders").orElseThrow();
 
-        var disposition = groups.onHeadFailure(head, rejected());
+        var disposition = groups.onHeadFailure(head, rejected(), true);
 
         assertThat(((HeadFailure.BlockGroup) disposition).siblings()).isEmpty();
         assertThat(groups.groupCount()).isZero();
@@ -316,7 +338,7 @@ class OrderedGroupsTest {
         offerAll("invoices", DispatchMode.BLOCK_ON_ERROR, "x", "y");
         var head = groups.pollHead("orders").orElseThrow();
 
-        groups.onHeadFailure(head, rejected());
+        groups.onHeadFailure(head, rejected(), true);
 
         assertThat(drainIds("invoices")).containsExactly("x", "y");
     }
@@ -379,7 +401,7 @@ class OrderedGroupsTest {
         groups.reFront(head);
         assertThat(groups.buffered()).isEqualTo(3);
 
-        groups.onHeadFailure(groups.pollHead("orders").orElseThrow(), rejected());
+        groups.onHeadFailure(groups.pollHead("orders").orElseThrow(), rejected(), true);
         assertThat(groups.buffered()).isOne();
     }
 

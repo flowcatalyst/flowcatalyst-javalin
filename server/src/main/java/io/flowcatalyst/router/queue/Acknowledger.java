@@ -33,4 +33,22 @@ public interface Acknowledger {
     /// Makes a delivery visible again after `delay`. Some backends ignore
     /// the delay; none may treat a nack as an ack.
     void nack(QueuedMessage message, Duration delay);
+
+    /// Whether a [#nack]ed message's `delay` is actually honoured by this
+    /// backend before it redelivers — R5 (owner ruling 2026-09-17,
+    /// `docs/spec/router-deferral-handback.md`, second unit).
+    ///
+    /// Deliberately **abstract, no default** (CLAUDE.md: every backend must
+    /// have an opinion): `SqsQueue` and `PostgresQueue` answer `true` — a
+    /// hand-back is a fresh delivery after exactly `delay` (R3/R4). NATS
+    /// answers `false`: this stream is one durable WorkQueue consumer with
+    /// no per-group subject, so a nack (`AckWait`) never blocks a group's
+    /// successors the way R4 blocks Postgres, and — worse — each hand-back
+    /// spends one of `max-deliver`'s limited redeliveries, so treating a
+    /// deferral as "handed back" here would collapse ten in-memory retries
+    /// into ten deliveries and then silent, permanent redelivery loss. A
+    /// backend answering `false` keeps R1's pre-ruling behaviour: the
+    /// deferral is retried in memory, on the `DEFERRED` curve, within its
+    /// own budget.
+    boolean honoursDelayedReturn();
 }
