@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.auth.oauth;
 import io.flowcatalyst.platform.auth.grant.AuthorizationCode;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
 import io.flowcatalyst.platform.auth.grant.RefreshToken;
+import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.token.ScopeNarrowing;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
@@ -167,7 +168,7 @@ public final class OAuthTokenApi {
             return;
         }
         if (!client.allowsGrant("client_credentials")) {
-            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+            recordAttempt(ctx, s, AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
                     "client_credentials grant not permitted for this client");
             OAuthError.unauthorizedClient(401, "Client is not permitted to use the client_credentials grant type").write(ctx);
             return;
@@ -177,7 +178,7 @@ public final class OAuthTokenApi {
             return;
         }
         if (!ClientAuthentication.acceptClientSecret(s, client, req.clientSecret())) {
-            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null, "Invalid client secret");
+            recordAttempt(ctx, s, AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null, "Invalid client secret");
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
             return;
         }
@@ -186,14 +187,14 @@ public final class OAuthTokenApi {
         // (RFC 6749 §5.2; owner ruling 2026-09-06 #11, Go 491d961 the same), and
         // the attempt is recorded like every other refusal on this grant.
         if (client.principalId() == null) {
-            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+            recordAttempt(ctx, s, AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
                     "Client not properly configured (no linked principal)");
             OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
             return;
         }
         Optional<Principal> p = s.principals().findById(client.principalId());
         if (p.isEmpty()) {
-            s.recordAttempt(AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+            recordAttempt(ctx, s, AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
                     "Client not properly configured (linked principal not found)");
             OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
             return;
@@ -227,7 +228,7 @@ public final class OAuthTokenApi {
         }
         var verification = ClientAuthentication.verifySecretRef(s, ref, req.clientSecret());
         if (!(verification instanceof Encryption.SecretVerification.Matched(var rehash))) {
-            s.recordAttempt(AttemptType.DEVELOPER_TOKEN, AttemptOutcome.FAILURE, req.clientId(), p.id(), "Invalid developer client secret");
+            recordAttempt(ctx, s, AttemptType.DEVELOPER_TOKEN, AttemptOutcome.FAILURE, req.clientId(), p.id(), "Invalid developer client secret");
             OAuthError.invalidClient("Invalid client credentials").write(ctx);
             return;
         }
@@ -256,12 +257,12 @@ public final class OAuthTokenApi {
                                               AttemptType attemptType, String deniedScopeSubject) {
         var granted = ScopeNarrowing.grant(s.resolver().ceiling(p), req.scope());
         if (granted.explicit() && granted.permissions().isEmpty()) {
-            s.recordAttempt(attemptType, AttemptOutcome.FAILURE, req.clientId(), p.id(), "requested scope exceeds granted permissions");
+            recordAttempt(ctx, s, attemptType, AttemptOutcome.FAILURE, req.clientId(), p.id(), "requested scope exceeds granted permissions");
             OAuthError.invalidScope("Requested scope exceeds " + deniedScopeSubject).write(ctx);
             return;
         }
         String accessToken = s.issuer().accessToken(p, TokenIssuer.Authority.full(p, granted.permissions(), s.labels()), null);
-        s.recordAttempt(attemptType, AttemptOutcome.SUCCESS, req.clientId(), p.id(), null);
+        recordAttempt(ctx, s, attemptType, AttemptOutcome.SUCCESS, req.clientId(), p.id(), null);
         if (s.serviceAccounts() != null && p.serviceAccountId() != null) {
             try {
                 s.serviceAccounts().touchLastUsed(p.serviceAccountId());
@@ -447,6 +448,15 @@ public final class OAuthTokenApi {
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
+
+    /// [OAuthState#recordAttempt] with the caller's IP and user agent — the
+    /// same derivation the password-login endpoint uses ([ClientIp#of]) —
+    /// so every SERVICE_ACCOUNT_TOKEN / DEVELOPER_TOKEN row this endpoint
+    /// writes, success or failure, carries them (owner ruling 2026-09-17).
+    private static void recordAttempt(Exchange ctx, OAuthState s, AttemptType type, AttemptOutcome outcome,
+                                       String identifier, String principalId, String reason) {
+        s.recordAttempt(type, outcome, identifier, principalId, reason, ClientIp.of(ctx), ctx.header("User-Agent"));
+    }
 
     static void writeToken(Exchange ctx, OAuthState s, String accessToken, String refreshToken, String idToken, String scope) {
         Map<String, Object> body = new LinkedHashMap<>();

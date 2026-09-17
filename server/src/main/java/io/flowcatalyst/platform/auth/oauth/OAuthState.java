@@ -117,12 +117,17 @@ public record OAuthState(
     }
 
     /// Best-effort attempt row; a logging miss never fails the auth flow.
-    public void recordAttempt(AttemptType type, AttemptOutcome outcome, String identifier, String principalId, String reason) {
+    /// `ip` and `userAgent` follow [LoginAttempt#attempt]'s own contract
+    /// (blank ⇒ `null`; the user agent is trimmed, as Go does), so callers
+    /// may pass raw header values.
+    public void recordAttempt(AttemptType type, AttemptOutcome outcome, String identifier, String principalId,
+                               String reason, String ip, String userAgent) {
         if (attempts == null) {
             return;
         }
         try {
-            attempts.recordAttempt(LoginAttempt.attempt(type, outcome, reason, identifier, principalId, null, null));
+            attempts.recordAttempt(LoginAttempt.attempt(type, outcome, reason, identifier, principalId,
+                    ip == null || ip.isBlank() ? null : ip, userAgent == null || userAgent.isBlank() ? null : userAgent.strip()));
         } catch (RuntimeException e) {
             LOG.atWarn().setMessage("recording attempt failed")
                     .addKeyValue("type", type)

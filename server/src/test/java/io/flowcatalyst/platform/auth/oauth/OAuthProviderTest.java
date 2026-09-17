@@ -624,6 +624,55 @@ class OAuthProviderTest {
         assertThat(CLIENTS.findById(svc.id()).orElseThrow().previousSecretLastUsedAt()).isEqualTo(stamp);
     }
 
+    // ── /oauth/token: login-attempt IP + user agent (owner ruling 2026-09-17) ──
+
+    /// T1: a successful client_credentials grant stores the rightmost
+    /// `X-Forwarded-For` hop and the `User-Agent` header on the SUCCESS row.
+    /// Mutant: a call site (or [OAuthState#recordAttempt]) that passes null
+    /// for either would leave the stored columns empty — asserting the
+    /// exact non-null values, not merely that a row exists, pins this.
+    @Test
+    void aSuccessfulTokenRequestRecordsTheCallersIpAndUserAgent() {
+        var r = token(Map.of("grant_type", "client_credentials"), basic(svc.clientId(), SECRET)[0], basic(svc.clientId(), SECRET)[1],
+                "X-Forwarded-For", "203.0.113.9, 198.51.100.7", "User-Agent", "fc-test/1.0");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+
+        var row = latestAttempt(svc.clientId(), "SUCCESS");
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.IP_ADDRESS)).as("the rightmost X-Forwarded-For hop").isEqualTo("198.51.100.7");
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.USER_AGENT)).isEqualTo("fc-test/1.0");
+    }
+
+    /// T2: the same treatment applies to a failure row — wiring the IP/UA
+    /// derivation into only the success call site
+    /// ([#mintClientCredentials]) while leaving the failure call sites
+    /// ([#clientCredentials]) on the old signature would pass T1 but fail
+    /// here.
+    @Test
+    void aFailedTokenRequestAlsoRecordsTheCallersIpAndUserAgent() {
+        var r = token(Map.of("grant_type", "client_credentials", "client_id", svc.clientId(), "client_secret", "wrong"),
+                "X-Forwarded-For", "203.0.113.9, 198.51.100.7", "User-Agent", "fc-test/1.0");
+        assertThat(r.statusCode()).isEqualTo(401);
+
+        var row = latestAttempt(svc.clientId(), "FAILURE");
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.IP_ADDRESS)).isEqualTo("198.51.100.7");
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.USER_AGENT)).isEqualTo("fc-test/1.0");
+    }
+
+    /// T3: with no `X-Forwarded-For`, the stored IP falls back to the
+    /// request's own remote address (the test harness's loopback client),
+    /// never left empty. Mutant: deriving the IP from the header alone
+    /// (skipping [ClientIp]'s remote-address fallback) would store null here.
+    @Test
+    void withNoForwardedForHeaderTheIpFallsBackToTheRemoteAddress() {
+        var r = token(Map.of("grant_type", "client_credentials"), basic(svc.clientId(), SECRET)[0], basic(svc.clientId(), SECRET)[1],
+                "User-Agent", "fc-test/1.0");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+
+        var row = latestAttempt(svc.clientId(), "SUCCESS");
+        String ip = row.get(IAM_LOGIN_ATTEMPTS.IP_ADDRESS);
+        assertThat(ip).as("must fall back to the remote address, never empty").isNotNull().isNotBlank().doesNotContain(":");
+    }
+
     // ── keyed hashing migration (docs/spec/encryption.md §3) ───────────────
 
     /// A client provisioned with a legacy `encrypted:` ref still authenticates,
@@ -1028,6 +1077,17 @@ class OAuthProviderTest {
 
     private static int attempts(String identifier, String outcome) {
         return DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.IDENTIFIER.eq(identifier).and(IAM_LOGIN_ATTEMPTS.OUTCOME.eq(outcome)));
+    }
+
+    /// The most recently written attempt row for `identifier`/`outcome` —
+    /// read right after this test's own request, so no other test's row can
+    /// be the newest one yet.
+    private static org.jooq.Record latestAttempt(String identifier, String outcome) {
+        return DB.selectFrom(IAM_LOGIN_ATTEMPTS)
+                .where(IAM_LOGIN_ATTEMPTS.IDENTIFIER.eq(identifier).and(IAM_LOGIN_ATTEMPTS.OUTCOME.eq(outcome)))
+                .orderBy(IAM_LOGIN_ATTEMPTS.ATTEMPTED_AT.desc())
+                .limit(1)
+                .fetchOne();
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────
