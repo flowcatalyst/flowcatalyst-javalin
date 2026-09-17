@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.auth.oidc;
 
+import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.oauth.OAuthError;
 import io.flowcatalyst.platform.auth.oauth.RedirectUriMatcher;
@@ -11,6 +12,10 @@ import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMappingRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
+import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
+import io.flowcatalyst.platform.loginattempt.AttemptType;
+import io.flowcatalyst.platform.loginattempt.LoginAttempt;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.Principal;
@@ -83,11 +88,12 @@ public final class OidcBridgeApi {
     }
 
     /// @param externalBaseUrl `FC_JWT_ISSUER`: the absolute origin the callback is registered under; empty ⇒ derived from the request
+    /// @param attempts the login-attempt store (spec `docs/spec/sso-login-attempts.md`); `null` disables recording
     public record State(OidcClients clients, LoginStateRepository states, PrincipalRepository principals,
                         EmailDomainMappingRepository mappings, IdentityProviderRepository identityProviders,
-                        IdpRoleMappingRepository roleMappings, RoleRepository roles, OAuthClientRepository oauthClients,
-                        UnitOfWork uow, TokenIssuer issuer, SessionCookie cookie, PortalSink portal, String externalBaseUrl,
-                        Clock clock) {
+                        LoginAttemptRepository attempts, IdpRoleMappingRepository roleMappings, RoleRepository roles,
+                        OAuthClientRepository oauthClients, UnitOfWork uow, TokenIssuer issuer, SessionCookie cookie,
+                        PortalSink portal, String externalBaseUrl, Clock clock) {
         public State {
             Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(states, "states");
@@ -267,22 +273,26 @@ public final class OidcBridgeApi {
                         .addKeyValue("reason", rej.reason())
                         .log();
                 HttpError.write(ctx, 403, "OIDC_VERIFY", "id_token verification failed", Map.of());
+                record(s, ctx, state, AttemptOutcome.FAILURE, null, null, "SSO: id_token verification failed");
                 return;
             }
             case OidcProvider.Verified v -> claims = v.claims();
         }
         if (claims.nonce() == null || !claims.nonce().equals(state.nonce())) {
             HttpError.write(ctx, 403, "NONCE_MISMATCH", "nonce did not match", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, verifiedIdentifier(claims), null, "SSO: nonce mismatch");
             return;
         }
         String identifier = claims.identifier();
         if (identifier.isEmpty()) {
             HttpError.write(ctx, 403, "NO_EMAIL", "id_token has no email / preferred_username claim", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, null, null, "SSO: no email claim");
             return;
         }
         String email = identifier.trim().toLowerCase(Locale.ROOT);
         if (email.contains("#ext#")) {
             HttpError.write(ctx, 403, "EXTERNAL_GUEST", "external guest accounts are not supported", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: external guest account");
             return;
         }
         String emailDomain = claims.domain();
@@ -290,21 +300,25 @@ public final class OidcBridgeApi {
             List<String> allowed = idp.allowedEmailDomains();
             if (!allowed.isEmpty() && allowed.stream().noneMatch(d -> d.equalsIgnoreCase(emailDomain))) {
                 HttpError.write(ctx, 403, "EMAIL_DOMAIN_MISMATCH", "the token's email domain is not allowed for this identity provider", Map.of());
+                record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: email domain not allowed");
                 return;
             }
         } else {
             if (!emailDomain.equalsIgnoreCase(state.emailDomain())) {
                 HttpError.write(ctx, 403, "EMAIL_DOMAIN_MISMATCH", "the token's email domain does not match the login domain", Map.of());
+                record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: email domain not allowed");
                 return;
             }
             String requiredTenant = mapping.requiredOidcTenantId();
             if (requiredTenant != null && !requiredTenant.isEmpty()) {
                 if (claims.tenantId() == null || claims.tenantId().isEmpty()) {
                     HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token has no tenant id (tid) claim", Map.of());
+                    record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
                     return;
                 }
                 if (!claims.tenantId().equals(requiredTenant)) {
                     HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token tenant does not match the configured tenant", Map.of());
+                    record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
                     return;
                 }
             }
@@ -330,6 +344,11 @@ public final class OidcBridgeApi {
             try {
                 principal = state.providerDirect() ? provisionPortalUser(s, email) : provision(s, state, email);
             } catch (ProvisioningException e) {
+                // Spec: only a refusal (4xx) is an identity being refused; a 500 (e.g. the
+                // email_domain_mapping lookup failing) is infrastructure noise, not recorded.
+                if (e.status >= 400 && e.status < 500) {
+                    record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: account provisioning refused");
+                }
                 HttpError.write(ctx, e.status, e.code, e.getMessage(), Map.of());
                 return;
             }
@@ -357,8 +376,43 @@ public final class OidcBridgeApi {
         // redirect — a login that actually succeeded — and best-effort: a failure here
         // must never change the login's outcome.
         emitLoggedIn(s, principal, email, idp.id(), idp.code(), claims, tokens.accessToken().orElse(null));
+        record(s, ctx, state, AttemptOutcome.SUCCESS, email, principal.id(), null);
         s.cookie().set(ctx, token);
         ctx.redirect(landing(state), 302);
+    }
+
+    /// Spec `docs/spec/sso-login-attempts.md`: the callback's accept/refuse
+    /// outcomes, employee plane only — a portal-flow state (`state.portal()`)
+    /// writes no row at all, success or failure, checked once here rather
+    /// than at every call site. Best-effort: a failed write is logged at
+    /// WARN and never changes the response.
+    private static void record(State s, Exchange ctx, LoginState state, AttemptOutcome outcome, String identifier,
+                               String principalId, String failureReason) {
+        if (s.attempts() == null || state.portal()) {
+            return;
+        }
+        try {
+            s.attempts().recordAttempt(LoginAttempt.attempt(AttemptType.USER_LOGIN, outcome, failureReason, identifier,
+                    principalId, blankToNull(ClientIp.of(ctx)), blankToNull(header(ctx, "User-Agent"))));
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("recording SSO login attempt failed")
+                    .addKeyValue("outcome", outcome)
+                    .setCause(e)
+                    .log();
+        }
+    }
+
+    /// The verified id_token's normalised identifier (spec table): `null`
+    /// when [IdTokenClaims#identifier] is empty. Called only where `claims`
+    /// has already passed signature/audience/issuer verification — never a
+    /// claim read from an unverified token.
+    private static String verifiedIdentifier(IdTokenClaims claims) {
+        String id = claims.identifier();
+        return id.isEmpty() ? null : id.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String blankToNull(String v) {
+        return v.isBlank() ? null : v;
     }
 
     /// Emits [io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserLoggedIn]

@@ -20,6 +20,10 @@ import io.flowcatalyst.platform.emaildomainmapping.ScopeType;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
+import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
+import io.flowcatalyst.platform.loginattempt.AttemptType;
+import io.flowcatalyst.platform.loginattempt.LoginAttempt;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
@@ -76,6 +80,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
+import static io.flowcatalyst.db.generated.Tables.IAM_LOGIN_ATTEMPTS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPAL_ROLES;
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
@@ -110,6 +115,7 @@ class OidcBridgeTest {
     private static final IdpRoleMappingRepository ROLE_MAPPINGS = new IdpRoleMappingRepository(DS);
     private static final OAuthClientRepository OAUTH_CLIENTS = new OAuthClientRepository(DS, new ApplicationRepository(DS));
     private static final LoginStateRepository STATES = new LoginStateRepository(DS);
+    private static final LoginAttemptRepository ATTEMPTS = new LoginAttemptRepository(DS);
     private static final JwtVerifier VERIFIER = new JwtVerifier(new JwtVerifier.Config(ISSUER, new JwtVerifier.RsaKeys(KEYS.publicKey())));
 
     // ── the fake identity provider ────────────────────────────────────────
@@ -214,7 +220,7 @@ class OidcBridgeTest {
 
         var clients = new OidcClients(IDPS, MAPPINGS, Optional.of(ENC),
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(), Clock.systemUTC(), Duration.ofMinutes(10));
-        var state = new OidcBridgeApi.State(clients, STATES, PRINCIPALS, MAPPINGS, IDPS, ROLE_MAPPINGS, ROLES, OAUTH_CLIENTS, UOW,
+        var state = new OidcBridgeApi.State(clients, STATES, PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, ROLE_MAPPINGS, ROLES, OAUTH_CLIENTS, UOW,
                 new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER)), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), OidcBridgeApi.PortalSink.disabled(),
                 ISSUER, Clock.systemUTC());
         http = TestHttp.routes(routes -> {
@@ -511,6 +517,128 @@ class OidcBridgeTest {
             assertThat(json(second).get("error").asString()).isEqualTo("TOO_MANY_REQUESTS");
             assertThat(throttled.get("/auth/login").statusCode()).as("other routes are outside the bucket").isEqualTo(200);
         }
+    }
+
+    // ── SSO login-attempt rows (spec docs/spec/sso-login-attempts.md) ───────
+    //
+    // Every callback in this section sends the spec's fixed
+    // X-Forwarded-For / User-Agent pair; ClientIp.of keeps the rightmost
+    // hop, so the recorded ip_address is always "198.51.100.7".
+
+    private static final String ATTEMPT_XFF = "203.0.113.9, 198.51.100.7";
+    private static final String ATTEMPT_UA = "fc-test/1.0";
+    private static final String ATTEMPT_IP = "198.51.100.7";
+
+    @Test
+    void t1SuccessfulSsoLoginWritesExactlyOneSuccessRow() {
+        String email = "attempt-ok-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
+
+        String principalId = PRINCIPALS.findByEmail(email).orElseThrow().id();
+        List<LoginAttempt> rows = ATTEMPTS.findRecentByIdentifier(email, 10);
+        assertThat(rows).as("exactly one row for this identifier").hasSize(1);
+        LoginAttempt row = rows.getFirst();
+        assertThat(row.attemptType()).isEqualTo(AttemptType.USER_LOGIN);
+        assertThat(row.outcome()).isEqualTo(AttemptOutcome.SUCCESS);
+        assertThat(row.identifier()).isEqualTo(email);
+        assertThat(row.principalId()).isEqualTo(principalId);
+        assertThat(row.ipAddress()).isEqualTo(ATTEMPT_IP);
+        assertThat(row.userAgent()).isEqualTo(ATTEMPT_UA);
+    }
+
+    @Test
+    void t2AnEmailDomainMismatchWritesOneFailureRowWithTheVerifiedIdentifierAndNoPrincipal() {
+        String email = "attempt-mismatch-" + RUN + "@other-" + RUN + ".example";
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        assertThat(json(r).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
+
+        List<LoginAttempt> rows = ATTEMPTS.findRecentByIdentifier(email, 10);
+        assertThat(rows).as("exactly one row for this identifier").hasSize(1);
+        LoginAttempt row = rows.getFirst();
+        assertThat(row.outcome()).isEqualTo(AttemptOutcome.FAILURE);
+        assertThat(row.failureReason()).isEqualTo("SSO: email domain not allowed");
+        assertThat(row.identifier()).isEqualTo(email);
+        assertThat(row.principalId()).isNull();
+        assertThat(row.ipAddress()).isEqualTo(ATTEMPT_IP);
+        assertThat(row.userAgent()).isEqualTo(ATTEMPT_UA);
+        assertThat(PRINCIPALS.findByEmail(email)).as("no principal provisioned for a refused login").isEmpty();
+    }
+
+    @Test
+    void t3ABadSignatureIdTokenWritesOneFailureRowWithNoIdentifier() {
+        String email = "attempt-badsig-" + RUN + "@" + oidcDomain;
+        Map<String, String> q = begin("domain=" + oidcDomain);
+        idTokenFor(q, email);
+        SIGN_WITH_ROGUE_KEY.set(true);
+        try {
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+            assertThat(json(r).get("error").asString()).isEqualTo("OIDC_VERIFY");
+        } finally {
+            SIGN_WITH_ROGUE_KEY.set(false);
+        }
+
+        // OIDC_VERIFY never carries an identifier (the token is unverified), so the
+        // row can't be found by identifier — it is found by the fixed reason + ip
+        // instead, which no other OIDC_VERIFY test in this class sets (they send no
+        // X-Forwarded-For, so their rows carry the loopback address).
+        var rows = DB.selectFrom(IAM_LOGIN_ATTEMPTS)
+                .where(IAM_LOGIN_ATTEMPTS.FAILURE_REASON.eq("SSO: id_token verification failed"))
+                .and(IAM_LOGIN_ATTEMPTS.IP_ADDRESS.eq(ATTEMPT_IP))
+                .fetch();
+        assertThat(rows).as("exactly one OIDC_VERIFY row for this test's ip").hasSize(1);
+        var row = rows.getFirst();
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.OUTCOME)).isEqualTo(AttemptOutcome.FAILURE.name());
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.IDENTIFIER)).as("never the unverified token's email").isNull();
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID)).isNull();
+        assertThat(row.get(IAM_LOGIN_ATTEMPTS.USER_AGENT)).isEqualTo(ATTEMPT_UA);
+    }
+
+    @Test
+    void t4AnUnknownOrExpiredStateWritesNoRow() {
+        int before = DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.IP_ADDRESS.eq(ATTEMPT_IP).and(IAM_LOGIN_ATTEMPTS.USER_AGENT.eq(ATTEMPT_UA)));
+        var r = http.get("/auth/oidc/callback?state=unknown-" + RUN + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        assertThat(json(r).get("error").asString()).isEqualTo("INVALID_STATE");
+        int after = DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.IP_ADDRESS.eq(ATTEMPT_IP).and(IAM_LOGIN_ATTEMPTS.USER_AGENT.eq(ATTEMPT_UA)));
+        assertThat(after).as("an unknown/expired state writes nothing").isEqualTo(before);
+    }
+
+    @Test
+    void t5APortalFlowStateWritesNoRowOnEitherASuccessfulOrARefusedIdentityCheck() {
+        // A portal-plane handshake (docs/spec/auth-identity.md §5.6): provider-direct
+        // (emailDomainMappingId "") with portalClientId set. oidcIdpId already allows
+        // oidcDomain (the mapping fixture routes it there), so a matching-domain login
+        // reaches state.portal() — a portal sink call, not an identity refusal — without
+        // any portal-specific fixtures. portal_client_id is a real TSID column
+        // (varchar(17)); rp's id is any already-persisted OAuthClient — PortalSink
+        // never reads it.
+        String okEmail = "attempt-portal-ok-" + RUN + "@" + oidcDomain;
+        var okState = new LoginState("portal-ok-" + RUN, "", oidcIdpId, "", "portal-nonce-ok-" + RUN, "verifier-" + RUN,
+                null, null, rp.id(), Instant.now(), Instant.now().plus(Duration.ofMinutes(10)));
+        STATES.insert(okState);
+        idTokenFor(Map.of("nonce", "portal-nonce-ok-" + RUN), okEmail);
+        var ok = http.get("/auth/oidc/callback?state=portal-ok-" + RUN + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        assertThat(ok.statusCode()).as("PortalSink.disabled(): the identity checks passed, only the sink is unwired").isEqualTo(500);
+        assertThat(json(ok).get("error").asString()).isEqualTo("PORTAL_DISABLED");
+        assertThat(ATTEMPTS.findRecentByIdentifier(okEmail, 10)).as("a successful portal-plane login writes no row").isEmpty();
+
+        // A portal-flow state refused by an ordinary identity check (EMAIL_DOMAIN_MISMATCH,
+        // reached before state.portal() is ever consulted): this is what actually exercises
+        // the plane check, since record() is called here with a known identifier while
+        // state.portal() is true — a passing identity check never calls record() at all.
+        String refusedEmail = "attempt-portal-refused-" + RUN + "@other-" + RUN + ".example";
+        var refusedState = new LoginState("portal-refused-" + RUN, "", oidcIdpId, "", "portal-nonce-refused-" + RUN, "verifier-" + RUN,
+                null, null, rp.id(), Instant.now(), Instant.now().plus(Duration.ofMinutes(10)));
+        STATES.insert(refusedState);
+        idTokenFor(Map.of("nonce", "portal-nonce-refused-" + RUN), refusedEmail);
+        var refused = http.get("/auth/oidc/callback?state=portal-refused-" + RUN + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        assertThat(json(refused).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
+        assertThat(ATTEMPTS.findRecentByIdentifier(refusedEmail, 10)).as("a refused portal-plane login writes no row either").isEmpty();
     }
 
     // ── UserLoggedIn event (spec docs/spec/oidc-logged-in-event.md) ─────────

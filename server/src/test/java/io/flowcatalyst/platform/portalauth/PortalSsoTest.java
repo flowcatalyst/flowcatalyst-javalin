@@ -172,7 +172,7 @@ class PortalSsoTest {
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(), Clock.systemUTC(), Duration.ofMinutes(10));
         var states = new LoginStateRepository(DS);
         var sinkHolder = new AtomicReference<PortalSso>();
-        var bridge = new OidcBridgeApi.State(oidcClients, states, PRINCIPALS, MAPPINGS, IDPS, new IdpRoleMappingRepository(DS),
+        var bridge = new OidcBridgeApi.State(oidcClients, states, PRINCIPALS, MAPPINGS, IDPS, null, new IdpRoleMappingRepository(DS),
                 new RoleRepository(DS), OAUTH_CLIENTS, UOW, TOKEN_ISSUER, new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), ISSUER, Clock.systemUTC());
         var sso = new PortalSso(new PortalSso.State(FLOWS, IDENTITIES, new ClientRepository(DS), PORTAL_APPS, UOW, GRANTS, oidcClients, states,

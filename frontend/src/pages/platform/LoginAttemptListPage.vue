@@ -179,6 +179,10 @@ onMounted(async () => {
       <div>
         <h1 class="page-title">Login Attempts</h1>
         <p class="page-subtitle">Authentication attempt history for users and service accounts</p>
+        <p class="page-note">
+          SSO sign-ins appear when the platform accepts or refuses the identity provider's response. Failures at the
+          identity provider itself (wrong password, MFA) are only in that provider's logs.
+        </p>
       </div>
     </header>
 
@@ -417,6 +421,13 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.page-note {
+  color: #94a3b8;
+  margin-top: 4px;
+  font-size: 12px;
+  max-width: 60rem;
+}
+
 .cursor-pager {
   display: flex;
   align-items: center;

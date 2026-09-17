@@ -565,7 +565,7 @@ public final class Platform {
         // for the callback URL. A holder breaks the construction cycle.
         var sinkHolder = new java.util.concurrent.atomic.AtomicReference<PortalSso>();
         var bridgeState = new OidcBridgeApi.State(oidcClients, loginStateRepo, loginPrincipalRepo,
-                loginMappingRepo, identityProviderRepo, idpRoleMappingRepo, roleRepo, oauthClientRepo, uow,
+                loginMappingRepo, identityProviderRepo, loginAttemptRepo, idpRoleMappingRepo, roleRepo, oauthClientRepo, uow,
                 tokenIssuer, new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()),
                 (ctx, st, claims) -> sinkHolder.get().complete(ctx, st, claims), env.jwtIssuer(), Clock.systemUTC());
         OidcBridgeApi.register(routes, bridgeState);
