@@ -374,6 +374,61 @@ class ServiceAccountApiTest {
         assertThat(match.has("principalId")).as("principalId is omitted from the list read (spec §9.1)").isFalse();
     }
 
+    /// T1 (`docs/spec/login-attempt-links.md`): the single-account read must
+    /// surface the OAuth client's PUBLIC `client_id` — the value a
+    /// `SERVICE_ACCOUNT_TOKEN` login attempt's `identifier` actually carries
+    /// — never the OAuth client row's own `id`, a different string that
+    /// would resolve nothing on the wire. Mutant: return the row id.
+    @Test
+    void getByIdReturnsTheOAuthClientsPublicClientIdNotItsRowId() {
+        var created = create(code("oauthid"), "OAuth Id");
+        String id = created.get("serviceAccount").get("id").asText();
+        String publicClientId = created.get("oauth").get("clientId").asText();
+        String rowId = OAUTH_CLIENTS.findByClientId(publicClientId).orElseThrow().id();
+        assertThat(rowId).as("fixture sanity: the row id and the public client_id must be different strings")
+                .isNotEqualTo(publicClientId);
+
+        var byId = json(http.get("/api/service-accounts/" + id, VIEWER));
+        assertThat(byId.get("oauthClientId").asText())
+                .as("oauthClientId must be the public client_id, the value /oauth/token callers send")
+                .isEqualTo(publicClientId);
+        assertThat(byId.get("oauthClientId").asText())
+                .as("oauthClientId must NOT be the OAuth client row's own id")
+                .isNotEqualTo(rowId);
+    }
+
+    /// T2: the list endpoint's items carry no `oauthClientId` — no per-row
+    /// OAuth-client lookup on a list read, matching the `principalId`
+    /// omission above. Mutant: populate it on list.
+    @Test
+    void listOmitsOAuthClientId() {
+        var created = create(code("oauthlist"), "OAuth List");
+        String id = created.get("serviceAccount").get("id").asText();
+
+        var list = json(http.get("/api/service-accounts", VIEWER));
+        var match = list.get("serviceAccounts").valueStream().filter(n -> n.get("id").asText().equals(id)).findFirst().orElseThrow();
+        assertThat(match.has("oauthClientId")).as("list items must never carry oauthClientId").isFalse();
+    }
+
+    /// T3: a service account whose linked principal has no OAuth client at
+    /// all reports the field ABSENT, never present-but-empty — a caller that
+    /// checks for the field's presence must not be fooled by `""` standing
+    /// in for "none". Mutant: return "" instead of absent.
+    @Test
+    void getByIdOmitsOAuthClientIdWhenNoneIsLinked() {
+        var created = create(code("oauthorphan"), "OAuth Orphan");
+        String id = created.get("serviceAccount").get("id").asText();
+        String publicClientId = created.get("oauth").get("clientId").asText();
+
+        // Sever the link: delete the provisioned OAuth client row outright, so the
+        // account's principal has none — the same shape as an independently removed client.
+        var client = OAUTH_CLIENTS.findByClientId(publicClientId).orElseThrow();
+        UOW.inTransaction(tx -> { OAUTH_CLIENTS.delete(client, tx.dbTx()); return null; });
+
+        var byId = json(http.get("/api/service-accounts/" + id, VIEWER));
+        assertThat(byId.has("oauthClientId")).as("no linked OAuth client must render as an absent field").isFalse();
+    }
+
     @Test
     void unknownIdOrCodeIs404() {
         assertThat(http.get("/api/service-accounts/sac_doesnotexist1", VIEWER).statusCode()).isEqualTo(404);

@@ -75,8 +75,11 @@ export const oauthClientsApi = {
 		return apiFetch(`/oauth-clients/${id}`);
 	},
 
-	getByClientId(clientId: string): Promise<OAuthClient> {
-		return apiFetch(`/oauth-clients/by-client-id/${clientId}`);
+	getByClientId(
+		clientId: string,
+		opts?: { suppressGlobalErrorToast?: boolean; suppressAuthErrorEvent?: boolean },
+	): Promise<OAuthClient> {
+		return apiFetch(`/oauth-clients/by-client-id/${clientId}`, opts);
 	},
 
 	create(data: CreateOAuthClientRequest): Promise<CreateOAuthClientResponse> {

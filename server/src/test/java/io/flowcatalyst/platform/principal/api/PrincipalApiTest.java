@@ -298,6 +298,27 @@ class PrincipalApiTest {
         return r.body().replace(id, "<ID>");
     }
 
+    /// T4 (`docs/spec/login-attempt-links.md`): a `SERVICE` principal's read
+    /// carries `serviceAccountId` equal to the account it backs — the
+    /// login-attempt detail dialog (F2) uses this to route a
+    /// `DEVELOPER_TOKEN`/`SERVICE` row to the service-account detail screen —
+    /// while a `USER` principal's read carries no such field at all. Mutant:
+    /// drop the field, or read the wrong column.
+    @Test
+    @DisplayName("a SERVICE principal's read carries serviceAccountId; a USER principal's carries none")
+    void serviceAccountIdIsCarriedOnlyByServicePrincipals() {
+        String serviceAccountId = EntityType.SERVICE_ACCOUNT.generate();
+        var service = Principal.newService(serviceAccountId, "Linked Service");
+        UOW.inTransaction(tx -> { REPO.persist(service, tx.dbTx()); return null; });
+
+        var serviceRead = json(http.get("/api/principals/" + service.id(), anchor()));
+        assertThat(serviceRead.get("serviceAccountId").asText())
+                .as("serviceAccountId must equal the linked account's own id").isEqualTo(serviceAccountId);
+
+        var userRead = json(http.get("/api/principals/" + userInA, anchor()));
+        assertThat(userRead.has("serviceAccountId")).as("a USER principal must not carry serviceAccountId").isFalse();
+    }
+
     @Test
     @DisplayName("PR-4: the /{id}/roles sub-route now answers the same not-found as the by-id read, not 200")
     void rolesSubRouteIsNowClientScoped() {

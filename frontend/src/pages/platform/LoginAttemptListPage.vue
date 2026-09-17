@@ -7,6 +7,8 @@ import {
 	fetchLoginAttempts,
 	type LoginAttempt,
 } from "@/api/login-attempts";
+import { usersApi } from "@/api/users";
+import { oauthClientsApi } from "@/api/oauth-clients";
 
 const listState = useListState(
 	{
@@ -75,9 +77,70 @@ const showDetailDialog = ref(false);
 const attemptTypeOptions = ["USER_LOGIN", "SERVICE_ACCOUNT_TOKEN"];
 const outcomeOptions = ["SUCCESS", "FAILURE"];
 
+/** A resolved navigation target for one of the dialog's id rows. */
+interface ResolvedLink {
+	name: string;
+	params: Record<string, string>;
+}
+
+// Resolved once per dialog open (docs/spec/login-attempt-links.md F2). A
+// failed lookup (403, 404, network) leaves the corresponding ref `null` —
+// the row then renders as plain `<code>`, exactly as before, and is never
+// surfaced as an error toast (both API calls suppress the global banner and
+// the 401/403 session modal).
+const principalLink = ref<ResolvedLink | null>(null);
+const identifierLink = ref<ResolvedLink | null>(null);
+
+const silent = { suppressGlobalErrorToast: true, suppressAuthErrorEvent: true };
+
+// Bumped on every open, so a slow lookup for a previously opened attempt
+// can never write its links onto the attempt now showing.
+let resolveGeneration = 0;
+
+async function resolveLinks(attempt: LoginAttempt) {
+	const generation = ++resolveGeneration;
+	const current = () => generation === resolveGeneration;
+	principalLink.value = null;
+	identifierLink.value = null;
+
+	if (attempt.principalId) {
+		try {
+			const principal = await usersApi.get(attempt.principalId, silent);
+			if (!current()) return;
+			if (principal.type === "USER") {
+				principalLink.value = { name: "user-detail", params: { id: attempt.principalId } };
+			} else if (principal.type === "SERVICE" && principal.serviceAccountId) {
+				principalLink.value = {
+					name: "service-account-detail",
+					params: { id: principal.serviceAccountId },
+				};
+			}
+		} catch {
+			// stays unresolved — the row renders as plain text.
+		}
+	}
+
+	if (attempt.attemptType === "SERVICE_ACCOUNT_TOKEN") {
+		try {
+			const client = await oauthClientsApi.getByClientId(attempt.identifier, silent);
+			if (!current()) return;
+			identifierLink.value = { name: "oauth-client-detail", params: { id: client.id } };
+		} catch {
+			// stays unresolved — the row renders as plain text.
+		}
+	} else if (attempt.attemptType === "DEVELOPER_TOKEN") {
+		// The identifier IS the USER principal id — same target as the
+		// Principal ID row, whatever that resolved (or failed) to.
+		identifierLink.value = principalLink.value;
+	} else if (attempt.attemptType === "USER_LOGIN" && principalLink.value?.name === "user-detail") {
+		identifierLink.value = principalLink.value;
+	}
+}
+
 function viewDetails(attempt: LoginAttempt) {
 	selectedAttempt.value = attempt;
 	showDetailDialog.value = true;
+	void resolveLinks(attempt);
 }
 
 function formatDateTime(isoString: string): string {
@@ -316,12 +379,26 @@ onMounted(async () => {
 
           <div class="detail-row">
             <span class="detail-label">Identifier</span>
-            <code class="identifier-text">{{ selectedAttempt.identifier }}</code>
+            <RouterLink
+              v-if="identifierLink"
+              :to="{ name: identifierLink.name, params: identifierLink.params }"
+              @click="showDetailDialog = false"
+            >
+              <code class="identifier-text">{{ selectedAttempt.identifier }}</code>
+            </RouterLink>
+            <code v-else class="identifier-text">{{ selectedAttempt.identifier }}</code>
           </div>
 
           <div class="detail-row" v-if="selectedAttempt.principalId">
             <span class="detail-label">Principal ID</span>
-            <code class="identifier-text">{{ selectedAttempt.principalId }}</code>
+            <RouterLink
+              v-if="principalLink"
+              :to="{ name: principalLink.name, params: principalLink.params }"
+              @click="showDetailDialog = false"
+            >
+              <code class="identifier-text">{{ selectedAttempt.principalId }}</code>
+            </RouterLink>
+            <code v-else class="identifier-text">{{ selectedAttempt.principalId }}</code>
           </div>
 
           <div class="detail-row" v-if="selectedAttempt.ipAddress">

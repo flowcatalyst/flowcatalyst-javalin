@@ -85,6 +85,31 @@ public final class OAuthClientRepository implements Persist<OAuthClient> {
         return findOne(T.CLIENT_ID.eq(clientId));
     }
 
+    /// OAuth clients linked to a `SERVICE` principal
+    /// (`service_account_principal_id = principalId`), earliest by
+    /// `(created_at, id)` first — consulted by the service-account read to
+    /// surface the public `client_id` of the account's provisioned OAuth
+    /// client (`docs/spec/login-attempt-links.md` B1). Same hydration shape
+    /// as [#findAll]/[#findByPortalAppId]; the condition and ordering are the
+    /// only things that vary.
+    public List<OAuthClient> findByPrincipalId(String principalId) {
+        var rows = dsl.selectFrom(T).where(T.SERVICE_ACCOUNT_PRINCIPAL_ID.eq(principalId))
+                .orderBy(T.CREATED_AT.asc(), T.ID.asc()).fetch();
+        if (rows.isEmpty()) return List.of();
+        var ids = rows.getValues(T.ID);
+        var redirectUris = redirectUrisFor(ids);
+        var postLogoutUris = postLogoutRedirectUrisFor(ids);
+        var grantTypes = grantTypesFor(ids);
+        var allowedOrigins = allowedOriginsFor(ids);
+        var applicationIds = applicationIdsFor(ids);
+        return List.copyOf(rows.map(row -> toEntity(row,
+                redirectUris.getOrDefault(row.getId(), List.of()),
+                postLogoutUris.getOrDefault(row.getId(), List.of()),
+                grantTypes.getOrDefault(row.getId(), List.of()),
+                allowedOrigins.getOrDefault(row.getId(), List.of()),
+                applicationIds.getOrDefault(row.getId(), List.of()))));
+    }
+
     /// Every OAuth client linked to `portalAppId` (`portal_app_id = id`),
     /// ordered by name — the delete orchestration's read (spec `portal-apps.md`
     /// §3.6): a full aggregate per row (not the [LinkedRef] projection below)

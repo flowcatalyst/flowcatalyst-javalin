@@ -667,6 +667,12 @@ async function deleteServiceAccount() {
           <FcDetailField label="Code">
             <code>{{ serviceAccount.code }}</code>
           </FcDetailField>
+          <FcDetailField v-if="serviceAccount.principalId" label="Principal ID">
+            <code>{{ serviceAccount.principalId }}</code>
+          </FcDetailField>
+          <FcDetailField v-if="serviceAccount.oauthClientId" label="OAuth Client ID">
+            <code>{{ serviceAccount.oauthClientId }}</code>
+          </FcDetailField>
           <FcDetailField label="Description" :value="serviceAccount.description" span />
           <FcDetailField label="Scope">
             <Tag

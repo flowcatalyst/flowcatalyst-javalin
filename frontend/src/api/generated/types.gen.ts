@@ -1916,6 +1916,7 @@ export type PrincipalResponse = {
     name: string;
     roles: Array<string>;
     scope: string;
+    serviceAccountId?: string;
     twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
@@ -2343,6 +2344,7 @@ export type ServiceAccountResponse = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    oauthClientId?: string;
     principalId?: string;
     roles: Array<string>;
     scope?: string;
@@ -4260,6 +4262,7 @@ export type PrincipalResponseWritable = {
     name: string;
     roles: Array<string>;
     scope: string;
+    serviceAccountId?: string;
     twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
@@ -4489,6 +4492,7 @@ export type ServiceAccountResponseWritable = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    oauthClientId?: string;
     principalId?: string;
     roles: Array<string>;
     scope?: string;

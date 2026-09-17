@@ -5542,6 +5542,9 @@
           "scope": {
             "type": "string"
           },
+          "serviceAccountId": {
+            "type": "string"
+          },
           "twoFactorMethods": {
             "items": {
               "type": "string"
@@ -6873,6 +6876,9 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "oauthClientId": {
             "type": "string"
           },
           "principalId": {

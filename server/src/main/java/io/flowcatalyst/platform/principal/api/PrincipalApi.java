@@ -1062,7 +1062,12 @@ public final class PrincipalApi {
     /// service; `inviteLink` (app-managed-invitations §1) only on the
     /// `POST /api/principals/users` response when a link was minted — every
     /// other `from(...)` caller (list, by-id, update, PARTNER-merge return)
-    /// leaves it `null`. Never logged or included in a `toString`.
+    /// leaves it `null`. `serviceAccountId` is the linked service account's
+    /// id for a `SERVICE` principal (the inverse of
+    /// `ServiceAccountResponse.principalId`) — absent for a `USER` principal —
+    /// and is carried on every read: it's a column on the row already loaded,
+    /// no extra lookup (`docs/spec/login-attempt-links.md` B2). Never logged
+    /// or included in a `toString`.
     public record PrincipalResponse(
             String id,
             String type,
@@ -1080,7 +1085,8 @@ public final class PrincipalApi {
             boolean hasDeveloperCredential,
             Instant developerCredentialUpdatedAt,
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<String> twoFactorMethods,
-            @JsonInclude(JsonInclude.Include.NON_NULL) String inviteLink) {
+            @JsonInclude(JsonInclude.Include.NON_NULL) String inviteLink,
+            String serviceAccountId) {
 
         public static PrincipalResponse from(Principal p) {
             return from(p, null, null);
@@ -1098,7 +1104,7 @@ public final class PrincipalApi {
                     p.roleNames(), p.scope().isAnchor(), p.assignedClients(), p.createdAt(), p.updatedAt(),
                     p.hasDeveloperSecret(),
                     u == null || !u.hasDeveloperSecret() ? null : u.devClientSecretUpdatedAt(),
-                    twoFactorMethods, inviteLink);
+                    twoFactorMethods, inviteLink, p.serviceAccountId());
         }
     }
 

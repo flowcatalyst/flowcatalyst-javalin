@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.serviceaccount.operations.MintServiceAccountToke
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountTokenMinted;
 
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
@@ -141,7 +142,7 @@ public final class ServiceAccountApi {
 
     private static void list(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
-        List<ServiceAccountResponse> items = s.repo().findAll().stream().map(sa -> ServiceAccountResponse.from(sa, null)).toList();
+        List<ServiceAccountResponse> items = s.repo().findAll().stream().map(sa -> ServiceAccountResponse.from(sa, null, null)).toList();
         ctx.json(new ServiceAccountListResponse(items, items.size()));
     }
 
@@ -149,15 +150,17 @@ public final class ServiceAccountApi {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String code = ctx.pathParam("code");
         ServiceAccount sa = s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("ServiceAccount", code));
-        // principalId omitted here, matching Go (spec §9.1, §10 Q5) — only the single-id read below populates it.
-        ctx.json(ServiceAccountResponse.from(sa, null));
+        // principalId/oauthClientId omitted here, matching Go (spec §9.1, §10 Q5;
+        // login-attempt-links.md B1) — only the single-id read below populates them.
+        ctx.json(ServiceAccountResponse.from(sa, null, null));
     }
 
     private static void getById(Exchange ctx, State s) {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_VIEW);
         String id = ctx.pathParam("id");
         ServiceAccount sa = s.repo().findById(id).orElseThrow(() -> HttpError.notFound("ServiceAccount", id));
-        ctx.json(ServiceAccountResponse.from(sa, principalIdOf(s, sa.id())));
+        String principalId = principalIdOf(s, sa.id());
+        ctx.json(ServiceAccountResponse.from(sa, principalId, oauthClientIdOf(s, principalId)));
     }
 
     private static void create(Exchange ctx, State s) {
@@ -166,9 +169,10 @@ public final class ServiceAccountApi {
         var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.clients(), s.encryption())
                 .run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreateServiceAccountResponse(
-                // principalId omitted on the nested serviceAccount, matching Go (spec §9.1, §10 Q5) —
-                // the top-level principalId field below is the one Go always populates here.
-                ServiceAccountResponse.from(result.serviceAccount(), null),
+                // principalId/oauthClientId omitted on the nested serviceAccount, matching Go (spec
+                // §9.1, §10 Q5; login-attempt-links.md B1) — the top-level principalId field below is
+                // the one Go always populates here, and the create response never surfaces oauthClientId.
+                ServiceAccountResponse.from(result.serviceAccount(), null, null),
                 result.principalId(),
                 new ServiceAccountOAuthSecrets(result.oauthClientClientId(), result.oauthClientSecret()),
                 new ServiceAccountWebhookSecrets(result.authToken(), result.signingSecret())));
@@ -268,6 +272,16 @@ public final class ServiceAccountApi {
         return s.principals().findByServiceAccount(serviceAccountId).map(p -> p.id()).orElse(null);
     }
 
+    /// The public `client_id` (never the OAuth client row's own `id`) of the
+    /// OAuth client provisioned for `principalId`'s `client_credentials`
+    /// grant — the earliest by `(created_at, id)` when several exist, `null`
+    /// when none is linked or there is no linked principal at all
+    /// (`docs/spec/login-attempt-links.md` B1).
+    private static String oauthClientIdOf(State s, String principalId) {
+        if (principalId == null) return null;
+        return s.oauthClients().findByPrincipalId(principalId).stream().findFirst().map(OAuthClient::clientId).orElse(null);
+    }
+
     /// The linked principal's roles, or `[]` when there is no linked principal.
     private static List<RoleAssignment> rolesOf(State s, String serviceAccountId) {
         return s.repo().findById(serviceAccountId)
@@ -334,15 +348,19 @@ public final class ServiceAccountApi {
     /// hoisted out of the webhook credentials, `roles` as a plain name list.
     /// Webhook secrets are never exposed here — only once, at create/rotate
     /// time. `principalId` is populated on the single-account reads only
-    /// (spec §9.1, matches the `roles` hydration decision).
+    /// (spec §9.1, matches the `roles` hydration decision). `oauthClientId`
+    /// is the public `client_id` (never the OAuth client row's own `id`) of
+    /// the OAuth client provisioned for that principal's `client_credentials`
+    /// grant, populated on the same single-account reads
+    /// (`docs/spec/login-attempt-links.md` B1) — absent when none is linked.
     public record ServiceAccountResponse(String id, String code, String name, String description, boolean active,
                                          List<String> clientIds, String scope, String applicationId, String authType,
-                                         List<String> roles, String principalId, Instant lastUsedAt, Instant createdAt,
-                                         Instant updatedAt) {
-        public static ServiceAccountResponse from(ServiceAccount sa, String principalId) {
+                                         List<String> roles, String principalId, String oauthClientId,
+                                         Instant lastUsedAt, Instant createdAt, Instant updatedAt) {
+        public static ServiceAccountResponse from(ServiceAccount sa, String principalId, String oauthClientId) {
             return new ServiceAccountResponse(sa.id(), sa.code(), sa.name(), sa.description(), sa.active(),
                     sa.clientIds(), sa.scope(), sa.applicationId(), sa.webhookCredentials().authType().name(),
-                    sa.roles().stream().map(RoleAssignment::roleName).toList(), principalId,
+                    sa.roles().stream().map(RoleAssignment::roleName).toList(), principalId, oauthClientId,
                     sa.lastUsedAt(), sa.createdAt(), sa.updatedAt());
         }
     }

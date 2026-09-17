@@ -100,8 +100,11 @@ export const usersApi = {
 		return apiFetch(`/principals${query ? `?${query}` : ""}`);
 	},
 
-	get(id: string): Promise<User> {
-		return apiFetch(`/principals/${id}`);
+	get(
+		id: string,
+		opts?: { suppressGlobalErrorToast?: boolean; suppressAuthErrorEvent?: boolean },
+	): Promise<User> {
+		return apiFetch(`/principals/${id}`, opts);
 	},
 
 	create(data: CreateUserRequest): Promise<User> {
