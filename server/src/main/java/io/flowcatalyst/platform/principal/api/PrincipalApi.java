@@ -67,6 +67,7 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
+import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
@@ -85,6 +86,7 @@ import java.util.LinkedHashSet;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -415,10 +417,9 @@ public final class PrincipalApi {
         if (name.isEmpty()) return BulkImportResult.error(row, email, "name is required");
         if (!seen.add(email)) return BulkImportResult.error(row, email, "duplicate email in file");
         if (!ac.isAnchor()) {
-            try {
-                assertAssignableRoles(s, roles, clientApplicationIds(s, clientId));
-            } catch (UseCaseException e) {
-                return BulkImportResult.error(row, email, e.error().message());
+            var problem = assignableRolesProblem(s, roles, clientApplicationIds(s, clientId));
+            if (problem.isPresent()) {
+                return BulkImportResult.error(row, email, problem.get().message());
             }
         }
         if (s.repo().findByEmail(email).isPresent()) return new BulkImportResult(row, email, "exists", "already exists — skipped");
@@ -709,18 +710,33 @@ public final class PrincipalApi {
     }
 
     /// Every role a non-anchor names must exist, be application-scoped, and
-    /// belong to an allowed application (spec §5.3).
+    /// belong to an allowed application (spec §5.3). Throws for the single
+    /// mutations; the bulk import records the same outcome per row through
+    /// [#assignableRolesProblem].
     private static void assertAssignableRoles(State s, List<String> roleNames, Set<String> allowed) {
+        assignableRolesProblem(s, roleNames, allowed).ifPresent(problem -> {
+            throw new UseCaseException(problem);
+        });
+    }
+
+    /// The first role in `roleNames` a non-anchor may not assign, as the
+    /// error the mutation would refuse with; empty when every role passes.
+    private static Optional<UseCaseError> assignableRolesProblem(State s, List<String> roleNames, Set<String> allowed) {
         for (String name : roleNames) {
-            Role r = s.roles().findByName(name)
-                    .orElseThrow(() -> UseCaseException.validation("UNKNOWN_ROLE", "role not found: " + name));
-            if (r.applicationId() == null) {
-                throw UseCaseException.authorization("PLATFORM_ROLE_FORBIDDEN", "client administrators cannot assign platform roles");
+            Optional<Role> role = s.roles().findByName(name);
+            if (role.isEmpty()) {
+                return Optional.of(new UseCaseError.Validation("UNKNOWN_ROLE", "role not found: " + name, Map.of()));
             }
-            if (!allowed.contains(r.applicationId())) {
-                throw UseCaseException.authorization("ROLE_APP_FORBIDDEN", "role belongs to an application the client cannot access");
+            if (role.get().applicationId() == null) {
+                return Optional.of(new UseCaseError.Authorization("PLATFORM_ROLE_FORBIDDEN",
+                        "client administrators cannot assign platform roles", Map.of()));
+            }
+            if (!allowed.contains(role.get().applicationId())) {
+                return Optional.of(new UseCaseError.Authorization("ROLE_APP_FORBIDDEN",
+                        "role belongs to an application the client cannot access", Map.of()));
             }
         }
+        return Optional.empty();
     }
 
     /// The target's existing roles a non-anchor may not manage — platform,

@@ -72,44 +72,60 @@ public record CronExpression(String expression, long seconds, long minutes, long
     ///                          `TZ=` prefix, malformed field) or
     ///                          `CRON_INVALID_SHAPE` (not six fields)
     public static CronExpression parse(String text) {
-        if (text == null || text.isBlank()) {
-            throw UseCaseException.validation(INVALID_CRON, "cron expressions cannot be empty");
-        }
-        String expr = text.strip();
-        if (expr.startsWith("@")) {
-            throw UseCaseException.validation(INVALID_CRON,
-                    "cron expression '" + expr + "': descriptors are not supported");
-        }
-        if (expr.startsWith("TZ=") || expr.startsWith("CRON_TZ=")) {
-            throw UseCaseException.validation(INVALID_CRON,
-                    "cron expression '" + expr + "': a per-expression time zone is not supported; use the job's timezone");
-        }
-        String[] fields = expr.split("\\s+");
-        if (fields.length != FIELD_COUNT) {
-            throw UseCaseException.validation(CRON_INVALID_SHAPE,
-                    "cron expression must have 6 whitespace-separated fields (sec min hour dom mon dow), got "
-                            + fields.length + ": '" + expr + "'");
-        }
-        try {
-            return new CronExpression(expr,
-                    field(fields[0], SECONDS),
-                    field(fields[1], MINUTES),
-                    field(fields[2], HOURS),
-                    field(fields[3], DOM),
-                    field(fields[4], MONTHS),
-                    field(fields[5], DOW));
-        } catch (Malformed e) {
-            throw UseCaseException.validation(INVALID_CRON, "cron expression '" + expr + "': " + e.getMessage());
-        }
+        return switch (parseOutcome(text)) {
+            case Parse.Parsed parsed -> parsed.expression();
+            case Parse.Invalid invalid -> throw UseCaseException.validation(invalid.code(), invalid.message());
+        };
     }
 
     /// [#parse] as an outcome, for readers of *stored* text that must not
     /// fail on a legacy row (spec §3.2): empty when the text does not parse.
     public static Optional<CronExpression> tryParse(String text) {
+        return switch (parseOutcome(text)) {
+            case Parse.Parsed parsed -> Optional.of(parsed.expression());
+            case Parse.Invalid _ -> Optional.empty();
+        };
+    }
+
+    /// The one parser behind [#parse] and [#tryParse]: a malformed
+    /// expression is an expected outcome here, not an exception, so the two
+    /// entry points switch on it rather than one catching the other's throw.
+    private sealed interface Parse {
+        record Parsed(CronExpression expression) implements Parse {
+        }
+
+        record Invalid(String code, String message) implements Parse {
+        }
+    }
+
+    private static Parse parseOutcome(String text) {
+        if (text == null || text.isBlank()) {
+            return new Parse.Invalid(INVALID_CRON, "cron expressions cannot be empty");
+        }
+        String expr = text.strip();
+        if (expr.startsWith("@")) {
+            return new Parse.Invalid(INVALID_CRON, "cron expression '" + expr + "': descriptors are not supported");
+        }
+        if (expr.startsWith("TZ=") || expr.startsWith("CRON_TZ=")) {
+            return new Parse.Invalid(INVALID_CRON,
+                    "cron expression '" + expr + "': a per-expression time zone is not supported; use the job's timezone");
+        }
+        String[] fields = expr.split("\\s+");
+        if (fields.length != FIELD_COUNT) {
+            return new Parse.Invalid(CRON_INVALID_SHAPE,
+                    "cron expression must have 6 whitespace-separated fields (sec min hour dom mon dow), got "
+                            + fields.length + ": '" + expr + "'");
+        }
         try {
-            return Optional.of(parse(text));
-        } catch (UseCaseException _) {
-            return Optional.empty();
+            return new Parse.Parsed(new CronExpression(expr,
+                    field(fields[0], SECONDS),
+                    field(fields[1], MINUTES),
+                    field(fields[2], HOURS),
+                    field(fields[3], DOM),
+                    field(fields[4], MONTHS),
+                    field(fields[5], DOW)));
+        } catch (Malformed e) {
+            return new Parse.Invalid(INVALID_CRON, "cron expression '" + expr + "': " + e.getMessage());
         }
     }
 

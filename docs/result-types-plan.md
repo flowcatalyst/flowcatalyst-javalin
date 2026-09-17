@@ -94,7 +94,7 @@ assertion site.
 
 Phase 0 — rulings before any code:
 - Scope is the use-case envelope only: `Operation`, `TxOperation`, the
-  operations packages, and the 12 in-code catches. Handlers keep throwing
+  operations packages, and the two remaining in-code catches. Handlers keep throwing
   into `HttpError.install`; infrastructure keeps exceptions.
 - Shape: a project-owned `sealed interface Result<T> permits Ok<T>, Err`
   with `Err(UseCaseError)`; no third-party Either. `Result.orThrow()` and
@@ -110,8 +110,9 @@ Phase 1 — envelope (module `usecase`):
 - Tests: `OperationTest`/`TxOperationTest` converted first; the mutant for
   each ("Err from Execute still commits") must be killed.
 
-Phase 2 — the 12 in-code catches: convert each to a switch on `Result`.
-Small, self-contained, each with its own test.
+Phase 2 — the two catches still standing (§4: the bulk import's
+`CreateUser.run` / `AssignRoles.run`): a switch on the envelope's `Result`.
+Small, self-contained, pinned by the bulk-import tests.
 
 Phase 3 — operations packages, one aggregate per commit, Sonnet mechanical
 under the spec: 158 files. Order by the parity corpus's coverage so every
@@ -130,10 +131,27 @@ Rough size: phases 1–2 a day or two; phase 3 a few days of delegated work
 with review; phase 4 a day. The risk is concentrated in phase 1's
 `TxOperation` rollback change, which is why it goes first and alone.
 
-## 4. Worth doing now, independently of the plan
+## 4. The 12 in-code catches — done 2026-09-17
 
-- Convert the 12 in-code `catch (UseCaseException)` sites to sealed
-  outcomes. They are the convention's actual target and cost nothing
-  structurally.
+Each `catch (UseCaseException)` in production code was read and dealt with
+one of three ways:
+
+| Site | What it was | Disposition |
+|---|---|---|
+| `SyncDispatchPools.validateInput` | catch the code value type's throw, re-throw naming the row | **Converted.** `DispatchPoolCode.problem(code) → Optional<String>` is the check as an outcome; `parse` is now built on it. No catch. |
+| `SyncEventTypes.fromSync` | same, via `EventType.create` | **Converted.** `EventTypeCode.problem`. |
+| `SyncProcesses.fromSync` | same, via `Process.create` | **Converted.** `ProcessCode.problem`. |
+| `CronExpression.tryParse` | `parse` throws, `tryParse` catches into `Optional` | **Converted.** One private sealed `Parse { Parsed | Invalid(code, message) }` behind both entry points; `parse` and `tryParse` switch on it. |
+| `PrincipalApi.importRow` (role check) | catch the role gate's throw, record the row | **Converted.** `assignableRolesProblem → Optional<UseCaseError>`; `assertAssignableRoles` throws from it for the single mutations. New test pins the row outcome and the mutant (silent unknown role) is killed. |
+| `PrincipalApi.importRow` (`CreateUser.run`, `AssignRoles.run`) ×2 | catch an envelope run to record the row | **Left until Phase 1.** The envelope's `run` is what has to return a `Result`; wrapping the throw locally would be the same catch under another name. |
+| `PasswordResetApi` confirm, `PortalSso` first login, `OidcBridgeApi` provisioning | catch → `HttpError.write(ctx, e.error()); return;` | **Removed.** That is byte-for-byte what `HttpError.install` does for every route; the hand-written copies were the only thing making these three handlers look different from the other 32. |
+| `SendPasswordReset.run`, `PortalAuthApi.guarded` | `catch (UseCaseException e) { throw e; }` before a `catch (RuntimeException)` that wraps as `internal` | **Left.** A pass-through, not control flow: it exists only because Java cannot exclude a subtype from a catch. Nothing decides on it. |
+
+Net: 8 of 12 gone, 2 wait on Phase 1, 2 are not control flow. Wire
+behaviour unchanged (parity 1,326 steps, 0 DIFF after the change).
+
+## 5. Worth doing now, independently of the plan
+
+- The 12 in-code catches: done, §4.
 - Keep applying "outcomes, not exceptions, at verification boundaries" to
   new code, as the router's `Attempt` / `FetchOutcome` do.

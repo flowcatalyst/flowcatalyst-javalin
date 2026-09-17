@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.eventtype;
 
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
+import java.util.Optional;
+
 import java.util.Objects;
 
 /// The four-segment event-type code `application:subdomain:aggregate:event`,
@@ -33,17 +35,28 @@ public record EventTypeCode(String application, String subdomain, String aggrega
     /// @throws UseCaseException validation `INVALID_CODE_FORMAT` when the code
     ///                          is not exactly four segments or any segment is blank
     public static EventTypeCode parse(String code) {
+        problem(code).ifPresent(message -> {
+            throw UseCaseException.validation("INVALID_CODE_FORMAT", message);
+        });
+        String[] parts = code.split(":", -1);
+        return new EventTypeCode(parts[0], parts[1], parts[2], parts[3]);
+    }
+
+    /// The format check as an outcome: the message [#parse] would refuse
+    /// with, or empty when `code` is well-formed. For callers that want to
+    /// name the offending row themselves (the sync batch) rather than catch
+    /// and re-throw.
+    public static Optional<String> problem(String code) {
         String[] parts = (code == null ? "" : code).split(":", -1);
         if (parts.length != SEGMENT_NAMES.length) {
-            throw UseCaseException.validation("INVALID_CODE_FORMAT", FORMAT_MESSAGE);
+            return Optional.of(FORMAT_MESSAGE);
         }
         for (int i = 0; i < parts.length; i++) {
             if (parts[i].isBlank()) {
-                throw UseCaseException.validation("INVALID_CODE_FORMAT",
-                        "Event type code part '" + SEGMENT_NAMES[i] + "' cannot be empty");
+                return Optional.of("Event type code part '" + SEGMENT_NAMES[i] + "' cannot be empty");
             }
         }
-        return new EventTypeCode(parts[0], parts[1], parts[2], parts[3]);
+        return Optional.empty();
     }
 
     /// The event segment of a *stored* code, or `""` when the stored code does

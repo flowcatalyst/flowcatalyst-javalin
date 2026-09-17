@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.process;
 
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
+import java.util.Optional;
+
 import java.util.Objects;
 
 /// The three-segment process code `application:subdomain:process-name`,
@@ -32,15 +34,27 @@ public record ProcessCode(String application, String subdomain, String processNa
     /// @throws UseCaseException validation `INVALID_CODE_FORMAT` when the code
     ///                          is not exactly three segments or any segment is blank
     public static ProcessCode parse(String code) {
+        problem(code).ifPresent(message -> {
+            throw UseCaseException.validation("INVALID_CODE_FORMAT", message);
+        });
+        String[] parts = code.split(":", -1);
+        return new ProcessCode(parts[0], parts[1], parts[2]);
+    }
+
+    /// The format check as an outcome: the message [#parse] would refuse
+    /// with, or empty when `code` is well-formed. For callers that want to
+    /// name the offending row themselves (the sync batch) rather than catch
+    /// and re-throw.
+    public static Optional<String> problem(String code) {
         String[] parts = (code == null ? "" : code).split(":", -1);
         if (parts.length != SEGMENTS) {
-            throw UseCaseException.validation("INVALID_CODE_FORMAT", FORMAT_MESSAGE);
+            return Optional.of(FORMAT_MESSAGE);
         }
         for (String part : parts) {
             if (part.isBlank()) {
-                throw UseCaseException.validation("INVALID_CODE_FORMAT", EMPTY_SEGMENT_MESSAGE);
+                return Optional.of(EMPTY_SEGMENT_MESSAGE);
             }
         }
-        return new ProcessCode(parts[0], parts[1], parts[2]);
+        return Optional.empty();
     }
 }

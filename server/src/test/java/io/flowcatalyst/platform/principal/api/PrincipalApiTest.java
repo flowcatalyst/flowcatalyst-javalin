@@ -599,6 +599,26 @@ class PrincipalApiTest {
         }
     }
 
+    // ── Bulk import: a per-row refusal is an outcome, never a thrown error ───
+
+    @Test
+    @DisplayName("bulk import by a client administrator: an unknown role fails that row with the role check's message and creates no user")
+    void bulkImportRecordsAnUnassignableRoleAsARowError() {
+        String email = "bulk-badrole-" + RUN + "@example.test";
+        String role = "no-such-role-" + RUN;
+        var r = http.post("/api/principals/bulk-import",
+                "{\"clientId\":\"" + clientA + "\",\"users\":[{\"name\":\"Bulk\",\"email\":\"" + email
+                        + "\",\"roles\":[\"" + role + "\"]}]}", client(clientA, "platform:*:*:*"));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("failed").asInt()).as("mutant: the row refusal escaped as a 400/403").isEqualTo(1);
+        assertThat(body.get("created").asInt()).isZero();
+        var row = body.get("results").get(0);
+        assertThat(row.get("status").asText()).isEqualTo("error");
+        assertThat(row.get("message").asText()).as("mutant: outcome message lost").isEqualTo("role not found: " + role);
+        assertThat(REPO.findByEmail(email)).as("no user for a refused row").isEmpty();
+    }
+
     // ── inviteRedirectUri validation (spec app-managed-invitations.md §1a, §7) ──
 
     @Test

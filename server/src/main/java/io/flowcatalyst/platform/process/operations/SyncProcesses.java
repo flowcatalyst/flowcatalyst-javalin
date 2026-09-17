@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.process.operations;
 
 import io.flowcatalyst.platform.process.Process;
+import io.flowcatalyst.platform.process.ProcessCode;
 import io.flowcatalyst.platform.process.ProcessRepository;
 import io.flowcatalyst.platform.process.ProcessSource;
 import io.flowcatalyst.platform.process.operations.ProcessEvents.ProcessCreated;
@@ -84,16 +85,14 @@ public final class SyncProcesses {
     /// the offending row: the batch aborts on the first one, and a bare
     /// format message gives no clue which of N codes failed.
     private static Process fromSync(SyncProcessInput in) {
-        try {
-            return Process.create(in.code(), in.name())
-                    .withSource(ProcessSource.API)
-                    .withDescription(in.description())
-                    .withBody(in.body())
-                    .withDiagramType(in.diagramType())
-                    .withTags(in.tags());
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation("INVALID_PROCESS_CODE",
-                    e.error().message() + " (offending code: \"" + in.code() + "\")");
-        }
+        ProcessCode.problem(in.code()).ifPresent(message -> {
+            throw UseCaseException.validation("INVALID_PROCESS_CODE", message + " (offending code: \"" + in.code() + "\")");
+        });
+        return Process.create(in.code(), in.name())
+                .withSource(ProcessSource.API)
+                .withDescription(in.description())
+                .withBody(in.body())
+                .withDiagramType(in.diagramType())
+                .withTags(in.tags());
     }
 }

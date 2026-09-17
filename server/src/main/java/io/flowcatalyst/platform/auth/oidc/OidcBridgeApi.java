@@ -24,7 +24,6 @@ import io.flowcatalyst.platform.principal.operations.SyncIdpRolesCommand;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
@@ -324,9 +323,6 @@ public final class OidcBridgeApi {
         if (existing.isEmpty()) {
             try {
                 principal = state.providerDirect() ? provisionPortalUser(s, email) : provision(s, state, email);
-            } catch (UseCaseException e) {
-                HttpError.write(ctx, e.error());
-                return;
             } catch (ProvisioningException e) {
                 HttpError.write(ctx, e.status, e.code, e.getMessage(), Map.of());
                 return;

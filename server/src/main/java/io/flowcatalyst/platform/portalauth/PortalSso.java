@@ -16,7 +16,6 @@ import io.flowcatalyst.platform.portalidentity.operations.EnsureCommand;
 import io.flowcatalyst.platform.portalidentity.operations.EnsurePortalIdentity;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
@@ -155,16 +154,13 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
         PortalIdentity identity;
         if (found.isEmpty()) {
             String name = claims.name() == null || claims.name().isBlank() ? null : claims.name().trim();
-            try {
-                // First login grants the app, when one is linked (§5.2 step 2).
-                var event = EnsurePortalIdentity.of(s.identities(), s.clients(), s.portalApps()).run(s.uow(),
-                        new EnsureCommand(state.portalClientId(), email, name, "JIT", app == null ? null : app.id()),
-                        ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
-                identity = s.identities().findById(event.identityId()).orElse(null);
-            } catch (UseCaseException e) {
-                HttpError.write(ctx, e.error());
-                return;
-            }
+            // First login grants the app, when one is linked (§5.2 step 2). A
+            // refusal propagates to HttpError.install, which writes the same
+            // envelope this handler used to write by hand.
+            var event = EnsurePortalIdentity.of(s.identities(), s.clients(), s.portalApps()).run(s.uow(),
+                    new EnsureCommand(state.portalClientId(), email, name, "JIT", app == null ? null : app.id()),
+                    ExecutionContext.of(OidcBridgeApi.SYSTEM_ACTOR));
+            identity = s.identities().findById(event.identityId()).orElse(null);
             if (identity == null) {
                 HttpError.write(ctx, 500, "IDENTITY", "post-create identity lookup failed", Map.of());
                 return;

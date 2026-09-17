@@ -85,9 +85,7 @@ public final class SyncDispatchPools {
     /// A bad code names the offending row, since the batch aborts on the
     /// first one.
     private static void validateInput(SyncDispatchPoolInput in) {
-        try {
-            DispatchPoolCode.parse(in.code());
-        } catch (UseCaseException _) {
+        if (DispatchPoolCode.problem(in.code()).isPresent()) {
             throw UseCaseException.validation("INVALID_POOL_CODE", "Pool code '" + in.code()
                     + "' is invalid. Must start with lowercase letter, contain only lowercase alphanumeric, hyphens, underscores.");
         }

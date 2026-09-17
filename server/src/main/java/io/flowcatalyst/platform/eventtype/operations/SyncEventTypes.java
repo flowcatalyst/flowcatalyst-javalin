@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.eventtype.operations;
 
 import io.flowcatalyst.platform.eventtype.EventType;
+import io.flowcatalyst.platform.eventtype.EventTypeCode;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeSource;
 import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypeCreated;
@@ -81,13 +82,11 @@ public final class SyncEventTypes {
     /// the offending row: the batch aborts on the first one, and a bare format
     /// message gives no clue which of N codes failed.
     private static EventType fromSync(SyncEventTypeInput in) {
-        try {
-            return EventType.create(in.code(), in.name())
-                    .withDescription(in.description())
-                    .withSource(EventTypeSource.API);
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation("INVALID_CODE",
-                    e.error().message() + " (offending code: \"" + in.code() + "\")");
-        }
+        EventTypeCode.problem(in.code()).ifPresent(message -> {
+            throw UseCaseException.validation("INVALID_CODE", message + " (offending code: \"" + in.code() + "\")");
+        });
+        return EventType.create(in.code(), in.name())
+                .withDescription(in.description())
+                .withSource(EventTypeSource.API);
     }
 }

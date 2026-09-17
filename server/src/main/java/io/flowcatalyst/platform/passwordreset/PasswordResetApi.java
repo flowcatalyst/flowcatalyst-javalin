@@ -17,7 +17,6 @@ import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
@@ -287,13 +286,11 @@ public final class PasswordResetApi {
                 return;
             }
         }
-        try {
-            ResetPassword.of(s.principals()).run(s.uow(), new ResetPasswordCommand(token.principalId(), password, true),
-                    ExecutionContext.of(SYSTEM_ACTOR));
-        } catch (UseCaseException e) {
-            HttpError.write(ctx, e.error());
-            return;
-        }
+        // A refusal (password policy, principal gone) propagates to
+        // HttpError.install, which writes the same envelope this handler
+        // used to write by hand; the token survives for another attempt.
+        ResetPassword.of(s.principals()).run(s.uow(), new ResetPasswordCommand(token.principalId(), password, true),
+                ExecutionContext.of(SYSTEM_ACTOR));
         try {
             s.tokens().deleteByPrincipal(token.principalId());
         } catch (RuntimeException e) {

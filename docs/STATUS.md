@@ -162,6 +162,18 @@ stays 0.0.4 until we cut a tag), `ResetPasswordPage.vue` + API types,
 embedded SPA rebuilt. **Parity vs Go `0e07df6`: 1,326 steps, 0 DIFF, 0
 ERROR** (a malformed-redirect step added to `principals-core`).
 
+**Result types: assessed, the 12 in-code catches dealt with** (2026-09-17,
+`docs/result-types-plan.md`): the use-case envelope is the one place a
+domain value rides inside an exception; a phased plan to make
+`Operation.run` return `Result<E>` is written for **after** the cutover, the
+handler layer and infrastructure failures stay as they are. Of the 12
+`catch (UseCaseException)` sites in production code, 8 are gone — the three
+sync batches and the cron parser check as an outcome (`XCode.problem`,
+`CronExpression.Parse`), the bulk import's role gate returns its problem,
+and three handlers stop hand-writing the envelope `HttpError.install`
+already writes — 2 wait on Phase 1 (envelope runs inside the bulk import),
+2 are pass-throughs, not control flow. Wire unchanged: parity 1,326 / 0 DIFF.
+
 **A refusing config source no longer holds the others back** (Go `da64e71`,
 2026-09-16; spec `router.md` §8.1): `HttpConfigSource` classifies a
 response — 5xx, 408/425/429 and a 401 on an authenticated request are
