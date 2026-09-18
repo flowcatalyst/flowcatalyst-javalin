@@ -183,7 +183,7 @@ The repository turns a pattern into column equalities (§6.1), never a `LIKE`.
   "entrypoint": "com.acme.billing.CreateInvoice",
   "pool": "default",
   "warm": false,
-  "limits": { "maxDurationMs": 30000, "maxConcurrency": 32, "wasmMemoryMb": 64 },
+  "limits": { "maxDurationMs": 30000, "maxConcurrency": 32 },
   "triggers": [
     { "type": "event", "eventType": "billing:invoices:invoice:created", "messageGroupKey": "invoiceId" },
     { "type": "schedule", "cron": "0 * * * *", "timezone": "UTC" },
@@ -198,6 +198,8 @@ The repository turns a pattern into column equalities (§6.1), never a `LIKE`.
   "httpAllow": ["api.stripe.com"]
 }
 ```
+
+(`limits.wasmMemoryMb` exists for a `wasm` function only — §4.3 `LIMIT_NOT_APPLICABLE`.)
 
 `Manifest` is a record; `Trigger` is sealed (`Event | Schedule | Http`); every list is
 `List.copyOf`'d; absent optional strings are `null`, never `""`.
@@ -223,18 +225,19 @@ of §4.1 with `Json.MAPPER`; `readStored(parseStrict(x).toJson())` round-trips t
 | Code | Rule |
 |---|---|
 | `MANIFEST_REQUIRED` | the node is null / not an object |
-| `MANIFEST_UNKNOWN_FIELD` | any key not in §4.1, at any level; message names the JSON path (`limits.maxConcurency`) |
+| `MANIFEST_UNKNOWN_FIELD` | any key not in §4.1, at any level; message names the JSON path (`limits.maxConcurency`). A trigger's allowed keys are **those of its own type** — `type` is read first, then `cron` inside an `event` trigger is an unknown field, not an ignored one |
+| `MANIFEST_INVALID` | `warm` present and not a boolean |
 | `RUNTIME_INVALID` | `runtime` absent or not `jvm`/`wasm` (case-insensitive) |
 | `RUNTIME_MISMATCH` | `runtime` differs from the function's runtime |
 | `ENTRYPOINT_REQUIRED` | absent/blank. JVM: must be a binary class name (`^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$`), else `ENTRYPOINT_INVALID`. Wasm: an export name `^[A-Za-z_][\w]*$` |
 | `POOL_INVALID` | `pool` present and not a `DnsLabel`. Absent ⇒ `default` (`Manifest.DEFAULT_POOL`) |
-| `LIMIT_INVALID` | a limit present and not a positive integer (zero, negative, fractional, string); message names the limit |
+| `LIMIT_INVALID` | a limit present and not a positive integer that fits an `int` (zero, negative, fractional, string, `5000000000`); message names the limit. The same "fits an `int`" rule holds for every integer in the manifest |
 | `LIMIT_OVER_CEILING` | a limit above the client's ceiling; message names the limit, the value and the ceiling |
 | `LIMIT_NOT_APPLICABLE` | `wasmMemoryMb` on a JVM function |
 | `TRIGGER_INVALID` | `type` absent/unknown; `event` without `eventType`; `schedule` without `cron`; `http` with no routes |
 | `TRIGGER_DUPLICATE` | two `event` triggers with the same `eventType`; more than one `http` trigger |
-| `ROUTE_INVALID` | no methods; an unknown method; `path` not a `RoutePattern` (§5.2); a hostname not a `Hostname` (§5.1); `auth` not `bearer`/`none`; `maxBodyBytes`/`timeoutMs` not positive |
-| `ROUTE_AMBIGUOUS` | two routes in this manifest that share a hostname (or are both private), share a method, and whose patterns are ambiguous (§5.3); message names both patterns |
+| `ROUTE_INVALID` | no methods; an unknown method; a method or a hostname listed twice in one route (each pair becomes an `fn_routes` row, and a duplicate would be a unique violation at publish, not a validation error); `path` not a `RoutePattern` (§5.2); a hostname not a `Hostname` (§5.1); `auth` not `bearer`/`none`; `maxBodyBytes`/`timeoutMs` not positive |
+| `ROUTE_AMBIGUOUS` | two routes in this manifest that share a method and whose patterns are ambiguous (§5.3); message names both patterns. **Hostnames do not separate routes within one function**: the private entry (`/fn/{address}/…`, design §4a) reaches a function by address with no hostname, so every route of the function is a candidate there. A path served on two hostnames is one route listing both |
 | `DB_INVALID` | `name` not a `DnsLabel`, blank `secretRef`, duplicate `name` |
 | `CONFIG_INVALID` | blank or duplicate entries in `config`, `secrets` or `httpAllow` |
 
