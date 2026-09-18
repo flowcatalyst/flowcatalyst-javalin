@@ -23,7 +23,13 @@ public sealed interface DeliveryResult {
     /// "delaySeconds":N]}`, or HTTP 429 (`Retry-After` seconds, or its
     /// default). [ProcessingApi] reschedules to `now + delaySeconds`
     /// spending **no** retry budget (spec §4, §5, §9's second invariant).
-    record Deferred(int delaySeconds) implements DeliveryResult {
+    ///
+    /// `status` is the real HTTP status the subscriber returned (2xx for the
+    /// `ack:false` case, 429 for the rate-limit case) — recorded on the
+    /// attempt row exactly like [Delivered] and [Failed] already record
+    /// theirs, so a deferral is distinguishable on the wire from a transport
+    /// failure, which never received a response at all.
+    record Deferred(int status, int delaySeconds) implements DeliveryResult {
     }
 
     /// Any other outcome: 3xx/4xx/5xx from the subscriber, a timeout, or a

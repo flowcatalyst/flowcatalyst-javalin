@@ -401,6 +401,26 @@ class ProcessingApiTest {
         assertThat(after.scheduledFor()).isCloseTo(before.plusSeconds(7), within(Duration.ofSeconds(4)));
     }
 
+    /// (a): a 2xx carrying `{"ack":false}` is a cooperative deferral, not a
+    /// failure — but the subscriber DID answer, and that real HTTP status
+    /// must land on the attempt row exactly like a genuine success or
+    /// failure would. Mutant: pass `null` instead of the real status into
+    /// `recordAttempt` for the `Deferred` branch — this must fail under it.
+    @Test
+    void ackFalseDeferralRecordsTheRealResponseCode() {
+        String id = seedJob(Seed.of(code("proc-defer-rc")));
+        status.set(200);
+        responseBody.set("{\"ack\":false}");
+
+        process(id);
+
+        var attempts = repo.attemptsByJob(id);
+        assertThat(attempts).hasSize(1);
+        assertThat(attempts.getFirst().responseCode())
+                .as("a 2xx ack=false deferral got a real HTTP response and must record it")
+                .isEqualTo(200);
+    }
+
     // ── (e) 429 defers on Retry-After, also without spending budget ────
 
     @Test
@@ -418,6 +438,42 @@ class ProcessingApiTest {
         assertThat(after.status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after.attemptCount()).isZero();
         assertThat(after.scheduledFor()).isCloseTo(before.plusSeconds(11), within(Duration.ofSeconds(4)));
+    }
+
+    /// (b): a 429 got a real HTTP response and must record it. Mutant: pass
+    /// `null` instead of the real status — this must fail under it.
+    @Test
+    void rateLimitedDeferralRecordsTheRealResponseCode() {
+        String id = seedJob(Seed.of(code("proc-429-rc")));
+        status.set(429);
+
+        process(id);
+
+        var attempts = repo.attemptsByJob(id);
+        assertThat(attempts).hasSize(1);
+        assertThat(attempts.getFirst().responseCode())
+                .as("a 429 got a real HTTP response and must record it")
+                .isEqualTo(429);
+    }
+
+    /// (c): the negative case — a genuine transport failure (no HTTP
+    /// response at all) must still record NO response code; carrying the
+    /// real status for a deferral must not mean fabricating one where none
+    /// exists. Port 1 on loopback: nothing listens there, so this is a
+    /// connection failure, not a slow one. Mutant: fabricate a status (e.g.
+    /// 0) for a transport failure — this must fail under it.
+    @Test
+    void transportFailureRecordsNoResponseCode() {
+        String id = seedJob(Seed.of(code("proc-transport-rc")));
+        retarget(id, "http://127.0.0.1:1/hook");
+
+        process(id);
+
+        var attempts = repo.attemptsByJob(id);
+        assertThat(attempts).hasSize(1);
+        assertThat(attempts.getFirst().responseCode())
+                .as("a transport failure never got an HTTP response; response_code must stay unset")
+                .isNull();
     }
 
     // ── (f) group hold-back ──────────────────────────────────────────────

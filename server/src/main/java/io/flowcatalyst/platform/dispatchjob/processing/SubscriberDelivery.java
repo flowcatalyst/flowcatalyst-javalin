@@ -159,12 +159,12 @@ public final class SubscriberDelivery {
         if (status >= 200 && status < 300) {
             Optional<Integer> deferralDelay = parseDeferral(cappedBody);
             if (deferralDelay.isPresent()) {
-                return new DeliveryResult.Deferred(deferralDelay.get());
+                return new DeliveryResult.Deferred(status, deferralDelay.get());
             }
             return new DeliveryResult.Delivered(status, bodyStr);
         }
         if (status == 429) {
-            return new DeliveryResult.Deferred(retryAfterSeconds(response));
+            return new DeliveryResult.Deferred(status, retryAfterSeconds(response));
         }
         // 3xx / 4xx / 5xx: a delivery failure, retried on the fixed ladder
         // (spec §5) until the job's own retry budget is spent.

@@ -275,8 +275,9 @@ public final class ProcessingApi {
             switch (result) {
                 case DeliveryResult.Delivered delivered -> s.repo().recordAttempt(jobId, attemptNumber, true,
                         delivered.status(), delivered.body(), null, null, attemptedAt, completedAt, durationMillis);
-                case DeliveryResult.Deferred ignored -> s.repo().recordAttempt(jobId, attemptNumber, false,
-                        null, null, "subscriber deferred delivery", null, attemptedAt, completedAt, durationMillis);
+                case DeliveryResult.Deferred deferred -> s.repo().recordAttempt(jobId, attemptNumber, false,
+                        deferred.status(), null, "subscriber deferred delivery", null, attemptedAt, completedAt,
+                        durationMillis);
                 case DeliveryResult.Failed failed -> s.repo().recordAttempt(jobId, attemptNumber, false,
                         failed.status(), null, failed.message(), failed.errorType(), attemptedAt, completedAt, durationMillis);
             }
