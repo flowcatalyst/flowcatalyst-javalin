@@ -34,8 +34,9 @@ class DispatchJobTest {
                 "orders", "shipment-1", "https://hook.example/in", Protocol.HTTP_WEBHOOK, "{\"a\":1}",
                 "application/json", true, "evt1", "corr-1", "cli_1", "sub_1", "sa_1", "dpl_1", "group-1",
                 DispatchMode.BLOCK_ON_ERROR, 3, 30, null, 3, RetryStrategy.EXPONENTIAL, status,
-                3, "boom", List.of(new DispatchJob.Metadata("k", "v")), "idem-1", CREATED, CREATED.plusSeconds(60),
-                CREATED.plusSeconds(30), CREATED.plusSeconds(3600), CREATED.plusSeconds(50), CREATED.plusSeconds(60), 1234L);
+                3, "boom", List.of(new DispatchJob.Metadata("k", "v")), "idem-1", "HIGH_PRIORITY", CREATED,
+                CREATED.plusSeconds(60), CREATED.plusSeconds(30), CREATED.plusSeconds(3600), CREATED.plusSeconds(50),
+                CREATED.plusSeconds(60), 1234L);
     }
 
     // ── requeue (spec §2) ──────────────────────────────────────────────────
@@ -63,6 +64,7 @@ class DispatchJobTest {
         assertThat(after.maxRetries()).isEqualTo(3);
         assertThat(after.expiresAt()).isEqualTo(before.expiresAt());
         assertThat(after.lastAttemptAt()).isEqualTo(before.lastAttemptAt());
+        assertThat(after.queue()).as("the job's own priority claim is never mutated by requeue").isEqualTo("HIGH_PRIORITY");
     }
 
     /// Total — no precondition (spec §2, open question 2): every status, terminal or in flight, resets.
@@ -87,6 +89,7 @@ class DispatchJobTest {
         assertThat(after.attemptCount()).isEqualTo(3);
         assertThat(after.scheduledFor()).isEqualTo(before.scheduledFor());
         assertThat(after.id()).isEqualTo(before.id());
+        assertThat(after.queue()).isEqualTo("HIGH_PRIORITY");
     }
 
     @Test
@@ -105,7 +108,7 @@ class DispatchJobTest {
         DispatchJob j = failedJob();
         DispatchJob none = new DispatchJob(j.id(), null, j.kind(), j.code(), null, null, j.targetUrl(), j.protocol(),
                 null, j.payloadContentType(), false, null, null, null, null, null, null, null, DispatchMode.IMMEDIATE,
-                99, 30, null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.PENDING, 0, null, null, null,
+                99, 30, null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.PENDING, 0, null, null, null, null,
                 CREATED, CREATED, null, null, null, null, null);
         assertThat(none.metadata()).isEmpty();
         assertThat(none.isTerminal()).isFalse();

@@ -51,7 +51,7 @@ class PostgresQueuePublisherTest {
     private static PublishedMessage published(String jobId, String clientId, String subscriptionId, String messageGroupId) {
         Message message = new Message(jobId, "pool-code", "auth-token", null, MediationType.HTTP,
                 "http://localhost/api/dispatch/process", messageGroupId, false, DispatchMode.IMMEDIATE);
-        return new PublishedMessage(jobId, Instant.now(), clientId, subscriptionId, message);
+        return new PublishedMessage(jobId, Instant.now(), clientId, subscriptionId, null, message);
     }
 
     private static String queueNameFor(String jobId) {

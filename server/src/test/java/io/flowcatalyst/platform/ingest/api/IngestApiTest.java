@@ -535,7 +535,7 @@ class IngestApiTest {
         return new DispatchJob(id, null, DispatchJobKind.EVENT, code, null, null, "https://target.test/hook",
                 Protocol.HTTP_WEBHOOK, null, "application/json", false, null, null, null, null, null, null,
                 null, DispatchMode.NEXT_ON_ERROR, 99, 30, null, 3, RetryStrategy.EXPONENTIAL,
-                DispatchJobStatus.PENDING, 0, null, List.of(), null, createdAt, createdAt, null, null, null, null, null);
+                DispatchJobStatus.PENDING, 0, null, List.of(), null, null, createdAt, createdAt, null, null, null, null, null);
     }
 
     // ── Dispatch jobs: singular ──────────────────────────────────────────
@@ -616,6 +616,82 @@ class IngestApiTest {
         assertThat(metadata.get(0).get("value").asText()).isEqualTo("1");
         assertThat(metadata.get(1).get("key").asText()).isEqualTo("b");
         assertThat(metadata.get(1).get("value").asText()).isEqualTo("2");
+    }
+
+    // ── Dispatch jobs: queue priority (dispatch-job-priority spec) ──────
+
+    /// T1 (storage half): `queue: HIGH_PRIORITY` on the singular create is
+    /// stored. Mutant: ignore the field on create — this must fail.
+    @Test
+    void singularDispatchJobQueueStoredWhenRecognised() {
+        String code = uniqueType("djqueuehi");
+        var r = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://t","payload":"{}","serviceAccountId":"sa","queue":"HIGH_PRIORITY"}
+                """.formatted(code), DISPATCH_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var row = DB.db.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.CODE.eq(code)).fetchOne();
+        assertThat(row.getQueue()).isEqualTo("HIGH_PRIORITY");
+    }
+
+    /// T2: an absent `queue` stores `null`, never a silently-defaulted
+    /// `DEFAULT` — "not asked for" must stay distinguishable from "asked for
+    /// DEFAULT". Mutant: default the column to `DEFAULT` on create.
+    @Test
+    void singularDispatchJobQueueAbsentStoresNull() {
+        String code = uniqueType("djqueueabsent");
+        var r = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://t","payload":"{}","serviceAccountId":"sa"}
+                """.formatted(code), DISPATCH_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var row = DB.db.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.CODE.eq(code)).fetchOne();
+        assertThat(row.getQueue()).as("an absent queue field must store null, not a defaulted value").isNull();
+    }
+
+    /// T3: `queue: "workers-high"` is a 400 naming the field, on both the
+    /// singular and batch endpoints, and no job row is written either way.
+    /// Mutant: accept any string.
+    @Test
+    void dispatchJobInvalidQueueRejectedOnBothEndpointsWritingNothing() {
+        String singularCode = uniqueType("djqueuebadsingular");
+        var r1 = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://t","payload":"{}","serviceAccountId":"sa","queue":"workers-high"}
+                """.formatted(singularCode), DISPATCH_WRITER);
+        assertThat(r1.statusCode()).isEqualTo(400);
+        assertThat(json(r1).get("error").asText()).isEqualTo("INVALID_QUEUE");
+        assertThat(json(r1).get("message").asText()).as("the 400 must name the offending field").contains("queue");
+        assertThat(countJobsByCode(singularCode)).isEqualTo(0);
+
+        String batchCode = uniqueType("djqueuebadbatch");
+        var r2 = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://t","queue":"workers-high"}]}
+                """.formatted(batchCode), DISPATCH_WRITER);
+        assertThat(r2.statusCode()).isEqualTo(400);
+        assertThat(json(r2).get("error").asText()).isEqualTo("INVALID_QUEUE");
+        assertThat(countJobsByCode(batchCode)).as("an invalid queue must not persist a job row on the batch path either")
+                .isEqualTo(0);
+    }
+
+    /// T4: a batch's per-item `queue` is honoured independently — one item
+    /// HIGH_PRIORITY, one absent — not the first item's value applied to
+    /// every job. Mutant: read the first item's value for all.
+    @Test
+    void dispatchBatchPerItemQueueIsHonouredIndependently() {
+        String hiCode = uniqueType("djqueueitemhi");
+        String absentCode = uniqueType("djqueueitemabsent");
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[
+                    {"code":"%s","targetUrl":"https://target.test/hook","queue":"HIGH_PRIORITY"},
+                    {"code":"%s","targetUrl":"https://target.test/hook"}
+                ]}
+                """.formatted(hiCode, absentCode), DISPATCH_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+
+        var hiRow = DB.db.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.CODE.eq(hiCode)).fetchOne();
+        assertThat(hiRow.getQueue()).as("the first item's HIGH_PRIORITY must be honoured").isEqualTo("HIGH_PRIORITY");
+
+        var absentRow = DB.db.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.CODE.eq(absentCode)).fetchOne();
+        assertThat(absentRow.getQueue()).as("the second item's absent queue must stay absent, not inherit the first's")
+                .isNull();
     }
 
     @Test

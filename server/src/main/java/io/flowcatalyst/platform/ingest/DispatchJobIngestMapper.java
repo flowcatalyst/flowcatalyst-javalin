@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.Protocol;
 import io.flowcatalyst.platform.dispatchjob.RetryStrategy;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
+import io.flowcatalyst.platform.shared.dispatch.QueuePriority;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
@@ -54,14 +55,20 @@ public final class DispatchJobIngestMapper {
             int maxRetries,
             String retryStrategy,
             List<DispatchJob.Metadata> metadata,
-            String idempotencyKey) {
+            String idempotencyKey,
+            String queue) {
     }
 
-    /// @throws UseCaseException validation `INVALID_KIND` | `INVALID_RETRY_STRATEGY`
+    /// @throws UseCaseException validation `INVALID_KIND` | `INVALID_RETRY_STRATEGY` | `INVALID_QUEUE`
     public static DispatchJob toJob(RawItem it) {
         DispatchJobKind kind = DispatchJobKind.parseStrict(it.kind());
         DispatchMode mode = DispatchMode.parse(it.mode());
         RetryStrategy retryStrategy = RetryStrategy.parseStrict(it.retryStrategy());
+        // dispatch-job-priority spec R3: validated the same way a subscription's is
+        // (QueuePriority.parse) — DEFAULT | HIGH_PRIORITY only, case-insensitive; absent/blank
+        // stores null so "not asked for" stays distinguishable from an explicit DEFAULT.
+        QueuePriority queuePriority = QueuePriority.parse(it.queue());
+        String queue = queuePriority == null ? null : queuePriority.name();
         String payloadContentType = blank(it.payloadContentType()) == null
                 ? DispatchJob.DEFAULT_PAYLOAD_CONTENT_TYPE
                 : it.payloadContentType();
@@ -83,7 +90,7 @@ public final class DispatchJobIngestMapper {
                 Protocol.HTTP_WEBHOOK, it.payload(), payloadContentType, it.dataOnly(), it.eventId(),
                 it.correlationId(), it.clientId(), it.subscriptionId(), it.serviceAccountId(), it.dispatchPoolId(),
                 it.messageGroup(), mode, sequence, timeoutSeconds, null, maxRetries, retryStrategy,
-                DispatchJobStatus.PENDING, 0, null, it.metadata(), it.idempotencyKey(), now, now,
+                DispatchJobStatus.PENDING, 0, null, it.metadata(), it.idempotencyKey(), queue, now, now,
                 null, null, null, null, null);
     }
 

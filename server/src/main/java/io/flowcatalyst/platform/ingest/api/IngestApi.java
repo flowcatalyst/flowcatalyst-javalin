@@ -194,7 +194,7 @@ public final class IngestApi {
                 req.payload(), req.payloadContentType(), req.dataOnly(), req.eventId(), req.correlationId(),
                 req.clientId(), req.subscriptionId(), req.serviceAccountId(), req.dispatchPoolId(), req.messageGroup(),
                 req.mode(), 0, req.sequence(), req.timeoutSeconds(), req.maxRetries(), req.retryStrategy(),
-                metadataFromMap(req.metadata()), req.idempotencyKey()));
+                metadataFromMap(req.metadata()), req.idempotencyKey(), req.queue()));
         s.dispatchJobRepo().insertBatch(List.of(job));
         ctx.status(201).json(new CreatedResponse(job.id()));
     }
@@ -215,7 +215,7 @@ public final class IngestApi {
                     item.targetUrl(), item.payload(), item.payloadContentType(), item.dataOnly(), item.eventId(),
                     item.correlationId(), item.clientId(), item.subscriptionId(), item.serviceAccountId(),
                     item.dispatchPoolId(), item.messageGroup(), item.mode(), item.sequence(), null,
-                    item.timeoutSeconds(), item.maxRetries(), null, item.metadata(), null));
+                    item.timeoutSeconds(), item.maxRetries(), null, item.metadata(), null, item.queue()));
             requireClientAccess(ac, job.clientId());
             jobs.add(job);
         }
@@ -422,7 +422,8 @@ public final class IngestApi {
             int sequence,
             int timeoutSeconds,
             int maxRetries,
-            List<DispatchJob.Metadata> metadata) {
+            List<DispatchJob.Metadata> metadata,
+            String queue) {
     }
 
     public record DispatchJobBatchRequest(List<DispatchJobBatchItem> items) {
@@ -454,7 +455,8 @@ public final class IngestApi {
             String retryStrategy,
             String idempotencyKey,
             String externalId,
-            Map<String, String> metadata) {
+            Map<String, String> metadata,
+            String queue) {
     }
 
     public record CreatedResponse(String id) {

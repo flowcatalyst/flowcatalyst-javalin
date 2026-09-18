@@ -32,10 +32,13 @@ import java.util.Objects;
 ///
 /// ### Priority
 ///
-/// [SubscriptionPriorityCache#priorityFor(String)] (ruling R6): a job with no
-/// subscription, an unresolvable one, a `NULL` stored value, or unrecognised
-/// legacy text (`workers-high`) all read as [QueuePriority#DEFAULT] — never
-/// an error, and never a dropped job.
+/// The job's OWN `queue` wins when it names a recognised value
+/// ([QueuePriority#forJob]); otherwise [SubscriptionPriorityCache#priorityFor(String)]
+/// (ruling R6, dispatch-job-priority spec R4): a job with no queue of its
+/// own falls through to its subscription, and a job with no subscription,
+/// an unresolvable one, a `NULL` stored value, or unrecognised legacy text
+/// anywhere in the chain (`workers-high`) all read as [QueuePriority#DEFAULT]
+/// — never an error, and never a dropped job.
 ///
 /// ### Formatting
 ///
@@ -61,7 +64,9 @@ public final class DispatchDestinationResolver {
     public DispatchQueueName destinationFor(PublishedMessage m) {
         String identifier = tenants.clientIdentifier(m.clientId());
         String tenant = identifier != null ? identifier : ClientIdentifier.RESERVED_PLATFORM;
-        QueuePriority priority = priorities.priorityFor(m.subscriptionId());
+        // R4: the job's own claim wins when it names a recognised priority;
+        // otherwise fall through to the raising subscription's (ruling R6).
+        QueuePriority priority = QueuePriority.forJob(m.queue()).orElseGet(() -> priorities.priorityFor(m.subscriptionId()));
         return DispatchQueueName.compose(settings.prefix(), tenant, priority, settings.sqs());
     }
 }

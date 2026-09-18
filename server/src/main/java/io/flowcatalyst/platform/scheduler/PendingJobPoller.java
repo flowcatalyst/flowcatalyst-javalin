@@ -209,7 +209,7 @@ public final class PendingJobPoller {
         String groupId = (c.messageGroup() == null || c.messageGroup().isEmpty()) ? null : c.messageGroup();
         Message message = new Message(c.id(), poolCode, authToken, null,
                 MediationType.HTTP, processingEndpoint, groupId, false, c.mode());
-        return new PublishedMessage(c.id(), c.createdAt(), c.clientId(), c.subscriptionId(), message);
+        return new PublishedMessage(c.id(), c.createdAt(), c.clientId(), c.subscriptionId(), c.queue(), message);
     }
 
     /// Wraps a claim-transaction JDBC failure — connection acquisition,

@@ -247,6 +247,11 @@ public class MsgDispatchJobs extends TableImpl<MsgDispatchJobsRecord> {
      */
     public final TableField<MsgDispatchJobsRecord, OffsetDateTime> UPDATED_AT = createField(DSL.name("updated_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
 
+    /**
+     * The column <code>public.msg_dispatch_jobs.queue</code>.
+     */
+    public final TableField<MsgDispatchJobsRecord, String> QUEUE = createField(DSL.name("queue"), SQLDataType.VARCHAR(255), this, "");
+
     private MsgDispatchJobs(Name alias, Table<MsgDispatchJobsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }

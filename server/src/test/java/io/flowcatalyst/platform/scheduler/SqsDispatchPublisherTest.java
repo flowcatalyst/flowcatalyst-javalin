@@ -38,9 +38,17 @@ class SqsDispatchPublisherTest {
     }
 
     private static PublishedMessage published(String jobId, String clientId, String subscriptionId, String messageGroupId) {
+        return published(jobId, clientId, subscriptionId, null, messageGroupId);
+    }
+
+    /// Overload carrying the job's own `queue` claim (dispatch-job-priority
+    /// spec R4) — most tests in this class don't care and use the 4-arg
+    /// overload above (`queue = null`).
+    private static PublishedMessage published(String jobId, String clientId, String subscriptionId, String queue,
+                                               String messageGroupId) {
         Message message = new Message(jobId, "pool-code", "auth-token", null, MediationType.HTTP,
                 "http://localhost/api/dispatch/process", messageGroupId, false, DispatchMode.IMMEDIATE);
-        return new PublishedMessage(jobId, Instant.now(), clientId, subscriptionId, message);
+        return new PublishedMessage(jobId, Instant.now(), clientId, subscriptionId, queue, message);
     }
 
     private static SqsDispatchPublisher publisher(FakeSqsSendClient client) {

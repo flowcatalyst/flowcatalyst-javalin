@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.shared.dispatch;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.util.Locale;
+import java.util.Optional;
 
 /// The subscription's dispatch priority (ruling R1/R1a,
 /// `docs/go-mirror/2026-09-12-dispatch-rulings.md`): which of the client's
@@ -63,6 +64,31 @@ public enum QueuePriority {
         return switch (stored.trim().toUpperCase(Locale.ROOT)) {
             case "HIGH_PRIORITY" -> HIGH_PRIORITY;
             default -> DEFAULT;
+        };
+    }
+
+    /// The **job's own** read counterpart of [#parse] (ruling R4,
+    /// `docs/spec/dispatch-job-priority.md`): reads `msg_dispatch_jobs.queue`
+    /// — distinct from [#forPublishing] because a caller MUST be able to
+    /// tell "the job itself named a recognised priority" from "the job said
+    /// nothing" — an empty [Optional] means the latter, and
+    /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver]
+    /// falls through to the subscription's own priority only in that case
+    /// (R4: job wins when present, subscription decides when absent, else
+    /// `DEFAULT`).
+    ///
+    /// Never throws, for the same reason [#forPublishing] never does: an
+    /// error here would strand a job that happens to carry legacy text in
+    /// its own column rather than simply falling through to the
+    /// subscription lookup.
+    public static Optional<QueuePriority> forJob(String stored) {
+        if (stored == null || stored.isBlank()) {
+            return Optional.empty();
+        }
+        return switch (stored.trim().toUpperCase(Locale.ROOT)) {
+            case "DEFAULT" -> Optional.of(DEFAULT);
+            case "HIGH_PRIORITY" -> Optional.of(HIGH_PRIORITY);
+            default -> Optional.empty();
         };
     }
 }

@@ -157,26 +157,53 @@ class IngestMappingTest {
         assertThat(DispatchJobIngestMapper.toJob(rawJob(it -> it.withId("myjobid12345"))).id()).isEqualTo("myjobid12345");
     }
 
+    // ── Dispatch jobs: queue priority (dispatch-job-priority spec R3) ───
+
+    @Test
+    void queueAbsentOrBlankStoresNull() {
+        assertThat(DispatchJobIngestMapper.toJob(rawJob(it -> it)).queue()).isNull();
+        assertThat(DispatchJobIngestMapper.toJob(rawJob(it -> it.withQueue("  "))).queue()).isNull();
+    }
+
+    @ParameterizedTest(name = "queue \"{0}\" -> {1}")
+    @CsvSource({"DEFAULT, DEFAULT", "default, DEFAULT", "HIGH_PRIORITY, HIGH_PRIORITY", "high_priority, HIGH_PRIORITY"})
+    void queueIsStoredCaseInsensitivelyWhenRecognised(String wire, String expected) {
+        assertThat(DispatchJobIngestMapper.toJob(rawJob(it -> it.withQueue(wire))).queue()).isEqualTo(expected);
+    }
+
+    /// T3: unrecognised legacy text on create is rejected exactly like any
+    /// other bad queue value — R3 validates the same way a subscription's
+    /// does, never silently accepting arbitrary strings the way the READ
+    /// side's `forJob`/`forPublishing` leniency does.
+    @ParameterizedTest
+    @ValueSource(strings = {"workers-high", "low", "NOT_A_QUEUE"})
+    void aNonBlankUnrecognisedQueueIsRejected(String bad) {
+        assertThatThrownBy(() -> DispatchJobIngestMapper.toJob(rawJob(it -> it.withQueue(bad))))
+                .isInstanceOf(UseCaseException.class)
+                .hasMessageContaining("INVALID_QUEUE");
+    }
+
     private static DispatchJobIngestMapper.RawItem rawJob(java.util.function.Function<Raw, Raw> f) {
-        var raw = f.apply(new Raw(null, "EVENT", "", 0, null, 0, 0, null, null));
+        var raw = f.apply(new Raw(null, "EVENT", "", 0, null, 0, 0, null, null, null));
         return new DispatchJobIngestMapper.RawItem(raw.id, null, raw.kind, "it:dispatch:job:created", null, null,
                 "https://target.test/hook", null, raw.payloadContentType, false, null, null, null, null, null, null,
                 null, raw.mode, raw.sequence, raw.sequenceOverride, raw.timeoutSeconds, raw.maxRetries,
-                raw.retryStrategy, List.of(), null);
+                raw.retryStrategy, List.of(), null, raw.queue);
     }
 
     /// A small builder so each defaulting test only names the one field it varies.
     private record Raw(String id, String kind, String payloadContentType, int sequence, Integer sequenceOverride,
-                        int timeoutSeconds, int maxRetries, String retryStrategy, String mode) {
-        Raw withId(String v) { return new Raw(v, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode); }
-        Raw withKind(String v) { return new Raw(id, v, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode); }
-        Raw withPayloadContentType(String v) { return new Raw(id, kind, v, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode); }
-        Raw withSequence(int v) { return new Raw(id, kind, payloadContentType, v, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode); }
-        Raw withSequenceOverride(Integer v) { return new Raw(id, kind, payloadContentType, sequence, v, timeoutSeconds, maxRetries, retryStrategy, mode); }
-        Raw withTimeoutSeconds(int v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, v, maxRetries, retryStrategy, mode); }
-        Raw withMaxRetries(int v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, v, retryStrategy, mode); }
-        Raw withRetryStrategy(String v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, v, mode); }
-        Raw withMode(String v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, v); }
+                        int timeoutSeconds, int maxRetries, String retryStrategy, String mode, String queue) {
+        Raw withId(String v) { return new Raw(v, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode, queue); }
+        Raw withKind(String v) { return new Raw(id, v, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode, queue); }
+        Raw withPayloadContentType(String v) { return new Raw(id, kind, v, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode, queue); }
+        Raw withSequence(int v) { return new Raw(id, kind, payloadContentType, v, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode, queue); }
+        Raw withSequenceOverride(Integer v) { return new Raw(id, kind, payloadContentType, sequence, v, timeoutSeconds, maxRetries, retryStrategy, mode, queue); }
+        Raw withTimeoutSeconds(int v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, v, maxRetries, retryStrategy, mode, queue); }
+        Raw withMaxRetries(int v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, v, retryStrategy, mode, queue); }
+        Raw withRetryStrategy(String v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, v, mode, queue); }
+        Raw withMode(String v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, v, queue); }
+        Raw withQueue(String v) { return new Raw(id, kind, payloadContentType, sequence, sequenceOverride, timeoutSeconds, maxRetries, retryStrategy, mode, v); }
     }
 
     // ── Audit logs (spec §4.3) ───────────────────────────────────────────

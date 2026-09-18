@@ -92,6 +92,14 @@ in.
    two names (R1a) so the SPA's existing `"default"` keeps working.
    ~~*Assumed:*~~ **Ruled (R6):** a job with no subscription, a blank value, or
    an unrecognised one all publish as `DEFAULT`, never an error.
+   **Superseded in part (owner ruling 2026-09-18, `docs/spec/dispatch-job-priority.md`):**
+   the job now carries its own `queue` claim (`msg_dispatch_jobs.queue`,
+   nullable, set at ingest or copied verbatim from the raising subscription
+   by fan-out). At publish, `DispatchDestinationResolver` resolves the job's
+   own queue first (`QueuePriority#forJob`) and falls through to the
+   subscription's (R6, unchanged) only when the job names nothing
+   recognised — so an existing job's priority is no longer tied to its
+   subscription's current value.
 3. **Queues are created lazily**, on first publish, as Integral does. Pairs
    with the router's 2026-09-11 behaviour: a queue that does not exist yet is
    consumed by nobody and alerts no one.

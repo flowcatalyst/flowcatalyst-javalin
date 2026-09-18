@@ -112,7 +112,11 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// not the full [DispatchJob] entity, which the claim query never reads.
     /// `mode` is already parsed here (spec §2 "`dispatchMode` resolution"
     /// starts from the stored raw value); every other nullable component is
-    /// `null` exactly when the column is `NULL`.
+    /// `null` exactly when the column is `NULL`. `queue` is the job's OWN
+    /// raw stored priority claim (dispatch-job-priority spec R4) — carried
+    /// through to [io.flowcatalyst.platform.scheduler.PublishedMessage] so
+    /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver] can
+    /// resolve it ahead of the subscription's.
     public record ClaimRow(
             String id,
             String subscriptionId,
@@ -121,7 +125,8 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
             String dispatchPoolId,
             String clientId,
             Instant createdAt,
-            int sequence) {
+            int sequence,
+            String queue) {
     }
 
     /// The closed set of projection columns a facet may be taken over (spec §3).
@@ -263,6 +268,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         row.put(T.DURATION_MILLIS, j.durationMillis());
         row.put(T.LAST_ERROR, j.lastError());
         row.put(T.IDEMPOTENCY_KEY, j.idempotencyKey());
+        row.put(T.QUEUE, j.queue());
         row.put(T.UPDATED_AT, utc(Instant.now()));
         txDsl.insertInto(T)
                 .set(T.ID, j.id())
@@ -331,6 +337,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .set(T.DURATION_MILLIS, j.durationMillis())
                 .set(T.LAST_ERROR, j.lastError())
                 .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
+                .set(T.QUEUE, j.queue())
                 .set(T.CREATED_AT, utc(j.createdAt()))
                 .set(T.UPDATED_AT, utc(j.updatedAt()))
                 .onConflict(T.ID, T.CREATED_AT).doNothing();
@@ -412,7 +419,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     public List<ClaimRow> claimPending(DbTx tx, int batchSize) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
         return txDsl.select(T.ID, T.SUBSCRIPTION_ID, T.MESSAGE_GROUP, T.MODE, T.DISPATCH_POOL_ID, T.CLIENT_ID,
-                        T.CREATED_AT, T.SEQUENCE)
+                        T.CREATED_AT, T.SEQUENCE, T.QUEUE)
                 .from(T)
                 .where(T.STATUS.eq(DispatchJobStatus.PENDING.name()))
                 .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
@@ -428,7 +435,8 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                         r.get(T.DISPATCH_POOL_ID),
                         r.get(T.CLIENT_ID),
                         r.get(T.CREATED_AT).toInstant(),
-                        r.get(T.SEQUENCE) == null ? 0 : r.get(T.SEQUENCE)));
+                        r.get(T.SEQUENCE) == null ? 0 : r.get(T.SEQUENCE),
+                        r.get(T.QUEUE)));
     }
 
     /// Marks the survivors of one poll tick `QUEUED` (spec §3, step 4), in
@@ -684,6 +692,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getLastError(),
                 fromJsonb(row.getMetadata()),
                 row.getIdempotencyKey(),
+                row.getQueue(),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant(),
                 instant(row.getScheduledFor()),

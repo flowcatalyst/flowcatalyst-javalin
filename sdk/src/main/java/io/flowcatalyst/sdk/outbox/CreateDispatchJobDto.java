@@ -59,6 +59,7 @@ public final class CreateDispatchJobDto {
     private String idempotencyKey;
     private String externalId;
     private String connectionId;
+    private String queue;
 
     private CreateDispatchJobDto() {}
 
@@ -87,6 +88,7 @@ public final class CreateDispatchJobDto {
         c.idempotencyKey = idempotencyKey;
         c.externalId = externalId;
         c.connectionId = connectionId;
+        c.queue = queue;
         return c;
     }
 
@@ -224,6 +226,19 @@ public final class CreateDispatchJobDto {
         return c;
     }
 
+    /**
+     * The job's own dispatch priority: {@code DEFAULT} or {@code HIGH_PRIORITY},
+     * matched ignoring case. Unset stays absent — never silently defaulted — so
+     * "not asked for" stays distinguishable from an explicit {@code DEFAULT}
+     * (docs/spec/dispatch-job-priority.md R3). Wins over the target
+     * subscription's own priority at publish time when set.
+     */
+    public CreateDispatchJobDto withQueue(String queue) {
+        CreateDispatchJobDto c = copy();
+        c.queue = queue;
+        return c;
+    }
+
     public String messageGroup() {
         return messageGroup;
     }
@@ -254,6 +269,7 @@ public final class CreateDispatchJobDto {
         putIfNotNull(payload, "idempotencyKey", idempotencyKey);
         putIfNotNull(payload, "externalId", externalId);
         putIfNotNull(payload, "connectionId", connectionId);
+        putIfNotNull(payload, "queue", queue);
         return payload;
     }
 

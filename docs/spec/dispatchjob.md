@@ -75,6 +75,7 @@ to one partition.
 | `attempts` | list of [Attempt](#12-attempt) | — | **never hydrated on the job** (Go never loads them into the entity; the detail response therefore never carries `attempts`); read via the attempts route |
 | `metadata` | list of `{key, value}` | `metadata` (JSONB array) | SDK wire shape is an **array of pairs**, not an object; `NULL`/`[]`/absent → empty list; written back as `[]` when empty |
 | `idempotencyKey` | string, optional | `idempotency_key` | |
+| `queue` | `DEFAULT` \| `HIGH_PRIORITY` \| legacy text, optional | `queue` | the job's OWN dispatch priority claim (`docs/spec/dispatch-job-priority.md` R1); `NULL` is the legacy state, not an error. Set at ingest (validated, `QueuePriority.parse`) or copied verbatim from the raising subscription by fan-out (R2); never mutated afterward. Wins over the subscription's own priority at publish time when it names a recognised value (R4, `QueuePriority#forJob`) |
 | `createdAt`, `updatedAt` | timestamps | | `created_at` is the partition key and half the primary key — immutable |
 | `scheduledFor` | timestamp, optional | `scheduled_for` | the poller only claims `PENDING` rows whose `scheduled_for` is `NULL` or due |
 | `expiresAt` | timestamp, optional | `expires_at` | |

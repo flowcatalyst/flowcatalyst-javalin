@@ -46,6 +46,14 @@ import java.util.Objects;
 /// @param lastError          last failure message, `null` when none
 /// @param metadata           SDK key/value tags, never `null`
 /// @param idempotencyKey     optional dedup key
+/// @param queue              the job's OWN dispatch priority claim — `DEFAULT` /
+///                            `HIGH_PRIORITY` / unrecognised legacy text, or
+///                            `null` for the legacy state (dispatch-job-priority
+///                            spec R1). Set at ingest (directly, or copied
+///                            verbatim from the raising subscription by
+///                            fan-out, R2) and never mutated afterward; wins
+///                            over the subscription's own priority at publish
+///                            time when it names a recognised value (R4)
 /// @param createdAt          creation time — the partition key
 /// @param updatedAt          last change
 /// @param scheduledFor       earliest (re)dispatch time, `null` = now
@@ -83,6 +91,7 @@ public record DispatchJob(
         String lastError,
         List<Metadata> metadata,
         String idempotencyKey,
+        String queue,
         Instant createdAt,
         Instant updatedAt,
         Instant scheduledFor,
@@ -133,7 +142,7 @@ public record DispatchJob(
         return new DispatchJob(id, externalId, kind, code, source, subject, targetUrl, protocol, payload,
                 payloadContentType, dataOnly, eventId, correlationId, clientId, subscriptionId, serviceAccountId,
                 dispatchPoolId, messageGroup, mode, sequence, timeoutSeconds, schemaId, maxRetries, retryStrategy,
-                DispatchJobStatus.PENDING, 0, null, metadata, idempotencyKey, createdAt, Instant.now(),
+                DispatchJobStatus.PENDING, 0, null, metadata, idempotencyKey, queue, createdAt, Instant.now(),
                 null, expiresAt, lastAttemptAt, null, null);
     }
 
@@ -157,7 +166,7 @@ public record DispatchJob(
         return new DispatchJob(id, externalId, kind, code, source, subject, targetUrl, protocol, payload,
                 payloadContentType, dataOnly, eventId, correlationId, clientId, subscriptionId, serviceAccountId,
                 dispatchPoolId, messageGroup, mode, sequence, timeoutSeconds, schemaId, maxRetries, retryStrategy,
-                newStatus, attemptCount, lastError, metadata, idempotencyKey, createdAt, now,
+                newStatus, attemptCount, lastError, metadata, idempotencyKey, queue, createdAt, now,
                 scheduledFor, expiresAt, lastAttemptAt, now, durationMillis);
     }
 }

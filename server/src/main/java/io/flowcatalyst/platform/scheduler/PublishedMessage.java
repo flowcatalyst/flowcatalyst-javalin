@@ -25,9 +25,14 @@ import java.util.Objects;
 ///                       job has none) — carried so [SqsDispatchPublisher]
 ///                       can resolve the job's dispatch priority (ruling R6);
 ///                       likewise unused by the other two publishers
+/// @param queue          the claimed row's OWN raw stored `queue` value
+///                       (`null` when the job has none) — consulted by
+///                       [DispatchDestinationResolver] AHEAD of `subscriptionId`
+///                       (dispatch-job-priority spec R4): a job that names a
+///                       recognised priority wins over its subscription's
 /// @param message        the wire payload to publish
 public record PublishedMessage(String jobId, Instant createdAt, String clientId, String subscriptionId,
-                               Message message) {
+                               String queue, Message message) {
 
     public PublishedMessage {
         Objects.requireNonNull(jobId, "jobId");

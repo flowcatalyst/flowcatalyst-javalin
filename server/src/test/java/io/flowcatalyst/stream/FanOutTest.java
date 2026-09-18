@@ -124,6 +124,41 @@ class FanOutTest {
         assertThat(job.getUpdatedAt().toInstant()).isEqualTo(createdAt);
     }
 
+    /// T5 (dispatch-job-priority spec R2): a job raised from a
+    /// `HIGH_PRIORITY` subscription carries that value verbatim on its own
+    /// `queue` column; one raised from a subscription with no queue set
+    /// carries none. Mutant: leave the column `null` and rely on the
+    /// publish-time subscription lookup instead — the HIGH_PRIORITY
+    /// assertion below must fail under it.
+    @Test
+    @DisplayName("the raising subscription's queue is copied verbatim onto the job")
+    void subscriptionQueueCopiedVerbatimOntoTheJob() {
+        String type = StreamFixture.type("queuecopy");
+        String hiSubId = StreamFixture.subscription("queuecopy-hi", "https://example.test/hi", DispatchMode.IMMEDIATE,
+                null, type);
+        String loSubId = StreamFixture.subscription("queuecopy-lo", "https://example.test/lo", DispatchMode.IMMEDIATE,
+                null, type);
+        DB.update(MSG_SUBSCRIPTIONS).set(MSG_SUBSCRIPTIONS.QUEUE, "HIGH_PRIORITY")
+                .where(MSG_SUBSCRIPTIONS.ID.eq(hiSubId)).execute();
+        // loSubId's queue stays NULL — the "subscription has none set" case.
+
+        String eventId = StreamFixture.event(type, "test://src", null, null, null, null, null, Instant.now());
+
+        int claimed = fanOut(fixed(hiSubId, loSubId)).step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        var jobs = DB.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.EVENT_ID.eq(eventId)).fetch();
+        assertThat(jobs).hasSize(2);
+        // Collectors.toMap rejects null values (Collectors.java:180) — a HashMap
+        // tolerates the loSubId job's null queue, which is exactly what this pins.
+        var byRaiser = new java.util.HashMap<String, String>();
+        jobs.forEach(r -> byRaiser.put(r.getSubscriptionId(), r.getQueue()));
+        assertThat(byRaiser.get(hiSubId)).as("the HIGH_PRIORITY subscription's job must carry that queue value")
+                .isEqualTo("HIGH_PRIORITY");
+        assertThat(byRaiser).as("a subscription with no queue set must write none onto its job")
+                .containsEntry(loSubId, null);
+    }
+
     @Test
     @DisplayName("an event with no data gets the JSON literal null as its payload")
     void emptyDataBecomesJsonNullLiteral() {

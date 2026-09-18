@@ -170,7 +170,7 @@ public final class FanOut implements Projector.Step {
         var insert = txDsl.insertInto(D, D.ID, D.CODE, D.SOURCE, D.SUBJECT, D.EVENT_ID, D.CORRELATION_ID,
                 D.CLIENT_ID, D.MESSAGE_GROUP, D.PAYLOAD, D.TARGET_URL, D.DATA_ONLY, D.SERVICE_ACCOUNT_ID,
                 D.SUBSCRIPTION_ID, D.DISPATCH_POOL_ID, D.SEQUENCE, D.TIMEOUT_SECONDS, D.MAX_RETRIES, D.MODE,
-                D.PROTOCOL, D.STATUS, D.IDEMPOTENCY_KEY, D.CREATED_AT, D.UPDATED_AT);
+                D.PROTOCOL, D.STATUS, D.IDEMPOTENCY_KEY, D.QUEUE, D.CREATED_AT, D.UPDATED_AT);
         int jobCount = 0;
         for (ClaimedEvent event : claimed) {
             for (Subscription sub : subs) {
@@ -178,11 +178,14 @@ public final class FanOut implements Projector.Step {
                     continue;
                 }
                 OffsetDateTime createdAt = event.createdAt().atOffset(ZoneOffset.UTC);
+                // The raising subscription's queue is copied verbatim onto the job
+                // (dispatch-job-priority spec R2) — including `null`, and including
+                // legacy text the read side alone tolerates (spec R4).
                 insert = insert.values(Tsid.generate(), event.type(), event.source(), event.subject(), event.id(),
                         event.correlationId(), event.clientId(), event.messageGroup(), payloadOf(event.data()),
                         sub.endpoint(), sub.dataOnly(), sub.serviceAccountId(), sub.id(), sub.dispatchPoolId(),
                         sub.sequence(), sub.timeoutSeconds(), sub.maxRetries(), sub.mode().name(), "HTTP_WEBHOOK",
-                        "PENDING", event.id() + ":" + sub.id(), createdAt, createdAt);
+                        "PENDING", event.id() + ":" + sub.id(), sub.queue(), createdAt, createdAt);
                 jobCount++;
             }
         }

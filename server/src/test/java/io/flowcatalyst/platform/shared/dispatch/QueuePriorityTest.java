@@ -9,6 +9,8 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Optional;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -79,6 +81,30 @@ class QueuePriorityTest {
     @ValueSource(strings = {"HIGH_PRIORITY", "high_priority", "  High_Priority  "})
     void forPublishingStillRoutesTheHighPriorityLane(String stored) {
         assertThat(QueuePriority.forPublishing(stored)).isEqualTo(QueuePriority.HIGH_PRIORITY);
+    }
+
+    // ── forJob (ruling R4, dispatch-job-priority spec) ──────────────────────
+
+    /// [QueuePriority#forJob] distinguishes "the job named a recognised
+    /// priority" from "the job said nothing" — unlike [#forPublishing], it
+    /// must report [Optional#empty()] rather than silently defaulting, so
+    /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver] knows
+    /// to fall through to the subscription.
+    @Test
+    void forJobIsEmptyForNilBlankOrUnrecognisedLegacyText() {
+        assertThat(QueuePriority.forJob(null)).isEmpty();
+        assertThat(QueuePriority.forJob("  ")).isEmpty();
+        assertThat(QueuePriority.forJob("workers-high")).isEmpty();
+    }
+
+    @ParameterizedTest(name = "forJob(\"{0}\") = {1}")
+    @CsvSource({
+            "DEFAULT, DEFAULT",
+            "Default, DEFAULT",
+            "HIGH_PRIORITY, HIGH_PRIORITY",
+            "high_priority, HIGH_PRIORITY"})
+    void forJobRecognisesBothNamesCaseInsensitively(String stored, QueuePriority expected) {
+        assertThat(QueuePriority.forJob(stored)).contains(expected);
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {

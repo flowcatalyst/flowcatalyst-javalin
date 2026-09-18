@@ -31,7 +31,7 @@ accident?**).
 | `eventTypes` | list of binding | ≥ 1 on create; replaced wholesale on update/sync |
 | `connectionId` | string, optional | not a foreign key; validated to exist **only by sync** (`CONNECTION_NOT_FOUND`), not by admin create/update — **load-bearing or accident?** |
 | `endpoint` | string, required | column `target`; admin create/update require `^https?://.+`; sync requires non-blank only (**accident?**) |
-| `queue` | string, optional | read-only; nothing sets it. **accident?** |
+| `queue` | string, optional | written by admin create/update (R1, `docs/spec/deployed-dispatch.md` §3) — this row predates that ruling. A dispatch job raised from this subscription copies `queue` onto its own `msg_dispatch_jobs.queue` verbatim at fan-out (R2) and, since owner ruling 2026-09-18, the job's own copy wins over this column at publish time (R4, `docs/spec/dispatch-job-priority.md`) — editing or deleting a subscription no longer moves an already-created job's priority. |
 | `customConfig` | list of `{key, value}` | free-form key/values; replaced wholesale |
 | `source` | `CODE` \| `API` \| `UI` | `UI` from the admin API, `API` from sync; `CODE` is read-only legacy |
 | `status` | `ACTIVE` \| `PAUSED` | default `ACTIVE` |
