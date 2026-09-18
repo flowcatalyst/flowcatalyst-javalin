@@ -31,7 +31,7 @@ Items tagged **[owner?]** are "load-bearing or accident?" questions.
 | Current key | env `FLOWCATALYST_APP_KEY` | `FromEnv` |
 | Previous key | env `FLOWCATALYST_APP_KEY_PREVIOUS`, optional, **at most one** | `FromEnv` wraps it as a one-element list; `WithPreviousKeys` accepts N but nothing calls it with N > 1 |
 | Unset / empty current key | encryption **disabled** — no service; callers refuse to *write* plaintext secrets and fail closed on reads | `FromEnv` → `nil, nil`; `token.go:281` `verifyClientSecret` → false; `oidc.go:196` error; `mfa` TOTP disabled |
-| Malformed current or previous key | boot error | `wire_services.go:92` returns the error (fatal); two sites discarded it. **Ruled 2026-09-08: fatal everywhere** — a key that cannot decrypt is worse than no key, and silently continuing gives a process that fails closed on every read with nothing naming the bad key. Java was already fatal everywhere; Go's two sites are fixed in `docs/go-mirror/2026-09-08-encryption-rulings.patch` (`wire_routes.go` now reuses the service `wire_services` already validated; `serviceaccount.NewRepository` uses the new `encryption.MustFromEnv`). `cmd/fcdev` already handled it. An *unset* key is still the documented disabled state, not an error. |
+| Malformed current or previous key | boot error | `wire_services.go:92` returns the error (fatal); two sites discarded it. **Ruled 2026-09-08: fatal everywhere** — a key that cannot decrypt is worse than no key, and silently continuing gives a process that fails closed on every read with nothing naming the bad key. Java was already fatal everywhere; Go's two sites were fixed with the 2026-09-08 encryption rulings, now in Go (`wire_routes.go` reuses the service `wire_services` already validated; `serviceaccount.NewRepository` uses `encryption.MustFromEnv`); see `docs/go-mirror/README.md`. `cmd/fcdev` already handled it. An *unset* key is still the documented disabled state, not an error. |
 | Whitespace | Go trims the previous key, not the current one (Go's base64 decoder silently skips `\n`, so a trailing newline still works, a trailing space does not) | `FromEnv`, `decrypt-check/main.go:33` warns about it |
 | `GenerateKey()` | 32 random bytes → padded standard base64 | `encryption.go:176` |
 
@@ -94,8 +94,8 @@ with `0x01` (1 in 256) is misread as v1 and fails to decrypt. GCM
 authentication makes a v0 re-try safe (no false positive is possible), so
 Java **falls back to the v0 reading when the v1 reading fails with every
 key**. **Ruled 2026-09-08: keep Java's fallback, and Go takes it too** — the
-alternative is permanent, silent loss of 1 in 256 legacy v0 rows. Mirrored in
-`docs/go-mirror/2026-09-08-encryption-rulings.patch`; a test pins that
+alternative is permanent, silent loss of 1 in 256 legacy v0 rows. Mirrored in Go with the
+2026-09-08 encryption rulings (`docs/go-mirror/README.md`); a test pins that
 undecryptable data is still rejected after the retry, so the fallback cannot
 manufacture a false positive.
 
@@ -270,7 +270,7 @@ Returns the sealed `Decryption`, never throws for bad data:
 | `Plain` that is not base64 / too short | `Failed(NOT_ENCRYPTED)` |
 | `None` | `Failed(EMPTY)` (Go: "empty ciphertext") |
 | `External` | `External(ref)` — the caller resolves it elsewhere (Go `Decrypt` errors "invalid base64"; the intent is plainly "not inline") |
-| `Literal` | `Plaintext(value)`. **Ruled 2026-09-08: keep Java's** — one shape, one meaning, wherever it is read. Go's `Decrypt` rejected it (only `secrets.Service.Resolve` honoured `literal:`), an artefact of where the prefix was introduced; mirrored in `docs/go-mirror/2026-09-08-encryption-rulings.patch`. |
+| `Literal` | `Plaintext(value)`. **Ruled 2026-09-08: keep Java's** — one shape, one meaning, wherever it is read. Go's `Decrypt` rejected it (only `secrets.Service.Resolve` honoured `literal:`), an artefact of where the prefix was introduced; mirrored in Go with the 2026-09-08 encryption rulings (`docs/go-mirror/README.md`). |
 | `Hashed` | `Failed(HASHED)` — one-way by design; there is no plaintext to recover. Verify it with `verifySecret` (§3.1) instead |
 
 Key order: current first, then previous. Plaintext is UTF-8. Whitespace

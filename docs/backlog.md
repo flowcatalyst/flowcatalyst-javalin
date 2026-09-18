@@ -1182,9 +1182,9 @@ that is not exactly 32 base64 bytes).
 Reachable by POSTing `hashed:v1:…` as `oidcClientSecretRef` or a
 service-account credential. Consequence is mild — the stored value simply
 never verifies — but it is the same class as the closed-prefix ruling of
-2026-09-08. Deliberately **not** in
-`docs/go-mirror/2026-09-08-encryption-rulings.patch`, which is scoped to the
-four rulings you gave; a one-line prefix check fixes it whenever you want it.
+2026-09-08. Deliberately **not** part of the
+2026-09-08 encryption rulings (`docs/go-mirror/README.md`), which were scoped
+to the four rulings you gave; a one-line prefix check fixes it whenever you want it.
 
 ## The per-queue Postgres pool is sized from the wrong quantity (2026-09-08, measured)
 
