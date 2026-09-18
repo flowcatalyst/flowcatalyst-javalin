@@ -1,5 +1,6 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 
@@ -366,6 +367,18 @@ public record Env(
         // `FC_WEBAUTHN_ORIGINS` (comma-separated; alias the legacy singular
         // `FC_WEBAUTHN_RP_ORIGIN`), default `[http://localhost:8080]`; blank entries dropped.
         List<String> webauthnOrigins,
+
+        // ── function registry (docs/spec/function-registry.md §4.6) ──────────
+        // `FC_FN_DEFAULT_MAX_DURATION_MS` (default 30000), `FC_FN_DEFAULT_MAX_CONCURRENCY`
+        // (default 32), `FC_FN_DEFAULT_WASM_MEMORY_MB` (default 64), `FC_FN_DEFAULT_DB_POOL_SIZE`
+        // (default 4), `FC_FN_MAX_WARM_PER_HOST` (default 200): the platform's function-limit
+        // defaults, resolved straight into `FunctionLimits` — whose constructor already refuses
+        // any component `<= 0` (`IllegalArgumentException`), so a set-but-non-positive value is a
+        // startup error the same way a malformed value elsewhere in this file silently falls back
+        // to a default: unparseable input still yields the default (`EnvReader#integer`), but a
+        // parseable non-positive one reaches the record and fails loudly instead of arming a
+        // function pool with a zero or negative limit.
+        FunctionLimits functionLimits,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
         // environment directly, or fcdev's map-loaded environment and the parity
@@ -525,6 +538,13 @@ public record Env(
 
                 e.or("FC_WEBAUTHN_RP_ID", "localhost"),
                 webauthnOrigins(e),
+
+                new FunctionLimits(
+                        e.integer("FC_FN_DEFAULT_MAX_DURATION_MS", FunctionLimits.DEFAULT_MAX_DURATION_MS),
+                        e.integer("FC_FN_DEFAULT_MAX_CONCURRENCY", FunctionLimits.DEFAULT_MAX_CONCURRENCY),
+                        e.integer("FC_FN_DEFAULT_WASM_MEMORY_MB", FunctionLimits.DEFAULT_WASM_MEMORY_MB),
+                        e.integer("FC_FN_DEFAULT_DB_POOL_SIZE", FunctionLimits.DEFAULT_DB_POOL_SIZE),
+                        e.integer("FC_FN_MAX_WARM_PER_HOST", FunctionLimits.DEFAULT_MAX_WARM_PER_HOST)),
                 e
         );
     }

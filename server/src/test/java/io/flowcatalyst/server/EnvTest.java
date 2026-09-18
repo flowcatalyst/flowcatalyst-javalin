@@ -1,5 +1,6 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.function.FunctionLimits;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -7,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EnvTest {
 
@@ -116,6 +118,41 @@ class EnvTest {
 
         assertThat(env.webauthnRpId()).isEqualTo("localhost");
         assertThat(env.webauthnOrigins()).containsExactly("http://localhost:8080");
+
+        assertThat(env.functionLimits()).isEqualTo(FunctionLimits.defaults());
+    }
+
+    /// spec `function-registry.md` §4.6: each `FC_FN_*` var overrides its own
+    /// default, and a set-but-non-positive value is a startup error — the
+    /// [FunctionLimits] constructor throws, the same way a malformed value
+    /// elsewhere in `Env` reaches a value object that refuses to start
+    /// (`TokenIssuer.Config`) rather than silently keeping the default.
+    @Test
+    void functionLimitsOverridesEachVarAndRejectsANonPositiveValue() {
+        var env = load(
+                "FC_FN_DEFAULT_MAX_DURATION_MS", "1000",
+                "FC_FN_DEFAULT_MAX_CONCURRENCY", "5",
+                "FC_FN_DEFAULT_WASM_MEMORY_MB", "16",
+                "FC_FN_DEFAULT_DB_POOL_SIZE", "2",
+                "FC_FN_MAX_WARM_PER_HOST", "50");
+        assertThat(env.functionLimits()).isEqualTo(new FunctionLimits(1000, 5, 16, 2, 50));
+
+        // Unparseable falls back to the default, like every other integer var.
+        assertThat(load("FC_FN_DEFAULT_MAX_CONCURRENCY", "not-a-number").functionLimits().maxConcurrency())
+                .isEqualTo(FunctionLimits.DEFAULT_MAX_CONCURRENCY);
+
+        // Parseable but <= 0 reaches FunctionLimits' constructor and throws —
+        // a startup error, not a silent fallback to the default.
+        assertThatThrownBy(() -> load("FC_FN_DEFAULT_MAX_CONCURRENCY", "0"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("maxConcurrency");
+        assertThatThrownBy(() -> load("FC_FN_DEFAULT_MAX_DURATION_MS", "-1"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("maxDurationMs");
+        assertThatThrownBy(() -> load("FC_FN_DEFAULT_WASM_MEMORY_MB", "0"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("wasmMemoryMb");
+        assertThatThrownBy(() -> load("FC_FN_DEFAULT_DB_POOL_SIZE", "0"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("dbPoolSize");
+        assertThatThrownBy(() -> load("FC_FN_MAX_WARM_PER_HOST", "0"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("maxWarmPerHost");
     }
 
     @Test
