@@ -3,6 +3,9 @@ package io.flowcatalyst.platform.dispatchjob.processing;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.db.generated.Tables;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
@@ -13,6 +16,7 @@ import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.router.wire.WebhookSigner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -29,6 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +63,16 @@ class ProcessingApiTest {
     private static TestHttp http;
     private static HmacTokenVerifier verifier;
     private static DispatchJobRepository repo;
+    private static ClientRepository clientRepo;
+    /// A second registration of the same route, wired with a real
+    /// [ClientCodeResolver] over [#clientRepo] instead of
+    /// [ClientCodeResolver#none] — the webhook-client-code tests (T1-T5, T7)
+    /// need an actual `tnt_clients` row to resolve against.
+    private static TestHttp clientCodeHttp;
+    /// `tnt_clients` rows this class inserts directly (bypassing the use-case
+    /// envelope — there is no client-creation flow to exercise here), for
+    /// [#cleanup].
+    private static final List<String> insertedClients = new ArrayList<>();
 
     private static HttpServer subscriber;
     private static String subscriberUrl;
@@ -76,9 +91,16 @@ class ProcessingApiTest {
     static void start() throws IOException {
         repo = new DispatchJobRepository(DS);
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
+        clientRepo = new ClientRepository(DS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
+        });
+        clientCodeHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
+                    DeliveryCredentials.none(), Clock.systemUTC()));
         });
         subscriber = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         // A real executor, not the default in-line one: without it the stand-in
@@ -92,7 +114,11 @@ class ProcessingApiTest {
     @AfterAll
     static void stop() {
         http.close();
+        clientCodeHttp.close();
         subscriber.stop(0);
+        if (!insertedClients.isEmpty()) {
+            DispatchJobFixture.DB.deleteFrom(Tables.TNT_CLIENTS).where(Tables.TNT_CLIENTS.ID.in(insertedClients)).execute();
+        }
     }
 
     @BeforeEach
@@ -155,6 +181,35 @@ class ProcessingApiTest {
                 .execute();
     }
 
+    /// `msg_dispatch_jobs.data_only` defaults to `true` (V1__baseline.sql),
+    /// and [DispatchJobFixture.Seed] never overrides it — every job `seedJob`
+    /// creates is `dataOnly` unless this flips it, which the webhook-client-code
+    /// envelope tests (T1/T2/T3/T5/T6) need to exercise `DeliveryPayload`'s
+    /// non-`dataOnly` branch.
+    private static void setDataOnly(String id, boolean dataOnly) {
+        DispatchJobFixture.DB.update(Tables.MSG_DISPATCH_JOBS)
+                .set(Tables.MSG_DISPATCH_JOBS.DATA_ONLY, dataOnly)
+                .where(Tables.MSG_DISPATCH_JOBS.ID.eq(id))
+                .execute();
+    }
+
+    /// Inserts a `tnt_clients` row directly — a raw insert, not
+    /// `Client.create` + `ClientRepository#persist`, because this unit has no
+    /// unit-of-work wiring and the client aggregate's own invariants are not
+    /// what is under test here ([io.flowcatalyst.platform.client.ClientRepositoryTest]
+    /// is the model for this pattern). Returns the new client's id.
+    private static String insertClient(String identifier) {
+        String id = EntityType.CLIENT.generate();
+        DispatchJobFixture.DB.insertInto(Tables.TNT_CLIENTS)
+                .set(Tables.TNT_CLIENTS.ID, id)
+                .set(Tables.TNT_CLIENTS.NAME, "Processing test client " + identifier)
+                .set(Tables.TNT_CLIENTS.IDENTIFIER, identifier)
+                .set(Tables.TNT_CLIENTS.STATUS, "ACTIVE")
+                .execute();
+        insertedClients.add(id);
+        return id;
+    }
+
     private static DispatchJob reload(String id) {
         return repo.findById(id).orElseThrow();
     }
@@ -168,8 +223,15 @@ class ProcessingApiTest {
     }
 
     private static HttpResponse<String> process(String jobId) {
+        return process(http, jobId);
+    }
+
+    /// Same call, against a caller-chosen [TestHttp] — the webhook-client-code
+    /// tests each need their own `ProcessingApi.State` (a real or fake
+    /// [ClientCodeResolver]) rather than the class's default [#http].
+    private static HttpResponse<String> process(TestHttp httpClient, String jobId) {
         String body = "{\"messageId\":\"%s\"}".formatted(jobId);
-        return http.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(jobId));
+        return httpClient.post("/api/dispatch/process", body, "Authorization", "Bearer " + verifier.sign(jobId));
     }
 
     // ── (a) valid token, subscriber 200 ─────────────────────────────────
@@ -421,7 +483,7 @@ class ProcessingApiTest {
         try (TestHttp signedHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
             ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
-                    new SubscriberDelivery(SubscriberDelivery.defaultClient()), creds, Clock.systemUTC()));
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
         })) {
             String id = seedJob(Seed.of(code("proc-signed")));
 
@@ -638,7 +700,7 @@ class ProcessingApiTest {
         return TestHttp.routes(routes -> {
             HttpError.install(routes);
             ProcessingApi.register(routes,
-                    new ProcessingApi.State(failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient())));
+                    new ProcessingApi.State(failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
         });
     }
 
@@ -733,6 +795,221 @@ class ProcessingApiTest {
             assertThat(repo.attemptsByJob(id)).as("no attempt row").isEmpty();
             assertThat(reload(id).status()).as("job left exactly where a redelivery can pick it up")
                     .isEqualTo(DispatchJobStatus.PENDING);
+        }
+    }
+
+    // ── the delivered webhook names its tenant (docs/spec/webhook-client-code.md) ──
+
+    /// T1 — a client-scoped job's non-`dataOnly` envelope carries `clientCode`
+    /// (the client's `identifier`) alongside the existing `clientId`.
+    /// Mutant: drop the field.
+    @Test
+    void clientScopedEnvelopeCarriesClientCodeAlongsideClientId() {
+        String identifier = "acme-" + RUN;
+        String clientId = insertClient(identifier);
+        String id = seedJob(Seed.of(code("proc-clientcode")).withClientId(clientId));
+        setDataOnly(id, false);
+        status.set(200);
+        lastBody.set(null);
+
+        var r = process(clientCodeHttp, id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        var envelope = Json.MAPPER.readTree(lastBody.get());
+        assertThat(envelope.get("clientId").asText()).isEqualTo(clientId);
+        assertThat(envelope.get("clientCode").asText()).isEqualTo(identifier);
+    }
+
+    /// T2 — a platform-scoped job (no `clientId`) has neither key in its
+    /// envelope AND no `X-FlowCatalyst-Client` header — the header shape the
+    /// envelope alone cannot cover. Mutant: emit the header with an empty half.
+    @Test
+    void platformScopedJobOmitsBothEnvelopeKeysAndTheHeader() {
+        String id = seedJob(Seed.of(code("proc-platformcode")));
+        setDataOnly(id, false);
+        status.set(200);
+        lastBody.set(null);
+        lastHeaders.clear();
+
+        var r = process(clientCodeHttp, id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        var envelope = Json.MAPPER.readTree(lastBody.get());
+        assertThat(envelope.has("clientId")).as("no clientId on a platform-scoped job").isFalse();
+        assertThat(envelope.has("clientCode")).isFalse();
+        assertThat(lastHeaders).doesNotContainKey("x-flowcatalyst-client");
+    }
+
+    /// T3 — the header is exactly `{clientId}:{clientCode}`, not the code
+    /// alone. Mutant: send the code alone.
+    @Test
+    void headerIsExactlyClientIdColonClientCode() {
+        String identifier = "widget-" + RUN;
+        String clientId = insertClient(identifier);
+        String id = seedJob(Seed.of(code("proc-headershape")).withClientId(clientId));
+        setDataOnly(id, false);
+        status.set(200);
+        lastHeaders.clear();
+
+        var r = process(clientCodeHttp, id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(lastHeaders.get("x-flowcatalyst-client"))
+                .as("exact bytes of the header for a sample job")
+                .isEqualTo(clientId + ":" + identifier);
+    }
+
+    /// T4 — a `dataOnly` delivery (the DB default `msg_dispatch_jobs.data_only
+    /// = true` this fixture never overrides here) still carries the header,
+    /// and its body is the raw payload byte-for-byte, untouched by
+    /// `clientCode`. Mutant: skip the header in `dataOnly` mode.
+    @Test
+    void dataOnlyDeliveryKeepsTheRawBodyButStillCarriesTheHeader() {
+        String identifier = "raw-" + RUN;
+        String clientId = insertClient(identifier);
+        String payload = "{\"raw\":true,\"n\":42}";
+        String id = seedJob(Seed.of(code("proc-dataonly")).withClientId(clientId).withPayload(payload));
+        // dataOnly left at the DB default (true) — deliberately not calling setDataOnly.
+        status.set(200);
+        lastBody.set(null);
+        lastHeaders.clear();
+
+        var r = process(clientCodeHttp, id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(new String(lastBody.get(), StandardCharsets.UTF_8))
+                .as("dataOnly body is the raw payload, unchanged")
+                .isEqualTo(payload);
+        assertThat(lastHeaders.get("x-flowcatalyst-client")).isEqualTo(clientId + ":" + identifier);
+    }
+
+    /// T5 — an unresolvable client (a `clientId` with no matching
+    /// `tnt_clients` row): the delivery still happens, with no `clientCode`
+    /// and no header. Mutant: fail or block the delivery.
+    @Test
+    void unresolvableClientStillDeliversWithNeitherCodeNorHeader() {
+        String bogusClientId = "clt_bogus_" + RUN;
+        String id = seedJob(Seed.of(code("proc-unresolvable")).withClientId(bogusClientId));
+        setDataOnly(id, false);
+        status.set(200);
+        lastBody.set(null);
+        lastHeaders.clear();
+
+        var r = process(clientCodeHttp, id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(json(r).get("ack").asBoolean()).isTrue();
+        assertThat(hits.get()).as("the subscriber was still called").isEqualTo(1);
+        var envelope = Json.MAPPER.readTree(lastBody.get());
+        assertThat(envelope.has("clientCode")).isFalse();
+        assertThat(lastHeaders).doesNotContainKey("x-flowcatalyst-client");
+        assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+    }
+
+    /// T6 — caching: two deliveries for the same (resolvable) client perform
+    /// exactly one repository lookup; a client that missed once still
+    /// resolves on a later delivery, proving the miss was not cached.
+    /// Mutant: cache negatives for ever.
+    @Test
+    void oneLookupPerResolvedClientAndAMissDoesNotStickForever() {
+        var lookup = new CountingLookup();
+        try (TestHttp countingHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(lookup)),
+                    DeliveryCredentials.none(), Clock.systemUTC()));
+        })) {
+            // msg_dispatch_jobs.client_id is varchar(17) — these fake ids (never a
+            // real TSID, since CountingLookup ignores the value entirely) must fit.
+            String clientId = "cid-hit-" + RUN;
+            Client resolved = Client.create("Cache test", ClientIdentifier.parse("cache-" + RUN));
+            lookup.client = resolved;
+
+            String id1 = seedJob(Seed.of(code("proc-cache1")).withClientId(clientId));
+            setDataOnly(id1, false);
+            lastHeaders.clear();
+            var r1 = process(countingHttp, id1);
+            assertThat(r1.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("x-flowcatalyst-client")).isEqualTo(clientId + ":" + resolved.identifier());
+
+            String id2 = seedJob(Seed.of(code("proc-cache2")).withClientId(clientId));
+            setDataOnly(id2, false);
+            lastHeaders.clear();
+            var r2 = process(countingHttp, id2);
+            assertThat(r2.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("x-flowcatalyst-client")).isEqualTo(clientId + ":" + resolved.identifier());
+            assertThat(lookup.calls.get())
+                    .as("the second delivery for the same client reused the cached hit — one lookup total")
+                    .isEqualTo(1);
+
+            // A different, still-unresolvable client id: the miss must not stick.
+            String missingClientId = "cid-miss-" + RUN;
+            lookup.client = null;
+            String id3 = seedJob(Seed.of(code("proc-miss1")).withClientId(missingClientId));
+            setDataOnly(id3, false);
+            lastHeaders.clear();
+            var r3 = process(countingHttp, id3);
+            assertThat(r3.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders).as("unresolvable — no header at all").doesNotContainKey("x-flowcatalyst-client");
+
+            Client belated = Client.create("Belated", ClientIdentifier.parse("belated-" + RUN));
+            lookup.client = belated;
+            String id4 = seedJob(Seed.of(code("proc-miss2")).withClientId(missingClientId));
+            setDataOnly(id4, false);
+            lastHeaders.clear();
+            var r4 = process(countingHttp, id4);
+            assertThat(r4.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("x-flowcatalyst-client"))
+                    .as("a client that missed once resolves on a later delivery")
+                    .isEqualTo(missingClientId + ":" + belated.identifier());
+        }
+    }
+
+    /// T7 — `X-FlowCatalyst-Signature` still verifies over the body alone
+    /// even though the `X-FlowCatalyst-Client` header is present. Mutant:
+    /// fold the header into the signed material.
+    @Test
+    void signatureStillVerifiesOverTheBodyAloneWithTheClientHeaderPresent() {
+        String secret = "signing-secret-t7-" + RUN;
+        DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved(null, secret);
+        String identifier = "signed-" + RUN;
+        String clientId = insertClient(identifier);
+        try (TestHttp signedHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
+                    creds, Clock.systemUTC()));
+        })) {
+            String id = seedJob(Seed.of(code("proc-signed-t7")).withClientId(clientId));
+            setDataOnly(id, false);
+            lastHeaders.clear();
+            lastBody.set(null);
+
+            var r = process(signedHttp, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("x-flowcatalyst-client")).isEqualTo(clientId + ":" + identifier);
+            assertThat(lastHeaders).containsKey("x-flowcatalyst-signature");
+
+            String expected = WebhookSigner.sign(secret, lastHeaders.get("x-flowcatalyst-timestamp"), lastBody.get());
+            assertThat(lastHeaders.get("x-flowcatalyst-signature"))
+                    .as("recomputed over the body alone still matches with the header present")
+                    .isEqualTo(expected);
+        }
+    }
+
+    /// A fake [ClientCodeResolver.Lookup] that counts calls and lets the test
+    /// flip whether the client currently "exists" — [#oneLookupPerResolvedClientAndAMissDoesNotStickForever]
+    /// needs to observe the repository call count directly, which a real
+    /// database cannot cheaply offer.
+    private static final class CountingLookup implements ClientCodeResolver.Lookup {
+        final AtomicInteger calls = new AtomicInteger();
+        volatile Client client;
+
+        @Override
+        public Optional<Client> findById(String id) {
+            calls.incrementAndGet();
+            return Optional.ofNullable(client);
         }
     }
 }

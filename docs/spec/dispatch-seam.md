@@ -468,9 +468,21 @@ constraint on `error_type` now rejects outright.
 - Body: `buildPayload` (`processing.go:405-448`) — raw `payload` bytes
   when `data_only`, else a CloudEvents-ish envelope
   `{id, type, attemptNumber, source?, subject?, correlationId?,
-  messageGroup?, clientId?, data?}`. A non-JSON `payload` string passes
-  through as the literal string value of `data` rather than being
-  dropped (`processing.go:433-441`).
+  messageGroup?, clientId?, clientCode?, data?}`. A non-JSON `payload`
+  string passes through as the literal string value of `data` rather
+  than being dropped (`processing.go:433-441`).
+- **`clientCode`** (`docs/spec/webhook-client-code.md`, owner ruling
+  2026-09-18): the resolved client's `identifier` slug, alongside the
+  existing `clientId` — omitted (key absent, not `null`) when the job
+  has no `clientId` or the client cannot be resolved. Resolution is
+  cached in memory (a hit for the process's life; a miss is never
+  cached, so a client created after an earlier miss resolves on the
+  next delivery) rather than paid as a database round trip per job.
+- **`X-FlowCatalyst-Client: {clientId}:{clientCode}`** header — sent
+  whenever the client resolves, **including `data_only` deliveries**
+  (the one case the envelope body cannot cover). Never a half pair: a
+  platform-scoped job or an unresolved client omits the header
+  entirely, never sends the code alone or an empty half.
 - Credentials (`DeliveryCredsResolver`, optional): `Authorization: Bearer
   <SA bearer>` and `X-FlowCatalyst-Signature`/`X-FlowCatalyst-Timestamp`
   (HMAC-SHA256 over `timestamp + body`, millisecond ISO8601 UTC,
@@ -478,6 +490,8 @@ constraint on `error_type` now rejects outright.
   router-spec §4.1) when the resolved credentials carry a signing secret
   (`processing.go:333-353`). Resolver failure or empty creds degrades to
   bare delivery with a warning, not a hard failure (`processing.go:334-337`).
+  **The signature covers the body only** — adding `X-FlowCatalyst-Client`
+  does not change what a subscriber verifies.
 - **No redirects followed**: `CheckRedirect` returns
   `http.ErrUseLastResponse` (`processing.go:101-103`) — matches
   router-spec §4.4's "3xx (any; redirects are never followed)."

@@ -18,6 +18,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 
 /// The processing endpoint's actual webhook client: one POST to a dispatch
@@ -42,9 +43,17 @@ public final class SubscriberDelivery {
     private static final int DEFAULT_RETRY_AFTER_SECONDS = 30;
 
     private final HttpClient client;
+    private final ClientCodeResolver clientCodes;
 
-    public SubscriberDelivery(HttpClient client) {
+    /// `clientCodes` is deliberately required, with no convenience overload
+    /// defaulting it to [ClientCodeResolver#none]: a delivery that silently
+    /// drops `clientCode` and the `X-FlowCatalyst-Client` header looks
+    /// identical to a correct one from in here, so the only way a caller can
+    /// lose the tenant is by saying so at the construction site
+    /// (`docs/spec/webhook-client-code.md` R2).
+    public SubscriberDelivery(HttpClient client, ClientCodeResolver clientCodes) {
         this.client = client;
+        this.clientCodes = Objects.requireNonNull(clientCodes, "clientCodes");
     }
 
     /// Redirects are NEVER followed (spec §5: `CheckRedirect` /
@@ -66,10 +75,14 @@ public final class SubscriberDelivery {
     /// result. `at` is the clock reading used for the signature timestamp
     /// (spec §5) — passed in so tests can pin it.
     public DeliveryResult deliver(DispatchJob job, DeliveryCredentials.Resolved credentials, Instant at) {
-        byte[] body = DeliveryPayload.build(job);
+        // Resolved once per delivery and threaded into both the body (non-dataOnly
+        // envelope) and the header below, so the two can never disagree on whether
+        // this job's client resolved (webhook-client-code spec R1/R2).
+        String clientCode = clientCodes.identifierFor(job.clientId());
+        byte[] body = DeliveryPayload.build(job, clientCode);
         HttpRequest request;
         try {
-            request = buildRequest(job, body, credentials, at);
+            request = buildRequest(job, body, credentials, at, clientCode);
         } catch (RuntimeException e) {
             return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "could not build request: " + e.getMessage());
         }
@@ -89,13 +102,22 @@ public final class SubscriberDelivery {
         }
     }
 
-    private HttpRequest buildRequest(DispatchJob job, byte[] body, DeliveryCredentials.Resolved credentials, Instant at) {
+    private HttpRequest buildRequest(DispatchJob job, byte[] body, DeliveryCredentials.Resolved credentials,
+                                      Instant at, String clientCode) {
         var builder = HttpRequest.newBuilder(URI.create(job.targetUrl()))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .timeout(attemptTimeout(job.timeoutSeconds()))
                 .header("Content-Type", "application/json")
                 .header("X-Dispatch-Job-Id", job.id())
                 .header("X-Event-Type", job.code());
+
+        if (job.clientId() != null && clientCode != null) {
+            // Sent for dataOnly deliveries too — that is the case the envelope body
+            // cannot cover, and the reason this is a header, not just an envelope
+            // field (webhook-client-code spec R2). Never a half pair: a platform-scoped
+            // job (no clientId) or an unresolved client omits the header entirely.
+            builder.header("X-FlowCatalyst-Client", job.clientId() + ":" + clientCode);
+        }
 
         if (credentials.bearerToken() != null && !credentials.bearerToken().isEmpty()) {
             builder.header("Authorization", "Bearer " + credentials.bearerToken());

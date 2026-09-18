@@ -81,6 +81,7 @@ import io.flowcatalyst.platform.dispatch.api.RouterConfigApi;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
+import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
 import io.flowcatalyst.platform.dispatchjob.processing.ProcessingApi;
 import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -445,8 +446,13 @@ public final class Platform {
             // serviceaccount aggregate yet to resolve job -> subscription -> application ->
             // service-account webhook credentials from, so every delivery goes out bare until
             // that aggregate lands.
+            //
+            // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
+            // webhook-client-code spec R3 — the resolver caches a resolved identifier for
+            // the process's life, so this shares the one repository instance rather than a
+            // second copy.
             ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
-                    new SubscriberDelivery(SubscriberDelivery.defaultClient())));
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById))));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
         }
