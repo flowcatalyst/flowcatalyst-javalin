@@ -39,6 +39,7 @@ class CreateDispatchJobDto
         public readonly ?string $idempotencyKey = null,
         public readonly ?string $externalId = null,
         public readonly ?string $connectionId = null,
+        public readonly ?string $queue = null,
     ) {
         QualifiedCode::assert($this->code, 'Dispatch job code');
     }
@@ -93,6 +94,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -125,6 +127,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -157,6 +160,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -189,6 +193,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -221,6 +226,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -254,6 +260,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -286,6 +293,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -318,6 +326,7 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -350,6 +359,7 @@ class CreateDispatchJobDto
             idempotencyKey: $idempotencyKey,
             externalId: $this->externalId,
             connectionId: $this->connectionId,
+            queue: $this->queue,
         );
     }
 
@@ -382,6 +392,46 @@ class CreateDispatchJobDto
             idempotencyKey: $this->idempotencyKey,
             externalId: $this->externalId,
             connectionId: $connectionId,
+            queue: $this->queue,
+        );
+    }
+
+    /**
+     * Set the job's own dispatch priority: DEFAULT or HIGH_PRIORITY, matched
+     * ignoring case. Unset stays absent — never silently defaulted — so "not
+     * asked for" stays distinguishable from an explicit DEFAULT. Wins over
+     * the target subscription's own priority at publish time when set.
+     *
+     * Not validated here: the platform rejects an invalid value, and
+     * duplicating that check client-side would just be another place to drift.
+     */
+    public function withQueue(string $queue): self
+    {
+        return new self(
+            source: $this->source,
+            code: $this->code,
+            targetUrl: $this->targetUrl,
+            payload: $this->payload,
+            dispatchPoolId: $this->dispatchPoolId,
+            subject: $this->subject,
+            correlationId: $this->correlationId,
+            eventId: $this->eventId,
+            metadata: $this->metadata,
+            headers: $this->headers,
+            payloadContentType: $this->payloadContentType,
+            dataOnly: $this->dataOnly,
+            messageGroup: $this->messageGroup,
+            mode: $this->mode,
+            sequence: $this->sequence,
+            timeoutSeconds: $this->timeoutSeconds,
+            maxRetries: $this->maxRetries,
+            retryStrategy: $this->retryStrategy,
+            scheduledFor: $this->scheduledFor,
+            expiresAt: $this->expiresAt,
+            idempotencyKey: $this->idempotencyKey,
+            externalId: $this->externalId,
+            connectionId: $this->connectionId,
+            queue: $queue,
         );
     }
 
@@ -414,6 +464,7 @@ class CreateDispatchJobDto
             'idempotencyKey' => $this->idempotencyKey,
             'externalId' => $this->externalId,
             'connectionId' => $this->connectionId,
+            'queue' => $this->queue,
         ], fn($v) => $v !== null);
     }
 }

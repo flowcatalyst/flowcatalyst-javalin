@@ -8,6 +8,7 @@ import {
 } from "../src/outbox/tsid.js";
 import { CreateEventDto } from "../src/outbox/create-event-dto.js";
 import { CreateAuditLogDto } from "../src/outbox/create-audit-log-dto.js";
+import { CreateDispatchJobDto } from "../src/outbox/create-dispatch-job-dto.js";
 
 // ─── Branded TSIDs ──────────────────────────────────────────────────────────
 
@@ -48,4 +49,18 @@ test("CreateAuditLogDto carries applicationCode + clientCode", () => {
 	const p1 = linked.toPayload();
 	assert.equal(p1.applicationCode, "shop");
 	assert.equal(p1.clientCode, "acme");
+});
+
+test("CreateDispatchJobDto carries an explicit queue but omits an unset one", () => {
+	const base = CreateDispatchJobDto.create(
+		"svc",
+		"app:sub:agg:act",
+		"https://example.com/hook",
+		'{"k":1}',
+		"pool-1",
+	);
+	assert.equal(base.toPayload().queue, undefined, "an unset queue must be omitted, never defaulted");
+
+	const withQueue = base.withQueue("HIGH_PRIORITY");
+	assert.equal(withQueue.toPayload().queue, "HIGH_PRIORITY");
 });

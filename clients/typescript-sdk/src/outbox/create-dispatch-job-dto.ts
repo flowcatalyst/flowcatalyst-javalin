@@ -45,6 +45,7 @@ export class CreateDispatchJobDto {
 	readonly idempotencyKey: string | null;
 	readonly externalId: string | null;
 	readonly connectionId: string | null;
+	readonly queue: string | null;
 
 	private constructor(params: {
 		source: string;
@@ -70,6 +71,7 @@ export class CreateDispatchJobDto {
 		idempotencyKey?: string | null;
 		externalId?: string | null;
 		connectionId?: string | null;
+		queue?: string | null;
 	}) {
 		this.source = params.source;
 		this.code = params.code;
@@ -94,6 +96,7 @@ export class CreateDispatchJobDto {
 		this.idempotencyKey = params.idempotencyKey ?? null;
 		this.externalId = params.externalId ?? null;
 		this.connectionId = params.connectionId ?? null;
+		this.queue = params.queue ?? null;
 	}
 
 	/**
@@ -201,6 +204,19 @@ export class CreateDispatchJobDto {
 		return new CreateDispatchJobDto({ ...this.toParams(), connectionId });
 	}
 
+	/**
+	 * The job's own dispatch priority: `DEFAULT` or `HIGH_PRIORITY`, matched
+	 * ignoring case. Unset stays absent — never silently defaulted — so "not
+	 * asked for" stays distinguishable from an explicit `DEFAULT`. Wins over
+	 * the target subscription's own priority at publish time when set.
+	 *
+	 * Not validated here: the platform rejects an invalid value, and
+	 * duplicating that check client-side would just be another place to drift.
+	 */
+	withQueue(queue: string): CreateDispatchJobDto {
+		return new CreateDispatchJobDto({ ...this.toParams(), queue });
+	}
+
 	/** Build the dispatch job payload for the outbox. Filters out null values. */
 	toPayload(): Record<string, unknown> {
 		return filterNulls({
@@ -227,6 +243,7 @@ export class CreateDispatchJobDto {
 			idempotencyKey: this.idempotencyKey,
 			externalId: this.externalId,
 			connectionId: this.connectionId,
+			queue: this.queue,
 		});
 	}
 
@@ -255,6 +272,7 @@ export class CreateDispatchJobDto {
 			idempotencyKey: this.idempotencyKey,
 			externalId: this.externalId,
 			connectionId: this.connectionId,
+			queue: this.queue,
 		};
 	}
 }
