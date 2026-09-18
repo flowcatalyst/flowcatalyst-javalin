@@ -11,6 +11,13 @@ import io.flowcatalyst.db.generated.tables.AppDocs;
 import io.flowcatalyst.db.generated.tables.AppPlatformConfigAccess;
 import io.flowcatalyst.db.generated.tables.AppPlatformConfigs;
 import io.flowcatalyst.db.generated.tables.AudLogs;
+import io.flowcatalyst.db.generated.tables.FnAliases;
+import io.flowcatalyst.db.generated.tables.FnClientPolicies;
+import io.flowcatalyst.db.generated.tables.FnDomains;
+import io.flowcatalyst.db.generated.tables.FnFunctions;
+import io.flowcatalyst.db.generated.tables.FnHosts;
+import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
 import io.flowcatalyst.db.generated.tables.IamClientAccessGrants;
 import io.flowcatalyst.db.generated.tables.IamLoginAttempts;
@@ -132,6 +139,41 @@ public class Public extends SchemaImpl {
      * The table <code>public.aud_logs</code>.
      */
     public final AudLogs AUD_LOGS = AudLogs.AUD_LOGS;
+
+    /**
+     * The table <code>public.fn_aliases</code>.
+     */
+    public final FnAliases FN_ALIASES = FnAliases.FN_ALIASES;
+
+    /**
+     * The table <code>public.fn_client_policies</code>.
+     */
+    public final FnClientPolicies FN_CLIENT_POLICIES = FnClientPolicies.FN_CLIENT_POLICIES;
+
+    /**
+     * The table <code>public.fn_domains</code>.
+     */
+    public final FnDomains FN_DOMAINS = FnDomains.FN_DOMAINS;
+
+    /**
+     * The table <code>public.fn_functions</code>.
+     */
+    public final FnFunctions FN_FUNCTIONS = FnFunctions.FN_FUNCTIONS;
+
+    /**
+     * The table <code>public.fn_hosts</code>.
+     */
+    public final FnHosts FN_HOSTS = FnHosts.FN_HOSTS;
+
+    /**
+     * The table <code>public.fn_routes</code>.
+     */
+    public final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_versions</code>.
+     */
+    public final FnVersions FN_VERSIONS = FnVersions.FN_VERSIONS;
 
     /**
      * The table <code>public.iam_authorization_codes</code>.
@@ -477,6 +519,13 @@ public class Public extends SchemaImpl {
             AppPlatformConfigAccess.APP_PLATFORM_CONFIG_ACCESS,
             AppPlatformConfigs.APP_PLATFORM_CONFIGS,
             AudLogs.AUD_LOGS,
+            FnAliases.FN_ALIASES,
+            FnClientPolicies.FN_CLIENT_POLICIES,
+            FnDomains.FN_DOMAINS,
+            FnFunctions.FN_FUNCTIONS,
+            FnHosts.FN_HOSTS,
+            FnRoutes.FN_ROUTES,
+            FnVersions.FN_VERSIONS,
             IamAuthorizationCodes.IAM_AUTHORIZATION_CODES,
             IamClientAccessGrants.IAM_CLIENT_ACCESS_GRANTS,
             IamLoginAttempts.IAM_LOGIN_ATTEMPTS,

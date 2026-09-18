@@ -11,6 +11,13 @@ import io.flowcatalyst.db.generated.tables.AppDocs;
 import io.flowcatalyst.db.generated.tables.AppPlatformConfigAccess;
 import io.flowcatalyst.db.generated.tables.AppPlatformConfigs;
 import io.flowcatalyst.db.generated.tables.AudLogs;
+import io.flowcatalyst.db.generated.tables.FnAliases;
+import io.flowcatalyst.db.generated.tables.FnClientPolicies;
+import io.flowcatalyst.db.generated.tables.FnDomains;
+import io.flowcatalyst.db.generated.tables.FnFunctions;
+import io.flowcatalyst.db.generated.tables.FnHosts;
+import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
 import io.flowcatalyst.db.generated.tables.IamClientAccessGrants;
 import io.flowcatalyst.db.generated.tables.IamLoginAttempts;
@@ -117,6 +124,41 @@ public class Tables {
      * The table <code>public.aud_logs</code>.
      */
     public static final AudLogs AUD_LOGS = AudLogs.AUD_LOGS;
+
+    /**
+     * The table <code>public.fn_aliases</code>.
+     */
+    public static final FnAliases FN_ALIASES = FnAliases.FN_ALIASES;
+
+    /**
+     * The table <code>public.fn_client_policies</code>.
+     */
+    public static final FnClientPolicies FN_CLIENT_POLICIES = FnClientPolicies.FN_CLIENT_POLICIES;
+
+    /**
+     * The table <code>public.fn_domains</code>.
+     */
+    public static final FnDomains FN_DOMAINS = FnDomains.FN_DOMAINS;
+
+    /**
+     * The table <code>public.fn_functions</code>.
+     */
+    public static final FnFunctions FN_FUNCTIONS = FnFunctions.FN_FUNCTIONS;
+
+    /**
+     * The table <code>public.fn_hosts</code>.
+     */
+    public static final FnHosts FN_HOSTS = FnHosts.FN_HOSTS;
+
+    /**
+     * The table <code>public.fn_routes</code>.
+     */
+    public static final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_versions</code>.
+     */
+    public static final FnVersions FN_VERSIONS = FnVersions.FN_VERSIONS;
 
     /**
      * The table <code>public.iam_authorization_codes</code>.

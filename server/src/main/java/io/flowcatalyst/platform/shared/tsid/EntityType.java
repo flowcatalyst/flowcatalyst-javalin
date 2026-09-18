@@ -52,7 +52,11 @@ public enum EntityType {
     RESET_APPROVAL_REQUEST("rar"),
     PORTAL_USER("ptu"),
     PORTAL_APP("pta"),
-    APP_DOC("doc");
+    APP_DOC("doc"),
+    FUNCTION("fnc"),
+    FUNCTION_VERSION("fnv"),
+    FUNCTION_DOMAIN("fnd"),
+    FUNCTION_ROUTE("fnr");
 
     private final String prefix;
 

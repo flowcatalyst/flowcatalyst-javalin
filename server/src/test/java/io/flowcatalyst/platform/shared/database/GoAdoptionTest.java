@@ -42,19 +42,29 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V9 even
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V11 even
         // though the Go database already has V2..V7 AND V9's effect (053
         // portal_apps, spec `portal-apps.md`): each of those is idempotent
         // (IF NOT EXISTS / pg_constraint guards) and a no-op here; V8
         // (`mail_outbox`) is a genuinely new, Java-only table this
         // Go-adopted database does not have yet (spec `mail-outbox.md`,
-        // Go mirror item G9) and is created for the first time.
-        assertThat(result.migrationsExecuted).isEqualTo(8);
+        // Go mirror item G9) and is created for the first time. V10
+        // (`msg_dispatch_jobs.queue`, spec `dispatch-job-priority.md`) is also
+        // genuinely new here: the captured `go-schema.sql`/fingerprint fixture
+        // predates Go's own mirroring migration (054_dispatch_job_queue.sql)
+        // that adds the identical column, so on THIS fixture the column does
+        // not exist yet and V10 creates it for the first time, exactly as V8
+        // created mail_outbox. V11 (the seven `fn_` function-registry tables,
+        // spec `function-registry.md` §2) is a genuine addition too — there is
+        // no Go for the function service at all (spec §0), so these tables
+        // never exist on a Go-adopted database and V11 creates them here for
+        // the first time.
+        assertThat(result.migrationsExecuted).isEqualTo(10);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(9);
+        assertThat(applied).hasSize(11);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -74,7 +84,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 9; v++) {
+                for (int v = 2; v <= 11; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -88,6 +98,31 @@ class GoAdoptionTest {
                     WHERE table_schema = 'public' AND table_name = 'mail_outbox'""")) {
                 rs.next();
                 assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
+            }
+            // V10 (`msg_dispatch_jobs.queue`) is also genuinely new here (see the
+            // comment above `migrationsExecuted`): it is not a no-op either, it
+            // adds the column for the first time.
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs'
+                      AND column_name = 'queue'""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("msg_dispatch_jobs.queue created exactly once").isEqualTo(1);
+            }
+            // V11's seven fn_ tables are genuinely new here too (Java-only,
+            // spec `function-registry.md` §0/§2: there is no Go for the
+            // function service at all).
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name LIKE 'fn\\_%' ESCAPE '\\'
+                    ORDER BY table_name""")) {
+                List<String> fnTables = new java.util.ArrayList<>();
+                while (rs.next()) {
+                    fnTables.add(rs.getString(1));
+                }
+                assertThat(fnTables).as("V11 creates each fn_ table exactly once").containsExactly(
+                        "fn_aliases", "fn_client_policies", "fn_domains", "fn_functions", "fn_hosts", "fn_routes",
+                        "fn_versions");
             }
             // V2..V7 and V9 are no-ops on a Go-HEAD database: the schema they add
             // is already there exactly once, not duplicated or altered.
@@ -144,20 +179,33 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(4)).as("chk_msg_dispatch_jobs_kind on the parent").isEqualTo(1);
             }
         }
-        // V2..V7 still change nothing (flyway_schema_history is ignored by the
-        // fingerprint); V8 is the one genuine addition (`mail_outbox`, Go mirror
-        // item G9) — assert the only lines the fingerprint gained are its own.
+        // V2..V7 and V9 still change nothing (flyway_schema_history is ignored by
+        // the fingerprint); V8 (`mail_outbox`), V10 (`msg_dispatch_jobs.queue`)
+        // and V11 (the seven fn_ tables) are the genuine additions on this
+        // fixture — assert the only lines the fingerprint gained are theirs.
+        java.util.Set<String> javaOnlyTables = java.util.Set.of(
+                "mail_outbox", "fn_functions", "fn_versions", "fn_aliases", "fn_hosts", "fn_client_policies",
+                "fn_domains", "fn_routes");
         List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
-        List<String> mailOutboxLines = afterLines.stream()
-                .filter(l -> l.split("\t", -1).length > 1 && l.split("\t", -1)[1].equals("mail_outbox"))
+        List<String> javaOnlyTableLines = afterLines.stream()
+                .filter(l -> l.split("\t", -1).length > 1 && javaOnlyTables.contains(l.split("\t", -1)[1]))
                 .toList();
-        List<String> afterWithoutMailOutbox = afterLines.stream()
-                .filter(l -> !mailOutboxLines.contains(l))
+        List<String> dispatchJobsQueueLines = afterLines.stream()
+                .filter(l -> {
+                    String[] f = l.split("\t", -1);
+                    return f.length > 2 && f[0].equals("COLUMN") && f[1].equals("msg_dispatch_jobs") && f[2].equals("queue");
+                })
                 .toList();
-        assertThat(afterWithoutMailOutbox)
-                .as("V2..V7 change nothing beyond V8's own new mail_outbox table")
+        List<String> newLines = new java.util.ArrayList<>(javaOnlyTableLines);
+        newLines.addAll(dispatchJobsQueueLines);
+        List<String> afterWithoutNewLines = afterLines.stream()
+                .filter(l -> !newLines.contains(l))
+                .toList();
+        assertThat(afterWithoutNewLines)
+                .as("V2..V7 and V9 change nothing beyond V8's/V11's new Java-only tables and V10's new queue column")
                 .containsExactlyInAnyOrderElementsOf(before.lines().toList());
-        assertThat(mailOutboxLines).as("V8 adds the mail_outbox table/columns/constraint/indexes").isNotEmpty();
+        assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V11 adds the fn_ tables").isNotEmpty();
+        assertThat(dispatchJobsQueueLines).as("V10 adds msg_dispatch_jobs.queue").isNotEmpty();
 
         // And a second run is still a no-op.
         assertThat(Migrator.migrate(ds).migrationsExecuted).isZero();
