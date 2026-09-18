@@ -849,8 +849,9 @@ Prometheus rather than busy-but-suppressed. **Q53.**
 Mapping to the wire-visible queue actions: **Ack** on 5, 7, 2″, 9; **Nack**
 on 8; nothing on 2′, 3b-flush, 6-cancel(IMMEDIATE), 10.
 
-**A deferral with a delay skips state 6 — a deliberate Java/Go difference
-(owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md` R1/R2).**
+**A deferral with a delay skips state 6** (owner ruling 2026-09-17,
+`docs/spec/router-deferral-handback.md` R1/R2; ported to Go 2026-09-18 in
+`flowcatalyst-go` `d879b23`, so both implementations now agree).**
 A `Deferred` outcome carrying `delaySeconds > 0` no longer enters
 **Retrying / in backoff** at all: on its first occurrence it goes straight
 from state 4 (**Delivering**) to state 8 (**Nacked**), with `delay` set to
@@ -1347,12 +1348,13 @@ outcome (`ConsumerBuild.Missing`, `RouterManager.ConsumerFactory`):
 Postgres and NATS queues are always treated as existing — this ruling is SQS-
 specific, matching where Integral's lazy-creation behaviour actually lives.
 
-**Nack honours the delay — a deliberate Java/Go difference (owner ruling
-2026-09-17, `docs/spec/router-deferral-handback.md`).** Go's `Nack`/`Defer`
-are a no-op beyond their counters because Go retries a failing message
-in-process and never releases it to the broker while doing so — shortening
-SQS's own visibility timeout here would race that in-memory retry against a
-broker-driven redelivery of the same message. Java's pool now hands a
+**Nack honours the delay** (owner ruling 2026-09-17,
+`docs/spec/router-deferral-handback.md`; ported to Go 2026-09-18 in
+`flowcatalyst-go` `d879b23`, so both now behave the same). Until then Go's
+`Nack`/`Defer` were a no-op beyond their counters, because Go retried a
+failing message in-process and never released it to the broker while doing
+so — shortening SQS's own visibility timeout would have raced that in-memory
+retry against a broker-driven redelivery of the same message. Java's pool now hands a
 deferral naming a delay straight back to the broker on its first occurrence
 (R1/R2, §4.1, §6.5) instead of retrying it in memory, so by the time
 `SqsQueue#nack` runs the router has already given up ownership —
@@ -1408,10 +1410,10 @@ CREATE INDEX IF NOT EXISTS idx_queue_visible
 | Stop | set stopped; close the pool |
 | Dedup interplay | broker id == app id → redeliveries always classify as `Redelivery`; `ExternalRequeue` impossible |
 
-**A returned (nacked-with-a-delay) head blocks its group across polls — a
-deliberate Java/Go difference (owner ruling 2026-09-17,
-`docs/spec/router-deferral-handback.md` R4).** Go's claim eligibility (and
-Java's, until now) only ever checked for an earlier row that is currently
+**A returned (nacked-with-a-delay) head blocks its group across polls**
+(owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md` R4; ported
+to Go 2026-09-18 in `flowcatalyst-go` `d879b23`). Both claims previously
+only ever checked for an earlier row that is currently
 **visible** — a claimed, in-flight head never blocked its successors on a
 later poll either, so "cross-poll group ordering is not enforced" was
 equally true of both states. But a head **returned with a delay** (R1/R2:
@@ -1447,7 +1449,7 @@ scheduler publishes to the same synthesised queue (`server/subsystems.go:96-110`
 | Poll | `Fetch(min(n, max-messages), MaxWait=poll-timeout)`; per msg: metadata error → `Term`; malformed JSON → `Term`; receipt `<stream>:<streamSeq>`; broker id `<streamSeq>:<consumerSeq>`; msg kept in a pending map by receipt |
 | Poll (Java, listener model — owner ruling 2026-09-07, superseding two earlier revisions) | NATS is a genuine subscription, not a poller — polling (`Poll(ctx, max)`, a request-response shape) is an SQS/Postgres limitation, not the design NATS itself calls for. `NatsQueue` opens **one** standing `MessageConsumer` for the queue's whole life (`ConsumerContext#consume(ConsumeOptions, MessageHandler)`, `batchSize=max-messages`): the NATS client keeps a pull request continuously outstanding against the server and hands each message to a handler on its own delivery thread the moment it arrives. The handler's entire job is `buffer.put(msg)` — a `BlockingQueue` bounded at `max-messages` — so `put` blocking when the buffer is full **is** the back-pressure that stops the client asking for more. `poll(max)` is `buffer.take()` (untimed — free on a virtual thread) for the first message, then `drainTo` for up to `max-1` more already sitting in the buffer; there is no poll cycle to time and no `expiresIn` to race, so the two throughput defects the earlier revisions fixed (ephemeral-subscription churn; a no-wait-first fetch still capable of a multi-second tail — see G13's history) cannot recur, because the shape that caused them — this class issuing its own timed pull requests — no longer exists. `close()` interrupts a `poll` parked in `take()` directly (`waitingThread`), rather than relying on an external caller to interrupt the right thread. `poll-timeout-ms` on the URI is **parsed but unused** for NATS — documented on `NatsQueueUri`, never removed as a parameter. Confirmed by bench (`bench/router`, NATS JetStream, 50,000 messages, pool concurrency 256): QUEUES=1 7,671/s (6.4 s), QUEUES=4 6,401/s (6.6 s), QUEUES=8 at 2 CPU 3,959/s (13.3 s) — all pass; QUEUES=8 at 1 CPU 3,338/s (15.08 s, just over the 15 s bar) — a per-second timeline shows a multi-second stall late in the drain (~47.4k/50k, both 1 and 2 CPU) not yet root-caused (candidate: `ConsumeOptions`'s unset `expiresIn` defaulting to 30 s per internal refill cycle) — see G13, `docs/go-mirror/2026-09-06-go-fix-list.md`. |
 | Ack / Nack / Defer | pop pending by receipt (unknown → error); `Ack()`; `NakWithDelay(delay)` if >0 else `Nak()` |
-| Deferral hand-back (R1/R5, owner ruling 2026-09-17, deliberate Java/Go difference, `docs/spec/router-deferral-handback.md`) | `NatsQueue.honoursDelayedReturn()` is `false` — unlike SQS/Postgres (§7.2/§7.3), a `Deferred` outcome naming a delay is **not** handed back to the broker on its first occurrence. NATS keeps the pre-R1 behaviour instead: the pool retries it **in memory** on the `DEFERRED` curve, within `MAX_IN_PIPELINE_ATTEMPTS`, exactly as every other `RETRY_IN_PLACE` outcome does. Deliberate: this stream is one durable WorkQueue consumer with no per-group subject, so the broker enforces no group ordering at all — a nacked head never blocks its successors the way §7.3's claim query blocks Postgres — and every hand-back spends one of `MaxDeliver`'s limited redeliveries, so treating a deferral as a hand-back here would turn "10 in-memory attempts" into "10 deliveries, then silent, permanent redelivery loss" (the redelivery cap below). Go keeps its in-memory deferral loop unconditionally and its SQS `Nack` is a no-op (`internal/queue/sqs/sqs.go:258`), so this row is Java-only; Go has nothing to differ from here. |
+| Deferral hand-back (R1/R5, owner ruling 2026-09-17, owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md`) | `NatsQueue.honoursDelayedReturn()` is `false` — unlike SQS/Postgres (§7.2/§7.3), a `Deferred` outcome naming a delay is **not** handed back to the broker on its first occurrence. NATS keeps the pre-R1 behaviour instead: the pool retries it **in memory** on the `DEFERRED` curve, within `MAX_IN_PIPELINE_ATTEMPTS`, exactly as every other `RETRY_IN_PLACE` outcome does. Deliberate: this stream is one durable WorkQueue consumer with no per-group subject, so the broker enforces no group ordering at all — a nacked head never blocks its successors the way §7.3's claim query blocks Postgres — and every hand-back spends one of `MaxDeliver`'s limited redeliveries, so treating a deferral as a hand-back here would turn "10 in-memory attempts" into "10 deliveries, then silent, permanent redelivery loss" (the redelivery cap below). Go carries the same rule since the 2026-09-18 port (`flowcatalyst-go` `d879b23`): its `queue.Consumer.HonoursDelayedReturn()` answers `false` for NATS too. |
 | ExtendVisibility | `InProgress()` (never called) |
 | Publish | subject = filter with trailing `.>`/`.*` replaced by `.<poolCode>` (or `.default`); returns stream sequence as decimal |
 | Stop | running=false, pending cleared, connection closed |

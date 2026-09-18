@@ -51,7 +51,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /// since R4 (owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md`),
 /// a row nacked with a delay (`receipt_handle IS NULL AND visible_at > now`)
 /// also blocks its group's later rows until it becomes visible again or is
-/// claimed — a deliberate Java/Go difference; Go's claim has no such clause.
+/// claimed. Go's claim carries the same clause since the 2026-09-18 port
+/// (`flowcatalyst-go` `d879b23`).
 public final class PostgresQueue implements Consumer, Publisher {
 
     private static final Logger log = LoggerFactory.getLogger(PostgresQueue.class);
