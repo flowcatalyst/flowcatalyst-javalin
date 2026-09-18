@@ -10,6 +10,7 @@
  */
 
 import type { RbacCatalogue } from "./rbac.js";
+import { parseClientsClaim } from "./oidc/claims.js";
 
 export type PrincipalType = "USER" | "SERVICE";
 export type PrincipalScope = "anchor" | "partner" | "client";
@@ -28,7 +29,16 @@ export interface PrincipalSnapshot<TData = Record<string, unknown>> {
 	scope: PrincipalScope;
 	name: string;
 	email?: string;
+	/** Raw `clients` claim: `"{id}:{code}"` pairs, or `["*"]` for anchor. */
 	clients: string[];
+	/**
+	 * Client ids the principal may access, parsed from {@link clients}. Never
+	 * itself contains `"*"` — anchor access is a separate check on the raw
+	 * {@link clients} claim (`Principal.isAnchor`).
+	 */
+	clientIds: string[];
+	/** Client codes, positionally aligned with {@link clientIds}. */
+	clientCodes: string[];
 	roles: string[];
 	/** Application ids the principal may reach (parsed from the claim). */
 	applications: string[];
@@ -81,6 +91,18 @@ export function buildPrincipal<TData>(opts: BuildOpts<TData>): Principal<TData> 
 	const { snapshot, rbac } = opts;
 	const roleSet = new Set(snapshot.roles);
 	const clientSet = new Set(snapshot.clients);
+	// clientIds/clientCodes are the parsed halves of the "{id}:{code}" pairs
+	// in `clients` (mirroring applications/applicationCodes) — see
+	// `oidc/claims.ts:parseClientsClaim`, which populates them. A session
+	// minted by an older SDK carries neither, so they are re-derived from the
+	// raw claim here rather than silently denying every client until the user
+	// logs in again.
+	const parsed =
+		snapshot.clientIds === undefined && snapshot.clientCodes === undefined
+			? parseClientsClaim(snapshot.clients)
+			: { clientIds: snapshot.clientIds ?? [], clientCodes: snapshot.clientCodes ?? [] };
+	const clientIdSet = new Set(parsed.clientIds);
+	const clientCodeSet = new Set(parsed.clientCodes);
 	const permissionList = rbac ? rbac.resolve(snapshot.roles) : [];
 	const permissionSet = new Set(permissionList);
 	const isAnchor = snapshot.scope === "anchor" || clientSet.has("*");
@@ -106,7 +128,7 @@ export function buildPrincipal<TData>(opts: BuildOpts<TData>): Principal<TData> 
 			return isAnchor;
 		},
 		canAccessClient(clientId) {
-			return isAnchor || clientSet.has(clientId);
+			return isAnchor || clientIdSet.has(clientId) || clientCodeSet.has(clientId);
 		},
 	};
 }

@@ -151,13 +151,19 @@ const flowcatalystAuthImpl: FastifyPluginAsync<FlowcatalystAuthOptions> =
 		await ensureCookiePlugin(fastify);
 
 		const cookieAttrs = resolveCookieAttrs(opts.cookie);
-		const sessionStore =
+		const sessionStore: SessionStore =
 			opts.sessionStore ??
 			new CookieSessionStore({
 				cookieName: opts.cookie.name ?? DEFAULT_COOKIE_NAME,
 				secret: opts.cookie.secret,
 				cookieOptions: cookieAttrs,
 			});
+		// Wire any store-owned periodic maintenance (e.g. PgSessionStore's
+		// expired-row reap) to this plugin instance's lifecycle.
+		sessionStore.startReaper?.();
+		fastify.addHook("onClose", async () => {
+			sessionStore.close?.();
+		});
 
 		const routes = {
 			login: opts.routes?.login ?? DEFAULT_LOGIN,
@@ -487,6 +493,8 @@ function bagToSession(
 			scope: "client",
 			name: "",
 			clients: [],
+			clientIds: [],
+			clientCodes: [],
 			roles: [],
 			applications: [],
 			applicationCodes: [],

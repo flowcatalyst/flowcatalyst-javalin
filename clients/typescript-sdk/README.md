@@ -334,6 +334,26 @@ client. With a server-side store, the cookie contains an opaque session id
 only and the payload (including any size of `sessionData`) lives in the
 backend.
 
+`PgSessionStore` mints a fresh sid on every `write()` (including the
+mid-session token refresh the plugin performs automatically), deleting the
+row it supersedes in the same round trip — a long-lived session never
+orphans one row per rotation. It also carries a periodic sweep of rows past
+`expires_at` (reads already filter those out, so this is about table growth,
+not correctness): the `flowcatalystAuth` plugin starts it automatically when
+the store is registered, and stops it when the Fastify instance closes.
+It defaults to an hourly interval and is `unref()`'d, so it never by itself
+holds the process open; pass `reapIntervalMs` to change the interval or
+`reapIntervalMs: false` to opt out entirely:
+
+```typescript
+new PgSessionStore({
+  executor: pool,
+  cookieName: "fc_session",
+  cookieOptions: { /* ... */ },
+  reapIntervalMs: false, // opt out — sweep expired rows yourself instead
+});
+```
+
 ## Using with Effect
 
 If your project uses [Effect](https://effect.website/), the SDK ships an

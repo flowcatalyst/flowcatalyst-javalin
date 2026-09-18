@@ -42,6 +42,12 @@ export interface FcAccessTokenClaims extends JWTPayload {
 	scope?: string;
 	name: string;
 	email?: string;
+	/**
+	 * Client scope, as `"{id}:{code}"` pairs — or the single `"*"` sentinel
+	 * meaning every client (anchor). Use {@link parseClientsClaim} rather
+	 * than reading it raw for id/code matching; the SDK exposes the parsed
+	 * halves on the principal as `clientIds` and `clientCodes`.
+	 */
 	clients: string[];
 	roles: string[];
 	/**
@@ -173,6 +179,7 @@ export function claimsToSnapshot(
 		name: claims.name,
 		...(claims.email ? { email: claims.email } : {}),
 		clients: claims.clients ?? [],
+		...parseClientsClaim(claims.clients),
 		roles: claims.roles ?? [],
 		...parseApplicationsClaim(claims.applications, claims.all_applications),
 		...(claims.portal_client_id
@@ -227,4 +234,32 @@ export function parseApplicationsClaim(
 		}
 	}
 	return { applications, applicationCodes, allApplications };
+}
+
+/**
+ * Split the `clients` claim into id/code halves, mirroring
+ * {@link parseApplicationsClaim}. `clients` itself is left as the raw claim
+ * on the snapshot (anchor detection reads the `"*"` sentinel off it
+ * directly), so only the parsed halves are returned here — the `"*"`
+ * sentinel is dropped rather than pushed into either list.
+ */
+export function parseClientsClaim(entries: readonly string[] | undefined): {
+	clientIds: string[];
+	clientCodes: string[];
+} {
+	const clientIds: string[] = [];
+	const clientCodes: string[] = [];
+
+	for (const entry of entries ?? []) {
+		if (entry === "*") continue;
+		// First colon only: a client code containing one stays intact.
+		const i = entry.indexOf(":");
+		if (i > 0) {
+			clientIds.push(entry.slice(0, i));
+			clientCodes.push(entry.slice(i + 1));
+		} else if (entry) {
+			clientIds.push(entry);
+		}
+	}
+	return { clientIds, clientCodes };
 }
