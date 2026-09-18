@@ -54,8 +54,9 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static final Set<String> TOP_KEYS = Set.of(
             "runtime", "entrypoint", "pool", "warm", "limits", "triggers", "config", "secrets", "db", "httpAllow");
     private static final Set<String> LIMITS_KEYS = Set.of("maxDurationMs", "maxConcurrency", "wasmMemoryMb");
-    private static final Set<String> TRIGGER_KEYS =
-            Set.of("type", "eventType", "messageGroupKey", "cron", "timezone", "routes");
+    private static final Set<String> EVENT_TRIGGER_KEYS = Set.of("type", "eventType", "messageGroupKey");
+    private static final Set<String> SCHEDULE_TRIGGER_KEYS = Set.of("type", "cron", "timezone");
+    private static final Set<String> HTTP_TRIGGER_KEYS = Set.of("type", "routes");
     private static final Set<String> HTTP_ROUTE_KEYS =
             Set.of("hostnames", "methods", "path", "auth", "cors", "maxBodyBytes", "timeoutMs");
     private static final Set<String> CORS_KEYS = Set.of("origins", "methods", "headers", "allowCredentials");
@@ -268,6 +269,14 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         return new Limits(maxDurationMs, maxConcurrency, wasmMemoryMb);
     }
 
+    /// True when `node` is an integral JSON number that fits a Java `int`
+    /// (spec §4.3 `LIMIT_INVALID`: "fits an `int`" — a value like
+    /// `5000000000` must be rejected, never silently truncated by
+    /// `asInt()`). Shared by every integer field of the manifest.
+    private static boolean fitsInt(JsonNode node) {
+        return node.isIntegralNumber() && node.canConvertToInt();
+    }
+
     /// Absent ⇒ `min(default, ceiling)` (spec §4.6); present ⇒ must be a
     /// positive integer (`LIMIT_INVALID`) not exceeding the ceiling
     /// (`LIMIT_OVER_CEILING`).
@@ -276,7 +285,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (node.isMissingNode() || node.isNull()) {
             return Math.min(defaultValue, ceiling);
         }
-        if (!node.isIntegralNumber() || node.asInt() <= 0) {
+        if (!fitsInt(node) || node.asInt() <= 0) {
             throw UseCaseException.validation("LIMIT_INVALID", key + " must be a positive integer");
         }
         int value = node.asInt();
@@ -327,14 +336,30 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         return List.copyOf(triggers);
     }
 
+    /// `type` is read and validated first — absent, non-string, or unknown
+    /// is `TRIGGER_INVALID` — before the unknown-key check runs against
+    /// *that type's own* key set (spec §4.3 `MANIFEST_UNKNOWN_FIELD`: `cron`
+    /// inside an `event` trigger is an unknown field, not an ignored one).
     private static Trigger parseTrigger(JsonNode node, String path, Limits limits, ClientCeilings ceilings) {
         if (!node.isObject()) throw UseCaseException.validation("TRIGGER_INVALID", path + " must be an object");
-        rejectUnknown(node, TRIGGER_KEYS, path);
-        String type = node.path("type").asString();
+        JsonNode typeNode = node.path("type");
+        if (!typeNode.isString()) {
+            throw UseCaseException.validation("TRIGGER_INVALID", path + ".type must be event, schedule, or http");
+        }
+        String type = typeNode.asString();
         return switch (type) {
-            case "event" -> parseEventTrigger(node, path);
-            case "schedule" -> parseScheduleTrigger(node, path);
-            case "http" -> parseHttpTrigger(node, path, limits, ceilings);
+            case "event" -> {
+                rejectUnknown(node, EVENT_TRIGGER_KEYS, path);
+                yield parseEventTrigger(node, path);
+            }
+            case "schedule" -> {
+                rejectUnknown(node, SCHEDULE_TRIGGER_KEYS, path);
+                yield parseScheduleTrigger(node, path);
+            }
+            case "http" -> {
+                rejectUnknown(node, HTTP_TRIGGER_KEYS, path);
+                yield parseHttpTrigger(node, path, limits, ceilings);
+            }
             default ->
                     throw UseCaseException.validation("TRIGGER_INVALID", path + ".type must be event, schedule, or http");
         };
@@ -402,16 +427,23 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             throw UseCaseException.validation("ROUTE_INVALID", path + ".hostnames must be an array");
         }
         List<Hostname> hostnames = new ArrayList<>();
+        Set<Hostname> seen = new HashSet<>();
         for (JsonNode entry : hostnamesNode) {
             if (!entry.isString()) {
                 throw UseCaseException.validation("ROUTE_INVALID", path + ".hostnames entries must be strings");
             }
+            Hostname hostname;
             try {
-                hostnames.add(Hostname.parse(entry.asString()));
+                hostname = Hostname.parse(entry.asString());
             } catch (UseCaseException e) {
                 throw UseCaseException.validation("ROUTE_INVALID",
                         path + ".hostnames: " + e.error().message());
             }
+            if (!seen.add(hostname)) {
+                throw UseCaseException.validation("ROUTE_INVALID",
+                        path + ".hostnames has a duplicate entry '" + hostname.value() + "'");
+            }
+            hostnames.add(hostname);
         }
         return List.copyOf(hostnames);
     }
@@ -422,11 +454,17 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             throw UseCaseException.validation("ROUTE_INVALID", path + ".methods must be a non-empty array");
         }
         List<HttpMethod> methods = new ArrayList<>();
+        Set<HttpMethod> seen = new HashSet<>();
         for (JsonNode entry : methodsNode) {
             if (!entry.isString()) {
                 throw UseCaseException.validation("ROUTE_INVALID", path + ".methods entries must be strings");
             }
-            methods.add(HttpMethod.parseStrict(entry.asString()));
+            HttpMethod method = HttpMethod.parseStrict(entry.asString());
+            if (!seen.add(method)) {
+                throw UseCaseException.validation("ROUTE_INVALID",
+                        path + ".methods has a duplicate entry '" + method.name() + "'");
+            }
+            methods.add(method);
         }
         return List.copyOf(methods);
     }
@@ -492,7 +530,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static int parsePositiveOrDefault(JsonNode node, String key, String path, int defaultValue) {
         JsonNode value = node.path(key);
         if (value.isMissingNode() || value.isNull()) return defaultValue;
-        if (!value.isIntegralNumber() || value.asInt() <= 0) {
+        if (!fitsInt(value) || value.asInt() <= 0) {
             throw UseCaseException.validation("ROUTE_INVALID", path + "." + key + " must be a positive integer");
         }
         return value.asInt();
@@ -501,7 +539,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static int parseTimeoutMs(JsonNode node, String path, Limits limits, ClientCeilings ceilings) {
         JsonNode value = node.path("timeoutMs");
         if (value.isMissingNode() || value.isNull()) return limits.maxDurationMs();
-        if (!value.isIntegralNumber() || value.asInt() <= 0) {
+        if (!fitsInt(value) || value.asInt() <= 0) {
             throw UseCaseException.validation("ROUTE_INVALID", path + ".timeoutMs must be a positive integer");
         }
         int timeoutMs = value.asInt();
@@ -512,28 +550,24 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         return timeoutMs;
     }
 
-    /// Spec §4.3 `ROUTE_AMBIGUOUS`: two routes that share a hostname (or are
-    /// both private), share a method, and whose patterns are ambiguous.
+    /// Spec §4.3 `ROUTE_AMBIGUOUS`: two routes that share a method and whose
+    /// patterns are ambiguous. Hostnames do **not** separate routes within
+    /// one manifest: the private entry (`/fn/{address}/…`, design §4a)
+    /// reaches a function by address with no hostname, so every route of
+    /// the function is a candidate there regardless of which public
+    /// hostnames it lists.
     private static void checkRouteAmbiguity(List<HttpRoute> routes) {
         for (int i = 0; i < routes.size(); i++) {
             for (int j = i + 1; j < routes.size(); j++) {
                 HttpRoute a = routes.get(i);
                 HttpRoute b = routes.get(j);
-                if (shareHostname(a, b) && shareMethod(a, b) && a.path().ambiguousWith(b.path())) {
+                if (shareMethod(a, b) && a.path().ambiguousWith(b.path())) {
                     throw UseCaseException.validation("ROUTE_AMBIGUOUS",
                             "route '" + a.path().value() + "' and route '" + b.path().value()
                                     + "' are ambiguous");
                 }
             }
         }
-    }
-
-    private static boolean shareHostname(HttpRoute a, HttpRoute b) {
-        if (a.hostnames().isEmpty() && b.hostnames().isEmpty()) return true;
-        for (Hostname hostname : a.hostnames()) {
-            if (b.hostnames().contains(hostname)) return true;
-        }
-        return false;
     }
 
     private static boolean shareMethod(HttpRoute a, HttpRoute b) {
@@ -579,7 +613,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static int resolvePoolSize(JsonNode entry, String path, int defaultValue, int ceiling) {
         JsonNode node = entry.path("poolSize");
         if (node.isMissingNode() || node.isNull()) return Math.min(defaultValue, ceiling);
-        if (!node.isIntegralNumber() || node.asInt() <= 0) {
+        if (!fitsInt(node) || node.asInt() <= 0) {
             throw UseCaseException.validation("DB_INVALID", path + ".poolSize must be a positive integer");
         }
         int value = node.asInt();
@@ -685,7 +719,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
 
     private static int readPositiveInt(JsonNode node, String key, int defaultValue) {
         JsonNode value = node.path(key);
-        return value.isIntegralNumber() && value.asInt() > 0 ? value.asInt() : defaultValue;
+        return fitsInt(value) && value.asInt() > 0 ? value.asInt() : defaultValue;
     }
 
     private static List<Trigger> readTriggers(JsonNode root) {

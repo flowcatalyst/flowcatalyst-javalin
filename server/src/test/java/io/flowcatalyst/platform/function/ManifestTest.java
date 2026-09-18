@@ -218,6 +218,45 @@ class ManifestTest {
     }
 
     @Test
+    void manifestUnknownFieldCronInsideEventTrigger() {
+        // spec §4.3 (amended): a trigger's allowed keys are those of its own
+        // type — `cron` is not a recognised key of an `event` trigger.
+        String json = withTriggers("{\"type\":\"event\",\"eventType\":\"a:b:c\",\"cron\":\"* * * * *\"}");
+        assertThatThrownBy(() -> parseJvm(json))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+                    assertThat(err.message()).contains("triggers[0].cron");
+                });
+    }
+
+    @Test
+    void manifestUnknownFieldRoutesInsideScheduleTrigger() {
+        String json = withTriggers("{\"type\":\"schedule\",\"cron\":\"* * * * *\",\"routes\":[]}");
+        assertThatThrownBy(() -> parseJvm(json))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+                    assertThat(err.message()).contains("triggers[0].routes");
+                });
+    }
+
+    @Test
+    void manifestUnknownFieldEventTypeInsideHttpTrigger() {
+        String route = "{\"path\":\"/a\",\"methods\":[\"GET\"]}";
+        String json = withTriggers("{\"type\":\"http\",\"routes\":[" + route + "],\"eventType\":\"a:b:c\"}");
+        assertThatThrownBy(() -> parseJvm(json))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+                    assertThat(err.message()).contains("triggers[0].eventType");
+                });
+    }
+
+    @Test
     void runtimeInvalidWhenAbsentOrUnknown() {
         assertCode(() -> parseJvm("{\"entrypoint\":\"x\"}"), "RUNTIME_INVALID");
         assertCode(() -> parseJvm("{\"runtime\":\"dotnet\",\"entrypoint\":\"x\"}"), "RUNTIME_INVALID");
@@ -264,6 +303,13 @@ class ManifestTest {
         assertCode(() -> parseJvm(withLimits("\"maxDurationMs\": -1")), "LIMIT_INVALID");
         assertCode(() -> parseJvm(withLimits("\"maxDurationMs\": 1.5")), "LIMIT_INVALID");
         assertCode(() -> parseJvm(withLimits("\"maxDurationMs\": \"30000\"")), "LIMIT_INVALID");
+    }
+
+    @Test
+    void limitInvalidOutOfIntRange() {
+        // 5_000_000_000 is an integral JSON number but overflows int; asInt()
+        // would silently truncate it rather than reject it
+        assertCode(() -> parseJvm(withLimits("\"maxDurationMs\": 5000000000")), "LIMIT_INVALID");
     }
 
     @Test
@@ -370,6 +416,26 @@ class ManifestTest {
     }
 
     @Test
+    void routeInvalidDuplicateMethodCaseInsensitive() {
+        assertCode(() -> parseJvm(withHttpRoute(
+                "\"path\":\"/a\",\"methods\":[\"GET\",\"get\"]")), "ROUTE_INVALID");
+    }
+
+    @Test
+    void routeInvalidDuplicateHostnameCaseInsensitive() {
+        assertCode(() -> parseJvm(withHttpRoute(
+                "\"path\":\"/a\",\"methods\":[\"GET\"],\"hostnames\":[\"API.acme.com\",\"api.acme.com\"]")),
+                "ROUTE_INVALID");
+    }
+
+    @Test
+    void routeInvalidMaxBodyBytesOutOfIntRange() {
+        // 5_000_000_000 overflows int; must be rejected, not silently truncated by asInt()
+        assertCode(() -> parseJvm(withHttpRoute(
+                "\"path\":\"/a\",\"methods\":[\"GET\"],\"maxBodyBytes\":5000000000")), "ROUTE_INVALID");
+    }
+
+    @Test
     void routeInvalidCorsBlankEntry() {
         assertCode(() -> parseJvm(withHttpRoute(
                 "\"path\":\"/a\",\"methods\":[\"GET\"],\"cors\":{\"origins\":[\"  \"]}")), "ROUTE_INVALID");
@@ -392,11 +458,41 @@ class ManifestTest {
     }
 
     @Test
-    void routeNotAmbiguousWhenHostnamesDiffer() {
+    void routeAmbiguousAcrossDifferentHostnames() {
+        // spec §4.3 (amended): hostnames do not separate routes within one
+        // manifest — the private entry reaches a function by address with no
+        // hostname, so every route is a candidate there regardless of which
+        // public hostnames it lists.
         String json = withTriggers("""
                 {"type":"http","routes":[
                     {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
                     {"path":"/a/{y}","methods":["GET"],"hostnames":["other.acme.com"]}
+                ]}""");
+        assertThatThrownBy(() -> parseJvm(json))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err.code()).isEqualTo("ROUTE_AMBIGUOUS");
+                    assertThat(err.message()).contains("/a/{x}").contains("/a/{y}");
+                });
+    }
+
+    @Test
+    void routeAmbiguousBetweenPublicAndPrivate() {
+        String json = withTriggers("""
+                {"type":"http","routes":[
+                    {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
+                    {"path":"/a/{y}","methods":["GET"]}
+                ]}""");
+        assertCode(() -> parseJvm(json), "ROUTE_AMBIGUOUS");
+    }
+
+    @Test
+    void routeNotAmbiguousWhenMethodsDisjoint() {
+        String json = withTriggers("""
+                {"type":"http","routes":[
+                    {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
+                    {"path":"/a/{y}","methods":["POST"],"hostnames":["other.acme.com"]}
                 ]}""");
         Manifest manifest = parseJvm(json);
         assertThat(manifest.triggers()).hasSize(1);
@@ -514,6 +610,15 @@ class ManifestTest {
         assertThat(manifest.secrets()).isEmpty();
         assertThat(manifest.db()).isEmpty();
         assertThat(manifest.httpAllow()).isEmpty();
+    }
+
+    @Test
+    void readStoredFallsBackToDefaultWhenLimitOutOfIntRange() {
+        // an out-of-range stored value falls back to the default, never throws
+        // and never silently truncates through asInt()
+        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"limits\":{\"maxDurationMs\":5000000000}}";
+        Manifest manifest = Manifest.readStored(readTree(json));
+        assertThat(manifest.limits().maxDurationMs()).isEqualTo(FunctionLimits.DEFAULT_MAX_DURATION_MS);
     }
 
     @Test
