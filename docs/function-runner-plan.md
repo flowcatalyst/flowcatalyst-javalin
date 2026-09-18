@@ -1,7 +1,7 @@
 # Plan: FlowCatalyst Function Runner (Vert.x host, platform-owned registry, wasm via Chicory)
 
 Status: agreed design (owner decisions 2026-09-13 recorded in §10; amended 2026-09-18 — function
-addresses, the HTTP gateway, class-loader isolation, fcdev hosting: §3.1, §4a, §5, §8, §10 items 11–16).
+addresses, the HTTP gateway, class-loader isolation, fcdev hosting: §3.1, §4a, §5, §8, §10 items 11–17).
 
 ## 1. What it is
 
@@ -422,10 +422,9 @@ Amendments (owner, 2026-09-18):
 16. **Isolation by default:** functions bundle their own dependencies, the SDK included, behind a
     filtering parent loader; sharing the SDK through the parent is an optimisation to add only if
     measured metaspace demands it (§5). JVM function builds shrink before signing (§8).
-
-Open: can a function move to another service? Proposed: no — the address is its identity in router
-targets, routes, permissions and metrics, so a different address is a new function, as application
-codes behave. Not yet ruled.
+17. **A function never moves to another service.** The address is its identity in router targets,
+    routes, permissions and metrics; a different address is a new function, as application codes
+    behave. The API offers no rename of `service_name` or `name`.
 
 ## 11. Phases
 

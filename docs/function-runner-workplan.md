@@ -3,7 +3,8 @@
 Companion to `function-runner-plan.md` (the design; decisions in its §10) and
 `vertx-migration-brief.md` (in progress by another agent). This document is the build order.
 Read the design first; nothing here re-argues it. Amended 2026-09-18 for the design's §10 items
-11–16: function addresses, the HTTP gateway, the filtering parent loader, fcdev hosting, shrinking.
+11–17: function addresses, the HTTP gateway, the filtering parent loader, fcdev hosting,
+shrinking, no moving functions between services.
 
 ## 0. Coordination with the Vert.x conversion
 
@@ -127,7 +128,9 @@ Services:
 Acceptance: parity scenarios added to `parity/scenarios/` for every new route (the Go binary will
 not have them — mark them Java-only in `surface.json` the way any Java-first route is marked, or
 skip in the Go leg; do not weaken the harness); OpenAPI lock diff reviewed and committed; audit
-entries asserted in tests; convention tests green.
+entries asserted in tests; convention tests green. No route changes a function's application,
+service or name (design §10 item 17); a test asserts the function's address is unchanged after
+every mutating route.
 
 ### C. Signature verification and artifact store — parallel with B
 
