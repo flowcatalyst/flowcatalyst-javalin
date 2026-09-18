@@ -201,10 +201,21 @@ final class FlowCatalystAuthenticatable implements AuthenticatableContract, Auth
         return $this->user->getApplications();
     }
 
+    /**
+     * True when the principal may reach `$applicationCode` — matched against
+     * EITHER half of the `applications` claim's `"{id}:{code}"` pairs (the
+     * caller may pass an id or a code), or when the principal reaches every
+     * application ({@see \FlowCatalyst\Auth\DTOs\FlowCatalystUser::hasAllApplications()}
+     * — the `"*"` entry or legacy `all_applications` flag), or when it holds
+     * the platform-wide `clients` anchor ({@see hasFullAccess()}).
+     */
     public function hasApplicationAccess(string $applicationCode): bool
     {
-        return $this->user->hasFullAccess()
-            || in_array($applicationCode, $this->getApplications(), true);
+        if ($this->user->hasFullAccess() || $this->user->hasAllApplications()) {
+            return true;
+        }
+        return in_array($applicationCode, $this->user->getApplications(), true)
+            || in_array($applicationCode, $this->user->getApplicationCodes(), true);
     }
 
     /** @return array<int,string> client (tenant) ids/identifiers */

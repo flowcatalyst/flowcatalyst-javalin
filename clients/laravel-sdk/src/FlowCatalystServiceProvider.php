@@ -393,9 +393,22 @@ class FlowCatalystServiceProvider extends ServiceProvider
             );
         });
 
+        // Verifies OIDC id_tokens (login + refresh) — separate from
+        // AccessTokenValidator because `aud` is mandatory here (the SDK's own
+        // OIDC client_id), never the opt-in `expected_audience`.
+        $this->app->singleton(\FlowCatalyst\Auth\Support\IdTokenValidator::class, function ($app) {
+            $config = $app['config']['flowcatalyst'];
+            return new \FlowCatalyst\Auth\Support\IdTokenValidator(
+                jwks: $app->make(JwksCache::class),
+                baseUrl: $config['base_url'],
+                clientId: (string) ($config['oidc']['client_id'] ?? ''),
+            );
+        });
+
         $this->app->singleton(\FlowCatalyst\Auth\Support\TokenRefresher::class, function ($app) {
             return new \FlowCatalyst\Auth\Support\TokenRefresher(
                 userHandler: $app->make(\FlowCatalyst\Auth\Contracts\OidcUserHandler::class),
+                idTokenValidator: $app->make(\FlowCatalyst\Auth\Support\IdTokenValidator::class),
             );
         });
 

@@ -80,18 +80,35 @@ final class FlowCatalystAuthenticatableTest extends TestCase
 
     public function test_application_and_client_scope(): void
     {
+        // Real tokens carry "{id}:{code}" pairs (ClaimShapes), never bare
+        // codes — a bare-code fixture here would mask a comparison against
+        // the wrong half of the pair (see hasApplicationAccess()'s P5 fix).
         $auth = $this->make(
             ['integral:administrator'],
             [],
-            ['applications' => ['integral'], 'clients' => ['clt_abc']],
+            ['applications' => ['app_01HXAPP:integral'], 'clients' => ['clt_abc']],
         );
-        $this->assertTrue($auth->hasApplicationAccess('integral'));
+        $this->assertTrue($auth->hasApplicationAccess('integral'));      // matches the code half
+        $this->assertTrue($auth->hasApplicationAccess('app_01HXAPP'));   // matches the id half
         $this->assertFalse($auth->hasApplicationAccess('yard'));
         $this->assertFalse($auth->hasFullAccess());
 
         $full = $this->make(['integral:administrator'], [], ['clients' => ['*']]);
         $this->assertTrue($full->hasFullAccess());
         $this->assertTrue($full->hasClientAccess('anything'));
+    }
+
+    public function test_application_access_true_for_all_applications_without_clients_wildcard(): void
+    {
+        // hasAllApplications() ("*"/all_applications) must grant access on
+        // its own — not only the unrelated `clients` anchor wildcard.
+        $auth = $this->make(
+            ['integral:administrator'],
+            [],
+            ['applications' => ['*'], 'clients' => ['clt_abc']],
+        );
+        $this->assertFalse($auth->hasFullAccess());
+        $this->assertTrue($auth->hasApplicationAccess('anything-at-all'));
     }
 
     public function test_write_methods_are_read_only(): void

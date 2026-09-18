@@ -6,6 +6,7 @@ namespace FlowCatalyst\Auth\Http\Controllers;
 
 use FlowCatalyst\Auth\Contracts\OidcUserHandler;
 use FlowCatalyst\Auth\DTOs\FlowCatalystUser;
+use FlowCatalyst\Auth\Support\IdTokenValidator;
 use FlowCatalyst\Auth\Support\JwtDecoder;
 use FlowCatalyst\Auth\Support\OidcConfig;
 use FlowCatalyst\Auth\Support\PkceGenerator;
@@ -48,6 +49,7 @@ class OidcAuthController extends Controller
     public function __construct(
         private readonly OidcUserHandler $userHandler,
         private readonly TokenRefresher $tokenRefresher,
+        private readonly IdTokenValidator $idTokenValidator,
     ) {
         $this->httpClient = new Client([
             'timeout' => 30,
@@ -75,9 +77,15 @@ class OidcAuthController extends Controller
         session()->put(self::VERIFIER_SESSION_KEY, $codeVerifier);
         session()->put(self::NONCE_SESSION_KEY, $nonce);
 
-        // Store return URL if provided
-        if ($request->has('return_url')) {
-            session()->put(self::RETURN_URL_SESSION_KEY, $request->input('return_url'));
+        // Store the return URL if provided. `returnTo` is the current name
+        // (what RequireSession/RequireAuth send when bouncing a guest);
+        // `return_url` is kept as a deprecated alias so existing deep links
+        // keep working. Validated later, right before the redirect
+        // ({@see sanitizeReturnTo}) — never here, since this is only a
+        // session write.
+        $returnTo = $request->input('returnTo') ?? $request->input('return_url');
+        if ($returnTo !== null) {
+            session()->put(self::RETURN_URL_SESSION_KEY, $returnTo);
         }
 
         // Provider-direct login: route the user straight to a named upstream
@@ -183,8 +191,11 @@ class OidcAuthController extends Controller
             // Call the user handler (this is where the app customizes login)
             $this->userHandler->handleAuthenticatedUser($fcUser);
 
-            // Redirect to post-login URL
-            $redirectUrl = $returnUrl ?? $this->userHandler->getPostLoginRedirect();
+            // Redirect to post-login URL. `returnTo`/`return_url` are
+            // caller-supplied — validate before ever redirecting to them
+            // (open-redirect guard); anything that isn't a same-origin
+            // relative path falls back to the configured post-login redirect.
+            $redirectUrl = $this->sanitizeReturnTo($returnUrl) ?? $this->userHandler->getPostLoginRedirect();
             return redirect()->to($redirectUrl);
 
         } catch (AuthenticationException $e) {
@@ -255,8 +266,9 @@ class OidcAuthController extends Controller
         try {
             $this->tokenRefresher->refresh($current);
 
-            $returnUrl = $request->input('return_url')
-                ?: (url()->previous() ?: $this->userHandler->getPostLoginRedirect());
+            $requestedReturnTo = $request->input('returnTo') ?: $request->input('return_url');
+            $returnUrl = $this->sanitizeReturnTo($requestedReturnTo)
+                ?? (url()->previous() ?: $this->userHandler->getPostLoginRedirect());
             return redirect()->to($returnUrl)->with('status', 'Session refreshed.');
         } catch (\Throwable $e) {
             Log::error('OIDC refresh failed', ['error' => $e->getMessage()]);
@@ -368,34 +380,22 @@ class OidcAuthController extends Controller
     }
 
     /**
-     * Parse and decode an ID token (JWT).
+     * Verify and decode an ID token (JWT).
      *
-     * Note: This does basic validation. For production, you should validate
-     * the signature using the JWKS endpoint.
+     * Verified the same way the access token is ({@see IdTokenValidator}):
+     * RS256 signature against JWKS, `iss`, `aud`, `exp`, `nbf`. A failure
+     * here is a login failure — never a silent fallback to the token's
+     * unverified claims, since the whole principal (roles included) is
+     * built from this.
      *
      * @return array<string, mixed>
      * @throws AuthenticationException
      */
     private function parseIdToken(string $idToken): array
     {
-        $parts = explode('.', $idToken);
-        if (count($parts) !== 3) {
-            throw new AuthenticationException('Invalid ID token format');
-        }
-
-        $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true);
-        if (!is_array($payload)) {
-            throw new AuthenticationException('Failed to decode ID token');
-        }
-
-        // Validate expiration
-        if (isset($payload['exp']) && $payload['exp'] < time()) {
-            throw new AuthenticationException('ID token has expired');
-        }
-
-        // Validate required claims
-        if (empty($payload['sub'])) {
-            throw new AuthenticationException('Missing sub claim in ID token');
+        $payload = $this->idTokenValidator->validate($idToken);
+        if ($payload === null) {
+            throw new AuthenticationException('Invalid ID token');
         }
 
         if (empty($payload['email']) && empty($payload['preferred_username'])) {
@@ -403,6 +403,27 @@ class OidcAuthController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * Validate a caller-supplied return URL (the `returnTo`/`return_url`
+     * request param) before ever redirecting to it. Only a same-origin
+     * relative path is accepted — a single leading `/`, never `//host`
+     * (protocol-relative), any scheme, or any absolute URL — mirroring the
+     * TypeScript SDK's `sanitizeReturnTo`
+     * (`typescript-sdk/src/fastify/plugin.ts`). Anything else returns null
+     * so the caller falls back to its own configured redirect.
+     */
+    private function sanitizeReturnTo(?string $raw): ?string
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $decoded = rawurldecode($raw);
+        if ($decoded === '' || !str_starts_with($decoded, '/') || str_starts_with($decoded, '//')) {
+            return null;
+        }
+        return $decoded;
     }
 
     /**

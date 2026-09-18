@@ -27,6 +27,7 @@ final class TokenRefresher
 
     public function __construct(
         private readonly OidcUserHandler $userHandler,
+        private readonly IdTokenValidator $idTokenValidator,
     ) {
         $this->httpClient = new Client(['timeout' => 30, 'http_errors' => false]);
     }
@@ -47,21 +48,43 @@ final class TokenRefresher
         $config = OidcConfig::resolve();
         $tokens = $this->exchangeRefreshToken($config, $refreshToken);
 
-        // The access token is the source of truth for roles + permissions
-        // (scope). Preserve identity fields it may not carry from the
-        // current principal.
-        $claims = JwtDecoder::decodePayload($tokens['access_token'] ?? '') ?? [];
-        $claims['sub'] ??= $current->sub;
-        $claims['email'] ??= $current->email;
-        $claims['name'] ??= $current->name;
+        // exp/iat anchor for session capping / the opt-in revocation check —
+        // always sourced from the access token, whichever branch below wins
+        // authority.
+        $accessTokenClaims = JwtDecoder::decodePayload($tokens['access_token'] ?? '') ?? [];
 
-        $fcUser = FlowCatalystUser::fromAccessTokenClaims(
+        // Roles/clients/applications live in the id_token, never a normal
+        // client's access token (authority-free — see
+        // TokenIssuer.identityAccessToken). The refresh grant only mints a
+        // fresh id_token when the original login's scope included `openid`;
+        // rebuild the principal from THAT (verified — never trust it
+        // unverified, same rule as login) when present. If it is absent, or
+        // fails verification, keep the PREVIOUS principal's claims rather
+        // than overwriting authority with the access token's empties.
+        $idTokenClaims = null;
+        if (!empty($tokens['id_token'])) {
+            $idTokenClaims = $this->idTokenValidator->validate($tokens['id_token']);
+        }
+
+        if ($idTokenClaims !== null) {
+            $claims = $idTokenClaims;
+            $claims['sub'] ??= $current->sub;
+            $claims['email'] ??= $current->email;
+            $claims['name'] ??= $current->name;
+        } else {
+            $claims = $current->claims;
+        }
+
+        $fcUser = FlowCatalystUser::fromClaims(
             claims: $claims,
             accessToken: $tokens['access_token'] ?? null,
             refreshToken: $tokens['refresh_token'] ?? $refreshToken,
-            mechanism: 'session',
-        );
+            accessTokenClaims: $accessTokenClaims,
+        )->withMechanism('session');
 
+        // The raw id_token is kept purely as a logout hint (id_token_hint for
+        // RP-Initiated Logout) regardless of whether it verified above — it
+        // never grants authority on its own.
         if (!empty($tokens['id_token'])) {
             session()->put(OidcAuthController::ID_TOKEN_SESSION_KEY, $tokens['id_token']);
         }
