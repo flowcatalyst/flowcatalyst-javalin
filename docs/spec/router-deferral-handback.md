@@ -1,7 +1,8 @@
 # Router: a requested deferral is honoured by the broker (owner ruling 2026-09-17)
 
-Status: **ruled, implementing.** Deliberate Java/Go difference — Go keeps the
-in-memory deferral loop and its SQS `Nack` is a no-op (`internal/queue/sqs/sqs.go:258`).
+Status: **ruled; landed in Java (`5420b516`, `7759059a`), and ported to Go on
+the owner's instruction 2026-09-18 (§Go port).** Originally specced as a
+deliberate Java/Go difference; that difference is now closed.
 
 ## Problem (as found 2026-09-17)
 
@@ -140,3 +141,27 @@ in-memory attempts" into "10 deferrals". Do not change `NatsQueue`.
 Existing tests that pin the old behaviour (in-memory deferral with a delay,
 ordered return at 10 s, SQS nack no-op) are to be **updated to the new
 rulings**, and each one listed in the report with the reason.
+
+---
+
+## Go port (owner instruction 2026-09-18)
+
+The Go router takes R1–R5 with the same observable behaviour; only the shapes
+differ. Java is the reference implementation — read `git show 5420b516` and
+`git show 7759059a` in `flowcatalyst-javalin` before writing Go.
+
+| Ruling | Go home |
+|---|---|
+| R1 unordered | `internal/router/pool.go`'s dispatch path — the retryable-failure branch that today only nacks when the retry budget is spent (`nackMsg(..., nackDelay(d.RetryAfter), "released to broker")`). A `MediationDeferred` outcome whose `delaySeconds > 0` nacks on its **first** occurrence with exactly that delay, reason `deferred`, and does not enter the in-pipeline retry loop. `delaySeconds == 0` is unchanged. |
+| R1 ordered | the ordered drainer's head-failure decision: a delay-bearing `MediationDeferred` releases the group immediately instead of re-fronting the head. |
+| R2 | when the ordered drainer releases a group, the **head** carries the deferral's exact delay, or the same backoff the unordered path would use for that outcome — never the fixed 10 s. Siblings keep 10 s. |
+| R3 | `internal/queue/sqs/sqs.go` `Nack`: `ChangeMessageVisibility(receipt, seconds)`, seconds floored at 0 and clamped to `43200 − secondsSinceReceived`. Go's SQS queue does not record a per-receipt poll time today (only `pendingDelete` by broker id) — add one, or clamp to the flat 43200 and say which you chose and why. Best-effort: log at WARN, never return an error that fails a hand-back; keep the `nacked` counter. Rewrite the comment block at `sqs.go:250-257`. |
+| R4 | `internal/queue/postgres/postgres.go` claim SQL: a row is not claimable while an **earlier** row of its group (`COALESCE(message_group_id, id)`, by `(created_at, id)`) is `receipt_handle IS NULL AND visible_at > now`. A *claimed* earlier row still does not block. |
+| R5 | `internal/queue/queue.go` `Consumer` gains `HonoursDelayedReturn() bool` (no default — every backend answers): SQS and Postgres `true`, NATS `false`. The pool resolves it through the same consumer lookup `nackMsg` uses; an unregistered queue answers `false`. R1's condition on both paths is `delaySeconds > 0 && honoursDelayedReturn`. |
+
+Tests: port T1–T14 from the Java suite (`PoolTest`, `OrderedGroupsTest`,
+`SqsQueueTest`, `PostgresQueueTest`, `QueueBrokerTest` in the Java repo) into
+the Go router/queue test packages, keeping the same assertions and the same
+mutants. Go's own guardrail test that "retryable outcomes never nack" will
+need the same treatment Java's did: re-point it at a `RateLimited` outcome,
+which R1 does not touch, and say so.
