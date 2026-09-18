@@ -4,6 +4,24 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Function service — branch `function-service` (2026-09-18)
+
+Java-first, no Go counterpart. Design `docs/function-runner-plan.md` (§10 decisions), build order
+`docs/function-runner-workplan.md`. Split: orchestrator writes the spec, `sonnet` writes the code,
+every load-bearing behaviour mutation-checked (spec §8 tables name the mutants).
+
+- **Package A landed** (`2a5ba6f8`..`1170c382`): spec `docs/spec/function-registry.md`; `V11__functions.sql`
+  (seven Java-only `fn_` tables); `platform/function/` — addresses, route patterns, manifest
+  (strict + stored readers, limits frozen at publish), entities, repositories; `Env.functionLimits`
+  (`FC_FN_*`). Server suite 4495 run, 1 failure — the one below.
+- **Red on `main` too, owed:** `SchemaFingerprintTest` fails on `msg_dispatch_jobs.queue` — V10 landed
+  without a re-dump of `go-schema.sql` (Go has `054_dispatch_job_queue.sql`). Re-dump, regenerate the
+  fingerprint, then revisit `GoAdoptionTest` (it currently treats V10 as a genuine addition on the old dump).
+- **Next: package B** (platform API + services) — needs its own spec first, and owner rulings on
+  spec §9 Q1–Q3 (application codes are not DNS labels; functions of client-less applications;
+  Promote needs `READY` but hosts only load aliased versions). Package C (signatures, artifact
+  store) can run in parallel; it needs Q5 (signer subject matching).
+
 ## Next: the verification plan (2026-09-11)
 
 **Start with `docs/verification-plan.md`.** It lays out how to prove Java is
