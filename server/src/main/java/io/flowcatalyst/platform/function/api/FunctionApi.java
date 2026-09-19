@@ -9,9 +9,12 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.SecretValue;
+import io.flowcatalyst.platform.function.SettingKey;
 import io.flowcatalyst.platform.function.SignerIdentity;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.Access;
@@ -19,6 +22,8 @@ import io.flowcatalyst.platform.function.operations.CreateCommand;
 import io.flowcatalyst.platform.function.operations.CreateFunction;
 import io.flowcatalyst.platform.function.operations.DeleteCommand;
 import io.flowcatalyst.platform.function.operations.DeleteFunction;
+import io.flowcatalyst.platform.function.operations.DeleteFunctionSecret;
+import io.flowcatalyst.platform.function.operations.DeleteSecretCommand;
 import io.flowcatalyst.platform.function.operations.FunctionEvents;
 import io.flowcatalyst.platform.function.operations.PromoteCommand;
 import io.flowcatalyst.platform.function.operations.PromoteVersion;
@@ -26,6 +31,10 @@ import io.flowcatalyst.platform.function.operations.PublishCommand;
 import io.flowcatalyst.platform.function.operations.PublishVersion;
 import io.flowcatalyst.platform.function.operations.RetireCommand;
 import io.flowcatalyst.platform.function.operations.RetireVersion;
+import io.flowcatalyst.platform.function.operations.SetConfigCommand;
+import io.flowcatalyst.platform.function.operations.SetFunctionConfig;
+import io.flowcatalyst.platform.function.operations.SetFunctionSecret;
+import io.flowcatalyst.platform.function.operations.SetSecretCommand;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.function.operations.UpdateCommand;
 import io.flowcatalyst.platform.function.operations.UpdateFunction;
@@ -43,6 +52,7 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Visibility;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -55,14 +65,18 @@ import tools.jackson.databind.JsonNode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_MANAGE;
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_PROMOTE;
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_PUBLISH;
+import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_SECRET_MANAGE;
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 
 /// The `/api/functions` surface (spec `function-api.md` §4.1, §4.2). Java-first —
@@ -109,7 +123,8 @@ public final class FunctionApi {
                         ClientPolicyRepository policies, FunctionLimits limits, Signatures signatures,
                         TriggerSync triggerSync, TriggerObjectRepository triggerObjects,
                         SubscriptionRepository subscriptions, DispatchPoolRepository dispatchPools,
-                        ScheduledJobRepository scheduledJobs) {
+                        ScheduledJobRepository scheduledJobs, FunctionSettingsRepository settings,
+                        Optional<Encryption> encryption) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(applications, "applications");
@@ -125,6 +140,8 @@ public final class FunctionApi {
             Objects.requireNonNull(subscriptions, "subscriptions");
             Objects.requireNonNull(dispatchPools, "dispatchPools");
             Objects.requireNonNull(scheduledJobs, "scheduledJobs");
+            Objects.requireNonNull(settings, "settings");
+            Objects.requireNonNull(encryption, "encryption");
         }
     }
 
@@ -144,6 +161,12 @@ public final class FunctionApi {
         write.post("/api/functions/{address}/versions/{version}/retire", Auth.scoped(ctx -> retire(ctx, s)));
         write.put("/api/functions/{address}/aliases/{alias}", Auth.scoped(ctx -> promote(ctx, s)));
         routes.get("/api/functions/{address}/aliases", Auth.scoped(ctx -> listAliases(ctx, s)));
+        // §1 (function-context.md, slice D4a): platform-stored config/secrets.
+        routes.get("/api/functions/{address}/config", Auth.scoped(ctx -> getConfig(ctx, s)));
+        write.put("/api/functions/{address}/config", Auth.scoped(ctx -> putConfig(ctx, s)));
+        routes.get("/api/functions/{address}/secrets", Auth.scoped(ctx -> getSecrets(ctx, s)));
+        write.put("/api/functions/{address}/secrets/{key}", Auth.scoped(ctx -> putSecret(ctx, s)));
+        write.delete("/api/functions/{address}/secrets/{key}", Auth.scoped(ctx -> deleteSecret(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
@@ -235,7 +258,7 @@ public final class FunctionApi {
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
         String alias = ctx.pathParam("alias");
         var req = ctx.bodyAsClass(PromoteRequest.class);
-        FunctionEvents.AliasChanged event = PromoteVersion.of(s.repo(), s.versions(), s.triggerSync())
+        FunctionEvents.AliasChanged event = PromoteVersion.of(s.repo(), s.versions(), s.triggerSync(), s.settings())
                 .run(s.uow(), new PromoteCommand(address, alias, req.version()), Auth.executionContext());
         Integer previousVersion = event.previousVersionId() == null ? null
                 : s.versions().findById(event.previousVersionId()).map(FunctionVersion::version).orElse(null);
@@ -252,6 +275,116 @@ public final class FunctionApi {
                     .ifPresent(v -> out.add(new AliasResponse(a.alias(), v.version(), a.versionId(), a.updatedBy(), a.updatedAt())));
         }
         ctx.json(out);
+    }
+
+    // ── §1 (function-context.md, D4a): platform-stored config/secrets ───────
+
+    /// spec §1: `GET .../config` — `{values, declared, missing}`. `declared`
+    /// is the LIVE manifest's `config` keys (empty when there is no live
+    /// version yet); `missing` is the subset of `declared` with no value set.
+    private static void getConfig(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        Map<String, String> values = s.settings().configMap(f.id());
+        List<String> declared = declaredConfig(s, f);
+        List<String> missing = missing(declared, values.keySet());
+        ctx.json(new ConfigResponse(new TreeMap<>(values), declared, missing));
+    }
+
+    /// spec §1: `PUT .../config` — full replacement; `SetFunctionConfig` owns
+    /// the key-format/size validation. 200 with the GET shape.
+    private static void putConfig(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_MANAGE);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        var req = ctx.bodyAsClass(SetConfigRequest.class);
+        SetFunctionConfig.of(s.repo(), s.settings())
+                .run(s.uow(), new SetConfigCommand(address, req.values()), Auth.executionContext());
+        Function f = functionByAddress(s, address, Auth.current());
+        Map<String, String> values = s.settings().configMap(f.id());
+        List<String> declared = declaredConfig(s, f);
+        ctx.json(new ConfigResponse(new TreeMap<>(values), declared, missing(declared, values.keySet())));
+    }
+
+    /// spec §1: `GET .../secrets` — `{keys, declared, missing}`. **Never a
+    /// value** — [FunctionSettingsRepository.SecretInfo] carries none.
+    private static void getSecrets(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        if (!encryptionConfigured(ctx, s)) {
+            return;
+        }
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        List<FunctionSettingsRepository.SecretInfo> infos = s.settings().listSecrets(f.id());
+        List<SecretKeyResponse> keys = infos.stream()
+                .map(i -> new SecretKeyResponse(i.key(), i.updatedAt(), i.updatedBy())).toList();
+        List<String> declared = declaredSecrets(s, f);
+        Set<String> present = infos.stream().map(FunctionSettingsRepository.SecretInfo::key)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        ctx.json(new SecretListResponse(keys, declared, missing(declared, present)));
+    }
+
+    /// spec §1: `PUT .../secrets/{key}` — `{value}`, 204. Never echoes the
+    /// value back (X1): the response is empty.
+    private static void putSecret(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_SECRET_MANAGE);
+        if (!encryptionConfigured(ctx, s)) {
+            return;
+        }
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        String key = ctx.pathParam("key");
+        var req = ctx.bodyAsClass(SetSecretRequest.class);
+        SetFunctionSecret.of(s.repo(), s.settings())
+                .run(s.uow(), new SetSecretCommand(address, key, new SecretValue(req.value() == null ? "" : req.value())),
+                        Auth.executionContext());
+        ctx.status(204);
+    }
+
+    /// spec §1: `DELETE .../secrets/{key}` — 204, 404 when absent.
+    private static void deleteSecret(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_SECRET_MANAGE);
+        if (!encryptionConfigured(ctx, s)) {
+            return;
+        }
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        String key = ctx.pathParam("key");
+        DeleteFunctionSecret.of(s.repo(), s.settings())
+                .run(s.uow(), new DeleteSecretCommand(address, key), Auth.executionContext());
+        ctx.status(204);
+    }
+
+    /// spec §1: "`FLOWCATALYST_APP_KEY` unconfigured ⇒ the secret routes are
+    /// `503 ENCRYPTION_UNCONFIGURED`" — written directly (not a
+    /// [UseCaseException]: the platform's use-case kinds are 400/401/403/404/
+    /// 409/500 only, `CONVENTIONS.md` §4) so this is the one place a function
+    /// route answers 503.
+    ///
+    /// @return `true` when encryption IS configured and the handler should proceed
+    private static boolean encryptionConfigured(Exchange ctx, State s) {
+        if (s.encryption().isPresent()) {
+            return true;
+        }
+        HttpError.write(ctx, 503, "ENCRYPTION_UNCONFIGURED",
+                "FLOWCATALYST_APP_KEY is not configured; function secrets are unavailable", Map.of());
+        return false;
+    }
+
+    private static List<String> declaredConfig(State s, Function f) {
+        FunctionVersion live = liveVersionOf(s, f);
+        return live == null ? List.of() : live.manifest().config();
+    }
+
+    private static List<String> declaredSecrets(State s, Function f) {
+        FunctionVersion live = liveVersionOf(s, f);
+        return live == null ? List.of() : live.manifest().secrets();
+    }
+
+    private static List<String> missing(List<String> declared, Set<String> present) {
+        List<String> out = new ArrayList<>();
+        for (String key : declared) {
+            if (!present.contains(key)) {
+                out.add(key);
+            }
+        }
+        return out;
     }
 
     /// `FUNCTION_IMMUTABLE_FIELD` (spec §4.2) is checked against the RAW body
@@ -591,5 +724,35 @@ public final class FunctionApi {
 
     /// `GET /api/function-pools` (spec §6.3).
     public record PoolSummaryResponse(String pool, int hosts) {
+    }
+
+    // ── §1 (function-context.md, D4a): config/secrets DTOs ──────────────────
+
+    /// `GET`/`PUT` `.../config` (spec §1): `values` is the full map, `declared`
+    /// is the live manifest's `config` keys, `missing` is `declared` minus
+    /// `values.keySet()`.
+    public record ConfigResponse(Map<String, String> values, List<String> declared, List<String> missing) {
+    }
+
+    /// Body of `PUT /api/functions/{address}/config` (spec §1): full
+    /// replacement.
+    public record SetConfigRequest(Map<String, String> values) {
+        public SetConfigRequest {
+            values = values == null ? Map.of() : Map.copyOf(values);
+        }
+    }
+
+    /// `GET /api/functions/{address}/secrets` (spec §1): `keys` never carries
+    /// a value.
+    public record SecretListResponse(List<SecretKeyResponse> keys, List<String> declared, List<String> missing) {
+    }
+
+    /// One entry of [SecretListResponse#keys] — key, `updatedAt`, `updatedBy`,
+    /// never a value (spec §1).
+    public record SecretKeyResponse(String key, Instant updatedAt, String updatedBy) {
+    }
+
+    /// Body of `PUT /api/functions/{address}/secrets/{key}` (spec §1).
+    public record SetSecretRequest(String value) {
     }
 }

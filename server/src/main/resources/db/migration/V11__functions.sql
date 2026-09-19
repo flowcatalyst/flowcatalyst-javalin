@@ -1,6 +1,7 @@
 -- Function registry, work package A (docs/spec/function-registry.md §2), reshaped by
--- docs/spec/function-invocation.md §3-§4 (I1). Java-only: there is no Go for the
--- function service (spec §0), so these eight fn_ tables are never read or written by
+-- docs/spec/function-invocation.md §3-§4 (I1), extended by docs/spec/function-context.md
+-- §1 (D4a, fn_config/fn_secrets). Java-only: there is no Go for the
+-- function service (spec §0), so these ten fn_ tables are never read or written by
 -- Go and carry no goose counterpart. Additive, like V8's mail_outbox:
 -- SchemaFingerprintTest.JAVA_ONLY_TABLES hides them from the Go fingerprint comparison
 -- (spec §2.1). The one exception is chk_msg_subscriptions_source below, widened on the
@@ -189,6 +190,39 @@ CREATE TABLE IF NOT EXISTS fn_trigger_objects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fn_trigger_objects_function_id ON fn_trigger_objects (function_id);
+
+-- fn_config: per-function, per-key config values (function-context.md §1, D4a, ruling
+-- R12) — a value outlives a deploy; what a VERSION brings is only the list of keys it
+-- needs (manifest.config). key is held to the same format as fn_secrets and the
+-- manifest's own config/secrets/db[].secretRef entries (SettingKey, SETTING_KEY_INVALID).
+-- Natural key, no TSID: (function_id, key) is the identity.
+CREATE TABLE IF NOT EXISTS fn_config (
+    function_id VARCHAR(17) NOT NULL,
+    key VARCHAR(100) NOT NULL,
+    value TEXT NOT NULL,
+    updated_by VARCHAR(17) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fn_config_pkey PRIMARY KEY (function_id, key),
+    CONSTRAINT fn_config_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
+    CONSTRAINT fn_config_key_check CHECK (key ~ '^[A-Za-z][A-Za-z0-9_./-]{0,99}$')
+);
+
+-- fn_secrets: per-function, per-key secret values (function-context.md §1, D4a, ruling
+-- R12). value_ref is Encryption's `encrypted:` form under FLOWCATALYST_APP_KEY, exactly
+-- as service-account webhook credentials are stored (ServiceAccountRepository §11) —
+-- never plaintext at rest, and FLOWCATALYST_APP_KEY unconfigured means the secret
+-- routes refuse to write at all (503 ENCRYPTION_UNCONFIGURED), so an empty table is
+-- the only state this repository ever leaves it in without a key.
+CREATE TABLE IF NOT EXISTS fn_secrets (
+    function_id VARCHAR(17) NOT NULL,
+    key VARCHAR(100) NOT NULL,
+    value_ref TEXT NOT NULL,
+    updated_by VARCHAR(17) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fn_secrets_pkey PRIMARY KEY (function_id, key),
+    CONSTRAINT fn_secrets_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
+    CONSTRAINT fn_secrets_key_check CHECK (key ~ '^[A-Za-z][A-Za-z0-9_./-]{0,99}$')
+);
 
 -- msg_subscriptions.source (V6 chk_msg_subscriptions_source, subscription.Source in
 -- Go) widened to admit the new FUNCTION source (invocation spec §4.1, ruling R6): a

@@ -8,15 +8,18 @@ import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.SecretValue;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.AliasChanged;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.VersionRetired;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
@@ -35,6 +38,8 @@ import javax.sql.DataSource;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -59,6 +64,10 @@ class PublishPromoteRetireTest {
     private static final FunctionRepository functions = new FunctionRepository(DS);
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(DS);
     private static final ClientPolicyRepository policies = new ClientPolicyRepository(DS);
+    // A real key (not Optional.empty()) so the SETTINGS_MISSING tests below can actually
+    // set a secret/db-secretRef value through the repository, exactly like production.
+    private static final FunctionSettingsRepository settings =
+            new FunctionSettingsRepository(DS, Optional.of(Encryption.withKey(Encryption.generateKey())));
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
@@ -116,12 +125,12 @@ class PublishPromoteRetireTest {
     }
 
     private static AliasChanged promote(AuthContext ac, FunctionAddress address, int version) {
-        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE)
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE, settings)
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
     private static AliasChanged promote(AuthContext ac, FunctionAddress address, String alias, int version) {
-        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE)
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE, settings)
                 .run(uow, new PromoteCommand(address, alias, version), EC));
     }
 
@@ -403,5 +412,84 @@ class PublishPromoteRetireTest {
         // 409 VERSION_NOT_READY instead of 400 ALIAS_UNSUPPORTED.
         assertUseCaseError(() -> promote(ANCHOR, f.address(), "canary", 1),
                 UseCaseError.Validation.class, "ALIAS_UNSUPPORTED");
+    }
+
+    // ── X3 (function-context.md §1): promote refuses SETTINGS_MISSING, one source at a time ──
+
+    private static final String MANIFEST_WITH_CONFIG = """
+            {"runtime":"jvm","entrypoint":"com.acme.billing.CreateInvoice","config":["FOO"]}
+            """;
+    private static final String MANIFEST_WITH_SECRET = """
+            {"runtime":"jvm","entrypoint":"com.acme.billing.CreateInvoice","secrets":["API_KEY"]}
+            """;
+    private static final String MANIFEST_WITH_DB = """
+            {"runtime":"jvm","entrypoint":"com.acme.billing.CreateInvoice",
+             "db":[{"name":"main","secretRef":"DB_DSN"}]}
+            """;
+
+    /// X3: an unset `config` key, in isolation, refuses `SETTINGS_MISSING`
+    /// naming it — and succeeds once it is set. Pins that promote actually
+    /// checks the `config` source (mutant: skip it) and that the check does
+    /// not merely always fail (mutant: fail unconditionally) — the second
+    /// `promote` call must succeed.
+    @Test
+    void promoteRefusesSettingsMissingForAnUnsetConfigKeyAndSucceedsOnceSet() {
+        Function f = createFunction("settings-config", new FunctionOwner.Platform());
+        var v = publish(ANCHOR, f.address(), "cfg", Json.MAPPER.readTree(MANIFEST_WITH_CONFIG)).version();
+        markReady(v);
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "SETTINGS_MISSING");
+        assertThatThrownBy(() -> promote(ANCHOR, f.address(), 1)).hasMessageContaining("FOO");
+        // Nothing was promoted by the refused attempt.
+        assertThat(functions.findById(f.id()).orElseThrow().liveVersionId()).isEmpty();
+
+        uow.inTransaction(tx -> {
+            settings.replaceConfig(f.id(), Map.of("FOO", "bar"), PRINCIPAL, tx.dbTx());
+            return null;
+        });
+        AliasChanged event = promote(ANCHOR, f.address(), 1);
+        assertThat(event.version()).isEqualTo(1);
+    }
+
+    /// X3: an unset `secrets` key, in isolation.
+    @Test
+    void promoteRefusesSettingsMissingForAnUnsetSecretKeyAndSucceedsOnceSet() {
+        Function f = createFunction("settings-secret", new FunctionOwner.Platform());
+        var v = publish(ANCHOR, f.address(), "sec", Json.MAPPER.readTree(MANIFEST_WITH_SECRET)).version();
+        markReady(v);
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "SETTINGS_MISSING");
+        assertThatThrownBy(() -> promote(ANCHOR, f.address(), 1)).hasMessageContaining("API_KEY");
+
+        uow.inTransaction(tx -> {
+            settings.putSecret(f.id(), "API_KEY", new SecretValue("shh"), PRINCIPAL, tx.dbTx());
+            return null;
+        });
+        AliasChanged event = promote(ANCHOR, f.address(), 1);
+        assertThat(event.version()).isEqualTo(1);
+    }
+
+    /// X3: an unset `db[].secretRef`, in isolation — the DSN is itself a
+    /// secret, named by `secretRef`, stored in the SAME `fn_secrets` table
+    /// `secrets` uses.
+    @Test
+    void promoteRefusesSettingsMissingForAnUnsetDbSecretRefAndSucceedsOnceSet() {
+        Function f = createFunction("settings-db", new FunctionOwner.Platform());
+        var v = publish(ANCHOR, f.address(), "db", Json.MAPPER.readTree(MANIFEST_WITH_DB)).version();
+        markReady(v);
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "SETTINGS_MISSING");
+        assertThatThrownBy(() -> promote(ANCHOR, f.address(), 1)).hasMessageContaining("DB_DSN");
+
+        uow.inTransaction(tx -> {
+            // "jdbc:postgresql://…" (not a bare "postgres://…") — Encryption#encryptSecretRef
+            // rejects an unknown bare "<scheme>://" value outright (docs/spec/encryption.md §3);
+            // "jdbc:postgresql" is not a scheme token (it contains a colon), so this passes
+            // through as an ordinary plaintext secret, encrypted normally.
+            settings.putSecret(f.id(), "DB_DSN", new SecretValue("jdbc:postgresql://u:p@h/db"), PRINCIPAL, tx.dbTx());
+            return null;
+        });
+        AliasChanged event = promote(ANCHOR, f.address(), 1);
+        assertThat(event.version()).isEqualTo(1);
     }
 }

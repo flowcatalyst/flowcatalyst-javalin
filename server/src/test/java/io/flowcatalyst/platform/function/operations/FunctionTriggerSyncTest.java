@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.PoolUrlTemplate;
@@ -82,6 +83,7 @@ class FunctionTriggerSyncTest {
     private static final ScheduledJobRepository jobs = new ScheduledJobRepository(DS);
     private static final ApplicationRepository applications = new ApplicationRepository(DS);
     private static final ServiceAccountRepository serviceAccounts = new ServiceAccountRepository(DS, Optional.empty());
+    private static final FunctionSettingsRepository settings = new FunctionSettingsRepository(DS, Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
@@ -174,7 +176,7 @@ class FunctionTriggerSyncTest {
 
     private static AliasChanged promote(FunctionAddress address, int version) {
         markReady(address, version);
-        return Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, SYNC)
+        return Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, SYNC, settings)
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
@@ -363,7 +365,7 @@ class FunctionTriggerSyncTest {
         FunctionVersion v1 = Auth.runAs(ANCHOR,
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
         markReady(first.address(), v1.version());
-        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(first.address(), Function.LIVE, v1.version()), EC));
 
         // A second warm function in the SAME pool now exceeds the cap of 1.
@@ -399,7 +401,7 @@ class FunctionTriggerSyncTest {
         FunctionVersion v1 = Auth.runAs(ANCHOR,
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
-        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
         // f1 is now the sole live warm function in `pool`, exactly at the cap of 1.
 
@@ -430,7 +432,7 @@ class FunctionTriggerSyncTest {
         FunctionVersion v1 = Auth.runAs(ANCHOR,
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
-        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
 
         Function f2 = createFunction(appId, new FunctionOwner.Platform());
@@ -460,7 +462,7 @@ class FunctionTriggerSyncTest {
         FunctionVersion v1 = Auth.runAs(ANCHOR,
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
-        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
 
         Function f2 = createFunction(appId, new FunctionOwner.Platform());
@@ -490,7 +492,7 @@ class FunctionTriggerSyncTest {
         FunctionVersion v1 = Auth.runAs(ANCHOR,
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
-        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
 
         Function f3 = createFunction(appId, new FunctionOwner.Platform());
@@ -587,7 +589,7 @@ class FunctionTriggerSyncTest {
                 () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, collidingSync).run(uow, cmd, EC));
         markReady(f.address(), published.version().version());
 
-        assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, collidingSync)
+        assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, collidingSync, settings)
                 .run(uow, new PromoteCommand(f.address(), Function.LIVE, published.version().version()), EC)))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(e -> ((UseCaseException) e).code()).isEqualTo("TRIGGER_KEY_COLLISION");

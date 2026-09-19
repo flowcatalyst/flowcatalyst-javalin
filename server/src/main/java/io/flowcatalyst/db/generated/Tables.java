@@ -13,10 +13,12 @@ import io.flowcatalyst.db.generated.tables.AppPlatformConfigs;
 import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.FnAliases;
 import io.flowcatalyst.db.generated.tables.FnClientPolicies;
+import io.flowcatalyst.db.generated.tables.FnConfig;
 import io.flowcatalyst.db.generated.tables.FnDomains;
 import io.flowcatalyst.db.generated.tables.FnFunctions;
 import io.flowcatalyst.db.generated.tables.FnHosts;
 import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnSecrets;
 import io.flowcatalyst.db.generated.tables.FnTriggerObjects;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
@@ -137,6 +139,11 @@ public class Tables {
     public static final FnClientPolicies FN_CLIENT_POLICIES = FnClientPolicies.FN_CLIENT_POLICIES;
 
     /**
+     * The table <code>public.fn_config</code>.
+     */
+    public static final FnConfig FN_CONFIG = FnConfig.FN_CONFIG;
+
+    /**
      * The table <code>public.fn_domains</code>.
      */
     public static final FnDomains FN_DOMAINS = FnDomains.FN_DOMAINS;
@@ -155,6 +162,11 @@ public class Tables {
      * The table <code>public.fn_routes</code>.
      */
     public static final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_secrets</code>.
+     */
+    public static final FnSecrets FN_SECRETS = FnSecrets.FN_SECRETS;
 
     /**
      * The table <code>public.fn_trigger_objects</code>.

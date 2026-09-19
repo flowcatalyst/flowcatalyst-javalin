@@ -279,6 +279,9 @@ public enum Permission {
     // function / version (smoke-testing a versioned call, function-invocation.md §4)
     FUNCTION_VERSION_INVOKE("platform:function:version:invoke"),
 
+    // function / secret (platform-side config/secrets, function-context.md §1, D4a)
+    FUNCTION_SECRET_MANAGE("platform:function:secret:manage"),
+
     // super-admin wildcard
     SUPER_ADMIN("platform:*:*:*");
 

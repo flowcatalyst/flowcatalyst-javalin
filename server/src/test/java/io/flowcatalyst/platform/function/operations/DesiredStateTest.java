@@ -10,15 +10,18 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.SecretValue;
 import io.flowcatalyst.platform.function.SignerIdentity;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
@@ -60,8 +63,10 @@ class DesiredStateTest {
     private static final ApplicationRepository applications = new ApplicationRepository(DS);
     private static final ServiceAccountRepository serviceAccounts =
             new ServiceAccountRepository(DS, java.util.Optional.empty());
+    private static final FunctionSettingsRepository settings =
+            new FunctionSettingsRepository(DS, java.util.Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
-    private static final DesiredState DESIRED = new DesiredState(functions, versions, hosts, serviceAccounts);
+    private static final DesiredState DESIRED = new DesiredState(functions, versions, hosts, serviceAccounts, settings);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final AtomicLong SEQ = new AtomicLong(System.nanoTime());
@@ -715,5 +720,63 @@ class DesiredStateTest {
                 .contains("\"applicationId\":\"" + appId + "\"");
         assertThat(json).as("mutant: write null instead of omitting clientId")
                 .doesNotContain("\"clientId\"");
+    }
+
+    // ── X2 (function-context.md §1, D4a) ─────────────────────────────────
+
+    private static Manifest manifestWithConfigAndSecrets(String pool) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s",
+                 "config":["FOO"],"secrets":["API_KEY"]}
+                """.formatted(pool);
+        return Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+    }
+
+    /// X2: an entry's `config`/`secrets` carry ONLY the keys the manifest
+    /// itself declares — an undeclared stored value never rides along —
+    /// `missingSettings` names every declared key with no value yet, and
+    /// setting a value moves the document's bytes (and so the ETag).
+    @Test
+    void x2DesiredStateRestrictsToDeclaredKeysNamesMissingSettingsAndMovesETagOnChange() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Encryption encryption = Encryption.withKey(Encryption.generateKey());
+        FunctionSettingsRepository settingsWithKey =
+                new FunctionSettingsRepository(DS, java.util.Optional.of(encryption));
+        DesiredState desiredWithKey = new DesiredState(functions, versions, hosts, serviceAccounts, settingsWithKey);
+
+        Function f = createFunction("x2" + fresh());
+        FunctionVersion v = publish(f, 1, manifestWithConfigAndSecrets(pool.value()));
+        promote(f, v);
+
+        // Nothing set yet: both declared keys are missing; config/secrets are empty.
+        DesiredState.Document before = desiredWithKey.build(pool, Instant.now());
+        var entryBefore = before.functions().stream()
+                .filter(e -> e.address().equals(f.address().render())).findFirst().orElseThrow();
+        assertThat(entryBefore.config()).isEmpty();
+        assertThat(entryBefore.secrets()).isEmpty();
+        assertThat(entryBefore.missingSettings()).as("mutant: omit missingSettings")
+                .containsExactlyInAnyOrder("FOO", "API_KEY");
+        String beforeEtag = sha256Hex(Json.write(before));
+
+        // Set the declared config/secret AND an undeclared one of each — the undeclared
+        // pair must never reach the document (mutant: send everything).
+        uow.inTransaction(tx -> {
+            settingsWithKey.replaceConfig(f.id(), Map.of("FOO", "bar", "UNDECLARED", "leak"), "prn_test", tx.dbTx());
+            settingsWithKey.putSecret(f.id(), "API_KEY", new SecretValue("shh"), "prn_test", tx.dbTx());
+            settingsWithKey.putSecret(f.id(), "UNDECLARED_SECRET", new SecretValue("also-leak"), "prn_test", tx.dbTx());
+            return null;
+        });
+
+        DesiredState.Document after = desiredWithKey.build(pool, Instant.now());
+        var entryAfter = after.functions().stream()
+                .filter(e -> e.address().equals(f.address().render())).findFirst().orElseThrow();
+        assertThat(entryAfter.config()).as("mutant: send everything, not restricted to declared keys")
+                .containsExactly(Map.entry("FOO", "bar"));
+        assertThat(entryAfter.secrets()).as("mutant: send everything, not restricted to declared keys")
+                .containsExactly(Map.entry("API_KEY", "shh"));
+        assertThat(entryAfter.missingSettings()).as("mutant: keep reporting a now-set key as missing").isEmpty();
+
+        String afterEtag = sha256Hex(Json.write(after));
+        assertThat(afterEtag).as("mutant: a settings change does not move the ETag").isNotEqualTo(beforeEtag);
     }
 }

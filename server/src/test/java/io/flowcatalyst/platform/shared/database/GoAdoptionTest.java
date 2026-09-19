@@ -50,7 +50,7 @@ class GoAdoptionTest {
         // is idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op
         // here. Two are genuine additions, created here for the first time:
         // V8 (`mail_outbox`, spec `mail-outbox.md`, Go mirror item G9) and V11
-        // (the seven `fn_` function-registry tables, spec
+        // (the ten `fn_` function-registry tables, spec
         // `function-registry.md` §2 — there is no Go for the function service
         // at all, spec §0).
         assertThat(result.migrationsExecuted).isEqualTo(10);
@@ -93,7 +93,7 @@ class GoAdoptionTest {
                 rs.next();
                 assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
             }
-            // V11's eight fn_ tables are genuinely new here too (Java-only,
+            // V11's ten fn_ tables are genuinely new here too (Java-only,
             // spec `function-registry.md` §0/§2 and `function-invocation.md`
             // §3/§4: there is no Go for the function service at all).
             try (ResultSet rs = st.executeQuery("""
@@ -105,8 +105,8 @@ class GoAdoptionTest {
                     fnTables.add(rs.getString(1));
                 }
                 assertThat(fnTables).as("V11 creates each fn_ table exactly once").containsExactly(
-                        "fn_aliases", "fn_client_policies", "fn_domains", "fn_functions", "fn_hosts", "fn_routes",
-                        "fn_trigger_objects", "fn_versions");
+                        "fn_aliases", "fn_client_policies", "fn_config", "fn_domains", "fn_functions", "fn_hosts",
+                        "fn_routes", "fn_secrets", "fn_trigger_objects", "fn_versions");
             }
             // V2..V7, V9 and V10 are no-ops on a Go-HEAD database: the schema they
             // add is already there exactly once, not duplicated or altered.
@@ -179,7 +179,7 @@ class GoAdoptionTest {
         // not blanket-ignored, and excluded from the "nothing else changed" check.
         java.util.Set<String> javaOnlyTables = java.util.Set.of(
                 "mail_outbox", "fn_functions", "fn_versions", "fn_aliases", "fn_hosts", "fn_client_policies",
-                "fn_domains", "fn_routes", "fn_trigger_objects");
+                "fn_domains", "fn_routes", "fn_trigger_objects", "fn_config", "fn_secrets");
         List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
         List<String> javaOnlyTableLines = afterLines.stream()
                 .filter(l -> l.split("\t", -1).length > 1 && javaOnlyTables.contains(l.split("\t", -1)[1]))

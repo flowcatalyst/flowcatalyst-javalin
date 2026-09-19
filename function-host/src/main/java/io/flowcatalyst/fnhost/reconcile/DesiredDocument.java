@@ -10,7 +10,9 @@ import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /// The host's own reading of the wire document `GET
@@ -50,10 +52,16 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     /// decide *reach* for a versioned call (`function-invocation.md` §4).
     /// `applicationId` is ALWAYS present (a platform-owned function still
     /// belongs to an application); only `clientId` is `null` for one.
+    /// `config`/`secrets`/`missingSettings` (spec `function-context.md` §1,
+    /// D4a) are parsed here but have no caller yet (`HostFunctionContext` is
+    /// D4b, a later slice) — read leniently like everything else: an absent
+    /// or malformed `config`/`secrets` object reads as empty rather than
+    /// failing the entry, and a non-string `missingSettings` entry is dropped.
     public record Entry(FunctionAddress address, String functionId, String versionId, int version, Role role,
                          Mode mode, Digest digest, String artifactRef, String signatureBundle,
                          SignerIdentity signer, Manifest manifest, String webhookSigningSecret,
-                         String applicationId, String clientId) {
+                         String applicationId, String clientId, Map<String, String> config,
+                         Map<String, String> secrets, List<String> missingSettings) {
         public Entry {
             Objects.requireNonNull(address, "address");
             Objects.requireNonNull(functionId, "functionId");
@@ -63,10 +71,16 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
             Objects.requireNonNull(digest, "digest");
             Objects.requireNonNull(artifactRef, "artifactRef");
             Objects.requireNonNull(manifest, "manifest");
+            config = config == null ? Map.of() : Map.copyOf(config);
+            secrets = secrets == null ? Map.of() : Map.copyOf(secrets);
+            missingSettings = missingSettings == null ? List.of() : List.copyOf(missingSettings);
         }
 
-        /// Masks the signing secret (spec §6: "the host never logs it" —
-        /// `CONVENTIONS.md` §8's "a carrier of key material masks `toString`").
+        /// Masks the signing secret AND `secrets` (spec §6: "the host never
+        /// logs it"; `function-context.md` §1: "same masking discipline as
+        /// `webhookSigningSecret`" — `CONVENTIONS.md` §8's "a carrier of key
+        /// material masks `toString`"). `config` is not secret and prints
+        /// plainly.
         @Override
         public String toString() {
             return "Entry[address=" + address + ", functionId=" + functionId + ", versionId=" + versionId
@@ -75,7 +89,9 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
                     + ", signatureBundle=" + (signatureBundle == null ? "null" : signatureBundle.length() + " chars")
                     + ", signer=" + signer + ", manifest=" + manifest
                     + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>")
-                    + ", applicationId=" + applicationId + ", clientId=" + clientId + "]";
+                    + ", applicationId=" + applicationId + ", clientId=" + clientId + ", config=" + config
+                    + ", secrets=" + (secrets.isEmpty() ? "{}" : secrets.keySet() + " (values redacted)")
+                    + ", missingSettings=" + missingSettings + "]";
         }
     }
 
@@ -160,8 +176,43 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         // never crash this parse (spec §1.1).
         String applicationId = optionalText(node, "applicationId");
         String clientId = optionalText(node, "clientId");
+        Map<String, String> config = readStringMap(node.path("config"));
+        Map<String, String> secrets = readStringMap(node.path("secrets"));
+        List<String> missingSettings = readStringListField(node.path("missingSettings"));
         return new Entry(address, functionId, versionId, version, role, mode, digest, artifactRef, signatureBundle,
-                signer, manifest, webhookSigningSecret, applicationId, clientId);
+                signer, manifest, webhookSigningSecret, applicationId, clientId, config, secrets, missingSettings);
+    }
+
+    /// Tolerant object-of-strings reader (spec §1.1): not an object, or any
+    /// entry not a string, drops the whole map — a value the caller cannot
+    /// trust in part is not trusted at all.
+    private static Map<String, String> readStringMap(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return Map.of();
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        for (var entry : node.properties()) {
+            if (!entry.getValue().isString()) {
+                return Map.of();
+            }
+            out.put(entry.getKey(), entry.getValue().asString());
+        }
+        return out;
+    }
+
+    /// Tolerant string-array reader: not an array reads as empty; a
+    /// non-string entry is dropped rather than failing the whole list.
+    private static List<String> readStringListField(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (JsonNode entry : node) {
+            if (entry.isString()) {
+                out.add(entry.asString());
+            }
+        }
+        return out;
     }
 
     private static UnloadRef parseUnloadRef(JsonNode node) {

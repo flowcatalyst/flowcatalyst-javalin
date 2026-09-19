@@ -9,6 +9,7 @@ import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.operations.DesiredState;
@@ -67,18 +68,20 @@ public final class FunctionControlApi {
     private static final int MAX_ERROR_LENGTH = 1000;
 
     public record State(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
-                        UnitOfWork uow, ServiceAccountRepository serviceAccounts) {
+                        UnitOfWork uow, ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings) {
         public State {
             Objects.requireNonNull(functions, "functions");
             Objects.requireNonNull(versions, "versions");
             Objects.requireNonNull(hosts, "hosts");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(serviceAccounts, "serviceAccounts");
+            Objects.requireNonNull(settings, "settings");
         }
     }
 
     public static void register(Routes routes, State s) {
-        DesiredState desiredState = new DesiredState(s.functions(), s.versions(), s.hosts(), s.serviceAccounts());
+        DesiredState desiredState =
+                new DesiredState(s.functions(), s.versions(), s.hosts(), s.serviceAccounts(), s.settings());
         routes.in(Group.API_READ).get("/control/functions/desired-state", Auth.scoped(ctx -> desiredState(ctx, desiredState)));
         routes.in(Group.API_WRITE).post("/control/functions/heartbeat", Auth.scoped(ctx -> heartbeat(ctx, s)));
     }

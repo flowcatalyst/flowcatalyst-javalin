@@ -146,7 +146,7 @@ public final class PlatformRoles {
                             ADMIN_PROCESS_READ, ADMIN_PROCESS_CREATE, ADMIN_PROCESS_UPDATE,
                             ADMIN_PROCESS_DELETE, ADMIN_PROCESS_ARCHIVE, ADMIN_PROCESS_SYNC,
                             FUNCTION_VIEW, FUNCTION_MANAGE, FUNCTION_PUBLISH, FUNCTION_PROMOTE, FUNCTION_POLICY_MANAGE,
-                            FUNCTION_VERSION_INVOKE)),
+                            FUNCTION_VERSION_INVOKE, FUNCTION_SECRET_MANAGE)),
 
             // platform:viewer
             mk("viewer", "Platform Viewer",
@@ -212,7 +212,8 @@ public final class PlatformRoles {
             // is unchanged.
             mk("function-publisher", "Function Publisher",
                     "Publishes and promotes function versions",
-                    List.of(FUNCTION_VIEW, FUNCTION_PUBLISH, FUNCTION_PROMOTE, FUNCTION_VERSION_INVOKE)),
+                    List.of(FUNCTION_VIEW, FUNCTION_PUBLISH, FUNCTION_PROMOTE, FUNCTION_VERSION_INVOKE,
+                            FUNCTION_SECRET_MANAGE)),
 
             // platform:function-host — spec §2, `router-config-auth.md` R3′'s precedent: one
             // permission, exactly what /control/functions/* needs, anchor-only, not

@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 
 /// Test support shared by the listener's own tests (spec
 /// `function-host-listener.md` §6): real HTTP against a real [FnHttpServer],
@@ -171,7 +172,7 @@ final class FnHttpTestSupport {
                                             String applicationId, String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.LIVE,
                 DesiredDocument.Mode.LAZY, digestOf(jar), fileRef(jar), null, null, manifest, webhookSigningSecret,
-                applicationId, clientId);
+                applicationId, clientId, Map.of(), Map.of(), List.of());
     }
 
     static DesiredDocument.Entry warmEntry(FunctionAddress address, String functionId, String versionId, int version,
@@ -179,7 +180,7 @@ final class FnHttpTestSupport {
                                             String applicationId, String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.LIVE,
                 DesiredDocument.Mode.WARM, digestOf(jar), fileRef(jar), null, null, manifest, webhookSigningSecret,
-                applicationId, clientId);
+                applicationId, clientId, Map.of(), Map.of(), List.of());
     }
 
     static DesiredDocument.Entry candidateEntry(FunctionAddress address, String functionId, String versionId,
@@ -187,7 +188,7 @@ final class FnHttpTestSupport {
                                                  String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.CANDIDATE,
                 DesiredDocument.Mode.LAZY, digestOf(jar), fileRef(jar), null, null, manifest, null, applicationId,
-                clientId);
+                clientId, Map.of(), Map.of(), List.of());
     }
 
     static DesiredDocument oneFunction(DesiredDocument.Entry entry) {

@@ -11,6 +11,7 @@ import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
@@ -60,6 +61,8 @@ class FunctionApiTest {
     private static final SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
     private static final DispatchPoolRepository dispatchPools = new DispatchPoolRepository(TestPg.dataSource());
     private static final ScheduledJobRepository scheduledJobs = new ScheduledJobRepository(TestPg.dataSource());
+    private static final FunctionSettingsRepository settings =
+            new FunctionSettingsRepository(TestPg.dataSource(), java.util.Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     private static final String[] ANCHOR = {
@@ -78,7 +81,7 @@ class FunctionApiTest {
             routes.before("/api/*", auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
                     policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
-                    subscriptions, dispatchPools, scheduledJobs));
+                    subscriptions, dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
             // §4.3: needed for P10's real PUT /api/function-policies/{owner} route.
             io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                     new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
@@ -708,5 +711,104 @@ class FunctionApiTest {
         assertThat(afterA.statusCode()).as("mutant: always use platform defaults — " + afterA.body()).isEqualTo(201);
         var afterB = publishHttp(addressB, "p10b2", overCeilingManifest);
         assertThat(afterB.statusCode()).as("mutant: use the OTHER owner's policy — " + afterB.body()).isEqualTo(400);
+    }
+
+    // ── config: GET/PUT round trip ────────────────────────────────────────
+
+    @Test
+    void configGetPutRoundTrips() {
+        testApplication("cfg", "cfg-" + RUN);
+        create("cfg-" + RUN, "svc", "fn", null);
+        String address = "cfg-" + RUN + ".svc.fn";
+
+        var empty = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(empty.get("values").isEmpty()).isTrue();
+        assertThat(empty.get("declared")).isEmpty();
+        assertThat(empty.get("missing")).isEmpty();
+
+        var put = http.put("/api/functions/" + address + "/config", "{\"values\":{\"GREETING\":\"hi\"}}", ANCHOR);
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
+        assertThat(json(put).get("values").get("GREETING").asString()).isEqualTo("hi");
+
+        var after = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(after.get("values").get("GREETING").asString()).isEqualTo("hi");
+
+        // Full replacement: a second PUT without GREETING removes it.
+        var replace = http.put("/api/functions/" + address + "/config", "{\"values\":{\"OTHER\":\"x\"}}", ANCHOR);
+        assertThat(replace.statusCode()).isEqualTo(200);
+        var afterReplace = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(afterReplace.get("values").has("GREETING")).as("mutant: merge instead of replace").isFalse();
+        assertThat(afterReplace.get("values").get("OTHER").asString()).isEqualTo("x");
+    }
+
+    @Test
+    void configInvalidKeyIs400SettingKeyInvalid() {
+        testApplication("cfgbad", "cfgbad-" + RUN);
+        create("cfgbad-" + RUN, "svc", "fn", null);
+        String address = "cfgbad-" + RUN + ".svc.fn";
+
+        var r = http.put("/api/functions/" + address + "/config", "{\"values\":{\"1bad\":\"x\"}}", ANCHOR);
+        assertThat(r.statusCode()).isEqualTo(400);
+        assertThat(json(r).get("error").asString()).isEqualTo("SETTING_KEY_INVALID");
+    }
+
+    @Test
+    void configOverTheKeyCountLimitIs400SettingTooLarge() {
+        testApplication("cfgbig", "cfgbig-" + RUN);
+        create("cfgbig-" + RUN, "svc", "fn", null);
+        String address = "cfgbig-" + RUN + ".svc.fn";
+
+        var values = new StringBuilder("{\"values\":{");
+        for (int i = 0; i <= io.flowcatalyst.platform.function.operations.SetFunctionConfig.MAX_KEYS; i++) {
+            if (i > 0) values.append(',');
+            values.append("\"K").append(i).append("\":\"v\"");
+        }
+        values.append("}}");
+
+        var r = http.put("/api/functions/" + address + "/config", values.toString(), ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
+        assertThat(json(r).get("error").asString()).isEqualTo("SETTING_TOO_LARGE");
+    }
+
+    @Test
+    void configValueOverTheByteLimitIs400SettingTooLarge() {
+        testApplication("cfgval", "cfgval-" + RUN);
+        create("cfgval-" + RUN, "svc", "fn", null);
+        String address = "cfgval-" + RUN + ".svc.fn";
+        String tooLong = "x".repeat(io.flowcatalyst.platform.function.operations.SetFunctionConfig.MAX_VALUE_BYTES + 1);
+
+        var r = http.put("/api/functions/" + address + "/config", "{\"values\":{\"BIG\":\"" + tooLong + "\"}}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
+        assertThat(json(r).get("error").asString()).isEqualTo("SETTING_TOO_LARGE");
+    }
+
+    // ── X4 (function-context.md §1): no app key ⇒ secret routes 503, nothing stored ──
+    // `encryption` is `Optional.empty()` for this whole test class (see `start()` above) —
+    // exactly the "no FLOWCATALYST_APP_KEY" condition X4 pins.
+
+    @Test
+    void secretRoutesAre503WithNoAppKeyConfiguredAndNothingIsStored() {
+        testApplication("x4", "x4-" + RUN);
+        create("x4-" + RUN, "svc", "fn", null);
+        String address = "x4-" + RUN + ".svc.fn";
+
+        var put = http.put("/api/functions/" + address + "/secrets/API_KEY", "{\"value\":\"whatever\"}", ANCHOR);
+        assertThat(put.statusCode()).as("mutant: fall back to plaintext storage instead of refusing — " + put.body())
+                .isEqualTo(503);
+        assertThat(json(put).get("error").asString()).isEqualTo("ENCRYPTION_UNCONFIGURED");
+
+        var get = http.get("/api/functions/" + address + "/secrets", ANCHOR);
+        assertThat(get.statusCode()).isEqualTo(503);
+        assertThat(json(get).get("error").asString()).isEqualTo("ENCRYPTION_UNCONFIGURED");
+
+        var del = http.delete("/api/functions/" + address + "/secrets/API_KEY", ANCHOR);
+        assertThat(del.statusCode()).isEqualTo(503);
+        assertThat(json(del).get("error").asString()).isEqualTo("ENCRYPTION_UNCONFIGURED");
+
+        // The refused PUT must not have reached the repository at all.
+        var f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        assertThat(settings.hasSecret(f.id(), "API_KEY"))
+                .as("mutant: write the secret anyway before answering 503").isFalse();
+        assertThat(settings.listSecrets(f.id())).isEmpty();
     }
 }

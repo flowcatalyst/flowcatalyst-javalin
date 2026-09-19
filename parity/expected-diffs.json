@@ -631,6 +631,55 @@
   },
   {
     "scenario": "functions*",
+    "step": "get-config",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of the (empty) ConfigResponse",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "put-config",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of Java's 200 ConfigResponse",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "get-secrets",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of the (empty) SecretListResponse",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "put-secret",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of Java's 204",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "get-secrets-after-set",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of the SecretListResponse naming the just-set key (never its value)",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "delete-secret",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of Java's 204",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "delete-secret-not-found",
+    "pointer": "/**",
+    "reason": "Java-first: platform-stored config/secrets have no Go implementation (docs/spec/function-context.md §1, D4a); Go's SPA catch-all or 404 answers instead of Java's own 404 FunctionSecret_NOT_FOUND (the secret was already deleted by the previous step)",
+    "ruling": "owner 2026-09-20, function-context.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
     "step": "retire-not-found",
     "pointer": "/**",
     "reason": "Java-first: version routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of Java's 404 FunctionVersion_NOT_FOUND",

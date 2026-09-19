@@ -13,10 +13,12 @@ import io.flowcatalyst.db.generated.tables.AppPlatformConfigs;
 import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.FnAliases;
 import io.flowcatalyst.db.generated.tables.FnClientPolicies;
+import io.flowcatalyst.db.generated.tables.FnConfig;
 import io.flowcatalyst.db.generated.tables.FnDomains;
 import io.flowcatalyst.db.generated.tables.FnFunctions;
 import io.flowcatalyst.db.generated.tables.FnHosts;
 import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnSecrets;
 import io.flowcatalyst.db.generated.tables.FnTriggerObjects;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
@@ -152,6 +154,11 @@ public class Public extends SchemaImpl {
     public final FnClientPolicies FN_CLIENT_POLICIES = FnClientPolicies.FN_CLIENT_POLICIES;
 
     /**
+     * The table <code>public.fn_config</code>.
+     */
+    public final FnConfig FN_CONFIG = FnConfig.FN_CONFIG;
+
+    /**
      * The table <code>public.fn_domains</code>.
      */
     public final FnDomains FN_DOMAINS = FnDomains.FN_DOMAINS;
@@ -170,6 +177,11 @@ public class Public extends SchemaImpl {
      * The table <code>public.fn_routes</code>.
      */
     public final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_secrets</code>.
+     */
+    public final FnSecrets FN_SECRETS = FnSecrets.FN_SECRETS;
 
     /**
      * The table <code>public.fn_trigger_objects</code>.
@@ -527,10 +539,12 @@ public class Public extends SchemaImpl {
             AudLogs.AUD_LOGS,
             FnAliases.FN_ALIASES,
             FnClientPolicies.FN_CLIENT_POLICIES,
+            FnConfig.FN_CONFIG,
             FnDomains.FN_DOMAINS,
             FnFunctions.FN_FUNCTIONS,
             FnHosts.FN_HOSTS,
             FnRoutes.FN_ROUTES,
+            FnSecrets.FN_SECRETS,
             FnTriggerObjects.FN_TRIGGER_OBJECTS,
             FnVersions.FN_VERSIONS,
             IamAuthorizationCodes.IAM_AUTHORIZATION_CODES,

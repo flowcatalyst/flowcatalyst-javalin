@@ -2,8 +2,10 @@ package io.flowcatalyst.platform.function.operations;
 
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.AliasChanged;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -11,7 +13,11 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.TxOperation;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Promotes a version to an alias — today always `live` (spec
 /// `function-api.md` §5.2, R3). `Authorize: Public` — load-or-404 + reach is
@@ -44,10 +50,11 @@ public final class PromoteVersion {
     /// transaction") — a trigger write that cannot be honoured rolls the
     /// alias change back too.
     public static TxOperation<PromoteCommand, AliasChanged> of(FunctionRepository functions,
-            FunctionVersionRepository versions, TriggerSync triggerSync) {
+            FunctionVersionRepository versions, TriggerSync triggerSync, FunctionSettingsRepository settings) {
         Objects.requireNonNull(functions, "functions");
         Objects.requireNonNull(versions, "versions");
         Objects.requireNonNull(triggerSync, "triggerSync");
+        Objects.requireNonNull(settings, "settings");
         return TxOperation.<PromoteCommand, AliasChanged>named("PromoteVersion")
                 .validate(cmd -> Function.requireSupportedAlias(cmd.alias()))
                 .authorize(Operation.Authorize.publicAccess())
@@ -65,6 +72,8 @@ public final class PromoteVersion {
                                         + v.manifest().pool().value() + "' yet");
                     }
 
+                    requireSettingsPresent(settings, f.id(), v.manifest());
+
                     Instant now = Instant.now();
                     Function.Promoted promoted = f.promote(cmd.alias(), v, ec.principalId(), now);
                     AliasChanged event = AliasChanged.of(ec, promoted.function(), cmd.alias(), v, promoted.previousVersionId());
@@ -76,5 +85,41 @@ public final class PromoteVersion {
 
                     return event;
                 });
+    }
+
+    /// spec `function-context.md` §1: every key `v`'s manifest declares —
+    /// `config`, `secrets`, and each `db[].secretRef` — must have a value,
+    /// checked as three independent sources (a candidate may be missing some
+    /// of one and none of another) and reported together, naming every
+    /// missing key from all three, or none is thrown at all.
+    ///
+    /// @throws UseCaseException conflict `SETTINGS_MISSING`
+    private static void requireSettingsPresent(FunctionSettingsRepository settings, String functionId, Manifest manifest) {
+        Set<String> configured = settings.configMap(functionId).keySet();
+        Set<String> secretKeys = settings.secretKeySet(functionId);
+
+        List<String> missing = new ArrayList<>();
+        for (String key : manifest.config()) {
+            if (!configured.contains(key)) {
+                missing.add(key);
+            }
+        }
+        for (String key : manifest.secrets()) {
+            if (!secretKeys.contains(key)) {
+                missing.add(key);
+            }
+        }
+        for (Manifest.DbRef ref : manifest.db()) {
+            if (!secretKeys.contains(ref.secretRef())) {
+                missing.add(ref.secretRef());
+            }
+        }
+        if (!missing.isEmpty()) {
+            // De-duplicate (a name can legitimately appear in more than one source)
+            // while keeping the first-seen order, so the message is stable.
+            List<String> named = List.copyOf(new LinkedHashSet<>(missing));
+            throw UseCaseException.conflict("SETTINGS_MISSING",
+                    "the following config/secret keys have no value set: " + String.join(", ", named));
+        }
     }
 }

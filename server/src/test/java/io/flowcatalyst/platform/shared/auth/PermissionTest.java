@@ -49,14 +49,14 @@ class PermissionTest {
         }
     }
 
-    /// The `function` context's six permissions (spec `function-api.md` §2)
-    /// are all named with the `FUNCTION_` prefix regardless of resource —
-    /// deliberately, so a reader searching for "function" finds every one of
-    /// them, and because the mechanical `<RESOURCE>_<ACTION>` rule would
-    /// collide `platform:function:policy:manage` with
-    /// `platform:function:function:manage` (both would mechanically be
+    /// The `function` context's seven permissions (spec `function-api.md` §2,
+    /// `function-context.md` §1) are all named with the `FUNCTION_` prefix
+    /// regardless of resource — deliberately, so a reader searching for
+    /// "function" finds every one of them, and because the mechanical
+    /// `<RESOURCE>_<ACTION>` rule would collide `platform:function:policy:manage`
+    /// with `platform:function:function:manage` (both would mechanically be
     /// `..._MANAGE`). An explicit table, not a formula, because no formula
-    /// produces these six names uniquely.
+    /// produces these seven names uniquely.
     private static final Map<String, String> FUNCTION_CONTEXT_NAMES = Map.of(
             "platform:function:function:view", "FUNCTION_VIEW",
             "platform:function:function:manage", "FUNCTION_MANAGE",
@@ -64,7 +64,8 @@ class PermissionTest {
             "platform:function:alias:promote", "FUNCTION_PROMOTE",
             "platform:function:policy:manage", "FUNCTION_POLICY_MANAGE",
             "platform:function:host:control", "FUNCTION_HOST_CONTROL",
-            "platform:function:version:invoke", "FUNCTION_VERSION_INVOKE");
+            "platform:function:version:invoke", "FUNCTION_VERSION_INVOKE",
+            "platform:function:secret:manage", "FUNCTION_SECRET_MANAGE");
 
     /// `<RESOURCE>_<ACTION>`, `APP_SVC_` prefix for the application-service
     /// context, `FUNCTION_CONTEXT_NAMES` for the function context,

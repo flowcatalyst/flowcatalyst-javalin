@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
@@ -74,6 +75,8 @@ class FunctionControlApiTest {
     private static final ScheduledJobRepository scheduledJobs = new ScheduledJobRepository(TestPg.dataSource());
     private static final ServiceAccountRepository serviceAccounts =
             new ServiceAccountRepository(TestPg.dataSource(), java.util.Optional.empty());
+    private static final FunctionSettingsRepository settings =
+            new FunctionSettingsRepository(TestPg.dataSource(), java.util.Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
 
@@ -100,9 +103,9 @@ class FunctionControlApiTest {
             routes.before(auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
                     policies, DEFAULTS, new Signatures.Off(), TriggerSync.none(), triggerObjects, subscriptions,
-                    dispatchPools, scheduledJobs));
+                    dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
             FunctionControlApi.register(routes,
-                    new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts));
+                    new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts, settings));
         });
     }
 

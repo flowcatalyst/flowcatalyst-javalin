@@ -36,7 +36,9 @@ class SchemaFingerprintTest {
             "fn_client_policies",    // docs/spec/function-registry.md §2, V11
             "fn_domains",            // docs/spec/function-registry.md §2, V11
             "fn_routes",             // docs/spec/function-invocation.md §3, reshaping function-registry.md §2, V11
-            "fn_trigger_objects"     // docs/spec/function-invocation.md §4, V11
+            "fn_trigger_objects",    // docs/spec/function-invocation.md §4, V11
+            "fn_config",             // docs/spec/function-context.md §1 (D4a), V11
+            "fn_secrets"             // docs/spec/function-context.md §1 (D4a), V11
     );
 
     /// The one line this suite permits to differ from Go on a table Go

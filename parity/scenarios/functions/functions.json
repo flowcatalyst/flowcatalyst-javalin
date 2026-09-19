@@ -95,6 +95,29 @@
     { "id": "list-aliases",
       "request": { "method": "GET", "path": "/api/functions/pf-${run}.svc.fn/aliases" } },
 
+    { "id": "get-config",
+      "request": { "method": "GET", "path": "/api/functions/pf-${run}.svc.fn/config" } },
+
+    { "id": "put-config",
+      "request": { "method": "PUT", "path": "/api/functions/pf-${run}.svc.fn/config",
+                   "body": { "values": { "GREETING": "hello" } } } },
+
+    { "id": "get-secrets",
+      "request": { "method": "GET", "path": "/api/functions/pf-${run}.svc.fn/secrets" } },
+
+    { "id": "put-secret",
+      "request": { "method": "PUT", "path": "/api/functions/pf-${run}.svc.fn/secrets/API_KEY",
+                   "body": { "value": "parity-secret-${run}" } } },
+
+    { "id": "get-secrets-after-set",
+      "request": { "method": "GET", "path": "/api/functions/pf-${run}.svc.fn/secrets" } },
+
+    { "id": "delete-secret",
+      "request": { "method": "DELETE", "path": "/api/functions/pf-${run}.svc.fn/secrets/API_KEY" } },
+
+    { "id": "delete-secret-not-found",
+      "request": { "method": "DELETE", "path": "/api/functions/pf-${run}.svc.fn/secrets/API_KEY" } },
+
     { "id": "retire-not-found",
       "request": { "method": "POST", "path": "/api/functions/pf-${run}.svc.fn/versions/1/retire" } },
 

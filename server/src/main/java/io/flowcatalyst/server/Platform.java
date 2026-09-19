@@ -639,11 +639,17 @@ public final class Platform {
                 subscriptionRepo, dispatchPoolRepo, scheduledJobRepo, eventTypeRepo, triggerObjectRepo,
                 applicationRepo, serviceAccountRepo, functionVersionRepo, env.functionLimits(),
                 env.fnPoolUrlTemplate());
+        // function-context.md §1 (D4a): platform-stored config/secrets. Same
+        // Encryption.fromKeys(...) resolution every other secret-at-rest repository uses
+        // (ServiceAccountRepository, ClientSecretEncryption) — Optional.empty() when
+        // FLOWCATALYST_APP_KEY is unset, never a fallback to plaintext.
+        var functionSettingsRepo = new io.flowcatalyst.platform.function.FunctionSettingsRepository(
+                pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow,
                         functionVersionRepo, functionHostRepo, functionPolicyRepo, env.functionLimits(),
                         functionSignatures, functionTriggerSync, triggerObjectRepo, subscriptionRepo, dispatchPoolRepo,
-                        scheduledJobRepo));
+                        scheduledJobRepo, functionSettingsRepo, Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
         io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
                         functionPolicyRepo, clientRepo, uow, env.functionLimits()));
@@ -651,7 +657,7 @@ public final class Platform {
         // inside the authenticator (Platform#isPlatformPath).
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
-                        functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo));
+                        functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));

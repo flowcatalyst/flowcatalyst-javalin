@@ -248,8 +248,8 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         List<ScheduleSpec> schedules = parseSchedulesField(root, endpoints);
         List<PublicRoute> publicRoutes = parsePublicField(root);
         List<DbRef> db = parseDbField(root, defaults, ceilings);
-        List<String> config = parseSimpleStringList(root, "config");
-        List<String> secrets = parseSimpleStringList(root, "secrets");
+        List<String> config = parseSettingKeyList(root, "config");
+        List<String> secrets = parseSettingKeyList(root, "secrets");
         List<String> httpAllow = parseSimpleStringList(root, "httpAllow");
 
         return new Manifest(runtime, entrypoint, pool, warm, limits, endpoints, subscriptions, schedules,
@@ -761,6 +761,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             if (!secretRefNode.isString() || secretRefNode.asString().isBlank()) {
                 throw UseCaseException.validation("DB_INVALID", path + ".secretRef is required");
             }
+            requireSettingKey(secretRefNode.asString(), path + ".secretRef", "DB_INVALID");
 
             int poolSize = resolvePoolSize(entry, path, defaults.dbPoolSize(), ceilings.dbPoolSize());
             refs.add(new DbRef(new DnsLabel(name), secretRefNode.asString(), poolSize));
@@ -799,6 +800,43 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             values.add(value);
         }
         return List.copyOf(values);
+    }
+
+    /// `config`/`secrets`: [#parseSimpleStringList]'s shape check plus the
+    /// [SettingKey] format rule (spec `function-context.md` §1: "the
+    /// manifest's config/secrets/secretRef entries are held to the same
+    /// rule") — the code stays `CONFIG_INVALID`, wrapping
+    /// [SettingKey]'s `SETTING_KEY_INVALID` message.
+    private static List<String> parseSettingKeyList(JsonNode root, String key) {
+        JsonNode node = root.path(key);
+        if (node.isMissingNode() || node.isNull()) return List.of();
+        if (!node.isArray()) throw UseCaseException.validation("CONFIG_INVALID", key + " must be an array");
+        List<String> values = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (JsonNode entry : node) {
+            if (!entry.isString() || entry.asString().isBlank()) {
+                throw UseCaseException.validation("CONFIG_INVALID", key + " entries must be non-blank strings");
+            }
+            String value = entry.asString();
+            requireSettingKey(value, key, "CONFIG_INVALID");
+            if (!seen.add(value)) {
+                throw UseCaseException.validation("CONFIG_INVALID", key + " has a duplicate entry '" + value + "'");
+            }
+            values.add(value);
+        }
+        return List.copyOf(values);
+    }
+
+    /// [SettingKey#parse], with `raw`'s `SETTING_KEY_INVALID` message
+    /// rewrapped under `code` and `path` (spec §1) — so `config`/`secrets`
+    /// keep `CONFIG_INVALID` and a `db[].secretRef` keeps `DB_INVALID`
+    /// while sharing the one key-format rule.
+    private static void requireSettingKey(String raw, String path, String code) {
+        try {
+            SettingKey.parse(raw);
+        } catch (UseCaseException e) {
+            throw UseCaseException.validation(code, path + ": " + e.error().message());
+        }
     }
 
     /// Checked for `node` as soon as it is entered, before any of its fields
@@ -849,8 +887,8 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         List<ScheduleSpec> schedules = readSchedules(root, endpoints);
         List<PublicRoute> publicRoutes = readPublicRoutes(root);
         List<DbRef> db = readDb(root);
-        List<String> config = readStringList(root, "config");
-        List<String> secrets = readStringList(root, "secrets");
+        List<String> config = readSettingKeyList(root, "config");
+        List<String> secrets = readSettingKeyList(root, "secrets");
         List<String> httpAllow = readStringList(root, "httpAllow");
 
         return new Manifest(runtime, entrypoint, pool, warm, limits, endpoints, subscriptions, schedules,
@@ -1075,7 +1113,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         JsonNode nameNode = node.path("name");
         JsonNode secretRefNode = node.path("secretRef");
         if (!nameNode.isString() || !DnsLabel.isValid(nameNode.asString())) return Optional.empty();
-        if (!secretRefNode.isString() || secretRefNode.asString().isBlank()) return Optional.empty();
+        if (!secretRefNode.isString() || !SettingKey.isValid(secretRefNode.asString())) return Optional.empty();
         int poolSize = readPositiveInt(node, "poolSize", FunctionLimits.DEFAULT_DB_POOL_SIZE);
         return Optional.of(new DbRef(new DnsLabel(nameNode.asString()), secretRefNode.asString(), poolSize));
     }
@@ -1086,6 +1124,18 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         List<String> values = new ArrayList<>();
         for (JsonNode entry : node) {
             if (entry.isString() && !entry.asString().isBlank()) values.add(entry.asString());
+        }
+        return List.copyOf(values);
+    }
+
+    /// [#readStringList] narrowed to valid [SettingKey]s (spec §1's tolerant
+    /// reader: a malformed key is dropped, never fails the whole manifest).
+    private static List<String> readSettingKeyList(JsonNode root, String key) {
+        JsonNode node = root.path(key);
+        if (!node.isArray()) return List.of();
+        List<String> values = new ArrayList<>();
+        for (JsonNode entry : node) {
+            if (entry.isString() && SettingKey.isValid(entry.asString())) values.add(entry.asString());
         }
         return List.copyOf(values);
     }

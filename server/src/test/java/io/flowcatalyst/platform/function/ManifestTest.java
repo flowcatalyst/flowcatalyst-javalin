@@ -698,6 +698,41 @@ class ManifestTest {
         assertCode(() -> parseJvm(json), "CONFIG_INVALID");
     }
 
+    // ── SettingKey format rule shared by config/secrets/db[].secretRef (function-context.md §1) ──
+
+    @Test
+    void configInvalidKeyFormatStartsWithDigit() {
+        assertCode(() -> parseJvm(withConfig("\"1BAD\"")), "CONFIG_INVALID");
+    }
+
+    @Test
+    void configInvalidKeyFormatDisallowedCharacter() {
+        assertCode(() -> parseJvm(withConfig("\"BAD KEY\"")), "CONFIG_INVALID");
+    }
+
+    @Test
+    void secretsInvalidKeyFormatStartsWithDigit() {
+        assertCode(() -> parseJvm(withSecrets("\"1BAD\"")), "CONFIG_INVALID");
+    }
+
+    @Test
+    void secretsValidKeyFormatAccepted() {
+        Manifest manifest = parseJvm(withSecrets("\"billing/stripe-key\""));
+        assertThat(manifest.secrets()).containsExactly("billing/stripe-key");
+    }
+
+    @Test
+    void dbInvalidSecretRefKeyFormat() {
+        assertCode(() -> parseJvm(withDb("{\"name\":\"main\",\"secretRef\":\"1bad\"}")), "DB_INVALID");
+    }
+
+    @Test
+    void dbValidSecretRefKeyFormatAccepted() {
+        Manifest manifest = parseJvm(withDb("{\"name\":\"main\",\"secretRef\":\"billing/dsn\"}"));
+        assertThat(manifest.db()).hasSize(1);
+        assertThat(manifest.db().getFirst().secretRef()).isEqualTo("billing/dsn");
+    }
+
     // ── readStored — tolerance contract ──────────────────────────────────────
 
     @Test
@@ -813,6 +848,11 @@ class ManifestTest {
 
     private static String withConfig(String configBody) {
         return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"config\":[" + configBody + "],"
+                + "\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\"}]}";
+    }
+
+    private static String withSecrets(String secretsBody) {
+        return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"secrets\":[" + secretsBody + "],"
                 + "\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\"}]}";
     }
 }

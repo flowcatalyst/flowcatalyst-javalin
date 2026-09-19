@@ -1,5 +1,6 @@
 [
   "DELETE /api/functions/{address}",
+  "DELETE /api/functions/{address}/secrets/{key}",
   "DELETE /auth/2fa/methods/{method}",
   "DELETE /auth/2fa/trusted-devices/{id}",
   "DELETE /auth/webauthn/credentials/{id}",
@@ -14,6 +15,8 @@
   "GET /api/functions",
   "GET /api/functions/{address}",
   "GET /api/functions/{address}/aliases",
+  "GET /api/functions/{address}/config",
+  "GET /api/functions/{address}/secrets",
   "GET /api/functions/{address}/status",
   "GET /api/functions/{address}/versions",
   "GET /api/functions/{address}/versions/{version}",
@@ -118,6 +121,8 @@
   "PUT /api/function-policies/{owner}",
   "PUT /api/functions/{address}",
   "PUT /api/functions/{address}/aliases/{alias}",
+  "PUT /api/functions/{address}/config",
+  "PUT /api/functions/{address}/secrets/{key}",
   "PUT /bff/event-types/{id}",
   "PUT /bff/roles/{roleName}"
 ]

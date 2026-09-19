@@ -7,6 +7,7 @@ import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
@@ -26,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 
 /// Builds the `/control/functions/desired-state` document (spec
 /// `function-api.md` §6.1). NOT a use case — reads never go through
@@ -39,16 +41,19 @@ public final class DesiredState {
     private final FunctionVersionRepository versions;
     private final FunctionHostRepository hosts;
     private final ServiceAccountRepository serviceAccounts;
+    private final FunctionSettingsRepository settings;
 
     /// `serviceAccounts` feeds [OutboundCredentials#resolve] — the SAME
     /// resolver chain the dispatch processor uses (spec §6, R9): "the
     /// application's oldest active service account's signing secret".
+    /// `settings` feeds [#configAndSecretsFor] (`function-context.md` §1).
     public DesiredState(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
-            ServiceAccountRepository serviceAccounts) {
+            ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings) {
         this.functions = Objects.requireNonNull(functions, "functions");
         this.versions = Objects.requireNonNull(versions, "versions");
         this.hosts = Objects.requireNonNull(hosts, "hosts");
         this.serviceAccounts = Objects.requireNonNull(serviceAccounts, "serviceAccounts");
+        this.settings = Objects.requireNonNull(settings, "settings");
     }
 
     /// One consistent read: every `ACTIVE` function's `live` + `candidate`
@@ -76,13 +81,15 @@ public final class DesiredState {
         for (Function f : active) {
             FunctionVersion live = f.liveVersionId().map(liveVersions::get).orElse(null);
             if (live != null && live.manifest().pool().equals(pool)) {
-                entries.add(FunctionEntry.of(f, live, "live", signingSecretFor(f, live, secretByApplication)));
+                entries.add(FunctionEntry.of(f, live, "live", signingSecretFor(f, live, secretByApplication),
+                        configAndSecretsFor(f, live)));
             }
             FunctionVersion candidate = candidates.get(f.id());
             if (candidate != null
                     && (live == null || candidate.version() > live.version())
                     && candidate.manifest().pool().equals(pool)) {
-                entries.add(FunctionEntry.of(f, candidate, "candidate", signingSecretFor(f, candidate, secretByApplication)));
+                entries.add(FunctionEntry.of(f, candidate, "candidate",
+                        signingSecretFor(f, candidate, secretByApplication), configAndSecretsFor(f, candidate)));
             }
         }
         entries.sort(Comparator.comparing(FunctionEntry::address).thenComparingInt(FunctionEntry::version));
@@ -127,6 +134,52 @@ public final class DesiredState {
         return manifest.endpoints().stream().anyMatch(e -> e.auth() == EndpointAuth.WEBHOOK);
     }
 
+    /// Spec §1: an entry's `config`/`secrets` are restricted to the keys
+    /// `v`'s OWN manifest declares — a host never receives a value the
+    /// version did not ask for — and `missingSettings` names every declared
+    /// key (from all three sources: `config`, `secrets`, `db[].secretRef` —
+    /// a `db` connection's DSN is itself a secret, named by `secretRef`, so
+    /// it travels in the SAME `secrets` map [FunctionContext]'s `dataSource`
+    /// reads from) that has no value. Sorted keys both ways
+    /// ([FunctionSettingsRepository#configMap]/[FunctionSettingsRepository#decryptSecrets]
+    /// already return a `TreeMap`) so the document's bytes are deterministic
+    /// (spec §8 P14) — a settings change always moves the ETag.
+    private Settings configAndSecretsFor(Function f, FunctionVersion v) {
+        Manifest manifest = v.manifest();
+        Map<String, String> allConfig = settings.configMap(f.id());
+        Map<String, String> config = new TreeMap<>();
+        for (String key : manifest.config()) {
+            if (allConfig.containsKey(key)) {
+                config.put(key, allConfig.get(key));
+            }
+        }
+
+        Set<String> declaredSecretKeys = new LinkedHashSet<>(manifest.secrets());
+        for (Manifest.DbRef ref : manifest.db()) {
+            declaredSecretKeys.add(ref.secretRef());
+        }
+        Map<String, String> secrets = settings.decryptSecrets(f.id(), declaredSecretKeys);
+
+        List<String> missing = new ArrayList<>();
+        for (String key : manifest.config()) {
+            if (!config.containsKey(key)) {
+                missing.add(key);
+            }
+        }
+        for (String key : declaredSecretKeys) {
+            if (!secrets.containsKey(key)) {
+                missing.add(key);
+            }
+        }
+        return new Settings(config, secrets, List.copyOf(missing));
+    }
+
+    /// The three settings fields one [FunctionEntry] carries (spec §1);
+    /// private — [#configAndSecretsFor]'s own return shape, unpacked into
+    /// [FunctionEntry.of]'s parameters.
+    private record Settings(Map<String, String> config, Map<String, String> secrets, List<String> missingSettings) {
+    }
+
     // ── The wire document (spec §6.1) ────────────────────────────────────
 
     public record Document(String pool, List<FunctionEntry> functions, List<UnloadEntry> unload) {
@@ -158,9 +211,11 @@ public final class DesiredState {
     public record FunctionEntry(String address, String functionId, String versionId, int version, String role,
                                 String mode, String digest, String artifactRef, String signatureBundle,
                                 JsonNode manifest, SignerView signer, String webhookSigningSecret,
-                                String applicationId, String clientId) {
+                                String applicationId, String clientId, Map<String, String> config,
+                                Map<String, String> secrets, List<String> missingSettings) {
 
-        static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret) {
+        static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret,
+                Settings settings) {
             String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
             boolean platformOwned = f.owner() instanceof FunctionOwner.Platform;
             // applicationId is always carried — a platform-owned function still belongs to an
@@ -169,14 +224,18 @@ public final class DesiredState {
             String clientId = platformOwned ? null : f.owner().clientIdOrNull();
             return new FunctionEntry(f.address().render(), f.id(), v.id(), v.version(), role, mode,
                     v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson(),
-                    SignerView.from(v.signer()), webhookSigningSecret, applicationId, clientId);
+                    SignerView.from(v.signer()), webhookSigningSecret, applicationId, clientId,
+                    settings.config(), settings.secrets(), settings.missingSettings());
         }
 
-        /// Masks the signing secret (spec §6: "the host never logs it"; the
-        /// document itself is never logged either — `CONVENTIONS.md` §8's "a
-        /// carrier of key material masks `toString`"). [Document]'s own
-        /// (implicit) `toString` delegates to this one for every entry in its
-        /// `functions` list, so masking here is the one place this needs doing.
+        /// Masks the signing secret AND `secrets` (spec §6: "the host never
+        /// logs it"; `function-context.md` §1: "same masking discipline as
+        /// `webhookSigningSecret`" — `config` is not secret and prints
+        /// plainly; the document itself is never logged either —
+        /// `CONVENTIONS.md` §8's "a carrier of key material masks
+        /// `toString`"). [Document]'s own (implicit) `toString` delegates to
+        /// this one for every entry in its `functions` list, so masking here
+        /// is the one place this needs doing.
         @Override
         public String toString() {
             return "FunctionEntry[address=" + address + ", functionId=" + functionId + ", versionId=" + versionId
@@ -185,7 +244,9 @@ public final class DesiredState {
                     + ", signatureBundle=" + (signatureBundle == null ? "null" : signatureBundle.length() + " chars")
                     + ", manifest=" + manifest + ", signer=" + signer
                     + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>")
-                    + ", applicationId=" + applicationId + ", clientId=" + clientId + "]";
+                    + ", applicationId=" + applicationId + ", clientId=" + clientId + ", config=" + config
+                    + ", secrets=" + (secrets.isEmpty() ? "{}" : secrets.keySet() + " (values redacted)")
+                    + ", missingSettings=" + missingSettings + "]";
         }
     }
 

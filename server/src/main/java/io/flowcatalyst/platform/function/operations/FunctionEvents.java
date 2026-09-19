@@ -8,6 +8,8 @@ import io.flowcatalyst.sdk.usecase.EventConventions;
 import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 
+import java.util.List;
+
 /// The function aggregate's domain events (spec `function-api.md` §3).
 /// Source `platform:function`; subject `platform.function.{id}`; message
 /// group `platform:function:{id}` for every event below EXCEPT
@@ -29,6 +31,9 @@ public final class FunctionEvents {
     public static final String VERSION_RETIRED = "platform:function:version:retired";
     public static final String ALIAS_CHANGED = "platform:function:alias:changed";
     public static final String POLICY_UPDATED = "platform:function:policy:updated";
+    public static final String CONFIG_UPDATED = "platform:function:config:updated";
+    public static final String SECRET_SET = "platform:function:secret:set";
+    public static final String SECRET_DELETED = "platform:function:secret:deleted";
 
     private FunctionEvents() {
     }
@@ -192,6 +197,62 @@ public final class FunctionEvents {
 
         private record Data(String functionId, String address, String alias, String versionId, int version,
                             String previousVersionId) {
+        }
+    }
+
+    /// `{functionId, address, keys}` (spec `function-context.md` §1) —
+    /// `SetFunctionConfig`. **Keys only, never values** — a config value is
+    /// not secret, but the event still never carries it (spec §1's PUT is a
+    /// full replacement; the event names what changed, not what it holds).
+    public record ConfigUpdated(EventMetadata metadata, String functionId, String address,
+                                List<String> keys) implements DomainEvent {
+
+        public static ConfigUpdated of(ExecutionContext ec, Function f, java.util.Collection<String> keys) {
+            return new ConfigUpdated(metadataFor(ec, CONFIG_UPDATED, f.id()), f.id(), f.address().render(),
+                    List.copyOf(keys));
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, keys);
+        }
+
+        private record Data(String functionId, String address, List<String> keys) {
+        }
+    }
+
+    /// `{functionId, address, key}` (spec §1) — `SetFunctionSecret`. **The
+    /// key only** — spec §1 X1: a secret value is in no event, ever.
+    public record SecretSet(EventMetadata metadata, String functionId, String address, String key)
+            implements DomainEvent {
+
+        public static SecretSet of(ExecutionContext ec, Function f, String key) {
+            return new SecretSet(metadataFor(ec, SECRET_SET, f.id()), f.id(), f.address().render(), key);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, key);
+        }
+
+        private record Data(String functionId, String address, String key) {
+        }
+    }
+
+    /// `{functionId, address, key}` (spec §1) — `DeleteFunctionSecret`.
+    public record SecretDeleted(EventMetadata metadata, String functionId, String address, String key)
+            implements DomainEvent {
+
+        public static SecretDeleted of(ExecutionContext ec, Function f, String key) {
+            return new SecretDeleted(metadataFor(ec, SECRET_DELETED, f.id()), f.id(), f.address().render(), key);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, key);
+        }
+
+        private record Data(String functionId, String address, String key) {
         }
     }
 
