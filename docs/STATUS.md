@@ -14,13 +14,19 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   (seven Java-only `fn_` tables); `platform/function/` — addresses, route patterns, manifest
   (strict + stored readers, limits frozen at publish), entities, repositories; `Env.functionLimits`
   (`FC_FN_*`). Server suite 4495 run, 1 failure — the one below.
-- **Red on `main` too, owed:** `SchemaFingerprintTest` fails on `msg_dispatch_jobs.queue` — V10 landed
-  without a re-dump of `go-schema.sql` (Go has `054_dispatch_job_queue.sql`). Re-dump, regenerate the
-  fingerprint, then revisit `GoAdoptionTest` (it currently treats V10 as a genuine addition on the old dump).
-- **Next: package B** (platform API + services) — needs its own spec first, and owner rulings on
-  spec §9 Q1–Q3 (application codes are not DNS labels; functions of client-less applications;
-  Promote needs `READY` but hosts only load aliased versions). Package C (signatures, artifact
-  store) can run in parallel; it needs Q5 (signer subject matching).
+- **Owner rulings 2026-09-19 landed** (spec §9 R1–R4): non-DNS-label application codes cannot own
+  functions (B rejects); platform-owned functions (`FunctionOwner`, nullable `client_id`, the
+  `PLATFORM` policy row); desired state carries the newest `PUBLISHED` version so it can become
+  `READY` before Promote (B); deleting a function cascades to versions, aliases, routes.
+- **Go schema fixture re-dumped at goose 54** on branch `fix/go-schema-redump` (`818623a5`, cut from
+  `main`, merged here at `1cabc008`). **`main` is still red on `SchemaFingerprintTest` until that
+  branch lands there** — owner's call.
+- **Next: package B** (platform API + services) — spec first. Carry-overs for it: `DeleteApplication`
+  while the application has functions (no FK); `ClientPolicy.id()` is null for the platform owner
+  and the audit trail will want a value.
+- **Package C** (signatures + artifact store) waits on two owner answers: `sigstore-java` (measured:
+  39 jars / 35 MB, gRPC-Netty, BouncyCastle, Guava, protobuf) vs JDK-only bundle verification against
+  a pinned trust root; and signer-subject matching (spec Q5).
 
 ## Next: the verification plan (2026-09-11)
 
