@@ -93,10 +93,13 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         }
 
         // The same resolve — one rule, one place — the platform's own composition
-        // root uses (spec §1.4): FC_FN_SIGNATURES + FLOWCATALYST_DEV_MODE.
+        // root uses (spec §1.4): FC_FN_SIGNATURES + FLOWCATALYST_DEV_MODE +
+        // FC_FN_TRUST_ROOT (the platform reads the same variable — a private
+        // Sigstore instance needs both sides to trust it).
         Signatures signatures = Signatures.resolve(
                 io.flowcatalyst.platform.function.artifact.SignaturesMode.parse(e.or("FC_FN_SIGNATURES", "required")),
-                e.bool("FLOWCATALYST_DEV_MODE", false));
+                e.bool("FLOWCATALYST_DEV_MODE", false),
+                e.get("FC_FN_TRUST_ROOT"));
 
         int maxLoaded = e.integer("FC_FN_MAX_LOADED", 200);
         Path cacheDir = Path.of(e.or("FC_FN_CACHE_DIR", System.getProperty("java.io.tmpdir") + "/fc-fn-cache"));

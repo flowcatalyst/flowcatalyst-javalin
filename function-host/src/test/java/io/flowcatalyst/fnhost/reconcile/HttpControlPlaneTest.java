@@ -96,10 +96,14 @@ class HttpControlPlaneTest {
 
     @Test
     void aSecondConsecutive401SurfacesAsUnauthorized() throws Exception {
+        AtomicInteger desiredStateCalls = new AtomicInteger();
         HttpServer server = startServer();
         server.createContext("/oauth/token", exchange ->
-                respondJson(exchange, 200, "{\"access_token\":\"tok\",\"expires_in\":3600}"));
-        server.createContext("/control/functions/desired-state", exchange -> respondJson(exchange, 401, "{}"));
+                respondJson(exchange, 200, "{\"access_token\":\"unique-rejected-token-9k2f\",\"expires_in\":3600}"));
+        server.createContext("/control/functions/desired-state", exchange -> {
+            desiredStateCalls.incrementAndGet();
+            respondJson(exchange, 401, "{}");
+        });
 
         HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
                 new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
@@ -107,7 +111,13 @@ class HttpControlPlaneTest {
         assertThatThrownBy(() -> cp.desiredState(new DnsLabel("pool"), null))
                 .isInstanceOf(ControlPlaneException.class)
                 .satisfies(e -> assertThat(((ControlPlaneException) e).reason())
-                        .isEqualTo(ControlPlaneException.Reason.UNAUTHORIZED));
+                        .isEqualTo(ControlPlaneException.Reason.UNAUTHORIZED))
+                .as("mutant: put the (still-rejected) token in the exception message")
+                .satisfies(e -> assertThat(e.getMessage()).doesNotContain("unique-rejected-token-9k2f"));
+
+        assertThat(desiredStateCalls.get())
+                .as("mutant: retry more than once on a second consecutive 401 instead of surfacing UNAUTHORIZED")
+                .isEqualTo(2);
     }
 
     @Test

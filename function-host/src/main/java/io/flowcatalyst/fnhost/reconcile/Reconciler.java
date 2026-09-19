@@ -327,10 +327,27 @@ public final class Reconciler {
     /// **New before old** (spec §1.2, pinned): [FunctionRegistry#put] returns
     /// the displaced version and this closes it only AFTER the put — an
     /// address is never without a version during a promote (R2).
+    ///
+    /// [FunctionRegistry#put] itself can refuse a NEW address when the
+    /// registry is at capacity and every existing entry is warm (its own
+    /// `IllegalStateException`, spec §1.2 step 3, R3b) — this is a load
+    /// failure like any other (R3): reported `FAILED` and retried next
+    /// cycle, never allowed to escape [#load] and abort the rest of the
+    /// document's entries, and never the reconcile loop itself (R10 depends
+    /// on [Reconciler#reconcileOnce] only ever throwing for something a run
+    /// truly cannot recover from).
     private void applyLoadOutcome(LoadOutcome outcome, Key key, boolean warm) {
         switch (outcome) {
             case Loaded(LoadedFunction fn) -> {
-                LoadedFunction displaced = registry.put(fn, warm);
+                LoadedFunction displaced;
+                try {
+                    displaced = registry.put(fn, warm);
+                } catch (IllegalStateException e) {
+                    failures.put(key, "LOAD:REGISTRY_FULL");
+                    logRegistryFullFailure(key, e);
+                    fn.close(); // never registered — release what was just loaded
+                    return;
+                }
                 failures.remove(key);
                 if (displaced != null) {
                     displaced.close();
@@ -339,6 +356,14 @@ public final class Reconciler {
             case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) ->
                     failures.put(key, "LOAD:" + reason.name());
         }
+    }
+
+    private void logRegistryFullFailure(Key key, Throwable cause) {
+        LOG.atWarn().setMessage("registry refused to load a function version: at capacity and every loaded entry is warm")
+                .addKeyValue("address", key.address().render())
+                .addKeyValue("version", key.version())
+                .setCause(cause)
+                .log();
     }
 
     /// What D3 calls on first invocation of a lazy address (spec §1.2 step 3).
@@ -385,6 +410,14 @@ public final class Reconciler {
         }
     }
 
+    /// Test-only seam: whether [#loadLocks] still holds a lock for `address` —
+    /// it must not grow forever over the life of the process once an address
+    /// leaves the document (spec §1.2 step 3, R1); production code never calls
+    /// this, same reasoning as [ReconcileLoop]'s short-interval constructor.
+    boolean hasLoadLockForTest(FunctionAddress address) {
+        return loadLocks.containsKey(address);
+    }
+
     // ── step 4: unload ───────────────────────────────────────────────────
 
     private void unload(DesiredDocument doc, Instant now) {
@@ -415,7 +448,17 @@ public final class Reconciler {
                 closeAndRemove(s.address());
             }
         }
-        lazyRoutes.keySet().removeIf(address -> !keep.contains(address));
+        // The address's per-address lock ([#loadLocks], R1) is never looked up again
+        // once it leaves lazyRoutes for this same reason — [#ensureLoaded] only ever
+        // computes one for an address it finds routed — so drop it here too, or the
+        // map only ever grows over the life of the process.
+        lazyRoutes.keySet().removeIf(address -> {
+            boolean gone = !keep.contains(address);
+            if (gone) {
+                loadLocks.remove(address);
+            }
+            return gone;
+        });
 
         // 4c: idle lazy eviction — closed, but the route stays so a later
         // invocation reloads it (spec §1.2 step 4).

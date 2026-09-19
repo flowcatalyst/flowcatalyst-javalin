@@ -61,4 +61,39 @@ public sealed interface Signatures {
     static Signatures resolve(SignaturesMode mode, boolean devMode) {
         return resolve(mode, devMode, TrustRoot::sigstorePublicGood);
     }
+
+    /// [#resolve] from an operator-supplied trust-root PATH rather than a
+    /// ready-built [TrustRoot] supplier — the ONE resolution rule
+    /// `FC_FN_TRUST_ROOT` gets on both sides (spec
+    /// `function-host-reconciler.md` §0, §1.4: "the platform reads the same
+    /// variable — a private Sigstore instance needs both sides to trust it,
+    /// and one side alone is a publish that can never load"). Both the
+    /// platform's own composition root ([io.flowcatalyst.server.Platform])
+    /// and the function host's [io.flowcatalyst.fnhost.reconcile.HostEnv]
+    /// call this one method rather than each resolving the path themselves.
+    ///
+    /// `trustRootPath` blank (the default) resolves to the committed
+    /// Sigstore public-good root, same as before this variable existed; set,
+    /// it is read as an operator-supplied `trusted_root.json`.
+    ///
+    /// @throws IllegalStateException `trustRootPath` is non-blank and cannot
+    ///                                be read as a `trusted_root.json` — the
+    ///                                message names `FC_FN_TRUST_ROOT`, same
+    ///                                as [#resolve(SignaturesMode,boolean,java.util.function.Supplier)]'s
+    ///                                own refusal names `FC_FN_SIGNATURES`
+    static Signatures resolve(SignaturesMode mode, boolean devMode, String trustRootPath) {
+        Objects.requireNonNull(trustRootPath, "trustRootPath");
+        java.util.function.Supplier<TrustRoot> trustRoot = trustRootPath.isBlank()
+                ? TrustRoot::sigstorePublicGood
+                : () -> {
+                    try {
+                        return TrustRoot.fromFile(java.nio.file.Path.of(trustRootPath));
+                    } catch (RuntimeException e) {
+                        throw new IllegalStateException(
+                                "FC_FN_TRUST_ROOT points at a file that could not be read: '"
+                                        + trustRootPath + "'", e);
+                    }
+                };
+        return resolve(mode, devMode, trustRoot);
+    }
 }

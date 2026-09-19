@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// `Reconciler` (`docs/spec/function-host-reconciler.md` §1.2, §3, R1-R8,
@@ -138,6 +139,146 @@ class ReconcilerTest {
         assertThat(registry.peek(TestFixtures.ADDR_A)).as("mutant: load a candidate").isNull();
         assertThat(fake.heartbeats().getLast().loaded()).extracting(HeartbeatReport.LoadedEntry::state)
                 .allMatch(HeartbeatReport.LoadState.Registered.class::isInstance);
+    }
+
+    // ── R1b: live (lazy) + candidate, same address — ensureLoaded must never
+    //         serve the candidate; a warm live entry must never be displaced by one ──
+
+    @Test
+    void liveLazyPlusCandidateSameAddress_ensureLoadedReturnsLiveNeverTheCandidate(@TempDir Path dir) {
+        Path jar1 = TestFixtures.functionJar(dir, "r1b-lazy-v1", "r1b-lazy-1");
+        Path jar2 = TestFixtures.functionJar(dir, "r1b-lazy-v2", "r1b-lazy-2");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry liveV1 = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.LAZY,
+                TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, false);
+        DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false));
+        DesiredDocument doc = new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of());
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", doc));
+
+        r.reconcileOnce(Instant.now());
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: eagerly load a lazy live entry (unrelated to this test's own mutants, but would "
+                        + "invalidate the setup)").isNull();
+
+        LoadedFunction loaded = r.ensureLoaded(TestFixtures.ADDR_A);
+        assertThat(loaded)
+                .as("mutant: let the candidate through the role check in the load step — ensureLoaded found nothing routed")
+                .isNotNull();
+        assertThat(loaded.version())
+                .as("mutant: candidate overwrites the lazyRoutes entry — ensureLoaded served an unpromoted version")
+                .isEqualTo(1);
+        assertThat(registry.peek(TestFixtures.ADDR_A).version()).isEqualTo(1);
+
+        // A second cycle (same document, NotModified) so the heartbeat reflects the
+        // load ensureLoaded just performed directly (spec §1.2 step 5).
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.NotModified());
+        r.reconcileOnce(Instant.now());
+        HeartbeatReport report = fake.heartbeats().getLast();
+        HeartbeatReport.LoadedEntry v1Entry = report.loaded().stream().filter(e -> e.version() == 1).findFirst().orElseThrow();
+        HeartbeatReport.LoadedEntry v2Entry = report.loaded().stream().filter(e -> e.version() == 2).findFirst().orElseThrow();
+        assertThat(v1Entry.state()).as("the live entry, now loaded via ensureLoaded, must report LOADED")
+                .isInstanceOf(HeartbeatReport.LoadState.Loaded.class);
+        assertThat(v2Entry.state()).as("mutant: the candidate ever reports anything other than REGISTERED")
+                .isInstanceOf(HeartbeatReport.LoadState.Registered.class);
+    }
+
+    @Test
+    void liveWarmPlusCandidateSameAddress_candidateNeverLoadsOrDisplacesTheWarmLive(@TempDir Path dir) {
+        Path jar1 = TestFixtures.functionJar(dir, "r1b-warm-v1", "r1b-warm-1");
+        Path jar2 = TestFixtures.functionJar(dir, "r1b-warm-v2", "r1b-warm-2");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry liveV1 = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, true);
+        DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false));
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of())));
+
+        r.reconcileOnce(Instant.now());
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: let the candidate through the role check — the warm live entry never loaded")
+                .isNotNull();
+        assertThat(registry.peek(TestFixtures.ADDR_A).version())
+                .as("mutant: the candidate loaded and displaced the warm live version").isEqualTo(1);
+
+        HeartbeatReport report = fake.heartbeats().getLast();
+        HeartbeatReport.LoadedEntry v1Entry = report.loaded().stream().filter(e -> e.version() == 1).findFirst().orElseThrow();
+        HeartbeatReport.LoadedEntry v2Entry = report.loaded().stream().filter(e -> e.version() == 2).findFirst().orElseThrow();
+        assertThat(v1Entry.state()).isInstanceOf(HeartbeatReport.LoadState.Loaded.class);
+        assertThat(v2Entry.state()).as("mutant: the candidate is ever reported as anything but REGISTERED")
+                .isInstanceOf(HeartbeatReport.LoadState.Registered.class);
+    }
+
+    // ── R3b: the registry itself refusing a load (capacity, all warm) is a
+    //         FAILED entry, never an exception out of reconcileOnce ─────────
+
+    @Test
+    void registryFullRefusalBecomesAFailedEntryAndDoesNotAbortTheRestOfTheDocument(@TempDir Path dir) {
+        FunctionAddress addrA = FunctionAddress.parse("recon.svc.r3b-new");
+        FunctionAddress addrB = TestFixtures.ADDR_A;
+        FunctionAddress addrC = TestFixtures.ADDR_B;
+
+        Path jarB1 = TestFixtures.functionJar(dir, "r3b-b-v1", "r3b-b-1");
+        Path jarC1 = TestFixtures.functionJar(dir, "r3b-c-v1", "r3b-c-1");
+        Path jarC2 = TestFixtures.functionJar(dir, "r3b-c-v2", "r3b-c-2");
+        Path jarA1 = TestFixtures.functionJar(dir, "r3b-a-v1", "r3b-a-1");
+
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(2); // capacity: exactly enough for B and C, none spare
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry entryB1 = liveEntry(addrB, "b-v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarB1), TestFixtures.fileRef(jarB1), null, null, true);
+        DesiredDocument.Entry entryC1 = liveEntry(addrC, "c-v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarC1), TestFixtures.fileRef(jarC1), null, null, true);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entryB1, entryC1), List.of(), List.of())));
+        r.reconcileOnce(Instant.now());
+        assertThat(registry.peek(addrB).version()).isEqualTo(1);
+        assertThat(registry.peek(addrC).version()).isEqualTo(1);
+
+        // Cycle 2: registry is completely full (2/2, both warm). A NEW address (A)
+        // is ordered FIRST — it can only fail (no address-swap skips the capacity
+        // check for a brand-new address). B is unchanged. C is promoted to v2 for
+        // the SAME address it already occupies, which — unlike A — never consults
+        // capacity at all (an existing address's slot is simply replaced), so it
+        // must still succeed even though the registry never had room to spare and
+        // A's attempt, right before it in iteration order, failed.
+        DesiredDocument.Entry entryA1 = liveEntry(addrA, "a-v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarA1), TestFixtures.fileRef(jarA1), null, null, true);
+        DesiredDocument.Entry entryC2 = liveEntry(addrC, "c-v2", 2, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarC2), TestFixtures.fileRef(jarC2), null, null, true);
+        DesiredDocument doc2 = new DesiredDocument(List.of(entryA1, entryB1, entryC2), List.of(), List.of());
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag2", doc2));
+
+        assertThatCode(() -> r.reconcileOnce(Instant.now()))
+                .as("mutant: let the registry's IllegalStateException propagate out of reconcileOnce")
+                .doesNotThrowAnyException();
+
+        assertThat(registry.peek(addrA)).as("A must never have loaded — the registry refused it").isNull();
+        assertThat(registry.peek(addrB).version())
+                .as("mutant: A's registry-full failure must not disturb B, an unrelated already-loaded address")
+                .isEqualTo(1);
+        assertThat(registry.peek(addrC).version())
+                .as("mutant: A's failure aborted the load loop before C's own (unrelated, same-address) promote ran")
+                .isEqualTo(2);
+
+        HeartbeatReport report = fake.heartbeats().getLast();
+        HeartbeatReport.LoadedEntry aEntry = report.loaded().stream()
+                .filter(e -> e.address().equals(addrA)).findFirst().orElseThrow();
+        assertThat(aEntry.state()).isInstanceOf(HeartbeatReport.LoadState.Failed.class);
+        assertThat(((HeartbeatReport.LoadState.Failed) aEntry.state()).error())
+                .as("mutant: any reason string other than the one spec §1.2 names").isEqualTo("LOAD:REGISTRY_FULL");
     }
 
     // ── R2: promote — new before old ─────────────────────────────────────
@@ -329,6 +470,71 @@ class ReconcilerTest {
         assertThat(((HeartbeatReport.LoadState.Failed) loaded.state()).error()).isEqualTo("UNSIGNED");
     }
 
+    /// Isolates the "no bundle" half of the check from the "no recorded signer"
+    /// half: [#signaturesRequiredRefusesAnUnsignedEntry] above has NEITHER, so it
+    /// cannot tell whether the bundle check alone is load-bearing — a `signer` IS
+    /// recorded here, so only removing the bundle check (and not the signer check)
+    /// would let this load.
+    @Test
+    void signaturesRequiredRefusesAMissingBundleEvenWhenASignerIsRecorded(@TempDir Path dir) throws Exception {
+        Instant now = Instant.now();
+        TestSigstore.Ecosystem eco = TestSigstore.build(TestSigstore.LeafSpec.valid(now.minusSeconds(60), now.plusSeconds(3600)));
+        var trustRoot = eco.trustRootFor(now.minusSeconds(3600), null, now.minusSeconds(3600), null);
+        Signatures signatures = new Signatures.Required(new SignatureVerifier(trustRoot));
+
+        Path jar = TestFixtures.functionJar(dir, "req-nobundle-v1", "req-nobundle-1");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = new Reconciler(POOL, "host-1", fake, fileArtifactStore(dir), signatures,
+                new JvmFunctionLoader(), registry);
+        SignerIdentity recorded = new SignerIdentity("https://example.test/issuer", "https://example.test/workflow.yml");
+        DesiredDocument.Entry entry = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jar), TestFixtures.fileRef(jar), null, recorded, true); // signer recorded, no bundle
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+
+        r.reconcileOnce(Instant.now());
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: Required loads an entry with a recorded signer but no bundle").isNull();
+        HeartbeatReport.LoadedEntry loaded = fake.heartbeats().getLast().loaded().getFirst();
+        assertThat(((HeartbeatReport.LoadState.Failed) loaded.state()).error()).isEqualTo("UNSIGNED");
+    }
+
+    /// Distinct from [#signaturesRequiredRefusesAnUnsignedEntry] above (no bundle at
+    /// all): here the bundle is real and validly signed, but the platform never
+    /// recorded a signer for it — spec §0/§1.2's "an entry with no bundle OR no
+    /// recorded signer is a failure under `Required`" has two independent halves,
+    /// and this pins the second one on its own (a test that only ever sends "no
+    /// bundle, no signer" together cannot tell the two checks apart).
+    @Test
+    void signaturesRequiredRefusesAValidlySignedBundleWithNoRecordedSigner(@TempDir Path dir) throws Exception {
+        Instant now = Instant.now();
+        TestSigstore.Ecosystem eco = TestSigstore.build(TestSigstore.LeafSpec.valid(now.minusSeconds(60), now.plusSeconds(3600)));
+        var trustRoot = eco.trustRootFor(now.minusSeconds(3600), null, now.minusSeconds(3600), null);
+        Signatures signatures = new Signatures.Required(new SignatureVerifier(trustRoot));
+
+        Path jar = TestFixtures.functionJar(dir, "req-nosigner-v1", "req-nosigner-1");
+        Digest digest = TestFixtures.digestOf(jar);
+        String bundle = TestSigstore.validBundleJson(eco, rawDigest(digest), now, 5L);
+
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = new Reconciler(POOL, "host-1", fake, fileArtifactStore(dir), signatures,
+                new JvmFunctionLoader(), registry);
+        DesiredDocument.Entry entry = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.WARM,
+                digest, TestFixtures.fileRef(jar), bundle, null, true); // real bundle, no recorded signer
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+
+        r.reconcileOnce(Instant.now());
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: Required loads a validly-signed bundle whose signer was never recorded").isNull();
+        HeartbeatReport.LoadedEntry loaded = fake.heartbeats().getLast().loaded().getFirst();
+        assertThat(((HeartbeatReport.LoadState.Failed) loaded.state()).error()).isEqualTo("UNSIGNED");
+    }
+
     // ── R6: control-plane outage vs NotModified ──────────────────────────
 
     @Test
@@ -382,28 +588,36 @@ class ReconcilerTest {
 
     // ── R7: unload clauses ────────────────────────────────────────────────
 
+    /// Deliberately does NOT also promote the address to a new version: a
+    /// same-cycle promotion would close the old version through the ordinary
+    /// "new before old" swap (R2) regardless of whether the explicit unload
+    /// list ran at all, so that shape cannot actually isolate clause 4a. Here
+    /// the address stays LIVE, at the SAME version, throughout — the unload
+    /// list is the only thing that can remove it (not clause 4b's "no longer
+    /// live" either, since `keep` still contains it).
     @Test
     void explicitUnloadListClosesAndRemoves(@TempDir Path dir) {
         Path jar1 = TestFixtures.functionJar(dir, "r7a-v1", "r7a-1");
-        Path jar2 = TestFixtures.functionJar(dir, "r7a-v2", "r7a-2");
         FakeControlPlane fake = new FakeControlPlane();
         FunctionRegistry registry = new FunctionRegistry(50);
         Reconciler r = offReconciler(fake, dir, registry);
 
-        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", docWithOneWarmLive(1, jar1)));
+        DesiredDocument.Entry v1 = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.LAZY,
+                TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, false);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(v1), List.of(), List.of())));
         r.reconcileOnce(Instant.now());
-        LoadedFunction v1 = registry.peek(TestFixtures.ADDR_A);
+        LoadedFunction loaded = r.ensureLoaded(TestFixtures.ADDR_A);
+        assertThat(loaded.version()).isEqualTo(1);
 
-        DesiredDocument.Entry v2 = liveEntry(TestFixtures.ADDR_A, "v2", 2, DesiredDocument.Mode.WARM,
-                TestFixtures.digestOf(jar2), TestFixtures.fileRef(jar2), null, null, true);
         DesiredDocument.UnloadRef unloadV1 = new DesiredDocument.UnloadRef(TestFixtures.ADDR_A, 1);
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag2",
-                new DesiredDocument(List.of(v2), List.of(unloadV1), List.of())));
+                new DesiredDocument(List.of(v1), List.of(unloadV1), List.of()))); // same v1 still LIVE, plus unload it
         r.reconcileOnce(Instant.now());
 
-        assertThat(registry.peek(TestFixtures.ADDR_A).version())
-                .as("mutant: ignore the explicit unload list").isEqualTo(2);
-        assertThatThrownBy(() -> v1.invoke(null, null)).as("mutant: never actually close the unloaded version")
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: ignore the explicit unload list").isNull();
+        assertThatThrownBy(() -> loaded.invoke(null, null)).as("mutant: never actually close the unloaded version")
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -452,6 +666,35 @@ class ReconcilerTest {
                 .as("mutant: leave a resident lazy function on its old version until it idles out")
                 .isNotNull();
         assertThat(registry.peek(TestFixtures.ADDR_A).version()).isEqualTo(2);
+    }
+
+    /// Design check (item 5): `loadLocks` (one lock object per address, so two
+    /// concurrent [Reconciler#ensureLoaded] calls for the same address load it
+    /// exactly once) only ever grew before this fix — the map must not carry a
+    /// lock forever for an address that has left the document entirely.
+    @Test
+    void thePerAddressLoadLockIsRemovedWhenTheAddressLeavesTheDocument(@TempDir Path dir) {
+        Path jar = TestFixtures.functionJar(dir, "loadlock-v1", "loadlock-1");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry entry = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.LAZY,
+                TestFixtures.digestOf(jar), TestFixtures.fileRef(jar), null, null, false);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+        r.reconcileOnce(Instant.now());
+        r.ensureLoaded(TestFixtures.ADDR_A); // creates the per-address lock entry
+        assertThat(r.hasLoadLockForTest(TestFixtures.ADDR_A)).isTrue();
+
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag2",
+                new DesiredDocument(List.of(), List.of(), List.of()))); // address no longer live at all
+        r.reconcileOnce(Instant.now());
+
+        assertThat(registry.peek(TestFixtures.ADDR_A)).isNull();
+        assertThat(r.hasLoadLockForTest(TestFixtures.ADDR_A))
+                .as("loadLocks must not keep growing forever for addresses no longer in the document")
+                .isFalse();
     }
 
     @Test
@@ -541,6 +784,42 @@ class ReconcilerTest {
         HeartbeatReport.LoadedEntry reported = fake.heartbeats().getLast().loaded().getFirst();
         assertThat(reported.version()).isEqualTo(9);
         assertThat(reported.state()).isInstanceOf(HeartbeatReport.LoadState.Failed.class);
+    }
+
+    /// The unload step's own reading of §1.1's "never takes the rest of the
+    /// document down with it": a parse failure for an address that WAS
+    /// already loaded and good must not itself read as "no longer live" and
+    /// get it unloaded — spec §1.1's "an unreadable entry's address is
+    /// protected from unloading for that cycle".
+    @Test
+    void anUnreadableEntrysAddressProtectsAnAlreadyLoadedGoodVersionFromBeingUnloaded(@TempDir Path dir) {
+        Path jar1 = TestFixtures.functionJar(dir, "r8c-v1", "r8c-1");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", docWithOneWarmLive(1, jar1)));
+        r.reconcileOnce(Instant.now());
+        assertThat(registry.peek(TestFixtures.ADDR_A)).isNotNull();
+
+        // Cycle 2: the SAME address's platform entry is now malformed (a bad digest) —
+        // it drops out of doc.functions() entirely and becomes an UnreadableEntry
+        // instead, so it is no longer a `live` entry in `keep`'s usual sense.
+        String badDigestJson = """
+                {"address":"%s","functionId":"fnc_a","versionId":"v9","version":9,"role":"live","mode":"warm",
+                 "digest":"not-a-digest","artifactRef":"file:///nope"}
+                """.formatted(TestFixtures.ADDR_A.render());
+        DesiredDocument doc2 = DesiredDocument.parse("{\"functions\":[" + badDigestJson + "]}");
+        assertThat(doc2.functions()).isEmpty();
+        assertThat(doc2.unreadable()).hasSize(1);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag2", doc2));
+        r.reconcileOnce(Instant.now());
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: drop the unload-protection of an unreadable entry's address — "
+                        + "a parse failure must never itself unload an already-good version")
+                .isNotNull();
+        assertThat(registry.peek(TestFixtures.ADDR_A).version()).isEqualTo(1);
     }
 
     // ── R11: wasm ⇒ RUNTIME_UNSUPPORTED, others unaffected ───────────────
