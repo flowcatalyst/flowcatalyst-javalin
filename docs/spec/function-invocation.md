@@ -62,7 +62,7 @@ router inside the function serves both. The request value also carries the origi
   ],
   "subscriptions": [
     { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created",
-      "mode": "BLOCK_ON_ERROR", "filter": null, "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
+      "mode": "BLOCK_ON_ERROR", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
   ],
   "schedules": [ { "cron": "0 * * * *", "timezone": "UTC", "path": "/jobs/hourly", "payload": { } } ],
   "public":    [ { "hostname": "api.acme.com", "pathPrefix": "/" } ],
@@ -88,7 +88,11 @@ router inside the function serves both. The request value also carries the origi
   `IMMEDIATE`; `maxRetries`, `timeoutSeconds`, `dataOnly` default to the subscription aggregate's own
   defaults, except `dataOnly` ⇒ `false`: a function should see the envelope). `path` **must match an
   endpoint whose `auth` is `webhook`** (`SUBSCRIPTION_PATH_NOT_WEBHOOK`) and be a literal path, not a
-  pattern. One entry per `eventType` (`SUBSCRIPTION_DUPLICATE`). `messageGroupKey` is gone: a
+  pattern. One entry per `eventType` (`SUBSCRIPTION_DUPLICATE`). There is **no `filter`**: a
+  subscription binding's filter has no column anywhere in the platform — it is accepted on the wire
+  and dropped, for every subscription (a port gap, `docs/backlog.md`). A manifest that could carry
+  one would promise filtering that never happens, so the key is an unknown field until the platform
+  has real filters. `messageGroupKey` is gone: a
   subscription has no such thing — ordering is the event's own `messageGroup` plus `mode`.
 - **`schedules`** — same `path` rule (`SCHEDULE_PATH_NOT_WEBHOOK`); one entry per (cron, timezone).
 - **`public`** — `Hostname` + `pathPrefix` (a literal path, default `/`, no trailing slash except the
@@ -106,20 +110,26 @@ and is not archived (`EVENT_TYPE_NOT_FOUND`); cron and zone parse (`CRON_INVALID
 `TIMEZONE_INVALID`); any `subscriptions`/`schedules` ⇒ the application has an active service account
 with a signing secret (`APPLICATION_SIGNING_SECRET_REQUIRED` — without it every delivery would be
 refused by the host); `public` hostnames are verified domains of the owner (package F);
-warm capacity (`WARM_CAPACITY_EXCEEDED`). Nothing is created.
+warm capacity (`WARM_CAPACITY_EXCEEDED`: the live warm versions of **other** functions in that pool,
+plus this one, against `maxWarmPerHost` — a function's own live warm version is about to be
+replaced, and counting it would stop a function at the cap from ever republishing). Nothing is
+created.
 
 At promote, inside the promote transaction, **reconcile to the new live manifest**: desired set from
 the manifest, actual set from `fn_trigger_objects`; create / update-if-different / **delete what the
 manifest no longer lists**; no difference ⇒ no write, no event. Rollback is a promote. `DeleteFunction`
-deletes the linked objects, then the function. `DISABLED` pauses them; `enable` resumes.
+deletes the linked objects, then the function. `DISABLED` pauses the linked subscriptions and jobs that are
+`ACTIVE`; `enable` resumes those that are `PAUSED` — an object already in the target state (an
+operator paused it by hand) is left alone, not a conflict that fails the function update.
 
 | Object | Code | Notes |
 |---|---|---|
 | dispatch pool — **one per function** (R7) | `fn-<fid>` | `concurrency = maxConcurrency`; platform-wide like every pool |
 | subscription, one per entry | `fn-<fid>-<8 hex sha256(eventType)>` | **`source = FUNCTION`** (R6); `applicationCode` the function's (that is what selects the signing credentials); `clientId` the owner's; `endpoint = <pool URL>/functions/<address><path>`; the function's pool; the entry's fields |
-| scheduled job, one per entry | `fn-<fid>-<8 hex sha256(cron ‖ 0 ‖ zone)>` | `applicationId` the function's; `targetUrl` as above; `concurrent = false` |
+| scheduled job, one per entry | `fn-<fid>-<8 hex sha256(cron ‖ NUL byte ‖ zone)>` — `zone` as written in the manifest, `""` when absent | `applicationId` the function's; **`clientId` the owner's** (null for a platform function); `targetUrl` as above; `concurrent = false` |
 
-`<fid>` = the function id lower-cased without `fnc_` (legal in every code pattern, unique by
+Two entries of one function whose keys collide (32 bits of hash) are an internal error at promote,
+never a silent overwrite of one link by the other. `<fid>` = the function id lower-cased without `fnc_` (legal in every code pattern, unique by
 construction). Names carry the address for humans. **Pool URL** (R8): `FC_FN_POOL_URL`, one template
 with a `{pool}` placeholder, default `http://fn-{pool}:8080`; no placeholder ⇒ startup error;
 resolved at promote.
