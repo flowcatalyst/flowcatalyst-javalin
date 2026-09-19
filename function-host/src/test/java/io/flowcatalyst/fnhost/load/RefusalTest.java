@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,18 +22,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `Class.forName`/`loadClass` — the marker file would then exist.
 class RefusalTest {
 
-    @Test
-    void nativeLibraryEntryIsRefusedBeforeAnyClassLoads(@TempDir Path dir) throws Exception {
+    /// One row per suffix the spec names (§2.2) plus a top-level entry: a
+    /// list that silently lost `.dylib` passed the single-`.so` test.
+    @ParameterizedTest
+    @ValueSource(strings = {"lib/x86_64/libfoo.so", "win/foo.dll", "darwin/libfoo.dylib", "libfoo.jnilib", "libbar.so"})
+    void nativeLibraryEntryIsRefusedBeforeAnyClassLoads(String entry, @TempDir Path dir) throws Exception {
         Path marker = dir.resolve("native.marker");
         Path jar = markerFixture(dir, "native", marker)
-                .entry("lib/x86_64/libfoo.so", new byte[] {1, 2, 3})
+                .entry(entry, new byte[] {1, 2, 3})
                 .build(TestSupport.tempJar(dir, "native-lib"));
 
         LoadOutcome outcome = new JvmFunctionLoader().load(jar, "fixture.l8.MarkerProbe", ADDRESS, 1);
 
         assertThat(outcome).isInstanceOf(Refused.class);
         assertThat(((Refused) outcome).reason()).isEqualTo(Reason.NATIVE_LIBRARY);
-        assertThat(((Refused) outcome).detail()).isEqualTo("lib/x86_64/libfoo.so");
+        assertThat(((Refused) outcome).detail()).isEqualTo(entry);
         assertThat(Files.exists(marker)).as("the scan must precede loading, so the marker is never written").isFalse();
     }
 
