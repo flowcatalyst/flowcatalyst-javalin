@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flowcatalyst-function-host</artifactId>
+  <packaging>jar</packaging>
+
+  <name>FlowCatalyst Function Host</name>
+  <description>
+    The JVM function host: the class-loading core that keeps functions apart
+    (docs/spec/function-host-core.md §2), and, from D2 on, the reconciler,
+    invoke path and FunctionContext services. Depends on the function API
+    (the contract a function is written against) and the server module (for
+    Digest, ArtifactStore, SignatureVerifier and Manifest, used from D2).
+    Inherits the parent's Java 25 / --enable-preview compiler flags — unlike
+    function-api, this module is not a contract a function author compiles
+    against.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-server</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

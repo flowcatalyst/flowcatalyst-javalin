@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flowcatalyst-function-api</artifactId>
+  <packaging>jar</packaging>
+
+  <name>FlowCatalyst Function API</name>
+  <description>
+    The API a function is written against: Function, Invocation, Result, FunctionContext and the
+    address parser (docs/spec/function-host-core.md §1). Zero dependencies beyond the JDK — a
+    function author's build must never pull anything through this jar, and it must load on any
+    JDK 21+, not just the host's. Compiled at release 21 with no --enable-preview: the host runs
+    Java 25 and loads 21 class files happily, but the reverse would force every function author to
+    match our toolchain.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Overrides the parent's release-25 / enable-preview flags (docs/spec/function-host-core.md
+           §1, §0): this jar is the contract a function author's own toolchain compiles and links
+           against, so it must be plain Java 21 bytecode with no preview bit. combine.self="override"
+           on compilerArgs replaces the parent's arg list instead of appending to it. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>21</release>
+          <failOnWarning>${maven.compiler.failOnWarning}</failOnWarning>
+          <compilerArgs combine.self="override">
+            <arg>-Xlint:all</arg>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine combine.self="override"></argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -15,7 +15,9 @@
   <modules>
     <module>usecase</module>
     <module>sdk</module>
+    <module>function-api</module>
     <module>server</module>
+    <module>function-host</module>
     <module>fcdev</module>
     <module>parity</module>
   </modules>
@@ -108,6 +110,11 @@
       <dependency>
         <groupId>io.flowcatalyst</groupId>
         <artifactId>flowcatalyst-sdk</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.flowcatalyst</groupId>
+        <artifactId>flowcatalyst-function-api</artifactId>
         <version>${project.version}</version>
       </dependency>
 
