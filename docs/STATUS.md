@@ -21,6 +21,31 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+
+## Dispatch-job deliveries now carry the application's webhook credentials (2026-09-19)
+
+Fixed the defect `docs/spec/dispatch-delivery-credentials.md` names (owner
+ruling 2026-09-19, lands ahead of the function service): every subscriber
+webhook Java delivered was unauthenticated and unsigned —
+`ProcessingApi`/`Platform` wired `DeliveryCredentials.none()` because the
+`serviceaccount` aggregate did not exist yet when that seam was built. It
+does now, so `DeliveryCredentials.forApplications`
+(`dispatchjob/processing/DeliveryCredentials.java`) resolves job →
+subscription's `applicationCode` (falling back to the job's own code's
+leading segment) → application → the application's oldest active service
+account's webhook credentials, behind the same one-minute-per-application
+cache the scheduled-job dispatcher already used — `OutboundCredentials`
+moved from `platform.scheduler.jobs` to the neutral `platform.serviceaccount`
+package so both callers share one resolver, not two. `Platform` wires the
+real resolver into `ProcessingApi.State` in place of `none()`; nothing else
+changed (no route, no schema, no env var). Tests: `DeliveryCredentialsTest`
+(the resolver, S2–S6), `ProcessingApiTest` (S1 end-to-end signing + S5
+header-absence + S7 a throwing resolver degrades to bare with a WARN and no
+secret leaked), `DispatchDeliveryCredentialsWiringTest` (S8, the `Platform`
+composition root over a real booted `Server`). `docs/backlog.md`'s
+"Subscriber deliveries go out unsigned" entry removed; `dispatch-seam.md`
+§15 carries a dated correction note.
+
 ## Application-managed invitations ported; the SPA source lives here (2026-09-14)
 
 **Owner's stated direction, 2026-09-14:** the move to the Java version is

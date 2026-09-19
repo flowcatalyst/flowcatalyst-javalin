@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.TriggerKind;
 import io.flowcatalyst.platform.scheduledjob.cron.CronExpression;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;

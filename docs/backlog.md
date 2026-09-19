@@ -711,9 +711,6 @@ later decision.
 - **No SQS or NATS dispatch publisher.** The scheduler publishes to Postgres
   or a no-op; Go is the same today. Needed before a production deployment on
   either broker.
-- **Subscriber deliveries go out unsigned** — `DeliveryCredentials.none()`
-  until the `serviceaccount` aggregate is ported (Go resolves job →
-  subscription → application → service-account credentials).
 - **Processing endpoint 5xx classification** is uniform (every non-2xx/429
   consumes budget), not the router's 502/503/504-vs-other split; open owner
   question in `docs/spec/dispatch-seam.md` §14.

@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.TriggerKind;
 import io.flowcatalyst.platform.scheduler.jobs.jfr.JobFiredEvent;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.router.wire.WebhookSigner;
 import org.slf4j.Logger;

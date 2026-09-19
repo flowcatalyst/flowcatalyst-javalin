@@ -11,6 +11,7 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.scheduledjob.TriggerKind;
 import io.flowcatalyst.platform.scheduledjob.cron.CronExpression;
 import io.flowcatalyst.platform.scheduler.jobs.jfr.JobFiredEvent;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
