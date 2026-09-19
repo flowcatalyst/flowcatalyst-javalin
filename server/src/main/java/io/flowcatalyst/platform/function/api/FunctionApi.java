@@ -29,8 +29,14 @@ import io.flowcatalyst.platform.function.operations.RetireVersion;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.function.operations.UpdateCommand;
 import io.flowcatalyst.platform.function.operations.UpdateFunction;
+import io.flowcatalyst.platform.function.TriggerObject;
+import io.flowcatalyst.platform.function.TriggerObjectKind;
+import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
+import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.shared.apicommon.OffsetPage;
 import io.flowcatalyst.platform.shared.apicommon.PageQuery;
 import io.flowcatalyst.platform.shared.auth.Auth;
@@ -101,7 +107,9 @@ public final class FunctionApi {
     public record State(FunctionRepository repo, ApplicationRepository applications, ClientRepository clients,
                         UnitOfWork uow, FunctionVersionRepository versions, FunctionHostRepository hosts,
                         ClientPolicyRepository policies, FunctionLimits limits, Signatures signatures,
-                        TriggerSync triggerSync) {
+                        TriggerSync triggerSync, TriggerObjectRepository triggerObjects,
+                        SubscriptionRepository subscriptions, DispatchPoolRepository dispatchPools,
+                        ScheduledJobRepository scheduledJobs) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(applications, "applications");
@@ -113,6 +121,10 @@ public final class FunctionApi {
             Objects.requireNonNull(limits, "limits");
             Objects.requireNonNull(signatures, "signatures");
             Objects.requireNonNull(triggerSync, "triggerSync");
+            Objects.requireNonNull(triggerObjects, "triggerObjects");
+            Objects.requireNonNull(subscriptions, "subscriptions");
+            Objects.requireNonNull(dispatchPools, "dispatchPools");
+            Objects.requireNonNull(scheduledJobs, "scheduledJobs");
         }
     }
 
@@ -223,7 +235,7 @@ public final class FunctionApi {
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
         String alias = ctx.pathParam("alias");
         var req = ctx.bodyAsClass(PromoteRequest.class);
-        FunctionEvents.AliasChanged event = PromoteVersion.of(s.repo(), s.versions())
+        FunctionEvents.AliasChanged event = PromoteVersion.of(s.repo(), s.versions(), s.triggerSync())
                 .run(s.uow(), new PromoteCommand(address, alias, req.version()), Auth.executionContext());
         Integer previousVersion = event.previousVersionId() == null ? null
                 : s.versions().findById(event.previousVersionId()).map(FunctionVersion::version).orElse(null);
@@ -251,14 +263,14 @@ public final class FunctionApi {
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
         rejectImmutableFields(ctx);
         var req = ctx.bodyAsClass(UpdateFunctionRequest.class);
-        UpdateFunction.of(s.repo()).run(s.uow(), req.toCommand(address), Auth.executionContext());
+        UpdateFunction.of(s.repo(), s.triggerSync()).run(s.uow(), req.toCommand(address), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_MANAGE);
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
-        DeleteFunction.of(s.repo()).run(s.uow(), new DeleteCommand(address), Auth.executionContext());
+        DeleteFunction.of(s.repo(), s.triggerSync()).run(s.uow(), new DeleteCommand(address), Auth.executionContext());
         ctx.status(204);
     }
 
@@ -302,7 +314,24 @@ public final class FunctionApi {
         }
         hostSummaries.sort(Comparator.comparing(StatusResponse.HostSummary::hostId));
 
-        ctx.json(new StatusResponse(address.render(), f.status().name(), live, versionSummaries, hostSummaries));
+        List<StatusResponse.WiringEntry> wiring = s.triggerObjects().listByFunction(f.id()).stream()
+                .map(o -> new StatusResponse.WiringEntry(o.kind().name(), o.triggerKey(), o.objectId(), wiringPresent(s, o)))
+                .toList();
+
+        ctx.json(new StatusResponse(address.render(), f.status().name(), live, versionSummaries, hostSummaries, wiring));
+    }
+
+    /// Whether the object a `fn_trigger_objects` row names still exists in
+    /// its own table (spec `function-invocation.md` §4 D2 note): `false`
+    /// when it was hand-deleted out from under the link row — the next
+    /// promote recreates it (spec §10, "hand-deleted linked subscription is
+    /// recreated at the next promote").
+    private static boolean wiringPresent(State s, TriggerObject o) {
+        return switch (o.kind()) {
+            case POOL -> s.dispatchPools().findById(o.objectId()).isPresent();
+            case SUBSCRIPTION -> s.subscriptions().findById(o.objectId()).isPresent();
+            case SCHEDULED_JOB -> s.scheduledJobs().findById(o.objectId()).isPresent();
+        };
     }
 
     /// spec §6.3: `requireAnchor` + `FUNCTION_VIEW`; counts reuse
@@ -538,7 +567,7 @@ public final class FunctionApi {
     /// `GET /api/functions/{address}/status` (spec §6.3). `hosts` lists only
     /// hosts that report THIS address, and only their entries for it.
     public record StatusResponse(String address, String status, Live live, List<VersionSummary> versions,
-                                 List<HostSummary> hosts) {
+                                 List<HostSummary> hosts, List<WiringEntry> wiring) {
 
         public record Live(int version) {
         }
@@ -551,6 +580,12 @@ public final class FunctionApi {
         }
 
         public record LoadedSummary(int version, String state, String error) {
+        }
+
+        /// One `fn_trigger_objects` row (spec `function-invocation.md` §4, §7
+        /// deliverable 5): `present` is `false` when the linked object has
+        /// vanished (hand-deleted) — the next promote recreates it.
+        public record WiringEntry(String kind, String code, String objectId, boolean present) {
         }
     }
 

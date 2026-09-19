@@ -17,6 +17,7 @@ import io.flowcatalyst.platform.function.operations.FunctionEvents.FunctionCreat
 import io.flowcatalyst.platform.function.operations.FunctionEvents.FunctionDeleted;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.FunctionUpdated;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.PolicyUpdated;
+import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -72,6 +73,14 @@ class FunctionOperationsTest {
     }
 
     private static <C, E extends io.flowcatalyst.sdk.usecase.DomainEvent> E runAs(AuthContext ac, Operation<C, E> op, C cmd) {
+        return Auth.runAs(ac, () -> op.run(uow, cmd, EC));
+    }
+
+    private static <C, R> R runAsAnchor(io.flowcatalyst.sdk.usecase.op.TxOperation<C, R> op, C cmd) {
+        return Auth.runAs(ANCHOR, () -> op.run(uow, cmd, EC));
+    }
+
+    private static <C, R> R runAs(AuthContext ac, io.flowcatalyst.sdk.usecase.op.TxOperation<C, R> op, C cmd) {
         return Auth.runAs(ac, () -> op.run(uow, cmd, EC));
     }
 
@@ -235,7 +244,7 @@ class FunctionOperationsTest {
         FunctionAddress address = FunctionAddress.parse("update-" + RUN + ".svc.fn");
         Function before = reload(address);
 
-        FunctionUpdated ev = runAsAnchor(UpdateFunction.of(functions), new UpdateCommand(address, "after", "DISABLED"));
+        FunctionUpdated ev = runAsAnchor(UpdateFunction.of(functions, TriggerSync.none()), new UpdateCommand(address, "after", "DISABLED"));
         assertThat(ev.description()).isEqualTo("after");
         assertThat(ev.status()).isEqualTo("DISABLED");
 
@@ -257,7 +266,7 @@ class FunctionOperationsTest {
 
     @Test
     void updateOfAnAbsentAddressIs404() {
-        assertUseCaseError(() -> runAsAnchor(UpdateFunction.of(functions),
+        assertUseCaseError(() -> runAsAnchor(UpdateFunction.of(functions, TriggerSync.none()),
                         new UpdateCommand(FunctionAddress.parse("nosuch-" + RUN + ".svc.fn"), "x", null)),
                 UseCaseError.NotFound.class, "Function_NOT_FOUND");
     }
@@ -274,7 +283,7 @@ class FunctionOperationsTest {
 
         AuthContext otherClient = new AuthContext("usr_other2", Scope.CLIENT, null, List.of("clt_notthisone"),
                 List.of(), List.of(), true, List.of());
-        assertUseCaseError(() -> runAs(otherClient, UpdateFunction.of(functions), new UpdateCommand(address, "x", null)),
+        assertUseCaseError(() -> runAs(otherClient, UpdateFunction.of(functions, TriggerSync.none()), new UpdateCommand(address, "x", null)),
                 UseCaseError.NotFound.class, "Function_NOT_FOUND");
     }
 
@@ -285,7 +294,7 @@ class FunctionOperationsTest {
                 new CreateCommand("badstatus-" + RUN, "svc", "fn", "jvm", null, null));
         FunctionAddress address = FunctionAddress.parse("badstatus-" + RUN + ".svc.fn");
 
-        assertUseCaseError(() -> runAsAnchor(UpdateFunction.of(functions), new UpdateCommand(address, null, "BOGUS")),
+        assertUseCaseError(() -> runAsAnchor(UpdateFunction.of(functions, TriggerSync.none()), new UpdateCommand(address, null, "BOGUS")),
                 UseCaseError.Validation.class, "STATUS_INVALID");
     }
 
@@ -298,7 +307,7 @@ class FunctionOperationsTest {
                 new CreateCommand("delete-" + RUN, "svc", "fn", "jvm", null, null));
         FunctionAddress address = FunctionAddress.parse("delete-" + RUN + ".svc.fn");
 
-        FunctionDeleted ev = runAsAnchor(DeleteFunction.of(functions), new DeleteCommand(address));
+        FunctionDeleted ev = runAsAnchor(DeleteFunction.of(functions, TriggerSync.none()), new DeleteCommand(address));
         assertThat(ev.functionId()).isEqualTo(created.functionId());
         assertThat(functions.findByAddress(address)).as("row is gone").isEmpty();
 
@@ -319,7 +328,7 @@ class FunctionOperationsTest {
 
         // Platform-owned function, non-anchor caller: clause 2.
         AuthContext nonAnchor = new AuthContext("usr_nonanchor", Scope.CLIENT, null, List.of("*"), List.of(), List.of(), true, List.of());
-        assertUseCaseError(() -> runAs(nonAnchor, DeleteFunction.of(functions), new DeleteCommand(address)),
+        assertUseCaseError(() -> runAs(nonAnchor, DeleteFunction.of(functions, TriggerSync.none()), new DeleteCommand(address)),
                 UseCaseError.NotFound.class, "Function_NOT_FOUND");
         assertThat(functions.findByAddress(address)).as("refused delete leaves the row in place").isPresent();
     }

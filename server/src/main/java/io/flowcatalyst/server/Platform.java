@@ -629,12 +629,21 @@ public final class Platform {
         // holds, the function host's own `HostEnv` calls the very same method.
         var functionSignatures = io.flowcatalyst.platform.function.artifact.Signatures.resolve(
                 env.fnSignaturesMode(), env.routerDevMode(), env.fnTrustRootPath());
-        // function-triggers.md replaces this once package F lands (spec §5.1 step 8).
-        var functionTriggerSync = io.flowcatalyst.platform.function.operations.TriggerSync.none();
+        // function-invocation.md §4 (slice I2): publish validation + promote/delete/status-change
+        // reconciliation of the function's own dispatch pool, subscriptions and scheduled jobs.
+        // `subscriptionRepo`/`dispatchPoolRepo`/`scheduledJobRepo`/`eventTypeRepo`/`applicationRepo`/
+        // `serviceAccountRepo` are the SAME instances already built above for their own aggregates'
+        // APIs — the reconciliation reads and writes through the one repository each aggregate uses
+        // everywhere else, never a second connection's view of the same rows.
+        var functionTriggerSync = new io.flowcatalyst.platform.function.operations.FunctionTriggerSync(
+                subscriptionRepo, dispatchPoolRepo, scheduledJobRepo, eventTypeRepo, triggerObjectRepo,
+                applicationRepo, serviceAccountRepo, functionVersionRepo, env.functionLimits(),
+                env.fnPoolUrlTemplate());
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow,
                         functionVersionRepo, functionHostRepo, functionPolicyRepo, env.functionLimits(),
-                        functionSignatures, functionTriggerSync));
+                        functionSignatures, functionTriggerSync, triggerObjectRepo, subscriptionRepo, dispatchPoolRepo,
+                        scheduledJobRepo));
         io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
                         functionPolicyRepo, clientRepo, uow, env.functionLimits()));
@@ -642,7 +651,7 @@ public final class Platform {
         // inside the authenticator (Platform#isPlatformPath).
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
-                        functionRepo, functionVersionRepo, functionHostRepo, uow));
+                        functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));

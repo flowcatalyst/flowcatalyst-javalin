@@ -109,7 +109,7 @@ public record ScheduledJob(
             deliveryMaxAttempts = deliveryMaxAttempts == null ? DEFAULT_DELIVERY_MAX_ATTEMPTS : deliveryMaxAttempts;
         }
 
-        List<String> cronText() {
+        public List<String> cronText() {
             return crons.stream().map(CronExpression::expression).toList();
         }
     }

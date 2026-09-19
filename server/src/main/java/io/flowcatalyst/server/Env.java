@@ -1,6 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.function.FunctionLimits;
+import io.flowcatalyst.platform.function.PoolUrlTemplate;
 import io.flowcatalyst.platform.function.artifact.SignaturesMode;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
@@ -399,6 +400,14 @@ public record Env(
         // the classpath resource or a file on disk, same division of labour as
         // `#fnSignaturesMode` above.
         String fnTrustRootPath,
+        // `FC_FN_POOL_URL` (spec `function-invocation.md` §4, ruling R8), default
+        // `http://fn-{pool}:8080`: one template with a `{pool}` placeholder, resolved
+        // per manifest `pool` at promote ([PoolUrlTemplate#resolve]) into a
+        // subscription/scheduled-job entry's `endpoint`. A configured value with no
+        // placeholder is a startup error naming the variable — [PoolUrlTemplate]'s own
+        // constructor throws, the same "unparseable/invalid still fails loudly" division
+        // of labour as [#functionLimits] above (never a silent fallback to the default).
+        PoolUrlTemplate fnPoolUrlTemplate,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
         // environment directly, or fcdev's map-loaded environment and the parity
@@ -567,6 +576,7 @@ public record Env(
                         e.integer("FC_FN_MAX_WARM_PER_HOST", FunctionLimits.DEFAULT_MAX_WARM_PER_HOST)),
                 SignaturesMode.parse(e.or("FC_FN_SIGNATURES", "required")),
                 e.get("FC_FN_TRUST_ROOT"),
+                PoolUrlTemplate.parse(e.or("FC_FN_POOL_URL", PoolUrlTemplate.DEFAULT)),
                 e
         );
     }

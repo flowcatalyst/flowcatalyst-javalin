@@ -12,8 +12,12 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
+import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
+import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -52,6 +56,10 @@ class FunctionApiTest {
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
     private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
     private static final ClientPolicyRepository policies = new ClientPolicyRepository(TestPg.dataSource());
+    private static final TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
+    private static final SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
+    private static final DispatchPoolRepository dispatchPools = new DispatchPoolRepository(TestPg.dataSource());
+    private static final ScheduledJobRepository scheduledJobs = new ScheduledJobRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     private static final String[] ANCHOR = {
@@ -69,7 +77,8 @@ class FunctionApiTest {
             HttpError.install(routes);
             routes.before("/api/*", auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
-                    policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none()));
+                    policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
+                    subscriptions, dispatchPools, scheduledJobs));
             // §4.3: needed for P10's real PUT /api/function-policies/{owner} route.
             io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                     new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(

@@ -116,12 +116,12 @@ class PublishPromoteRetireTest {
     }
 
     private static AliasChanged promote(AuthContext ac, FunctionAddress address, int version) {
-        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions)
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE)
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
     private static AliasChanged promote(AuthContext ac, FunctionAddress address, String alias, int version) {
-        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions)
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, NONE)
                 .run(uow, new PromoteCommand(address, alias, version), EC));
     }
 
@@ -280,8 +280,29 @@ class PublishPromoteRetireTest {
     @Test
     void aThrowingTriggerSeamLeavesNoVersionRowNoEventAndTheNextPublishStillGetsVersionOne() {
         Function f = createFunction("p7", new FunctionOwner.Platform());
-        TriggerSync throwing = (scoped, function, version) -> {
-            throw new RuntimeException("trigger sync exploded");
+        TriggerSync throwing = new TriggerSync() {
+            @Override
+            public void onPublish(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
+                    io.flowcatalyst.platform.function.FunctionVersion version) {
+                throw new RuntimeException("trigger sync exploded");
+            }
+
+            @Override
+            public void onPromote(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
+                    io.flowcatalyst.platform.function.FunctionVersion newLive,
+                    io.flowcatalyst.platform.function.FunctionVersion previousLive,
+                    io.flowcatalyst.sdk.usecase.ExecutionContext ec) {
+            }
+
+            @Override
+            public void onDelete(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
+                    io.flowcatalyst.sdk.usecase.ExecutionContext ec) {
+            }
+
+            @Override
+            public void onStatusChange(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
+                    io.flowcatalyst.sdk.usecase.ExecutionContext ec) {
+            }
         };
         var cmd = new PublishCommand(f.address(), "oci://artifact/p7", digest("p7").value(), null, manifestJson());
 

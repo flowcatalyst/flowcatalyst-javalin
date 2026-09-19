@@ -116,6 +116,40 @@ public record Subscription(
                 DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES, null, DEFAULT_DATA_ONLY, null, now, now);
     }
 
+    /// A fresh `ACTIVE`, `FUNCTION`-sourced subscription (spec
+    /// `function-invocation.md` §4, ruling R6) — the platform's own wiring
+    /// of a function manifest's `subscriptions` entry at promote, never an
+    /// admin create or an SDK sync. Distinct from [#create] because a
+    /// function's subscription needs fields [#create] leaves at their admin
+    /// default: `applicationCode` (what selects the delivery signing
+    /// credentials), `clientId` (the function's owner), a pre-resolved
+    /// dispatch pool, one binding and the manifest entry's own dispatch
+    /// settings — a chain of generic `with*` copies at the call site would
+    /// bury that in noise the way `CreateSubscription`'s does not.
+    ///
+    /// @param code             `fn-<fid>-<8 hex>` (spec §4 table)
+    /// @param name              carries the function's address, for humans
+    /// @param endpoint          `<pool URL>/functions/<address><path>`, no version
+    /// @param applicationCode   the function's application code
+    /// @param clientId          the function's owner client id, or `null` for a platform function
+    /// @param dispatchPoolId    the function's own one dispatch pool
+    /// @param dispatchPoolCode  the function's own one dispatch pool's code
+    /// @param binding           the single event-type binding this entry declares
+    /// @param mode              the manifest entry's dispatch mode
+    /// @param maxRetries        the manifest entry's retry budget
+    /// @param timeoutSeconds    the manifest entry's per-delivery timeout
+    /// @param dataOnly          the manifest entry's `dataOnly`
+    public static Subscription forFunction(String code, String name, String endpoint, String applicationCode,
+            String clientId, String dispatchPoolId, String dispatchPoolCode, EventTypeBinding binding,
+            DispatchMode mode, int maxRetries, int timeoutSeconds, boolean dataOnly) {
+        Instant now = Instant.now();
+        return new Subscription(EntityType.SUBSCRIPTION.generate(), code, applicationCode, name, null, clientId, null,
+                false, List.of(binding), null, endpoint, null, List.of(), SubscriptionSource.FUNCTION,
+                SubscriptionStatus.ACTIVE, DEFAULT_MAX_AGE_SECONDS, dispatchPoolId, dispatchPoolCode,
+                DEFAULT_DELAY_SECONDS, DEFAULT_SEQUENCE, mode, timeoutSeconds, maxRetries, null, dataOnly, null, now,
+                now);
+    }
+
     public boolean isActive() {
         return status == SubscriptionStatus.ACTIVE;
     }

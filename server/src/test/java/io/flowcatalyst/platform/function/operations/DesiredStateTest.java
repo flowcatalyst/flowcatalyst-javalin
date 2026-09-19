@@ -15,19 +15,35 @@ import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.SignerIdentity;
+import io.flowcatalyst.platform.application.Application;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ApplicationType;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
+import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `DesiredState.build` (spec `function-api.md` §6.1, §8 P13, P14). Every
@@ -41,8 +57,11 @@ class DesiredStateTest {
     private static final FunctionRepository functions = new FunctionRepository(DS);
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(DS);
     private static final FunctionHostRepository hosts = new FunctionHostRepository(DS);
+    private static final ApplicationRepository applications = new ApplicationRepository(DS);
+    private static final ServiceAccountRepository serviceAccounts =
+            new ServiceAccountRepository(DS, java.util.Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
-    private static final DesiredState DESIRED = new DesiredState(functions, versions, hosts);
+    private static final DesiredState DESIRED = new DesiredState(functions, versions, hosts, serviceAccounts);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final AtomicLong SEQ = new AtomicLong(System.nanoTime());
@@ -109,6 +128,61 @@ class DesiredStateTest {
         Function.Promoted p = f.promote(Function.LIVE, v, "prn_promoter", Instant.now());
         save(p.function());
         return p.function();
+    }
+
+    private static String persistApplication(String code) {
+        Application app = Application.create(ApplicationType.APPLICATION, code, code);
+        uow.inTransaction(tx -> {
+            applications.persist(app, tx.dbTx());
+            return null;
+        });
+        return app.id();
+    }
+
+    private static void serviceAccount(String applicationId, String secret, boolean active, Instant createdAt) {
+        DSLContext db = DSL.using(DS, SQLDialect.POSTGRES);
+        db.insertInto(IAM_SERVICE_ACCOUNTS)
+                .set(IAM_SERVICE_ACCOUNTS.ID, EntityType.SERVICE_ACCOUNT.generate())
+                .set(IAM_SERVICE_ACCOUNTS.CODE, "ds-svc-" + fresh())
+                .set(IAM_SERVICE_ACCOUNTS.NAME, "desired-state test service account")
+                .set(IAM_SERVICE_ACCOUNTS.APPLICATION_ID, applicationId)
+                .set(IAM_SERVICE_ACCOUNTS.ACTIVE, active)
+                .set(IAM_SERVICE_ACCOUNTS.WH_AUTH_TYPE, "BEARER_TOKEN")
+                .set(IAM_SERVICE_ACCOUNTS.WH_AUTH_TOKEN_REF, "ds-token-" + fresh())
+                .set(IAM_SERVICE_ACCOUNTS.WH_SIGNING_SECRET_REF, secret)
+                .set(IAM_SERVICE_ACCOUNTS.CREATED_AT, createdAt.atOffset(ZoneOffset.UTC))
+                .execute();
+    }
+
+    private static void serviceAccount(String applicationId, String secret, boolean active) {
+        serviceAccount(applicationId, secret, active, Instant.now());
+    }
+
+    private static Function createFunctionForApp(String tag, String applicationId) {
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("ds" + RUN), new DnsLabel("svc"), new DnsLabel(tag));
+        Function f = Function.create(applicationId, address, FunctionOwner.ofClientId("clt_" + RUN), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+        return f;
+    }
+
+    private static Manifest manifestWebhook(String pool) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s",
+                 "endpoints":[{"path":"/events/*","auth":"webhook"}]}
+                """.formatted(pool);
+        return Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+    }
+
+    private static String sha256Hex(String text) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static void heartbeatHost(String hostId, DnsLabel pool, Instant lastHeartbeat, List<FunctionHost.LoadedVersion> loaded) {
@@ -365,5 +439,194 @@ class DesiredStateTest {
         String json = Json.write(doc);
         assertThat(json).as("mutant: write null instead of omitting the absent signer field")
                 .doesNotContain("\"signer\"");
+    }
+
+    // ── V7: webhookSigningSecret (spec `function-invocation.md` §6, §10) ────
+
+    @Test
+    void webhookSigningSecretIsCarriedOnlyForAVersionWithAWebhookEndpoint() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("v7app" + fresh());
+        String secret = "v7-secret-" + fresh();
+        serviceAccount(appId, secret, true);
+
+        Function withHook = createFunctionForApp("v7hook" + fresh(), appId);
+        FunctionVersion vHook = publish(withHook, 1, manifestWebhook(pool.value()));
+        promote(withHook, vHook);
+
+        Function withoutHook = createFunctionForApp("v7nohook" + fresh(), appId);
+        FunctionVersion vNoHook = publish(withoutHook, 1, manifestForPool(pool.value(), false));
+        promote(withoutHook, vNoHook);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        var byAddress = doc.functions().stream()
+                .collect(java.util.stream.Collectors.toMap(DesiredState.FunctionEntry::address, e -> e));
+
+        assertThat(byAddress.get(withHook.address().render()).webhookSigningSecret())
+                .as("mutant: never include it").isEqualTo(secret);
+        assertThat(byAddress.get(withoutHook.address().render()).webhookSigningSecret())
+                .as("mutant: always include it — no webhook endpoint means no secret").isNull();
+    }
+
+    @Test
+    void webhookSigningSecretIsAbsentWhenTheApplicationHasNoSigningSecret() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("v7nosecret" + fresh()); // no service account at all
+        Function f = createFunctionForApp("v7ns" + fresh(), appId);
+        FunctionVersion v = publish(f, 1, manifestWebhook(pool.value()));
+        promote(f, v);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        assertThat(doc.functions().getFirst().webhookSigningSecret())
+                .as("no active service account with a secret -> omitted, never \"\"").isNull();
+    }
+
+    @Test
+    void rotatingTheWebhookSigningSecretChangesTheETagBytes() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("v7rot" + fresh());
+        serviceAccount(appId, "before-" + fresh(), true);
+        Function f = createFunctionForApp("v7r" + fresh(), appId);
+        FunctionVersion v = publish(f, 1, manifestWebhook(pool.value()));
+        promote(f, v);
+
+        String before = Json.write(DESIRED.build(pool, Instant.now()));
+        String beforeEtag = sha256Hex(before);
+
+        // Rotate: a NEW active account (older accounts stay — "oldest active" would
+        // still pick the first one; deactivate it explicitly to force the rotation).
+        DSLContext db = DSL.using(DS, SQLDialect.POSTGRES);
+        db.update(IAM_SERVICE_ACCOUNTS).set(IAM_SERVICE_ACCOUNTS.ACTIVE, false)
+                .where(IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(appId)).execute();
+        serviceAccount(appId, "after-" + fresh(), true);
+
+        String after = Json.write(DESIRED.build(pool, Instant.now()));
+        String afterEtag = sha256Hex(after);
+
+        assertThat(afterEtag).as("mutant: resolve the secret once and cache it for ever").isNotEqualTo(beforeEtag);
+    }
+
+    @Test
+    void theSecretIsInNoLogLineAndNoToString() {
+        var log = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger("io.flowcatalyst");
+        var captured = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            DnsLabel pool = new DnsLabel("pool" + fresh());
+            String appId = persistApplication("v7log" + fresh());
+            String secret = "v7-must-never-be-logged-" + fresh();
+            serviceAccount(appId, secret, true);
+            Function f = createFunctionForApp("v7l" + fresh(), appId);
+            FunctionVersion v = publish(f, 1, manifestWebhook(pool.value()));
+            promote(f, v);
+
+            DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+            DesiredState.FunctionEntry entry = doc.functions().stream()
+                    .filter(e -> e.address().equals(f.address().render())).findFirst().orElseThrow();
+            assertThat(entry.webhookSigningSecret()).isEqualTo(secret); // sanity: the secret really is there
+
+            assertThat(entry.toString()).as("mutant: FunctionEntry#toString leaks the secret").doesNotContain(secret);
+            assertThat(doc.toString()).as("mutant: Document#toString leaks the secret via an entry").doesNotContain(secret);
+            assertThat(captured.list).as("no captured log line carries the secret")
+                    .allSatisfy(e -> assertThat(e.getFormattedMessage()).doesNotContain(secret));
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    // ── V7 (function-invocation.md §6, R9): the webhook signing secret ─────
+
+    @Test
+    void webhookSigningSecretIsCarriedOnlyForAFunctionWithAWebhookEndpoint() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-v7a-" + fresh());
+        serviceAccount(appId, "ds-secret-" + fresh(), true);
+
+        Function withHook = createFunctionForApp("v7hook" + fresh(), appId);
+        promote(withHook, publish(withHook, 1, manifestWebhook(pool.value())));
+
+        Function withoutHook = createFunctionForApp("v7plain" + fresh(), appId);
+        promote(withoutHook, publish(withoutHook, 1, manifestForPool(pool.value(), false)));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        Map<String, DesiredState.FunctionEntry> byAddress = doc.functions().stream()
+                .collect(Collectors.toMap(DesiredState.FunctionEntry::address, e -> e));
+
+        assertThat(byAddress.get(withHook.address().render()).webhookSigningSecret())
+                .as("mutant: never include the secret").isNotNull();
+        assertThat(byAddress.get(withoutHook.address().render()).webhookSigningSecret())
+                .as("mutant: always include, even with no webhook endpoint").isNull();
+    }
+
+    @Test
+    void webhookSigningSecretIsAbsentWhenTheApplicationHasNoActiveServiceAccount() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-v7b-" + fresh());
+        // No service account persisted at all for this application.
+        Function f = createFunctionForApp("v7nosecret" + fresh(), appId);
+        promote(f, publish(f, 1, manifestWebhook(pool.value())));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        assertThat(doc.functions().getFirst().webhookSigningSecret())
+                .as("mutant: fabricate a secret when none resolves").isNull();
+    }
+
+    @Test
+    void rotatingTheSigningSecretChangesTheResolvedValueAndTheDocumentsETag() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-v7c-" + fresh());
+        Instant t0 = Instant.now().minusSeconds(120);
+        String before = "ds-secret-before-" + fresh();
+        serviceAccount(appId, before, true, t0);
+
+        Function f = createFunctionForApp("v7rotate" + fresh(), appId);
+        promote(f, publish(f, 1, manifestWebhook(pool.value())));
+
+        Instant now = Instant.now();
+        DesiredState.Document docBefore = DESIRED.build(pool, now);
+        assertThat(docBefore.functions().getFirst().webhookSigningSecret()).isEqualTo(before);
+        String bytesBefore = Json.write(docBefore);
+        String etagBefore = sha256Hex(bytesBefore);
+
+        // Rotation: a new ACTIVE account, OLDER than the current one — the
+        // resolver's own "oldest active wins" rule (`OutboundCredentials`)
+        // means this one, not the newer original, is what resolves now.
+        String after = "ds-secret-after-" + fresh();
+        serviceAccount(appId, after, true, t0.minusSeconds(60));
+
+        DesiredState.Document docAfter = DESIRED.build(pool, now);
+        assertThat(docAfter.functions().getFirst().webhookSigningSecret())
+                .as("mutant: cache the resolved secret across builds").isEqualTo(after);
+        String bytesAfter = Json.write(docAfter);
+        String etagAfter = sha256Hex(bytesAfter);
+
+        assertThat(etagAfter).as("mutant: the secret is not in the bytes — ETag must change on rotation")
+                .isNotEqualTo(etagBefore);
+    }
+
+    @Test
+    void webhookSigningSecretIsMaskedInToStringButPresentInTheJsonBody() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-v7d-" + fresh());
+        String secret = "super-secret-" + fresh();
+        serviceAccount(appId, secret, true);
+        Function f = createFunctionForApp("v7mask" + fresh(), appId);
+        promote(f, publish(f, 1, manifestWebhook(pool.value())));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        DesiredState.FunctionEntry entry = doc.functions().getFirst();
+        assertThat(entry.webhookSigningSecret()).isEqualTo(secret);
+
+        assertThat(entry.toString()).as("mutant: FunctionEntry#toString leaks the secret")
+                .doesNotContain(secret).contains("<redacted>");
+        assertThat(doc.toString()).as("mutant: Document#toString leaks the secret via its entry list")
+                .doesNotContain(secret);
+
+        // The wire body DOES carry the real secret (the host needs it) — masking display only.
+        String json = Json.write(doc);
+        assertThat(json).contains(secret);
     }
 }

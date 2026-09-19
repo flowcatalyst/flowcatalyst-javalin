@@ -41,12 +41,16 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     /// address, both TSIDs, the version number, its role and load mode, the
     /// artifact's digest/ref/bundle, the recorded signer (spec
     /// `function-host-reconciler.md` §0 — `null` when the version was
-    /// published with signatures off), and its manifest (read leniently
-    /// through [Manifest#readStored], the same reader the platform's own
-    /// repository uses for a foreign JSON shape).
+    /// published with signatures off), its manifest (read leniently through
+    /// [Manifest#readStored], the same reader the platform's own repository
+    /// uses for a foreign JSON shape), and — spec `function-invocation.md`
+    /// §6, R9 — the application's webhook signing secret, present only for a
+    /// function with a `webhook` endpoint. Not used by anything in this
+    /// slice (D3 wires it into signature verification); parsed and masked
+    /// now so the secret-bearing shape lands before its first reader does.
     public record Entry(FunctionAddress address, String functionId, String versionId, int version, Role role,
                          Mode mode, Digest digest, String artifactRef, String signatureBundle,
-                         SignerIdentity signer, Manifest manifest) {
+                         SignerIdentity signer, Manifest manifest, String webhookSigningSecret) {
         public Entry {
             Objects.requireNonNull(address, "address");
             Objects.requireNonNull(functionId, "functionId");
@@ -56,6 +60,18 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
             Objects.requireNonNull(digest, "digest");
             Objects.requireNonNull(artifactRef, "artifactRef");
             Objects.requireNonNull(manifest, "manifest");
+        }
+
+        /// Masks the signing secret (spec §6: "the host never logs it" —
+        /// `CONVENTIONS.md` §8's "a carrier of key material masks `toString`").
+        @Override
+        public String toString() {
+            return "Entry[address=" + address + ", functionId=" + functionId + ", versionId=" + versionId
+                    + ", version=" + version + ", role=" + role + ", mode=" + mode + ", digest=" + digest
+                    + ", artifactRef=" + artifactRef
+                    + ", signatureBundle=" + (signatureBundle == null ? "null" : signatureBundle.length() + " chars")
+                    + ", signer=" + signer + ", manifest=" + manifest
+                    + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>") + "]";
         }
     }
 
@@ -133,8 +149,9 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         String signatureBundle = optionalText(node, "signatureBundle");
         SignerIdentity signer = parseSigner(node.path("signer"));
         Manifest manifest = Manifest.readStored(node.path("manifest"));
+        String webhookSigningSecret = optionalText(node, "webhookSigningSecret");
         return new Entry(address, functionId, versionId, version, role, mode, digest, artifactRef, signatureBundle,
-                signer, manifest);
+                signer, manifest, webhookSigningSecret);
     }
 
     private static UnloadRef parseUnloadRef(JsonNode node) {

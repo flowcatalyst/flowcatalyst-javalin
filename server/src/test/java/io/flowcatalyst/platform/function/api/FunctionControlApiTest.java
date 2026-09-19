@@ -18,8 +18,14 @@ import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
+import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
+import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.shared.encryption.Encryption;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -62,6 +68,12 @@ class FunctionControlApiTest {
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
     private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
     private static final ClientPolicyRepository policies = new ClientPolicyRepository(TestPg.dataSource());
+    private static final TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
+    private static final SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
+    private static final DispatchPoolRepository dispatchPools = new DispatchPoolRepository(TestPg.dataSource());
+    private static final ScheduledJobRepository scheduledJobs = new ScheduledJobRepository(TestPg.dataSource());
+    private static final ServiceAccountRepository serviceAccounts =
+            new ServiceAccountRepository(TestPg.dataSource(), java.util.Optional.empty());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
 
@@ -87,8 +99,10 @@ class FunctionControlApiTest {
             HttpError.install(routes);
             routes.before(auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
-                    policies, DEFAULTS, new Signatures.Off(), TriggerSync.none()));
-            FunctionControlApi.register(routes, new FunctionControlApi.State(functions, versions, hosts, uow));
+                    policies, DEFAULTS, new Signatures.Off(), TriggerSync.none(), triggerObjects, subscriptions,
+                    dispatchPools, scheduledJobs));
+            FunctionControlApi.register(routes,
+                    new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts));
         });
     }
 

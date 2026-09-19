@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.db.generated.tables.FnAliases;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.records.FnVersionsRecord;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -27,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.flowcatalyst.db.generated.Tables.FN_ALIASES;
 import static io.flowcatalyst.db.generated.Tables.FN_FUNCTIONS;
 import static io.flowcatalyst.db.generated.Tables.FN_VERSIONS;
 
@@ -91,6 +93,37 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
                 .orderBy(T.FUNCTION_ID.asc(), T.VERSION.desc())
                 .forEach(row -> newestByFunction.putIfAbsent(row.getFunctionId(), toEntity(row)));
         return newestByFunction;
+    }
+
+    /// The publish-time warm-capacity read (spec `function-invocation.md`
+    /// §4, §10 V1 `WARM_CAPACITY_EXCEEDED`): how many functions' CURRENT
+    /// `live` version has `manifest.warm() == true` and names `pool` — one
+    /// join, decoded in Java since `warm`/`pool` live inside the stored
+    /// JSONB manifest, not their own columns. `PublishVersion`'s own
+    /// validation adds the version being published, if it too is warm, on
+    /// top of this count (spec: "live warm versions in that pool + this one").
+    public int countLiveWarmInPool(DnsLabel pool) {
+        Objects.requireNonNull(pool, "pool");
+        FnAliases a = FN_ALIASES;
+        int count = 0;
+        for (var row : dsl.select(T.MANIFEST).from(T)
+                .join(a).on(a.VERSION_ID.eq(T.ID))
+                .where(a.ALIAS.eq(Function.LIVE))
+                .fetch()) {
+            Manifest manifest = Manifest.readStored(readManifestJson(row.value1()));
+            if (manifest.warm() && manifest.pool().equals(pool)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static JsonNode readManifestJson(JSONB manifest) {
+        try {
+            return Json.MAPPER.readTree(manifest.data());
+        } catch (JacksonException e) {
+            throw new IllegalStateException("fn_versions.manifest is not valid JSON", e);
+        }
     }
 
     private Optional<FunctionVersion> findOne(Condition where) {
