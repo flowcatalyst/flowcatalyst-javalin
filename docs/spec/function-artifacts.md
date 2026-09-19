@@ -110,7 +110,9 @@ A Sigstore bundle, media type `application/vnd.dev.sigstore.bundle.v0.3+json`, w
 (`messageDigest.algorithm = SHA2_256`), and exactly one `tlogEntries[]` entry of kind `hashedrekord`
 version `0.0.1` carrying **both** an `inclusionPromise` and an `inclusionProof` with a checkpoint.
 Any other media type, a DSSE envelope, a certificate chain in place of the leaf, a public-key hint,
-zero or several tlog entries, or another entry kind/version ⇒ `UNSUPPORTED_BUNDLE`. Missing or
+zero or several tlog entries, or another entry kind/version ⇒ `UNSUPPORTED_BUNDLE`. An entry of the right kind
+that lacks its `inclusionPromise`, or its `inclusionProof` or checkpoint ⇒ `TLOG_MISSING` — the bundle is
+a supported shape with the evidence left out, which is a different thing to tell a publisher. Missing or
 wrongly typed fields, bad base64 ⇒ `MALFORMED_BUNDLE`. Parsed as a Jackson tree from `Json.MAPPER`.
 
 ### 3.2 The checks, in order
@@ -205,7 +207,7 @@ restore; report mutant → test):
 | C2 | a poisoned cache entry is detected and replaced | return the cached file without re-hashing |
 | C3 | `maxBytes` stops the transfer (a source that would stream for ever terminates) | check the size only after the download |
 | C4 | bearer token dance against a local `HttpServer`: 401+challenge → token → 200; credentials are **not** sent to a redirect target on another host/port | forward `Authorization` on redirect |
-| C5 | each `Reason` of §3.2 is produced by exactly the broken variant built for it, and the golden and the `TestSigstore` bundle verify | remove each check in turn — eight mutants, one per step |
+| C5 | each `Reason` of §3.2 is produced by exactly the broken variant built for it, and the golden and the `TestSigstore` bundle verify | **one mutant per condition, not per step** — a step is several conditions (the checkpoint's signature, its size, its root; the entry's hash, signature, certificate; chain, time, EKU, the CA's and the log key's windows; each field the SET covers). Removing a whole step proves only that the step runs: the first pass did that, and a mutant that unbound the signed checkpoint from the inclusion proof survived it |
 | C6 | the certificate is validated at `integratedTime`: a bundle whose leaf expired long ago verifies; one whose `integratedTime` is outside the leaf's window is `CERTIFICATE_NOT_VALID_AT_SIGNING` | validate at `Instant.now()` |
 | C7 | step 3: a genuine log entry for a *different* digest, spliced into an otherwise valid bundle, is `TLOG_ENTRY_MISMATCH` | compare only the signature |
 | C8 | `verify` never throws: `null`, `""`, `[]`, truncated JSON, a 10 MB string of `{` | let a parse exception escape |

@@ -45,8 +45,8 @@ New context `function`. `Permission` enum + `seed/Permissions` strings (`Permiss
 
 Roles, appended to `PlatformRoles` in this order (`PlatformCatalogueTest` pins names and indexes):
 `platform:function-publisher` (view, publish, promote — what a pipeline's service account holds) and
-`platform:function-host` (host control only). The platform admin role that already holds the
-messaging `manage` permissions gains view, manage, publish, promote and policy-manage.
+`platform:function-host` (host control only). `platform:messaging-admin` gains view, manage,
+publish, promote and policy-manage (super-admin has them through `platform:*:*:*`).
 
 **Reach** (who may touch *this* function), checked in the operation's `execute` right after the load,
 through `operations/Access`:
@@ -66,6 +66,8 @@ through `operations/Access`:
 
 `FunctionEvents`: source `platform:function`; subject `platform.function.<functionId>`; message group
 `platform:function:<functionId>` for **every** event below, so one function's history is ordered.
+(The policy event has no function: its subject is `platform.function-policy.<owner key>` and its group
+`platform:function-policy:<owner key>`.)
 
 | Type | Data |
 |---|---|
@@ -109,7 +111,7 @@ client must exist (404) and `checkScopeAccess`; absent ⇒ owner `Platform`, `re
 - `PUT /api/functions/{address}` — `UpdateFunction` / `UpdateCommand` `{description?, status?}`, both
   optional, "absent = untouched". `Function.describe` and, for `status`, an exhaustive switch to
   `enable()`/`disable()` (CONVENTIONS: a selecting field is routed, not modelled). One `updated`
-  event. **The body has no `serviceName`, `name`, `applicationCode`, `clientId` or `runtime`; a body
+  event. 204, no body (`ApplicationApi.update`'s precedent). **The body has no `serviceName`, `name`, `applicationCode`, `clientId` or `runtime`; a body
   carrying any of them is 400 `FUNCTION_IMMUTABLE_FIELD` naming it** (design §10.17 — silently
   ignoring a rename is how someone believes they renamed a function).
 - `DELETE /api/functions/{address}` — `DeleteFunction` / `DeleteCommand`. Cascades to versions,
