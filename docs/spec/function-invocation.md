@@ -180,13 +180,31 @@ its `code`'s first segment is the function's application code (`dispatch-deliver
   `Request(address, version, invocationId, method, path, originalHost, originalPath, pathParams,
   query, headers, body, remoteAddress, Caller caller)`; `sealed Caller = Platform /* verified webhook:
   subscription, dispatch job or schedule */ | Principal(id, type, clientId, permissions) | Anonymous`.
-- `Result` is the HTTP response value, with helpers that spell the dispatch contract so authors do
-  not memorise status codes: `Result.ack()`, `Result.retry(Duration)`, `Result.fail(String reason)`,
-  `Result.http(status, headers, body)`. The status each helper produces is taken from
-  `dispatchjob.md`'s response classification — D3's spec pins the table **after reading it**, not
-  from memory.
+- `Result` is a single HTTP-response record (`status`, `headers`, `body`), not a sealed taxonomy, with
+  helpers that spell the dispatch contract so authors do not memorise status codes: `Result.ack()`,
+  `Result.retry(Duration)`, `Result.fail(String reason)`, `Result.http(status, headers, body)`, plus
+  `Result.json(status, String json)` for a direct answer whose body is already JSON text (added in I3,
+  beyond this section's original list — `function-api` has zero JSON-library dependency, so a caller
+  who wants a JSON body still has to hand it over pre-built). The status/header each helper produces
+  is taken from reading `dispatch-seam.md` §5 and the actual code
+  (`platform/dispatchjob/processing/{ProcessingApi,SubscriberDelivery}.java`,
+  `platform/scheduler/jobs/JobDispatcher.java`), pinned in `Result`'s own class doc as a table with
+  file:line evidence — **not from memory, and not uniform**: `SubscriberDelivery.classify` honours a
+  `429`'s `Retry-After` (integer seconds, no budget spent) and a `2xx` `{"ack":false}` body the same
+  way, but `JobDispatcher.deliver` (the scheduled-job path) only branches on `2xx` vs. not — a `429`
+  from `Result.retry` is treated exactly like `Result.fail` there, and the requested delay is silently
+  discarded. Neither path lets a function force an *immediate* non-retryable failure: every non-2xx,
+  non-429 status is retried identically until the platform's own attempt budget is spent
+  (`dispatch-seam.md` §5's open question 1 — this D3-adjacent finding answers it descriptively, not
+  normatively: today's behaviour, uniform, is what both processors do).
 - `Webhook.event(Request)` parses the delivery body into the `Event` envelope value; `Webhook.schedule(Request)`
-  likewise. Helpers, not invocation kinds.
+  likewise. Helpers, not invocation kinds. The wire shapes are `platform/dispatchjob/processing/
+  DeliveryPayload.build`'s `Envelope` (event) and `platform/scheduler/jobs/JobDispatcher.WebhookEnvelope`
+  (schedule) — read directly from those payload builders, not guessed; `Event.dataJson`/
+  `Schedule.payloadJson` carry the `data`/`payload` member's raw JSON text rather than a parsed tree,
+  since the API jar has no JSON library to hand a richer type back through. Malformed or
+  wrongly-shaped JSON throws `WebhookFormatException`, via a small internal recursive-descent JSON
+  reader (`WebhookJson`/`JsonValue`, package-private) built for exactly these two envelopes.
 
 ## 8. Rulings (owner, 2026-09-19/20)
 

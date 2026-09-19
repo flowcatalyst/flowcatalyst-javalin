@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.function.FunctionContext;
-import io.flowcatalyst.function.Invocation;
+import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
 import io.flowcatalyst.platform.function.FunctionAddress;
 
@@ -129,7 +129,7 @@ class FunctionRegistryTest {
 
     private static final class NoopFunction implements Function {
         @Override
-        public Result handle(Invocation in, FunctionContext ctx) {
+        public Result handle(Request in, FunctionContext ctx) {
             return Result.ack();
         }
     }

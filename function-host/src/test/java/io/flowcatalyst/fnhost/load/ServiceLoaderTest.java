@@ -5,11 +5,10 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import io.flowcatalyst.function.Fail;
-
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.failReason;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// L5 (`docs/spec/function-host-core.md` §3): `ServiceLoader.load(X.class)`
@@ -47,7 +46,7 @@ class ServiceLoaderTest {
                         import java.util.ServiceLoader;
                         import java.util.function.Supplier;
                         public final class ServiceLoaderProbe implements Function {
-                            public Result handle(Invocation in, FunctionContext ctx) {
+                            public Result handle(Request in, FunctionContext ctx) {
                                 StringBuilder found = new StringBuilder();
                                 for (Supplier<?> s : ServiceLoader.load(Supplier.class)) {
                                     if (found.length() > 0) found.append(',');
@@ -65,8 +64,8 @@ class ServiceLoaderTest {
         assertThat(outcome).isInstanceOf(Loaded.class);
 
         try (LoadedFunction function = ((Loaded) outcome).function()) {
-            var result = function.invoke(invocation(), context());
-            assertThat(((Fail) result).reason()).isEqualTo("function");
+            var result = function.invoke(request(), context());
+            assertThat(failReason(result)).isEqualTo("function");
         }
     }
 }

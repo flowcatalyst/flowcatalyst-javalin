@@ -42,7 +42,7 @@ final class TestFixtures {
                         import io.flowcatalyst.function.*;
                         public final class Fn implements Function {
                             public static final String V = "%s";
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """.formatted(variant))
                 .build(jar);

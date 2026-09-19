@@ -1,76 +1,53 @@
 package io.flowcatalyst.function;
 
-import java.time.Instant;
-import java.util.Arrays;
 import java.util.Objects;
 
-/// The CloudEvents-shaped envelope the platform stores, carried by an
-/// [EventInvocation]. `data` is cloned in the constructor and again by
-/// [#data()].
+/// A subscription/dispatch-job delivery's envelope, parsed by
+/// [Webhook#event(Request)] from a `webhook`-endpoint [Request]'s body.
+/// Field-for-field the wire shape the platform actually sends — read from
+/// `platform/dispatchjob/processing/DeliveryPayload.build` (dispatch-seam
+/// spec §5 "Delivery request construction"):
 ///
-/// @param id              the event's own id
-/// @param type            the CloudEvents `type`
-/// @param source          the CloudEvents `source`
-/// @param subject         the CloudEvents `subject`
-/// @param time             when the event occurred
-/// @param dataContentType the media type of `data`
-/// @param data            the event payload
-/// @param correlationId   links this event to the request/flow that caused it
-/// @param causationId     the id of the event that directly caused this one
-/// @param messageGroup    the ordering group this event belongs to
-/// @param dedupId         the id the platform deduplicated this event on
+/// ```
+/// {id, type, attemptNumber, source?, subject?, correlationId?,
+///  messageGroup?, clientId?, clientCode?, data?}
+/// ```
+///
+/// Only the shape of a **non-`dataOnly`** subscription's delivery — a
+/// `dataOnly:true` subscription sends `job.payload` verbatim as the whole
+/// body, which is not this envelope at all; a function declaring such an
+/// endpoint parses [Request#body] itself instead of calling this method.
+///
+/// `dataJson` is the raw JSON text of the `data` member exactly as it
+/// appeared on the wire (an object, array, string, number, boolean, or
+/// absent) — never parsed further here, since this jar carries no JSON
+/// library a function could otherwise be handed a parsed tree from; `null`
+/// when `data` was absent.
+///
+/// @param id            the dispatch job's own id
+/// @param type          the event type / dispatch job code
+/// @param attemptNumber this delivery attempt, 1-based
+/// @param source        the originating event's `source`, `null` when absent
+/// @param subject       the originating event's `subject`, `null` when absent
+/// @param correlationId links this delivery to the flow that caused it, `null` when absent
+/// @param messageGroup  the ordering group this delivery belongs to, `null` when absent
+/// @param clientId      the owning client's id, `null` for a platform-scoped job or an unresolved client
+/// @param clientCode    the owning client's code, `null` under the same conditions as `clientId`
+/// @param dataJson      the raw JSON text of `data`, `null` when absent
 public record Event(
         String id,
         String type,
+        int attemptNumber,
         String source,
         String subject,
-        Instant time,
-        String dataContentType,
-        byte[] data,
         String correlationId,
-        String causationId,
         String messageGroup,
-        String dedupId) {
+        String clientId,
+        String clientCode,
+        String dataJson) {
 
     public Event {
-        data = Copies.bytes(data);
-    }
-
-    @Override
-    public byte[] data() {
-        return Copies.bytes(data);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Event other)) return false;
-        return Objects.equals(id, other.id)
-                && Objects.equals(type, other.type)
-                && Objects.equals(source, other.source)
-                && Objects.equals(subject, other.subject)
-                && Objects.equals(time, other.time)
-                && Objects.equals(dataContentType, other.dataContentType)
-                && Arrays.equals(data, other.data)
-                && Objects.equals(correlationId, other.correlationId)
-                && Objects.equals(causationId, other.causationId)
-                && Objects.equals(messageGroup, other.messageGroup)
-                && Objects.equals(dedupId, other.dedupId);
-    }
-
-    @Override
-    public int hashCode() {
-        int result = Objects.hash(id, type, source, subject, time, dataContentType,
-                correlationId, causationId, messageGroup, dedupId);
-        return 31 * result + Arrays.hashCode(data);
-    }
-
-    @Override
-    public String toString() {
-        return "Event[id=" + id + ", type=" + type + ", source=" + source + ", subject=" + subject
-                + ", time=" + time + ", dataContentType=" + dataContentType
-                + ", data.length=" + (data == null ? 0 : data.length)
-                + ", correlationId=" + correlationId + ", causationId=" + causationId
-                + ", messageGroup=" + messageGroup + ", dedupId=" + dedupId + "]";
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(type, "type");
     }
 }

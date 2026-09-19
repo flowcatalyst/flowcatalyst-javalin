@@ -5,13 +5,13 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import io.flowcatalyst.function.Fail;
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.function.Result;
 
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.failReason;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// L4 (`docs/spec/function-host-core.md` §3): two functions bundling one
@@ -40,7 +40,7 @@ class IndependentStaticStateTest {
             package fixture.l4;
             import io.flowcatalyst.function.*;
             public final class CounterProbe implements Function {
-                public Result handle(Invocation in, FunctionContext ctx) {
+                public Result handle(Request in, FunctionContext ctx) {
                     return Result.fail("count=" + Counter.increment());
                 }
             }
@@ -65,15 +65,15 @@ class IndependentStaticStateTest {
 
         try (LoadedFunction functionA = ((Loaded) outcomeA).function();
                 LoadedFunction functionB = ((Loaded) outcomeB).function()) {
-            assertThat(countOf(functionA.invoke(invocation(), context()))).isEqualTo(1);
-            assertThat(countOf(functionA.invoke(invocation(), context()))).isEqualTo(2);
-            assertThat(countOf(functionB.invoke(invocation(), context()))).isEqualTo(1);
-            assertThat(countOf(functionA.invoke(invocation(), context()))).isEqualTo(3);
+            assertThat(countOf(functionA.invoke(request(), context()))).isEqualTo(1);
+            assertThat(countOf(functionA.invoke(request(), context()))).isEqualTo(2);
+            assertThat(countOf(functionB.invoke(request(), context()))).isEqualTo(1);
+            assertThat(countOf(functionA.invoke(request(), context()))).isEqualTo(3);
         }
     }
 
     private static int countOf(Result result) {
-        String reason = ((Fail) result).reason();
+        String reason = failReason(result);
         return Integer.parseInt(reason.substring(reason.indexOf('=') + 1));
     }
 
@@ -98,8 +98,8 @@ class IndependentStaticStateTest {
         Function fnA = (Function) entrypoint.getDeclaredConstructor().newInstance();
         Function fnB = (Function) entrypoint.getDeclaredConstructor().newInstance();
 
-        int a1 = countOf(fnA.handle(invocation(), context()));
-        int b1 = countOf(fnB.handle(invocation(), context()));
+        int a1 = countOf(fnA.handle(request(), context()));
+        int b1 = countOf(fnB.handle(request(), context()));
 
         assertThat(a1).isEqualTo(1);
         assertThat(b1).as("under a shared loader B's first call sees A's count, proving the real test can fail")

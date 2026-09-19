@@ -6,11 +6,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import io.flowcatalyst.function.Ack;
-
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.isAck;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// L3 (`docs/spec/function-host-core.md` §3): a function cannot load a
@@ -38,7 +37,7 @@ class HostOnlyClassTest {
                         package fixture.l3;
                         import io.flowcatalyst.function.*;
                         public final class HostOnlyProbe implements Function {
-                            public Result handle(Invocation in, FunctionContext ctx) {
+                            public Result handle(Request in, FunctionContext ctx) {
                                 try {
                                     Class.forName("%s", false, this.getClass().getClassLoader());
                                     return Result.fail("host-only class loaded unexpectedly");
@@ -55,9 +54,8 @@ class HostOnlyClassTest {
 
         assertThat(outcome).isInstanceOf(Loaded.class);
         try (LoadedFunction function = ((Loaded) outcome).function()) {
-            var result = function.invoke(invocation(), context());
-            assertThat(result).as(target + " must not be loadable from inside the function")
-                    .isInstanceOf(Ack.class);
+            var result = function.invoke(request(), context());
+            assertThat(isAck(result)).as(target + " must not be loadable from inside the function").isTrue();
         }
     }
 }

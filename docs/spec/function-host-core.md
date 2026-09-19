@@ -31,25 +31,29 @@ outside `java.*` / `javax.sql.*` / this package.
 ```java
 public interface Function {
     default void init(FunctionContext ctx) throws Exception {}
-    Result handle(Invocation in, FunctionContext ctx) throws Exception;
+    Result handle(Request in, FunctionContext ctx) throws Exception;
     default void stop() throws Exception {}
 }
 ```
 
-- `sealed interface Invocation permits EventInvocation, HttpInvocation, ScheduleInvocation` — each
-  carries `FunctionAddress address()` and `String invocationId()`. A sealed type, not the design's
-  `kind` enum with nullable halves: the compiler then tells a function author which cases exist.
-  - `EventInvocation(address, invocationId, Event event)`; `Event(id, type, source, subject, Instant
-    time, String dataContentType, byte[] data, correlationId, causationId, messageGroup, dedupId)`.
-  - `HttpInvocation(address, invocationId, HttpRequest request)`; `HttpRequest(method, path, route,
-    Map<String,String> pathParams, Map<String,List<String>> query, Map<String,List<String>> headers,
-    byte[] body, remoteAddress, Principal principal /* null when the route is auth: none */)`;
-    `Principal(id, type, clientId /* nullable */, Set<String> permissions)`.
-  - `ScheduleInvocation(address, invocationId, String schedule, Instant scheduledFor)`.
-- `sealed interface Result permits Ack, Retry, Fail, HttpResponse` with factories `Result.ack()`,
-  `retry(Duration)`, `fail(String reason)`, `http(int status, Map<String,List<String>> headers,
-  byte[] body)`. `Retry` rejects a negative or null duration; `Fail` a blank reason; `HttpResponse` a
-  status outside 100–599.
+**Superseded by `function-invocation.md` §7 (invocation slice I3):** `Invocation` is no longer a
+sealed type over three kinds — every call is an HTTP request, full stop. `Function.handle` takes a
+single `Request(FunctionAddress address, int version, String invocationId, String method, String
+path, String originalHost, String originalPath, Map<String,String> pathParams,
+Map<String,List<String>> query, Map<String,List<String>> headers, byte[] body, String remoteAddress,
+Caller caller)`; `sealed Caller permits Caller.Platform, Caller.Principal, Caller.Anonymous` names who
+the host believes the call came from (`webhook` / `platform` / `none` auth respectively).
+`Result(int status, Map<String,List<String>> headers, byte[] body)` is a single record, not a sealed
+taxonomy, with factories `ack()`, `retry(Duration)`, `fail(String reason)`, `http(status, headers,
+body)`, `json(status, json)` — `Result`'s own class doc carries the full ack/retry/fail-to-HTTP-status
+mapping table, with file:line evidence from `SubscriberDelivery`/`ProcessingApi`/`JobDispatcher`, and
+says plainly where the platform does *not* honour what a function asks for (a scheduled-job delivery
+ignores `retry`'s duration entirely; no delivery path lets `fail` force immediate termination).
+`Webhook.event(Request)` / `Webhook.schedule(Request)` parse a `webhook`-endpoint request's body into
+the `Event`/`Schedule` envelope values, via a small internal JSON reader (the API jar has zero
+dependencies, so no library). See `function-invocation.md` §7 for the authoritative shapes; the
+summary below is historical (D1, pre-I3).
+
 - `FunctionAddress(application, service, name)` — a **second, deliberate copy** of the parser in
   `platform/function/FunctionAddress` (the API jar cannot depend on the server). Same rule, same
   table; a test in `function-host` runs one shared `@CsvSource` file through both and fails if they
@@ -63,7 +67,7 @@ public interface Function {
   `UnsupportedOperationException` naming the slice.
 - **Values are values.** Every `byte[]` is cloned in the compact constructor and in the accessor;
   every map and list is deep-copied unmodifiable; header-name lookup is case-insensitive through
-  `HttpRequest.header(name)` / `headers(name)` while the map keeps the original spelling. Records
+  `Request.header(name)` / `headers(name)` while the map keeps the original spelling. Records
   holding `byte[]` define `equals`/`hashCode`/`toString` over content (length only in `toString`).
   Pinned: mutating an array passed in, or one read out, never changes the record.
 
@@ -84,7 +88,7 @@ flags. D1 adds only the `load` package.
    the host's class path — the platform loader does not see it);
 2. names in package `io.flowcatalyst.function` **exactly** (not subpackages, not
    `io.flowcatalyst.functionx`) ⇒ the host's loader — the one place a class crosses, so host and
-   function agree on `Function`, `Invocation`, `Result`;
+   function agree on `Function`, `Request`, `Result`;
 3. everything else ⇒ `ClassNotFoundException`.
 
 `getResource`/`getResources`: rule 1 delegates to the platform loader; **everything else returns
@@ -117,7 +121,7 @@ without throwing.
 
 ### 2.3 `LoadedFunction`
 
-Holds the instance, its loader, address, version. `Result invoke(Invocation, FunctionContext)` sets
+Holds the instance, its loader, address, version. `Result invoke(Request, FunctionContext)` sets
 the calling thread's **context class loader** to the function's loader for the call and restores the
 previous one in `finally` — also when the function throws, and also around `init` and `stop`.
 `close()`: `stop()` (exceptions logged, not propagated), then `URLClassLoader.close()`. After
@@ -151,7 +155,7 @@ application loader** — that replacement is mutant L1 and must kill L2–L5 eac
 | L6 | the context class loader is restored after a normal return, after a throw, and after `init`/`stop` | restore only on the normal path |
 | L7 | leak: load → invoke → `close()` → drop references → `System.gc()` loop (bounded, 50 × 100 ms) ⇒ a `WeakReference` to the loader clears. And the control: a fixture that parks its instance in a **JDK-owned** static (a `ThreadLocal` on a platform thread, or `java.util.logging` handler) does **not** clear — proving the test can fail | keep a strong reference in the registry after close |
 | L8 | each refusal reason, from a fixture jar built for it; a refused jar defines **no** class (the scan precedes loading — assert via a static initialiser that would write a marker file) | scan after `loadClass` |
-| L9 | API values: array and collection immutability (§1), `Retry`/`Fail`/`HttpResponse` validation, case-insensitive header lookup | drop each clone |
+| L9 | API values: array and collection immutability (§1), `Result` factory validation (`retry`/`fail`/`http`/`json`), case-insensitive header lookup | drop each clone |
 | L10 | the API jar's class files are major 65 without the preview bit; every public signature stays inside `java.*`, `javax.sql.*`, the API package | add `--enable-preview` back; add a Jackson type to a signature |
 | L11 | registry: swap returns the displaced version; LRU evicts the least-recently-*invoked* lazy entry, never a warm one; `close()` waits for `release()` and gives up after its timeout | evict by insertion order; evict warm |
 | L12 | the two `FunctionAddress` parsers agree on one shared table | loosen one |

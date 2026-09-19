@@ -5,11 +5,10 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import io.flowcatalyst.function.Ack;
-
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.isAck;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// L2 (`docs/spec/function-host-core.md` §3): a function bundling its own
@@ -22,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Mutant L1 (replace [ApiOnlyParentLoader] with the host application
 /// loader as the function's parent) kills this: the host's v1 wins
 /// parent-first delegation, `v2Only()` does not exist on it, and the
-/// invocation ends with a `Fail` naming a `NoSuchMethodError` instead of
-/// `Ack`.
+/// invocation ends with a `Result.fail` naming a `NoSuchMethodError`
+/// instead of an ack.
 class ShadowedClassTest {
 
     @Test
@@ -40,7 +39,7 @@ class ShadowedClassTest {
                         import com.example.lib.Version;
                         import io.flowcatalyst.function.*;
                         public final class ShadowProbe implements Function {
-                            public Result handle(Invocation in, FunctionContext ctx) {
+                            public Result handle(Request in, FunctionContext ctx) {
                                 try {
                                     String v = new Version().v2Only();
                                     return "v2".equals(v) ? Result.ack() : Result.fail("unexpected:" + v);
@@ -57,8 +56,8 @@ class ShadowedClassTest {
 
         assertThat(outcome).isInstanceOf(Loaded.class);
         try (LoadedFunction function = ((Loaded) outcome).function()) {
-            var result = function.invoke(invocation(), context());
-            assertThat(result).as("the function must see its own bundled v2, not the host's v1").isInstanceOf(Ack.class);
+            var result = function.invoke(request(), context());
+            assertThat(isAck(result)).as("the function must see its own bundled v2, not the host's v1").isTrue();
         }
     }
 }

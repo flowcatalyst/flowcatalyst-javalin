@@ -78,7 +78,7 @@ class RefusalTest {
                         package fixture.l8;
                         import io.flowcatalyst.function.*;
                         public final class Plain implements Function {
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """)
                 .entry("io/flowcatalyst/function/sub/Evil.class", new byte[] {1, 2, 3})
@@ -120,7 +120,7 @@ class RefusalTest {
                         import io.flowcatalyst.function.*;
                         public final class NeedsArgs implements Function {
                             public NeedsArgs(String mustBeSupplied) {}
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """)
                 .build(TestSupport.tempJar(dir, "not-instantiable"));
@@ -139,7 +139,7 @@ class RefusalTest {
                         import io.flowcatalyst.function.*;
                         public final class ThrowsOnConstruct implements Function {
                             public ThrowsOnConstruct() { throw new IllegalStateException("nope"); }
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """)
                 .build(TestSupport.tempJar(dir, "throws-on-construct"));
@@ -178,7 +178,7 @@ class RefusalTest {
                                     throw new RuntimeException(e);
                                 }
                             }
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """.formatted(markerPath));
     }

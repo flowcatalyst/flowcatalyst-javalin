@@ -9,12 +9,12 @@ import org.junit.jupiter.api.Test;
 
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.function.FunctionContext;
-import io.flowcatalyst.function.Invocation;
+import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
 
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -47,9 +47,9 @@ class ContextClassLoaderTest {
         RecordingFunction fn = new RecordingFunction();
         LoadedFunction loaded = new LoadedFunction(fn, functionLoader, ADDRESS, 1);
 
-        Result result = loaded.invoke(invocation(), context());
+        Result result = loaded.invoke(request(), context());
 
-        assertThat(result).isInstanceOf(io.flowcatalyst.function.Ack.class);
+        assertThat(result.status()).isEqualTo(200);
         assertThat(fn.duringHandle).isSameAs(functionLoader);
         assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(baseline);
     }
@@ -60,7 +60,7 @@ class ContextClassLoaderTest {
         fn.throwOnHandle = true;
         LoadedFunction loaded = new LoadedFunction(fn, functionLoader, ADDRESS, 1);
 
-        assertThatThrownBy(() -> loaded.invoke(invocation(), context())).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> loaded.invoke(request(), context())).isInstanceOf(RuntimeException.class);
 
         assertThat(fn.duringHandle).isSameAs(functionLoader);
         assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(baseline);
@@ -100,7 +100,7 @@ class ContextClassLoaderTest {
         }
 
         @Override
-        public Result handle(Invocation in, FunctionContext ctx) {
+        public Result handle(Request in, FunctionContext ctx) {
             duringHandle = Thread.currentThread().getContextClassLoader();
             if (throwOnHandle) {
                 throw new RuntimeException("boom");

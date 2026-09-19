@@ -12,7 +12,7 @@ public interface Function {
     }
 
     /// Handles one invocation and returns its outcome.
-    Result handle(Invocation in, FunctionContext ctx) throws Exception;
+    Result handle(Request in, FunctionContext ctx) throws Exception;
 
     /// Runs once, when this version is being unloaded — after every
     /// in-flight [#handle] call has returned. The default does nothing.

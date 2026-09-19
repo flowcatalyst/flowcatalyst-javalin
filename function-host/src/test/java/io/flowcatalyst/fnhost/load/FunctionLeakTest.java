@@ -8,7 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static io.flowcatalyst.fnhost.load.TestSupport.context;
-import static io.flowcatalyst.fnhost.load.TestSupport.invocation;
+import static io.flowcatalyst.fnhost.load.TestSupport.request;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// L7 (`docs/spec/function-host-core.md` §3): after load → invoke →
@@ -28,7 +28,7 @@ class FunctionLeakTest {
                         package fixture.l7;
                         import io.flowcatalyst.function.*;
                         public final class CleanProbe implements Function {
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """)
                 .build(TestSupport.tempJar(dir, "clean"));
@@ -58,7 +58,7 @@ class FunctionLeakTest {
                                     public void close() {}
                                 });
                             }
-                            public Result handle(Invocation in, FunctionContext ctx) { return Result.ack(); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
                         }
                         """)
                 .build(TestSupport.tempJar(dir, "leaky"));
@@ -80,7 +80,7 @@ class FunctionLeakTest {
         assertThat(outcome).isInstanceOf(Loaded.class);
         LoadedFunction function = ((Loaded) outcome).function();
         function.init(context());
-        function.invoke(invocation(), context());
+        function.invoke(request(), context());
         WeakReference<ClassLoader> ref = new WeakReference<>(function.loaderForTest());
         function.close();
         return ref;

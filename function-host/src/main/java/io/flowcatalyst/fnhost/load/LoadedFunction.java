@@ -2,7 +2,7 @@ package io.flowcatalyst.fnhost.load;
 
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.function.FunctionContext;
-import io.flowcatalyst.function.Invocation;
+import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import org.slf4j.Logger;
@@ -83,7 +83,7 @@ public final class LoadedFunction implements AutoCloseable {
     /// too.
     ///
     /// @throws IllegalStateException if this function has been [#close()]d
-    public Result invoke(Invocation in, FunctionContext ctx) throws Exception {
+    public Result invoke(Request in, FunctionContext ctx) throws Exception {
         requireOpen();
         return withFunctionContextLoader(() -> function.handle(in, ctx));
     }

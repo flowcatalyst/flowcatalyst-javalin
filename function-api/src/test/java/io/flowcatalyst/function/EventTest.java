@@ -1,45 +1,42 @@
 package io.flowcatalyst.function;
 
-import java.time.Instant;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// Spec `docs/spec/function-host-core.md` §1, L9: `Event.data()` is a
-/// defensive copy both ways, and its `equals`/`toString` treat `data` by
-/// content (length only in `toString`).
+/// `Event`'s own invariants — parsing it out of a delivery body is
+/// `WebhookTest`'s job (`docs/spec/function-invocation.md` §7).
 class EventTest {
 
     @Test
-    void dataIsIndependentOfTheArrayPassedInAndReadOut() {
-        byte[] data = {1, 2, 3};
-        Event event = event(data);
-        data[0] = 99;
-        assertThat(event.data()).containsExactly(1, 2, 3);
-
-        byte[] read = event.data();
-        read[0] = 42;
-        assertThat(event.data()).containsExactly(1, 2, 3);
+    void idAndTypeAreRequired() {
+        assertThatThrownBy(() -> event(null, "type")).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> event("id", null)).isInstanceOf(NullPointerException.class);
     }
 
     @Test
-    void equalityIsByContentIncludingData() {
-        Event a = event(new byte[] {1, 2});
-        Event b = event(new byte[] {1, 2});
-        Event c = event(new byte[] {1, 3});
+    void everyOptionalFieldMayBeNull() {
+        Event event = new Event("id-1", "type", 1, null, null, null, null, null, null, null);
+        assertThat(event.source()).isNull();
+        assertThat(event.subject()).isNull();
+        assertThat(event.correlationId()).isNull();
+        assertThat(event.messageGroup()).isNull();
+        assertThat(event.clientId()).isNull();
+        assertThat(event.clientCode()).isNull();
+        assertThat(event.dataJson()).isNull();
+    }
+
+    @Test
+    void equalityIsByContent() {
+        Event a = new Event("id-1", "type", 1, "src", "subj", "corr", "grp", "cid", "code", "{\"x\":1}");
+        Event b = new Event("id-1", "type", 1, "src", "subj", "corr", "grp", "cid", "code", "{\"x\":1}");
+        Event c = new Event("id-1", "type", 2, "src", "subj", "corr", "grp", "cid", "code", "{\"x\":1}");
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
     }
 
-    @Test
-    void toStringReportsDataLengthNotBytes() {
-        Event event = event(new byte[] {1, 2, 3});
-        assertThat(event.toString()).contains("data.length=3").doesNotContain("[1, 2, 3]");
-    }
-
-    private static Event event(byte[] data) {
-        return new Event("id-1", "type", "source", "subject", Instant.EPOCH, "application/json",
-                data, "corr", "cause", "group", "dedup");
+    private static Event event(String id, String type) {
+        return new Event(id, type, 1, null, null, null, null, null, null, null);
     }
 }
