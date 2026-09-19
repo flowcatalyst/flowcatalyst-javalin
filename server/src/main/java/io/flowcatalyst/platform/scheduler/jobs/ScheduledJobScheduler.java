@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.scheduler.jobs;
 
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.server.Env;

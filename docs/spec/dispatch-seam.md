@@ -1149,3 +1149,18 @@ requeue operation only.** Everything else this specification describes —
 the scheduler, the processing endpoint, the settled endpoint, the reaper,
 Cancel/Complete, and the shared `GroupHolding` predicate that ties claim-
 time and delivery-time enforcement together — is unbuilt.
+
+**Update 2026-09-19 (`docs/spec/dispatch-delivery-credentials.md`):** this
+section is a snapshot from when it was written and was not kept in sync as
+later units landed (the processing/settled endpoints and the reaper above
+all exist now) — noted here only for the one item that specifically
+motivated the newer spec: **`DeliveryCredsResolver`'s Java equivalent now
+exists.** `DeliveryCredentials.forApplications`
+(`dispatchjob/processing/DeliveryCredentials.java`) resolves job →
+subscription (or the job's own code) → application → the application's
+oldest active service account's webhook credentials, behind the same
+one-minute-per-application cache the scheduled-job dispatcher uses
+(`OutboundCredentials`, moved to `platform.serviceaccount` so both share
+it) — wired into `Platform`'s `ProcessingApi.State` in place of
+`DeliveryCredentials.none()`. §5 "Credentials" above is otherwise accurate
+as written.

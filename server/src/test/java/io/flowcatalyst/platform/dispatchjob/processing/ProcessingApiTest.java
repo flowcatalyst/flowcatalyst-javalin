@@ -1,8 +1,15 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.db.generated.Tables;
+import io.flowcatalyst.platform.application.Application;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
@@ -13,22 +20,32 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.platform.subscription.Subscription;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.router.wire.WebhookSigner;
+import io.flowcatalyst.sdk.usecase.HasId;
+import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
+import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -74,6 +91,13 @@ class ProcessingApiTest {
     /// [#cleanup].
     private static final List<String> insertedClients = new ArrayList<>();
 
+    // ── dispatch-delivery-credentials.md S1/S7 fixtures ─────────────────
+    private static ApplicationRepository applicationRepo;
+    private static SubscriptionRepository subscriptionRepo;
+    private static final List<String> insertedApplications = new ArrayList<>();
+    private static final List<String> insertedSubscriptions = new ArrayList<>();
+    private static final List<String> insertedServiceAccounts = new ArrayList<>();
+
     private static HttpServer subscriber;
     private static String subscriberUrl;
     private final AtomicInteger status = new AtomicInteger(200);
@@ -92,6 +116,8 @@ class ProcessingApiTest {
         repo = new DispatchJobRepository(DS);
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
         clientRepo = new ClientRepository(DS);
+        applicationRepo = new ApplicationRepository(DS);
+        subscriptionRepo = new SubscriptionRepository(DS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
@@ -118,6 +144,18 @@ class ProcessingApiTest {
         subscriber.stop(0);
         if (!insertedClients.isEmpty()) {
             DispatchJobFixture.DB.deleteFrom(Tables.TNT_CLIENTS).where(Tables.TNT_CLIENTS.ID.in(insertedClients)).execute();
+        }
+        if (!insertedServiceAccounts.isEmpty()) {
+            DispatchJobFixture.DB.deleteFrom(Tables.IAM_SERVICE_ACCOUNTS)
+                    .where(Tables.IAM_SERVICE_ACCOUNTS.ID.in(insertedServiceAccounts)).execute();
+        }
+        if (!insertedSubscriptions.isEmpty()) {
+            DispatchJobFixture.DB.deleteFrom(Tables.MSG_SUBSCRIPTIONS)
+                    .where(Tables.MSG_SUBSCRIPTIONS.ID.in(insertedSubscriptions)).execute();
+        }
+        if (!insertedApplications.isEmpty()) {
+            DispatchJobFixture.DB.deleteFrom(Tables.APP_APPLICATIONS)
+                    .where(Tables.APP_APPLICATIONS.ID.in(insertedApplications)).execute();
         }
     }
 
@@ -208,6 +246,70 @@ class ProcessingApiTest {
                 .execute();
         insertedClients.add(id);
         return id;
+    }
+
+    // ── dispatch-delivery-credentials.md S1/S7 fixtures ─────────────────
+
+    /// Application + Subscription go through the real aggregate `create()` +
+    /// repository `persist` (unlike [#insertClient] above) because
+    /// [DeliveryCredentials#forApplications] reads them back through
+    /// [ApplicationRepository]/[SubscriptionRepository] the same way — the
+    /// point of S1/S7 is that the REAL resolver chain works end to end, so
+    /// the rows it reads should come from the real write path, not a
+    /// hand-shaped row that happens to satisfy today's column list.
+    private static String persistApplication(String code) {
+        Application app = Application.create(ApplicationType.APPLICATION, code, code);
+        persist(app, applicationRepo);
+        insertedApplications.add(app.id());
+        return app.id();
+    }
+
+    private static String persistSubscription(String code, String applicationCode) {
+        Subscription sub = Subscription.create(code, code, "https://hook.example/" + code)
+                .withApplicationCode(applicationCode);
+        persist(sub, subscriptionRepo);
+        insertedSubscriptions.add(sub.id());
+        return sub.id();
+    }
+
+    private static <T extends HasId> void persist(T entity, Persist<T> repository) {
+        try (Connection conn = DS.getConnection()) {
+            conn.setAutoCommit(false);
+            repository.persist(entity, DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /// A raw `iam_service_accounts` row (same reasoning as [#insertClient]:
+    /// webhook-credential encryption/rotation is not what S1/S7 pin) —
+    /// `ACTIVE`, `BEARER_TOKEN`, both the token and secret plaintext (no app
+    /// key configured for this class's [ServiceAccountRepository] reads).
+    private static String activeServiceAccount(String applicationId, String token, String signingSecret) {
+        String id = EntityType.SERVICE_ACCOUNT.generate();
+        DispatchJobFixture.DB.insertInto(Tables.IAM_SERVICE_ACCOUNTS)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.ID, id)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.CODE, "proc-svc-" + RUN + "-" + id)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.NAME, "processing test service account")
+                .set(Tables.IAM_SERVICE_ACCOUNTS.APPLICATION_ID, applicationId)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.ACTIVE, true)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.WH_AUTH_TYPE, "BEARER_TOKEN")
+                .set(Tables.IAM_SERVICE_ACCOUNTS.WH_AUTH_TOKEN_REF, token)
+                .set(Tables.IAM_SERVICE_ACCOUNTS.WH_SIGNING_SECRET_REF, signingSecret)
+                .execute();
+        insertedServiceAccounts.add(id);
+        return id;
+    }
+
+    /// The real resolver chain (spec §2): subscription → applicationCode →
+    /// application → oldest active service account, un-cached (no TTL
+    /// interference between S1/S7's independent applications/tests — S6 in
+    /// `DeliveryCredentialsTest` pins the cache itself).
+    private static DeliveryCredentials realDeliveryCredentials() {
+        var serviceAccounts = new ServiceAccountRepository(DS, Optional.empty());
+        return DeliveryCredentials.forApplications(subscriptionRepo::findById, applicationRepo::findByCode,
+                applicationId -> OutboundCredentials.resolve(serviceAccounts, applicationId));
     }
 
     private static DispatchJob reload(String id) {
@@ -556,6 +658,208 @@ class ProcessingApiTest {
             assertThat(lastHeaders.get("x-flowcatalyst-signature")).isEqualTo(expected);
 
             assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        }
+    }
+
+    // ── S1 (docs/spec/dispatch-delivery-credentials.md): end-to-end, the REAL resolver ──
+
+    /// Unlike [#signedDeliveryCarriesAVerifiableHmacSignature] above (a
+    /// hand-built `DeliveryCredentials` lambda), this wires
+    /// [DeliveryCredentials#forApplications] against real `Subscription`/
+    /// `Application`/service-account rows — the job's subscription resolves
+    /// an application, which resolves its active service account's real
+    /// bearer + signing secret, delivered to a real loopback subscriber.
+    ///
+    /// The signature is verified by recomputing it with
+    /// [WebhookSigner#sign] — the exact `HMAC-SHA256(secret, timestamp ‖
+    /// body)`, lower-case-hex formula
+    /// `sdk/src/main/java/io/flowcatalyst/sdk/webhook/WebhookSignature#hmacHex`
+    /// implements (this module does not depend on `sdk` — checked
+    /// `server/pom.xml`, no `flowcatalyst-sdk` artifact — so the SDK class
+    /// itself cannot be called from here); it both ACCEPTS under the
+    /// resolved secret and is shown to DIFFER under another secret, the same
+    /// two assertions `WebhookSignature.verify` would make (constant-time
+    /// equal / not-equal on the same HMAC).
+    ///
+    /// Mutants: wire `DeliveryCredentials.none()` instead — `authorization`/
+    /// `x-flowcatalyst-signature` would be absent, failing the `containsKey`
+    /// assertions. Sign with a constant instead of the resolved secret — the
+    /// "accepts with the right secret" assertion fails. Sign a different
+    /// body than the one sent — the "verifies over the body actually
+    /// delivered" assertion fails (the expected value is recomputed from
+    /// `lastBody`, the bytes the subscriber actually received).
+    @Test
+    void s1_endToEndDeliveryIsSignedWithTheResolvedApplicationsServiceAccountCredentials() throws IOException {
+        String appCode = "proc-s1-app-" + RUN;
+        String token = "s1-token-" + RUN;
+        String secret = "s1-secret-" + RUN;
+        String appId = persistApplication(appCode);
+        activeServiceAccount(appId, token, secret);
+        // The job's OWN code names a DIFFERENT (non-existent) application —
+        // proves resolution went through the subscription, not the code.
+        String subscriptionId = persistSubscription("proc-s1-sub-" + RUN, appCode);
+
+        try (TestHttp s1Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()),
+                    realDeliveryCredentials(), Clock.systemUTC()));
+        })) {
+            String id = seedJob(Seed.of(code("proc-s1-other-app")).withSubscriptionId(subscriptionId));
+            status.set(200);
+            lastHeaders.clear();
+            lastBody.set(null);
+
+            var r = process(s1Http, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(hits.get()).isEqualTo(1);
+            assertThat(lastHeaders.get("authorization")).isEqualTo("Bearer " + token);
+            assertThat(lastHeaders).containsKey("x-flowcatalyst-signature");
+            assertThat(lastHeaders).containsKey("x-flowcatalyst-timestamp");
+
+            String timestamp = lastHeaders.get("x-flowcatalyst-timestamp");
+            byte[] deliveredBody = lastBody.get();
+            String expected = WebhookSigner.sign(secret, timestamp, deliveredBody);
+            assertThat(lastHeaders.get("x-flowcatalyst-signature"))
+                    .as("verifies with the resolved application's own secret, over the body actually delivered")
+                    .isEqualTo(expected);
+
+            String underAnotherSecret = WebhookSigner.sign("a-completely-different-secret-" + RUN, timestamp, deliveredBody);
+            assertThat(lastHeaders.get("x-flowcatalyst-signature"))
+                    .as("the same signature does not verify under a different secret")
+                    .isNotEqualTo(underAnotherSecret);
+
+            assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        }
+    }
+
+    // ── S5 (docs/spec/dispatch-delivery-credentials.md): exactly one header, the other genuinely absent ──
+
+    /// The resolver-side half of S5 (the value is `null`, never `""`) is
+    /// pinned in `DeliveryCredentialsTest`; this half pins
+    /// [SubscriberDelivery]'s request-building: given a token-only
+    /// [DeliveryCredentials.Resolved], the wire carries `Authorization` and
+    /// genuinely NO `X-FlowCatalyst-Signature`/`-Timestamp` at all — not an
+    /// empty value for either.
+    ///
+    /// Mutant: send an empty `X-FlowCatalyst-Signature`/`-Timestamp` header
+    /// instead of omitting it — `doesNotContainKey` fails under it, where a
+    /// `.isEmpty()` assertion on the value would not.
+    @Test
+    void s5_tokenOnlyCredentialsSendExactlyTheAuthorizationHeader() {
+        String token = "s5-token-only-" + RUN;
+        DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved(token, null);
+        try (TestHttp s5Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
+        })) {
+            String id = seedJob(Seed.of(code("proc-s5-tokenonly")));
+            lastHeaders.clear();
+
+            var r = process(s5Http, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("authorization")).isEqualTo("Bearer " + token);
+            assertThat(lastHeaders).as("no signing secret configured — no signature header").doesNotContainKey("x-flowcatalyst-signature");
+            assertThat(lastHeaders).as("no signing secret configured — no timestamp header").doesNotContainKey("x-flowcatalyst-timestamp");
+        }
+    }
+
+    /// The mirror case: secret-only credentials carry the signature headers
+    /// and genuinely NO `Authorization` header — not an empty `Bearer `.
+    ///
+    /// Mutant: send `Authorization: Bearer ` (empty token) instead of
+    /// omitting the header.
+    @Test
+    void s5_secretOnlyCredentialsSendExactlyTheSignatureHeadersNeverAuthorization() {
+        String secret = "s5-secret-only-" + RUN;
+        DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved(null, secret);
+        try (TestHttp s5Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
+        })) {
+            String id = seedJob(Seed.of(code("proc-s5-secretonly")));
+            lastHeaders.clear();
+            lastBody.set(null);
+
+            var r = process(s5Http, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders).as("no bearer token configured — no Authorization header at all").doesNotContainKey("authorization");
+            assertThat(lastHeaders).containsKey("x-flowcatalyst-signature");
+            assertThat(lastHeaders).containsKey("x-flowcatalyst-timestamp");
+
+            String expected = WebhookSigner.sign(secret, lastHeaders.get("x-flowcatalyst-timestamp"), lastBody.get());
+            assertThat(lastHeaders.get("x-flowcatalyst-signature")).isEqualTo(expected);
+        }
+    }
+
+    // ── S7 (docs/spec/dispatch-delivery-credentials.md): a throwing resolver degrades to bare ──
+
+    /// The resolver first computes the REAL credentials (so the secret
+    /// genuinely exists in a local variable at the moment of failure — the
+    /// strongest version of "the resolver had it and must not have logged
+    /// it") and only then throws, simulating a failure after a successful
+    /// lookup (e.g. a downstream audit write) rather than before one.
+    ///
+    /// Mutants: let the exception propagate out of `ProcessingApi` (delivery
+    /// aborted, no 200/ack, no delivery) instead of degrading to bare — every
+    /// assertion in the try block fails. Log the resolved secret anywhere in
+    /// the captured WARN — the "no secret leaked" assertion fails.
+    @Test
+    void s7_throwingResolverDegradesToBareDeliveryWithWarnAndLeaksNoSecret() {
+        String appCode = "proc-s7-app-" + RUN;
+        String secret = "s7-secret-must-never-be-logged-" + RUN;
+        String appId = persistApplication(appCode);
+        activeServiceAccount(appId, "s7-token-" + RUN, secret);
+        String subscriptionId = persistSubscription("proc-s7-sub-" + RUN, appCode);
+
+        DeliveryCredentials real = realDeliveryCredentials();
+        DeliveryCredentials throwing = job -> {
+            real.resolve(job); // the secret exists right here, then is discarded
+            throw new RuntimeException("simulated resolver failure after a successful lookup");
+        };
+
+        var log = (Logger) LoggerFactory.getLogger(ProcessingApi.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try (TestHttp throwingHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()),
+                    throwing, Clock.systemUTC()));
+        })) {
+            String id = seedJob(Seed.of(code("proc-s7")).withSubscriptionId(subscriptionId));
+            status.set(200);
+            lastHeaders.clear();
+
+            var r = process(throwingHttp, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(json(r).get("ack").asBoolean()).as("a throwing resolver does not abort the delivery").isTrue();
+            assertThat(hits.get()).as("the delivery still went out, bare").isEqualTo(1);
+            assertThat(lastHeaders).as("bare — no bearer").doesNotContainKey("authorization");
+            assertThat(lastHeaders).as("bare — no signature").doesNotContainKey("x-flowcatalyst-signature");
+            assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+
+            assertThat(captured.list).as("a WARN was logged for the failed lookup")
+                    .anySatisfy(e -> {
+                        assertThat(e.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(e.getFormattedMessage()).contains("delivering unsigned");
+                    });
+            assertThat(captured.list).as("no captured log line's message carries the secret").allSatisfy(e ->
+                    assertThat(e.getFormattedMessage()).doesNotContain(secret));
+            assertThat(captured.list).as("no captured log line's key/value fields carry the secret").allSatisfy(e -> {
+                if (e.getKeyValuePairs() != null) {
+                    assertThat(e.getKeyValuePairs()).noneSatisfy(kv -> assertThat(String.valueOf(kv.value)).contains(secret));
+                }
+            });
+        } finally {
+            log.detachAppender(captured);
         }
     }
 

@@ -82,6 +82,7 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
 import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
+import io.flowcatalyst.platform.dispatchjob.processing.DeliveryCredentials;
 import io.flowcatalyst.platform.dispatchjob.processing.ProcessingApi;
 import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -133,6 +134,7 @@ import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.sdksync.api.SdkSyncApi;
 import io.flowcatalyst.platform.scheduledjob.api.ScheduledJobApi;
+import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.api.ServiceAccountApi;
 import io.flowcatalyst.platform.serviceaccount.operations.RsaServiceAccountTokenMinter;
@@ -446,17 +448,26 @@ public final class Platform {
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
             SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
-            // DeliveryCredentials.none() (dispatch-seam spec §5, §15): the platform has no
-            // serviceaccount aggregate yet to resolve job -> subscription -> application ->
-            // service-account webhook credentials from, so every delivery goes out bare until
-            // that aggregate lands.
-            //
+            // DeliveryCredentials.forApplications (docs/spec/dispatch-delivery-credentials.md):
+            // job -> subscription (when it has one) -> application code -> application -> the
+            // application's oldest active service account's webhook credentials, behind the
+            // SAME one-minute-per-application cache the scheduled-job dispatcher uses
+            // (OutboundCredentials.cached) — reused here, not reimplemented. `subscriptionRepo`
+            // and `applicationRepo` are already built above (for SubscriptionApi/ApplicationApi);
+            // the service-account repository is stateless over the pool like every other
+            // repository instance built more than once in this file.
+            var deliveryCredentialServiceAccounts = new ServiceAccountRepository(pool,
+                    Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
+            var deliveryCredentials = DeliveryCredentials.forApplications(subscriptionRepo::findById, applicationRepo::findByCode,
+                    OutboundCredentials.cached(applicationId ->
+                            OutboundCredentials.resolve(deliveryCredentialServiceAccounts, applicationId), Clock.systemUTC()));
             // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
             // webhook-client-code spec R3 — the resolver caches a resolved identifier for
             // the process's life, so this shares the one repository instance rather than a
             // second copy.
             ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
-                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById))));
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
+                    deliveryCredentials, Clock.systemUTC()));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
         }

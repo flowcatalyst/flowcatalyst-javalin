@@ -1,6 +1,4 @@
-package io.flowcatalyst.platform.scheduler.jobs;
-
-import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+package io.flowcatalyst.platform.serviceaccount;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -10,11 +8,20 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
-/// The dispatcher's resolved outbound credentials for one job's application
-/// (`docs/spec/scheduled-job-scheduler.md` §3 step 5): the bearer token
-/// and/or HMAC signing secret of the application's **oldest active service
-/// account**. Either field may be independently absent — a degraded case
-/// [JobDispatcher] logs a WARN for and still delivers.
+/// An application's resolved outbound credentials — the bearer token and/or
+/// HMAC signing secret of the application's **oldest active service
+/// account**. Either field may be independently absent — a degraded case the
+/// caller logs a WARN for and still delivers.
+///
+/// Shared by two callers, deliberately one resolver: the scheduled-job
+/// dispatcher (`docs/spec/scheduled-job-scheduler.md` §3 step 5,
+/// [io.flowcatalyst.platform.scheduler.jobs.JobDispatcher]) and the dispatch-job
+/// processing endpoint (`docs/spec/dispatch-delivery-credentials.md` §2,
+/// [io.flowcatalyst.platform.dispatchjob.processing.DeliveryCredentials#forApplications]).
+/// Moved here from `platform.scheduler.jobs` (2026-09-19) — a neutral package
+/// both callers can depend on without one owning the other — when the second
+/// caller needed the exact same resolve-then-cache behaviour rather than a
+/// second implementation of it.
 public record OutboundCredentials(String token, String signingSecret) {
 
     /// Looks up the oldest active service account of `applicationId` and
@@ -27,9 +34,9 @@ public record OutboundCredentials(String token, String signingSecret) {
 
     /// Wraps `delegate` with a one-minute-per-application TTL cache (spec §3
     /// step 5: "cached one minute per application"). A plain function, not a
-    /// class depending on [ServiceAccountRepository] directly, so
-    /// [JobDispatcherTest]'s counting resolver plugs in as `delegate` without
-    /// a repository or a database at all.
+    /// class depending on [ServiceAccountRepository] directly, so a counting
+    /// resolver (`JobDispatcherTest`, `DeliveryCredentialsTest`) plugs in as
+    /// `delegate` without a repository or a database at all.
     public static Function<String, Optional<OutboundCredentials>> cached(
             Function<String, Optional<OutboundCredentials>> delegate, Clock clock) {
         return new Cache(delegate, clock);
