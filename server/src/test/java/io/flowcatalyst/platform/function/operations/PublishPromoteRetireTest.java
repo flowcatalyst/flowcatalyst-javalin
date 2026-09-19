@@ -1,0 +1,367 @@
+package io.flowcatalyst.platform.function.operations;
+
+import io.flowcatalyst.platform.function.ClientPolicyRepository;
+import io.flowcatalyst.platform.function.Digest;
+import io.flowcatalyst.platform.function.DnsLabel;
+import io.flowcatalyst.platform.function.Function;
+import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.FunctionLimits;
+import io.flowcatalyst.platform.function.FunctionOwner;
+import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionVersion;
+import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.artifact.Signatures;
+import io.flowcatalyst.platform.function.operations.FunctionEvents.AliasChanged;
+import io.flowcatalyst.platform.function.operations.FunctionEvents.VersionRetired;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
+import io.flowcatalyst.platform.shared.auth.Scope;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
+import io.flowcatalyst.sdk.usecase.ExecutionContext;
+import io.flowcatalyst.sdk.usecase.UseCaseError;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
+import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import io.flowcatalyst.testpg.TestPg;
+import org.jooq.DSLContext;
+import org.jooq.Record;
+import org.jooq.Result;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
+import org.junit.jupiter.api.Test;
+
+import javax.sql.DataSource;
+import java.time.Instant;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/// `PublishVersion` / `PromoteVersion` / `RetireVersion` against embedded
+/// Postgres (spec `function-api.md` §5, §8 P3, P5, P7, P10, P11, P12, and the
+/// duplicate-digest/`FUNCTION_DISABLED`/out-of-reach clauses of §5.1).
+/// `PublishSignaturesTest` (package `artifact`, for `TestSigstore` access)
+/// covers P8; `FunctionApiTest` covers the HTTP wiring, including P10's
+/// per-owner ceiling via the real `PUT /api/function-policies/{owner}` route.
+@SuppressWarnings("deprecation")
+class PublishPromoteRetireTest {
+
+    private static final DataSource DS = TestPg.dataSource();
+    private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
+    private static final FunctionRepository functions = new FunctionRepository(DS);
+    private static final FunctionVersionRepository versions = new FunctionVersionRepository(DS);
+    private static final ClientPolicyRepository policies = new ClientPolicyRepository(DS);
+    private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
+
+    private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
+    private static final String PRINCIPAL = "usr_ppr_" + RUN;
+    private static final ExecutionContext EC = ExecutionContext.of(PRINCIPAL);
+    private static final AuthContext ANCHOR =
+            new AuthContext(PRINCIPAL, Scope.ANCHOR, "anchor@x.io", List.of("*"), List.of(), List.of(), true, List.of());
+    // client_id is VARCHAR(17) — short, fixed prefixes so a per-test tag never overflows it.
+    private static final String CLIENT_ID = "clt_" + RUN;
+    private static final String OTHER_CLIENT_ID = "clo_" + RUN;
+
+    private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
+    private static final Signatures OFF = new Signatures.Off();
+    private static final TriggerSync NONE = TriggerSync.none();
+
+    private static final String MINIMAL_JVM = """
+            {
+              "runtime": "jvm",
+              "entrypoint": "com.acme.billing.CreateInvoice"
+            }
+            """;
+
+    private static tools.jackson.databind.JsonNode manifestJson() {
+        return Json.MAPPER.readTree(MINIMAL_JVM);
+    }
+
+    private static Digest digest(String suffix) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest((RUN + ":" + suffix).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return Digest.parse("sha256:" + java.util.HexFormat.of().formatHex(hash));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static Function createFunction(String tag, FunctionOwner owner) {
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("ppr" + RUN), new DnsLabel("svc"), new DnsLabel(tag));
+        Function f = Function.create("app_" + RUN, address, owner, Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+        return f;
+    }
+
+    private static PublishVersion.Result publish(AuthContext ac, FunctionAddress address, String digestSuffix) {
+        return publish(ac, address, digestSuffix, manifestJson());
+    }
+
+    private static PublishVersion.Result publish(AuthContext ac, FunctionAddress address, String digestSuffix,
+            tools.jackson.databind.JsonNode manifest) {
+        var cmd = new PublishCommand(address, "oci://artifact/" + digestSuffix, digest(digestSuffix).value(), null, manifest);
+        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, NONE).run(uow, cmd, EC));
+    }
+
+    private static AliasChanged promote(AuthContext ac, FunctionAddress address, int version) {
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions)
+                .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
+    }
+
+    private static VersionRetired retire(AuthContext ac, FunctionAddress address, int version) {
+        return Auth.runAs(ac, () -> RetireVersion.of(functions, versions)
+                .run(uow, new RetireCommand(address, version), EC));
+    }
+
+    private static void markReady(FunctionVersion v) {
+        uow.inTransaction(tx -> {
+            versions.persist(v.markReady(Instant.now()), tx.dbTx());
+            return null;
+        });
+    }
+
+    private static Result<Record> eventsFor(String subject, String type) {
+        return DB.fetch("SELECT type, subject, source, message_group, data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
+                subject, type);
+    }
+
+    private static Result<Record> auditsFor(String entityId, String operation) {
+        return DB.fetch("SELECT entity_type, entity_id, operation, principal_id FROM aud_logs WHERE entity_id = ? AND operation = ?",
+                entityId, operation);
+    }
+
+    private static void assertUseCaseError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call,
+            Class<? extends UseCaseError> kind, String code) {
+        assertThatThrownBy(call)
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err).as("error kind").isInstanceOf(kind);
+                    assertThat(err.code()).as("error code").isEqualTo(code);
+                });
+    }
+
+    // ── P5: publish/promote/retire each write exactly one event + one audit row ──
+
+    @Test
+    void publishWritesOneVersionPublishedEventAndOneAuditRow() {
+        Function f = createFunction("p5publish", new FunctionOwner.Platform());
+        var result = publish(ANCHOR, f.address(), "a");
+
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.VERSION_PUBLISHED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("message_group")).as("mutant: wrong message group")
+                .isEqualTo("platform:function:" + f.id());
+
+        assertThat(auditsFor(f.id(), "PublishCommand")).as("mutant: wrong/no audit row").hasSize(1);
+        assertThat(result.version().version()).isEqualTo(1);
+        assertThat(result.event().digest()).isEqualTo(digest("a").value());
+    }
+
+    @Test
+    void promoteWritesOneAliasChangedEventAndOneAuditRow() {
+        Function f = createFunction("p5promote", new FunctionOwner.Platform());
+        var v = publish(ANCHOR, f.address(), "a").version();
+        markReady(v);
+
+        AliasChanged event = promote(ANCHOR, f.address(), 1);
+
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.ALIAS_CHANGED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("message_group")).as("mutant: wrong message group")
+                .isEqualTo("platform:function:" + f.id());
+        assertThat(auditsFor(f.id(), "PromoteCommand")).as("mutant: wrong/no audit row").hasSize(1);
+        assertThat(event.previousVersionId()).as("first promotion has no previous version").isNull();
+    }
+
+    @Test
+    void retireWritesOneVersionRetiredEventAndOneAuditRow() {
+        Function f = createFunction("p5retire", new FunctionOwner.Platform());
+        publish(ANCHOR, f.address(), "a");
+
+        retire(ANCHOR, f.address(), 1);
+
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.VERSION_RETIRED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("message_group")).as("mutant: wrong message group")
+                .isEqualTo("platform:function:" + f.id());
+        assertThat(auditsFor(f.id(), "RetireCommand")).as("mutant: wrong/no audit row").hasSize(1);
+    }
+
+    // ── P3: identity fields unchanged after publish/promote/retire ──────────
+
+    @Test
+    void identityFieldsAreUnchangedAfterPublishPromoteAndRetire() {
+        Function f = createFunction("p3", FunctionOwner.ofClientId(CLIENT_ID));
+
+        var v1 = publish(ANCHOR, f.address(), "a").version();
+        assertIdentityUnchanged(f);
+
+        markReady(v1);
+        promote(ANCHOR, f.address(), 1);
+        assertIdentityUnchanged(f);
+
+        var v2 = publish(ANCHOR, f.address(), "b").version();
+        markReady(v2);
+        promote(ANCHOR, f.address(), 2);
+        retire(ANCHOR, f.address(), 1);
+        assertIdentityUnchanged(f);
+    }
+
+    private static void assertIdentityUnchanged(Function original) {
+        Function reloaded = functions.findById(original.id()).orElseThrow();
+        assertThat(reloaded.address()).isEqualTo(original.address());
+        assertThat(reloaded.applicationId()).isEqualTo(original.applicationId());
+        assertThat(reloaded.owner()).isEqualTo(original.owner());
+        assertThat(reloaded.runtime()).isEqualTo(original.runtime());
+    }
+
+    // ── Duplicate digest ──────────────────────────────────────────────────
+
+    @Test
+    void duplicateDigestConflictsNamingTheExistingVersion() {
+        Function f = createFunction("dup", new FunctionOwner.Platform());
+        publish(ANCHOR, f.address(), "same");
+
+        assertUseCaseError(() -> publish(ANCHOR, f.address(), "same"), UseCaseError.Conflict.class, "VERSION_DIGEST_EXISTS");
+        assertThatThrownBy(() -> publish(ANCHOR, f.address(), "same"))
+                .hasMessageContaining("version 1");
+
+        // Only the first version row exists — the duplicate attempt never persisted.
+        assertThat(versions.listByFunction(f.id())).hasSize(1);
+    }
+
+    // ── FUNCTION_DISABLED ─────────────────────────────────────────────────
+
+    @Test
+    void publishToADisabledFunctionConflicts() {
+        Function f = createFunction("disabled", new FunctionOwner.Platform());
+        Function disabled = f.disable(Instant.now());
+        uow.inTransaction(tx -> {
+            functions.persist(disabled, tx.dbTx());
+            return null;
+        });
+
+        assertUseCaseError(() -> publish(ANCHOR, f.address(), "a"), UseCaseError.Conflict.class, "FUNCTION_DISABLED");
+        assertThat(versions.listByFunction(f.id())).as("mutant: skip the check — nothing must persist").isEmpty();
+    }
+
+    // ── Out of reach ──────────────────────────────────────────────────────
+
+    @Test
+    void publishToAFunctionOutOfReachIs404() {
+        Function f = createFunction("reach", FunctionOwner.ofClientId(CLIENT_ID));
+        AuthContext stranger =
+                new AuthContext("usr_stranger", Scope.CLIENT, null, List.of(OTHER_CLIENT_ID), List.of(), List.of(), true, List.of());
+
+        assertUseCaseError(() -> publish(stranger, f.address(), "a"), UseCaseError.NotFound.class, "Function_NOT_FOUND");
+        assertThat(versions.listByFunction(f.id())).isEmpty();
+    }
+
+    // ── P7: publish is atomic — a throwing trigger seam leaves nothing ──────
+
+    @Test
+    void aThrowingTriggerSeamLeavesNoVersionRowNoEventAndTheNextPublishStillGetsVersionOne() {
+        Function f = createFunction("p7", new FunctionOwner.Platform());
+        TriggerSync throwing = (scoped, function, version) -> {
+            throw new RuntimeException("trigger sync exploded");
+        };
+        var cmd = new PublishCommand(f.address(), "oci://artifact/p7", digest("p7").value(), null, manifestJson());
+
+        assertThatThrownBy(() -> Auth.runAs(ANCHOR, () ->
+                PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, throwing).run(uow, cmd, EC)))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(versions.listByFunction(f.id())).as("mutant: call the seam after commit — no row must survive").isEmpty();
+        assertThat(eventsFor("platform.function." + f.id(), FunctionEvents.VERSION_PUBLISHED))
+                .as("mutant: call the seam after commit — no event must survive").isEmpty();
+
+        // The version counter did not advance either — the next real publish still gets version 1.
+        var result = publish(ANCHOR, f.address(), "p7-next");
+        assertThat(result.version().version()).as("mutant: leaked version counter").isEqualTo(1);
+    }
+
+    // ── P11: two concurrent publishes of different digests both succeed, versions n/n+1 ──
+
+    @Test
+    void concurrentPublishesOfDifferentDigestsBothSucceedWithSequentialVersions() throws Exception {
+        Function f = createFunction("p11", new FunctionOwner.Platform());
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<PublishVersion.Result> f1 = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return publish(ANCHOR, f.address(), "p11a");
+            });
+            Future<PublishVersion.Result> f2 = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return publish(ANCHOR, f.address(), "p11b");
+            });
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+
+            int v1 = f1.get(20, TimeUnit.SECONDS).version().version();
+            int v2 = f2.get(20, TimeUnit.SECONDS).version().version();
+
+            assertThat(List.of(v1, v2)).as("mutant: nextVersion outside the tx — must serialise to {1,2}, never {1,1}")
+                    .containsExactlyInAnyOrder(1, 2);
+            assertThat(versions.listByFunction(f.id())).hasSize(2);
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    // ── P12: promote requires READY; retire refuses the live version; rollback ──
+
+    @Test
+    void promoteRequiresReadyRetireRefusesLiveAndRollbackWorks() {
+        Function f = createFunction("p12", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+
+        // Not yet ready — the error names both the version and the pool (spec §5.2's exact wording).
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "VERSION_NOT_READY");
+        assertThatThrownBy(() -> promote(ANCHOR, f.address(), 1))
+                .hasMessageContaining("version 1").hasMessageContaining("pool 'default'");
+
+        markReady(v1);
+        AliasChanged firstPromote = promote(ANCHOR, f.address(), 1);
+        assertThat(firstPromote.version()).isEqualTo(1);
+
+        // The live version cannot be retired.
+        assertUseCaseError(() -> retire(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "VERSION_IS_LIVE");
+
+        var v2 = publish(ANCHOR, f.address(), "v2").version();
+        markReady(v2);
+        AliasChanged secondPromote = promote(ANCHOR, f.address(), 2);
+        assertThat(secondPromote.previousVersionId()).isEqualTo(v1.id());
+
+        // v1 is no longer live — retiring it now succeeds.
+        retire(ANCHOR, f.address(), 1);
+
+        // Promoting the now-retired v1 back is refused, distinctly from VERSION_NOT_READY.
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "VERSION_RETIRED");
+
+        // Rollback: v2 -> v1 fails (v1 retired); publish v3, mark ready, promote back to v2 (still ready) works.
+        var v3 = publish(ANCHOR, f.address(), "v3").version();
+        markReady(v3);
+        promote(ANCHOR, f.address(), 3);
+        AliasChanged rollback = promote(ANCHOR, f.address(), 2);
+        assertThat(rollback.version()).as("rollback to an older, still-READY version works").isEqualTo(2);
+        assertThat(rollback.previousVersionId()).isEqualTo(v3.id());
+    }
+}

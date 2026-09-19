@@ -21,6 +21,8 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -52,6 +54,8 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_HOST_CONT
 /// | GET | `/control/functions/desired-state` | 200 / 304 |
 /// | POST | `/control/functions/heartbeat` | 204 |
 public final class FunctionControlApi {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FunctionControlApi.class);
 
     private FunctionControlApi() {
     }
@@ -138,8 +142,12 @@ public final class FunctionControlApi {
         });
 
         // Spec §6.2 step 2: ONLY an `ok()` entry (never FAILED — step 3) whose
-        // resolved version is still `Published` becomes ready. This guard is
-        // the ONE place spec §8 P6's behaviour lives (see MarkVersionReady's doc).
+        // resolved version is still `Published` becomes ready. This pre-check keeps the
+        // routine case (a host re-reporting an already-Ready version) from ever calling
+        // the operation; MarkVersionReady's OWN guard (review fix, slice B3) is what spec
+        // §8 P6's behaviour actually lives on now, so a race between two heartbeats that
+        // both pass this pre-check surfaces as MarkVersionReady's VERSION_NOT_PUBLISHED
+        // conflict, caught and ignored below — not a failed heartbeat.
         for (FunctionHost.LoadedVersion lv : loaded) {
             if (!lv.state().ok()) {
                 continue;
@@ -153,8 +161,18 @@ public final class FunctionControlApi {
                 continue;
             }
             if (version.get().state() instanceof FunctionVersion.VersionState.Published) {
-                MarkVersionReady.of(s.versions(), s.functions())
-                        .run(s.uow(), new MarkVersionReadyCommand(version.get().id(), hostId), Auth.executionContext());
+                try {
+                    MarkVersionReady.of(s.versions(), s.functions())
+                            .run(s.uow(), new MarkVersionReadyCommand(version.get().id(), hostId), Auth.executionContext());
+                } catch (UseCaseException e) {
+                    if (!MarkVersionReady.VERSION_NOT_PUBLISHED.equals(e.code())) {
+                        throw e;
+                    }
+                    LOG.atDebug().setMessage("heartbeat lost a race marking a version ready; ignoring")
+                            .addKeyValue("versionId", version.get().id())
+                            .addKeyValue("hostId", hostId)
+                            .log();
+                }
             }
         }
 

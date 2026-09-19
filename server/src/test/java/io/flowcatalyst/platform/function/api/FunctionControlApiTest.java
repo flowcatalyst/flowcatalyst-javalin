@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.function.ClientCeilings;
+import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
@@ -17,6 +18,8 @@ import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.artifact.Signatures;
+import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -58,6 +61,7 @@ class FunctionControlApiTest {
     private static final FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
     private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
+    private static final ClientPolicyRepository policies = new ClientPolicyRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
 
@@ -82,7 +86,8 @@ class FunctionControlApiTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before(auth);
-            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts));
+            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
+                    policies, DEFAULTS, new Signatures.Off(), TriggerSync.none()));
             FunctionControlApi.register(routes, new FunctionControlApi.State(functions, versions, hosts, uow));
         });
     }
@@ -360,6 +365,62 @@ class FunctionControlApiTest {
         assertThat(reloaded.applicationId()).isEqualTo(f.applicationId());
         assertThat(reloaded.owner()).isEqualTo(f.owner());
         assertThat(reloaded.runtime()).isEqualTo(f.runtime());
+    }
+
+    /// R-b (review fix, slice B3): a real race between two hosts' heartbeats
+    /// for the SAME not-yet-ready version must never surface as a 500 — the
+    /// loser's `VERSION_NOT_PUBLISHED` conflict (if MarkVersionReady's guard
+    /// catches it) is caught and ignored by `FunctionControlApi`. NOTE this
+    /// does NOT pin "exactly one `version:ready` event": `MarkVersionReady`
+    /// is a single-aggregate `Operation`, whose guard read runs in `execute`
+    /// BEFORE `PlanApplier` opens the write transaction (unlike
+    /// `PublishVersion`'s `TxOperation` + `nextVersion`'s row lock) — so two
+    /// heartbeats that both read `Published` before either commits can BOTH
+    /// pass the guard and both write, each emitting its own event. Observed
+    /// empirically while building this test; recorded here rather than
+    /// asserting a guarantee the current design does not actually make.
+    @Test
+    void twoHostsRacingToMarkTheSameVersionReadyNeverProduceA500() throws Exception {
+        Function f = testFunction("p6race");
+        publish(f, 1, "p6racepool" + RUN);
+        String hostA = "host-p6race-a-" + RUN;
+        String hostB = "host-p6race-b-" + RUN;
+        String bodyA = """
+                {"hostId":"%s","pool":"p6racepool%s","state":"ACTIVE",
+                 "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostA, RUN, f.address().render());
+        String bodyB = """
+                {"hostId":"%s","pool":"p6racepool%s","state":"ACTIVE",
+                 "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostB, RUN, f.address().render());
+
+        var startingLine = new java.util.concurrent.CountDownLatch(2);
+        var go = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var beatA = pool.submit(() -> {
+                startingLine.countDown();
+                go.await();
+                return http.post("/control/functions/heartbeat", bodyA, HOST);
+            });
+            var beatB = pool.submit(() -> {
+                startingLine.countDown();
+                go.await();
+                return http.post("/control/functions/heartbeat", bodyB, HOST);
+            });
+            assertThat(startingLine.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+
+            assertThat(beatA.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
+                    .as("mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
+            assertThat(beatB.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
+                    .as("mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
+        } finally {
+            pool.shutdown();
+        }
+
+        assertThat(versions.findById(versions.findByFunctionAndVersion(f.id(), 1).orElseThrow().id()).orElseThrow().state())
+                .isInstanceOf(FunctionVersion.VersionState.Ready.class);
+        // At least one event — never zero — and never more than the two requests could produce.
+        assertThat(versionReadyEventsFor(f.id()).size()).isBetween(1, 2);
     }
 
     @Test

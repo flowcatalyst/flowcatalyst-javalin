@@ -13,7 +13,10 @@
   "GET /api/function-pools",
   "GET /api/functions",
   "GET /api/functions/{address}",
+  "GET /api/functions/{address}/aliases",
   "GET /api/functions/{address}/status",
+  "GET /api/functions/{address}/versions",
+  "GET /api/functions/{address}/versions/{version}",
   "GET /api/me",
   "GET /api/me/applications",
   "GET /api/me/clients",
@@ -67,6 +70,8 @@
   "GET /q/openapi",
   "PATCH /bff/event-types/{id}",
   "POST /api/functions",
+  "POST /api/functions/{address}/versions",
+  "POST /api/functions/{address}/versions/{version}/retire",
   "POST /auth/2fa/challenge/email",
   "POST /auth/2fa/enroll/email/begin",
   "POST /auth/2fa/enroll/email/confirm",
@@ -112,6 +117,7 @@
   "POST /portal/auth/password-reset",
   "PUT /api/function-policies/{owner}",
   "PUT /api/functions/{address}",
+  "PUT /api/functions/{address}/aliases/{alias}",
   "PUT /bff/event-types/{id}",
   "PUT /bff/roles/{roleName}"
 ]

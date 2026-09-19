@@ -1,20 +1,32 @@
 package io.flowcatalyst.platform.function.api;
 
+import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionAddressPattern;
 import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
+import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.SignerIdentity;
+import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.Access;
 import io.flowcatalyst.platform.function.operations.CreateCommand;
 import io.flowcatalyst.platform.function.operations.CreateFunction;
 import io.flowcatalyst.platform.function.operations.DeleteCommand;
 import io.flowcatalyst.platform.function.operations.DeleteFunction;
+import io.flowcatalyst.platform.function.operations.FunctionEvents;
+import io.flowcatalyst.platform.function.operations.PromoteCommand;
+import io.flowcatalyst.platform.function.operations.PromoteVersion;
+import io.flowcatalyst.platform.function.operations.PublishCommand;
+import io.flowcatalyst.platform.function.operations.PublishVersion;
+import io.flowcatalyst.platform.function.operations.RetireCommand;
+import io.flowcatalyst.platform.function.operations.RetireVersion;
+import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.function.operations.UpdateCommand;
 import io.flowcatalyst.platform.function.operations.UpdateFunction;
 import io.flowcatalyst.platform.application.ApplicationRepository;
@@ -38,9 +50,13 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_MANAGE;
+import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_PROMOTE;
+import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_PUBLISH;
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 
 /// The `/api/functions` surface (spec `function-api.md` §4.1, §4.2). Java-first —
@@ -59,11 +75,18 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// | DELETE | `/api/functions/{address}` | 204 |
 /// | GET | `/api/functions/{address}/status` | 200 [StatusResponse] |
 /// | GET | `/api/function-pools` | 200 `[`[PoolSummaryResponse]`]` |
+/// | POST | `/api/functions/{address}/versions` | 201 [PublishResponse] |
+/// | GET | `/api/functions/{address}/versions` | 200 `[`[VersionResponse]`]` |
+/// | GET | `/api/functions/{address}/versions/{version}` | 200 [VersionResponse] (+ `manifest`) |
+/// | POST | `/api/functions/{address}/versions/{version}/retire` | 200 [VersionResponse] |
+/// | PUT | `/api/functions/{address}/aliases/{alias}` | 200 [PromoteResponse] |
+/// | GET | `/api/functions/{address}/aliases` | 200 `[`[AliasResponse]`]` |
 ///
-/// The last two (spec §6.3, work package B2) are gated `requireAnchor` +
-/// `FUNCTION_VIEW` — NOT the per-function reach every other route above
-/// applies — the coordinator's explicit instruction for this slice: hosts and
-/// pools are cross-tenant infrastructure state, not a client-scoped resource.
+/// `GET /api/functions/{address}/status` (spec §6.3, work package B2) is
+/// gated exactly like every other by-address read: `FUNCTION_VIEW` + the
+/// ordinary per-function reach (review fix, slice B3). Only `GET
+/// /api/function-pools` is `requireAnchor` + `FUNCTION_VIEW` — pools are
+/// cross-tenant infrastructure state with no owning function to reach.
 public final class FunctionApi {
 
     private FunctionApi() {
@@ -76,7 +99,9 @@ public final class FunctionApi {
             List.of("serviceName", "name", "applicationCode", "clientId", "runtime");
 
     public record State(FunctionRepository repo, ApplicationRepository applications, ClientRepository clients,
-                        UnitOfWork uow, FunctionVersionRepository versions, FunctionHostRepository hosts) {
+                        UnitOfWork uow, FunctionVersionRepository versions, FunctionHostRepository hosts,
+                        ClientPolicyRepository policies, FunctionLimits limits, Signatures signatures,
+                        TriggerSync triggerSync) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(applications, "applications");
@@ -84,6 +109,10 @@ public final class FunctionApi {
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(versions, "versions");
             Objects.requireNonNull(hosts, "hosts");
+            Objects.requireNonNull(policies, "policies");
+            Objects.requireNonNull(limits, "limits");
+            Objects.requireNonNull(signatures, "signatures");
+            Objects.requireNonNull(triggerSync, "triggerSync");
         }
     }
 
@@ -96,6 +125,13 @@ public final class FunctionApi {
         write.delete("/api/functions/{address}", Auth.scoped(ctx -> delete(ctx, s)));
         routes.get("/api/functions/{address}/status", Auth.scoped(ctx -> status(ctx, s)));
         routes.get("/api/function-pools", Auth.scoped(ctx -> pools(ctx, s)));
+        // §5: versions and aliases (slice B3).
+        write.post("/api/functions/{address}/versions", Auth.scoped(ctx -> publish(ctx, s)));
+        routes.get("/api/functions/{address}/versions", Auth.scoped(ctx -> listVersions(ctx, s)));
+        routes.get("/api/functions/{address}/versions/{version}", Auth.scoped(ctx -> getVersion(ctx, s)));
+        write.post("/api/functions/{address}/versions/{version}/retire", Auth.scoped(ctx -> retire(ctx, s)));
+        write.put("/api/functions/{address}/aliases/{alias}", Auth.scoped(ctx -> promote(ctx, s)));
+        routes.get("/api/functions/{address}/aliases", Auth.scoped(ctx -> listAliases(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
@@ -107,13 +143,18 @@ public final class FunctionApi {
         FunctionRepository.PageFilter filter = listFilter(ctx, ac);
         List<Function> rows = s.repo().findWithFilters(filter, page.pageSize(), (int) page.offset());
         long total = s.repo().countWithFilters(filter);
-        ctx.json(OffsetPage.of(rows.stream().map(FunctionResponse::from).toList(), page, total));
+        // One batch read for every row's live version (spec §4.4), not one per row.
+        List<String> liveIds = rows.stream().map(Function::liveVersionId).flatMap(Optional::stream).toList();
+        Map<String, FunctionVersion> liveVersions = s.versions().findByIds(liveIds);
+        ctx.json(OffsetPage.of(rows.stream()
+                .map(f -> FunctionResponse.from(f, f.liveVersionId().map(liveVersions::get).orElse(null)))
+                .toList(), page, total));
     }
 
     private static void getOne(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_VIEW);
         Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
-        ctx.json(FunctionResponse.from(f));
+        ctx.json(FunctionResponse.from(f, liveVersionOf(s, f)));
     }
 
     private static void create(Exchange ctx, State s) {
@@ -123,7 +164,82 @@ public final class FunctionApi {
                 .run(s.uow(), req.toCommand(), Auth.executionContext());
         Function f = s.repo().findById(event.functionId())
                 .orElseThrow(() -> HttpError.internal("REPO", "function created but row not found", null));
-        ctx.status(201).json(FunctionResponse.from(f));
+        // A brand-new function has no version yet — never a batch read for one row.
+        ctx.status(201).json(FunctionResponse.from(f, null));
+    }
+
+    /// spec §5.1: `POST /api/functions/{address}/versions`. `FUNCTION_PUBLISH`
+    /// gates it (spec §2); reach + `FUNCTION_DISABLED` + everything else is
+    /// `PublishVersion`'s own job.
+    private static void publish(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_PUBLISH);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        var req = ctx.bodyAsClass(PublishRequest.class);
+        PublishVersion.Result result = PublishVersion
+                .of(s.repo(), s.versions(), s.policies(), s.limits(), s.signatures(), s.triggerSync())
+                .run(s.uow(), req.toCommand(address), Auth.executionContext());
+        ctx.status(201).json(PublishResponse.from(result.version()));
+    }
+
+    /// spec §5.2: `GET /api/functions/{address}/versions`, newest first.
+    private static void listVersions(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        String liveId = f.liveVersionId().orElse(null);
+        List<VersionResponse> out = s.versions().listByFunction(f.id()).stream()
+                .map(v -> VersionResponse.summary(v, v.id().equals(liveId)))
+                .toList();
+        ctx.json(out);
+    }
+
+    /// spec §5.2: `GET /api/functions/{address}/versions/{v}` — adds `manifest`.
+    private static void getVersion(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        int version = parseVersionNumber(ctx.pathParam("version"));
+        FunctionVersion v = versionOrNotFound(s, f, version);
+        ctx.json(VersionResponse.detail(v, f.isLive(v.id())));
+    }
+
+    /// spec §5.2: `POST /api/functions/{address}/versions/{v}/retire`.
+    /// `FUNCTION_PUBLISH` gates retire too (spec §2's table).
+    private static void retire(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_PUBLISH);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        int version = parseVersionNumber(ctx.pathParam("version"));
+        RetireVersion.of(s.repo(), s.versions())
+                .run(s.uow(), new RetireCommand(address, version), Auth.executionContext());
+        Function f = functionByAddress(s, address, Auth.current());
+        FunctionVersion v = versionOrNotFound(s, f, version);
+        ctx.json(VersionResponse.summary(v, f.isLive(v.id())));
+    }
+
+    /// spec §5.2: `PUT /api/functions/{address}/aliases/{alias}`. The `{alias}`
+    /// segment is passed straight through to `Function.promote`, which is the
+    /// ONE place `ALIAS_UNSUPPORTED` is decided (spec §6.1's own doc) — no
+    /// duplicate check here, so the two paths can never disagree.
+    private static void promote(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_PROMOTE);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        String alias = ctx.pathParam("alias");
+        var req = ctx.bodyAsClass(PromoteRequest.class);
+        FunctionEvents.AliasChanged event = PromoteVersion.of(s.repo(), s.versions())
+                .run(s.uow(), new PromoteCommand(address, alias, req.version()), Auth.executionContext());
+        Integer previousVersion = event.previousVersionId() == null ? null
+                : s.versions().findById(event.previousVersionId()).map(FunctionVersion::version).orElse(null);
+        ctx.json(new PromoteResponse(event.alias(), event.version(), event.versionId(), previousVersion));
+    }
+
+    /// spec §5.2: `GET /api/functions/{address}/aliases`.
+    private static void listAliases(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        List<AliasResponse> out = new ArrayList<>();
+        for (Function.FunctionAlias a : f.aliases()) {
+            s.versions().findById(a.versionId())
+                    .ifPresent(v -> out.add(new AliasResponse(a.alias(), v.version(), a.versionId(), a.updatedBy(), a.updatedAt())));
+        }
+        ctx.json(out);
     }
 
     /// `FUNCTION_IMMUTABLE_FIELD` (spec §4.2) is checked against the RAW body
@@ -146,17 +262,20 @@ public final class FunctionApi {
         ctx.status(204);
     }
 
-    /// spec §6.3: `requireAnchor` + `FUNCTION_VIEW`, not the per-function
-    /// reach the other routes above apply (this slice's explicit
-    /// instruction — see the class doc). [FunctionHostRepository#listAll] is
+    /// spec §6.3: gated exactly like the other by-address reads —
+    /// `FUNCTION_VIEW` + the ordinary per-function reach (review fix, slice
+    /// B3: `requireAnchor` was wrong here; only `GET /api/function-pools`
+    /// below is anchor-gated, since pools are cross-tenant infrastructure
+    /// state with no owning function to reach). A function out of reach is
+    /// 404, never 403 — same rule as [#getOne], sharing [Access#canReach] so
+    /// the two paths can never disagree. [FunctionHostRepository#listAll] is
     /// the "hosts reporting this address" read: an in-memory filter over
     /// every host, any pool, since a function's versions can each name a
     /// different pool.
     private static void status(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), FUNCTION_VIEW);
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
-        Function f = s.repo().findByAddress(address).orElseThrow(() -> HttpError.notFound("Function", address.render()));
+        Function f = functionByAddress(s, address, Auth.current());
 
         List<FunctionVersion> versions = s.versions().listByFunction(f.id());
         List<StatusResponse.VersionSummary> versionSummaries = versions.stream()
@@ -240,6 +359,31 @@ public final class FunctionApi {
         return FunctionAddress.parse(raw);
     }
 
+    /// `f`'s `live` alias's version, or `null` when unset — the single-row
+    /// read `getOne` uses (list uses its own batch read, [#list]).
+    private static FunctionVersion liveVersionOf(State s, Function f) {
+        return f.liveVersionId().flatMap(s.versions()::findById).orElse(null);
+    }
+
+    /// Load-or-404 for a version already known to belong to `f` (spec §5.2).
+    private static FunctionVersion versionOrNotFound(State s, Function f, int version) {
+        return s.versions().findByFunctionAndVersion(f.id(), version)
+                .orElseThrow(() -> HttpError.notFound("FunctionVersion", f.address().render() + "#" + version));
+    }
+
+    /// `{v}` not a positive integer ⇒ 400 `VERSION_INVALID` (spec §5.2).
+    private static int parseVersionNumber(String raw) {
+        try {
+            int v = Integer.parseInt(raw);
+            if (v <= 0) {
+                throw new NumberFormatException();
+            }
+            return v;
+        } catch (NumberFormatException e) {
+            throw UseCaseException.validation("VERSION_INVALID", "version must be a positive integer");
+        }
+    }
+
     /// The list filter: the caller's optional narrowing (`address`,
     /// `clientId`, `status`) AND-ed with its mandatory reach (spec §4.2,
     /// `FunctionRepository.PageFilter`'s own doc). `clientId=platform`
@@ -299,24 +443,96 @@ public final class FunctionApi {
         }
     }
 
-    /// The function response (spec §4.4). `live` is always absent in this
-    /// slice — no version can exist before B3's publish/promote land.
+    /// The function response (spec §4.4). `live` is absent until a version
+    /// is promoted (spec §5.2); `liveVersion` is `null` in every path that
+    /// has not already loaded it — never a fresh read per row here, see
+    /// [#list], [#getOne], [#create]'s own call sites.
     public record FunctionResponse(
             String id, String address, String applicationCode, String serviceName, String name,
             String applicationId, String clientId, String runtime, String description, String status,
             Live live, Instant createdAt, Instant updatedAt) {
 
-        public static FunctionResponse from(Function f) {
+        public static FunctionResponse from(Function f, FunctionVersion liveVersion) {
+            Live live = liveVersion == null ? null : new Live(String.valueOf(liveVersion.version()), liveVersion.id());
             return new FunctionResponse(f.id(), f.address().render(), f.address().application().value(),
                     f.address().service().value(), f.address().name().value(), f.applicationId(),
                     f.owner().clientIdOrNull(), f.runtime().wireValue(), f.description(), f.status().name(),
-                    null, f.createdAt(), f.updatedAt());
+                    live, f.createdAt(), f.updatedAt());
         }
 
-        /// Populated once B3's publish/promote exist; carried on the wire
-        /// shape now so the field never needs to be added later.
         public record Live(String version, String versionId) {
         }
+    }
+
+    /// Body of `POST /api/functions/{address}/versions` (spec §5.1).
+    public record PublishRequest(String artifactRef, String digest, String signatureBundle, JsonNode manifest) {
+        public PublishCommand toCommand(FunctionAddress address) {
+            return new PublishCommand(address, artifactRef, digest, signatureBundle, manifest);
+        }
+    }
+
+    /// 201 body of `POST /api/functions/{address}/versions` (spec §5.1):
+    /// `{id, version, state: "PUBLISHED", digest, signer?}`.
+    public record PublishResponse(String id, int version, String state, String digest,
+                                  VersionResponse.SignerResponse signer) {
+        static PublishResponse from(FunctionVersion v) {
+            return new PublishResponse(v.id(), v.version(), "PUBLISHED", v.digest().value(),
+                    VersionResponse.SignerResponse.from(v.signer()));
+        }
+    }
+
+    /// One version, on the wire (spec §5.2): the LIST shape when `manifest`
+    /// is `null` (omitted — `Json`'s `NON_ABSENT` default), the single-GET
+    /// shape ("adds `manifest`") when it is not. `live` is whether THIS
+    /// version is the function's current `live` alias target.
+    public record VersionResponse(String id, int version, String state, String digest, String artifactRef,
+                                  String pool, boolean warm, SignerResponse signer, String publishedBy,
+                                  Instant publishedAt, Instant readyAt, Instant retiredAt, boolean live,
+                                  JsonNode manifest) {
+
+        public record SignerResponse(String issuer, String subject) {
+            static SignerResponse from(SignerIdentity signer) {
+                return signer == null ? null : new SignerResponse(signer.issuer(), signer.subject());
+            }
+        }
+
+        static VersionResponse summary(FunctionVersion v, boolean live) {
+            return of(v, live, null);
+        }
+
+        static VersionResponse detail(FunctionVersion v, boolean live) {
+            return of(v, live, v.manifest().toJson());
+        }
+
+        private static VersionResponse of(FunctionVersion v, boolean live, JsonNode manifest) {
+            return new VersionResponse(v.id(), v.version(), versionStateWire(v.state()), v.digest().value(),
+                    v.artifactRef(), v.manifest().pool().value(), v.manifest().warm(), SignerResponse.from(v.signer()),
+                    v.publishedBy(), v.publishedAt(), readyAtOf(v.state()), retiredAtOf(v.state()), live, manifest);
+        }
+
+        private static Instant readyAtOf(FunctionVersion.VersionState state) {
+            return state instanceof FunctionVersion.VersionState.Ready ready ? ready.at() : null;
+        }
+
+        private static Instant retiredAtOf(FunctionVersion.VersionState state) {
+            return state instanceof FunctionVersion.VersionState.Retired retired ? retired.at() : null;
+        }
+    }
+
+    /// Body of `PUT /api/functions/{address}/aliases/{alias}` (spec §5.2).
+    public record PromoteRequest(int version) {
+    }
+
+    /// 200 body of `PUT /api/functions/{address}/aliases/{alias}` (spec
+    /// §5.2): `{alias, version, versionId, previousVersion?}` —
+    /// `previousVersion` is the prior live version's NUMBER (not its id,
+    /// unlike the `alias:changed` event, which carries `previousVersionId`),
+    /// absent on a first promotion.
+    public record PromoteResponse(String alias, int version, String versionId, Integer previousVersion) {
+    }
+
+    /// One entry of `GET /api/functions/{address}/aliases` (spec §5.2).
+    public record AliasResponse(String alias, int version, String versionId, String updatedBy, Instant updatedAt) {
     }
 
     /// `GET /api/functions/{address}/status` (spec §6.3). `hosts` lists only

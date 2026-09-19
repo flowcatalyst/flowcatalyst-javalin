@@ -155,6 +155,24 @@ class EnvTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("maxWarmPerHost");
     }
 
+    /// spec `function-api.md` §5.1 step 5, §8 P9: `Env` only PARSES the raw
+    /// value — the "off requires dev mode" refusal is
+    /// `Signatures#resolve`'s job (`SignaturesTest`), not `Env`'s.
+    @Test
+    void fnSignaturesModeDefaultsToRequiredAndOnlyOffParsesToOff() {
+        assertThat(load().fnSignaturesMode())
+                .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.REQUIRED);
+        assertThat(load("FC_FN_SIGNATURES", "off").fnSignaturesMode())
+                .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.OFF);
+        assertThat(load("FC_FN_SIGNATURES", "required").fnSignaturesMode())
+                .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.REQUIRED);
+        assertThat(load("FC_FN_SIGNATURES", "OFF").fnSignaturesMode()).as("case-insensitive")
+                .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.OFF);
+        assertThat(load("FC_FN_SIGNATURES", "offf").fnSignaturesMode())
+                .as("mutant: a typo must never silently mean off")
+                .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.REQUIRED);
+    }
+
     @Test
     void canonicalNameWinsOverAlias() {
         var env = load(

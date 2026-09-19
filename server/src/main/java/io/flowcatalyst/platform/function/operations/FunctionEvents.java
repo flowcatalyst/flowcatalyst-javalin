@@ -24,7 +24,10 @@ public final class FunctionEvents {
     public static final String CREATED = "platform:function:function:created";
     public static final String UPDATED = "platform:function:function:updated";
     public static final String DELETED = "platform:function:function:deleted";
+    public static final String VERSION_PUBLISHED = "platform:function:version:published";
     public static final String VERSION_READY = "platform:function:version:ready";
+    public static final String VERSION_RETIRED = "platform:function:version:retired";
+    public static final String ALIAS_CHANGED = "platform:function:alias:changed";
     public static final String POLICY_UPDATED = "platform:function:policy:updated";
 
     private FunctionEvents() {
@@ -123,6 +126,72 @@ public final class FunctionEvents {
         }
 
         private record Data(String functionId, String address, String versionId, int version, String hostId) {
+        }
+    }
+
+    /// `{functionId, address, versionId, version, digest, pool, signerIssuer?,
+    /// signerSubject?}` (spec §3) — `PublishVersion` (spec §5.1). The signer
+    /// pair is absent together: a version published with [Signatures.Off]
+    /// carries neither.
+    public record VersionPublished(EventMetadata metadata, String functionId, String address, String versionId,
+                                   int version, String digest, String pool, String signerIssuer, String signerSubject)
+            implements DomainEvent {
+
+        public static VersionPublished of(ExecutionContext ec, Function f, FunctionVersion v) {
+            String issuer = v.signer() == null ? null : v.signer().issuer();
+            String subject = v.signer() == null ? null : v.signer().subject();
+            return new VersionPublished(metadataFor(ec, VERSION_PUBLISHED, f.id()), f.id(), f.address().render(),
+                    v.id(), v.version(), v.digest().value(), v.manifest().pool().value(), issuer, subject);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, versionId, version, digest, pool, signerIssuer, signerSubject);
+        }
+
+        private record Data(String functionId, String address, String versionId, int version, String digest,
+                            String pool, String signerIssuer, String signerSubject) {
+        }
+    }
+
+    /// `{functionId, address, versionId, version}` (spec §3) — `RetireVersion`
+    /// (spec §5.2).
+    public record VersionRetired(EventMetadata metadata, String functionId, String address, String versionId,
+                                 int version) implements DomainEvent {
+
+        public static VersionRetired of(ExecutionContext ec, Function f, FunctionVersion v) {
+            return new VersionRetired(metadataFor(ec, VERSION_RETIRED, f.id()), f.id(), f.address().render(), v.id(),
+                    v.version());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, versionId, version);
+        }
+
+        private record Data(String functionId, String address, String versionId, int version) {
+        }
+    }
+
+    /// `{functionId, address, alias, versionId, version, previousVersionId?}`
+    /// (spec §3) — `PromoteVersion` (spec §5.2); `previousVersionId` is
+    /// `null` on a first promotion ([Function.Promoted#previousVersionId]).
+    public record AliasChanged(EventMetadata metadata, String functionId, String address, String alias,
+                               String versionId, int version, String previousVersionId) implements DomainEvent {
+
+        public static AliasChanged of(ExecutionContext ec, Function f, String alias, FunctionVersion v,
+                String previousVersionId) {
+            return new AliasChanged(metadataFor(ec, ALIAS_CHANGED, f.id()), f.id(), f.address().render(), alias,
+                    v.id(), v.version(), previousVersionId);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, alias, versionId, version, previousVersionId);
+        }
+
+        private record Data(String functionId, String address, String alias, String versionId, int version,
+                            String previousVersionId) {
         }
     }
 

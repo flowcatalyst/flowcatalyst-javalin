@@ -151,25 +151,59 @@ class MarkVersionReadyTest {
         assertThat(afterwards.runtime()).isEqualTo(f.runtime());
     }
 
-    // ── markReady keeps the first ready_at (§8 M12, exercised through the operation) ──
+    // ── R-b (review fix): the operation guards itself — not-Published conflicts, no event ──
 
     @Test
-    void aSecondCallOnAnAlreadyReadyVersionKeepsTheOriginalReadyAt() {
-        Function f = createFunction("keepready");
-        FunctionVersion v = publish(f, 1, "b");
-
+    void aReadyVersionConflictsAndEmitsNoEvent() {
+        Function f = createFunction("readyguard");
+        FunctionVersion v = publish(f, 1, "c");
         run(v, "host-1");
+
         FunctionVersion firstReady = versions.findById(v.id()).orElseThrow();
         Instant firstReadyAt = ((FunctionVersion.VersionState.Ready) firstReady.state()).at();
 
-        // The caller (FunctionControlApi) is what normally prevents this second call —
-        // MarkVersionReady itself has no such guard (see its class doc) — so calling it
-        // again must still never resurrect a fresh `ready_at`.
-        run(v, "host-2");
+        assertThatThrownBy(() -> run(v, "host-2"))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err).as("mutant: drop the guard").isInstanceOf(UseCaseError.Conflict.class);
+                    assertThat(err.code()).isEqualTo("VERSION_NOT_PUBLISHED");
+                });
+
+        // Exactly the ONE event from the first, successful call — the guarded second call wrote none.
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.VERSION_READY);
+        assertThat(events).as("mutant: drop the guard — a second call must emit no event").hasSize(1);
+
         FunctionVersion secondReady = versions.findById(v.id()).orElseThrow();
         assertThat(((FunctionVersion.VersionState.Ready) secondReady.state()).at())
-                .as("mutant: overwrite ready_at on a second Ready->Ready transition")
+                .as("mutant: overwrite ready_at on a rejected second call")
                 .isEqualTo(firstReadyAt);
+    }
+
+    @Test
+    void aRetiredVersionConflictsAndEmitsNoEvent() {
+        Function f = createFunction("retiredguard");
+        FunctionVersion v = publish(f, 1, "d");
+        FunctionVersion retired = v.retire(Instant.now());
+        uow.inTransaction(tx -> {
+            versions.persist(retired, tx.dbTx());
+            return null;
+        });
+
+        assertThatThrownBy(() -> run(retired, "host-1"))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err).as("mutant: drop the guard").isInstanceOf(UseCaseError.Conflict.class);
+                    assertThat(err.code()).isEqualTo("VERSION_NOT_PUBLISHED");
+                });
+
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.VERSION_READY);
+        assertThat(events).as("mutant: drop the guard — a retired version must emit no version:ready event").isEmpty();
+
+        FunctionVersion reloaded = versions.findById(v.id()).orElseThrow();
+        assertThat(reloaded.state()).as("still retired, never resurrected to ready")
+                .isInstanceOf(FunctionVersion.VersionState.Retired.class);
     }
 
     // ── Not-found ─────────────────────────────────────────────────────────

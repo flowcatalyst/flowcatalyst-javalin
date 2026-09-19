@@ -597,17 +597,26 @@ public final class Platform {
                 connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow));
 
-        // function platform API (docs/spec/function-api.md, work package B, slices B1+B2): Java-first,
+        // function platform API (docs/spec/function-api.md, work package B, slices B1-B3): Java-first,
         // outside the lockfile (spec §0) — every route is named in parity/surface.json instead.
         // functionRepo/clientRepo/applicationRepo are the same instances built above.
         var functionVersionRepo = new io.flowcatalyst.platform.function.FunctionVersionRepository(pool);
         var functionHostRepo = new io.flowcatalyst.platform.function.FunctionHostRepository(pool);
+        var functionPolicyRepo = new io.flowcatalyst.platform.function.ClientPolicyRepository(pool);
+        // §5.1 step 5, §8 P9: chosen ONCE here, the composition root — `off` is refused
+        // outright unless FLOWCATALYST_DEV_MODE=true, so it cannot reach a production
+        // task definition by typo or by intent (Signatures#resolve's own doc).
+        var functionSignatures = io.flowcatalyst.platform.function.artifact.Signatures.resolve(
+                env.fnSignaturesMode(), env.routerDevMode());
+        // function-triggers.md replaces this once package F lands (spec §5.1 step 8).
+        var functionTriggerSync = io.flowcatalyst.platform.function.operations.TriggerSync.none();
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow,
-                        functionVersionRepo, functionHostRepo));
+                        functionVersionRepo, functionHostRepo, functionPolicyRepo, env.functionLimits(),
+                        functionSignatures, functionTriggerSync));
         io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
-                        new io.flowcatalyst.platform.function.ClientPolicyRepository(pool), clientRepo, uow, env.functionLimits()));
+                        functionPolicyRepo, clientRepo, uow, env.functionLimits()));
         // B2 (spec §6): the control plane a function host calls — /control/functions/*, already
         // inside the authenticator (Platform#isPlatformPath).
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,

@@ -1,6 +1,7 @@
 package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.function.FunctionLimits;
+import io.flowcatalyst.platform.function.artifact.SignaturesMode;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 
@@ -379,6 +380,15 @@ public record Env(
         // parseable non-positive one reaches the record and fails loudly instead of arming a
         // function pool with a zero or negative limit.
         FunctionLimits functionLimits,
+        // `FC_FN_SIGNATURES` (`required` default | `off`), spec `function-api.md` §5.1
+        // step 5, §8 P9: parsed with [SignaturesMode#parse] (unset/blank/"required"/any
+        // unrecognised typo ⇒ `REQUIRED` — the only way to reach `OFF` is to spell it
+        // exactly). Carried here as the parsed enum, not the raw string, but the
+        // "off requires FLOWCATALYST_DEV_MODE=true" refusal is NOT enforced here — it is
+        // the composition root's job ([io.flowcatalyst.platform.function.artifact.Signatures#resolve]),
+        // same division of labour as [#functionLimits]'s ceilings vs. this record's own
+        // positivity check.
+        SignaturesMode fnSignaturesMode,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
         // environment directly, or fcdev's map-loaded environment and the parity
@@ -545,6 +555,7 @@ public record Env(
                         e.integer("FC_FN_DEFAULT_WASM_MEMORY_MB", FunctionLimits.DEFAULT_WASM_MEMORY_MB),
                         e.integer("FC_FN_DEFAULT_DB_POOL_SIZE", FunctionLimits.DEFAULT_DB_POOL_SIZE),
                         e.integer("FC_FN_MAX_WARM_PER_HOST", FunctionLimits.DEFAULT_MAX_WARM_PER_HOST)),
+                SignaturesMode.parse(e.or("FC_FN_SIGNATURES", "required")),
                 e
         );
     }

@@ -7,9 +7,13 @@ import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
+import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.artifact.Signatures;
+import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -47,6 +51,7 @@ class FunctionApiTest {
     private static final FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
     private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
+    private static final ClientPolicyRepository policies = new ClientPolicyRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     private static final String[] ANCHOR = {
@@ -63,7 +68,12 @@ class FunctionApiTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before("/api/*", auth);
-            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts));
+            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
+                    policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none()));
+            // §4.3: needed for P10's real PUT /api/function-policies/{owner} route.
+            io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
+                    new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
+                            policies, clients, uow, FunctionLimits.defaults()));
         });
     }
 
@@ -390,14 +400,21 @@ class FunctionApiTest {
         return promoted.function();
     }
 
+    /// R-a (review fix, slice B3): status is gated like every other by-address
+    /// read — the owning client sees its own function's status; another
+    /// client gets 404 (never 403, which would confirm the address exists).
     @Test
-    void statusRequiresAnchorEvenForTheOwningClient() {
+    void statusReachesTheOwningClientButNotAnotherClient() {
         String clientId = testClient("status-anchor");
         testApplication("status-anchor", "statusanchor-" + RUN);
         create("statusanchor-" + RUN, "svc", "fn", clientId);
 
-        var r = http.get("/api/functions/statusanchor-" + RUN + ".svc.fn/status", clientViewer(clientId));
-        assertThat(r.statusCode()).as("mutant: apply the ordinary reach rule instead of requireAnchor").isEqualTo(403);
+        var owner = http.get("/api/functions/statusanchor-" + RUN + ".svc.fn/status", clientViewer(clientId));
+        assertThat(owner.statusCode()).as("mutant: drop the reach check — the owning client must see its own function's status")
+                .isEqualTo(200);
+
+        var stranger = http.get("/api/functions/statusanchor-" + RUN + ".svc.fn/status", clientViewer("clt_someoneelse_" + RUN));
+        assertThat(stranger.statusCode()).as("mutant: drop the reach check — another client must not").isEqualTo(404);
     }
 
     @Test
@@ -510,5 +527,168 @@ class FunctionApiTest {
             }
         }
         assertThat(found).as("the live host's pool is listed").isTrue();
+    }
+
+    // ── §5: versions and aliases (slice B3) ──────────────────────────────────
+
+    private static final String MINIMAL_MANIFEST = """
+            {"runtime":"jvm","entrypoint":"com.acme.Fn"}""";
+
+    private static String digestHex(String suffix) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest((RUN + ":" + suffix).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "sha256:" + java.util.HexFormat.of().formatHex(hash);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static HttpResponse<String> publishHttp(String address, String digestSuffix, String manifestJson) {
+        String body = "{\"artifactRef\":\"oci://artifact/" + digestSuffix + "\",\"digest\":\"" + digestHex(digestSuffix)
+                + "\",\"manifest\":" + manifestJson + "}";
+        return http.post("/api/functions/" + address + "/versions", body, ANCHOR);
+    }
+
+    @Test
+    void publishRouteReturns201WithTheStoredVersion() {
+        testApplication("publish", "publish-" + RUN);
+        create("publish-" + RUN, "svc", "fn", null);
+        String address = "publish-" + RUN + ".svc.fn";
+
+        var r = publishHttp(address, "http1", MINIMAL_MANIFEST);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        JsonNode body = json(r);
+        assertThat(body.get("version").asInt()).isEqualTo(1);
+        assertThat(body.get("state").asString()).isEqualTo("PUBLISHED");
+        assertThat(body.get("digest").asString()).isEqualTo(digestHex("http1"));
+        assertThat(body.has("signer")).as("Signatures.Off in this harness -> no signer").isFalse();
+    }
+
+    @Test
+    void publishRequiresTheFunctionPublishPermission() {
+        testApplication("publishperm", "publishperm-" + RUN);
+        create("publishperm-" + RUN, "svc", "fn", null);
+        String address = "publishperm-" + RUN + ".svc.fn";
+
+        String body = "{\"artifactRef\":\"oci://artifact/x\",\"digest\":\"" + digestHex("permx") + "\",\"manifest\":"
+                + MINIMAL_MANIFEST + "}";
+        var r = http.post("/api/functions/" + address + "/versions", body, manage());
+        assertThat(r.statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void listVersionsAndGetVersionRoutesWork() {
+        testApplication("versions", "versions-" + RUN);
+        create("versions-" + RUN, "svc", "fn", null);
+        String address = "versions-" + RUN + ".svc.fn";
+        publishHttp(address, "lv1", MINIMAL_MANIFEST);
+        publishHttp(address, "lv2", MINIMAL_MANIFEST);
+
+        var list = json(http.get("/api/functions/" + address + "/versions", ANCHOR));
+        assertThat(list).as("newest first").hasSize(2);
+        assertThat(list.get(0).get("version").asInt()).isEqualTo(2);
+        assertThat(list.get(0).has("manifest")).as("list omits manifest").isFalse();
+
+        var one = json(http.get("/api/functions/" + address + "/versions/1", ANCHOR));
+        assertThat(one.get("version").asInt()).isEqualTo(1);
+        assertThat(one.get("manifest").get("entrypoint").asString()).as("GET one adds manifest")
+                .isEqualTo("com.acme.Fn");
+
+        var notInteger = http.get("/api/functions/" + address + "/versions/abc", ANCHOR);
+        assertThat(notInteger.statusCode()).isEqualTo(400);
+        assertThat(json(notInteger).get("error").asString()).isEqualTo("VERSION_INVALID");
+    }
+
+    @Test
+    void retireRouteReturns200WithTheVersion() {
+        testApplication("retire", "retire-" + RUN);
+        create("retire-" + RUN, "svc", "fn", null);
+        String address = "retire-" + RUN + ".svc.fn";
+        publishHttp(address, "ret1", MINIMAL_MANIFEST);
+
+        var r = http.post("/api/functions/" + address + "/versions/1/retire", null, ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("state").asString()).isEqualTo("RETIRED");
+
+        var retireAgain = http.post("/api/functions/" + address + "/versions/1/retire", null, ANCHOR);
+        assertThat(retireAgain.statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void promoteAliasUnsupportedAndListAliasesRoutesWork() {
+        testApplication("promote", "promote-" + RUN);
+        create("promote-" + RUN, "svc", "fn", null);
+        String address = "promote-" + RUN + ".svc.fn";
+        publishHttp(address, "pr1", MINIMAL_MANIFEST);
+
+        // Not ready yet — R3's guard runs before Function.promote's own checks, so even a
+        // bad alias name surfaces as VERSION_NOT_READY here, not ALIAS_UNSUPPORTED.
+        var notReady = http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
+        assertThat(notReady.statusCode()).isEqualTo(409);
+        assertThat(json(notReady).get("error").asString()).isEqualTo("VERSION_NOT_READY");
+
+        // Mark ready directly (control-plane heartbeat is package B2's own surface).
+        var f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        var v1 = versions.findByFunctionAndVersion(f.id(), 1).orElseThrow();
+        uow.inTransaction(tx -> {
+            versions.persist(v1.markReady(java.time.Instant.now()), tx.dbTx());
+            return null;
+        });
+
+        // §8 P12 / spec §5.2: any alias but `live` is 400 ALIAS_UNSUPPORTED — Function.promote's OWN
+        // check (this operation duplicates nothing), reached now that the READY guard passes.
+        var badAlias = http.put("/api/functions/" + address + "/aliases/canary", "{\"version\":1}", ANCHOR);
+        assertThat(badAlias.statusCode()).isEqualTo(400);
+        assertThat(json(badAlias).get("error").asString()).isEqualTo("ALIAS_UNSUPPORTED");
+
+        var promoted = http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
+        assertThat(promoted.statusCode()).as(promoted.body()).isEqualTo(200);
+        JsonNode body = json(promoted);
+        assertThat(body.get("alias").asString()).isEqualTo("live");
+        assertThat(body.get("version").asInt()).isEqualTo(1);
+        assertThat(body.has("previousVersion")).as("first promotion has none").isFalse();
+
+        var aliases = json(http.get("/api/functions/" + address + "/aliases", ANCHOR));
+        assertThat(aliases).hasSize(1);
+        assertThat(aliases.get(0).get("alias").asString()).isEqualTo("live");
+        assertThat(aliases.get(0).get("version").asInt()).isEqualTo(1);
+
+        // FunctionResponse.live is now filled.
+        var fn = json(http.get("/api/functions/" + address, ANCHOR));
+        assertThat(fn.get("live").get("version").asString()).isEqualTo("1");
+        assertThat(fn.get("live").get("versionId").asString()).isEqualTo(v1.id());
+    }
+
+    // ── P10: over-ceiling manifest, rejected using the OWNER's ceilings ──────
+
+    @Test
+    void overCeilingManifestUsesTheOwnersCeilingNotThePlatformDefault() {
+        String clientA = testClient("p10a");
+        String clientB = testClient("p10b");
+        testApplication("p10", "p10-" + RUN);
+        var fnA = create("p10-" + RUN, "svc", "a", clientA);
+        var fnB = create("p10-" + RUN, "svc", "b", clientB);
+        String addressA = "p10-" + RUN + ".svc.a";
+        String addressB = "p10-" + RUN + ".svc.b";
+        String overCeilingManifest = """
+                {"runtime":"jvm","entrypoint":"com.acme.Fn","limits":{"maxConcurrency":64}}""";
+
+        // Default ceiling is 32 — both over it.
+        var beforeA = publishHttp(addressA, "p10a1", overCeilingManifest);
+        assertThat(beforeA.statusCode()).as(beforeA.body()).isEqualTo(400);
+        assertThat(json(beforeA).get("error").asString()).isEqualTo("LIMIT_OVER_CEILING");
+        var beforeB = publishHttp(addressB, "p10b1", overCeilingManifest);
+        assertThat(beforeB.statusCode()).isEqualTo(400);
+
+        // Raise ONLY client A's ceiling via the real policy route.
+        var putPolicy = http.put("/api/function-policies/" + clientA,
+                "{\"signers\":[],\"ceilings\":{\"maxConcurrency\":100}}", ANCHOR);
+        assertThat(putPolicy.statusCode()).as(putPolicy.body()).isEqualTo(200);
+
+        var afterA = publishHttp(addressA, "p10a2", overCeilingManifest);
+        assertThat(afterA.statusCode()).as("mutant: always use platform defaults — " + afterA.body()).isEqualTo(201);
+        var afterB = publishHttp(addressB, "p10b2", overCeilingManifest);
+        assertThat(afterB.statusCode()).as("mutant: use the OTHER owner's policy — " + afterB.body()).isEqualTo(400);
     }
 }
