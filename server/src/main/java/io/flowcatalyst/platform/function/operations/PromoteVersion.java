@@ -24,6 +24,13 @@ import java.util.Objects;
 /// "promote back to retired v1 ⇒ 409 VERSION_RETIRED", not `VERSION_NOT_READY`).
 /// `Function.promote` then owns its own errors: `VERSION_RETIRED`,
 /// `FUNCTION_DISABLED`, `ALIAS_UNCHANGED`.
+///
+/// Review fix, slice B3: alias validity is checked in `validate` — BEFORE
+/// authorize/execute ever load the function or its version — so `PUT
+/// …/aliases/canary` on an unready version is 400 `ALIAS_UNSUPPORTED`, not
+/// 409 `VERSION_NOT_READY`; [Function#requireSupportedAlias] is the rule's
+/// one home, called again inside [Function#promote] itself so the two paths
+/// can never disagree and the message is written once.
 public final class PromoteVersion {
 
     private PromoteVersion() {
@@ -33,6 +40,7 @@ public final class PromoteVersion {
         Objects.requireNonNull(functions, "functions");
         Objects.requireNonNull(versions, "versions");
         return Operation.<PromoteCommand, AliasChanged>named("PromoteVersion")
+                .validate(cmd -> Function.requireSupportedAlias(cmd.alias()))
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
                     Function f = Access.byAddress(functions, cmd.address(), Auth.current());

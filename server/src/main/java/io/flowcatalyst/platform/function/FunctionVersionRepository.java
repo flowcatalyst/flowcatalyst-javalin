@@ -97,6 +97,20 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
         return dsl.selectFrom(T).where(where).fetchOptional().map(FunctionVersionRepository::toEntity);
     }
 
+    /// `SELECT … FOR UPDATE` on the version row, inside the caller's open
+    /// transaction, hydrated through the same [#toEntity] path every other
+    /// read uses — one hydration path (`CONVENTIONS.md` §8). Review fix,
+    /// slice B3: `MarkVersionReady` locks the row here and guards `Published`
+    /// on THIS read, so two heartbeats racing to mark the same version ready
+    /// serialise — the second sees the first's committed `Ready` state
+    /// instead of the pre-lock snapshot both would otherwise have passed.
+    public Optional<FunctionVersion> lockById(String id, DbTx tx) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(tx, "tx");
+        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        return txDsl.selectFrom(T).where(T.ID.eq(id)).forUpdate().fetchOptional().map(FunctionVersionRepository::toEntity);
+    }
+
     // ── nextVersion (spec §6.2, §8 M10) ─────────────────────────────────────
 
     /// `SELECT … FROM fn_functions WHERE id = ? FOR UPDATE` on the caller's

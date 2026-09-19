@@ -369,58 +369,64 @@ class FunctionControlApiTest {
 
     /// R-b (review fix, slice B3): a real race between two hosts' heartbeats
     /// for the SAME not-yet-ready version must never surface as a 500 — the
-    /// loser's `VERSION_NOT_PUBLISHED` conflict (if MarkVersionReady's guard
-    /// catches it) is caught and ignored by `FunctionControlApi`. NOTE this
-    /// does NOT pin "exactly one `version:ready` event": `MarkVersionReady`
-    /// is a single-aggregate `Operation`, whose guard read runs in `execute`
-    /// BEFORE `PlanApplier` opens the write transaction (unlike
-    /// `PublishVersion`'s `TxOperation` + `nextVersion`'s row lock) — so two
-    /// heartbeats that both read `Published` before either commits can BOTH
-    /// pass the guard and both write, each emitting its own event. Observed
-    /// empirically while building this test; recorded here rather than
-    /// asserting a guarantee the current design does not actually make.
+    /// loser's `VERSION_NOT_PUBLISHED` conflict is caught and ignored by
+    /// `FunctionControlApi` — AND must produce EXACTLY ONE `version:ready`
+    /// event, never two. `MarkVersionReady` is now a `TxOperation` that takes
+    /// `SELECT … FOR UPDATE` on the version row
+    /// (`FunctionVersionRepository#lockById`) inside its own transaction and
+    /// guards `Published` on that locked, freshly-hydrated read — the loser
+    /// sees the winner's committed `Ready` state, not a pre-lock snapshot
+    /// both heartbeats could have read as `Published`. Run 20× with a fresh
+    /// version each time: the mutant that drops `FOR UPDATE` lets both
+    /// heartbeats read `Published` before either commits and both write,
+    /// which does not reproduce on every interleaving — a race that only
+    /// SOMETIMES loses still shows across 20 rounds.
     @Test
     void twoHostsRacingToMarkTheSameVersionReadyNeverProduceA500() throws Exception {
-        Function f = testFunction("p6race");
-        publish(f, 1, "p6racepool" + RUN);
-        String hostA = "host-p6race-a-" + RUN;
-        String hostB = "host-p6race-b-" + RUN;
-        String bodyA = """
-                {"hostId":"%s","pool":"p6racepool%s","state":"ACTIVE",
-                 "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostA, RUN, f.address().render());
-        String bodyB = """
-                {"hostId":"%s","pool":"p6racepool%s","state":"ACTIVE",
-                 "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostB, RUN, f.address().render());
+        for (int i = 0; i < 20; i++) {
+            Function f = testFunction("p6race" + i);
+            String pool = "p6racepool" + i + RUN;
+            publish(f, 1, pool);
+            String hostA = "host-p6race-a-" + i + "-" + RUN;
+            String hostB = "host-p6race-b-" + i + "-" + RUN;
+            String bodyA = """
+                    {"hostId":"%s","pool":"%s","state":"ACTIVE",
+                     "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostA, pool, f.address().render());
+            String bodyB = """
+                    {"hostId":"%s","pool":"%s","state":"ACTIVE",
+                     "loaded":[{"address":"%s","version":1,"state":"LOADED"}]}""".formatted(hostB, pool, f.address().render());
 
-        var startingLine = new java.util.concurrent.CountDownLatch(2);
-        var go = new java.util.concurrent.CountDownLatch(1);
-        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
-        try {
-            var beatA = pool.submit(() -> {
-                startingLine.countDown();
-                go.await();
-                return http.post("/control/functions/heartbeat", bodyA, HOST);
-            });
-            var beatB = pool.submit(() -> {
-                startingLine.countDown();
-                go.await();
-                return http.post("/control/functions/heartbeat", bodyB, HOST);
-            });
-            assertThat(startingLine.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            go.countDown();
+            var startingLine = new java.util.concurrent.CountDownLatch(2);
+            var go = new java.util.concurrent.CountDownLatch(1);
+            var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                var beatA = executor.submit(() -> {
+                    startingLine.countDown();
+                    go.await();
+                    return http.post("/control/functions/heartbeat", bodyA, HOST);
+                });
+                var beatB = executor.submit(() -> {
+                    startingLine.countDown();
+                    go.await();
+                    return http.post("/control/functions/heartbeat", bodyB, HOST);
+                });
+                assertThat(startingLine.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                go.countDown();
 
-            assertThat(beatA.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
-                    .as("mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
-            assertThat(beatB.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
-                    .as("mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
-        } finally {
-            pool.shutdown();
+                assertThat(beatA.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
+                        .as("iteration " + i + ": mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
+                assertThat(beatB.get(20, java.util.concurrent.TimeUnit.SECONDS).statusCode())
+                        .as("iteration " + i + ": mutant: catch something other than exactly VERSION_NOT_PUBLISHED").isEqualTo(204);
+            } finally {
+                executor.shutdown();
+            }
+
+            assertThat(versions.findById(versions.findByFunctionAndVersion(f.id(), 1).orElseThrow().id()).orElseThrow().state())
+                    .isInstanceOf(FunctionVersion.VersionState.Ready.class);
+            assertThat(versionReadyEventsFor(f.id()))
+                    .as("iteration " + i + ": mutant: drop FOR UPDATE, or guard on the pre-lock read — exactly one version:ready, never two")
+                    .hasSize(1);
         }
-
-        assertThat(versions.findById(versions.findByFunctionAndVersion(f.id(), 1).orElseThrow().id()).orElseThrow().state())
-                .isInstanceOf(FunctionVersion.VersionState.Ready.class);
-        // At least one event — never zero — and never more than the two requests could produce.
-        assertThat(versionReadyEventsFor(f.id()).size()).isBetween(1, 2);
     }
 
     @Test

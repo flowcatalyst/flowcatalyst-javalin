@@ -453,14 +453,14 @@ public final class FunctionApi {
             Live live, Instant createdAt, Instant updatedAt) {
 
         public static FunctionResponse from(Function f, FunctionVersion liveVersion) {
-            Live live = liveVersion == null ? null : new Live(String.valueOf(liveVersion.version()), liveVersion.id());
+            Live live = liveVersion == null ? null : new Live(liveVersion.version(), liveVersion.id());
             return new FunctionResponse(f.id(), f.address().render(), f.address().application().value(),
                     f.address().service().value(), f.address().name().value(), f.applicationId(),
                     f.owner().clientIdOrNull(), f.runtime().wireValue(), f.description(), f.status().name(),
                     live, f.createdAt(), f.updatedAt());
         }
 
-        public record Live(String version, String versionId) {
+        public record Live(int version, String versionId) {
         }
     }
 

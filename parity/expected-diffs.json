@@ -516,5 +516,166 @@
     "pointer": "/status",
     "reason": "/auth/me answers status ok in Java; Go leaves the login envelope's status empty on this route (the invite-confirm cookie step, app-managed-invitations.md section 4)",
     "ruling": "C-Q24 (auth-core.md section 0.5, section 6.1)"
+  },
+  {
+    "scenario": "functions*",
+    "step": "create-function",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of the created FunctionResponse",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "get-function",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "list-by-pattern",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "update-function",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of the 204 Java returns",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "get-policy",
+    "pointer": "/**",
+    "reason": "Java-first: signer policy routes have no Go implementation (docs/spec/function-api.md §0, §4.3); Go's SPA catch-all or 404 answers instead of the effective-default PolicyResponse",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "put-policy",
+    "pointer": "/**",
+    "reason": "Java-first: signer policy routes have no Go implementation (docs/spec/function-api.md §0, §4.3); Go's SPA catch-all or 404 answers instead of the stored PolicyResponse",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "publish",
+    "pointer": "/**",
+    "reason": "Java-first: publish has no Go implementation (docs/spec/function-api.md §0, §5.1); Go's SPA catch-all or 404 answers instead of Java's 400 SIGNATURE_REQUIRED (FC_FN_SIGNATURES defaults to required and FLOWCATALYST_DEV_MODE is not set for the parity harness, so no signature bundle can be supplied — spec §5.1 step 5, §8 P9)",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "list-versions",
+    "pointer": "/**",
+    "reason": "Java-first: version routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of the (empty, since publish never succeeded) Java list",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "get-version-not-found",
+    "pointer": "/**",
+    "reason": "Java-first: version routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of Java's 404 FunctionVersion_NOT_FOUND",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "host-token",
+    "pointer": "/scope",
+    "reason": "Go has already caught up on the platform:function-host ROLE (assign-host-role succeeds identically on both sides, ../flowcatalyst-go da983c4a — the 'unknown role' precedent router-config-auth.md documented for platform:router no longer applies here); but Go's role carries no working PERMISSION, since the function feature and platform:function:host:control do not exist on Go (function-api.md §0) — so the token scope Go mints for the role never gains it, where Java's does",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds the function feature and its permission"
+  },
+  {
+    "scenario": "functions*",
+    "step": "host-token",
+    "pointer": "/access_token/«jwt»/claims/scope",
+    "reason": "Go has already caught up on the platform:function-host ROLE (assign-host-role succeeds identically on both sides, ../flowcatalyst-go da983c4a — the 'unknown role' precedent router-config-auth.md documented for platform:router no longer applies here); but Go's role carries no working PERMISSION, since the function feature and platform:function:host:control do not exist on Go (function-api.md §0) — so the token scope Go mints for the role never gains it, where Java's does",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds the function feature and its permission"
+  },
+  {
+    "scenario": "functions*",
+    "step": "heartbeat",
+    "pointer": "/**",
+    "reason": "Java-first: /control/functions/heartbeat has no Go implementation (docs/spec/function-api.md §0, §6.2); Go's SPA catch-all or 404 answers instead of Java's 204",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "desired-state",
+    "pointer": "/**",
+    "reason": "Java-first: /control/functions/desired-state has no Go implementation (docs/spec/function-api.md §0, §6.1); Go's SPA catch-all or 404 answers instead of Java's desired-state document",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "promote-not-ready",
+    "pointer": "/**",
+    "reason": "Java-first: alias routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of Java's 404 FunctionVersion_NOT_FOUND — no version was ever published (the publish step stops at 400 SIGNATURE_REQUIRED), so this is 404, not the 409 VERSION_NOT_READY a signed publish would show",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "status",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0, §6.3); Go's SPA catch-all or 404 answers instead of the StatusResponse",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "list-aliases",
+    "pointer": "/**",
+    "reason": "Java-first: alias routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of the (empty) Java list",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "retire-not-found",
+    "pointer": "/**",
+    "reason": "Java-first: version routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of Java's 404 FunctionVersion_NOT_FOUND",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "pools",
+    "pointer": "/**",
+    "reason": "Java-first: /api/function-pools has no Go implementation (docs/spec/function-api.md §0, §6.3); Go's SPA catch-all or 404 answers instead of the Java pool summary list",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "duplicate-create",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 409 FUNCTION_EXISTS",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "immutable-field",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 400 FUNCTION_IMMUTABLE_FIELD (spec §4.2)",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "two-part-address",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 400 ADDRESS_INVALID (spec §8 P16)",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "create-function-application-not-addressable",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 400 APPLICATION_CODE_NOT_ADDRESSABLE (spec §4.1 R1, §8 P1)",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "delete-function",
+    "pointer": "/**",
+    "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 204",
+    "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
   }
 ]

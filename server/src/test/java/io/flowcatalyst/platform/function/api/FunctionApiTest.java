@@ -622,8 +622,15 @@ class FunctionApiTest {
         String address = "promote-" + RUN + ".svc.fn";
         publishHttp(address, "pr1", MINIMAL_MANIFEST);
 
-        // Not ready yet — R3's guard runs before Function.promote's own checks, so even a
-        // bad alias name surfaces as VERSION_NOT_READY here, not ALIAS_UNSUPPORTED.
+        // Review fix, slice B3: alias validity is checked BEFORE version state, in
+        // PromoteVersion's own `validate` phase — an unsupported alias on a version that is
+        // not yet ready is 400 ALIAS_UNSUPPORTED, never 409 VERSION_NOT_READY.
+        var badAliasNotReady = http.put("/api/functions/" + address + "/aliases/canary", "{\"version\":1}", ANCHOR);
+        assertThat(badAliasNotReady.statusCode())
+                .as("mutant: check version state before alias validity").isEqualTo(400);
+        assertThat(json(badAliasNotReady).get("error").asString()).isEqualTo("ALIAS_UNSUPPORTED");
+
+        // The one supported alias, still not ready, reaches the version-state guard instead.
         var notReady = http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
         assertThat(notReady.statusCode()).isEqualTo(409);
         assertThat(json(notReady).get("error").asString()).isEqualTo("VERSION_NOT_READY");
@@ -636,8 +643,8 @@ class FunctionApiTest {
             return null;
         });
 
-        // §8 P12 / spec §5.2: any alias but `live` is 400 ALIAS_UNSUPPORTED — Function.promote's OWN
-        // check (this operation duplicates nothing), reached now that the READY guard passes.
+        // §8 P12 / spec §5.2: any alias but `live` is still 400 ALIAS_UNSUPPORTED once ready —
+        // Function.requireSupportedAlias is the rule's one home, reached both ways.
         var badAlias = http.put("/api/functions/" + address + "/aliases/canary", "{\"version\":1}", ANCHOR);
         assertThat(badAlias.statusCode()).isEqualTo(400);
         assertThat(json(badAlias).get("error").asString()).isEqualTo("ALIAS_UNSUPPORTED");
@@ -654,9 +661,11 @@ class FunctionApiTest {
         assertThat(aliases.get(0).get("alias").asString()).isEqualTo("live");
         assertThat(aliases.get(0).get("version").asInt()).isEqualTo(1);
 
-        // FunctionResponse.live is now filled.
+        // FunctionResponse.live.version is a wire INTEGER (review fix, slice B3), not a string.
         var fn = json(http.get("/api/functions/" + address, ANCHOR));
-        assertThat(fn.get("live").get("version").asString()).isEqualTo("1");
+        assertThat(fn.get("live").get("version").isNumber())
+                .as("mutant: emit live.version as a string on the wire").isTrue();
+        assertThat(fn.get("live").get("version").asInt()).isEqualTo(1);
         assertThat(fn.get("live").get("versionId").asString()).isEqualTo(v1.id());
     }
 

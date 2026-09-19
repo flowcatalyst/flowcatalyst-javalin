@@ -252,6 +252,76 @@ class FunctionVersionRepositoryTest {
                 .hasMessageContaining("Function_NOT_FOUND");
     }
 
+    // ── review fix, slice B3: lockById serialises MarkVersionReady's race ───
+
+    /// Deterministic interleaving (the `nextVersion` test's own pattern
+    /// above): tx1 locks the row and holds it; tx2's `lockById` call must
+    /// block until tx1 commits, then observe tx1's committed state — never
+    /// the pre-lock snapshot both callers could otherwise have read. This is
+    /// what makes two racing `MarkVersionReady` calls serialise instead of
+    /// both reading `Published` and both writing `version:ready`. The mutant
+    /// that drops `FOR UPDATE` lets tx2 race straight through without
+    /// blocking and read the stale `Published` state.
+    @Test
+    void lockByIdBlocksASecondCallerUntilTheFirstTransactionCommits() throws Exception {
+        Function f = createFunction();
+        FunctionVersion v = FunctionVersion.publish(f.id(), 1, "oci://artifact", digest("2"), null, null, null,
+                manifest(), "prn_1", Instant.now());
+        UOW.inTransaction(tx -> {
+            REPO.persist(v, tx.dbTx());
+            return null;
+        });
+
+        CountDownLatch tx1HasLock = new CountDownLatch(1);
+        CountDownLatch releaseTx1 = new CountDownLatch(1);
+        CompletableFuture<Void> tx1Done = new CompletableFuture<>();
+
+        Thread t1 = Thread.ofVirtual().unstarted(() -> {
+            try {
+                UOW.inTransaction(tx -> {
+                    FunctionVersion locked = REPO.lockById(v.id(), tx.dbTx()).orElseThrow();
+                    tx1HasLock.countDown();
+                    try {
+                        releaseTx1.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    REPO.persist(locked.markReady(Instant.now()), tx.dbTx());
+                    return null;
+                });
+                tx1Done.complete(null);
+            } catch (RuntimeException e) {
+                tx1Done.completeExceptionally(e);
+            }
+        });
+        t1.start();
+
+        assertThat(tx1HasLock.await(5, TimeUnit.SECONDS)).as("tx1 acquired the row lock").isTrue();
+
+        CompletableFuture<FunctionVersion.VersionState> tx2State = new CompletableFuture<>();
+        Thread t2 = Thread.ofVirtual().start(() -> {
+            UOW.inTransaction(tx -> {
+                FunctionVersion locked = REPO.lockById(v.id(), tx.dbTx()).orElseThrow();
+                tx2State.complete(locked.state());
+                return null;
+            });
+        });
+
+        // tx1's transaction is still open (holding the FOR UPDATE lock), so tx2 must NOT have
+        // returned yet — the mutant that removes FOR UPDATE lets it race straight through.
+        Thread.sleep(300);
+        assertThat(tx2State.isDone()).as("tx2 must still be blocked on tx1's row lock").isFalse();
+
+        releaseTx1.countDown();
+        tx1Done.get(5, TimeUnit.SECONDS);
+
+        assertThat(tx2State.get(10, TimeUnit.SECONDS))
+                .as("tx2 sees tx1's committed Ready state, not the pre-lock Published snapshot")
+                .isInstanceOf(FunctionVersion.VersionState.Ready.class);
+        t1.join(5_000);
+        t2.join(5_000);
+    }
+
     // ── §8 M14: fn_versions.manifest with unknown keys reads ────────────────
 
     @Test

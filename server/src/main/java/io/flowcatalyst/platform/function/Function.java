@@ -133,9 +133,7 @@ public record Function(
         Objects.requireNonNull(version, "version");
         Objects.requireNonNull(principalId, "principalId");
         Objects.requireNonNull(now, "now");
-        if (!LIVE.equals(alias)) {
-            throw UseCaseException.validation("ALIAS_UNSUPPORTED", "alias must be '" + LIVE + "'");
-        }
+        requireSupportedAlias(alias);
         if (!id.equals(version.functionId())) {
             throw UseCaseException.validation("VERSION_NOT_OF_FUNCTION", "version does not belong to this function");
         }
@@ -166,6 +164,18 @@ public record Function(
         Function updatedFunction =
                 new Function(id, applicationId, address, owner, runtime, description, status, updated, createdAt, now);
         return new Promoted(updatedFunction, current.orElse(null));
+    }
+
+    /// The one home of the `ALIAS_UNSUPPORTED` rule (review fix, slice B3):
+    /// [#promote] calls it, and `PromoteVersion`'s `validate` phase calls it
+    /// too — so alias validity is rejected BEFORE the version-state check
+    /// (`VERSION_NOT_READY`) ever runs, and the message is written once.
+    ///
+    /// @throws UseCaseException validation `ALIAS_UNSUPPORTED` for any alias but [#LIVE]
+    public static void requireSupportedAlias(String alias) {
+        if (!LIVE.equals(alias)) {
+            throw UseCaseException.validation("ALIAS_UNSUPPORTED", "alias must be '" + LIVE + "'");
+        }
     }
 
     public Optional<String> liveVersionId() {

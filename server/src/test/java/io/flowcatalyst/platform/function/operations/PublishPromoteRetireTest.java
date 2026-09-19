@@ -120,6 +120,11 @@ class PublishPromoteRetireTest {
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
+    private static AliasChanged promote(AuthContext ac, FunctionAddress address, String alias, int version) {
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions)
+                .run(uow, new PromoteCommand(address, alias, version), EC));
+    }
+
     private static VersionRetired retire(AuthContext ac, FunctionAddress address, int version) {
         return Auth.runAs(ac, () -> RetireVersion.of(functions, versions)
                 .run(uow, new RetireCommand(address, version), EC));
@@ -363,5 +368,19 @@ class PublishPromoteRetireTest {
         AliasChanged rollback = promote(ANCHOR, f.address(), 2);
         assertThat(rollback.version()).as("rollback to an older, still-READY version works").isEqualTo(2);
         assertThat(rollback.previousVersionId()).isEqualTo(v3.id());
+    }
+
+    // ── Review fix, slice B3: alias validity is checked BEFORE version state ──
+
+    @Test
+    void anUnsupportedAliasOnAnUnreadyVersionIsAliasUnsupportedNotVersionNotReady() {
+        Function f = createFunction("aliasorder", new FunctionOwner.Platform());
+        publish(ANCHOR, f.address(), "v1"); // version 1, still PUBLISHED — never marked ready
+
+        // The mutant this pins: if PromoteVersion guarded version state before alias validity
+        // (or duplicated the check in `execute` instead of `validate`), this would surface as
+        // 409 VERSION_NOT_READY instead of 400 ALIAS_UNSUPPORTED.
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), "canary", 1),
+                UseCaseError.Validation.class, "ALIAS_UNSUPPORTED");
     }
 }
