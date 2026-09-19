@@ -129,6 +129,22 @@ public record TrustRoot(List<CertificateAuthority> cas, List<TransparencyLog> tl
         }
     }
 
+    /// An operator-supplied `trusted_root.json`, read from `path` (env
+    /// `FC_FN_TRUST_ROOT`, resolved in [io.flowcatalyst.server.Env] /
+    /// [io.flowcatalyst.server.Platform]) — for a private/on-prem Sigstore
+    /// instance whose Fulcio and Rekor the committed public-good root does
+    /// not cover, the same "path to real key material" shape
+    /// `FC_JWT_SIGNING_KEY_PATH` already uses. Throws unchecked, same
+    /// reasoning as [#sigstorePublicGood()]: this reads the platform's own
+    /// configuration at start-up, not attacker input.
+    public static TrustRoot fromFile(java.nio.file.Path path) {
+        try {
+            return parse(java.nio.file.Files.readString(path, StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException("failed to read trust root file " + path, e);
+        }
+    }
+
     private static byte[] decode(String base64) {
         return Base64.getDecoder().decode(base64);
     }

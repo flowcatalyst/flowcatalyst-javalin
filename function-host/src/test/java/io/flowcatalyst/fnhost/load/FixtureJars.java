@@ -36,12 +36,15 @@ import javax.tools.ToolProvider;
 /// code source, since the reactor resolves `function-api` from
 /// `target/classes`, not a packaged jar (CLAUDE.md build hygiene: never
 /// `mvn install` from a worktree).
-final class FixtureJars {
+/// Public (widened minimally, `docs/spec/function-host-reconciler.md` §3):
+/// the reconciler's own tests (package `io.flowcatalyst.fnhost.reconcile`)
+/// build fixture jars through this same builder rather than a second copy.
+public final class FixtureJars {
 
     private FixtureJars() {
     }
 
-    static Builder builder() {
+    public static Builder builder() {
         return new Builder();
     }
 
@@ -56,7 +59,7 @@ final class FixtureJars {
         }
     }
 
-    static final class Builder {
+    public static final class Builder {
 
         private final List<SourceFile> sources = new ArrayList<>();
         private final Map<String, byte[]> rawEntries = new LinkedHashMap<>();
@@ -66,7 +69,7 @@ final class FixtureJars {
         }
 
         /// One `.java` source to compile into the fixture jar.
-        Builder source(String className, String code) {
+        public Builder source(String className, String code) {
             sources.add(new SourceFile(className, code));
             return this;
         }
@@ -76,24 +79,24 @@ final class FixtureJars {
         /// under the API's own package (the `BUNDLES_API` fixtures). Never
         /// compiled, and never checked for validity: the refusal scan
         /// looks only at entry names.
-        Builder entry(String name, byte[] content) {
+        public Builder entry(String name, byte[] content) {
             rawEntries.put(name, content);
             return this;
         }
 
-        Builder entry(String name, String utf8Content) {
+        public Builder entry(String name, String utf8Content) {
             return entry(name, utf8Content.getBytes(StandardCharsets.UTF_8));
         }
 
         /// An extra compile classpath entry, ahead of the API classes —
         /// for a fixture whose source needs to see another fixture's
         /// already-compiled classes.
-        Builder classpath(Path dir) {
+        public Builder classpath(Path dir) {
             extraClasspath.add(dir);
             return this;
         }
 
-        Path build(Path targetJar) {
+        public Path build(Path targetJar) {
             try {
                 Path classesDir = Files.createTempDirectory("fixture-classes-");
                 if (!sources.isEmpty()) {

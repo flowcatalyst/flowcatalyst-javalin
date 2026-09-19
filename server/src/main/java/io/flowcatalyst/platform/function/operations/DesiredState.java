@@ -8,6 +8,7 @@ import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.SignerIdentity;
 import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
@@ -104,14 +105,25 @@ public final class DesiredState {
     /// manifest says so, else `"lazy"` — a candidate is ALWAYS `"lazy"`
     /// regardless of its own manifest's `warm` (spec §6.1: "a host fetches
     /// and verifies a candidate and reports it REGISTERED, never serves it").
+    /// `signer` (spec §0, R13) is the identity recorded at publish — omitted
+    /// (never `null` on the wire, `Json`'s `NON_ABSENT` default) when the
+    /// version was published with signatures off.
     public record FunctionEntry(String address, String functionId, String versionId, int version, String role,
                                 String mode, String digest, String artifactRef, String signatureBundle,
-                                JsonNode manifest) {
+                                JsonNode manifest, SignerView signer) {
 
         static FunctionEntry of(Function f, FunctionVersion v, String role) {
             String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
             return new FunctionEntry(f.address().render(), f.id(), v.id(), v.version(), role, mode,
-                    v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson());
+                    v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson(),
+                    SignerView.from(v.signer()));
+        }
+    }
+
+    /// The wire shape of a recorded signer (spec §0): `{issuer, subject}`.
+    public record SignerView(String issuer, String subject) {
+        static SignerView from(SignerIdentity signer) {
+            return signer == null ? null : new SignerView(signer.issuer(), signer.subject());
         }
     }
 

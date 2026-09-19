@@ -233,6 +233,27 @@
   <build>
     <plugins>
       <!--
+        The test-jar (function-host-reconciler.md §1): function-host's tests need
+        TestSigstore, TestPg and TestHttp (server test classes) to build fixture
+        signatures, an embedded Postgres, and drive real HTTP against an
+        in-process platform. function-host depends on this artifact with
+        <type>test-jar</type>, test scope. Nothing else in this module changes —
+        the production fc-server jar (maven-shade-plugin, above) is untouched.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!--
         The executable fc-server jar — the production artefact, mirroring Go's
         single static `fc-server` binary. Attached with the `exec` classifier so
         the thin jar stays the module's main artifact (fcdev shades that one):

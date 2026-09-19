@@ -173,6 +173,16 @@ class EnvTest {
                 .isEqualTo(io.flowcatalyst.platform.function.artifact.SignaturesMode.REQUIRED);
     }
 
+    /// `function-host-reconciler.md` §0: blank (the default) is the seam the
+    /// composition root reads as "use the committed public-good root, not an
+    /// operator-supplied file" — `Env` itself only carries the raw path.
+    @Test
+    void fnTrustRootPathDefaultsToBlank() {
+        assertThat(load().fnTrustRootPath()).isEmpty();
+        assertThat(load("FC_FN_TRUST_ROOT", "/etc/flowcatalyst/trusted_root.json").fnTrustRootPath())
+                .isEqualTo("/etc/flowcatalyst/trusted_root.json");
+    }
+
     @Test
     void canonicalNameWinsOverAlias() {
         var env = load(

@@ -606,8 +606,17 @@ public final class Platform {
         // §5.1 step 5, §8 P9: chosen ONCE here, the composition root — `off` is refused
         // outright unless FLOWCATALYST_DEV_MODE=true, so it cannot reach a production
         // task definition by typo or by intent (Signatures#resolve's own doc).
+        // FC_FN_TRUST_ROOT (function-host-reconciler.md §0): blank uses the committed
+        // Sigstore public-good root, same as before that variable existed; set, it
+        // points at an operator-supplied trusted_root.json (a private Sigstore
+        // instance). The supplier is lazy — Signatures.Off never calls it.
+        java.util.function.Supplier<io.flowcatalyst.platform.function.artifact.TrustRoot> trustRoot =
+                env.fnTrustRootPath().isBlank()
+                        ? io.flowcatalyst.platform.function.artifact.TrustRoot::sigstorePublicGood
+                        : () -> io.flowcatalyst.platform.function.artifact.TrustRoot.fromFile(
+                                java.nio.file.Path.of(env.fnTrustRootPath()));
         var functionSignatures = io.flowcatalyst.platform.function.artifact.Signatures.resolve(
-                env.fnSignaturesMode(), env.routerDevMode());
+                env.fnSignaturesMode(), env.routerDevMode(), trustRoot);
         // function-triggers.md replaces this once package F lands (spec §5.1 step 8).
         var functionTriggerSync = io.flowcatalyst.platform.function.operations.TriggerSync.none();
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,

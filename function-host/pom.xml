@@ -46,5 +46,43 @@
       <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      docs/spec/function-host-reconciler.md §1: the reconciler's tests need
+      TestSigstore (signed fixture bundles + a TrustRoot), TestPg (an embedded
+      Postgres) and TestHttp/the real Server (R12's in-process integration
+      pin) from the server module's own test sources. Maven never carries
+      test-scope dependencies transitively — even through a test-jar — so
+      every test-scope dependency TestPg/Server themselves need (embedded
+      Postgres + its platform binaries) is repeated here verbatim from
+      server/pom.xml, the same duplication fcdev/pom.xml and parity/pom.xml
+      already carry for the same reason (see fcdev/pom.xml's comment on
+      embedded-postgres). CLAUDE.md build hygiene: never `mvn install` from a
+      worktree — the reactor resolves this test-jar from server's own
+      target/test-classes when built with `-pl function-host -am`.
+    -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-server</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.zonky.test</groupId>
+      <artifactId>embedded-postgres</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- native Apple-silicon PG binaries (the default bundle only ships amd64 for macOS) -->
+      <groupId>io.zonky.test.postgres</groupId>
+      <artifactId>embedded-postgres-binaries-darwin-arm64v8</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.zonky.test.postgres</groupId>
+      <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

@@ -35,7 +35,8 @@ public interface ControlPlane {
 `function-api.md` §6.1; the manifest through `Manifest.readStored` (lenient — a newer platform may
 add keys). An entry the host cannot read (bad address, bad digest, unknown `role`) is **dropped with
 a WARN and reported `FAILED`** if it has an address and version, and never takes the rest of the
-document down with it. Unknown top-level keys are ignored.
+document down with it. An unreadable entry's address is **protected from unloading** for that
+cycle — a parse failure is not evidence the function is gone. Unknown top-level keys are ignored.
 
 `HttpControlPlane` (`java.net.http.HttpClient`, connect 5 s, request 30 s): bearer token from
 `TokenSource` — client-credentials against `<platform>/oauth/token`, cached until 60 s before
@@ -54,7 +55,10 @@ every version fetched and verified; `failures` — `(address, version) → error
 
 1. `desiredState(pool, etag)`. `ControlPlaneException` ⇒ keep serving what is loaded, log WARN, and
    **still send a heartbeat attempt** (it will likely fail too; that is fine) — a platform outage must
-   never unload a function. `NotModified` ⇒ skip to step 5 with the previous document.
+   never unload a function. `NotModified` ⇒ carry on with the previous document: prepare and load are
+   no-ops when nothing changed, a failed entry gets its retry, and idle unloading (step 4) is a
+   decision about *time*, which an unchanged document says nothing about. Only an exception skips
+   to step 5.
 2. **Prepare** every entry (live and candidate) not yet in `prepared`: `ArtifactStore.fetch(ref,
    digest)`; then signatures — `Signatures.Required`: bundle present, `verify(bundle, digest)` is
    `Verified`, and its signer **equals** the entry's `signer` (§0); an entry with no bundle or no
@@ -70,7 +74,8 @@ every version fetched and verified; `failures` — `(address, version) → error
    currently loaded, replace it now (a lazy function already in memory must not keep serving the old
    version until it happens to idle out); otherwise leave loading to first invocation —
    `LoadedFunction ensureLoaded(FunctionAddress)` is what D3 calls, and it loads from `prepared`
-   under a per-address lock so two first invocations load once. A `candidate` is never loaded.
+   under a per-address lock so two first invocations load once. A `candidate` is never loaded **and never routed**: it must not enter `lazyRoutes`, or
+   `ensureLoaded` would serve a version nobody promoted.
    `runtime: wasm` ⇒ failure `RUNTIME_UNSUPPORTED` (phase 3).
 4. **Unload.** Everything in the document's `unload`, and everything loaded or in `lazyRoutes` whose
    address is no longer a `live` entry ⇒ close and remove; their `prepared` artifacts are dropped from
@@ -98,7 +103,9 @@ A record read through the server's `EnvReader`: `FC_FN_POOL` (default `default`,
 `FC_FN_PLATFORM_URL`, `FC_FN_CLIENT_ID`, `FC_FN_CLIENT_SECRET` (required; masked `toString`),
 `FC_FN_HOST_ID` (default `<hostname>-<6 random base32>`, validated against the heartbeat's host-id
 rule), `FC_FN_SIGNATURES` + `FLOWCATALYST_DEV_MODE` (the same `Signatures.resolve` as the platform —
-one rule, one place), `FC_FN_MAX_LOADED` (default 200), `FC_FN_CACHE_DIR` (default
+one rule, one place), `FC_FN_TRUST_ROOT` (optional path to a `trusted_root.json`; the platform reads the same variable — a
+private Sigstore instance needs both sides to trust it, and one side alone is a publish that can
+never load), `FC_FN_MAX_LOADED` (default 200), `FC_FN_CACHE_DIR` (default
 `${java.io.tmpdir}/fc-fn-cache`). Missing required values fail with one message naming all of them.
 
 ## 2. Build change (authorised for this slice)
@@ -124,6 +131,8 @@ Time is a parameter; nothing sleeps except the loop tests, which use latches.
 | R8 | one unreadable entry is dropped and reported; the rest of the document is applied | fail the whole parse |
 | R9 | token: cached across calls; refreshed once on 401 then retried; second 401 surfaces; the secret and token appear in no log line (capture the logger) and no exception message | refresh on every call; log the token at debug |
 | R10 | loop: N triggers during a run ⇒ exactly one more run; `close()` interrupts a run blocked in the control plane and joins within 5 s; an exception in a run does not end the loop | run once per trigger; swallow the interrupt |
+| R1b | live v1 (lazy) + candidate v2: `ensureLoaded` returns **v1**; the candidate is in no route | let candidates through the role check |
+| R3b | the registry refusing a load (capacity, all warm) is a `FAILED` entry, not an exception out of `reconcileOnce` | let it propagate |
 | R11 | wasm entry ⇒ `RUNTIME_UNSUPPORTED`, others unaffected | — |
 | R12 | **in-process end to end** (platform `Server` on `TestPg`, signatures `Required` over a `TestSigstore` root on both sides, a `function-host` service principal): create → policy → publish (signed) → host reconciles ⇒ heartbeat ⇒ version `READY` ⇒ promote ⇒ next reconcile ⇒ `LOADED` (warm) and `GET …/status` shows this host with `LOADED`; retire-after-promote-v2 ⇒ v1 unloaded within one reconcile | — (integration pin) |
 | R13 | platform: desired state carries `signer` when recorded and omits it when not; bytes still deterministic | — |

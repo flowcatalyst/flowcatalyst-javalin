@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
+import io.flowcatalyst.platform.function.SignerIdentity;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
@@ -77,8 +78,12 @@ class DesiredStateTest {
     }
 
     private static FunctionVersion publish(Function f, int version, Manifest manifest) {
+        return publish(f, version, manifest, null);
+    }
+
+    private static FunctionVersion publish(Function f, int version, Manifest manifest, SignerIdentity signer) {
         FunctionVersion v = FunctionVersion.publish(f.id(), version, "oci://artifact", digest(f.id() + version),
-                null, null, null, manifest, "prn_publisher", Instant.now());
+                signer == null ? null : "bundle-json", null, signer, manifest, "prn_publisher", Instant.now());
         uow.inTransaction(tx -> {
             versions.persist(v, tx.dbTx());
             return null;
@@ -316,5 +321,49 @@ class DesiredStateTest {
         String first = Json.write(DESIRED.build(pool, now));
         String second = Json.write(DESIRED.build(pool, now));
         assertThat(second).as("mutant: any nondeterministic ordering breaks byte-identity").isEqualTo(first);
+    }
+
+    // ── R13 (function-host-reconciler.md §0): signer carried when recorded, omitted when not ──
+
+    @Test
+    void signerIsCarriedWhenTheVersionWasPublishedWithOneAndByteDeterminismStillHolds() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("signed" + fresh());
+        SignerIdentity signer = new SignerIdentity("https://issuer.example", "subject-" + fresh());
+        FunctionVersion v = publish(f, 1, manifestForPool(pool.value(), false), signer);
+        promote(f, v);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        DesiredState.FunctionEntry entry = doc.functions().getFirst();
+        assertThat(entry.signer()).as("mutant: drop the signer from the desired-state entry")
+                .isEqualTo(new DesiredState.SignerView(signer.issuer(), signer.subject()));
+
+        String json = Json.write(doc);
+        assertThat(json).contains("\"issuer\":\"https://issuer.example\"");
+        assertThat(json).contains("\"subject\":\"" + signer.subject() + "\"");
+
+        // Byte-determinism still holds with a signer present (spec §0 / P14).
+        Instant now = Instant.now();
+        String first = Json.write(DESIRED.build(pool, now));
+        String second = Json.write(DESIRED.build(pool, now));
+        assertThat(second).isEqualTo(first);
+    }
+
+    @Test
+    void signerIsOmittedNotNullWhenTheVersionWasPublishedWithoutOne() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("unsigned" + fresh());
+        FunctionVersion v = publish(f, 1, manifestForPool(pool.value(), false)); // no signer
+        promote(f, v);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        assertThat(doc.functions().getFirst().signer())
+                .as("mutant: emit a signer for a version published with signatures off").isNull();
+
+        String json = Json.write(doc);
+        assertThat(json).as("mutant: write null instead of omitting the absent signer field")
+                .doesNotContain("\"signer\"");
     }
 }

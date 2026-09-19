@@ -389,6 +389,16 @@ public record Env(
         // same division of labour as [#functionLimits]'s ceilings vs. this record's own
         // positivity check.
         SignaturesMode fnSignaturesMode,
+        // `FC_FN_TRUST_ROOT`, no default: an operator-supplied `trusted_root.json` path,
+        // for a private/on-prem Sigstore instance whose Fulcio and Rekor the committed
+        // public-good root (`TrustRoot#sigstorePublicGood`) does not cover — the same
+        // "path to real key material" shape as `FC_JWT_SIGNING_KEY_PATH`. Blank (the
+        // default) means the composition root uses the committed public-good root, same
+        // as before this existed. Read here, resolved to a `TrustRoot` in `Platform`
+        // (not here) so a test can inject its own `TrustRoot` supplier without touching
+        // the classpath resource or a file on disk, same division of labour as
+        // `#fnSignaturesMode` above.
+        String fnTrustRootPath,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
         // environment directly, or fcdev's map-loaded environment and the parity
@@ -556,6 +566,7 @@ public record Env(
                         e.integer("FC_FN_DEFAULT_DB_POOL_SIZE", FunctionLimits.DEFAULT_DB_POOL_SIZE),
                         e.integer("FC_FN_MAX_WARM_PER_HOST", FunctionLimits.DEFAULT_MAX_WARM_PER_HOST)),
                 SignaturesMode.parse(e.or("FC_FN_SIGNATURES", "required")),
+                e.get("FC_FN_TRUST_ROOT"),
                 e
         );
     }

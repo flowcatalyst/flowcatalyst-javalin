@@ -36,7 +36,11 @@ import java.util.List;
 /// tree of one leaf needs no audit-path hashes at all (RFC 6962: the root of
 /// a one-leaf tree *is* the leaf hash), which keeps every bundle here
 /// self-consistent without hand-rolling a multi-leaf Merkle tree.
-final class TestSigstore {
+/// Public (widened minimally, `docs/spec/function-host-reconciler.md`
+/// §1/§3): `function-host`'s reconciler tests build bundles and trust roots
+/// against this same miniature ecosystem via the `flowcatalyst-server`
+/// test-jar, rather than a second, drifting copy.
+public final class TestSigstore {
 
     static final String ISSUER_OID = "1.3.6.1.4.1.57264.1.8";
     static final String ISSUER_OID_DEPRECATED = "1.3.6.1.4.1.57264.1.1";
@@ -47,7 +51,7 @@ final class TestSigstore {
 
     /// What to bake into the leaf certificate; `null` on an optional field
     /// omits that extension entirely (used by the broken-variant tests).
-    record LeafSpec(
+    public record LeafSpec(
             Instant notBefore,
             Instant notAfter,
             boolean codeSigningEku,
@@ -58,7 +62,7 @@ final class TestSigstore {
             String keyAlgorithm,
             String rawIssuerExtensionHex
     ) {
-        static LeafSpec valid(Instant notBefore, Instant notAfter) {
+        public static LeafSpec valid(Instant notBefore, Instant notAfter) {
             return new LeafSpec(notBefore, notAfter, true, "uri",
                     "https://example.test/workflow.yml", ISSUER_OID, "https://example.test/issuer", "EC", null);
         }
@@ -102,9 +106,9 @@ final class TestSigstore {
         }
     }
 
-    record Ecosystem(X509Certificate rootCert, X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey) {
+    public record Ecosystem(X509Certificate rootCert, X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey) {
 
-        TrustRoot trustRootFor(Instant caFrom, Instant caUntil, Instant tlogFrom, Instant tlogUntil) throws GeneralSecurityException {
+        public TrustRoot trustRootFor(Instant caFrom, Instant caUntil, Instant tlogFrom, Instant tlogUntil) throws GeneralSecurityException {
             byte[] logSpki = logKey.getPublic().getEncoded();
             var ca = new TrustRoot.CertificateAuthority(List.of(rootCert.getEncoded()), caFrom, caUntil);
             var tlog = new TrustRoot.TransparencyLog(sha256(logSpki), logSpki, tlogFrom, tlogUntil);
@@ -115,7 +119,7 @@ final class TestSigstore {
     /// Builds a root CA and a leaf certificate it signs, with the extensions
     /// `spec` describes. `keyAlgorithm` other than `"EC"` produces an RSA
     /// leaf (for the "non-EC key ⇒ UNSUPPORTED_BUNDLE" case, spec §3.2 step 7).
-    static Ecosystem build(LeafSpec spec) {
+    public static Ecosystem build(LeafSpec spec) {
         try {
             Path dir = Files.createTempDirectory("sigstore-test");
             Path keystore = dir.resolve("ks.p12");
@@ -236,7 +240,7 @@ final class TestSigstore {
 
     // ---- bundle construction: a single-leaf tree, so the audit path is empty and root == leaf hash ----
 
-    static String validBundleJson(Ecosystem eco, byte[] artifactDigest, Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
+    public static String validBundleJson(Ecosystem eco, byte[] artifactDigest, Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
         return bundleJson(eco.leafCert(), eco.leafPrivateKey(), eco.logKey(), artifactDigest, artifactDigest, integratedTime, entryLogIndex);
     }
 
@@ -249,8 +253,10 @@ final class TestSigstore {
     /// is what the leaf key actually signs. Equal for every ordinary bundle —
     /// deliberately different only to build the C5-step-7 broken variant (a
     /// cryptographically wrong signature that is still internally consistent
-    /// with everything else).
-    static String bundleJson(X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey,
+    /// with everything else). Public: also how `function-host`'s R3 test
+    /// builds a bundle that fails verification at exactly step 7
+    /// (`BAD_SIGNATURE`), never earlier.
+    public static String bundleJson(X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey,
                               byte[] declaredDigest, byte[] signOverDigest, Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
         return bundleJson(leafCert, leafPrivateKey, logKey, declaredDigest, signOverDigest,
                 HexFormat.of().formatHex(declaredDigest), integratedTime, entryLogIndex);
