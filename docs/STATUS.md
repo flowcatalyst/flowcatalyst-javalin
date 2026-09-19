@@ -45,8 +45,15 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   succeed on the Go leg and called `router-config`'s expected-diffs stale. Go has no such role in
   code (`grep` clean at `da983c4`); the role row most likely comes from the Java seeder the harness
   runs into the shared seed. The full-corpus stale-entry check will settle it.
-- **Next: package D** (the host) — spec first; `function-api` module and the loader/isolation core
-  have no open questions. The invoke path needs the trigger rulings and T0.
+- **Package D slice D1 landed** (`9a9632da`, `17d479c1`): spec `docs/spec/function-host-core.md`. Two new
+  reactor modules — `function-api` (zero deps, `release 21`, no preview; sealed `Invocation`/`Result`,
+  immutable values) and `function-host` (`io.flowcatalyst.fnhost.load`: `ApiOnlyParentLoader`,
+  `JvmFunctionLoader` with refusals, `LoadedFunction`, `FunctionRegistry`). Isolation tests die when
+  the filter is replaced by the host loader; the leak test has a control that really leaks.
+  121 tests. No verticle per function (spec §0).
+- **Next: D2 the reconciler** (desired state → fetch → verify → load → heartbeat) — no owner input
+  needed. D3 (invoke path) needs the trigger rulings and T0. Long unattended runs: the machine's
+  maintenance sleep stalled an agent on 2026-09-19 — `caffeinate -dims` first.
 
 ## Next: the verification plan (2026-09-11)
 
