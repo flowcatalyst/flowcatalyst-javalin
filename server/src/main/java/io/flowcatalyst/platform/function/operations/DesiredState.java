@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.function.EndpointAuth;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
+import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
@@ -147,15 +148,25 @@ public final class DesiredState {
     /// whose manifest has a `webhook` endpoint AND whose application has an
     /// active service account with a secret — it changes the document's
     /// bytes on purpose, so a rotation changes the `ETag` (spec §10 V7).
+    /// `applicationId`/`clientId` (spec `function-host-listener.md` §1) are
+    /// the function's owning application and client — the host needs them
+    /// to decide *reach* for a versioned call (`function-invocation.md` §4):
+    /// both are omitted together for a platform-owned function ([FunctionOwner.Platform]),
+    /// since a platform function's reach check is "anchor, full stop" and
+    /// neither field is ever consulted for it.
     public record FunctionEntry(String address, String functionId, String versionId, int version, String role,
                                 String mode, String digest, String artifactRef, String signatureBundle,
-                                JsonNode manifest, SignerView signer, String webhookSigningSecret) {
+                                JsonNode manifest, SignerView signer, String webhookSigningSecret,
+                                String applicationId, String clientId) {
 
         static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret) {
             String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
+            boolean platformOwned = f.owner() instanceof FunctionOwner.Platform;
+            String applicationId = platformOwned ? null : f.applicationId();
+            String clientId = platformOwned ? null : f.owner().clientIdOrNull();
             return new FunctionEntry(f.address().render(), f.id(), v.id(), v.version(), role, mode,
                     v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson(),
-                    SignerView.from(v.signer()), webhookSigningSecret);
+                    SignerView.from(v.signer()), webhookSigningSecret, applicationId, clientId);
         }
 
         /// Masks the signing secret (spec §6: "the host never logs it"; the
@@ -170,7 +181,8 @@ public final class DesiredState {
                     + ", artifactRef=" + artifactRef
                     + ", signatureBundle=" + (signatureBundle == null ? "null" : signatureBundle.length() + " chars")
                     + ", manifest=" + manifest + ", signer=" + signer
-                    + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>") + "]";
+                    + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>")
+                    + ", applicationId=" + applicationId + ", clientId=" + clientId + "]";
         }
     }
 

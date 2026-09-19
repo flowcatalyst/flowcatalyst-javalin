@@ -228,6 +228,7 @@ public final class Permissions {
     public static final String FUNCTION_PROMOTE = "platform:function:alias:promote";
     public static final String FUNCTION_POLICY_MANAGE = "platform:function:policy:manage";
     public static final String FUNCTION_HOST_CONTROL = "platform:function:host:control";
+    public static final String FUNCTION_VERSION_INVOKE = "platform:function:version:invoke";
 
     /// Wildcard.
     public static final String ADMIN_ALL = "platform:*:*:*";

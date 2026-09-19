@@ -276,6 +276,9 @@ public enum Permission {
     // function / host
     FUNCTION_HOST_CONTROL("platform:function:host:control"),
 
+    // function / version (smoke-testing a versioned call, function-invocation.md §4)
+    FUNCTION_VERSION_INVOKE("platform:function:version:invoke"),
+
     // super-admin wildcard
     SUPER_ADMIN("platform:*:*:*");
 

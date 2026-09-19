@@ -93,7 +93,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(182);
+        assertThat(total).isEqualTo(184);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission
@@ -103,19 +103,20 @@ class PlatformCatalogueTest {
         assertThat(roles.get(14).name()).isEqualTo("platform:router");
         assertThat(roles.get(14).permissions()).containsExactly(Permissions.ADMIN_DISPATCH_POOL_READ);
 
-        // function-api.md §2: messaging-admin gains the five (view/manage/publish/
-        // promote/policy-manage), never host-control.
+        // function-api.md §2 + function-invocation.md §1: messaging-admin gains the
+        // six (view/manage/publish/promote/policy-manage/version-invoke), never host-control.
         RoleDefinition messagingAdmin = roles.get(9);
         assertThat(messagingAdmin.name()).isEqualTo("platform:messaging-admin");
         assertThat(messagingAdmin.permissions()).contains(
                 Permissions.FUNCTION_VIEW, Permissions.FUNCTION_MANAGE, Permissions.FUNCTION_PUBLISH,
-                Permissions.FUNCTION_PROMOTE, Permissions.FUNCTION_POLICY_MANAGE)
+                Permissions.FUNCTION_PROMOTE, Permissions.FUNCTION_POLICY_MANAGE, Permissions.FUNCTION_VERSION_INVOKE)
                 .doesNotContain(Permissions.FUNCTION_HOST_CONTROL);
 
         // Appended, not inserted: every pre-existing role above kept its index.
         assertThat(roles.get(15).name()).isEqualTo("platform:function-publisher");
         assertThat(roles.get(15).permissions()).containsExactly(
-                Permissions.FUNCTION_VIEW, Permissions.FUNCTION_PUBLISH, Permissions.FUNCTION_PROMOTE);
+                Permissions.FUNCTION_VIEW, Permissions.FUNCTION_PUBLISH, Permissions.FUNCTION_PROMOTE,
+                Permissions.FUNCTION_VERSION_INVOKE);
         assertThat(roles.get(16).name()).isEqualTo("platform:function-host");
         assertThat(roles.get(16).permissions()).containsExactly(Permissions.FUNCTION_HOST_CONTROL);
     }

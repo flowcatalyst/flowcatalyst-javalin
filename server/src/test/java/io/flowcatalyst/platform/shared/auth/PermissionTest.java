@@ -63,7 +63,8 @@ class PermissionTest {
             "platform:function:version:publish", "FUNCTION_PUBLISH",
             "platform:function:alias:promote", "FUNCTION_PROMOTE",
             "platform:function:policy:manage", "FUNCTION_POLICY_MANAGE",
-            "platform:function:host:control", "FUNCTION_HOST_CONTROL");
+            "platform:function:host:control", "FUNCTION_HOST_CONTROL",
+            "platform:function:version:invoke", "FUNCTION_VERSION_INVOKE");
 
     /// `<RESOURCE>_<ACTION>`, `APP_SVC_` prefix for the application-service
     /// context, `FUNCTION_CONTEXT_NAMES` for the function context,

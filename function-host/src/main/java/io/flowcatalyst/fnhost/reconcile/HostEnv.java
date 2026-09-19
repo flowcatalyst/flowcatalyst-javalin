@@ -14,10 +14,19 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /// The host process's own environment (spec `function-host-reconciler.md`
-/// §1.4), read through the server's [EnvReader] — one rule, one place for
-/// every `envOr`/`envBool` lookup, same as `io.flowcatalyst.server.Env`.
+/// §1.4, extended by `function-host-listener.md` §2 with the listener's own
+/// three variables), read through the server's [EnvReader] — one rule, one
+/// place for every `envOr`/`envBool` lookup, same as `io.flowcatalyst.server.Env`.
+///
+/// @param port            `FC_FN_PORT` — the listener's bind port (default 8080)
+/// @param maxConcurrency  `FC_FN_MAX_CONCURRENCY` — the host-global invocation
+///                        permit ceiling (default 512, spec §2 step 7)
+/// @param drainTimeoutSeconds `FC_DRAIN_TIMEOUT_SECONDS` — how long [#close]
+///                        waits for in-flight requests before closing anyway
+///                        (default 60, spec §5)
 public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String clientSecret, String hostId,
-                       Signatures signatures, int maxLoaded, Path cacheDir) {
+                       Signatures signatures, int maxLoaded, Path cacheDir, int port, int maxConcurrency,
+                       int drainTimeoutSeconds) {
 
     /// The heartbeat's own host-id rule (`function-api.md` §6.2): 1-100
     /// characters of `[A-Za-z0-9._:-]`.
@@ -103,8 +112,12 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
 
         int maxLoaded = e.integer("FC_FN_MAX_LOADED", 200);
         Path cacheDir = Path.of(e.or("FC_FN_CACHE_DIR", System.getProperty("java.io.tmpdir") + "/fc-fn-cache"));
+        int port = e.integer("FC_FN_PORT", 8080);
+        int maxConcurrency = e.integer("FC_FN_MAX_CONCURRENCY", 512);
+        int drainTimeoutSeconds = e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60);
 
-        return new HostEnv(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir);
+        return new HostEnv(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir,
+                port, maxConcurrency, drainTimeoutSeconds);
     }
 
     private static String defaultHostId() {
@@ -138,6 +151,7 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
     public String toString() {
         return "HostEnv[pool=" + pool + ", platformUrl=" + platformUrl + ", clientId=" + clientId
                 + ", clientSecret=<redacted>, hostId=" + hostId + ", signatures=" + signatures
-                + ", maxLoaded=" + maxLoaded + ", cacheDir=" + cacheDir + "]";
+                + ", maxLoaded=" + maxLoaded + ", cacheDir=" + cacheDir + ", port=" + port
+                + ", maxConcurrency=" + maxConcurrency + ", drainTimeoutSeconds=" + drainTimeoutSeconds + "]";
     }
 }

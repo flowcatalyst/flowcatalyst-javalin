@@ -12,16 +12,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 /// installed with [#desiredStateReturns]; every [#heartbeat] is recorded
 /// (and can also be scripted to fail, for the "heartbeat itself fails" half
 /// of R6). Both call counts are tracked for tests that assert "no refetch,
-/// no reload" (R6).
-final class FakeControlPlane implements ControlPlane {
+/// no reload" (R6). Public (widened for D3, same reasoning as D1's
+/// `FixtureJars`, `function-host-listener.md` §6): the listener's own tests
+/// (package `io.flowcatalyst.fnhost.http`) build their `Reconciler` fixtures
+/// through this same fake rather than a second copy.
+public final class FakeControlPlane implements ControlPlane {
 
     @FunctionalInterface
-    interface DesiredStateScript {
+    public interface DesiredStateScript {
         Fetched apply(DnsLabel pool, String knownEtag) throws ControlPlaneException, InterruptedException;
     }
 
     @FunctionalInterface
-    interface HeartbeatScript {
+    public interface HeartbeatScript {
         void apply(HeartbeatReport report) throws ControlPlaneException;
     }
 
@@ -33,25 +36,25 @@ final class FakeControlPlane implements ControlPlane {
     private final AtomicInteger desiredStateCalls = new AtomicInteger();
     private final AtomicInteger heartbeatCalls = new AtomicInteger();
 
-    void desiredStateReturns(DesiredStateScript script) {
+    public void desiredStateReturns(DesiredStateScript script) {
         this.desiredStateScript = script;
     }
 
-    void heartbeatDoes(HeartbeatScript script) {
+    public void heartbeatDoes(HeartbeatScript script) {
         this.heartbeatScript = script;
     }
 
-    List<HeartbeatReport> heartbeats() {
+    public List<HeartbeatReport> heartbeats() {
         synchronized (heartbeats) {
             return List.copyOf(heartbeats);
         }
     }
 
-    int desiredStateCallCount() {
+    public int desiredStateCallCount() {
         return desiredStateCalls.get();
     }
 
-    int heartbeatCallCount() {
+    public int heartbeatCallCount() {
         return heartbeatCalls.get();
     }
 

@@ -168,6 +168,16 @@ class DesiredStateTest {
         return f;
     }
 
+    private static Function createPlatformFunction(String tag, String applicationId) {
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("ds" + RUN), new DnsLabel("svc"), new DnsLabel(tag));
+        Function f = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+        return f;
+    }
+
     private static Manifest manifestWebhook(String pool) {
         String json = """
                 {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s",
@@ -657,5 +667,47 @@ class DesiredStateTest {
         // The wire body DOES carry the real secret (the host needs it) — masking display only.
         String json = Json.write(doc);
         assertThat(json).contains(secret);
+    }
+
+    // ── function-host-listener.md §1: applicationId/clientId for reach ─────
+
+    @Test
+    void applicationIdAndClientIdAreCarriedForAClientOwnedFunction() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-owner-" + fresh());
+        Function f = createFunctionForApp("owned" + fresh(), appId);
+        promote(f, publish(f, 1, manifestForPool(pool.value(), false)));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        DesiredState.FunctionEntry entry = doc.functions().getFirst();
+        assertThat(entry.applicationId()).as("mutant: never carry applicationId").isEqualTo(appId);
+        assertThat(entry.clientId()).as("mutant: never carry clientId").isEqualTo("clt_" + RUN);
+
+        String json = Json.write(doc);
+        assertThat(json).contains("\"applicationId\":\"" + appId + "\"");
+        assertThat(json).contains("\"clientId\":\"clt_" + RUN + "\"");
+    }
+
+    @Test
+    void applicationIdAndClientIdAreBothOmittedForAPlatformOwnedFunction() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("ds-plat-" + fresh());
+        Function f = createPlatformFunction("plat" + fresh(), appId);
+        promote(f, publish(f, 1, manifestForPool(pool.value(), false)));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(1);
+        DesiredState.FunctionEntry entry = doc.functions().getFirst();
+        assertThat(entry.applicationId())
+                .as("mutant: carry applicationId even for a platform-owned function").isNull();
+        assertThat(entry.clientId())
+                .as("mutant: carry clientId even for a platform-owned function").isNull();
+
+        String json = Json.write(doc);
+        assertThat(json).as("mutant: write null instead of omitting applicationId")
+                .doesNotContain("\"applicationId\"");
+        assertThat(json).as("mutant: write null instead of omitting clientId")
+                .doesNotContain("\"clientId\"");
     }
 }

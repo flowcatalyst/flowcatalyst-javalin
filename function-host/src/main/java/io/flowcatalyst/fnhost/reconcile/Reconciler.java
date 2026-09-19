@@ -26,10 +26,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.atomic.AtomicLong;
 
 /// Desired state → fetch → verify → load → heartbeat, one cycle at a time
 /// (`docs/spec/function-host-reconciler.md` §1.2). [ReconcileLoop] is what
@@ -88,6 +90,24 @@ public final class Reconciler {
     /// for the same address load it exactly once (spec §1.2 step 3, R1).
     private final Map<FunctionAddress, Object> loadLocks = new ConcurrentHashMap<>();
 
+    /// D3 (`function-host-listener.md` §3, H3): the live entry's CURRENT
+    /// webhook signing secret per address, as last seen in an applied
+    /// document — kept so a rotation can be detected against the NEXT one.
+    private final Map<FunctionAddress, String> currentSecretByAddress = new ConcurrentHashMap<>();
+
+    /// D3: the secret a rotation displaced, and the reconcile number after
+    /// which it stops being accepted (spec §3: "accepted until the second
+    /// reconcile after the change, then dropped").
+    private final Map<FunctionAddress, PreviousSecret> previousSecretByAddress = new ConcurrentHashMap<>();
+
+    private record PreviousSecret(String secret, long validThroughReconcile) {
+    }
+
+    /// D3: incremented once per [#reconcileOnce] call (regardless of outage),
+    /// so [#previousWebhookSecret] can answer "has the second reconcile after
+    /// a rotation happened yet".
+    private final AtomicLong reconcileCounter = new AtomicLong();
+
     private volatile String etag;
     private volatile DesiredDocument document;
     private volatile boolean draining;
@@ -144,6 +164,7 @@ public final class Reconciler {
     /// wait and stops there.
     public void reconcileOnce(Instant now) {
         Objects.requireNonNull(now, "now");
+        long reconcileNumber = reconcileCounter.incrementAndGet();
         DesiredDocument doc;
         boolean outage = false;
         try {
@@ -155,6 +176,7 @@ public final class Reconciler {
                 case ControlPlane.Fetched.Changed(String newEtag, DesiredDocument newDoc) -> {
                     etag = newEtag;
                     document = newDoc;
+                    updateSecretHistory(newDoc, reconcileNumber);
                 }
             }
             doc = document;
@@ -173,6 +195,7 @@ public final class Reconciler {
         if (doc != null && !outage) {
             prepare(doc);
             load(doc);
+            checkSigningSecrets(doc);
             unload(doc, now);
         }
         if (doc != null) {
@@ -492,6 +515,143 @@ public final class Reconciler {
         if (removed != null) {
             removed.close();
         }
+    }
+
+    // ── D3 (function-host-listener.md §3): webhook signing secret tracking ──
+
+    /// Records a rotation the moment a NEW document changes a live entry's
+    /// webhook secret: the displaced value becomes the "previous" secret,
+    /// accepted through reconcile `reconcileNumber + 1` (spec §3: "accepted
+    /// until the second reconcile after the change, then dropped" — this is
+    /// that reconcile PLUS one more).
+    private void updateSecretHistory(DesiredDocument doc, long reconcileNumber) {
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            if (entry.role() != DesiredDocument.Role.LIVE) {
+                continue;
+            }
+            String newSecret = entry.webhookSigningSecret();
+            String oldSecret = currentSecretByAddress.get(entry.address());
+            if (Objects.equals(oldSecret, newSecret)) {
+                continue;
+            }
+            if (oldSecret != null) {
+                previousSecretByAddress.put(entry.address(), new PreviousSecret(oldSecret, reconcileNumber + 1));
+            }
+            if (newSecret != null) {
+                currentSecretByAddress.put(entry.address(), newSecret);
+            } else {
+                currentSecretByAddress.remove(entry.address());
+            }
+        }
+    }
+
+    /// Spec §3: "No secret in desired state ⇒ every webhook call is 401
+    /// (fail closed) and the heartbeat reports the function FAILED:
+    /// NO_SIGNING_SECRET" — a live entry with a `webhook` endpoint but no
+    /// secret is flagged in `failures` AFTER [#load] (never before — it must
+    /// not stop the entry from loading and serving its `platform`/`none`
+    /// endpoints), so it shows FAILED in the heartbeat without ever being
+    /// unloaded or refused.
+    private void checkSigningSecrets(DesiredDocument doc) {
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            if (entry.role() != DesiredDocument.Role.LIVE || !hasWebhookEndpoint(entry.manifest())) {
+                continue;
+            }
+            Key key = new Key(entry.address(), entry.version());
+            if (entry.webhookSigningSecret() == null) {
+                failures.put(key, "NO_SIGNING_SECRET");
+            } else if ("NO_SIGNING_SECRET".equals(failures.get(key))) {
+                failures.remove(key);
+            }
+        }
+    }
+
+    private static boolean hasWebhookEndpoint(io.flowcatalyst.platform.function.Manifest manifest) {
+        return manifest.endpoints().stream()
+                .anyMatch(e -> e.auth() == io.flowcatalyst.platform.function.EndpointAuth.WEBHOOK);
+    }
+
+    /// The CURRENT webhook signing secret for `address`'s live entry, or
+    /// empty when none is recorded (spec §3).
+    public Optional<String> currentWebhookSecret(FunctionAddress address) {
+        return Optional.ofNullable(currentSecretByAddress.get(address));
+    }
+
+    /// The PREVIOUS webhook signing secret for `address`, still accepted
+    /// (spec §3's rotation window), or empty once it has expired or none was
+    /// ever recorded.
+    public Optional<String> previousWebhookSecret(FunctionAddress address) {
+        PreviousSecret p = previousSecretByAddress.get(address);
+        if (p == null) {
+            return Optional.empty();
+        }
+        if (reconcileCounter.get() > p.validThroughReconcile()) {
+            previousSecretByAddress.remove(address, p);
+            return Optional.empty();
+        }
+        return Optional.of(p.secret());
+    }
+
+    /// How many times [#reconcileOnce] has run — the clock [#previousWebhookSecret]'s
+    /// rotation window is measured against (spec §3).
+    public long reconcileCount() {
+        return reconcileCounter.get();
+    }
+
+    // ── D3 (function-host-listener.md §2-§4): what the listener needs ──────
+
+    /// The current document's LIVE entry for `address`, or `null` — what an
+    /// unversioned call resolves against (spec §2 step 3): endpoint match,
+    /// auth mode and permits all read this entry's manifest, regardless of
+    /// whether the version has finished loading yet.
+    public DesiredDocument.Entry liveEntry(FunctionAddress address) {
+        DesiredDocument doc = document;
+        if (doc == null) {
+            return null;
+        }
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            if (entry.role() == DesiredDocument.Role.LIVE && entry.address().equals(address)) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /// The current document's entry for `address` at exactly `version` —
+    /// live OR candidate (spec §4 step 4: "the version must be an entry of
+    /// the current desired-state document (live or candidate)") — or `null`
+    /// when no such entry exists (`VERSION_NOT_AVAILABLE`).
+    public DesiredDocument.Entry entryFor(FunctionAddress address, int version) {
+        DesiredDocument doc = document;
+        if (doc == null) {
+            return null;
+        }
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            if (entry.address().equals(address) && entry.version() == version) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    /// Loads `entry`'s version fresh from `prepared` — for a versioned call
+    /// pinning a candidate (spec §4: "the host loads the candidate lazily for
+    /// it"), never touching the registry's live slot or `lazyRoutes`. Returns
+    /// `null` when the version is not (yet) prepared, or its load is refused.
+    /// The caller ([io.flowcatalyst.fnhost.http.PinnedVersions]) owns the
+    /// resulting [LoadedFunction]'s lifecycle.
+    public LoadedFunction loadPinned(DesiredDocument.Entry entry) {
+        Objects.requireNonNull(entry, "entry");
+        Prepared p = prepared.get(entry.versionId());
+        if (p == null) {
+            return null;
+        }
+        LoadOutcome outcome =
+                loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
+        return switch (outcome) {
+            case Loaded(LoadedFunction fn) -> fn;
+            case Refused ignored -> null;
+        };
     }
 
     // ── step 5: heartbeat ────────────────────────────────────────────────

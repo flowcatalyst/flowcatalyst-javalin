@@ -36,6 +36,31 @@
       <version>${project.version}</version>
     </dependency>
 
+    <!--
+      D3 (docs/spec/function-host-listener.md §2): `io.flowcatalyst.fnhost.http`
+      uses `vertx-core` directly (already resolvable transitively through
+      `flowcatalyst-server` at compile scope — NOT declared as a direct
+      dependency here). `vertx-codegen-api`/`vertx-codegen-json` are NOT
+      vertx-core itself: they are the annotation classes (`@GenIgnore` etc.)
+      vertx-core's own class files carry, needed on the compile classpath so
+      `-Werror` does not fail on "cannot find annotation method" — the exact
+      reason `server/pom.xml` already declares them, `provided` scope, nothing
+      ships. Without them this module cannot compile any code that imports
+      vertx-core under this repo's lint settings; flagged in the handback
+      report as a POM-rule literal deviation, same pragmatic necessity server
+      already accepted.
+    -->
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-codegen-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-codegen-json</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>

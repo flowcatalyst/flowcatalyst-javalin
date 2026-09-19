@@ -5,10 +5,11 @@
 # R3′) and matches Go only once Go mirrors it — see SeederTest#rolesMatchGo. The 21 `perm` rows
 # added to iam-admin/iam-readonly/admin/admin-readonly/viewer (`docs/spec/reach-only-routes.md`
 # §2: IdP, email-domain-mapping, config, CORS-origin) are Java-first the same way. platform:
-# function-publisher, platform:function-host (roles + their perm rows) and the five function
+# function-publisher, platform:function-host (roles + their perm rows) and the six function
 # permissions added to platform:messaging-admin are Java-first the same way again
-# (`docs/spec/function-api.md` §2, work package B slice B1) — there is no Go for the function
-# platform at all.
+# (`docs/spec/function-api.md` §2, work package B slice B1; `platform:function:version:invoke`
+# added by `docs/spec/function-invocation.md` §1, package D slice D3) — there is no Go for the
+# function platform at all.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -154,6 +155,7 @@ perm	platform:messaging-admin	platform:function:function:manage
 perm	platform:messaging-admin	platform:function:version:publish
 perm	platform:messaging-admin	platform:function:alias:promote
 perm	platform:messaging-admin	platform:function:policy:manage
+perm	platform:messaging-admin	platform:function:version:invoke
 perm	platform:viewer	platform:iam:user:view
 perm	platform:viewer	platform:iam:role:view
 perm	platform:viewer	platform:iam:client-access:view
@@ -207,6 +209,7 @@ perm	platform:router	platform:messaging:dispatch-pool:view
 perm	platform:function-publisher	platform:function:function:view
 perm	platform:function-publisher	platform:function:version:publish
 perm	platform:function-publisher	platform:function:alias:promote
+perm	platform:function-publisher	platform:function:version:invoke
 perm	platform:function-host	platform:function:host:control
 eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user

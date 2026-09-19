@@ -130,7 +130,7 @@ class ReconcilerTest {
 
         DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, digest, TestFixtures.fileRef(jar), null,
-                null, TestFixtures.jvmManifest(POOL.value(), true), null); // warm manifest — must still never load
+                null, TestFixtures.jvmManifest(POOL.value(), true), null, null, null); // warm manifest — must still never load
         fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
 
@@ -156,7 +156,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, false);
         DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null);
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null);
         DesiredDocument doc = new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", doc));
 
@@ -199,7 +199,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, true);
         DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null);
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null);
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of())));
 
@@ -377,7 +377,7 @@ class ReconcilerTest {
                 "{\"runtime\":\"jvm\",\"entrypoint\":\"nope.NoSuchClass\",\"pool\":\"" + POOL.value() + "\",\"warm\":true}"));
         DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, badEntrypoint, null);
+                TestFixtures.fileRef(jar2), null, null, badEntrypoint, null, null, null);
         fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag2",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
         r.reconcileOnce(Instant.now());
@@ -836,7 +836,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jvmJar), TestFixtures.fileRef(jvmJar), null, null, true);
         DesiredDocument.Entry wasmEntry = new DesiredDocument.Entry(TestFixtures.ADDR_B, "fnc_b", "w1", 1,
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(wasmJar),
-                TestFixtures.fileRef(wasmJar), null, null, TestFixtures.wasmManifest(POOL.value()), null);
+                TestFixtures.fileRef(wasmJar), null, null, TestFixtures.wasmManifest(POOL.value()), null, null, null);
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(jvmEntry, wasmEntry), List.of(), List.of())));
 
@@ -871,7 +871,7 @@ class ReconcilerTest {
                                                      String signatureBundle, SignerIdentity signer, boolean warm) {
         return new DesiredDocument.Entry(address, "fnc_" + address.name().value(), versionId, version,
                 DesiredDocument.Role.LIVE, mode, digest, artifactRef, signatureBundle, signer,
-                TestFixtures.jvmManifest(POOL.value(), warm), null);
+                TestFixtures.jvmManifest(POOL.value(), warm), null, null, null);
     }
 
     private static byte[] rawDigest(Digest digest) {
