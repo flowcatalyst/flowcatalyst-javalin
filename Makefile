@@ -23,7 +23,7 @@ MVN := mvn
 NO_EMPTY := -Dsurefire.failIfNoSpecifiedTests=false
 
 .DEFAULT_GOAL := help
-.PHONY: help test test-router test-db test-one verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk
+.PHONY: help test test-router test-db test-one fnhost-smoke verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -49,6 +49,10 @@ test-router: ## Just the message router (45 classes)
 
 test-db: ## Migrator, schema fingerprint and Go adoption (docs/database.md)
 	$(MVN) -pl server -am test -Dtest='Migrator*,*Fingerprint*,*Adoption*' $(NO_EMPTY)
+
+fnhost-smoke: ## Package the fc-fnhost exec jar, then run it for real (P9, docs/spec/function-host-process.md §4)
+	$(MVN) -q -DskipTests -pl function-host -am package
+	$(MVN) -pl function-api,function-host -am test -Dtest='FnHostSmokeTest' $(NO_EMPTY)
 
 test-one: ## One class or pattern: make test-one T=PoolTest
 	@[ -n "$(T)" ] || { echo "usage: make test-one T=<ClassName|pattern>"; exit 2; }

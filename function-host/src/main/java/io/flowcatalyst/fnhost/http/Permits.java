@@ -3,6 +3,7 @@ package io.flowcatalyst.fnhost.http;
 import io.flowcatalyst.platform.function.FunctionAddress;
 
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 
@@ -71,6 +72,27 @@ public final class Permits {
     public int functionAvailable(FunctionAddress address) {
         Sized sized = perFunction.get(address);
         return sized == null ? -1 : sized.semaphore().availablePermits();
+    }
+
+    /// D5 (`function-host-process.md` §2): the addresses this instance has
+    /// ever sized a per-function semaphore for, as of now — what
+    /// `fc_fn_permits_available{scope="function",...}`'s scrape-time
+    /// callback iterates over.
+    public Set<FunctionAddress> knownAddresses() {
+        return Set.copyOf(perFunction.keySet());
+    }
+
+    /// D5: drops `address`'s per-function semaphore once its function has
+    /// left desired state — otherwise this map only ever grows (the class
+    /// doc's own "created lazily... harmless" note covers a permit already
+    /// checked out of a replaced semaphore, not an address that will never
+    /// be seen again). Never called while a permit for `address` might still
+    /// be outstanding in production (the reconciler only reports an address
+    /// gone once nothing routes to it any more); a permit released into a
+    /// forgotten semaphore afterwards is still harmless for the same reason
+    /// the class doc already gives.
+    public void forget(FunctionAddress address) {
+        perFunction.remove(Objects.requireNonNull(address, "address"));
     }
 
     private Semaphore semaphoreFor(FunctionAddress address, int size) {

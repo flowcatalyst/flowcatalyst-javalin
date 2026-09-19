@@ -7,6 +7,14 @@
 #
 # Runs under busybox ash on Alpine: POSIX sh only, no bashisms, no `bc`.
 # $(( )) is 64-bit there, which the arithmetic below relies on.
+#
+# FC_JVM_METASPACE_FENCE=true (default: unset/off — the fc-server image never
+# sets it, so its computed flags are byte-identical to before this variable
+# existed): also derives -XX:MaxMetaspaceSize, a fraction (25%) of the same
+# container limit, floored at 32 MiB. Function-host-only (function-host/Dockerfile
+# sets it): a function is a class loader, so an unbounded metaspace turns a
+# leak into a host OOM-kill instead of a catchable `OutOfMemoryError:
+# Metaspace` that fails one load (docs/spec/function-host-process.md §3).
 set -eu
 
 warn() {
@@ -86,4 +94,17 @@ else
     warn "limit $L bytes -> -Xmx${xmx_mib}m -XX:MaxDirectMemorySize=${direct_mib}m"
 fi
 
-printf -- "-Xmx%sm -XX:MaxDirectMemorySize=%sm\n" "$xmx_mib" "$direct_mib"
+metaspace_flag=""
+if [ "${FC_JVM_METASPACE_FENCE:-false}" = "true" ]; then
+    metaspace_bytes=$(( L * 25 / 100 ))
+    metaspace_mib=$(( metaspace_bytes / one_mib ))
+    if [ "$metaspace_mib" -lt 32 ]; then
+        warn "limit $L bytes gives a computed -XX:MaxMetaspaceSize below the 32 MiB floor; flooring to 32m"
+        metaspace_mib=32
+    else
+        warn "limit $L bytes -> -XX:MaxMetaspaceSize=${metaspace_mib}m"
+    fi
+    metaspace_flag=" -XX:MaxMetaspaceSize=${metaspace_mib}m"
+fi
+
+printf -- "-Xmx%sm -XX:MaxDirectMemorySize=%sm%s\n" "$xmx_mib" "$direct_mib" "$metaspace_flag"

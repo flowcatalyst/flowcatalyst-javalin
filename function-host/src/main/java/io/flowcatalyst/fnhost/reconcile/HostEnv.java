@@ -24,9 +24,16 @@ import java.util.regex.Pattern;
 /// @param drainTimeoutSeconds `FC_DRAIN_TIMEOUT_SECONDS` — how long [#close]
 ///                        waits for in-flight requests before closing anyway
 ///                        (default 60, spec §5)
+/// @param metricsPort     `FC_METRICS_PORT` — the observability listener's
+///                        bind port (default 9090, `function-host-process.md`
+///                        §2)
+/// @param exitAfterStart  `FC_EXIT_AFTER_START` — the server's AOT-training
+///                        convention (`function-host-process.md` §1): exit 0
+///                        right after a successful start instead of running
+///                        forever
 public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String clientSecret, String hostId,
                        Signatures signatures, int maxLoaded, Path cacheDir, int port, int maxConcurrency,
-                       int drainTimeoutSeconds) {
+                       int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart) {
 
     /// The heartbeat's own host-id rule (`function-api.md` §6.2): 1-100
     /// characters of `[A-Za-z0-9._:-]`.
@@ -115,9 +122,11 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         int port = e.integer("FC_FN_PORT", 8080);
         int maxConcurrency = e.integer("FC_FN_MAX_CONCURRENCY", 512);
         int drainTimeoutSeconds = e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60);
+        int metricsPort = e.integer("FC_METRICS_PORT", 9090);
+        boolean exitAfterStart = e.bool("FC_EXIT_AFTER_START", false);
 
         return new HostEnv(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir,
-                port, maxConcurrency, drainTimeoutSeconds);
+                port, maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart);
     }
 
     private static String defaultHostId() {
@@ -152,6 +161,7 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         return "HostEnv[pool=" + pool + ", platformUrl=" + platformUrl + ", clientId=" + clientId
                 + ", clientSecret=<redacted>, hostId=" + hostId + ", signatures=" + signatures
                 + ", maxLoaded=" + maxLoaded + ", cacheDir=" + cacheDir + ", port=" + port
-                + ", maxConcurrency=" + maxConcurrency + ", drainTimeoutSeconds=" + drainTimeoutSeconds + "]";
+                + ", maxConcurrency=" + maxConcurrency + ", drainTimeoutSeconds=" + drainTimeoutSeconds
+                + ", metricsPort=" + metricsPort + ", exitAfterStart=" + exitAfterStart + "]";
     }
 }

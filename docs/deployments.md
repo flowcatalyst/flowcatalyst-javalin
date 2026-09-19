@@ -352,3 +352,89 @@ container's `memory` when `jvm_memory_pool_collection_used_bytes` for the
 old-generation pool exceeds ~75% of `jvm_memory_max_bytes{area="heap"}` for
 ten minutes, or when `rate(jvm_gc_collection_seconds_sum[5m])` exceeds 0.1
 (the JVM spending more than 6 seconds of every 5 minutes collecting).
+
+---
+
+## 4. fc-fnhost (function host) — new service, not part of the Phase 0 inventory above
+
+Everything above this section was produced by reading the owner's actual
+Pulumi IaC (`../inhance/iac`) — a real deployed-service inventory. The
+function host (package D slice D5, `docs/spec/function-host-process.md`) has
+no entry there yet: it is documented here ahead of that IaC work so whoever
+adds the ECS task definition (or equivalent) has the env table, ports and
+service-account recipe in one place, in the same shape as §§1–3 above. Treat
+every claim below as "what the Java code expects", not as "what is deployed".
+
+### Environment variables (`HostEnv`, `docs/spec/function-host-reconciler.md`
+§1.4, extended by `function-host-listener.md` §2 and `function-host-process.md`
+§2)
+
+| Name | Default | Notes |
+|---|---|---|
+| `FC_FN_POOL` | `default` | a [DnsLabel] — which pool of hosts this instance belongs to; the heartbeat's own identity |
+| `FC_FN_PLATFORM_URL` | *(required)* | the platform's base URL — control-plane API, `/oauth/token`, `/.well-known/jwks.json` |
+| `FC_FN_CLIENT_ID` / `FC_FN_CLIENT_SECRET` | *(required)* | this host's own OAuth client credentials against the platform (see the service-account recipe below) |
+| `FC_FN_HOST_ID` | `<hostname>-<6 random base32>` | 1-100 chars of `[A-Za-z0-9._:-]`; explicit values are validated, not sanitised |
+| `FC_FN_SIGNATURES` | `required` | `off`/`required` — `off` additionally requires `FLOWCATALYST_DEV_MODE=true` (a safety rail, not a knob for production) |
+| `FC_FN_TRUST_ROOT` | — | Sigstore trust-root override, same variable the platform's own publish-side signature verification reads |
+| `FC_FN_MAX_LOADED` | `200` | the [FunctionRegistry]'s capacity |
+| `FC_FN_CACHE_DIR` | `${java.io.tmpdir}/fc-fn-cache` | fetched/verified artifact cache — `function-host/Dockerfile` points this at a named volume instead |
+| `FC_FN_PORT` | `8080` | the function listener (`/functions/...`) |
+| `FC_FN_MAX_CONCURRENCY` | `512` | host-global invocation permit ceiling |
+| `FC_DRAIN_TIMEOUT_SECONDS` | `60` | how long `close()` waits for in-flight requests before closing anyway |
+| `FC_METRICS_PORT` | `9090` | the observability listener — `/health`, `/ready`, `/metrics` |
+| `FC_EXIT_AFTER_START` | `false` | the server's AOT-training convention (exit 0 right after a successful start) — used by a training/smoke run, never a real deployment |
+
+Not `HostEnv` fields, but read by the same composition root transitively
+through the `server` module: `FLOWCATALYST_DEV_MODE` (above), and whatever
+`Logging.init` reads for log shape (`FC_LOG_FORMAT`/`LOG_FORMAT`,
+`FC_LOG_LEVEL`/`RUST_LOG`) — same two variables the platform/router tasks
+already carry.
+
+### Ports
+
+`8080` (function listener, HTTP/1.1 + h2c) and `9090` (observability
+listener, HTTP/1.1) — the same split as `fc-platform`/`fc-router`'s
+`8080` + the shared metrics convention, on two entirely independent Vert.x
+servers (`function-host-process.md` §2 P7: a saturated function port must
+never make `9090` look dead).
+
+### Service Connect alias convention: `fn-<pool>`
+
+`FC_FN_POOL_URL`'s own default (`PoolUrlTemplate.DEFAULT`,
+`http://fn-{pool}:8080`, `docs/spec/function-invocation.md` §4 R8) assumes a
+Service Connect alias named `fn-<pool>` per pool of function hosts — the
+platform's own `FunctionTriggerSync` resolves a webhook subscription's
+target through this template at promote time. A deployment with a single
+pool (or one that sets `FC_FN_POOL_URL` to a fixed host) never needs the
+`{pool}` placeholder at all; a deployment with several pools (e.g. one for
+warm, latency-sensitive functions and one for everything else) names each
+Service Connect alias `fn-<pool-label>` to match.
+
+### Service account: `platform:function-host` recipe
+
+Same shape as the router's own recipe (§3 above, "Consuming the platform's
+own dispatch queues"): create an application for the host, provision its
+service account, then grant it the built-in `platform:function-host` role
+(seeded, `Seeder`'s own role list) alongside `platform:application-service`:
+
+```
+POST /api/applications/{id}/provision-service-account
+GET  /api/service-accounts/code/app:{applicationCode}          # to get the service account id
+PUT  /api/service-accounts/{id}/roles
+     ["platform:application-service", "platform:function-host"]
+```
+
+The resulting client id/secret become `FC_FN_CLIENT_ID`/`FC_FN_CLIENT_SECRET`
+(SSM, pattern `/inhance/{env}/fc-fnhost/{client-id,client-secret}`, same as
+the router's own credential) — sent only to `FC_FN_PLATFORM_URL`, never
+anywhere else, same reasoning as the router's own credential note.
+
+### Sizing note
+
+No throughput numbers exist for this service yet (unlike §"Sizing signal"
+above, which is real bench data for `fc-server`) — size it the same way
+`fc-platform`/`fc-worker` started (`memoryReservation`, no hard limit,
+ARM64/EC2/bridge) and revisit once a host has run under real function-load
+data; `docs/spec/jvm-memory.md` §4 is the memory-fence half of that story
+(heap/direct/metaspace split from one container limit).

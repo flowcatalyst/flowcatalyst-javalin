@@ -17,6 +17,9 @@ No picocli, no sub-commands: it is a daemon.
 configures its own exec jar (service-file merging, signature-file exclusion) — copy that block, do
 not invent one.
 
+The observability listener binds **before** the first reconcile attempt (so `/ready` can answer
+`STARTING`); the function listener still binds after it (`function-host-listener.md` §5).
+
 ## 2. Observability listener — `FC_METRICS_PORT` (default 9090), HTTP/1.1, all interfaces
 
 Independent of the function listener (its own Vert.x server, one event loop): a saturated function
@@ -31,7 +34,7 @@ port must not make the process look dead.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `fc_fn_invocations_total` | counter | `address`, `version`, `outcome` | `outcome` ∈ `ok` (2xx), `client_error` (4xx from the function), `retry` (429 from the function), `error` (5xx from the function or a throw), `timeout`, `busy` (permit refused), `unauthorized`, `unavailable` — host refusals count, with `version` = `-` when no version was resolved |
+| `fc_fn_invocations_total` | counter | `address`, `version`, `outcome` | `outcome` ∈ `ok` (any status below 400 — a redirect is not an error), `not_found` (the host refused without revealing whether the address or version exists — unknown address, and every versioned refusal before reach is established), `client_error` (4xx from the function), `retry` (429 from the function), `error` (5xx from the function or a throw), `timeout`, `busy` (permit refused), `unauthorized`, `unavailable` — host refusals count, with `version` = `-` when no version was resolved |
 | `fc_fn_duration_seconds` | histogram | `address` | invocation time, only when the function was entered; buckets 5 ms … 60 s |
 | `fc_fn_active` | gauge | `address` | invocations in flight |
 | `fc_fn_permits_available` | gauge | `scope` = `host` \| `function`, `address` (empty for `host`) | |

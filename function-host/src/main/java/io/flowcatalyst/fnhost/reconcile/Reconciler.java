@@ -112,6 +112,22 @@ public final class Reconciler {
     private volatile DesiredDocument document;
     private volatile boolean draining;
 
+    /// D5 (`function-host-process.md` §2 P1): has a desired-state fetch ever
+    /// RESOLVED (succeeded or failed — set only once [#reconcileOnce]'s fetch
+    /// returns or throws, never while one is still in flight, so a slow
+    /// first fetch reads as `STARTING`, not `PLATFORM_UNREACHABLE`), and has
+    /// one ever succeeded (`Changed` or `NotModified` — never the heartbeat)
+    /// — together with [#draining], what [#readiness] answers `/ready` from.
+    private volatile boolean reconcileAttempted;
+    private volatile boolean everReconciledSuccessfully;
+
+    /// D5 (`function-host-process.md` §2): who to tell about load errors and
+    /// reconcile outcomes — [io.flowcatalyst.fnhost.metrics.FnMetrics] via
+    /// [#setObserver], `NOOP` otherwise. A field, not a constructor
+    /// parameter, so every existing caller of the constructor above is
+    /// untouched.
+    private volatile ReconcileObserver observer = ReconcileObserver.NOOP;
+
     /// D3 (`function-host-listener.md` §4, `function-invocation.md` §2):
     /// run at the end of every [#reconcileOnce], regardless of outcome —
     /// [io.flowcatalyst.fnhost.http.PinnedVersions#sweep] is registered here
@@ -138,12 +154,50 @@ public final class Reconciler {
         draining = true;
     }
 
+    /// `/ready`'s own vocabulary (`function-host-process.md` §2 P1).
+    public enum Readiness {
+        /// No [#reconcileOnce] has completed yet.
+        STARTING,
+        /// At least one attempt ran, but none has ever succeeded.
+        PLATFORM_UNREACHABLE,
+        /// At least one attempt has ever succeeded, and this host is not
+        /// draining — stays `READY` through a LATER outage (D2 R6): once
+        /// loaded, already-served functions keep serving.
+        READY,
+        /// [#drain] was called. One-way; wins over every other state.
+        DRAINING
+    }
+
+    /// What `/ready` reports (D5, spec §2 P1) — `DRAINING` first (it wins
+    /// over everything else once [#drain] has been called), then whether any
+    /// reconcile has EVER succeeded, then whether one has even been
+    /// attempted yet.
+    public Readiness readiness() {
+        if (draining) {
+            return Readiness.DRAINING;
+        }
+        if (everReconciledSuccessfully) {
+            return Readiness.READY;
+        }
+        if (reconcileAttempted) {
+            return Readiness.PLATFORM_UNREACHABLE;
+        }
+        return Readiness.STARTING;
+    }
+
     /// Registers `listener` to run once at the end of every future
     /// [#reconcileOnce] call (after the heartbeat, spec §1.2's own final
     /// step). Never called for a listener the caller does not itself own —
     /// this class is otherwise oblivious to what a listener does.
     public void addPostReconcileListener(Runnable listener) {
         postReconcileListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /// D5: wires a [ReconcileObserver] (`FnMetrics`) in place of the default
+    /// no-op — [io.flowcatalyst.fnhost.FnHost] calls this once, before
+    /// [#reconcileOnce] first runs.
+    public void setObserver(ReconcileObserver observer) {
+        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     private record Prepared(Path artifact) {
@@ -188,12 +242,18 @@ public final class Reconciler {
             ControlPlane.Fetched fetched = controlPlane.desiredState(pool, etag);
             switch (fetched) {
                 case ControlPlane.Fetched.NotModified ignored -> {
-                    // document unchanged — fall through to prepare/load/unload below
+                    // document unchanged — fall through to prepare/load/unload below.
+                    // Spec `function-host-process.md` §2 P6: still a SUCCESS — the
+                    // platform answered — so the reconcile-success timestamp moves.
+                    everReconciledSuccessfully = true;
+                    observer.reconciled("not_modified", true, now);
                 }
                 case ControlPlane.Fetched.Changed(String newEtag, DesiredDocument newDoc) -> {
                     etag = newEtag;
                     document = newDoc;
                     updateSecretHistory(newDoc, reconcileNumber);
+                    everReconciledSuccessfully = true;
+                    observer.reconciled("changed", true, now);
                 }
             }
             doc = document;
@@ -207,7 +267,12 @@ public final class Reconciler {
                     .log();
             doc = document;
             outage = true;
+            observer.reconciled("failed", false, now);
         }
+        // Set only once the fetch has RESOLVED (success or failure), never while it is still
+        // in flight — a slow first fetch must read `/ready` as STARTING, not PLATFORM_UNREACHABLE
+        // (spec `function-host-process.md` §2 P1: "STARTING before the first reconcile").
+        reconcileAttempted = true;
 
         if (doc != null && !outage) {
             prepare(doc);
@@ -273,9 +338,11 @@ public final class Reconciler {
             // verbatim: "ARTIFACT:DigestMismatch".
             String reason = "ARTIFACT:" + e.reason().getClass().getSimpleName();
             failures.put(key, reason);
+            observer.loadError(reason);
             logPrepareFailure(entry, reason, e);
         } catch (PrepareFailure e) {
             failures.put(key, e.getMessage());
+            observer.loadError(e.getMessage());
             logPrepareFailure(entry, e.getMessage(), e);
         }
     }
@@ -332,6 +399,7 @@ public final class Reconciler {
             Key key = new Key(entry.address(), entry.version());
             if (entry.manifest().runtime() == Runtime.WASM) {
                 failures.put(key, "RUNTIME_UNSUPPORTED");
+                observer.loadError("RUNTIME_UNSUPPORTED");
                 continue;
             }
             switch (entry.mode()) {
@@ -387,6 +455,7 @@ public final class Reconciler {
                     displaced = registry.put(fn, warm);
                 } catch (IllegalStateException e) {
                     failures.put(key, "LOAD:REGISTRY_FULL");
+                    observer.loadError("LOAD:REGISTRY_FULL");
                     logRegistryFullFailure(key, e);
                     fn.close(); // never registered — release what was just loaded
                     return;
@@ -396,8 +465,11 @@ public final class Reconciler {
                     displaced.close();
                 }
             }
-            case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) ->
-                    failures.put(key, "LOAD:" + reason.name());
+            case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) -> {
+                String loadReason = "LOAD:" + reason.name();
+                failures.put(key, loadReason);
+                observer.loadError(loadReason);
+            }
         }
     }
 
@@ -446,7 +518,9 @@ public final class Reconciler {
                     yield fn;
                 }
                 case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) -> {
-                    failures.put(key, "LOAD:" + reason.name());
+                    String loadReason = "LOAD:" + reason.name();
+                    failures.put(key, loadReason);
+                    observer.loadError(loadReason);
                     yield current;
                 }
             };
@@ -652,6 +726,23 @@ public final class Reconciler {
             }
         }
         return null;
+    }
+
+    /// Every address named anywhere in the current document — live or
+    /// candidate — or empty before the first reconcile. D5 (spec
+    /// `function-host-process.md` §2): what [io.flowcatalyst.fnhost.metrics.FnMetrics]
+    /// diffs against, after each reconcile, to know which per-address
+    /// series have left desired state and must be dropped.
+    public Set<FunctionAddress> desiredAddresses() {
+        DesiredDocument doc = document;
+        if (doc == null) {
+            return Set.of();
+        }
+        Set<FunctionAddress> out = new HashSet<>();
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            out.add(entry.address());
+        }
+        return out;
     }
 
     /// Loads `entry`'s version fresh from `prepared` — for a versioned call

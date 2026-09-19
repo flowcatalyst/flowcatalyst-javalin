@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.fnhost.FunctionInvocationEvent;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.load.UnimplementedFunctionContext;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
@@ -84,6 +85,7 @@ public final class FnHttpServer implements AutoCloseable {
     private final Permits permits;
     private final PinnedVersions pinnedVersions;
     private final BearerAuthenticator bearerAuthenticator;
+    private final InvocationObserver observer;
     private volatile boolean draining;
     private volatile int port;
 
@@ -94,35 +96,54 @@ public final class FnHttpServer implements AutoCloseable {
     /// @param eventLoopPoolSize the Vert.x event-loop thread count — a test-only seam (H1's
     ///                          "the event loop is not blocked" proof needs exactly one to mean
     ///                          anything); production never overrides Vert.x's own default
+    /// @param observer          D5 (`function-host-process.md` §2): told about permits/refusals/
+    ///                          entry/exit/outcome — `NOOP` unless a caller (`FnHost`) wires
+    ///                          `FnMetrics` in. Kept as this interface, not a Prometheus type,
+    ///                          so this class stays free of any metrics-library dependency.
     public record Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
-                           int eventLoopPoolSize) {
+                           int eventLoopPoolSize, InvocationObserver observer) {
         public Options {
             Objects.requireNonNull(host, "host");
             Objects.requireNonNull(platformUrl, "platformUrl");
             Objects.requireNonNull(clock, "clock");
+            Objects.requireNonNull(observer, "observer");
             if (eventLoopPoolSize <= 0) {
                 throw new IllegalArgumentException("eventLoopPoolSize must be positive: " + eventLoopPoolSize);
             }
         }
 
-        /// Vert.x's own default event-loop pool size.
+        /// No observer wired.
+        public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
+                        int eventLoopPoolSize) {
+            this(host, port, maxConcurrency, platformUrl, clock, eventLoopPoolSize, InvocationObserver.NOOP);
+        }
+
+        /// Vert.x's own default event-loop pool size; no observer wired.
         public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock) {
-            this(host, port, maxConcurrency, platformUrl, clock, VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE);
+            this(host, port, maxConcurrency, platformUrl, clock, VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE,
+                    InvocationObserver.NOOP);
         }
 
         public static Options of(int port, int maxConcurrency, String platformUrl) {
             return new Options("0.0.0.0", port, maxConcurrency, platformUrl, Clock.systemUTC());
         }
+
+        public static Options of(int port, int maxConcurrency, String platformUrl, InvocationObserver observer) {
+            return new Options("0.0.0.0", port, maxConcurrency, platformUrl, Clock.systemUTC(),
+                    VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE, observer);
+        }
     }
 
     private FnHttpServer(Vertx vertx, HttpServer httpServer, Reconciler reconciler, Permits permits,
-                          PinnedVersions pinnedVersions, BearerAuthenticator bearerAuthenticator) {
+                          PinnedVersions pinnedVersions, BearerAuthenticator bearerAuthenticator,
+                          InvocationObserver observer) {
         this.vertx = vertx;
         this.httpServer = httpServer;
         this.reconciler = reconciler;
         this.permits = permits;
         this.pinnedVersions = pinnedVersions;
         this.bearerAuthenticator = bearerAuthenticator;
+        this.observer = observer;
     }
 
     /// Builds and binds. Returns once the socket is listening.
@@ -131,6 +152,7 @@ public final class FnHttpServer implements AutoCloseable {
         Objects.requireNonNull(options, "options");
         Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(options.eventLoopPoolSize()));
         Permits permits = new Permits(options.maxConcurrency());
+        options.observer().permitsReady(permits);
         PinnedVersions pinnedVersions = new PinnedVersions(reconciler);
         // Spec §4: a pinned candidate is closed once its version leaves desired state —
         // swept after every reconcile, not just at load time (nothing else ever calls
@@ -149,7 +171,8 @@ public final class FnHttpServer implements AutoCloseable {
         HttpServer server = vertx.createHttpServer(serverOptions)
                 .requestHandler(req -> holder[0].handle(req));
 
-        FnHttpServer instance = new FnHttpServer(vertx, server, reconciler, permits, pinnedVersions, bearerAuthenticator);
+        FnHttpServer instance = new FnHttpServer(vertx, server, reconciler, permits, pinnedVersions,
+                bearerAuthenticator, options.observer());
         holder[0] = instance;
         try {
             server.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
@@ -220,6 +243,10 @@ public final class FnHttpServer implements AutoCloseable {
     private void handleUnversioned(HttpServerRequest req, io.vertx.core.Context requestContext, RoutePath path) {
         DesiredDocument.Entry entry = reconciler.liveEntry(path.address());
         if (entry == null) {
+            // address = null: an unknown address is never a metrics label value
+            // (spec `function-host-process.md` §2's cardinality rule) — see
+            // InvocationObserver's own doc for why.
+            observer.refused("not_found", null);
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("FUNCTION_NOT_FOUND", "no such function"));
             return;
         }
@@ -320,6 +347,7 @@ public final class FnHttpServer implements AutoCloseable {
                                                       Map<String, String> pathParams, byte[] body) {
         AuthResult authResult = authenticateUnversioned(endpoint, req.headers(), body, entry);
         if (authResult instanceof AuthResult.Failed(HttpAnswer failure)) {
+            observer.refused("unauthorized", entry.address());
             return failure;
         }
         Caller caller = ((AuthResult.Ok) authResult).caller();
@@ -340,17 +368,24 @@ public final class FnHttpServer implements AutoCloseable {
     private HttpAnswer continueVersionedAfterBody(HttpServerRequest req, RoutePath path, byte[] body) {
         BearerAuthenticator.Outcome auth = bearerAuthenticator.authenticate(req.getHeader("Authorization"));
         if (auth instanceof BearerAuthenticator.Rejected(String reason)) {
+            // address = null: spec §4's own anti-leak requirement — an unauthenticated
+            // caller must not be able to tell a version exists by the shape of the
+            // failure, so the metrics label must not either.
+            observer.refused("unauthorized", null);
             return HttpAnswer.of(401, Map.of("WWW-Authenticate", List.of("Bearer")), "UNAUTHORIZED", reason);
         }
         TokenClaims claims = ((BearerAuthenticator.Authenticated) auth).claims();
         if (!Permission.grants(claims.permissions(), Permission.FUNCTION_VERSION_INVOKE.code())) {
+            observer.refused("unauthorized", null);
             return HttpAnswer.of(403, Map.of(), "PERMISSION_REQUIRED", "platform:function:version:invoke required");
         }
 
         DesiredDocument.Entry entry = reconciler.entryFor(path.address(), path.version());
         if (entry == null || !hasReach(claims, entry)) {
             // Spec §4: reach failure (or no such version) is 404, not 403 — "same rule as
-            // the platform API" — and indistinguishable from each other.
+            // the platform API" — and indistinguishable from each other. address = null
+            // for the same reason.
+            observer.refused("not_found", null);
             return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "no such version");
         }
 
@@ -442,6 +477,7 @@ public final class FnHttpServer implements AutoCloseable {
         int maxConcurrency = entry.manifest().limits().maxConcurrency();
         Permits.Grant grant = permits.tryAcquire(entry.address(), maxConcurrency);
         if (!grant.granted()) {
+            observer.refused("busy", entry.address());
             return HttpAnswer.of(429, Map.of("Retry-After", List.of("1")), "BUSY", "the function is at capacity");
         }
 
@@ -450,9 +486,13 @@ public final class FnHttpServer implements AutoCloseable {
             LoadedFunction fn = versioned ? pinnedVersions.getOrLoad(entry) : reconciler.ensureLoaded(entry.address());
             if (fn == null) {
                 permits.release(grant);
-                return versioned
-                        ? HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "version is not loadable")
-                        : HttpAnswer.of(503, Map.of("Retry-After", List.of("15")), "FUNCTION_UNAVAILABLE",
+                if (versioned) {
+                    // address = null, same anti-leak reasoning as the entry/reach check above.
+                    observer.refused("not_found", null);
+                    return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "version is not loadable");
+                }
+                observer.refused("unavailable", entry.address());
+                return HttpAnswer.of(503, Map.of("Retry-After", List.of("15")), "FUNCTION_UNAVAILABLE",
                         "the function could not be loaded");
             }
 
@@ -479,37 +519,54 @@ public final class FnHttpServer implements AutoCloseable {
                 mdc.put(Logging.MdcKeys.CORRELATION_ID, correlationId);
             }
             mdc.forEach(MDC::put);
+            observer.entered(entry.address());
+            FunctionInvocationEvent event = new FunctionInvocationEvent();
+            event.begin();
+            long startNanos = System.nanoTime();
             try {
                 InvocationRunner.Invocation invocation = InvocationRunner.start(fn, request, ctx);
                 long timeoutMs = endpoint.timeoutMs();
                 try {
                     Result result = invocation.future().get(timeoutMs, TimeUnit.MILLISECONDS);
                     permits.release(grant);
+                    observer.exited(entry.address());
                     if (result == null) {
                         LOG.atWarn().setMessage("function returned a null Result")
                                 .addKeyValue("address", entry.address().render())
                                 .addKeyValue("invocation_id", invocationId)
                                 .log();
+                        recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
                         return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
                     }
-                    return toAnswer(result);
+                    HttpAnswer answer = toAnswer(result);
+                    recordOutcome(event, entry, fn, invocationId, startNanos, answer.status(), outcomeFor(answer.status()));
+                    return answer;
                 } catch (TimeoutException e) {
                     invocation.worker().interrupt();
                     // The permit is released only once the worker actually finishes (H7): a
-                    // function that swallows the interrupt keeps it until it returns.
-                    invocation.future().whenComplete((r, ex) -> permits.release(grant));
+                    // function that swallows the interrupt keeps it until it returns —
+                    // fc_fn_active (D5) mirrors the permit gauge for the same reason.
+                    invocation.future().whenComplete((r, ex) -> {
+                        permits.release(grant);
+                        observer.exited(entry.address());
+                    });
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 504, "timeout");
                     return HttpAnswer.of(504, Map.of(), "FUNCTION_TIMEOUT", "the invocation exceeded its deadline");
                 } catch (ExecutionException e) {
                     permits.release(grant);
+                    observer.exited(entry.address());
                     LOG.atWarn().setMessage("function invocation threw")
                             .addKeyValue("address", entry.address().render())
                             .addKeyValue("invocation_id", invocationId)
                             .setCause(e.getCause())
                             .log();
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
                     return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     permits.release(grant);
+                    observer.exited(entry.address());
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
                     return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "interrupted");
                 }
             } finally {
@@ -519,6 +576,45 @@ public final class FnHttpServer implements AutoCloseable {
             permits.release(grant);
             throw e;
         }
+    }
+
+    /// D5: the one place that turns an entered invocation's outcome into
+    /// both [InvocationObserver#completed] and the committed
+    /// [FunctionInvocationEvent] — every return path through [#invoke] above
+    /// calls this exactly once, right before returning.
+    private void recordOutcome(FunctionInvocationEvent event, DesiredDocument.Entry entry, LoadedFunction fn,
+                                String invocationId, long startNanos, int status, String outcome) {
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+        observer.completed(entry.address(), fn.version(), outcome, elapsed);
+        if (event.shouldCommit()) {
+            event.address = entry.address().render();
+            event.version = fn.version();
+            event.invocationId = invocationId;
+            event.status = status;
+            event.outcome = outcome;
+            event.commit();
+        }
+    }
+
+    /// Spec §2's outcome table, restricted to what an ENTERED invocation can
+    /// reach: `ok` (2xx), `retry` (429 — distinct from a 4xx `client_error`),
+    /// `client_error` (any other 4xx), `error` (5xx, and any other status
+    /// the function's own [Result#http] could technically produce — 1xx/3xx
+    /// are not part of the dispatch contract at all, so they are bucketed
+    /// here rather than left unclassified).
+    static String outcomeFor(int status) {
+        // 1xx–3xx: the function answered and did not report a problem — a redirect
+        // from a function is not an error (it used to fall through to "error").
+        if (status < 400) {
+            return "ok";
+        }
+        if (status == 429) {
+            return "retry";
+        }
+        if (status >= 400 && status < 500) {
+            return "client_error";
+        }
+        return "error";
     }
 
     // ── auth (unversioned, spec §3) ─────────────────────────────────────────

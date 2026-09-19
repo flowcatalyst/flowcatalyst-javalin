@@ -1,11 +1,14 @@
 # JVM memory in the container image
 
 Status: spec + owner rulings, 2026-09-14 (§0–3); compact object headers and
-the AOT cache ruled 2026-09-15 (§1a). Applies to the `fc-server` image
-(`Dockerfile`) in every role — API tier, worker, router — and to the bench
-rig's image, which since §1a is built from that same `Dockerfile` (not a
-separate `bench/real/Dockerfile.java`), so what is measured is what is
-deployed. `fcdev`'s native binary is not a JVM and is untouched.
+the AOT cache ruled 2026-09-15 (§1a); the function host's metaspace addition,
+2026-09-19 (§4). §0–3 apply to the `fc-server` image (`Dockerfile`) in every
+role — API tier, worker, router — and to the bench rig's image, which since
+§1a is built from that same `Dockerfile` (not a separate
+`bench/real/Dockerfile.java`), so what is measured is what is deployed.
+§4 additionally applies to the function host's own image
+(`function-host/Dockerfile`, `fc-fnhost`). `fcdev`'s native binary is not a
+JVM and is untouched.
 
 ## 0. Rulings
 
@@ -190,3 +193,44 @@ collector pauses (G1 committed ~317 MB throughout, young pauses max 13.5
 ms, 2% of wall time) but queueing behind the request-worker admission
 (`admission.md` §11.7) — recorded in `docs/backlog.md` for the
 verification plan; the "explicit -Xmx" question is closed by this spec.
+
+## 4. The function host's own addition: metaspace (2026-09-19, package D slice D5)
+
+`function-host/Dockerfile` (`fc-fnhost`) shares `docker/jvm-opts.sh` verbatim
+with `fc-server` but sets `FC_JVM_METASPACE_FENCE=true` in its own
+`function-host/docker/entrypoint.sh` — a variable the fence script only acts
+on when it is exactly `"true"`, so `fc-server`'s own computed flags (never
+setting it) are byte-identical before and after this addition. Why the host
+needs this and the server does not: **a loaded function is its own class
+loader** (`docs/spec/function-host-core.md` §2) — many short-lived functions
+loading and unloading over the host's life is exactly the workload that
+grows metaspace, and an unbounded metaspace turns one function's classloader
+leak into a host-wide OOM-kill instead of a catchable `OutOfMemoryError:
+Metaspace` that fails just that one function's load (spec
+`function-host-process.md` §3). `fc-server` has no such workload — every
+class it ever loads is its own, fixed at build time — so it gets no fence.
+
+Derivation, same shape as §1's heap/direct split:
+
+```
+-XX:MaxMetaspaceSize = 25% of the container limit L, floored at 32 MiB
+```
+
+25% is a starting point (flagged in the slice's own spec as *load-bearing or
+arbitrary?* — revisit with real numbers once a host has run under load), not
+tuned against measured data the way §1's 15%/192 MiB reserve was. What each
+region gets, from one container limit `L`:
+
+| Region | Formula | 512 MiB example |
+|---|---|---:|
+| Heap (`-Xmx`) | `L - reserve` (§1) | 320 MiB |
+| Direct (`-XX:MaxDirectMemorySize`) | `reserve / 2` (§1) | 96 MiB |
+| Metaspace (`-XX:MaxMetaspaceSize`) | `25% of L`, floor 32 MiB | 128 MiB |
+| Everything else (thread stacks, code cache, GC bookkeeping) | whatever of `reserve` metaspace didn't claim, plus the JVM's own fixed overhead | — |
+
+Metaspace is carved from the same non-heap territory `reserve` already
+represents in §1, not added on top of it — a 512 MiB container still fits
+Go/Java's usual footprint; it is not being asked for more memory than the
+container has, only told to fail loudly (a catchable
+`OutOfMemoryError: Metaspace`) instead of being OOM-killed by the kernel
+when metaspace growth and heap growth compete for the same container.
