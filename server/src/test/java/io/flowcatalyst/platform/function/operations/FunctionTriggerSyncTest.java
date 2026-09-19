@@ -31,6 +31,7 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
+import io.flowcatalyst.platform.subscription.EventTypeBinding;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents;
@@ -221,6 +222,16 @@ class FunctionTriggerSyncTest {
         return "{\"eventType\":\"" + eventType + "\",\"path\":\"" + path + "\"}";
     }
 
+    /// A subscription entry with every dispatch-setting field spelled out —
+    /// for the sameSubscription per-clause delta tests, where each test
+    /// holds every field but one equal between v1 and v2.
+    private static String subFull(String eventType, String path, String mode, int maxRetries, int timeoutSeconds,
+            boolean dataOnly) {
+        return "{\"eventType\":\"" + eventType + "\",\"path\":\"" + path + "\",\"mode\":\"" + mode
+                + "\",\"maxRetries\":" + maxRetries + ",\"timeoutSeconds\":" + timeoutSeconds + ",\"dataOnly\":"
+                + dataOnly + "}";
+    }
+
     private static String sched(String cron, String path) {
         return "{\"cron\":\"" + cron + "\",\"path\":\"" + path + "\"}";
     }
@@ -310,6 +321,21 @@ class FunctionTriggerSyncTest {
         assertThat(versions.listByFunction(f.id())).isEmpty();
     }
 
+    /// The other half of the `||`: a manifest with schedules and no
+    /// subscriptions needs the signing secret just the same — a scheduled-job
+    /// delivery is a webhook too. Mutant: check subscriptions only.
+    @Test
+    void publishRejectsSchedulesAloneWithNoApplicationSigningSecretAndPersistsNothing() {
+        String appId = persistApplication("t5c"); // no service account at all
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null, List.of(), List.of(sched("0 0 * * * *", "/jobs/a")));
+
+        assertThatThrownBy(() -> publish(f.address(), "t5c", m))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(e -> ((UseCaseException) e).code()).isEqualTo("APPLICATION_SIGNING_SECRET_REQUIRED");
+        assertThat(versions.listByFunction(f.id())).isEmpty();
+    }
+
     @Test
     void publishAcceptsAManifestWithNoSubscriptionsOrSchedulesEvenWithNoSigningSecret() {
         String appId = persistApplication("t5b"); // no service account
@@ -347,6 +373,508 @@ class FunctionTriggerSyncTest {
                 .isInstanceOf(UseCaseException.class)
                 .extracting(e -> ((UseCaseException) e).code()).isEqualTo("WARM_CAPACITY_EXCEEDED");
         assertThat(versions.listByFunction(f.id())).isEmpty();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Warm capacity excludes the function's OWN live warm version (spec §4)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// At the cap, the function whose OWN live version is warm can still
+    /// republish a warm version — its own live version is about to be
+    /// replaced, so counting it would stop it from ever republishing.
+    /// Mutant "count own": the count would include `f1`'s own live version,
+    /// so `1 (self, wrongly counted) + 1 (this one) > cap 1` throws.
+    @Test
+    void warmCapacityAtCapLetsTheFunctionRepublishItsOwnWarmVersion() {
+        String appId = persistApplication("wex1");
+        DnsLabel pool = new DnsLabel("wex1" + fresh());
+        FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
+                DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
+        FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
+                applications, serviceAccounts, versions, tight, POOL_URL);
+
+        Function f1 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
+        var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex1a", sha256("wex1a"), null, warmManifest);
+        FunctionVersion v1 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+        markReady(f1.address(), v1.version());
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+                .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
+        // f1 is now the sole live warm function in `pool`, exactly at the cap of 1.
+
+        var cmd2 = new PublishCommand(f1.address(), "oci://artifact/wex1b", sha256("wex1b"), null, warmManifest);
+        PublishVersion.Result p2 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+        assertThat(p2.version().version()).as("f1 republishing its own warm version succeeds at the cap").isEqualTo(2);
+    }
+
+    /// The same cap still blocks a DIFFERENT function's warm publish — the
+    /// exclusion is scoped to the publishing function's own id, never a
+    /// blanket exemption. Mutant "count own" removed entirely (never
+    /// exclude): would also throw here, so this alone would not catch a
+    /// missing exclusion, but paired with the test above it pins that the
+    /// exclusion is per-function, not "no cap at all".
+    @Test
+    void warmCapacityAtCapStillBlocksADifferentFunction() {
+        String appId = persistApplication("wex2");
+        DnsLabel pool = new DnsLabel("wex2" + fresh());
+        FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
+                DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
+        FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
+                applications, serviceAccounts, versions, tight, POOL_URL);
+
+        Function f1 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
+        var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex2a", sha256("wex2a"), null, warmManifest);
+        FunctionVersion v1 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+        markReady(f1.address(), v1.version());
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+                .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
+
+        Function f2 = createFunction(appId, new FunctionOwner.Platform());
+        var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex2b", sha256("wex2b"), null, warmManifest);
+        assertThatThrownBy(() -> Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC)))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(e -> ((UseCaseException) e).code()).isEqualTo("WARM_CAPACITY_EXCEEDED");
+        assertThat(versions.listByFunction(f2.id())).isEmpty();
+    }
+
+    /// A non-warm publish is unaffected by a full warm cap in the same pool.
+    /// Mutant: the `if (manifest.warm())` guard dropped, applying the cap to
+    /// every publish.
+    @Test
+    void warmCapacityDoesNotAffectANonWarmPublishAtTheCap() {
+        String appId = persistApplication("wex3");
+        DnsLabel pool = new DnsLabel("wex3" + fresh());
+        FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
+                DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
+        FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
+                applications, serviceAccounts, versions, tight, POOL_URL);
+
+        Function f1 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
+        var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex3a", sha256("wex3a"), null, warmManifest);
+        FunctionVersion v1 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+        markReady(f1.address(), v1.version());
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+                .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
+
+        Function f2 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode coldManifest = manifest(pool.value(), false, null, List.of(), List.of());
+        var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex3b", sha256("wex3b"), null, coldManifest);
+        PublishVersion.Result p2 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+        assertThat(p2.version().version()).isEqualTo(1);
+    }
+
+    /// A warm publish into a DIFFERENT pool is unaffected by this pool's
+    /// full cap. Mutant "count all pools": would count `f1` against `f3`'s
+    /// pool too and throw here.
+    @Test
+    void warmCapacityDoesNotAffectAnotherPoolAtTheCap() {
+        String appId = persistApplication("wex4");
+        DnsLabel pool = new DnsLabel("wex4" + fresh());
+        DnsLabel otherPool = new DnsLabel("wex4o" + fresh());
+        FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
+                DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
+        FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
+                applications, serviceAccounts, versions, tight, POOL_URL);
+
+        Function f1 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
+        var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex4a", sha256("wex4a"), null, warmManifest);
+        FunctionVersion v1 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+        markReady(f1.address(), v1.version());
+        Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync)
+                .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
+
+        Function f3 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode otherPoolWarm = manifest(otherPool.value(), true, null, List.of(), List.of());
+        var cmd2 = new PublishCommand(f3.address(), "oci://artifact/wex4b", sha256("wex4b"), null, otherPoolWarm);
+        PublishVersion.Result p2 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+        assertThat(p2.version().version()).isEqualTo(1);
+    }
+
+    /// A warm version that was merely PUBLISHED, never promoted, does not
+    /// count toward the cap — only the `live` alias does. Mutant "count
+    /// lazy versions": dropping the `alias = live` join condition would
+    /// count `f1`'s published-but-unpromoted version too and throw here.
+    @Test
+    void warmCapacityIgnoresAWarmVersionThatWasPublishedButNeverPromoted() {
+        String appId = persistApplication("wex5");
+        DnsLabel pool = new DnsLabel("wex5" + fresh());
+        FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
+                DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
+        FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
+                applications, serviceAccounts, versions, tight, POOL_URL);
+
+        Function f1 = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
+        var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex5a", sha256("wex5a"), null, warmManifest);
+        PublishVersion.Result p1 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC));
+        assertThat(p1.version().version()).isEqualTo(1);
+        // f1's version is PUBLISHED only — never marked ready, never promoted, so
+        // fn_aliases has no `live` row for it.
+
+        Function f2 = createFunction(appId, new FunctionOwner.Platform());
+        var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex5b", sha256("wex5b"), null, warmManifest);
+        PublishVersion.Result p2 = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+        assertThat(p2.version().version()).isEqualTo(1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Trigger key collision (spec §4): two entries of one function whose
+    // keys collide are an internal error at promote, never a silent
+    // overwrite — and, forced via the injected hasher, this also pins
+    // "order and atomicity" (spec §10): the collision is detected before
+    // any subscription write, and the transaction that also holds the
+    // pool's own create/update and the alias change rolls all of it back.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// The ordinary (non-colliding) case: two different event types hash to
+    /// two different keys, so both subscriptions are created and linked.
+    @Test
+    void twoDifferentEventTypesDoNotCollideBothSubscriptionsExistAndAreLinked() {
+        String appId = persistApplication("kc1");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String et1 = "fts:kc1:x:a-" + fresh();
+        String et2 = "fts:kc1:x:b-" + fresh();
+        persistEventType(et1);
+        persistEventType(et2);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null, List.of(sub(et1, "/events/a"), sub(et2, "/events/b")), List.of());
+        PublishVersion.Result p = publish(f.address(), "kc1", m);
+        promote(f.address(), p.version().version());
+
+        List<TriggerObject> subs = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SUBSCRIPTION).toList();
+        assertThat(subs).as("both subscriptions created and linked, no collision").hasSize(2);
+        List<String> eventTypesSeen = subs.stream().map(TriggerObject::objectId)
+                .map(id -> subscriptions.findById(id).orElseThrow())
+                .map(s -> s.eventTypes().get(0).eventTypeCode()).toList();
+        assertThat(eventTypesSeen).containsExactlyInAnyOrder(et1, et2);
+    }
+
+    /// A forced collision (every input hashes to the same 8 hex value) is an
+    /// internal error at promote: nothing is written — not the colliding
+    /// subscriptions, not the pool, and the alias stays unchanged. Mutant:
+    /// drop `checkNoCollisions` entirely — the second subscription would
+    /// then silently overwrite the trigger-object link of the first (both
+    /// share one `fn_trigger_objects` row), losing track of the first's
+    /// underlying `msg_subscriptions` row.
+    @Test
+    void twoSubscriptionsWithCollidingKeysThrowsAtPromoteAndWritesNothing() {
+        String appId = persistApplication("kc2");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String et1 = "fts:kc2:x:a-" + fresh();
+        String et2 = "fts:kc2:x:b-" + fresh();
+        persistEventType(et1);
+        persistEventType(et2);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        FunctionTriggerSync collidingSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes,
+                triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, ignored -> "deadbeef");
+
+        JsonNode m = manifest("default", false, null, List.of(sub(et1, "/events/a"), sub(et2, "/events/b")), List.of());
+        var cmd = new PublishCommand(f.address(), "oci://artifact/kc2", sha256("kc2"), null, m);
+        PublishVersion.Result published = Auth.runAs(ANCHOR,
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, collidingSync).run(uow, cmd, EC));
+        markReady(f.address(), published.version().version());
+
+        assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, collidingSync)
+                .run(uow, new PromoteCommand(f.address(), Function.LIVE, published.version().version()), EC)))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(e -> ((UseCaseException) e).code()).isEqualTo("TRIGGER_KEY_COLLISION");
+
+        assertThat(linked(f)).as("nothing written at all on collision, not even the pool").isEmpty();
+        assertThat(subscriptions.findByApplicationCode("fts" + "kc2" + RUN)).as("no subscription row created").isEmpty();
+        assertThat(functions.findByAddress(f.address()).orElseThrow().liveVersionId())
+                .as("alias unchanged — the promote's whole transaction rolled back").isEmpty();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // sameSubscription — one delta per clause (spec §10 V3): a v2 that
+    // differs from v1 in ONLY one respect produces exactly one
+    // `subscription:updated` event and the row carries the new value.
+    // Manifest-driven clauses (path, pool URL, mode, maxRetries,
+    // timeoutSeconds, dataOnly) get a real v1→v2 promote; clauses the
+    // manifest cannot drive (name, applicationCode, clientId,
+    // dispatchPoolId, the binding's eventType) are simulated by mutating the
+    // ROW by hand and confirming the next promote repairs it.
+    // ═══════════════════════════════════════════════════════════════════
+
+    private record OneSubFixture(Function function, String eventType, String subId) {
+    }
+
+    private static OneSubFixture publishAndPromoteOneSubscription(String tag, String pool, int maxConcurrency,
+            String path, String mode, int maxRetries, int timeoutSeconds, boolean dataOnly) {
+        String appId = persistApplication(tag);
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String et = "fts:" + tag + ":x:a-" + fresh();
+        persistEventType(et);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest(pool, false, maxConcurrency,
+                List.of(subFull(et, path, mode, maxRetries, timeoutSeconds, dataOnly)), List.of());
+        PublishVersion.Result p = publish(f.address(), tag + "a", m);
+        promote(f.address(), p.version().version());
+        String subId = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SUBSCRIPTION)
+                .findFirst().orElseThrow().objectId();
+        return new OneSubFixture(f, et, subId);
+    }
+
+    private static long updatedEventCount(String subId) {
+        return eventsFor(SubscriptionEvents.subjectFor(subId), SubscriptionEvents.UPDATED).size();
+    }
+
+    @Test
+    void subscriptionEndpointUpdatesOnPathChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd1", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+        Subscription beforeRow = subscriptions.findById(fx.subId()).orElseThrow();
+
+        JsonNode m2 = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/b", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd1b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.endpoint()).as("mutant: drop the endpoint comparison").endsWith("/events/b")
+                .isNotEqualTo(beforeRow.endpoint());
+        assertThat(after.mode()).isEqualTo(beforeRow.mode());
+        assertThat(after.maxRetries()).isEqualTo(beforeRow.maxRetries());
+        assertThat(after.timeoutSeconds()).isEqualTo(beforeRow.timeoutSeconds());
+        assertThat(after.dataOnly()).isEqualTo(beforeRow.dataOnly());
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionEndpointUpdatesOnPoolUrlChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd2", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+        Subscription beforeRow = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(beforeRow.endpoint()).contains("fn-default");
+
+        JsonNode m2 = manifest("otherpool", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd2b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.endpoint()).as("mutant: drop the endpoint comparison").contains("fn-otherpool")
+                .isNotEqualTo(beforeRow.endpoint());
+        assertThat(after.mode()).isEqualTo(beforeRow.mode());
+        assertThat(after.maxRetries()).isEqualTo(beforeRow.maxRetries());
+        assertThat(after.timeoutSeconds()).isEqualTo(beforeRow.timeoutSeconds());
+        assertThat(after.dataOnly()).isEqualTo(beforeRow.dataOnly());
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionModeUpdatesOnModeChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd3", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode m2 = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "BLOCK_ON_ERROR", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd3b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.mode()).as("mutant: drop the mode comparison")
+                .isEqualTo(io.flowcatalyst.platform.shared.dispatch.DispatchMode.BLOCK_ON_ERROR);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionMaxRetriesUpdatesOnMaxRetriesChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd4", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode m2 = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 7, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd4b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.maxRetries()).as("mutant: drop the maxRetries comparison").isEqualTo(7);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionTimeoutSecondsUpdatesOnTimeoutSecondsChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd5", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode m2 = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 60, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd5b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.timeoutSeconds()).as("mutant: drop the timeoutSeconds comparison").isEqualTo(60);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionDataOnlyUpdatesOnDataOnlyChangeOnly() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd6", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode m2 = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, true)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd6b", m2);
+        promote(fx.function().address(), p2.version().version());
+
+        Subscription after = subscriptions.findById(fx.subId()).orElseThrow();
+        assertThat(after.dataOnly()).as("mutant: drop the dataOnly comparison").isTrue();
+        assertThat(updatedEventCount(fx.subId())).as("exactly one update").isEqualTo(before + 1);
+    }
+
+    // ── clauses the manifest cannot drive: mutate the row, re-promote the
+    // SAME manifest (a fresh version, byte-identical content — the pattern
+    // `promotingTheSameManifestTwiceWritesNothingTheSecondTime` already
+    // uses), and confirm the drift is repaired. ──────────────────────────
+
+    @Test
+    void subscriptionNameIsRepairedWhenDriftedByHand() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd7", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        String correctName = subscriptions.findById(fx.subId()).orElseThrow().name();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(subscriptions.findById(fx.subId()).orElseThrow().withName("drifted-by-hand"), tx.dbTx());
+            return null;
+        });
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().name()).isEqualTo("drifted-by-hand");
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd7b", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().name())
+                .as("mutant: drop the name comparison").isEqualTo(correctName);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionApplicationCodeIsRepairedWhenDriftedByHand() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd8", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        String correctApplicationCode = subscriptions.findById(fx.subId()).orElseThrow().applicationCode();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(subscriptions.findById(fx.subId()).orElseThrow().withApplicationCode("drifted-app-code"),
+                    tx.dbTx());
+            return null;
+        });
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd8b", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().applicationCode())
+                .as("mutant: drop the applicationCode comparison").isEqualTo(correctApplicationCode);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionClientIdIsRepairedWhenDriftedByHand() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd9", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().clientId())
+                .as("platform-owned function: correct clientId is null").isNull();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(subscriptions.findById(fx.subId()).orElseThrow().withClientId("cid" + fresh()),
+                    tx.dbTx());
+            return null;
+        });
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd9b", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().clientId())
+                .as("mutant: drop the clientId comparison").isNull();
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
+    }
+
+    /// Drifts ONLY `dispatchPoolId`, leaving `dispatchPoolCode` correct — so
+    /// dropping the `dispatchPoolId` clause specifically (and NOT the
+    /// `dispatchPoolCode` clause, which stays active and would otherwise
+    /// mask it) is the only way this test fails to detect the drift.
+    @Test
+    void subscriptionDispatchPoolIdIsRepairedWhenDriftedByHandAlone() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd10", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        Subscription correct = subscriptions.findById(fx.subId()).orElseThrow();
+        String correctPoolId = correct.dispatchPoolId();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(correct.withDispatchPoolId("dpl" + fresh()), tx.dbTx());
+            return null;
+        });
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd10b", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().dispatchPoolId())
+                .as("mutant: drop the dispatchPoolId comparison").isEqualTo(correctPoolId);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
+    }
+
+    /// The `dispatchPoolCode` twin: drifts ONLY the code, leaving the id
+    /// correct, so the `dispatchPoolId` clause staying active cannot mask a
+    /// dropped `dispatchPoolCode` clause.
+    @Test
+    void subscriptionDispatchPoolCodeIsRepairedWhenDriftedByHandAlone() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd10c", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        Subscription correct = subscriptions.findById(fx.subId()).orElseThrow();
+        String correctPoolId = correct.dispatchPoolId();
+        String correctPoolCode = correct.dispatchPoolCode();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(correct.withDispatchPool(correctPoolId, "drifted-code"), tx.dbTx());
+            return null;
+        });
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd10cb", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().dispatchPoolCode())
+                .as("mutant: drop the dispatchPoolCode comparison").isEqualTo(correctPoolCode);
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
+    }
+
+    @Test
+    void subscriptionBindingEventTypeIsRepairedWhenDriftedByHand() {
+        OneSubFixture fx = publishAndPromoteOneSubscription("sd11", "default", 5, "/events/a", "IMMEDIATE", 3, 30, false);
+        Subscription correct = subscriptions.findById(fx.subId()).orElseThrow();
+        uow.inTransaction(tx -> {
+            subscriptions.persist(correct.withEventTypes(List.of(EventTypeBinding.of("fts:sd11:x:drifted"))), tx.dbTx());
+            return null;
+        });
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().eventTypes().get(0).eventTypeCode())
+                .isEqualTo("fts:sd11:x:drifted");
+        long before = updatedEventCount(fx.subId());
+
+        JsonNode same = manifest("default", false, 5,
+                List.of(subFull(fx.eventType(), "/events/a", "IMMEDIATE", 3, 30, false)), List.of());
+        PublishVersion.Result p2 = publish(fx.function().address(), "sd11b", same);
+        promote(fx.function().address(), p2.version().version());
+
+        assertThat(subscriptions.findById(fx.subId()).orElseThrow().eventTypes().get(0).eventTypeCode())
+                .as("mutant: drop the binding eventType comparison").isEqualTo(fx.eventType());
+        assertThat(updatedEventCount(fx.subId())).as("exactly one repair event").isEqualTo(before + 1);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -558,6 +1086,189 @@ class FunctionTriggerSyncTest {
         updateStatus(f.address(), "ACTIVE");
         assertThat(subscriptions.findById(subId).orElseThrow().isActive()).as("subscription resumed").isTrue();
         assertThat(jobs.findById(jobId).orElseThrow().status().name()).as("job resumed").isEqualTo("ACTIVE");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Scheduled job client scope: the owner's, null for a platform function
+    // (spec §4 table). Mutant: always null.
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    void aPlatformOwnedFunctionsScheduledJobIsPlatformScoped() {
+        String appId = persistApplication("cs1");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null, List.of(), List.of(sched("0 0 * * * *", "/jobs/a")));
+        PublishVersion.Result p = publish(f.address(), "cs1", m);
+        promote(f.address(), p.version().version());
+
+        TriggerObject jobLink = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SCHEDULED_JOB)
+                .findFirst().orElseThrow();
+        ScheduledJob job = jobs.findById(jobLink.objectId()).orElseThrow();
+        assertThat(job.clientId()).as("platform-owned function's job is platform-scoped").isNull();
+    }
+
+    @Test
+    void aClientOwnedFunctionsScheduledJobCarriesTheOwnersClientId() {
+        String appId = persistApplication("cs2");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String clientId = "cid" + fresh();
+        Function f = createFunction(appId, new FunctionOwner.Client(clientId));
+        JsonNode m = manifest("default", false, null, List.of(), List.of(sched("0 0 * * * *", "/jobs/a")));
+        PublishVersion.Result p = publish(f.address(), "cs2", m);
+        promote(f.address(), p.version().version());
+
+        TriggerObject jobLink = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SCHEDULED_JOB)
+                .findFirst().orElseThrow();
+        ScheduledJob job = jobs.findById(jobLink.objectId()).orElseThrow();
+        assertThat(job.clientId()).as("client-owned function's job carries the owner's client id")
+                .isEqualTo(clientId);
+    }
+
+    /// Spec §4: disabling pauses only `ACTIVE` linked objects; an object
+    /// already in the target state (here, an operator's hand-pause) is left
+    /// alone — no write, no event — and the function's own status update
+    /// still succeeds. Then enabling resumes EVERY `PAUSED` linked object,
+    /// which necessarily includes the hand-paused one: the platform cannot
+    /// tell who paused it, so it cannot single it out to leave alone on the
+    /// way back up. Mutant (drop the disable-side guard): subB would get a
+    /// SECOND `paused` event even though it never left `PAUSED`, so the
+    /// "exactly one" count below would be 2, not 1.
+    @Test
+    void disablingWithAHandPausedSubscriptionEmitsExactlyOnePausedEventAndEnablingResumesBoth() {
+        String appId = persistApplication("pg1");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String etA = "fts:pg1:x:a-" + fresh();
+        String etB = "fts:pg1:x:b-" + fresh();
+        persistEventType(etA);
+        persistEventType(etB);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null,
+                List.of(sub(etA, "/events/a"), sub(etB, "/events/b")), List.of());
+        PublishVersion.Result p = publish(f.address(), "pg1", m);
+        promote(f.address(), p.version().version());
+
+        List<TriggerObject> subLinks = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SUBSCRIPTION).toList();
+        assertThat(subLinks).hasSize(2);
+        String subAId = subLinks.stream().map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
+                .filter(s -> s.eventTypes().get(0).eventTypeCode().equals(etA)).findFirst().orElseThrow().id();
+        String subBId = subLinks.stream().map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
+                .filter(s -> s.eventTypes().get(0).eventTypeCode().equals(etB)).findFirst().orElseThrow().id();
+
+        // The operator hand-pauses subB directly (bypassing FunctionTriggerSync
+        // entirely — no event, exactly like an admin PAUSE would look to this test).
+        uow.inTransaction(tx -> {
+            subscriptions.persist(subscriptions.findById(subBId).orElseThrow().pause(), tx.dbTx());
+            return null;
+        });
+        assertThat(subscriptions.findById(subBId).orElseThrow().isPaused()).isTrue();
+
+        updateStatus(f.address(), "DISABLED"); // must still succeed
+
+        assertThat(subscriptions.findById(subAId).orElseThrow().isPaused()).as("subA newly paused").isTrue();
+        assertThat(subscriptions.findById(subBId).orElseThrow().isPaused()).as("subB still paused").isTrue();
+        assertThat(eventsFor(SubscriptionEvents.subjectFor(subAId), SubscriptionEvents.PAUSED))
+                .as("subA got exactly one paused event").hasSize(1);
+        assertThat(eventsFor(SubscriptionEvents.subjectFor(subBId), SubscriptionEvents.PAUSED))
+                .as("subB, already paused, gets NO paused event from the function disable").isEmpty();
+
+        updateStatus(f.address(), "ACTIVE"); // must still succeed
+
+        assertThat(subscriptions.findById(subAId).orElseThrow().isActive()).as("subA resumed").isTrue();
+        assertThat(subscriptions.findById(subBId).orElseThrow().isActive())
+                .as("subB resumed too: it was PAUSED at enable time, hand-paused or not").isTrue();
+    }
+
+    /// The enable-side twin of the test above, pinned separately because
+    /// that one cannot catch a dropped RESUME guard on its own (both
+    /// subscriptions are PAUSED at enable time there, so either would
+    /// resume with or without the guard). Here the operator hand-RESUMES
+    /// one of two subscriptions while the FUNCTION itself is still
+    /// `DISABLED` (only the function's own transition runs `onStatusChange`
+    /// — `Function#enable`/`#disable` themselves refuse a no-op flip, so
+    /// there is no other way to reach it with a subscription already in the
+    /// target state). Enabling the function must resume subA (still
+    /// `PAUSED`) and leave subB alone. Mutant: drop `if (!s.isPaused())
+    /// return;` — subB would get a second, redundant `resumed` event.
+    @Test
+    void enablingWithAHandResumedSubscriptionEmitsExactlyOneResumedEvent() {
+        String appId = persistApplication("pg2");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String etA = "fts:pg2:x:a-" + fresh();
+        String etB = "fts:pg2:x:b-" + fresh();
+        persistEventType(etA);
+        persistEventType(etB);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null,
+                List.of(sub(etA, "/events/a"), sub(etB, "/events/b")), List.of());
+        PublishVersion.Result p = publish(f.address(), "pg2", m);
+        promote(f.address(), p.version().version());
+
+        List<TriggerObject> subLinks = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SUBSCRIPTION).toList();
+        String subAId = subLinks.stream().map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
+                .filter(s -> s.eventTypes().get(0).eventTypeCode().equals(etA)).findFirst().orElseThrow().id();
+        String subBId = subLinks.stream().map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
+                .filter(s -> s.eventTypes().get(0).eventTypeCode().equals(etB)).findFirst().orElseThrow().id();
+
+        updateStatus(f.address(), "DISABLED"); // real transition: both subs paused via onStatusChange
+        assertThat(subscriptions.findById(subAId).orElseThrow().isPaused()).isTrue();
+        assertThat(subscriptions.findById(subBId).orElseThrow().isPaused()).isTrue();
+
+        // The operator hand-resumes subB directly while the FUNCTION is still
+        // DISABLED — bypassing FunctionTriggerSync entirely, no event.
+        uow.inTransaction(tx -> {
+            subscriptions.persist(subscriptions.findById(subBId).orElseThrow().resume(), tx.dbTx());
+            return null;
+        });
+        assertThat(subscriptions.findById(subBId).orElseThrow().isActive()).isTrue();
+
+        updateStatus(f.address(), "ACTIVE"); // real transition: must still succeed
+
+        assertThat(subscriptions.findById(subAId).orElseThrow().isActive()).as("subA resumed").isTrue();
+        assertThat(subscriptions.findById(subBId).orElseThrow().isActive()).as("subB stayed active").isTrue();
+        assertThat(eventsFor(SubscriptionEvents.subjectFor(subAId), SubscriptionEvents.RESUMED))
+                .as("subA got exactly one resumed event").hasSize(1);
+        assertThat(eventsFor(SubscriptionEvents.subjectFor(subBId), SubscriptionEvents.RESUMED))
+                .as("subB, already active, gets NO resumed event from the function enable").isEmpty();
+    }
+
+    /// The scheduled-job twin of the two tests above: same guard, same
+    /// reasoning, in [#pauseOrResumeJob]. Mutant: drop either
+    /// `j.status() != ACTIVE`/`!= PAUSED` guard — the hand-mutated job would
+    /// get a redundant event.
+    @Test
+    void jobPauseAndResumeGuardsSkipAJobAlreadyInTheTargetState() {
+        String appId = persistApplication("pg3");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        JsonNode m = manifest("default", false, null, List.of(), List.of(sched("0 0 * * * *", "/jobs/a")));
+        PublishVersion.Result p = publish(f.address(), "pg3", m);
+        promote(f.address(), p.version().version());
+
+        String jobId = linked(f).stream().filter(o -> o.kind() == TriggerObjectKind.SCHEDULED_JOB)
+                .findFirst().orElseThrow().objectId();
+
+        // Hand-pause the job before disabling the function.
+        uow.inTransaction(tx -> {
+            jobs.persist(jobs.findById(jobId).orElseThrow().pause("operator"), tx.dbTx());
+            return null;
+        });
+        updateStatus(f.address(), "DISABLED");
+        assertThat(jobs.findById(jobId).orElseThrow().status()).isEqualTo(io.flowcatalyst.platform.scheduledjob.ScheduledJobStatus.PAUSED);
+        assertThat(eventsFor(io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.subjectFor(jobId),
+                io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.PAUSED))
+                .as("hand-paused job gets NO paused event from the function disable").isEmpty();
+
+        // Hand-resume the job while the function is still DISABLED.
+        uow.inTransaction(tx -> {
+            jobs.persist(jobs.findById(jobId).orElseThrow().resume("operator"), tx.dbTx());
+            return null;
+        });
+        updateStatus(f.address(), "ACTIVE");
+        assertThat(jobs.findById(jobId).orElseThrow().status()).isEqualTo(io.flowcatalyst.platform.scheduledjob.ScheduledJobStatus.ACTIVE);
+        assertThat(eventsFor(io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.subjectFor(jobId),
+                io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents.RESUMED))
+                .as("hand-resumed job gets NO resumed event from the function enable").isEmpty();
     }
 
     // ═══════════════════════════════════════════════════════════════════

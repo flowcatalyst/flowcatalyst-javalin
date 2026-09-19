@@ -1547,3 +1547,13 @@ edit is a three-file change, drafted and reverted.
   root, `-V` on subcommands. Cosmetic.
 - Browser flow `platform/documentation` failed once at `E2E_RETRIES=0`,
   passed on retry; cause not found.
+
+## Subscription binding `filter` is accepted on the wire and dropped (2026-09-19)
+
+`EventTypeBinding.filter` has no column (`SubscriptionRepository`) — every
+subscription, not just functions'. A function manifest's `subscriptions[]`
+entries carried a `filter` key until `docs/spec/function-invocation.md` §3
+was amended (2026-09-19/20 rulings) to make it an unknown field
+(`MANIFEST_UNKNOWN_FIELD`) rather than promise filtering that never
+happens. The underlying gap — no filter storage anywhere in the platform —
+is still open for the admin/SDK subscription surface too.

@@ -277,6 +277,50 @@ class ScheduledJobTest {
         assertThat(changed.reconcile(d, null, "p")).as("idempotent").isEmpty();
     }
 
+    /// One-delta-at-a-time pins for [ScheduledJob#reconcile]'s `||` chain
+    /// (`reconcileAppliesTheDefinitionReactivatesAndBackfillsTheApplication`
+    /// above changes every field at once, so a mutant dropping any ONE
+    /// clause survives it — every other differing clause still trips
+    /// `changed`). Each test here holds every field but one equal to the
+    /// `job()` baseline, so dropping that clause's own `||` term is the
+    /// only way to make `reconcile` wrongly report "no difference".
+
+    @Test
+    void reconcileDetectsOnlyTheCronChanged() {
+        var d = new ScheduledJob.Definition("Nightly", null, List.of(CronExpression.parse("0 0 3 * * *")), null, null,
+                false, false, null, null, null);
+        var r = job().reconcile(d, null, "p");
+        assertThat(r).as("mutant: drop the crons comparison").isPresent();
+        assertThat(r.orElseThrow().crons()).containsExactly("0 0 3 * * *");
+    }
+
+    @Test
+    void reconcileDetectsOnlyTheTimezoneChanged() {
+        var d = new ScheduledJob.Definition("Nightly", null, HOURLY, "Europe/Amsterdam", null, false, false, null,
+                null, null);
+        var r = job().reconcile(d, null, "p");
+        assertThat(r).as("mutant: drop the timezone comparison").isPresent();
+        assertThat(r.orElseThrow().timezone()).isEqualTo("Europe/Amsterdam");
+    }
+
+    @Test
+    void reconcileDetectsOnlyThePayloadChanged() {
+        var d = new ScheduledJob.Definition("Nightly", null, HOURLY, null, json("{\"a\":1}"), false, false, null,
+                null, null);
+        var r = job().reconcile(d, null, "p");
+        assertThat(r).as("mutant: drop the payload comparison").isPresent();
+        assertThat(r.orElseThrow().payload()).isEqualTo(json("{\"a\":1}"));
+    }
+
+    @Test
+    void reconcileDetectsOnlyTheTargetUrlChanged() {
+        var d = new ScheduledJob.Definition("Nightly", null, HOURLY, null, null, false, false, null, null,
+                "https://x/only-target-url");
+        var r = job().reconcile(d, null, "p");
+        assertThat(r).as("mutant: drop the targetUrl comparison").isPresent();
+        assertThat(r.orElseThrow().targetUrl()).isEqualTo("https://x/only-target-url");
+    }
+
     // ── Cron grammar: accepted (spec §3.1) ─────────────────────────────────
 
     @ParameterizedTest(name = "[{0}] {1} → {3}")

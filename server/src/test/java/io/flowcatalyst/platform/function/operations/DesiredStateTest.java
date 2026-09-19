@@ -468,6 +468,35 @@ class DesiredStateTest {
                 .as("mutant: always include it — no webhook endpoint means no secret").isNull();
     }
 
+    /// Spec §6, "live-or-candidate" as built: the secret decision is made
+    /// per ENTRY, from that entry's own version's manifest — [#signingSecretFor]
+    /// is called once per `FunctionEntry` with that entry's own `v`, never
+    /// the function's live version regardless of which entry is being built.
+    /// So a candidate with a webhook endpoint carries the secret even when
+    /// the function's CURRENT live version has none — pinned here rather
+    /// than left as an open question, since the code already decides it.
+    @Test
+    void webhookSigningSecretIsCarriedByTheCandidateEvenWhenTheLiveVersionHasNoWebhookEndpoint() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        String appId = persistApplication("v7cand" + fresh());
+        String secret = "v7-cand-secret-" + fresh();
+        serviceAccount(appId, secret, true);
+
+        Function f = createFunctionForApp("v7c" + fresh(), appId);
+        FunctionVersion v1 = publish(f, 1, manifestForPool(pool.value(), false)); // no webhook endpoint
+        promote(f, v1);
+        FunctionVersion v2 = publish(f, 2, manifestWebhook(pool.value())); // webhook endpoint, candidate only
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).extracting(DesiredState.FunctionEntry::role)
+                .containsExactly("live", "candidate");
+        assertThat(doc.functions().get(0).webhookSigningSecret())
+                .as("live has no webhook endpoint: no secret").isNull();
+        assertThat(doc.functions().get(1).webhookSigningSecret())
+                .as("mutant: decide the secret from the live version, not each entry's own")
+                .isEqualTo(secret);
+    }
+
     @Test
     void webhookSigningSecretIsAbsentWhenTheApplicationHasNoSigningSecret() {
         DnsLabel pool = new DnsLabel("pool" + fresh());

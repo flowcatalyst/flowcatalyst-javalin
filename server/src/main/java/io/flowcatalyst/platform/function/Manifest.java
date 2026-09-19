@@ -86,7 +86,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static final Set<String> ENDPOINT_KEYS =
             Set.of("path", "auth", "methods", "cors", "maxBodyBytes", "timeoutMs");
     private static final Set<String> SUBSCRIPTION_KEYS =
-            Set.of("eventType", "path", "mode", "filter", "maxRetries", "timeoutSeconds", "dataOnly");
+            Set.of("eventType", "path", "mode", "maxRetries", "timeoutSeconds", "dataOnly");
     private static final Set<String> SCHEDULE_KEYS = Set.of("cron", "timezone", "path", "payload");
     private static final Set<String> PUBLIC_ROUTE_KEYS = Set.of("hostname", "pathPrefix");
     private static final Set<String> CORS_KEYS = Set.of("origins", "methods", "headers", "allowCredentials");
@@ -157,11 +157,10 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     /// @param eventType     the pattern, required
     /// @param path          the literal delivery path; must resolve to a `webhook` endpoint
     /// @param mode          router ordering mode; [Manifest#DEFAULT_SUBSCRIPTION_MODE] when absent
-    /// @param filter        optional filter expression, carried verbatim; `null` when absent
     /// @param maxRetries    resolved; [Subscription#DEFAULT_MAX_RETRIES] when absent
     /// @param timeoutSeconds resolved; [Subscription#DEFAULT_TIMEOUT_SECONDS] when absent
     /// @param dataOnly      [Manifest#DEFAULT_SUBSCRIPTION_DATA_ONLY] (`false`) when absent
-    public record SubscriptionSpec(String eventType, RoutePattern path, DispatchMode mode, String filter,
+    public record SubscriptionSpec(String eventType, RoutePattern path, DispatchMode mode,
                                     int maxRetries, int timeoutSeconds, boolean dataOnly) {
         public SubscriptionSpec {
             Objects.requireNonNull(eventType, "eventType");
@@ -606,7 +605,6 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         requireWebhookMatch(subscriptionPath, endpoints, path, "SUBSCRIPTION_PATH_NOT_WEBHOOK");
 
         DispatchMode mode = parseSubscriptionMode(node, path);
-        String filter = optionalText(node, "filter", path, "SUBSCRIPTION_INVALID");
         int maxRetries = parsePositiveOrDefault(node, "maxRetries", path, Subscription.DEFAULT_MAX_RETRIES,
                 "SUBSCRIPTION_INVALID");
         int timeoutSeconds = parsePositiveOrDefault(node, "timeoutSeconds", path,
@@ -614,7 +612,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         boolean dataOnly = parseBooleanOrDefault(node, "dataOnly", path, DEFAULT_SUBSCRIPTION_DATA_ONLY,
                 "SUBSCRIPTION_INVALID");
 
-        return new SubscriptionSpec(eventType, subscriptionPath, mode, filter, maxRetries, timeoutSeconds, dataOnly);
+        return new SubscriptionSpec(eventType, subscriptionPath, mode, maxRetries, timeoutSeconds, dataOnly);
     }
 
     /// Absent ⇒ [Manifest#DEFAULT_SUBSCRIPTION_MODE] (`IMMEDIATE`); present ⇒
@@ -968,11 +966,10 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         Optional<RoutePattern> path = readLiteralPath(node, "path");
         if (path.isEmpty() || !readWebhookMatch(path.get(), endpoints)) return Optional.empty();
         DispatchMode mode = readMode(node);
-        String filter = readOptionalText(node, "filter");
         int maxRetries = readPositiveInt(node, "maxRetries", Subscription.DEFAULT_MAX_RETRIES);
         int timeoutSeconds = readPositiveInt(node, "timeoutSeconds", Subscription.DEFAULT_TIMEOUT_SECONDS);
         boolean dataOnly = readBoolean(node, "dataOnly", DEFAULT_SUBSCRIPTION_DATA_ONLY);
-        return Optional.of(new SubscriptionSpec(eventTypeNode.asString(), path.get(), mode, filter, maxRetries,
+        return Optional.of(new SubscriptionSpec(eventTypeNode.asString(), path.get(), mode, maxRetries,
                 timeoutSeconds, dataOnly));
     }
 
@@ -1168,7 +1165,6 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         node.put("eventType", spec.eventType());
         node.put("path", spec.path().value());
         node.put("mode", spec.mode().wireValue());
-        if (spec.filter() != null) node.put("filter", spec.filter());
         node.put("maxRetries", spec.maxRetries());
         node.put("timeoutSeconds", spec.timeoutSeconds());
         node.put("dataOnly", spec.dataOnly());

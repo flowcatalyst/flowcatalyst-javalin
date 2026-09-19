@@ -96,19 +96,26 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
     }
 
     /// The publish-time warm-capacity read (spec `function-invocation.md`
-    /// §4, §10 V1 `WARM_CAPACITY_EXCEEDED`): how many functions' CURRENT
-    /// `live` version has `manifest.warm() == true` and names `pool` — one
-    /// join, decoded in Java since `warm`/`pool` live inside the stored
-    /// JSONB manifest, not their own columns. `PublishVersion`'s own
-    /// validation adds the version being published, if it too is warm, on
-    /// top of this count (spec: "live warm versions in that pool + this one").
-    public int countLiveWarmInPool(DnsLabel pool) {
+    /// §4, §10 V1 `WARM_CAPACITY_EXCEEDED`): how many functions **other
+    /// than** `excludingFunctionId`'s CURRENT `live` version has
+    /// `manifest.warm() == true` and names `pool` — one join, decoded in
+    /// Java since `warm`/`pool` live inside the stored JSONB manifest, not
+    /// their own columns. `excludingFunctionId` is the function being
+    /// published: its own live warm version is about to be replaced by the
+    /// version under validation, so counting it here would stop a function
+    /// already at the cap from ever republishing (spec §4). `PublishVersion`'s
+    /// own validation adds the version being published, if it too is warm,
+    /// on top of this count (spec: "live warm versions of other functions in
+    /// that pool + this one").
+    public int countLiveWarmInPool(DnsLabel pool, String excludingFunctionId) {
         Objects.requireNonNull(pool, "pool");
+        Objects.requireNonNull(excludingFunctionId, "excludingFunctionId");
         FnAliases a = FN_ALIASES;
         int count = 0;
         for (var row : dsl.select(T.MANIFEST).from(T)
                 .join(a).on(a.VERSION_ID.eq(T.ID))
                 .where(a.ALIAS.eq(Function.LIVE))
+                .and(T.FUNCTION_ID.ne(excludingFunctionId))
                 .fetch()) {
             Manifest manifest = Manifest.readStored(readManifestJson(row.value1()));
             if (manifest.warm() && manifest.pool().equals(pool)) {

@@ -40,6 +40,7 @@ import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -80,11 +81,26 @@ public final class FunctionTriggerSync implements TriggerSync {
     private final FunctionVersionRepository functionVersions;
     private final FunctionLimits functionLimits;
     private final PoolUrlTemplate poolUrlTemplate;
+    private final java.util.function.Function<String, String> hasher;
 
     public FunctionTriggerSync(SubscriptionRepository subscriptions, DispatchPoolRepository pools,
             ScheduledJobRepository jobs, EventTypeRepository eventTypes, TriggerObjectRepository triggerObjects,
             ApplicationRepository applications, ServiceAccountRepository serviceAccounts,
             FunctionVersionRepository functionVersions, FunctionLimits functionLimits, PoolUrlTemplate poolUrlTemplate) {
+        this(subscriptions, pools, jobs, eventTypes, triggerObjects, applications, serviceAccounts, functionVersions,
+                functionLimits, poolUrlTemplate, FunctionTriggerSync::hash8);
+    }
+
+    /// Test seam (review fix): a forced `hasher` lets a test simulate a
+    /// genuine 32-bit hash collision between two different manifest entries
+    /// (spec §4: "two entries of one function whose keys collide ... an
+    /// internal error at promote") without needing to find a real SHA-256
+    /// collision.
+    FunctionTriggerSync(SubscriptionRepository subscriptions, DispatchPoolRepository pools,
+            ScheduledJobRepository jobs, EventTypeRepository eventTypes, TriggerObjectRepository triggerObjects,
+            ApplicationRepository applications, ServiceAccountRepository serviceAccounts,
+            FunctionVersionRepository functionVersions, FunctionLimits functionLimits, PoolUrlTemplate poolUrlTemplate,
+            java.util.function.Function<String, String> hasher) {
         this.subscriptions = Objects.requireNonNull(subscriptions, "subscriptions");
         this.pools = Objects.requireNonNull(pools, "pools");
         this.jobs = Objects.requireNonNull(jobs, "jobs");
@@ -95,6 +111,7 @@ public final class FunctionTriggerSync implements TriggerSync {
         this.functionVersions = Objects.requireNonNull(functionVersions, "functionVersions");
         this.functionLimits = Objects.requireNonNull(functionLimits, "functionLimits");
         this.poolUrlTemplate = Objects.requireNonNull(poolUrlTemplate, "poolUrlTemplate");
+        this.hasher = Objects.requireNonNull(hasher, "hasher");
     }
 
     // ── onPublish — VALIDATE ONLY (spec §4 first paragraph) ─────────────────
@@ -135,7 +152,7 @@ public final class FunctionTriggerSync implements TriggerSync {
         }
 
         if (manifest.warm()) {
-            int liveWarmInPool = functionVersions.countLiveWarmInPool(manifest.pool());
+            int liveWarmInPool = functionVersions.countLiveWarmInPool(manifest.pool(), function.id());
             if (liveWarmInPool + 1 > functionLimits.maxWarmPerHost()) {
                 throw UseCaseException.validation("WARM_CAPACITY_EXCEEDED",
                         "pool '" + manifest.pool().value() + "' is at its warm-function limit ("
@@ -225,16 +242,39 @@ public final class FunctionTriggerSync implements TriggerSync {
     private void reconcileSubscriptions(TxScopedUnitOfWork scoped, ExecutionContext ec, Function function,
             Manifest manifest, String applicationCode, DispatchPool dispatchPool, String fid,
             Map<String, TriggerObject> linkedSubs, Instant now, List<TriggerObject> toDelete) {
-        Set<String> desiredKeys = new LinkedHashSet<>();
-        for (Manifest.SubscriptionSpec spec : manifest.subscriptions()) {
-            String key = KEY_PREFIX + fid + "-" + hash8(spec.eventType());
-            desiredKeys.add(key);
-            reconcileSubscription(scoped, ec, function, manifest, applicationCode, dispatchPool, key, spec,
+        List<Manifest.SubscriptionSpec> specs = manifest.subscriptions();
+        List<String> keys = new ArrayList<>(specs.size());
+        for (Manifest.SubscriptionSpec spec : specs) {
+            keys.add(KEY_PREFIX + fid + "-" + hasher.apply(spec.eventType()));
+        }
+        checkNoCollisions(keys, "subscriptions");
+
+        Set<String> desiredKeys = new LinkedHashSet<>(keys);
+        for (int i = 0; i < specs.size(); i++) {
+            String key = keys.get(i);
+            reconcileSubscription(scoped, ec, function, manifest, applicationCode, dispatchPool, key, specs.get(i),
                     linkedSubs.get(key), now);
         }
         for (Map.Entry<String, TriggerObject> e : linkedSubs.entrySet()) {
             if (!desiredKeys.contains(e.getKey())) {
                 toDelete.add(e.getValue());
+            }
+        }
+    }
+
+    /// Spec §4: "two entries of one function whose keys collide ... an
+    /// internal error at promote, never a silent overwrite of one link by
+    /// the other" — checked before ANY of `keys`' entries is reconciled, so
+    /// a collision leaves the whole promote's reconciliation unwritten (the
+    /// surrounding transaction rolls everything else in this promote back
+    /// with it, spec §10 "order and atomicity").
+    private static void checkNoCollisions(List<String> keys, String what) {
+        Set<String> seen = new HashSet<>();
+        for (String key : keys) {
+            if (!seen.add(key)) {
+                throw UseCaseException.internal("TRIGGER_KEY_COLLISION",
+                        "two " + what + " entries of this function's manifest hash to the same trigger key '" + key
+                                + "'", null);
             }
         }
     }
@@ -245,7 +285,10 @@ public final class FunctionTriggerSync implements TriggerSync {
         String endpoint = endpointFor(manifest, function, spec.path().value());
         String name = function.address().render() + ": " + spec.eventType();
         String clientId = function.owner().clientIdOrNull();
-        EventTypeBinding binding = new EventTypeBinding(null, spec.eventType(), null, spec.filter());
+        // No manifest `filter` (spec §3): a subscription binding's filter has no column
+        // anywhere in the platform (`SubscriptionRepository`) — always null, for every
+        // subscription source, not just functions' (docs/backlog.md).
+        EventTypeBinding binding = new EventTypeBinding(null, spec.eventType(), null, null);
 
         Optional<Subscription> existing = linked == null ? Optional.empty() : subscriptions.findById(linked.objectId());
         Subscription result;
@@ -310,11 +353,17 @@ public final class FunctionTriggerSync implements TriggerSync {
     private void reconcileScheduledJobs(TxScopedUnitOfWork scoped, ExecutionContext ec, Function function,
             Manifest manifest, String fid, Map<String, TriggerObject> linkedJobs, Instant now,
             List<TriggerObject> toDelete) {
-        Set<String> desiredKeys = new LinkedHashSet<>();
-        for (Manifest.ScheduleSpec spec : manifest.schedules()) {
-            String key = KEY_PREFIX + fid + "-" + hash8(spec.cron() + "\0" + zoneOrEmpty(spec));
-            desiredKeys.add(key);
-            reconcileScheduledJob(scoped, ec, function, manifest, key, spec, linkedJobs.get(key), now);
+        List<Manifest.ScheduleSpec> specs = manifest.schedules();
+        List<String> keys = new ArrayList<>(specs.size());
+        for (Manifest.ScheduleSpec spec : specs) {
+            keys.add(KEY_PREFIX + fid + "-" + hasher.apply(spec.cron() + "\0" + zoneOrEmpty(spec)));
+        }
+        checkNoCollisions(keys, "schedules");
+
+        Set<String> desiredKeys = new LinkedHashSet<>(keys);
+        for (int i = 0; i < specs.size(); i++) {
+            String key = keys.get(i);
+            reconcileScheduledJob(scoped, ec, function, manifest, key, specs.get(i), linkedJobs.get(key), now);
         }
         for (Map.Entry<String, TriggerObject> e : linkedJobs.entrySet()) {
             if (!desiredKeys.contains(e.getKey())) {
@@ -346,11 +395,15 @@ public final class FunctionTriggerSync implements TriggerSync {
                             null, targetUrl));
         } else {
             ScheduledJobCode code = ScheduledJobCode.parse(key);
-            result = ScheduledJob.create(code, definition).withApplicationId(function.applicationId())
-                    .withCreatedBy(ec.principalId());
+            // The job's client scope is the function's owner (spec §4 table): null
+            // for a platform-owned function, never the platform-wide default a bare
+            // ScheduledJob.create leaves it at.
+            String clientId = function.owner().clientIdOrNull();
+            result = ScheduledJob.create(code, definition).withClientId(clientId)
+                    .withApplicationId(function.applicationId()).withCreatedBy(ec.principalId());
             scoped.commit(result, jobs, ScheduledJobEvents.ScheduledJobCreated.of(ec, result),
                     new io.flowcatalyst.platform.scheduledjob.operations.CreateCommand(key, name,
-                            List.of(spec.cron()), definition.timezone(), null, function.applicationId(), null,
+                            List.of(spec.cron()), definition.timezone(), clientId, function.applicationId(), null,
                             definition.payload(), false, false, null, null, targetUrl));
         }
         triggerObjects.link(
@@ -404,25 +457,41 @@ public final class FunctionTriggerSync implements TriggerSync {
         }
     }
 
+    /// Spec §4: disabling pauses only `ACTIVE` linked subscriptions; enabling
+    /// resumes only `PAUSED` ones. An object already in the target state (an
+    /// operator paused it by hand, or a sibling call already moved it) is
+    /// left alone — no write, no event — rather than re-flipped: [Subscription#pause]
+    /// / [#resume] are themselves unconditional idempotent flips, so without
+    /// this guard EVERY linked subscription would get a fresh `paused`/`resumed`
+    /// event on EVERY disable/enable regardless of its current status, and an
+    /// operator's hand-pause would be invisible in the event stream (spec §4:
+    /// "the platform cannot tell who paused it" — that not-telling only holds
+    /// if the platform does not also emit its own redundant event over it).
     private void pauseOrResumeSubscription(TxScopedUnitOfWork scoped, ExecutionContext ec, Subscription s,
             boolean disable) {
         if (disable) {
+            if (!s.isActive()) return; // already PAUSED (or otherwise not ACTIVE): left alone
             Subscription updated = s.pause();
             scoped.commit(updated, subscriptions, SubscriptionEvents.SubscriptionPaused.of(ec, updated),
                     new io.flowcatalyst.platform.subscription.operations.PauseCommand(s.id()));
         } else {
+            if (!s.isPaused()) return; // already ACTIVE: left alone
             Subscription updated = s.resume();
             scoped.commit(updated, subscriptions, SubscriptionEvents.SubscriptionResumed.of(ec, updated),
                     new io.flowcatalyst.platform.subscription.operations.ResumeCommand(s.id()));
         }
     }
 
+    /// The scheduled-job twin of [#pauseOrResumeSubscription] — same guard,
+    /// same reasoning; [ScheduledJob#pause]/[#resume] are unconditional too.
     private void pauseOrResumeJob(TxScopedUnitOfWork scoped, ExecutionContext ec, ScheduledJob j, boolean disable) {
         if (disable) {
+            if (j.status() != io.flowcatalyst.platform.scheduledjob.ScheduledJobStatus.ACTIVE) return;
             ScheduledJob updated = j.pause(ec.principalId());
             scoped.commit(updated, jobs, ScheduledJobEvents.ScheduledJobPaused.of(ec, updated),
                     new io.flowcatalyst.platform.scheduledjob.operations.PauseCommand(j.id()));
         } else {
+            if (j.status() != io.flowcatalyst.platform.scheduledjob.ScheduledJobStatus.PAUSED) return;
             ScheduledJob updated = j.resume(ec.principalId());
             scoped.commit(updated, jobs, ScheduledJobEvents.ScheduledJobResumed.of(ec, updated),
                     new io.flowcatalyst.platform.scheduledjob.operations.ResumeCommand(j.id()));

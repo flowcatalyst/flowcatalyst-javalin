@@ -126,7 +126,6 @@ class ManifestTest {
         assertThat(sub.eventType()).isEqualTo("billing:invoices:invoice:created");
         assertThat(sub.path()).isEqualTo(RoutePattern.parse("/events/invoice-created"));
         assertThat(sub.mode()).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
-        assertThat(sub.filter()).isNull();
         assertThat(sub.maxRetries()).isEqualTo(3);
         assertThat(sub.timeoutSeconds()).isEqualTo(30);
         assertThat(sub.dataOnly()).isFalse();
@@ -254,6 +253,21 @@ class ManifestTest {
                 .satisfies(err -> {
                     assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
                     assertThat(err.message()).contains("subscriptions[0].bogus");
+                });
+    }
+
+    /// Spec §3: "there is no `filter`" — a subscription binding's filter has
+    /// no column anywhere in the platform, so the key is unknown rather than
+    /// silently accepted-and-dropped.
+    @Test
+    void manifestFilterInSubscriptionIsUnknownField() {
+        String json = withWebhookAndSubscription("\"eventType\":\"a:b:c\",\"path\":\"/events/a\",\"filter\":\"x\"");
+        assertThatThrownBy(() -> parseJvm(json))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+                    assertThat(err.message()).contains("subscriptions[0].filter");
                 });
     }
 
