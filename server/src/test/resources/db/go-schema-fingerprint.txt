@@ -294,6 +294,7 @@ COLUMN	msg_dispatch_jobs	payload	12	text			YES		NO
 COLUMN	msg_dispatch_jobs	payload_content_type	13	character varying	100		YES	'application/json'::character varying	NO
 COLUMN	msg_dispatch_jobs	projected_at	36	timestamp with time zone			YES		NO
 COLUMN	msg_dispatch_jobs	protocol	11	character varying	30		NO	'HTTP_WEBHOOK'::character varying	NO
+COLUMN	msg_dispatch_jobs	queue	39	character varying	255		YES		NO
 COLUMN	msg_dispatch_jobs	queued_at	35	timestamp with time zone			YES		NO
 COLUMN	msg_dispatch_jobs	retry_strategy	26	character varying	50		YES	'exponential'::character varying	NO
 COLUMN	msg_dispatch_jobs	scheduled_for	27	timestamp with time zone			YES		NO
