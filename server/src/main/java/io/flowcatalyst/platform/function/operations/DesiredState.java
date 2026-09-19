@@ -150,10 +150,11 @@ public final class DesiredState {
     /// bytes on purpose, so a rotation changes the `ETag` (spec §10 V7).
     /// `applicationId`/`clientId` (spec `function-host-listener.md` §1) are
     /// the function's owning application and client — the host needs them
-    /// to decide *reach* for a versioned call (`function-invocation.md` §4):
-    /// both are omitted together for a platform-owned function ([FunctionOwner.Platform]),
-    /// since a platform function's reach check is "anchor, full stop" and
-    /// neither field is ever consulted for it.
+    /// to decide *reach* for a versioned call (`function-invocation.md` §4).
+    /// `applicationId` is ALWAYS carried — a platform-owned function still
+    /// belongs to an application; only `clientId` is omitted for one
+    /// ([FunctionOwner.Platform]), since a platform function's reach check
+    /// is "anchor, full stop" and `clientId` is never consulted for it.
     public record FunctionEntry(String address, String functionId, String versionId, int version, String role,
                                 String mode, String digest, String artifactRef, String signatureBundle,
                                 JsonNode manifest, SignerView signer, String webhookSigningSecret,
@@ -162,7 +163,9 @@ public final class DesiredState {
         static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret) {
             String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
             boolean platformOwned = f.owner() instanceof FunctionOwner.Platform;
-            String applicationId = platformOwned ? null : f.applicationId();
+            // applicationId is always carried — a platform-owned function still belongs to an
+            // application; only clientId is omitted for one (anchor-only reach, R1 §1).
+            String applicationId = f.applicationId();
             String clientId = platformOwned ? null : f.owner().clientIdOrNull();
             return new FunctionEntry(f.address().render(), f.id(), v.id(), v.version(), role, mode,
                     v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson(),

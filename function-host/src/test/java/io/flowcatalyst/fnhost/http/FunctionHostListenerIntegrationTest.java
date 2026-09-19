@@ -92,17 +92,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// own R12 integration test; turning it off here removes an entire unrelated
 /// TestSigstore/TrustRoot setup from a test that is already large.
 ///
-/// Pool-URL/ephemeral-port resolution (task-assigned decision): `PoolUrlTemplate`
-/// requires `{pool}` in the template but `endpointFor` string-concatenates
-/// `resolve(pool) + "/functions/" + address + path` directly — any `{pool}`
-/// placement that leaves a literal path segment before `/functions/…` breaks
-/// this host's routing (`/functions/…` must be the request's own first
-/// segment). The fix needs no code change: `{pool}` is placed in the
-/// authority's USERINFO (`http://{pool}@127.0.0.1:<port>`), which
-/// `java.net.http.HttpClient` — the same client family `SubscriberDelivery`
-/// uses — connects with by ignoring the userinfo and sending only the path
-/// (verified directly against a loopback `HttpServer` before writing this
-/// test). The resolved URL is a normal, valid, routable URL.
+/// Pool-URL/ephemeral-port resolution: `{pool}` is optional in
+/// `PoolUrlTemplate` (spec `function-invocation.md` §4 R8) — a single-pool
+/// setup like this test names the host directly, `http://127.0.0.1:<port>`,
+/// with no placeholder at all. `PoolUrlTemplate` also now rejects userinfo
+/// outright (a prior version of this test placed `{pool}` in the URL's
+/// userinfo, `http://{pool}@127.0.0.1:<port>`, to route around the
+/// then-mandatory-placeholder rule — that was a hack around a rule that was
+/// wrong for exactly this shape of environment, not a legitimate URL, and is
+/// rejected structurally now).
 @SuppressWarnings("deprecation")
 class FunctionHostListenerIntegrationTest {
 
@@ -136,8 +134,8 @@ class FunctionHostListenerIntegrationTest {
             metricsPort = m.getLocalPort();
             hostPort = h.getLocalPort();
         }
-        // R8/task decision: {pool} in the authority's userinfo — see the class doc.
-        String poolUrlTemplate = "http://{pool}@127.0.0.1:" + hostPort;
+        // R8: {pool} is optional — a single-pool template names the host directly (see the class doc).
+        String poolUrlTemplate = "http://127.0.0.1:" + hostPort;
 
         Env env = Env.load(Map.of(
                 "FC_API_PORT", String.valueOf(apiPort),
@@ -240,7 +238,7 @@ class FunctionHostListenerIntegrationTest {
                     .orElseThrow(() -> new AssertionError("promote must have created the subscription"));
             Subscription subscription = subscriptions.findById(subLink.objectId()).orElseThrow();
             assertThat(subscription.endpoint()).as("target is …/functions/<address>/events/… — no version in it")
-                    .isEqualTo("http://" + pool.value() + "@127.0.0.1:" + hostPort + "/functions/" + address.render() + "/events/created");
+                    .isEqualTo("http://127.0.0.1:" + hostPort + "/functions/" + address.render() + "/events/created");
             assertThat(subscription.applicationCode()).isEqualTo(appCode);
 
             // ── the dispatch job a matched subscription would produce (spec: "through the dispatch-jobs

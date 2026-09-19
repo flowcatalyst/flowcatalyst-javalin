@@ -194,7 +194,20 @@ final class FnHttpTestSupport {
         return new DesiredDocument(List.of(entry), List.of(), List.of());
     }
 
+    /// A fixture bug class of its own (H6's own finding: two entries sharing one
+    /// `versionId` raced for the SAME `prepared` slot in the reconciler and hung a run one
+    /// time in three) — `versionId` keys `Reconciler`'s own `prepared` map regardless of
+    /// address/version, so two entries of a multi-entry document must never share one.
+    /// Fails loudly here rather than letting the bug resurface as a flake somewhere else.
     static DesiredDocument document(List<DesiredDocument.Entry> entries) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (DesiredDocument.Entry entry : entries) {
+            if (!seen.add(entry.versionId())) {
+                throw new IllegalArgumentException(
+                        "fixture bug: two entries of this document share versionId '" + entry.versionId()
+                                + "' — Reconciler#prepared is keyed by it alone, so they would race for one slot");
+            }
+        }
         return new DesiredDocument(entries, List.of(), List.of());
     }
 

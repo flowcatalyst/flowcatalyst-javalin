@@ -46,9 +46,10 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     /// uses for a foreign JSON shape), the application's webhook signing
     /// secret (spec `function-invocation.md` §6, R9 — present only for a
     /// function with a `webhook` endpoint), and `applicationId`/`clientId`
-    /// (spec `function-host-listener.md` §1) — the function's owner, `null`
-    /// together for a platform-owned function, used to decide *reach* for a
-    /// versioned call (`function-invocation.md` §4).
+    /// (spec `function-host-listener.md` §1) — the function's owner, used to
+    /// decide *reach* for a versioned call (`function-invocation.md` §4).
+    /// `applicationId` is ALWAYS present (a platform-owned function still
+    /// belongs to an application); only `clientId` is `null` for one.
     public record Entry(FunctionAddress address, String functionId, String versionId, int version, Role role,
                          Mode mode, Digest digest, String artifactRef, String signatureBundle,
                          SignerIdentity signer, Manifest manifest, String webhookSigningSecret,
@@ -153,6 +154,10 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         SignerIdentity signer = parseSigner(node.path("signer"));
         Manifest manifest = Manifest.readStored(node.path("manifest"));
         String webhookSigningSecret = optionalText(node, "webhookSigningSecret");
+        // The platform always sends applicationId now (a platform-owned function still
+        // belongs to an application; only clientId is ever omitted) — read leniently
+        // regardless, same as every other field here: an older/foreign document must
+        // never crash this parse (spec §1.1).
         String applicationId = optionalText(node, "applicationId");
         String clientId = optionalText(node, "clientId");
         return new Entry(address, functionId, versionId, version, role, mode, digest, artifactRef, signatureBundle,

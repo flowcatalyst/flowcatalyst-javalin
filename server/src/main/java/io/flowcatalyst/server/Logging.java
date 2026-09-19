@@ -46,6 +46,14 @@ public final class Logging {
         public static final String PRINCIPAL_ID = "principal_id";
         public static final String EXECUTION_ID = "execution_id";
 
+        /// The function host (`docs/spec/function-host-listener.md` §2 step
+        /// 9): the invoked function's address, and its loaded version —
+        /// `EXECUTION_ID` above already carries the per-invocation id, and
+        /// `CORRELATION_ID` the caller's own trace id, so these two are the
+        /// only genuinely new keys the function host adds.
+        public static final String FUNCTION = "function";
+        public static final String VERSION = "version";
+
         private MdcKeys() {
         }
     }

@@ -16,7 +16,8 @@ verification, CORS) is package F and reuses everything here below the route matc
 
 ## 1. One platform-side addition
 
-Desired-state entries gain `applicationId` and `clientId` (omitted for a platform function) — the
+Desired-state entries gain `applicationId` (always present — a platform-owned function still
+belongs to an application) and `clientId` (omitted for a platform function) — the
 host needs the function's owner to decide *reach* for a versioned call (§4). New permission
 `FUNCTION_VERSION_INVOKE` = `platform:function:version:invoke`, added to `platform:function-publisher`
 and `platform:messaging-admin` (pinning tests updated).

@@ -112,6 +112,15 @@ public final class Reconciler {
     private volatile DesiredDocument document;
     private volatile boolean draining;
 
+    /// D3 (`function-host-listener.md` §4, `function-invocation.md` §2):
+    /// run at the end of every [#reconcileOnce], regardless of outcome —
+    /// [io.flowcatalyst.fnhost.http.PinnedVersions#sweep] is registered here
+    /// by [io.flowcatalyst.fnhost.http.FnHttpServer#start] so a pinned
+    /// candidate is closed the moment its version leaves desired state,
+    /// without this class needing to know anything about pinned versions
+    /// itself.
+    private final List<Runnable> postReconcileListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
                        Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry) {
         this.pool = Objects.requireNonNull(pool, "pool");
@@ -127,6 +136,14 @@ public final class Reconciler {
     /// step 5). One-way: a drained host is never un-drained.
     public void drain() {
         draining = true;
+    }
+
+    /// Registers `listener` to run once at the end of every future
+    /// [#reconcileOnce] call (after the heartbeat, spec §1.2's own final
+    /// step). Never called for a listener the caller does not itself own —
+    /// this class is otherwise oblivious to what a listener does.
+    public void addPostReconcileListener(Runnable listener) {
+        postReconcileListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     private record Prepared(Path artifact) {
@@ -200,6 +217,9 @@ public final class Reconciler {
         }
         if (doc != null) {
             sendHeartbeat(doc);
+        }
+        for (Runnable listener : postReconcileListeners) {
+            listener.run();
         }
     }
 

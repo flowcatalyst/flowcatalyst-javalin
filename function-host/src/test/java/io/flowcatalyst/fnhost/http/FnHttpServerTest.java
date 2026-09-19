@@ -1,12 +1,18 @@
 package io.flowcatalyst.fnhost.http;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.router.wire.WebhookSigner;
+import io.flowcatalyst.server.Logging;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.JsonNode;
 
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -19,6 +25,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -26,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// `FnHttpServer` — `docs/spec/function-host-listener.md` §2-§4, tests
 /// H1-H14. Real HTTP (`java.net.http`) against a real [FnHttpServer] on an
@@ -813,6 +821,249 @@ class FnHttpServerTest {
 
     private static String echoSourceNamed(String className, Path counterFile) {
         return echoSource(counterFile).replace("EchoFn", className.substring(className.lastIndexOf('.') + 1));
+    }
+
+    // ── H11b: versioned auth ordering — token(401) before permission(403) before
+    //    version-exists+reach(404), all indistinguishable from a probing caller's view ──
+
+    @Test
+    void h11b_versionedAuthFailuresAreIndistinguishableForAnExistingOrUnknownVersion(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path counter = dir.resolve("counter");
+            Path jar = FnHttpTestSupport.functionJar(dir, "v1", "fixture.http.EchoFn", echoSource(counter));
+            var manifest = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
+                    "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+            var liveV1 = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, "app_1", "clt_1");
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(liveV1), 50, options)) {
+                // no token: an EXISTING version and a version that has NEVER existed must answer
+                // identically — a probing, unauthenticated caller must not be able to tell them apart.
+                var noTokenExisting = h.get("/functions/" + ADDR.render() + ":1/x");
+                var noTokenMissing = h.get("/functions/" + ADDR.render() + ":99/x");
+                assertThat(noTokenExisting.statusCode()).isEqualTo(401);
+                assertThat(noTokenMissing.statusCode())
+                        .as("mutant: check version-exists before auth — a missing version would then answer 404, not 401")
+                        .isEqualTo(401);
+                assertThat(noTokenMissing.body())
+                        .as("mutant: check version-exists before auth — the failure must be byte-identical either way")
+                        .isEqualTo(noTokenExisting.body());
+                assertThat(countLines(counter)).isEqualTo(0);
+
+                // a token that authenticates but lacks the permission: same indistinguishability, at 403.
+                String tokenNoPerm = jwks.mint("prn_v", "SERVICE", "CLIENT", "platform:function:function:view",
+                        List.of("clt_1"), List.of(), false, Instant.now().plusSeconds(60));
+                var noPermExisting = h.get("/functions/" + ADDR.render() + ":1/x", "Authorization", "Bearer " + tokenNoPerm);
+                var noPermMissing = h.get("/functions/" + ADDR.render() + ":99/x", "Authorization", "Bearer " + tokenNoPerm);
+                assertThat(noPermExisting.statusCode()).isEqualTo(403);
+                assertThat(noPermMissing.statusCode())
+                        .as("mutant: check version-exists before the permission check").isEqualTo(403);
+                assertThat(noPermMissing.body())
+                        .as("mutant: check version-exists before the permission check — must be byte-identical either way")
+                        .isEqualTo(noPermExisting.body());
+                assertThat(countLines(counter)).isEqualTo(0);
+            }
+        }
+    }
+
+    // ── H11c: versioned authentication (JWKS fetch) never runs on the event loop ────
+
+    @Test
+    @Timeout(45) // a hard safety net — nothing here is meant to take this long even under a mutant
+    void h11c_versionedAuthenticationRunsOffTheEventLoopNotOnIt(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path counterA = dir.resolve("counterA");
+            Path jarA = FnHttpTestSupport.functionJar(dir, "a", "fixture.http.EchoFn", echoSource(counterA));
+            var manifestA = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
+                    "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+            var entryA = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jarA, manifestA, null, null, null);
+
+            Path counterB = dir.resolve("counterB");
+            Path jarB = FnHttpTestSupport.functionJar(dir, "b", "fixture.http.EchoFnB",
+                    echoSourceNamed("fixture.http.EchoFnB", counterB));
+            var manifestB = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFnB",
+                    "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+            var entryB = FnHttpTestSupport.liveEntry(ADDR_B, "fnc_2", "v1-b", 1, jarB, manifestB, null, "app_2", "clt_2");
+
+            // Exactly ONE event-loop thread — this test means nothing with more than one (H1).
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC(), 1);
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(entryA, entryB)), 50, options);
+                 var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                jwks.parkNextJwksFetch();
+                String tokenUnknownKid = jwks.mint("prn_v", "SERVICE", "CLIENT", "platform:function:version:invoke",
+                        List.of("clt_2"), List.of(), true, Instant.now().plusSeconds(60));
+
+                CompletableFuture<HttpResponse<byte[]>> versionedCall = CompletableFuture.supplyAsync(
+                        () -> h.get("/functions/" + ADDR_B.render() + ":1/x", "Authorization", "Bearer " + tokenUnknownKid),
+                        executor);
+
+                assertThat(jwks.awaitFetchStarted(Duration.ofSeconds(10)))
+                        .as("the versioned call's own auth must actually reach the JWKS fetch for this test to mean anything")
+                        .isTrue();
+
+                // While that fetch is parked, an UNVERSIONED call to a DIFFERENT function — which never
+                // touches auth at all — must still complete promptly: the single event-loop thread was
+                // not itself blocked inside the versioned call's authentication. Fired on its own thread
+                // and awaited with a SHORT, explicit bound — never the client's own (much longer) request
+                // timeout — so a mutant that blocks the event loop fails this test quickly, not slowly.
+                CompletableFuture<HttpResponse<byte[]>> unrelatedCall = CompletableFuture.supplyAsync(
+                        () -> h.get("/functions/" + ADDR.render() + "/x"), executor);
+                HttpResponse<byte[]> unrelated;
+                try {
+                    unrelated = unrelatedCall.get(3, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.TimeoutException e) {
+                    throw new AssertionError("mutant: authenticate the versioned call on the event loop — an "
+                            + "unrelated call to a different function never got a chance to run", e);
+                } finally {
+                    jwks.releaseParkedFetch(); // let the parked fetch go regardless, so cleanup never hangs
+                }
+                assertThat(unrelated.statusCode())
+                        .as("mutant: authenticate the versioned call on the event loop")
+                        .isEqualTo(200);
+
+                var versionedResp = versionedCall.get(15, TimeUnit.SECONDS);
+                assertThat(versionedResp.statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    // ── H: PinnedVersions.sweep runs after every reconcile (function-invocation.md §2) ──
+
+    @Test
+    void pinnedVersionsAreClosedOnceTheirVersionLeavesDesiredState(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path jar1 = FnHttpTestSupport.functionJar(dir, "sv1", "fixture.http.EchoFn", echoSource(dir.resolve("counter1")));
+            Path jar2 = FnHttpTestSupport.functionJar(dir, "sv2", "fixture.http.EchoFnS2",
+                    echoSourceNamed("fixture.http.EchoFnS2", dir.resolve("counter2")));
+            var manifest1 = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
+                    "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+            var manifest2 = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFnS2",
+                    "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+            var liveV1 = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "sv1", 1, jar1, manifest1, null, "app_1", "clt_1");
+            var candidateV2 = FnHttpTestSupport.candidateEntry(ADDR, "fnc_1", "sv2", 2, jar2, manifest2, "app_1", "clt_1");
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(liveV1, candidateV2)), 50, options)) {
+                String token = jwks.mint("prn_sweep", "SERVICE", "CLIENT", "platform:function:version:invoke",
+                        List.of("clt_1"), List.of(), true, Instant.now().plusSeconds(60));
+
+                var before = h.get("/functions/" + ADDR.render() + ":2/x", "Authorization", "Bearer " + token);
+                assertThat(before.statusCode()).isEqualTo(200);
+                LoadedFunction pinned = h.server.pinnedVersions().getOrLoad(candidateV2); // the same cached instance
+                assertThat(pinned).isNotNull();
+                assertThat(pinned.isClosed()).isFalse();
+
+                // v2 leaves desired state — only v1 remains.
+                h.publish(FnHttpTestSupport.oneFunction(liveV1));
+
+                assertThat(pinned.isClosed())
+                        .as("mutant: never sweep — the pinned loader must be closed once its version leaves desired state")
+                        .isTrue();
+
+                var after = h.get("/functions/" + ADDR.render() + ":2/x", "Authorization", "Bearer " + token);
+                assertThat(after.statusCode()).as("mutant: never sweep").isEqualTo(404);
+            }
+        }
+    }
+
+    // ── H9 (raw socket): the body cap is enforced BEFORE any body byte is read ──────
+
+    @Test
+    void h9_rawSocketProvesTheBodyCapIsCheckedBeforeReading(@TempDir Path dir) throws Exception {
+        Path counter = dir.resolve("counter");
+        Path jar = FnHttpTestSupport.functionJar(dir, "echo", "fixture.http.EchoFn", echoSource(counter));
+        var manifest = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
+                "[{\"path\":\"/*\",\"auth\":\"none\",\"maxBodyBytes\":10}]");
+        var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
+        try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry))) {
+            try (Socket socket = new Socket("127.0.0.1", h.server.port())) {
+                socket.setSoTimeout(5000); // bounded — a server that waits for the (never-sent) body must time this out
+                String request = "POST /functions/" + ADDR.render() + "/x HTTP/1.1\r\n"
+                        + "Host: 127.0.0.1\r\n"
+                        + "Content-Length: 1000\r\n"
+                        + "Connection: close\r\n"
+                        + "\r\n"; // the 1000-byte body itself is NEVER sent
+                socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
+                socket.getOutputStream().flush();
+
+                byte[] buf = new byte[4096];
+                int n;
+                try {
+                    n = socket.getInputStream().read(buf);
+                } catch (java.net.SocketTimeoutException e) {
+                    throw new AssertionError(
+                            "mutant: remove the pre-read body-cap check — the server waited for a body that never arrived",
+                            e);
+                }
+                assertThat(n).isGreaterThan(0);
+                String responseHead = new String(buf, 0, n, StandardCharsets.UTF_8);
+                assertThat(responseHead).as("mutant: remove the pre-read body-cap check").startsWith("HTTP/1.1 413");
+            }
+            assertThat(countLines(counter)).isEqualTo(0);
+        }
+    }
+
+    // ── MDC: function/version/execution_id/correlation_id set for the invocation, cleared after ──
+
+    @Test
+    void mdcIsSetOnTheHostsOwnLogLineDuringAnInvocationAndReflectsEachInvocationsOwnValues(@TempDir Path dir) throws Exception {
+        Path jarThrow = FnHttpTestSupport.functionJar(dir, "throw-mdc", "fixture.http.ThrowingFn", THROWING_SOURCE);
+        var manifestThrow = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.ThrowingFn",
+                "[{\"path\":\"/*\",\"auth\":\"none\"}]");
+        var entryThrow = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jarThrow, manifestThrow, null, null, null);
+
+        var log = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(FnHttpServer.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entryThrow))) {
+            var resp = h.get("/functions/" + ADDR.render() + "/x", "X-Correlation-Id", "corr-mdc-1");
+            assertThat(resp.statusCode()).isEqualTo(500);
+
+            ILoggingEvent errorEvent = captured.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("function invocation threw"))
+                    .findFirst().orElseThrow(() -> new AssertionError("expected a FUNCTION_ERROR host log line"));
+            Map<String, String> mdc = errorEvent.getMDCPropertyMap();
+            assertThat(mdc.get(Logging.MdcKeys.FUNCTION)).as("mutant: never set MDC").isEqualTo(ADDR.render());
+            assertThat(mdc.get(Logging.MdcKeys.VERSION)).as("mutant: never set MDC").isEqualTo("1");
+            assertThat(mdc.get(Logging.MdcKeys.EXECUTION_ID)).as("mutant: never set MDC").isNotBlank();
+            assertThat(mdc.get(Logging.MdcKeys.CORRELATION_ID)).as("mutant: never set MDC").isEqualTo("corr-mdc-1");
+
+            // A second, independent invocation's own host log line must carry ITS OWN values, not
+            // a stale copy of the first's — pins clearing (the values are per-invocation, not leaked).
+            captured.list.clear();
+            var resp2 = h.get("/functions/" + ADDR.render() + "/x", "X-Correlation-Id", "corr-mdc-2");
+            assertThat(resp2.statusCode()).isEqualTo(500);
+            ILoggingEvent secondEvent = captured.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("function invocation threw"))
+                    .findFirst().orElseThrow();
+            assertThat(secondEvent.getMDCPropertyMap().get(Logging.MdcKeys.CORRELATION_ID))
+                    .as("mutant: never clear — a later invocation's own log line must carry ITS OWN correlation id")
+                    .isEqualTo("corr-mdc-2");
+            assertThat(secondEvent.getMDCPropertyMap().get(Logging.MdcKeys.EXECUTION_ID))
+                    .as("mutant: never clear — the second invocation's execution id must differ from the first's")
+                    .isNotEqualTo(mdc.get(Logging.MdcKeys.EXECUTION_ID));
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    // ── fixture guard: FnHttpTestSupport.document(...) rejects a duplicate versionId ──
+
+    @Test
+    void documentRejectsTwoEntriesSharingOneVersionId(@TempDir Path dir) throws Exception {
+        Path jarA = FnHttpTestSupport.functionJar(dir, "dupa", "fixture.http.EchoFn", echoSource(dir.resolve("counterA")));
+        Path jarB = FnHttpTestSupport.functionJar(dir, "dupb", "fixture.http.EchoFnDup",
+                echoSourceNamed("fixture.http.EchoFnDup", dir.resolve("counterB")));
+        var manifestA = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
+                "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+        var manifestB = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFnDup",
+                "[{\"path\":\"/x\",\"auth\":\"none\"}]");
+        var entryA = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "dup-v1", 1, jarA, manifestA, null, null, null);
+        var entryB = FnHttpTestSupport.liveEntry(ADDR_B, "fnc_2", "dup-v1", 1, jarB, manifestB, null, null, null);
+
+        assertThatThrownBy(() -> FnHttpTestSupport.document(List.of(entryA, entryB)))
+                .as("mutant: never check — two entries sharing one versionId race for Reconciler's one prepared slot")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("dup-v1");
     }
 
     // ── H12: lazy load on first call; concurrent dedup; unloadable ──────

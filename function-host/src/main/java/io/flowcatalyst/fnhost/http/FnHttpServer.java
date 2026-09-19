@@ -7,6 +7,7 @@ import io.flowcatalyst.fnhost.reconcile.Reconciler;
 import io.flowcatalyst.function.Caller;
 import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
+import io.flowcatalyst.platform.function.EndpointAuth;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.HttpMethod;
 import io.flowcatalyst.platform.function.Manifest;
@@ -14,6 +15,7 @@ import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.sdk.tsid.Tsid;
+import io.flowcatalyst.server.Logging;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
@@ -23,11 +25,11 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -40,12 +42,22 @@ import java.util.concurrent.TimeoutException;
 
 /// The host's own small Vert.x `HttpServer` wrapper (spec
 /// `function-host-listener.md` §0's departure table, §2): the event loop
-/// buffers the request body, the whole seam chain (auth, permits, load,
-/// invoke) runs on a fresh virtual thread, and the response is written back
-/// with `runOnContext` — the same model-B shape as
-/// `io.flowcatalyst.http.vertx.VertxListener`, without its admission-group
-/// machinery (this host has no database and no request-group pools; its
-/// admission is per-function permits, [Permits]).
+/// does only cheap parsing, draining, and — for an UNVERSIONED call — the
+/// live lookup, endpoint match and body cap; everything that can block
+/// (authentication, permits, load, invoke) runs on a fresh virtual thread,
+/// and the response is written back with `runOnContext` — the same model-B
+/// shape as `io.flowcatalyst.http.vertx.VertxListener`, without its
+/// admission-group machinery (this host has no database and no request-group
+/// pools; its admission is per-function permits, [Permits]).
+///
+/// A VERSIONED call (spec §4) is different: its `platform:function:version:invoke`
+/// authentication, permission and reach checks must run BEFORE the entry (and
+/// therefore its manifest/endpoint) may be looked at at all — an
+/// unauthenticated caller must not be able to tell a version exists by the
+/// shape of the failure. So for a versioned call the event loop does nothing
+/// but buffer the body under a conservative cap ([#VERSIONED_BODY_CAP_BYTES]);
+/// auth, permission, entry/reach, endpoint match and the endpoint's own body
+/// cap all run together on the virtual thread, in that order.
 public final class FnHttpServer implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(FnHttpServer.class);
@@ -59,6 +71,13 @@ public final class FnHttpServer implements AutoCloseable {
 
     private static final Duration DEFAULT_DRAIN_TIMEOUT = Duration.ofSeconds(60);
 
+    /// A versioned call's entry (and so its OWN `maxBodyBytes`) must not be
+    /// revealed before authentication (spec §4), so the event loop buffers
+    /// under this conservative, fixed cap instead; the endpoint's own,
+    /// possibly tighter, cap is then checked on the virtual thread once the
+    /// entry is known (spec §2 step 5 / §4).
+    private static final long VERSIONED_BODY_CAP_BYTES = 1_048_576; // 1 MiB
+
     private final Vertx vertx;
     private final HttpServer httpServer;
     private final Reconciler reconciler;
@@ -70,13 +89,25 @@ public final class FnHttpServer implements AutoCloseable {
 
     /// What [#start] needs beyond the [Reconciler] (spec §2, §5).
     ///
-    /// @param maxConcurrency the host-global permit ceiling (`FC_FN_MAX_CONCURRENCY`)
-    /// @param platformUrl    where the platform's `/.well-known/jwks.json` lives (`auth: platform`)
-    public record Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock) {
+    /// @param maxConcurrency    the host-global permit ceiling (`FC_FN_MAX_CONCURRENCY`)
+    /// @param platformUrl       where the platform's `/.well-known/jwks.json` lives (`auth: platform`)
+    /// @param eventLoopPoolSize the Vert.x event-loop thread count — a test-only seam (H1's
+    ///                          "the event loop is not blocked" proof needs exactly one to mean
+    ///                          anything); production never overrides Vert.x's own default
+    public record Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
+                           int eventLoopPoolSize) {
         public Options {
             Objects.requireNonNull(host, "host");
             Objects.requireNonNull(platformUrl, "platformUrl");
             Objects.requireNonNull(clock, "clock");
+            if (eventLoopPoolSize <= 0) {
+                throw new IllegalArgumentException("eventLoopPoolSize must be positive: " + eventLoopPoolSize);
+            }
+        }
+
+        /// Vert.x's own default event-loop pool size.
+        public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock) {
+            this(host, port, maxConcurrency, platformUrl, clock, VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE);
         }
 
         public static Options of(int port, int maxConcurrency, String platformUrl) {
@@ -98,9 +129,13 @@ public final class FnHttpServer implements AutoCloseable {
     public static FnHttpServer start(Reconciler reconciler, Options options) {
         Objects.requireNonNull(reconciler, "reconciler");
         Objects.requireNonNull(options, "options");
-        Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(1));
+        Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(options.eventLoopPoolSize()));
         Permits permits = new Permits(options.maxConcurrency());
         PinnedVersions pinnedVersions = new PinnedVersions(reconciler);
+        // Spec §4: a pinned candidate is closed once its version leaves desired state —
+        // swept after every reconcile, not just at load time (nothing else ever calls
+        // #sweep, so a pinned entry would otherwise never be evicted at all).
+        reconciler.addPostReconcileListener(pinnedVersions::sweep);
         JwksKeySource keySource =
                 new JwksKeySource(HttpClient.newHttpClient(), options.platformUrl(), options.clock());
         BearerAuthenticator bearerAuthenticator =
@@ -158,16 +193,37 @@ public final class FnHttpServer implements AutoCloseable {
             return;
         }
 
-        // Steps 2-3: parse + resolve. Cheap, no I/O — safe on the event loop.
-        Resolution resolution = resolve(req);
-        if (resolution instanceof Resolution.Error(HttpAnswer error)) {
-            answer(req, requestContext, error.status(), error.headers(), error.body());
+        // Step 2: parse. Cheap, no I/O — safe on the event loop.
+        RoutePath.Result parsed = RoutePath.parse(req.path());
+        switch (parsed) {
+            case RoutePath.NotFunctionsRoute ignored ->
+                    answer(req, requestContext, 404, Map.of(), ErrorBody.json("NOT_FOUND", "not found"));
+            case RoutePath.AddressInvalid ignored ->
+                    answer(req, requestContext, 400, Map.of(), ErrorBody.json("ADDRESS_INVALID", "invalid function address"));
+            case RoutePath.VersionInvalid ignored -> answer(req, requestContext, 400, Map.of(),
+                    ErrorBody.json("VERSION_INVALID", "version must be a positive integer"));
+            case RoutePath.Matched(RoutePath path) -> {
+                if (path.version() == null) {
+                    handleUnversioned(req, requestContext, path);
+                } else {
+                    handleVersioned(req, requestContext, path);
+                }
+            }
+        }
+    }
+
+    /// Step 3 (unversioned) + step 4: the live lookup and the endpoint match
+    /// both run on the event loop — an unversioned call reveals nothing that
+    /// authentication would otherwise gate (spec §3's per-endpoint `auth` is
+    /// what protects an unversioned call, and it runs on the virtual thread
+    /// once the body is read, same as ever).
+    private void handleUnversioned(HttpServerRequest req, io.vertx.core.Context requestContext, RoutePath path) {
+        DesiredDocument.Entry entry = reconciler.liveEntry(path.address());
+        if (entry == null) {
+            answer(req, requestContext, 404, Map.of(), ErrorBody.json("FUNCTION_NOT_FOUND", "no such function"));
             return;
         }
-        Resolution.Ready ready = (Resolution.Ready) resolution;
-
-        // Step 4: endpoint match.
-        EndpointMatch match = matchEndpoint(ready.entry().manifest(), ready.path().functionPath(), req.method().name());
+        EndpointMatch match = matchEndpoint(entry.manifest(), path.functionPath(), req.method().name());
         if (match instanceof EndpointMatch.NotFound) {
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("ENDPOINT_NOT_FOUND", "no endpoint matches this path"));
             return;
@@ -178,9 +234,33 @@ public final class FnHttpServer implements AutoCloseable {
             return;
         }
         EndpointMatch.Ok ok = (EndpointMatch.Ok) match;
+        readBodyThenRun(req, requestContext, ok.endpoint().maxBodyBytes(),
+                body -> continueUnversionedAfterBody(req, entry, ok.endpoint(), path.functionPath(), ok.pathParams(), body));
+    }
 
-        // Step 5: body cap — checked against THIS endpoint's own maxBodyBytes, before reading.
-        int cap = ok.endpoint().maxBodyBytes();
+    /// Spec §4: NOTHING about the entry, its manifest or its endpoints may be
+    /// looked at on the event loop — only path parsing and a conservative,
+    /// address-independent body cap happen here; everything else (auth,
+    /// permission, entry/reach, endpoint match, the endpoint's own body cap,
+    /// permits, load, invoke) runs together on the virtual thread.
+    private void handleVersioned(HttpServerRequest req, io.vertx.core.Context requestContext, RoutePath path) {
+        readBodyThenRun(req, requestContext, VERSIONED_BODY_CAP_BYTES, body -> continueVersionedAfterBody(req, path, body));
+    }
+
+    @FunctionalInterface
+    private interface BodyContinuation {
+        HttpAnswer run(byte[] body);
+    }
+
+    /// Buffers the request body under `cap`, then runs `continuation` on a
+    /// fresh virtual thread and writes whatever it returns back on the
+    /// request's own Vert.x context (spec §2 step 5's body cap, shared by
+    /// both the unversioned and versioned paths — only what `cap` means, and
+    /// what runs after, differs between them). `Content-Length` over `cap` is
+    /// rejected BEFORE any body byte is read; a chunked body is cut off the
+    /// moment it crosses `cap` (spec §2 step 5, H9).
+    private void readBodyThenRun(HttpServerRequest req, io.vertx.core.Context requestContext, long cap,
+                                  BodyContinuation continuation) {
         String declaredLength = req.getHeader("Content-Length");
         if (declaredLength != null) {
             try {
@@ -218,10 +298,10 @@ public final class FnHttpServer implements AutoCloseable {
             Thread.ofVirtual().start(() -> {
                 HttpAnswer result;
                 try {
-                    result = continueAfterBody(req, ready, ok.endpoint(), ok.pathParams(), body);
+                    result = continuation.run(body);
                 } catch (RuntimeException e) {
                     // A safety net around auth/permits/load — the ONLY exceptions expected past this
-                    // point are the invocation's own (already handled inside #continueAfterBody); an
+                    // point are the invocation's own (already handled inside the continuation); an
                     // unexpected throw here must still answer the client, never leave the connection
                     // hanging forever (spec §2: never a stack trace or exception message in the body).
                     LOG.atError().setMessage("unexpected failure before/around invocation").setCause(e).log();
@@ -233,64 +313,62 @@ public final class FnHttpServer implements AutoCloseable {
         });
     }
 
-    // ── steps 2-3: parse + resolve ──────────────────────────────────────────
+    // ── unversioned: auth (endpoint's own) → invoke (virtual thread) ────────
 
-    private sealed interface Resolution {
-        record Ready(RoutePath path, DesiredDocument.Entry entry, boolean versioned, TokenClaims versionedCaller)
-                implements Resolution {
+    private HttpAnswer continueUnversionedAfterBody(HttpServerRequest req, DesiredDocument.Entry entry,
+                                                      Manifest.Endpoint endpoint, String functionPath,
+                                                      Map<String, String> pathParams, byte[] body) {
+        AuthResult authResult = authenticateUnversioned(endpoint, req.headers(), body, entry);
+        if (authResult instanceof AuthResult.Failed(HttpAnswer failure)) {
+            return failure;
         }
-
-        record Error(HttpAnswer answer) implements Resolution {
-        }
+        Caller caller = ((AuthResult.Ok) authResult).caller();
+        boolean stripAuthHeaders = endpoint.auth() != EndpointAuth.NONE;
+        return invoke(req, entry, endpoint, functionPath, pathParams, body, caller, stripAuthHeaders, false);
     }
 
-    private Resolution resolve(HttpServerRequest req) {
-        RoutePath.Result parsed = RoutePath.parse(req.path());
-        return switch (parsed) {
-            case RoutePath.NotFunctionsRoute ignored ->
-                    new Resolution.Error(HttpAnswer.of(404, Map.of(), "NOT_FOUND", "not found"));
-            case RoutePath.AddressInvalid ignored ->
-                    new Resolution.Error(HttpAnswer.of(400, Map.of(), "ADDRESS_INVALID", "invalid function address"));
-            case RoutePath.VersionInvalid ignored ->
-                    new Resolution.Error(HttpAnswer.of(400, Map.of(), "VERSION_INVALID", "version must be a positive integer"));
-            case RoutePath.Matched(RoutePath path) -> path.version() == null
-                    ? resolveUnversioned(path)
-                    : resolveVersioned(req, path);
-        };
-    }
+    // ── versioned: token → permission → entry/reach → endpoint match → own body cap → invoke ──
 
-    private Resolution resolveUnversioned(RoutePath path) {
-        DesiredDocument.Entry entry = reconciler.liveEntry(path.address());
-        if (entry == null) {
-            return new Resolution.Error(HttpAnswer.of(404, Map.of(), "FUNCTION_NOT_FOUND", "no such function"));
-        }
-        return new Resolution.Ready(path, entry, false, null);
-    }
-
-    /// Spec §4: whatever the endpoint's own `auth` says, a versioned call
-    /// ALWAYS needs a platform bearer token with `platform:function:version:invoke`
-    /// plus reach — checked here, on the event loop, before the body is even
-    /// read (none of these checks need it).
-    private Resolution resolveVersioned(HttpServerRequest req, RoutePath path) {
-        DesiredDocument.Entry entry = reconciler.entryFor(path.address(), path.version());
-        if (entry == null) {
-            return new Resolution.Error(HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "no such version"));
-        }
+    /// Spec §4, in the required order, ALL on the virtual thread: a platform
+    /// bearer token (401) → `platform:function:version:invoke` (403) →
+    /// entry-exists-and-reach, indistinguishable (404 `VERSION_NOT_AVAILABLE`)
+    /// → endpoint match (404/405, now safe — the caller is already proven
+    /// authorized to know) → the endpoint's own `maxBodyBytes` (413) →
+    /// permits → load → invoke. The endpoint's own `auth` is never applied
+    /// (spec §4: "not applied" — a `webhook` endpoint is reachable versioned
+    /// without a signature).
+    private HttpAnswer continueVersionedAfterBody(HttpServerRequest req, RoutePath path, byte[] body) {
         BearerAuthenticator.Outcome auth = bearerAuthenticator.authenticate(req.getHeader("Authorization"));
         if (auth instanceof BearerAuthenticator.Rejected(String reason)) {
-            return new Resolution.Error(HttpAnswer.of(401, Map.of("WWW-Authenticate", List.of("Bearer")),
-                    "UNAUTHORIZED", reason));
+            return HttpAnswer.of(401, Map.of("WWW-Authenticate", List.of("Bearer")), "UNAUTHORIZED", reason);
         }
         TokenClaims claims = ((BearerAuthenticator.Authenticated) auth).claims();
         if (!Permission.grants(claims.permissions(), Permission.FUNCTION_VERSION_INVOKE.code())) {
-            return new Resolution.Error(HttpAnswer.of(403, Map.of(), "PERMISSION_REQUIRED",
-                    "platform:function:version:invoke required"));
+            return HttpAnswer.of(403, Map.of(), "PERMISSION_REQUIRED", "platform:function:version:invoke required");
         }
-        if (!hasReach(claims, entry)) {
-            // Spec §4: reach failure is 404, not 403 — "same rule as the platform API".
-            return new Resolution.Error(HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "no such version"));
+
+        DesiredDocument.Entry entry = reconciler.entryFor(path.address(), path.version());
+        if (entry == null || !hasReach(claims, entry)) {
+            // Spec §4: reach failure (or no such version) is 404, not 403 — "same rule as
+            // the platform API" — and indistinguishable from each other.
+            return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "no such version");
         }
-        return new Resolution.Ready(path, entry, true, claims);
+
+        EndpointMatch match = matchEndpoint(entry.manifest(), path.functionPath(), req.method().name());
+        if (match instanceof EndpointMatch.NotFound) {
+            return HttpAnswer.of(404, Map.of(), "ENDPOINT_NOT_FOUND", "no endpoint matches this path");
+        }
+        if (match instanceof EndpointMatch.MethodNotAllowed(List<String> allowed)) {
+            return HttpAnswer.of(405, Map.of("Allow", List.of(String.join(", ", allowed))),
+                    "METHOD_NOT_ALLOWED", "method not allowed on this endpoint");
+        }
+        EndpointMatch.Ok ok = (EndpointMatch.Ok) match;
+        if (body.length > ok.endpoint().maxBodyBytes()) {
+            return HttpAnswer.of(413, Map.of(), "BODY_TOO_LARGE", "request body exceeds the endpoint's limit");
+        }
+
+        Caller.Principal caller = principalFrom(claims);
+        return invoke(req, entry, ok.endpoint(), path.functionPath(), ok.pathParams(), body, caller, true, true);
     }
 
     private static boolean hasReach(TokenClaims claims, DesiredDocument.Entry entry) {
@@ -310,7 +388,7 @@ public final class FnHttpServer implements AutoCloseable {
         return claims.allApplications() || claims.applications().contains(entry.applicationId());
     }
 
-    // ── step 4: endpoint match ───────────────────────────────────────────────
+    // ── endpoint match (spec §2 step 4) ─────────────────────────────────────
 
     private sealed interface EndpointMatch {
         record Ok(Manifest.Endpoint endpoint, Map<String, String> pathParams) implements EndpointMatch {
@@ -337,7 +415,7 @@ public final class FnHttpServer implements AutoCloseable {
 
         // Spec §2 step 4: "webhook ⇒ POST" — an override of the manifest's own
         // (empty-means-all) `methods` storage, applied here regardless of what is stored.
-        List<HttpMethod> effective = endpoint.auth() == io.flowcatalyst.platform.function.EndpointAuth.WEBHOOK
+        List<HttpMethod> effective = endpoint.auth() == EndpointAuth.WEBHOOK
                 ? List.of(HttpMethod.POST)
                 : endpoint.methods();
 
@@ -355,28 +433,11 @@ public final class FnHttpServer implements AutoCloseable {
         return new EndpointMatch.Ok(endpoint, match.get().params());
     }
 
-    // ── steps 6-10: auth, permits, load, invoke, respond (runs on a virtual thread) ──
+    // ── permits, load, invoke, respond (spec §2 steps 7-10; already on a virtual thread) ──
 
-    private HttpAnswer continueAfterBody(HttpServerRequest req, Resolution.Ready ready, Manifest.Endpoint endpoint,
-                                          Map<String, String> pathParams, byte[] body) {
-        DesiredDocument.Entry entry = ready.entry();
-        Caller caller;
-        boolean stripAuthHeaders;
-
-        if (ready.versioned()) {
-            // Spec §4: "The endpoint's own auth is then not applied" — already authenticated
-            // in #resolveVersioned; the caller is always a Principal.
-            caller = principalFrom(ready.versionedCaller());
-            stripAuthHeaders = true;
-        } else {
-            AuthResult authResult = authenticateUnversioned(endpoint, req.headers(), body, entry);
-            if (authResult instanceof AuthResult.Failed(HttpAnswer failure)) {
-                return failure;
-            }
-            caller = ((AuthResult.Ok) authResult).caller();
-            stripAuthHeaders = endpoint.auth() != io.flowcatalyst.platform.function.EndpointAuth.NONE;
-        }
-
+    private HttpAnswer invoke(HttpServerRequest req, DesiredDocument.Entry entry, Manifest.Endpoint endpoint,
+                               String functionPath, Map<String, String> pathParams, byte[] body, Caller caller,
+                               boolean stripAuthHeaders, boolean versioned) {
         // Step 7: permits.
         int maxConcurrency = entry.manifest().limits().maxConcurrency();
         Permits.Grant grant = permits.tryAcquire(entry.address(), maxConcurrency);
@@ -386,10 +447,10 @@ public final class FnHttpServer implements AutoCloseable {
 
         try {
             // Step 8: load.
-            LoadedFunction fn = ready.versioned() ? pinnedVersions.getOrLoad(entry) : reconciler.ensureLoaded(entry.address());
+            LoadedFunction fn = versioned ? pinnedVersions.getOrLoad(entry) : reconciler.ensureLoaded(entry.address());
             if (fn == null) {
                 permits.release(grant);
-                return ready.versioned()
+                return versioned
                         ? HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "version is not loadable")
                         : HttpAnswer.of(503, Map.of("Retry-After", List.of("15")), "FUNCTION_UNAVAILABLE",
                         "the function could not be loaded");
@@ -398,40 +459,61 @@ public final class FnHttpServer implements AutoCloseable {
             // Step 9: invoke.
             String invocationId = Tsid.generate();
             io.flowcatalyst.function.FunctionAddress apiAddress = toApiAddress(entry.address());
-            Request request = buildRequest(apiAddress, fn.version(), invocationId, req, ready.path().functionPath(),
+            Request request = buildRequest(apiAddress, fn.version(), invocationId, req, functionPath,
                     pathParams, body, stripAuthHeaders, caller);
             UnimplementedFunctionContext ctx = new UnimplementedFunctionContext(apiAddress, fn.version());
-            InvocationRunner.Invocation invocation = InvocationRunner.start(fn, request, ctx);
-            long timeoutMs = endpoint.timeoutMs();
+
+            // MDC (spec §2 step 9): set on THIS thread before the invocation starts — the
+            // worker thread InvocationRunner spawns inherits a snapshot of it at creation
+            // time (SLF4J/Logback's MDC is an InheritableThreadLocal), which is what makes
+            // it visible both to the function's own FunctionContext#logger() (its javadoc:
+            // "a logger carrying the host's MDC keys") and to every host log line emitted
+            // here while the invocation is in flight. Cleared in `finally` regardless of
+            // outcome.
+            Map<String, String> mdc = new LinkedHashMap<>();
+            mdc.put(Logging.MdcKeys.FUNCTION, entry.address().render());
+            mdc.put(Logging.MdcKeys.VERSION, String.valueOf(fn.version()));
+            mdc.put(Logging.MdcKeys.EXECUTION_ID, invocationId);
+            String correlationId = req.getHeader("X-Correlation-Id");
+            if (correlationId != null) {
+                mdc.put(Logging.MdcKeys.CORRELATION_ID, correlationId);
+            }
+            mdc.forEach(MDC::put);
             try {
-                Result result = invocation.future().get(timeoutMs, TimeUnit.MILLISECONDS);
-                permits.release(grant);
-                if (result == null) {
-                    LOG.atWarn().setMessage("function returned a null Result")
+                InvocationRunner.Invocation invocation = InvocationRunner.start(fn, request, ctx);
+                long timeoutMs = endpoint.timeoutMs();
+                try {
+                    Result result = invocation.future().get(timeoutMs, TimeUnit.MILLISECONDS);
+                    permits.release(grant);
+                    if (result == null) {
+                        LOG.atWarn().setMessage("function returned a null Result")
+                                .addKeyValue("address", entry.address().render())
+                                .addKeyValue("invocation_id", invocationId)
+                                .log();
+                        return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
+                    }
+                    return toAnswer(result);
+                } catch (TimeoutException e) {
+                    invocation.worker().interrupt();
+                    // The permit is released only once the worker actually finishes (H7): a
+                    // function that swallows the interrupt keeps it until it returns.
+                    invocation.future().whenComplete((r, ex) -> permits.release(grant));
+                    return HttpAnswer.of(504, Map.of(), "FUNCTION_TIMEOUT", "the invocation exceeded its deadline");
+                } catch (ExecutionException e) {
+                    permits.release(grant);
+                    LOG.atWarn().setMessage("function invocation threw")
                             .addKeyValue("address", entry.address().render())
                             .addKeyValue("invocation_id", invocationId)
+                            .setCause(e.getCause())
                             .log();
                     return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    permits.release(grant);
+                    return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "interrupted");
                 }
-                return toAnswer(result);
-            } catch (TimeoutException e) {
-                invocation.worker().interrupt();
-                // The permit is released only once the worker actually finishes (H7): a
-                // function that swallows the interrupt keeps it until it returns.
-                invocation.future().whenComplete((r, ex) -> permits.release(grant));
-                return HttpAnswer.of(504, Map.of(), "FUNCTION_TIMEOUT", "the invocation exceeded its deadline");
-            } catch (ExecutionException e) {
-                permits.release(grant);
-                LOG.atWarn().setMessage("function invocation threw")
-                        .addKeyValue("address", entry.address().render())
-                        .addKeyValue("invocation_id", invocationId)
-                        .setCause(e.getCause())
-                        .log();
-                return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                permits.release(grant);
-                return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "interrupted");
+            } finally {
+                mdc.keySet().forEach(MDC::remove);
             }
         } catch (RuntimeException e) {
             permits.release(grant);

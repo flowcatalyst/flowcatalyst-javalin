@@ -689,8 +689,13 @@ class DesiredStateTest {
         assertThat(json).contains("\"clientId\":\"clt_" + RUN + "\"");
     }
 
+    /// `function-host-listener.md` §1: a platform-owned function still
+    /// belongs to an application — `applicationId` is carried for it exactly
+    /// as for a client-owned one; only `clientId` is omitted, since a
+    /// platform function's reach check is "anchor, full stop" and never
+    /// consults it.
     @Test
-    void applicationIdAndClientIdAreBothOmittedForAPlatformOwnedFunction() {
+    void applicationIdIsCarriedButClientIdIsOmittedForAPlatformOwnedFunction() {
         DnsLabel pool = new DnsLabel("pool" + fresh());
         String appId = persistApplication("ds-plat-" + fresh());
         Function f = createPlatformFunction("plat" + fresh(), appId);
@@ -700,13 +705,14 @@ class DesiredStateTest {
         assertThat(doc.functions()).hasSize(1);
         DesiredState.FunctionEntry entry = doc.functions().getFirst();
         assertThat(entry.applicationId())
-                .as("mutant: carry applicationId even for a platform-owned function").isNull();
+                .as("mutant: omit applicationId for a platform-owned function — it still belongs to one")
+                .isEqualTo(appId);
         assertThat(entry.clientId())
                 .as("mutant: carry clientId even for a platform-owned function").isNull();
 
         String json = Json.write(doc);
-        assertThat(json).as("mutant: write null instead of omitting applicationId")
-                .doesNotContain("\"applicationId\"");
+        assertThat(json).as("mutant: write null instead of the real applicationId")
+                .contains("\"applicationId\":\"" + appId + "\"");
         assertThat(json).as("mutant: write null instead of omitting clientId")
                 .doesNotContain("\"clientId\"");
     }

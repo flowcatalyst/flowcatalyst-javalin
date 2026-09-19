@@ -49,6 +49,14 @@ public final class LoadedFunction implements AutoCloseable {
         return version;
     }
 
+    /// Whether [#close()] has already run — the loader's classes are then
+    /// collectable and [#invoke] no longer accepted. Test/diagnostic seam
+    /// (D3: [io.flowcatalyst.fnhost.http.PinnedVersions#sweep] provably
+    /// closes a pinned candidate once its version leaves desired state).
+    public boolean isClosed() {
+        return closed;
+    }
+
     /// The function's own class loader — package-private, for the leak
     /// test ([FunctionLeakTest]) to build a `WeakReference` against.
     ClassLoader loaderForTest() {

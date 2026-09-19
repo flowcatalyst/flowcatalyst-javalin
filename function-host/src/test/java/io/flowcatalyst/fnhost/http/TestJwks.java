@@ -19,6 +19,8 @@ import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /// A tiny loopback `/.well-known/jwks.json` (H4: `BearerAuthenticator`'s
@@ -77,6 +79,26 @@ final class TestJwks implements AutoCloseable {
         return jwksRequestCount.get();
     }
 
+    /// H1's "the event loop is not blocked" proof: makes the NEXT JWKS
+    /// fetch park (after being counted) until [#releaseParkedFetch] is
+    /// called. `awaitFetchStarted` lets the test know the fetch has actually
+    /// begun blocking (bounded — never a bare sleep).
+    private volatile boolean parkNext;
+    private final CountDownLatch fetchStarted = new CountDownLatch(1);
+    private final CountDownLatch releaseFetch = new CountDownLatch(1);
+
+    void parkNextJwksFetch() {
+        parkNext = true;
+    }
+
+    boolean awaitFetchStarted(java.time.Duration timeout) throws InterruptedException {
+        return fetchStarted.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    void releaseParkedFetch() {
+        releaseFetch.countDown();
+    }
+
     String mint(String subject, String type, String tier, String scope, List<String> clients,
                 List<String> applications, boolean allApplications, Instant expiresAt) {
         return mint(currentPrivate, currentKid, issuer, subject, type, tier, scope, clients, applications,
@@ -117,6 +139,15 @@ final class TestJwks implements AutoCloseable {
 
     private void serveJwks(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
         jwksRequestCount.incrementAndGet();
+        if (parkNext) {
+            parkNext = false;
+            fetchStarted.countDown();
+            try {
+                releaseFetch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         StringBuilder sb = new StringBuilder("{\"keys\":[");
         sb.append(jwk(currentKid, currentPublic));
         if (previousPublic != null) {

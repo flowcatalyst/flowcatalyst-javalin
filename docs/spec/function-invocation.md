@@ -130,9 +130,13 @@ operator paused it by hand) is left alone, not a conflict that fails the functio
 
 Two entries of one function whose keys collide (32 bits of hash) are an internal error at promote,
 never a silent overwrite of one link by the other. `<fid>` = the function id lower-cased without `fnc_` (legal in every code pattern, unique by
-construction). Names carry the address for humans. **Pool URL** (R8): `FC_FN_POOL_URL`, one template
-with a `{pool}` placeholder, default `http://fn-{pool}:8080`; no placeholder ⇒ startup error;
-resolved at promote.
+construction). Names carry the address for humans. **Pool URL** (R8): `FC_FN_POOL_URL`, one template,
+`{pool}` **optional** — an environment with one pool, or fcdev, names the host directly and never
+mentions `{pool}` at all; when present it may appear at most once. Default `http://fn-{pool}:8080`.
+The template must be an absolute `http`/`https` URL with no userinfo, no path beyond an optional
+trailing slash (stripped at resolve time — `endpointFor` string-concatenates `resolve(pool) +
+"/functions/…"` directly), no query and no fragment; any other shape is a startup error naming
+`FC_FN_POOL_URL`. Resolved at promote.
 
 `fn_trigger_objects(function_id → fn_functions ON DELETE CASCADE, kind, object_id, trigger_key,
 created_at)`, pk `(function_id, kind, trigger_key)`, unique `(kind, object_id)` — cleanup by id.

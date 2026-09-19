@@ -401,12 +401,15 @@ public record Env(
         // `#fnSignaturesMode` above.
         String fnTrustRootPath,
         // `FC_FN_POOL_URL` (spec `function-invocation.md` §4, ruling R8), default
-        // `http://fn-{pool}:8080`: one template with a `{pool}` placeholder, resolved
-        // per manifest `pool` at promote ([PoolUrlTemplate#resolve]) into a
-        // subscription/scheduled-job entry's `endpoint`. A configured value with no
-        // placeholder is a startup error naming the variable — [PoolUrlTemplate]'s own
-        // constructor throws, the same "unparseable/invalid still fails loudly" division
-        // of labour as [#functionLimits] above (never a silent fallback to the default).
+        // `http://fn-{pool}:8080`: one template, `{pool}` OPTIONAL — an environment with
+        // a single pool, or fcdev, names the host directly and never mentions `{pool}` at
+        // all — resolved per manifest `pool` at promote ([PoolUrlTemplate#resolve]) into a
+        // subscription/scheduled-job entry's `endpoint`. A configured value that is not an
+        // absolute http/https URL, carries userinfo, a path beyond an optional trailing
+        // slash, a query, a fragment, or more than one `{pool}` is a startup error naming
+        // the variable — [PoolUrlTemplate]'s own constructor throws, the same
+        // "unparseable/invalid still fails loudly" division of labour as [#functionLimits]
+        // above (never a silent fallback to the default).
         PoolUrlTemplate fnPoolUrlTemplate,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
