@@ -7,19 +7,20 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import java.time.Instant;
 import java.util.Objects;
 
-/// A client-claimed hostname pending or completed DNS verification (spec
+/// A claimed hostname pending or completed DNS verification (spec
 /// `function-registry.md` §6.5): once [#usableBy] is true, this hostname may
-/// carry public [FunctionRoute]s for that client.
+/// carry public [FunctionRoute]s for its owner — a client, or the platform
+/// (ruling R2).
 ///
 /// @param id                the domain's own `fnd_…` TSID
-/// @param clientId          the claiming client
+/// @param owner             the claiming client, or the platform
 /// @param hostname          the claimed hostname
-/// @param verificationToken the DNS TXT value the client must publish
+/// @param verificationToken the DNS TXT value the owner must publish
 /// @param verification      `Pending` \| `Verified`
 /// @param createdAt         creation time
 public record FunctionDomain(
         String id,
-        String clientId,
+        FunctionOwner owner,
         Hostname hostname,
         String verificationToken,
         Verification verification,
@@ -27,7 +28,7 @@ public record FunctionDomain(
 
     public FunctionDomain {
         Objects.requireNonNull(id, "id");
-        Objects.requireNonNull(clientId, "clientId");
+        Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(hostname, "hostname");
         Objects.requireNonNull(verificationToken, "verificationToken");
         Objects.requireNonNull(verification, "verification");
@@ -46,12 +47,12 @@ public record FunctionDomain(
     }
 
     /// A freshly claimed, `Pending` domain.
-    public static FunctionDomain claim(String clientId, Hostname hostname, String verificationToken, Instant now) {
-        Objects.requireNonNull(clientId, "clientId");
+    public static FunctionDomain claim(FunctionOwner owner, Hostname hostname, String verificationToken, Instant now) {
+        Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(hostname, "hostname");
         Objects.requireNonNull(verificationToken, "verificationToken");
         Objects.requireNonNull(now, "now");
-        return new FunctionDomain(EntityType.FUNCTION_DOMAIN.generate(), clientId, hostname, verificationToken,
+        return new FunctionDomain(EntityType.FUNCTION_DOMAIN.generate(), owner, hostname, verificationToken,
                 new Verification.Pending(), now);
     }
 
@@ -63,19 +64,20 @@ public record FunctionDomain(
         if (verification instanceof Verification.Verified) {
             throw UseCaseException.conflict("DOMAIN_ALREADY_VERIFIED", "domain is already verified");
         }
-        return new FunctionDomain(id, clientId, hostname, verificationToken, new Verification.Verified(now), createdAt);
+        return new FunctionDomain(id, owner, hostname, verificationToken, new Verification.Verified(now), createdAt);
     }
 
-    /// Verified, and owned by `clientId`.
-    public boolean usableBy(String clientId) {
-        return verification instanceof Verification.Verified && this.clientId.equals(clientId);
+    /// Verified, and owned by `owner` (`Platform` matches only `Platform`,
+    /// spec §6.5, §8 M20).
+    public boolean usableBy(FunctionOwner owner) {
+        return verification instanceof Verification.Verified && this.owner.equals(owner);
     }
 
     /// Masks the verification token — never printed in full
     /// (`CONVENTIONS.md` §8).
     @Override
     public String toString() {
-        return "FunctionDomain[id=" + id + ", clientId=" + clientId + ", hostname=" + hostname
+        return "FunctionDomain[id=" + id + ", owner=" + owner + ", hostname=" + hostname
                 + ", verificationToken=***, verification=" + verification + ", createdAt=" + createdAt + "]";
     }
 }

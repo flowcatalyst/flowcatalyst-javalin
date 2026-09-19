@@ -36,7 +36,7 @@ class FunctionRouteRepositoryTest {
     private static Function createFunction() {
         Function f = Function.create(fresh(),
                 FunctionAddress.of(new DnsLabel("app-" + RUN + "-" + fresh()), new DnsLabel("svc"), new DnsLabel("fn")),
-                fresh(), Runtime.JVM, null);
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null);
         UOW.inTransaction(tx -> {
             FUNCTION_REPO.persist(f, tx.dbTx());
             return null;

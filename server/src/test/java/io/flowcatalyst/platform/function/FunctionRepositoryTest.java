@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /// `FunctionRepository` against the embedded Postgres (spec
 /// `function-registry.md` §6.1, §8 M1, M3, M11, M16). The fixture never
@@ -28,6 +29,7 @@ class FunctionRepositoryTest {
     private static final DataSource DS = TestPg.dataSource();
     private static final FunctionRepository REPO = new FunctionRepository(DS);
     private static final FunctionVersionRepository VERSION_REPO = new FunctionVersionRepository(DS);
+    private static final FunctionRouteRepository ROUTE_REPO = new FunctionRouteRepository(DS);
     private static final UnitOfWork UOW = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
@@ -87,7 +89,7 @@ class FunctionRepositoryTest {
     void createFindAndDescribeRoundTrip() {
         DnsLabel app = randomAppCode();
         FunctionAddress address = FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create"));
-        Function f = persist(Function.create(fresh(), address, fresh(), Runtime.JVM, "desc"));
+        Function f = persist(Function.create(fresh(), address, FunctionOwner.ofClientId(fresh()), Runtime.JVM, "desc"));
 
         Function reloaded = REPO.findById(f.id()).orElseThrow();
         assertThat(reloaded.address()).isEqualTo(address);
@@ -168,9 +170,11 @@ class FunctionRepositoryTest {
     void listByPatternIsWholeSegmentAcrossServiceAndApplication() {
         DnsLabel app = randomAppCode();
         Function invoices = persist(Function.create(fresh(),
-                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")), fresh(), Runtime.JVM, null));
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
         Function invoicesV2 = persist(Function.create(fresh(),
-                FunctionAddress.of(app, new DnsLabel("invoices-v2"), new DnsLabel("create")), fresh(), Runtime.JVM, null));
+                FunctionAddress.of(app, new DnsLabel("invoices-v2"), new DnsLabel("create")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
 
         List<Function> byService = REPO.list(new FunctionRepository.ListFilter(
                 FunctionAddressPattern.parse(app.value() + ".invoices.*"), null, null));
@@ -188,16 +192,16 @@ class FunctionRepositoryTest {
     void persistNeverMovesAFunctionsAddressClientOrRuntime() {
         DnsLabel app = randomAppCode();
         FunctionAddress original = FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create"));
-        Function f = persist(Function.create(fresh(), original, "clt_original", Runtime.JVM, null));
+        Function f = persist(Function.create(fresh(), original, FunctionOwner.ofClientId("clt_original"), Runtime.JVM, null));
 
         FunctionAddress moved = FunctionAddress.of(app, new DnsLabel("moved"), new DnsLabel("elsewhere"));
-        Function corrupted = new Function(f.id(), "app_moved", moved, "clt_moved", Runtime.WASM,
+        Function corrupted = new Function(f.id(), "app_moved", moved, FunctionOwner.ofClientId("clt_moved"), Runtime.WASM,
                 "attempted move", f.status(), f.aliases(), f.createdAt(), Instant.now());
         persist(corrupted);
 
         Function reloaded = REPO.findById(f.id()).orElseThrow();
         assertThat(reloaded.address()).as("address unchanged").isEqualTo(original);
-        assertThat(reloaded.clientId()).as("client unchanged").isEqualTo("clt_original");
+        assertThat(reloaded.owner()).as("client unchanged").isEqualTo(FunctionOwner.ofClientId("clt_original"));
         assertThat(reloaded.runtime()).as("runtime unchanged").isEqualTo(Runtime.JVM);
         assertThat(reloaded.description()).as("description IS in the SET list, so it does change").isEqualTo("attempted move");
     }
@@ -208,7 +212,8 @@ class FunctionRepositoryTest {
     void promoteTwiceLeavesExactlyOneLiveRowPointingAtTheLatestVersion() {
         DnsLabel app = randomAppCode();
         Function f = persist(Function.create(fresh(),
-                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")), fresh(), Runtime.JVM, null));
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
         FunctionVersion v1 = publishVersion(f, 1);
         FunctionVersion v2 = publishVersion(f, 2);
 
@@ -228,12 +233,13 @@ class FunctionRepositoryTest {
     void persistDeletesAnAliasRemovedFromTheRecord() {
         DnsLabel app = randomAppCode();
         Function f = persist(Function.create(fresh(),
-                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")), fresh(), Runtime.JVM, null));
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
         FunctionVersion v1 = publishVersion(f, 1);
         FunctionVersion v2 = publishVersion(f, 2);
         Instant now = Instant.now();
 
-        Function withTwoAliases = new Function(f.id(), f.applicationId(), f.address(), f.clientId(), f.runtime(),
+        Function withTwoAliases = new Function(f.id(), f.applicationId(), f.address(), f.owner(), f.runtime(),
                 f.description(), f.status(),
                 List.of(new Function.FunctionAlias("live", v1.id(), "prn_1", now),
                         new Function.FunctionAlias("canary", v2.id(), "prn_1", now)),
@@ -241,16 +247,103 @@ class FunctionRepositoryTest {
         persist(withTwoAliases);
         assertThat(aliasRowCount(f.id())).isEqualTo(2);
 
-        Function withOneAlias = new Function(f.id(), f.applicationId(), f.address(), f.clientId(), f.runtime(),
+        Function withOneAlias = new Function(f.id(), f.applicationId(), f.address(), f.owner(), f.runtime(),
                 f.description(), f.status(), List.of(new Function.FunctionAlias("live", v1.id(), "prn_1", now)),
                 f.createdAt(), Instant.now());
         persist(withOneAlias);
         assertThat(aliasRowCount(f.id())).as("'canary' was removed from the record and must be gone from the table").isEqualTo(1);
     }
 
+    // ── §8 M18: delete cascades to versions, aliases and routes, only this function's ──
+
+    @Test
+    void deleteCascadesToVersionsAliasesAndRoutesAndLeavesASiblingFunctionUntouched() {
+        DnsLabel app = randomAppCode();
+        String applicationId = fresh();
+        Function f1 = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
+        Function f2 = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("cancel")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
+
+        FunctionVersion v1 = publishVersion(f1, 1);
+        FunctionVersion v2 = publishVersion(f2, 1);
+        persist(f1.promote(Function.LIVE, v1, "prn_1", Instant.now()).function());
+        persist(f2.promote(Function.LIVE, v2, "prn_1", Instant.now()).function());
+
+        UOW.inTransaction(tx -> {
+            ROUTE_REPO.replaceForFunction(f1.id(), List.of(
+                    FunctionRoute.of(f1.id(), null, HttpMethod.GET, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    tx.dbTx());
+            return null;
+        });
+        UOW.inTransaction(tx -> {
+            ROUTE_REPO.replaceForFunction(f2.id(), List.of(
+                    FunctionRoute.of(f2.id(), null, HttpMethod.GET, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    tx.dbTx());
+            return null;
+        });
+
+        assertThat(versionRowCount(f1.id())).isEqualTo(1);
+        assertThat(aliasRowCount(f1.id())).isEqualTo(1);
+        assertThat(routeRowCount(f1.id())).isEqualTo(1);
+
+        assertThatCode(() -> UOW.inTransaction(tx -> {
+            REPO.delete(f1, tx.dbTx());
+            return null;
+        })).as("delete cascades via FK — it must not throw").doesNotThrowAnyException();
+
+        assertThat(REPO.findById(f1.id())).isEmpty();
+        assertThat(versionRowCount(f1.id())).as("versions cascade").isEqualTo(0);
+        assertThat(aliasRowCount(f1.id())).as("aliases cascade").isEqualTo(0);
+        assertThat(routeRowCount(f1.id())).as("routes cascade").isEqualTo(0);
+
+        assertThat(REPO.findById(f2.id())).as("sibling function (same application) untouched").isPresent();
+        assertThat(versionRowCount(f2.id())).as("sibling's version untouched").isEqualTo(1);
+        assertThat(aliasRowCount(f2.id())).as("sibling's alias untouched").isEqualTo(1);
+        assertThat(routeRowCount(f2.id())).as("sibling's route untouched").isEqualTo(1);
+    }
+
+    // ── §8 M19: a platform function reads back Platform and lists under the Platform filter only ──
+
+    @Test
+    void platformFunctionRoundTripsAndListsUnderThePlatformFilterOnly() {
+        DnsLabel app = randomAppCode();
+        Function platformFn = persist(Function.create(fresh(),
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("create")),
+                new FunctionOwner.Platform(), Runtime.JVM, null));
+        Function clientFn = persist(Function.create(fresh(),
+                FunctionAddress.of(app, new DnsLabel("invoices"), new DnsLabel("cancel")),
+                FunctionOwner.ofClientId(fresh()), Runtime.JVM, null));
+
+        Function reloaded = REPO.findById(platformFn.id()).orElseThrow();
+        assertThat(reloaded.owner()).isEqualTo(new FunctionOwner.Platform());
+
+        List<Function> platformOnly = REPO.list(new FunctionRepository.ListFilter(
+                FunctionAddressPattern.parse(app.value() + ".*"), new FunctionOwner.Platform(), null));
+        assertThat(platformOnly).as("Platform filters to client_id IS NULL, not a client's rows")
+                .extracting(Function::id).containsExactly(platformFn.id());
+
+        List<Function> everyone = REPO.list(new FunctionRepository.ListFilter(
+                FunctionAddressPattern.parse(app.value() + ".*"), null, null));
+        assertThat(everyone).extracting(Function::id).containsExactlyInAnyOrder(platformFn.id(), clientFn.id());
+    }
+
     private static int aliasRowCount(String functionId) {
-        try (Connection c = DS.getConnection();
-             PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM fn_aliases WHERE function_id = ?")) {
+        return rowCount("SELECT COUNT(*) FROM fn_aliases WHERE function_id = ?", functionId);
+    }
+
+    private static int versionRowCount(String functionId) {
+        return rowCount("SELECT COUNT(*) FROM fn_versions WHERE function_id = ?", functionId);
+    }
+
+    private static int routeRowCount(String functionId) {
+        return rowCount("SELECT COUNT(*) FROM fn_routes WHERE function_id = ?", functionId);
+    }
+
+    private static int rowCount(String sql, String functionId) {
+        try (Connection c = DS.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, functionId);
             try (var rs = ps.executeQuery()) {
                 rs.next();

@@ -33,9 +33,18 @@ import static io.flowcatalyst.db.generated.Tables.FN_CLIENT_POLICIES;
 /// key — no TSID; upsert by `client_id`. `signers` is a foreign JSON shape
 /// (`CONVENTIONS.md` §8): [#readSigners] drops what it cannot read rather
 /// than failing the whole row (spec §6.4, §8 M14).
+///
+/// [#PLATFORM_KEY] is the one place in the codebase that spells the reserved
+/// primary-key value for the platform's own policy (ruling R2) — [#storedKey]
+/// and [#ownerOf] are its only two uses, for write and read respectively
+/// (spec §6.4, §8 M19).
 public final class ClientPolicyRepository implements Persist<ClientPolicy> {
 
     private static final FnClientPolicies T = FN_CLIENT_POLICIES;
+
+    /// No TSID is ever spelled this way (`EntityType` generates lower-case
+    /// prefixes), so a client policy row can never collide with it.
+    private static final String PLATFORM_KEY = "PLATFORM";
 
     private final DSLContext dsl;
 
@@ -43,8 +52,10 @@ public final class ClientPolicyRepository implements Persist<ClientPolicy> {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
     }
 
-    public Optional<ClientPolicy> findByClient(String clientId) {
-        return dsl.selectFrom(T).where(T.CLIENT_ID.eq(clientId)).fetchOptional().map(ClientPolicyRepository::toEntity);
+    public Optional<ClientPolicy> findByOwner(FunctionOwner owner) {
+        Objects.requireNonNull(owner, "owner");
+        return dsl.selectFrom(T).where(T.CLIENT_ID.eq(storedKey(owner))).fetchOptional()
+                .map(ClientPolicyRepository::toEntity);
     }
 
     // ── Writes (inside the unit of work's transaction only) ────────────────
@@ -60,7 +71,7 @@ public final class ClientPolicyRepository implements Persist<ClientPolicy> {
         row.put(T.MAX_DB_POOL_SIZE, p.maxDbPoolSize());
         row.put(T.UPDATED_AT, utc(p.updatedAt()));
         txDsl.insertInto(T)
-                .set(T.CLIENT_ID, p.clientId())
+                .set(T.CLIENT_ID, storedKey(p.owner()))
                 .set(T.CREATED_AT, utc(p.createdAt()))
                 .set(row)
                 .onConflict(T.CLIENT_ID).doUpdate().set(row)
@@ -69,14 +80,27 @@ public final class ClientPolicyRepository implements Persist<ClientPolicy> {
 
     @Override
     public void delete(ClientPolicy p, DbTx tx) {
-        DSL.using(tx.connection(), SQLDialect.POSTGRES).deleteFrom(T).where(T.CLIENT_ID.eq(p.clientId())).execute();
+        DSL.using(tx.connection(), SQLDialect.POSTGRES).deleteFrom(T).where(T.CLIENT_ID.eq(storedKey(p.owner()))).execute();
+    }
+
+    // ── owner ⇄ stored key (spec §6.4, §8 M19) ──────────────────────────────
+
+    private static String storedKey(FunctionOwner owner) {
+        return switch (owner) {
+            case FunctionOwner.Platform ignored -> PLATFORM_KEY;
+            case FunctionOwner.Client(String clientId) -> clientId;
+        };
+    }
+
+    private static FunctionOwner ownerOf(String clientId) {
+        return PLATFORM_KEY.equals(clientId) ? new FunctionOwner.Platform() : FunctionOwner.ofClientId(clientId);
     }
 
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static ClientPolicy toEntity(FnClientPoliciesRecord row) {
         return new ClientPolicy(
-                row.getClientId(),
+                ownerOf(row.getClientId()),
                 readSigners(row.getSigners()),
                 row.getMaxDurationMs(),
                 row.getMaxConcurrency(),

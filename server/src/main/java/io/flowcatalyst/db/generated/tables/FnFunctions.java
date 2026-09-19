@@ -89,7 +89,7 @@ public class FnFunctions extends TableImpl<FnFunctionsRecord> {
     /**
      * The column <code>public.fn_functions.client_id</code>.
      */
-    public final TableField<FnFunctionsRecord, String> CLIENT_ID = createField(DSL.name("client_id"), SQLDataType.VARCHAR(17).nullable(false), this, "");
+    public final TableField<FnFunctionsRecord, String> CLIENT_ID = createField(DSL.name("client_id"), SQLDataType.VARCHAR(17), this, "");
 
     /**
      * The column <code>public.fn_functions.runtime</code>.

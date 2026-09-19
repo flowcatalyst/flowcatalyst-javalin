@@ -7,11 +7,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/// A client's allowed keyless signers and per-client resource ceilings (spec
-/// `function-registry.md` §6.4). Natural key — no TSID; `client_id` is the
-/// primary key of `fn_client_policies`, so [#id] simply returns it.
+/// A client's (or the platform's, ruling R2) allowed keyless signers and
+/// resource ceilings (spec `function-registry.md` §6.4). Natural key — no
+/// TSID; `client_id` is the primary key of `fn_client_policies`, and only
+/// [ClientPolicyRepository] knows how [#owner] maps to it — including the
+/// reserved `PLATFORM` spelling for [FunctionOwner.Platform].
 ///
-/// @param clientId        the client this policy governs
+/// @param owner           the client this policy governs, or the platform
 /// @param signers         allowed signer identities, each scoped to a set of runtimes
 /// @param maxDurationMs   ceiling override; `null` = the platform default applies
 /// @param maxConcurrency  ceiling override; `null` = the platform default applies
@@ -20,7 +22,7 @@ import java.util.Set;
 /// @param createdAt       creation time
 /// @param updatedAt       last change
 public record ClientPolicy(
-        String clientId,
+        FunctionOwner owner,
         List<SignerRule> signers,
         Integer maxDurationMs,
         Integer maxConcurrency,
@@ -30,15 +32,17 @@ public record ClientPolicy(
         Instant updatedAt) implements HasId {
 
     public ClientPolicy {
-        Objects.requireNonNull(clientId, "clientId");
+        Objects.requireNonNull(owner, "owner");
         signers = List.copyOf(signers);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }
 
+    /// A client's id, or `null` for the platform — **not** the DB primary
+    /// key (that is `ClientPolicyRepository`'s `PLATFORM` spelling alone).
     @Override
     public String id() {
-        return clientId;
+        return owner.clientIdOrNull();
     }
 
     /// One allowed keyless signer, scoped to the runtimes it may publish for

@@ -11,14 +11,15 @@
 -- fn_functions: one row per app.service.name address (§3.2). application_code is
 -- a copy of the owning application's immutable code, so a lookup by address can
 -- check all three segments and avoid a join; no FK leaves the fn_ family, exactly
--- as portal_apps.client_id carries no FK to tnt_clients.
+-- as portal_apps.client_id carries no FK to tnt_clients. client_id is nullable:
+-- null means a platform-owned function (ruling R2, spec §6.1 FunctionOwner).
 CREATE TABLE IF NOT EXISTS fn_functions (
     id VARCHAR(17) NOT NULL,
     application_id VARCHAR(17) NOT NULL,
     application_code VARCHAR(63) NOT NULL,
     service_name VARCHAR(63) NOT NULL,
     name VARCHAR(63) NOT NULL,
-    client_id VARCHAR(17) NOT NULL,
+    client_id VARCHAR(17),
     runtime VARCHAR(10) NOT NULL,
     description VARCHAR(1000),
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS fn_functions (
 -- fn_versions: an immutable published artifact of a function (§4, §6.2). The
 -- signer/bundle columns are nullable because fcdev runs with signatures off
 -- (design §8); whether production may ever leave them null is package C's rule.
+-- function_id cascades: deleting a function deletes all its versions (ruling R4).
 CREATE TABLE IF NOT EXISTS fn_versions (
     id VARCHAR(17) NOT NULL,
     function_id VARCHAR(17) NOT NULL,
@@ -54,7 +56,7 @@ CREATE TABLE IF NOT EXISTS fn_versions (
     ready_at TIMESTAMPTZ,
     retired_at TIMESTAMPTZ,
     CONSTRAINT fn_versions_pkey PRIMARY KEY (id),
-    CONSTRAINT fn_versions_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id),
+    CONSTRAINT fn_versions_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
     CONSTRAINT fn_versions_version_check CHECK (version > 0),
     CONSTRAINT fn_versions_digest_check CHECK (digest ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT fn_versions_state_check CHECK (state IN ('PUBLISHED', 'READY', 'RETIRED')),
@@ -67,7 +69,10 @@ CREATE TABLE IF NOT EXISTS fn_versions (
 CREATE INDEX IF NOT EXISTS idx_fn_versions_function_id_state ON fn_versions (function_id, state);
 
 -- fn_aliases: a mutable named pointer (e.g. `live`) from a function to one of its
--- versions (§6.1). Natural key, no TSID.
+-- versions (§6.1). Natural key, no TSID. Both FKs cascade: deleting a function
+-- deletes its aliases directly, and deleting a version (which only happens via
+-- its function's cascade, §6.2) deletes any alias still pointing at it in the
+-- same transaction (ruling R4).
 CREATE TABLE IF NOT EXISTS fn_aliases (
     function_id VARCHAR(17) NOT NULL,
     alias VARCHAR(63) NOT NULL,
@@ -77,7 +82,7 @@ CREATE TABLE IF NOT EXISTS fn_aliases (
     CONSTRAINT fn_aliases_pkey PRIMARY KEY (function_id, alias),
     CONSTRAINT fn_aliases_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
     CONSTRAINT fn_aliases_alias_check CHECK (alias ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
-    CONSTRAINT fn_aliases_version_id_fkey FOREIGN KEY (version_id) REFERENCES fn_versions (id)
+    CONSTRAINT fn_aliases_version_id_fkey FOREIGN KEY (version_id) REFERENCES fn_versions (id) ON DELETE CASCADE
 );
 
 -- fn_hosts: a running function host self-registers under its own id (§6.3).
@@ -98,7 +103,11 @@ CREATE INDEX IF NOT EXISTS idx_fn_hosts_pool_last_heartbeat ON fn_hosts (pool, l
 
 -- fn_client_policies: one row per client — allowed signers and per-client ceilings
 -- (§6.4, `fn_signer_policies` renamed per the workplan's own suggestion, §0).
--- Natural key, no TSID.
+-- Natural key, no TSID. client_id also accepts the reserved value 'PLATFORM',
+-- which carries the platform-owned functions' signer policy and ceilings
+-- (ruling R2) — a primary key cannot be null, and no TSID is ever 'PLATFORM';
+-- ClientPolicyRepository is the only code that spells that constant, mapping it
+-- to/from FunctionOwner.Platform (spec §6.1, §6.4).
 CREATE TABLE IF NOT EXISTS fn_client_policies (
     client_id VARCHAR(17) NOT NULL,
     signers JSONB NOT NULL DEFAULT '[]',
@@ -116,9 +125,10 @@ CREATE TABLE IF NOT EXISTS fn_client_policies (
 );
 
 -- fn_domains: a client-verified hostname that may carry public fn_routes (§6.5).
+-- client_id is nullable: null means the platform's domain (ruling R2).
 CREATE TABLE IF NOT EXISTS fn_domains (
     id VARCHAR(17) NOT NULL,
-    client_id VARCHAR(17) NOT NULL,
+    client_id VARCHAR(17),
     hostname VARCHAR(253) NOT NULL,
     verification_token VARCHAR(64) NOT NULL,
     verified_at TIMESTAMPTZ,

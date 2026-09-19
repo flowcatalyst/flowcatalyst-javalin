@@ -64,7 +64,7 @@ public class FnDomains extends TableImpl<FnDomainsRecord> {
     /**
      * The column <code>public.fn_domains.client_id</code>.
      */
-    public final TableField<FnDomainsRecord, String> CLIENT_ID = createField(DSL.name("client_id"), SQLDataType.VARCHAR(17).nullable(false), this, "");
+    public final TableField<FnDomainsRecord, String> CLIENT_ID = createField(DSL.name("client_id"), SQLDataType.VARCHAR(17), this, "");
 
     /**
      * The column <code>public.fn_domains.hostname</code>.

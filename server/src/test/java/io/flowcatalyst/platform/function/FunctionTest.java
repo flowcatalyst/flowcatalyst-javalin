@@ -32,7 +32,7 @@ class FunctionTest {
     }
 
     private static Function newFunction() {
-        return Function.create("app_1", FunctionAddress.parse("billing.invoices.create"), "clt_1", Runtime.JVM, null);
+        return Function.create("app_1", FunctionAddress.parse("billing.invoices.create"), FunctionOwner.ofClientId("clt_1"), Runtime.JVM, null);
     }
 
     private static FunctionVersion versionOf(Function f, int version) {
@@ -65,7 +65,7 @@ class FunctionTest {
 
     @Test
     void blankDescriptionBecomesNull() {
-        Function f = Function.create("app_1", FunctionAddress.parse("billing.invoices.create"), "clt_1", Runtime.JVM, "   ");
+        Function f = Function.create("app_1", FunctionAddress.parse("billing.invoices.create"), FunctionOwner.ofClientId("clt_1"), Runtime.JVM, "   ");
         assertThat(f.description()).isNull();
     }
 
@@ -117,7 +117,7 @@ class FunctionTest {
     @Test
     void promoteAVersionOfAnotherFunctionIsRejected() {
         Function f = newFunction();
-        Function other = Function.create("app_1", FunctionAddress.parse("billing.invoices.other"), "clt_1", Runtime.JVM, null);
+        Function other = Function.create("app_1", FunctionAddress.parse("billing.invoices.other"), FunctionOwner.ofClientId("clt_1"), Runtime.JVM, null);
         FunctionVersion v = versionOf(other, 1);
         assertCode(() -> f.promote(Function.LIVE, v, "prn_1", Instant.now()),
                 UseCaseError.Validation.class, "VERSION_NOT_OF_FUNCTION");

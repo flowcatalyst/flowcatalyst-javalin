@@ -18,7 +18,7 @@ class ClientPolicyTest {
             new SignerIdentity("https://token.actions.githubusercontent.com", "repo:acme/billing:ref:refs/heads/main");
 
     private static ClientPolicy policyWith(ClientPolicy.SignerRule... rules) {
-        return new ClientPolicy("clt_1", List.of(rules), null, null, null, null, NOW, NOW);
+        return new ClientPolicy(FunctionOwner.ofClientId("clt_1"), List.of(rules), null, null, null, null, NOW, NOW);
     }
 
     // ── permits — §8 M15 ──────────────────────────────────────────────────
@@ -64,14 +64,14 @@ class ClientPolicyTest {
     @Test
     void aClientWithNoOverridesGetsThePlatformDefaultForEveryCeiling() {
         FunctionLimits defaults = FunctionLimits.defaults();
-        ClientPolicy p = new ClientPolicy("clt_1", List.of(), null, null, null, null, NOW, NOW);
+        ClientPolicy p = new ClientPolicy(FunctionOwner.ofClientId("clt_1"), List.of(), null, null, null, null, NOW, NOW);
         assertThat(p.ceilings(defaults)).isEqualTo(ClientCeilings.of(defaults));
     }
 
     @Test
     void anOverrideReplacesJustItsOwnColumn() {
         FunctionLimits defaults = FunctionLimits.defaults();
-        ClientPolicy p = new ClientPolicy("clt_1", List.of(), 1000, null, null, null, NOW, NOW);
+        ClientPolicy p = new ClientPolicy(FunctionOwner.ofClientId("clt_1"), List.of(), 1000, null, null, null, NOW, NOW);
         ClientCeilings c = p.ceilings(defaults);
         assertThat(c.maxDurationMs()).isEqualTo(1000);
         assertThat(c.maxConcurrency()).isEqualTo(defaults.maxConcurrency());
@@ -82,7 +82,7 @@ class ClientPolicyTest {
     @Test
     void everyCeilingColumnOverridesIndependently() {
         FunctionLimits defaults = FunctionLimits.defaults();
-        ClientPolicy p = new ClientPolicy("clt_1", List.of(), 111, 222, 333, 444, NOW, NOW);
+        ClientPolicy p = new ClientPolicy(FunctionOwner.ofClientId("clt_1"), List.of(), 111, 222, 333, 444, NOW, NOW);
         assertThat(p.ceilings(defaults)).isEqualTo(new ClientCeilings(111, 222, 333, 444));
     }
 }

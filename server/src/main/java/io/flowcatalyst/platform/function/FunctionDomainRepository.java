@@ -41,9 +41,18 @@ public final class FunctionDomainRepository implements Persist<FunctionDomain> {
         return findOne(T.HOSTNAME.eq(hostname.value()));
     }
 
-    public List<FunctionDomain> listByClient(String clientId) {
-        return List.copyOf(dsl.selectFrom(T).where(T.CLIENT_ID.eq(clientId)).orderBy(T.HOSTNAME.asc())
+    public List<FunctionDomain> listByOwner(FunctionOwner owner) {
+        Objects.requireNonNull(owner, "owner");
+        return List.copyOf(dsl.selectFrom(T).where(ownerCondition(owner)).orderBy(T.HOSTNAME.asc())
                 .fetch().map(FunctionDomainRepository::toEntity));
+    }
+
+    /// `Platform` ⇒ `client_id IS NULL`; `Client` ⇒ `client_id = ?` (spec §6.5).
+    private static Condition ownerCondition(FunctionOwner owner) {
+        return switch (owner) {
+            case FunctionOwner.Platform ignored -> T.CLIENT_ID.isNull();
+            case FunctionOwner.Client(String clientId) -> T.CLIENT_ID.eq(clientId);
+        };
     }
 
     private Optional<FunctionDomain> findOne(Condition where) {
@@ -60,7 +69,7 @@ public final class FunctionDomainRepository implements Persist<FunctionDomain> {
         OffsetDateTime verifiedAt = verifiedAt(d.verification());
         txDsl.insertInto(T)
                 .set(T.ID, d.id())
-                .set(T.CLIENT_ID, d.clientId())
+                .set(T.CLIENT_ID, d.owner().clientIdOrNull())
                 .set(T.HOSTNAME, d.hostname().value())
                 .set(T.VERIFICATION_TOKEN, d.verificationToken())
                 .set(T.VERIFIED_AT, verifiedAt)
@@ -83,7 +92,7 @@ public final class FunctionDomainRepository implements Persist<FunctionDomain> {
                 : new FunctionDomain.Verification.Verified(row.getVerifiedAt().toInstant());
         return new FunctionDomain(
                 row.getId(),
-                row.getClientId(),
+                FunctionOwner.ofClientId(row.getClientId()),
                 new Hostname(row.getHostname()),
                 row.getVerificationToken(),
                 verification,

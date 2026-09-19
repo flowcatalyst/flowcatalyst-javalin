@@ -45,7 +45,8 @@ public final class FunctionRepository implements Persist<Function> {
 
     /// `null` = no filter on that column. [#pattern] never becomes a `LIKE`
     /// — it is turned into whole-segment column equalities (spec §3.3, §8 M3).
-    public record ListFilter(FunctionAddressPattern pattern, String clientId, FunctionStatus status) {
+    /// `owner` = `Platform` filters to `client_id IS NULL` (spec §6.1, §8 M19).
+    public record ListFilter(FunctionAddressPattern pattern, FunctionOwner owner, FunctionStatus status) {
     }
 
     // ── Reads ──────────────────────────────────────────────────────────────
@@ -66,8 +67,8 @@ public final class FunctionRepository implements Persist<Function> {
         if (filter.pattern() != null) {
             where = where.and(patternCondition(filter.pattern()));
         }
-        if (filter.clientId() != null) {
-            where = where.and(T.CLIENT_ID.eq(filter.clientId()));
+        if (filter.owner() != null) {
+            where = where.and(ownerCondition(filter.owner()));
         }
         if (filter.status() != null) {
             where = where.and(T.STATUS.eq(filter.status().name()));
@@ -103,6 +104,14 @@ public final class FunctionRepository implements Persist<Function> {
                 .collect(groupingBy(FnAliasesRecord::getFunctionId, mapping(FunctionRepository::toAlias, toList())));
     }
 
+    /// `Platform` ⇒ `client_id IS NULL`; `Client` ⇒ `client_id = ?` (spec §6.1, §8 M19).
+    private static Condition ownerCondition(FunctionOwner owner) {
+        return switch (owner) {
+            case FunctionOwner.Platform ignored -> T.CLIENT_ID.isNull();
+            case FunctionOwner.Client(String clientId) -> T.CLIENT_ID.eq(clientId);
+        };
+    }
+
     private static Condition addressCondition(FunctionAddress address) {
         return T.APPLICATION_CODE.eq(address.application().value())
                 .and(T.SERVICE_NAME.eq(address.service().value()))
@@ -124,7 +133,7 @@ public final class FunctionRepository implements Persist<Function> {
 
     /// Upserts `fn_functions` — `SET`: `description`, `status`, `updated_at`
     /// only (spec §6.1: no transition moves `application_id`, `address`,
-    /// `client_id` or `runtime`, so the upsert cannot either — §8 M11). Then
+    /// `owner` or `runtime`, so the upsert cannot either — §8 M11). Then
     /// deletes alias rows absent from [Function#aliases] and upserts the
     /// rest (`SET`: `version_id`, `updated_by`, `updated_at` — §8 M16).
     @Override
@@ -136,7 +145,7 @@ public final class FunctionRepository implements Persist<Function> {
                 .set(T.APPLICATION_CODE, f.address().application().value())
                 .set(T.SERVICE_NAME, f.address().service().value())
                 .set(T.NAME, f.address().name().value())
-                .set(T.CLIENT_ID, f.clientId())
+                .set(T.CLIENT_ID, f.owner().clientIdOrNull())
                 .set(T.RUNTIME, f.runtime().name())
                 .set(T.DESCRIPTION, f.description())
                 .set(T.STATUS, f.status().name())
@@ -169,9 +178,9 @@ public final class FunctionRepository implements Persist<Function> {
         }
     }
 
-    /// Aliases and routes cascade via FK; a function with published versions
-    /// fails on the `fn_versions` FK — deleting a function that has versions
-    /// is package B's decision (spec §6.1, open question 4).
+    /// Deletes the function; versions, aliases and routes cascade via FK
+    /// (ruling R4, spec §6.1, §8 M18) — the database does it, this method
+    /// need not.
     @Override
     public void delete(Function f, DbTx tx) {
         DSL.using(tx.connection(), SQLDialect.POSTGRES).deleteFrom(T).where(T.ID.eq(f.id())).execute();
@@ -186,7 +195,7 @@ public final class FunctionRepository implements Persist<Function> {
                 row.getId(),
                 row.getApplicationId(),
                 address,
-                row.getClientId(),
+                FunctionOwner.ofClientId(row.getClientId()),
                 Runtime.parse(row.getRuntime()),
                 row.getDescription(),
                 FunctionStatus.parse(row.getStatus()),
