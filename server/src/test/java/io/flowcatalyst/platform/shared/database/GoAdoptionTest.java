@@ -26,12 +26,13 @@ class GoAdoptionTest {
         DataSource ds = TestPg.newDatabase("go_adoption");
         GoSchema.load(ds);
         // go-schema.sql contains the (empty) goose_db_version table; give it the
-        // rows goose would have written for the migrations up to 052 (a Go
-        // database at HEAD). There is no 023 or 050 in
+        // rows goose would have written for the migrations up to 054 (a Go
+        // database at HEAD, including 054_dispatch_job_queue.sql — the same
+        // column V10 adds). There is no 023 or 050 in
         // flowcatalyst-go/internal/migrate/sql.
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("INSERT INTO public.goose_db_version (version_id, is_applied) VALUES (0, true)");
-            for (int v = 1; v <= 53; v++) {
+            for (int v = 1; v <= 54; v++) {
                 if (v == 23 || v == 50) {
                     continue;
                 }
@@ -42,19 +43,20 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V9 even
-        // though the Go database already has V2..V7 AND V9's effect (053
-        // portal_apps, spec `portal-apps.md`): each of those is idempotent
-        // (IF NOT EXISTS / pg_constraint guards) and a no-op here; V8
-        // (`mail_outbox`) is a genuinely new, Java-only table this
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V10 even
+        // though the Go database already has V2..V7, V9's effect (053
+        // portal_apps, spec `portal-apps.md`) AND V10's effect (054
+        // dispatch_job_queue, spec `dispatch-job-priority.md`): each of those
+        // is idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op
+        // here; V8 (`mail_outbox`) is a genuinely new, Java-only table this
         // Go-adopted database does not have yet (spec `mail-outbox.md`,
         // Go mirror item G9) and is created for the first time.
-        assertThat(result.migrationsExecuted).isEqualTo(8);
+        assertThat(result.migrationsExecuted).isEqualTo(9);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(9);
+        assertThat(applied).hasSize(10);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -65,8 +67,8 @@ class GoAdoptionTest {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             try (ResultSet rs = st.executeQuery("SELECT count(*), max(version_id) FROM public.goose_db_version")) {
                 rs.next();
-                assertThat(rs.getInt(1)).isEqualTo(52);
-                assertThat(rs.getInt(2)).isEqualTo(53);
+                assertThat(rs.getInt(1)).isEqualTo(53);
+                assertThat(rs.getInt(2)).isEqualTo(54);
             }
             try (ResultSet rs = st.executeQuery(
                     "SELECT type, version, success FROM public.flyway_schema_history ORDER BY installed_rank")) {
@@ -74,7 +76,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 9; v++) {
+                for (int v = 2; v <= 10; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -89,8 +91,8 @@ class GoAdoptionTest {
                 rs.next();
                 assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
             }
-            // V2..V7 and V9 are no-ops on a Go-HEAD database: the schema they add
-            // is already there exactly once, not duplicated or altered.
+            // V2..V7, V9 and V10 are no-ops on a Go-HEAD database: the schema they
+            // add is already there exactly once, not duplicated or altered.
             try (ResultSet rs = st.executeQuery("""
                     SELECT count(*) FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'oauth_clients'
@@ -110,6 +112,13 @@ class GoAdoptionTest {
                       AND column_name = 'portal_app_id'""")) {
                 rs.next();
                 assertThat(rs.getInt(1)).as("oauth_clients.portal_app_id exists exactly once").isEqualTo(1);
+            }
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs'
+                      AND column_name = 'queue'""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("V10 (msg_dispatch_jobs.queue) is a no-op: the column already exists exactly once").isEqualTo(1);
             }
             try (ResultSet rs = st.executeQuery("""
                     SELECT EXISTS (
@@ -144,9 +153,10 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(4)).as("chk_msg_dispatch_jobs_kind on the parent").isEqualTo(1);
             }
         }
-        // V2..V7 still change nothing (flyway_schema_history is ignored by the
-        // fingerprint); V8 is the one genuine addition (`mail_outbox`, Go mirror
-        // item G9) — assert the only lines the fingerprint gained are its own.
+        // V2..V7, V9 and V10 still change nothing (flyway_schema_history is
+        // ignored by the fingerprint); V8 is the one genuine addition
+        // (`mail_outbox`, Go mirror item G9) — assert the only lines the
+        // fingerprint gained are its own.
         List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
         List<String> mailOutboxLines = afterLines.stream()
                 .filter(l -> l.split("\t", -1).length > 1 && l.split("\t", -1)[1].equals("mail_outbox"))
@@ -155,7 +165,7 @@ class GoAdoptionTest {
                 .filter(l -> !mailOutboxLines.contains(l))
                 .toList();
         assertThat(afterWithoutMailOutbox)
-                .as("V2..V7 change nothing beyond V8's own new mail_outbox table")
+                .as("V2..V7, V9 and V10 change nothing beyond V8's own new mail_outbox table")
                 .containsExactlyInAnyOrderElementsOf(before.lines().toList());
         assertThat(mailOutboxLines).as("V8 adds the mail_outbox table/columns/constraint/indexes").isNotEmpty();
 
