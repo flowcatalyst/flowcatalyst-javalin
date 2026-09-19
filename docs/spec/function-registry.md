@@ -52,7 +52,7 @@ fingerprint filter (§2.1) depends on it.
 
 **`fn_functions`** — `id` pk · `application_id` not null · `application_code VARCHAR(63)` not null
 LABEL · `service_name VARCHAR(63)` not null LABEL · `name VARCHAR(63)` not null LABEL ·
-`client_id VARCHAR(17)` not null · `runtime VARCHAR(10)` not null check in (`JVM`,`WASM`) ·
+`client_id VARCHAR(17)` **null** (null = a platform-owned function, ruling R2) · `runtime VARCHAR(10)` not null check in (`JVM`,`WASM`) ·
 `description VARCHAR(1000)` null · `status VARCHAR(20)` not null default `ACTIVE` check in
 (`ACTIVE`,`DISABLED`) · `created_at` · `updated_at`.
 Unique `(application_id, service_name, name)`; unique `(application_code, service_name, name)` —
@@ -62,7 +62,7 @@ code is immutable (`application.md`), and it is what lets the database check all
 the address and lets a read by address avoid a join. No foreign key to `app_applications` or
 `tnt_clients` — no `fn_` table references a table outside `fn_`, as `portal_apps.client_id` does not.
 
-**`fn_versions`** — `id` pk · `function_id` not null references `fn_functions(id)` · `version INT`
+**`fn_versions`** — `id` pk · `function_id` not null references `fn_functions(id) ON DELETE CASCADE` (ruling R4) · `version INT`
 not null check `> 0` · `artifact_ref VARCHAR(1000)` not null · `digest VARCHAR(71)` not null check
 `~ '^sha256:[0-9a-f]{64}$'` · `signature_bundle TEXT` null · `signature_bundle_ref VARCHAR(1000)`
 null · `signer_issuer VARCHAR(500)` null · `signer_subject VARCHAR(1000)` null · `manifest JSONB`
@@ -74,18 +74,18 @@ The signer and bundle columns are nullable because fcdev runs with signatures of
 whether production may ever leave them null is package C's rule, not the table's.
 
 **`fn_aliases`** — pk `(function_id, alias)` · `function_id` references `fn_functions(id) ON DELETE
-CASCADE` · `alias VARCHAR(63)` LABEL · `version_id` not null references `fn_versions(id)` ·
+CASCADE` · `alias VARCHAR(63)` LABEL · `version_id` not null references `fn_versions(id) ON DELETE CASCADE` ·
 `updated_by VARCHAR(17)` not null · `updated_at`.
 
 **`fn_hosts`** — `id VARCHAR(100)` pk (the host names itself) · `pool VARCHAR(63)` not null LABEL ·
 `state VARCHAR(20)` not null check in (`ACTIVE`,`DRAINING`) · `loaded JSONB` not null default
 `'[]'` · `started_at` · `last_heartbeat`. Index `(pool, last_heartbeat)`.
 
-**`fn_client_policies`** — `client_id VARCHAR(17)` pk · `signers JSONB` not null default `'[]'` ·
+**`fn_client_policies`** — `client_id VARCHAR(17)` pk (a client id, or the reserved value `PLATFORM` for platform-owned functions — a primary key cannot be null, and no TSID is ever `PLATFORM`; the repository is the only place that spells it, §6.4) · `signers JSONB` not null default `'[]'` ·
 `max_duration_ms INT` null · `max_concurrency INT` null · `max_wasm_memory_mb INT` null ·
 `max_db_pool_size INT` null · each ceiling check `IS NULL OR > 0` · `created_at` · `updated_at`.
 
-**`fn_domains`** — `id` pk · `client_id` not null · `hostname VARCHAR(253)` not null check
+**`fn_domains`** — `id` pk · `client_id` **null** (null = the platform's) · `hostname VARCHAR(253)` not null check
 `hostname = lower(hostname)` · `verification_token VARCHAR(64)` not null · `verified_at` nullable ·
 `created_at`. Unique `(hostname)`. Index `(client_id)`.
 
@@ -367,12 +367,17 @@ components, transitions return copies and throw `UseCaseException`. Repositories
 
 ### 6.1 `Function` (+ aliases)
 
-Components: `id`, `applicationId`, `address` (`FunctionAddress`), `clientId`, `runtime`,
+**Owner (ruling R2).** `sealed FunctionOwner = Platform | Client(String clientId)` — who a function,
+a domain or a policy belongs to. `FunctionOwner.ofClientId(String)`: null ⇒ `Platform`; blank is an
+`IllegalArgumentException`, never coerced. `String clientIdOrNull()` for the two nullable columns.
+Nothing in the JVM carries a null or a `"PLATFORM"` string to mean the platform.
+
+Components: `id`, `applicationId`, `address` (`FunctionAddress`), `owner` (`FunctionOwner`), `runtime`,
 `description` (nullable), `status`, `aliases` (`List<FunctionAlias>`), `createdAt`, `updatedAt`.
 `FunctionAlias(String alias, String versionId, String updatedBy, Instant updatedAt)`;
 `Function.LIVE = "live"`.
 
-- `static create(applicationId, FunctionAddress, clientId, Runtime, description, Instant now)` —
+- `static create(applicationId, FunctionAddress, FunctionOwner, Runtime, description, Instant now)` —
   `ACTIVE`, no aliases. It takes the parsed address (CONVENTIONS: the type carries the proof).
 - `describe(String description, Instant now)` — the only editable field.
 - `disable(now)` / `enable(now)` — conflict `FUNCTION_ALREADY_DISABLED` / `FUNCTION_ALREADY_ACTIVE`.
@@ -384,16 +389,17 @@ Components: `id`, `applicationId`, `address` (`FunctionAddress`), `clientId`, `r
   previousVersionId)` — `previousVersionId` null on first promotion. **It does not require `READY`**
   — see Q3.
 - `Optional<String> liveVersionId()`; `boolean isLive(String versionId)`.
-- **There is no transition that changes `applicationId`, `address`, `clientId` or `runtime`**
+- **There is no transition that changes `applicationId`, `address`, `owner` or `runtime`**
   (design §10.17), and the repository's upsert `SET` list omits those columns, so even a hand-built
   copy cannot move a function.
 
 `FunctionRepository implements Persist<Function>`: `findById`, `findByAddress(FunctionAddress)`,
-`list(ListFilter)` with `record ListFilter(FunctionAddressPattern pattern, String clientId,
-FunctionStatus status)` (null = no filter) ordered by address. `persist` upserts the row and
+`list(ListFilter)` with `record ListFilter(FunctionAddressPattern pattern, FunctionOwner owner,
+FunctionStatus status)` (null = no filter; `Platform` filters to `client_id IS NULL`) ordered by address. `persist` upserts the row and
 replaces the alias rows to match `aliases` (delete those absent, upsert the rest) in the same
-transaction. `delete` removes the function; aliases and routes cascade; it fails while versions
-exist (the FK) — deleting a function with versions is package B's decision (Q4).
+transaction. `delete` removes the function and, by cascade, its versions, aliases and routes (ruling R4). A test
+seeds all three, deletes, and asserts each table has no row for the function — and that a sibling
+function's rows are untouched.
 
 ### 6.2 `FunctionVersion`
 
@@ -424,7 +430,8 @@ keeps `ready_at` in the row; the record does not model it (nothing reads it).
   two concurrent publishes must get 1 and 2, not 1 and a unique-violation 500.
 - `persist`: insert; on conflict by id the `SET` list is **`state`, `ready_at`, `retired_at` only**.
   A version's content is immutable and the upsert is where that is enforced.
-- `delete` throws `UnsupportedOperationException` — versions are retired, never deleted.
+- `delete` throws `UnsupportedOperationException` — a version alone is retired, never deleted; it
+  goes only when its whole function does (§6.1).
 
 ### 6.3 `FunctionHost`
 
@@ -446,7 +453,7 @@ than failing the whole host row — one bad entry must not hide a host from Stat
 
 ### 6.4 `ClientPolicy`
 
-`ClientPolicy(clientId, List<SignerRule> signers, Integer maxDurationMs, Integer maxConcurrency,
+`ClientPolicy(FunctionOwner owner, List<SignerRule> signers, Integer maxDurationMs, Integer maxConcurrency,
 Integer maxWasmMemoryMb, Integer maxDbPoolSize, createdAt, updatedAt)`;
 `SignerRule(String issuer, String subject, Set<Runtime> runtimes)`.
 
@@ -458,17 +465,19 @@ Integer maxWasmMemoryMb, Integer maxDbPoolSize, createdAt, updatedAt)`;
 - `signers` JSON `[{"issuer":…,"subject":…,"runtimes":["JVM"]}]`; the stored reader drops unknown
   runtimes from a rule and drops a rule with a blank issuer or subject.
 
-`ClientPolicyRepository implements Persist<ClientPolicy>`: `findByClient(clientId)` → `Optional`.
+`ClientPolicyRepository implements Persist<ClientPolicy>`: `findByOwner(FunctionOwner)` → `Optional`.
+It maps `Platform` ⇄ the reserved `PLATFORM` key and is the only code that spells it; `HasId.id()`
+is that stored key.
 
 ### 6.5 `FunctionDomain`
 
-`FunctionDomain(id, clientId, Hostname hostname, String verificationToken, Verification
+`FunctionDomain(id, FunctionOwner owner, Hostname hostname, String verificationToken, Verification
 verification, createdAt)`; `sealed Verification = Pending | Verified(Instant at)`.
-`static claim(clientId, Hostname, String token, now)`; `verified(now)`: `Pending` ⇒ `Verified`,
-`Verified` ⇒ conflict `DOMAIN_ALREADY_VERIFIED`. `boolean usableBy(String clientId)` — verified and
-owned by that client. `toString` masks the token.
+`static claim(FunctionOwner, Hostname, String token, now)`; `verified(now)`: `Pending` ⇒ `Verified`,
+`Verified` ⇒ conflict `DOMAIN_ALREADY_VERIFIED`. `boolean usableBy(FunctionOwner owner)` — verified and
+owned by that owner (`Platform` matches only `Platform`). `toString` masks the token.
 
-Repository: `findById`, `findByHostname(Hostname)`, `listByClient(clientId)`, `persist` (SET:
+Repository: `findById`, `findByHostname(Hostname)`, `listByOwner(FunctionOwner)`, `persist` (SET:
 `verified_at` only), `delete`.
 
 ### 6.6 `FunctionRoute`
@@ -517,26 +526,25 @@ Accepted/Rejected table as a `@ParameterizedTest` `@CsvSource` with a rule-label
 defaults and the `<= 0` rejection; `tools/jooq-verify.sh` green; `SchemaFingerprintTest`,
 `GoAdoptionTest` and the convention tests green.
 
-## 9. Open questions for the owner (none blocks A)
+## 9. Rulings (owner, 2026-09-19) and what is still open
 
-- **Q1 — Application codes are not DNS labels.** `ApplicationCode` allows underscores and any
-  length (`logistics_portal` is a real code); an address segment does not. As specified, such an
-  application cannot own functions: B's create rejects it (`APPLICATION_CODE_NOT_ADDRESSABLE`).
-  The alternatives are an address alias on the application, or mapping `_` → `-` (which makes
-  `a_b` and `a-b` collide). Recommendation: reject, and say so in the error.
-- **Q2 — Who owns a function of a platform-level application?** Applications have no client;
-  `fn_functions.client_id` is `NOT NULL` because signer policy, ceilings and domains are per client.
-  Is there a function with no client (the platform's own)? If so the column relaxes and "no client"
-  needs a policy of its own.
-- **Q3 — Promote needs `READY`, but hosts only load what an alias references.** Workplan B:
-  Promote requires the version ready on a host; DesiredState lists "versions referenced by an
-  alias". A first version can then never become ready. Recommendation: desired state also carries
-  each function's newest `PUBLISHED` version, hosts fetch and verify it (`Registered`), the
-  heartbeat marks it `READY`, and only then can it be promoted. A's `promote` transition therefore
-  does not check `READY`; B's operation will, once this is ruled.
-- **Q4 — Deleting a function that has versions** (design §9 lists `DELETE`, the workplan's route
-  table does not): refuse, or retire-all-then-delete? And `DeleteApplication` should refuse while
-  the application has functions — there is no FK to stop it.
-- **Q5 — Signer subject matching** is exact here. GitHub's keyless subject embeds the workflow ref
-  (`…/publish.yml@refs/heads/main`); a tag-triggered release has a different subject per tag.
-  Package C will need a ruling: exact list, or a constrained pattern.
+- **R1 (was Q1).** An application whose code is not a DNS label cannot own functions. Package B's
+  create rejects it with `APPLICATION_CODE_NOT_ADDRESSABLE`, and the message says why.
+- **R2 (was Q2).** A function may belong to the platform rather than a client. `client_id` is
+  nullable on `fn_functions` and `fn_domains`; the platform's signer policy and ceilings are the
+  `PLATFORM` row of `fn_client_policies`; in Java it is `FunctionOwner.Platform` (§6.1).
+- **R3 (was Q3).** Desired state also carries each function's newest `PUBLISHED` version. A host
+  fetches and verifies it and reports `Registered`; the heartbeat marks it `READY`; only a `READY`
+  version can be promoted. Package B's Promote enforces `READY`; A's transition still does not,
+  so it stays a pure function of what it is handed.
+- **R4 (was Q4).** Deleting a function deletes all its versions, aliases and routes (cascade).
+  Still open for B: `DeleteApplication` while the application has functions — there is no FK.
+- **Open — Q5, package C.** Signer subject matching is exact here. GitHub's keyless subject embeds
+  the workflow ref (`…/publish.yml@refs/heads/main`); a tag-triggered release has a different
+  subject per tag. Exact list, or a constrained pattern.
+
+| # | Behaviour added by the rulings | The mutant that must die |
+|---|---|---|
+| M18 | Delete cascades to versions, aliases and routes, and only that function's | drop `ON DELETE CASCADE` from `fn_versions` (delete throws) ; delete by `application_id` instead of `id` |
+| M19 | `Platform` round-trips: a platform function reads back `Platform`, lists under the `Platform` filter and not under a client's; the platform policy is found by `findByOwner(Platform)` and by no client id | map `Platform` to a client filter of `IS NOT NULL`; spell the key differently on read and write |
+| M20 | `usableBy`: a client's verified domain is not usable by the platform, nor the reverse | compare `clientIdOrNull()` with `Objects.equals` but skip the verified check / ignore owner |
