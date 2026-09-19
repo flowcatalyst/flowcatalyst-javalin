@@ -121,7 +121,10 @@ public final class PlatformRoles {
                             ADMIN_EVENT_TYPE_READ,
                             ADMIN_SUBSCRIPTION_READ)),
 
-            // platform:messaging-admin
+            // platform:messaging-admin — the platform admin role that already holds the
+            // messaging manage/administer permissions; it gains the function context's
+            // view/manage/publish/promote/policy-manage (spec function-api.md §2). Host
+            // control is deliberately NOT included: that is platform:function-host alone.
             mk("messaging-admin", "Messaging Administrator",
                     "Manages event types, subscriptions, dispatch jobs, and scheduled jobs",
                     List.of(
@@ -141,7 +144,8 @@ public final class PlatformRoles {
                             ADMIN_SCHEDULED_JOB_PAUSE, ADMIN_SCHEDULED_JOB_FIRE, ADMIN_SCHEDULED_JOB_SYNC,
                             ADMIN_SCHEDULED_JOB_INSTANCE_READ,
                             ADMIN_PROCESS_READ, ADMIN_PROCESS_CREATE, ADMIN_PROCESS_UPDATE,
-                            ADMIN_PROCESS_DELETE, ADMIN_PROCESS_ARCHIVE, ADMIN_PROCESS_SYNC)),
+                            ADMIN_PROCESS_DELETE, ADMIN_PROCESS_ARCHIVE, ADMIN_PROCESS_SYNC,
+                            FUNCTION_VIEW, FUNCTION_MANAGE, FUNCTION_PUBLISH, FUNCTION_PROMOTE, FUNCTION_POLICY_MANAGE)),
 
             // platform:viewer
             mk("viewer", "Platform Viewer",
@@ -200,7 +204,21 @@ public final class PlatformRoles {
             // client's queues.
             mk("router", "Router",
                     "Fetches the dispatch router configuration",
-                    List.of(ADMIN_DISPATCH_POOL_READ)));
+                    List.of(ADMIN_DISPATCH_POOL_READ)),
+
+            // platform:function-publisher — spec function-api.md §2: "what a pipeline's
+            // service account holds". Appended (not inserted) so every existing role's index
+            // is unchanged.
+            mk("function-publisher", "Function Publisher",
+                    "Publishes and promotes function versions",
+                    List.of(FUNCTION_VIEW, FUNCTION_PUBLISH, FUNCTION_PROMOTE)),
+
+            // platform:function-host — spec §2, `router-config-auth.md` R3′'s precedent: one
+            // permission, exactly what /control/functions/* needs, anchor-only, not
+            // client-delegable.
+            mk("function-host", "Function Host",
+                    "Fetches desired state and reports heartbeats for the function host",
+                    List.of(FUNCTION_HOST_CONTROL)));
 
     private PlatformRoles() {
     }

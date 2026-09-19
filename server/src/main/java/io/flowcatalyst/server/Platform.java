@@ -374,6 +374,10 @@ public final class Platform {
         var permissionRepo = new PermissionRepository(pool);
         RoleApi.register(routes, new RoleApi.State(roleRepo, permissionRepo, uow));
         var applicationRepo = new ApplicationRepository(pool);
+        // Built here (ahead of the provisioning repositories below) because DeleteApplication's
+        // APPLICATION_HAS_FUNCTIONS guard (function-api.md §4.2) needs it, and FunctionApi/
+        // FunctionPolicyApi reuse this same instance at the end of this method (function-api.md §7 B1).
+        var functionRepo = new io.flowcatalyst.platform.function.FunctionRepository(pool);
         // The provisioning routes (spec application.md §10) need the service-account,
         // principal and OAuth-client repositories plus the app-key encryption; these
         // repositories are stateless over the pool, so they are constructed again here
@@ -382,7 +386,7 @@ public final class Platform {
         ApplicationApi.register(routes, new ApplicationApi.State(applicationRepo, new ClientConfigRepository(pool), roleRepo, uow,
                 new ServiceAccountRepository(pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious())),
                 new PrincipalRepository(pool), new OAuthClientRepository(pool, applicationRepo),
-                Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), functionRepo));
         var clientRepo = new ClientRepository(pool);
         ClientApi.register(routes, new ClientApi.State(clientRepo, new ApplicationRepository(pool), new ClientConfigRepository(pool), uow));
         var subscriptionRepo = new SubscriptionRepository(pool);
@@ -593,6 +597,15 @@ public final class Platform {
                 connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow));
 
+        // function platform API (docs/spec/function-api.md, work package B, slice B1): Java-first,
+        // outside the lockfile (spec §0) — every route is named in parity/surface.json instead.
+        // functionRepo/clientRepo/applicationRepo are the same instances built above.
+        io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
+                new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow));
+        io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
+                new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
+                        new io.flowcatalyst.platform.function.ClientPolicyRepository(pool), clientRepo, uow, env.functionLimits()));
+
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
 
@@ -697,7 +710,10 @@ public final class Platform {
     static boolean isPlatformPath(Exchange ctx) {
         String p = ctx.path();
         return p.startsWith("/api/") || p.startsWith("/auth/") || p.startsWith("/oauth/")
-                || p.startsWith("/bff/") || p.startsWith("/portal/") || p.startsWith("/.well-known/");
+                || p.startsWith("/bff/") || p.startsWith("/portal/") || p.startsWith("/.well-known/")
+                // function-api.md §2: the control plane (B2) runs inside the authenticator like
+                // every other platform route — it is not public — added now so B2 only adds routes.
+                || p.startsWith("/control/");
     }
 
     /// `registerPublicRoutes` + `registerSpecRoutes` in Go.

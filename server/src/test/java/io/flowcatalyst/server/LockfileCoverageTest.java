@@ -35,7 +35,10 @@ class LockfileCoverageTest {
     private static final List<String> OUTSIDE_LOCKFILE_PREFIXES = List.of(
             "/health", "/auth/", "/oauth/", "/.well-known/", "/portal/", "/bff/", "/api/me",
             "/api/public/", "/api/config/platform", "/api/dispatch/", "/api/dispatch-jobs/batch", "/api/audit-logs/batch",
-            "/api/openapi.json", "/api/openapi.yaml", "/q/openapi", "/swagger-ui", "/mcp", "/router/");
+            "/api/openapi.json", "/api/openapi.yaml", "/q/openapi", "/swagger-ui", "/mcp", "/router/",
+            // function-api.md §0: the function platform API is Java-first — there is no Go, so
+            // there is no lockfile document for it. Covers /api/functions and /api/function-policies.
+            "/api/function");
 
     /// Full `METHOD PATH` routes outside the lockfile that a path-prefix
     /// entry above can't name precisely without over-matching a sibling

@@ -7,6 +7,7 @@ import java.lang.reflect.Modifier;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -48,10 +49,28 @@ class PermissionTest {
         }
     }
 
+    /// The `function` context's six permissions (spec `function-api.md` §2)
+    /// are all named with the `FUNCTION_` prefix regardless of resource —
+    /// deliberately, so a reader searching for "function" finds every one of
+    /// them, and because the mechanical `<RESOURCE>_<ACTION>` rule would
+    /// collide `platform:function:policy:manage` with
+    /// `platform:function:function:manage` (both would mechanically be
+    /// `..._MANAGE`). An explicit table, not a formula, because no formula
+    /// produces these six names uniquely.
+    private static final Map<String, String> FUNCTION_CONTEXT_NAMES = Map.of(
+            "platform:function:function:view", "FUNCTION_VIEW",
+            "platform:function:function:manage", "FUNCTION_MANAGE",
+            "platform:function:version:publish", "FUNCTION_PUBLISH",
+            "platform:function:alias:promote", "FUNCTION_PROMOTE",
+            "platform:function:policy:manage", "FUNCTION_POLICY_MANAGE",
+            "platform:function:host:control", "FUNCTION_HOST_CONTROL");
+
     /// `<RESOURCE>_<ACTION>`, `APP_SVC_` prefix for the application-service
-    /// context, `SUPER_ADMIN` for the wildcard — the rule the enum's doc states.
+    /// context, `FUNCTION_CONTEXT_NAMES` for the function context,
+    /// `SUPER_ADMIN` for the wildcard — the rule the enum's doc states.
     private static String expectedName(Permission p) {
         if (p.code().equals("platform:*:*:*")) return "SUPER_ADMIN";
+        if (p.context().equals("function")) return FUNCTION_CONTEXT_NAMES.get(p.code());
         var name = (p.resource() + "_" + p.action()).toUpperCase(Locale.ROOT).replace('-', '_');
         return p.context().equals("application-service") ? "APP_SVC_" + name : name;
     }

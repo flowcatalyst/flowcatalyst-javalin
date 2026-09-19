@@ -4,6 +4,7 @@ import io.flowcatalyst.db.generated.tables.FnAliases;
 import io.flowcatalyst.db.generated.tables.FnFunctions;
 import io.flowcatalyst.db.generated.tables.records.FnAliasesRecord;
 import io.flowcatalyst.db.generated.tables.records.FnFunctionsRecord;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.jooq.Condition;
@@ -74,6 +75,90 @@ public final class FunctionRepository implements Persist<Function> {
             where = where.and(T.STATUS.eq(filter.status().name()));
         }
         return findMany(where);
+    }
+
+    /// The paginated `GET /api/functions` filter (spec `function-api.md`
+    /// §4.2): [#pattern] / [#owner] / [#status] are the caller's OPTIONAL
+    /// narrowing (`null` = no filter on that column, same as [ListFilter]);
+    /// [#visibility] and [#applicationIds] are the caller's MANDATORY reach,
+    /// always applied in addition — a caller can only narrow within its own
+    /// reach, never widen past it.
+    ///
+    /// [#visibility] is deliberately NOT [io.flowcatalyst.platform.shared.database.VisibilitySql]'s
+    /// usual `client_id IS NULL OR client_id IN (...)`: that shape treats a
+    /// platform-scoped row as visible to every authenticated caller, which is
+    /// right for a shared resource but wrong here — spec §2 requires a
+    /// non-anchor to reach NO platform-owned function at all, so
+    /// [Visibility.Tenants] here means "these clients' own rows", full stop
+    /// (see [#reachCondition]).
+    ///
+    /// @param applicationIds empty = no restriction (anchor, or a principal
+    ///                       with `allApplications`); non-empty = the
+    ///                       application-scoped caller's own set (spec §2's
+    ///                       third reach clause)
+    public record PageFilter(FunctionAddressPattern pattern, FunctionOwner owner, FunctionStatus status,
+                             Visibility visibility, List<String> applicationIds) {
+        public PageFilter {
+            Objects.requireNonNull(visibility, "visibility");
+            applicationIds = applicationIds == null ? List.of() : List.copyOf(applicationIds);
+        }
+    }
+
+    /// One page of functions matching [PageFilter], ordered by address.
+    public List<Function> findWithFilters(PageFilter filter, int limit, int offset) {
+        Objects.requireNonNull(filter, "filter");
+        var rows = dsl.selectFrom(T).where(pageCondition(filter))
+                .orderBy(T.APPLICATION_CODE.asc(), T.SERVICE_NAME.asc(), T.NAME.asc())
+                .limit(limit).offset(offset)
+                .fetch();
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        var ids = rows.getValues(T.ID);
+        var aliases = aliasesFor(ids);
+        return List.copyOf(rows.map(row -> toEntity(row, aliases.getOrDefault(row.getId(), List.of()))));
+    }
+
+    /// The total for [#findWithFilters]'s filter, ignoring the page.
+    public long countWithFilters(PageFilter filter) {
+        Objects.requireNonNull(filter, "filter");
+        return dsl.fetchCount(T, pageCondition(filter));
+    }
+
+    private Condition pageCondition(PageFilter filter) {
+        Condition where = DSL.noCondition();
+        if (filter.pattern() != null) {
+            where = where.and(patternCondition(filter.pattern()));
+        }
+        if (filter.owner() != null) {
+            where = where.and(ownerCondition(filter.owner()));
+        }
+        if (filter.status() != null) {
+            where = where.and(T.STATUS.eq(filter.status().name()));
+        }
+        where = where.and(reachCondition(filter.visibility()));
+        if (!filter.applicationIds().isEmpty()) {
+            where = where.and(T.APPLICATION_ID.in(filter.applicationIds()));
+        }
+        return where;
+    }
+
+    /// [Visibility.Everything] ⇒ no restriction (an anchor reaches every
+    /// owner). [Visibility.Tenants] ⇒ `client_id IN (...)` ONLY — never `OR
+    /// client_id IS NULL` (see [PageFilter]'s doc): an empty tenant list
+    /// (a non-anchor with no accessible clients) reaches nothing.
+    private static Condition reachCondition(Visibility visibility) {
+        return switch (visibility) {
+            case Visibility.Everything ignored -> DSL.noCondition();
+            case Visibility.Tenants t -> t.clientIds().isEmpty() ? DSL.falseCondition() : T.CLIENT_ID.in(t.clientIds());
+        };
+    }
+
+    /// How many functions an application owns — `DeleteApplication`'s guard
+    /// (spec §4.2: `APPLICATION_HAS_FUNCTIONS`).
+    public long countByApplication(String applicationId) {
+        Objects.requireNonNull(applicationId, "applicationId");
+        return dsl.fetchCount(T, T.APPLICATION_ID.eq(applicationId));
     }
 
     private Optional<Function> findOne(Condition where) {

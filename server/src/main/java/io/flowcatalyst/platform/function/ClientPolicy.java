@@ -38,11 +38,12 @@ public record ClientPolicy(
         Objects.requireNonNull(updatedAt, "updatedAt");
     }
 
-    /// A client's id, or `null` for the platform — **not** the DB primary
-    /// key (that is `ClientPolicyRepository`'s `PLATFORM` spelling alone).
+    /// The stored/audit entity id — `owner.key()` (spec `function-api.md`
+    /// §4.3): never `null`, because the audit row wants an entity id even
+    /// for the platform's own policy.
     @Override
     public String id() {
-        return owner.clientIdOrNull();
+        return owner.key();
     }
 
     /// One allowed keyless signer, scoped to the runtimes it may publish for

@@ -4,7 +4,11 @@
 # platform:router (role + its one permission row) is Java-first (`docs/spec/router-config-auth.md`
 # R3′) and matches Go only once Go mirrors it — see SeederTest#rolesMatchGo. The 21 `perm` rows
 # added to iam-admin/iam-readonly/admin/admin-readonly/viewer (`docs/spec/reach-only-routes.md`
-# §2: IdP, email-domain-mapping, config, CORS-origin) are Java-first the same way.
+# §2: IdP, email-domain-mapping, config, CORS-origin) are Java-first the same way. platform:
+# function-publisher, platform:function-host (roles + their perm rows) and the five function
+# permissions added to platform:messaging-admin are Java-first the same way again
+# (`docs/spec/function-api.md` §2, work package B slice B1) — there is no Go for the function
+# platform at all.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -20,6 +24,8 @@ role	platform:portal-administrator	Portal Administrator	Manage the client's port
 role	platform:developer	Developer	Developer portal: API documentation, accessible event types, and a self-service API credential for local testing	CODE	platform	false
 role	platform:application-service	Application Service Account	Permissions for application service accounts (scoped to own application)	CODE	platform	false
 role	platform:router	Router	Fetches the dispatch router configuration	CODE	platform	false
+role	platform:function-publisher	Function Publisher	Publishes and promotes function versions	CODE	platform	false
+role	platform:function-host	Function Host	Fetches desired state and reports heartbeats for the function host	CODE	platform	false
 perm	platform:super-admin	platform:*:*:*
 perm	platform:admin	platform:admin:client:view
 perm	platform:admin	platform:admin:client:create
@@ -143,6 +149,11 @@ perm	platform:messaging-admin	platform:messaging:process:update
 perm	platform:messaging-admin	platform:messaging:process:delete
 perm	platform:messaging-admin	platform:messaging:process:archive
 perm	platform:messaging-admin	platform:messaging:process:sync
+perm	platform:messaging-admin	platform:function:function:view
+perm	platform:messaging-admin	platform:function:function:manage
+perm	platform:messaging-admin	platform:function:version:publish
+perm	platform:messaging-admin	platform:function:alias:promote
+perm	platform:messaging-admin	platform:function:policy:manage
 perm	platform:viewer	platform:iam:user:view
 perm	platform:viewer	platform:iam:role:view
 perm	platform:viewer	platform:iam:client-access:view
@@ -193,6 +204,10 @@ perm	platform:application-service	platform:application-service:scheduled-job:syn
 perm	platform:application-service	platform:application-service:process:view
 perm	platform:application-service	platform:application-service:process:sync
 perm	platform:router	platform:messaging:dispatch-pool:view
+perm	platform:function-publisher	platform:function:function:view
+perm	platform:function-publisher	platform:function:version:publish
+perm	platform:function-publisher	platform:function:alias:promote
+perm	platform:function-host	platform:function:host:control
 eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:activated	User Activated	CURRENT	UI	false	platform	iam	user

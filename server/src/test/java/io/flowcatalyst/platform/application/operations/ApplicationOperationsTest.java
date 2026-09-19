@@ -8,6 +8,12 @@ import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.application.ClientConfig;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.application.operations.ApplicationEvents.ApplicationCreated;
+import io.flowcatalyst.platform.function.DnsLabel;
+import io.flowcatalyst.platform.function.Function;
+import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.FunctionOwner;
+import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
@@ -73,6 +79,7 @@ class ApplicationOperationsTest {
     private static final DataSource DS = TestPg.dataSource();
     private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
     private static final ApplicationRepository repo = new ApplicationRepository(DS);
+    private static final FunctionRepository functions = new FunctionRepository(DS);
     private static final ClientConfigRepository configs = new ClientConfigRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
     private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
@@ -283,7 +290,7 @@ class ApplicationOperationsTest {
     void deleteRemovesTheRow() {
         var seeded = created("appdel", "Doomed");
 
-        var ev = runAsAnchor(DeleteApplication.of(repo), new DeleteCommand(seeded.applicationId()));
+        var ev = runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId()));
         assertThat(ev.applicationId()).isEqualTo(seeded.applicationId());
         assertThat(ev.code()).isEqualTo(code("appdel"));
 
@@ -292,10 +299,39 @@ class ApplicationOperationsTest {
         assertThat(auditsFor(seeded.applicationId(), "DeleteCommand")).hasSize(1);
     }
 
+    /// spec `function-api.md` §4.2, §8 P4: `DeleteApplication` refuses while
+    /// the application owns a function, and succeeds once it is gone.
+    /// Mutant this pins: skip the guard entirely (or check the wrong
+    /// application id) — dying requires actually asserting the row survives
+    /// the refused attempt, not just that an error was thrown.
+    @Test
+    void deleteRefusesWhileFunctionsExistThenSucceedsAfterTheyAreDeleted() {
+        var seeded = created("appfn", "HasFunctions");
+        FunctionAddress address = FunctionAddress.of(
+                new DnsLabel("appfn-" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
+        Function f = Function.create(seeded.applicationId(), address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+
+        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId())),
+                UseCaseError.Conflict.class, "APPLICATION_HAS_FUNCTIONS");
+        assertThat(repo.findById(seeded.applicationId())).as("refused delete leaves the application row in place").isPresent();
+
+        uow.inTransaction(tx -> {
+            functions.delete(f, tx.dbTx());
+            return null;
+        });
+        var ev = runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId()));
+        assertThat(ev.applicationId()).isEqualTo(seeded.applicationId());
+        assertThat(repo.findById(seeded.applicationId())).as("succeeds once the function is gone").isEmpty();
+    }
+
     @Test
     void deleteRejectsMissingIdOrRow() {
-        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo), new DeleteCommand("")), UseCaseError.Validation.class, "ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo), new DeleteCommand("app_doesnotexist1")),
+        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand("")), UseCaseError.Validation.class, "ID_REQUIRED");
+        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand("app_doesnotexist1")),
                 UseCaseError.NotFound.class, "Application_NOT_FOUND");
     }
 

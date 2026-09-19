@@ -18,7 +18,11 @@ import java.util.stream.Stream;
 /// `APP_SVC_` for the `application-service` context (whose resources collide
 /// with the admin/iam/messaging ones) — so a constant can be found from a
 /// wire code without a lookup. [#SUPER_ADMIN] is the one exception: the
-/// all-wildcard `platform:*:*:*`.
+/// all-wildcard `platform:*:*:*`. The six `function` context permissions
+/// (spec `function-api.md` §2) are the other: every one of them is named
+/// `FUNCTION_<ACTION>` regardless of its resource (`version`, `alias`,
+/// `policy`, `host`) — `PermissionTest`'s `FUNCTION_CONTEXT_NAMES` is the
+/// explicit table, not a formula.
 ///
 /// Matching ([#matches], [#grants]): a *held* permission may contain `*`
 /// segments (a role granting `platform:messaging:*:*`, or the super-admin
@@ -255,6 +259,22 @@ public enum Permission {
     // application-service / process
     APP_SVC_PROCESS_VIEW("platform:application-service:process:view"),
     APP_SVC_PROCESS_SYNC("platform:application-service:process:sync"),
+
+    // function / function (spec function-api.md §2)
+    FUNCTION_VIEW("platform:function:function:view"),
+    FUNCTION_MANAGE("platform:function:function:manage"),
+
+    // function / version
+    FUNCTION_PUBLISH("platform:function:version:publish"),
+
+    // function / alias
+    FUNCTION_PROMOTE("platform:function:alias:promote"),
+
+    // function / policy
+    FUNCTION_POLICY_MANAGE("platform:function:policy:manage"),
+
+    // function / host
+    FUNCTION_HOST_CONTROL("platform:function:host:control"),
 
     // super-admin wildcard
     SUPER_ADMIN("platform:*:*:*");

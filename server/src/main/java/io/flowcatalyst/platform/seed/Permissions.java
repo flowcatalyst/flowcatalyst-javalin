@@ -221,6 +221,14 @@ public final class Permissions {
             "platform:application-service:process:view",
             "platform:application-service:process:sync");
 
+    // ── Function context — platform/client-owned functions (spec function-api.md §2) ──
+    public static final String FUNCTION_VIEW = "platform:function:function:view";
+    public static final String FUNCTION_MANAGE = "platform:function:function:manage";
+    public static final String FUNCTION_PUBLISH = "platform:function:version:publish";
+    public static final String FUNCTION_PROMOTE = "platform:function:alias:promote";
+    public static final String FUNCTION_POLICY_MANAGE = "platform:function:policy:manage";
+    public static final String FUNCTION_HOST_CONTROL = "platform:function:host:control";
+
     /// Wildcard.
     public static final String ADMIN_ALL = "platform:*:*:*";
 }

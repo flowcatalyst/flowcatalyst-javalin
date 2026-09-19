@@ -76,13 +76,14 @@ class PlatformCatalogueTest {
     @Test
     void roleCatalogueShape() {
         List<RoleDefinition> roles = PlatformRoles.all();
-        assertThat(roles).hasSize(15);
+        assertThat(roles).hasSize(17);
         assertThat(roles).extracting(RoleDefinition::name).containsExactly(
                 "platform:super-admin", "platform:admin", "platform:admin-readonly",
                 "platform:iam-admin", "platform:iam-readonly", "platform:client-admin",
                 "platform:auth-admin", "platform:auth-readonly", "platform:ai-agent-readonly",
                 "platform:messaging-admin", "platform:viewer", "platform:portal-administrator",
-                "platform:developer", "platform:application-service", "platform:router");
+                "platform:developer", "platform:application-service", "platform:router",
+                "platform:function-publisher", "platform:function-host");
         int total = 0;
         for (RoleDefinition r : roles) {
             assertThat(r.source()).isEqualTo("CODE");
@@ -92,7 +93,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(173);
+        assertThat(total).isEqualTo(182);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission
@@ -101,5 +102,21 @@ class PlatformCatalogueTest {
         // router-config document.
         assertThat(roles.get(14).name()).isEqualTo("platform:router");
         assertThat(roles.get(14).permissions()).containsExactly(Permissions.ADMIN_DISPATCH_POOL_READ);
+
+        // function-api.md §2: messaging-admin gains the five (view/manage/publish/
+        // promote/policy-manage), never host-control.
+        RoleDefinition messagingAdmin = roles.get(9);
+        assertThat(messagingAdmin.name()).isEqualTo("platform:messaging-admin");
+        assertThat(messagingAdmin.permissions()).contains(
+                Permissions.FUNCTION_VIEW, Permissions.FUNCTION_MANAGE, Permissions.FUNCTION_PUBLISH,
+                Permissions.FUNCTION_PROMOTE, Permissions.FUNCTION_POLICY_MANAGE)
+                .doesNotContain(Permissions.FUNCTION_HOST_CONTROL);
+
+        // Appended, not inserted: every pre-existing role above kept its index.
+        assertThat(roles.get(15).name()).isEqualTo("platform:function-publisher");
+        assertThat(roles.get(15).permissions()).containsExactly(
+                Permissions.FUNCTION_VIEW, Permissions.FUNCTION_PUBLISH, Permissions.FUNCTION_PROMOTE);
+        assertThat(roles.get(16).name()).isEqualTo("platform:function-host");
+        assertThat(roles.get(16).permissions()).containsExactly(Permissions.FUNCTION_HOST_CONTROL);
     }
 }

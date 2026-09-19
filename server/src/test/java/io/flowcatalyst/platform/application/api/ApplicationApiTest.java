@@ -75,7 +75,7 @@ class ApplicationApiTest {
             new ClientConfigRepository(TestPg.dataSource()), new RoleRepository(TestPg.dataSource()),
             new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)),
             new ServiceAccountRepository(TestPg.dataSource(), ENCRYPTION), new PrincipalRepository(TestPg.dataSource()),
-            OAUTH_CLIENTS, ENCRYPTION);
+            OAUTH_CLIENTS, ENCRYPTION, new io.flowcatalyst.platform.function.FunctionRepository(TestPg.dataSource()));
     private static TestHttp http;
 
     @BeforeAll

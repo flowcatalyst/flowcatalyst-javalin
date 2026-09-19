@@ -25,6 +25,7 @@ import io.flowcatalyst.platform.application.operations.ProvisionServiceAccount;
 import io.flowcatalyst.platform.application.operations.ProvisionServiceAccountCommand;
 import io.flowcatalyst.platform.application.operations.UpdateApplication;
 import io.flowcatalyst.platform.application.operations.UpdateCommand;
+import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClient;
 import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents.OAuthClientCreated;
@@ -85,7 +86,7 @@ public final class ApplicationApi {
     /// q3).
     public record State(ApplicationRepository repo, ClientConfigRepository configs, RoleRepository roles, UnitOfWork uow,
                         ServiceAccountRepository serviceAccounts, PrincipalRepository principals,
-                        OAuthClientRepository oauthClients, Optional<Encryption> encryption) {
+                        OAuthClientRepository oauthClients, Optional<Encryption> encryption, FunctionRepository functions) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(configs, "configs");
@@ -95,6 +96,7 @@ public final class ApplicationApi {
             Objects.requireNonNull(principals, "principals");
             Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(encryption, "encryption");
+            Objects.requireNonNull(functions, "functions");
         }
     }
 
@@ -175,7 +177,7 @@ public final class ApplicationApi {
 
     private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), APPLICATION_DELETE);
-        DeleteApplication.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        DeleteApplication.of(s.repo(), s.functions()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
