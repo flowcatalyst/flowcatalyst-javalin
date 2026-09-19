@@ -14,11 +14,12 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// `FunctionRouteRepository` against the embedded Postgres (spec
-/// `function-registry.md` §6.6, §8 M13).
+/// `function-invocation.md` §3, amending `function-registry.md` §6.6, §8 M13:
+/// every row is now public, so the reshaped table keeps only the
+/// cross-function uniqueness half of that behaviour).
 class FunctionRouteRepositoryTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -57,51 +58,50 @@ class FunctionRouteRepositoryTest {
     void replaceForFunctionListAndFindPublicRoundTrip() {
         Function f = createFunction();
         Hostname host = Hostname.parse("r-" + RUN + "-" + fresh() + ".acme.com");
-        RoutePattern pattern = RoutePattern.parse("/invoices/{id}");
-        FunctionRoute publicRoute = FunctionRoute.of(f.id(), host, HttpMethod.GET, pattern, Instant.now());
-        FunctionRoute privateRoute = FunctionRoute.of(f.id(), null, HttpMethod.POST,
-                RoutePattern.parse("/invoices"), Instant.now());
-        replace(f.id(), List.of(publicRoute, privateRoute));
+        RoutePattern prefix = RoutePattern.parse("/invoices");
+        FunctionRoute route = FunctionRoute.of(f.id(), host, prefix, Instant.now());
+        Hostname host2 = Hostname.parse("r2-" + RUN + "-" + fresh() + ".acme.com");
+        FunctionRoute route2 = FunctionRoute.of(f.id(), host2, RoutePattern.parse("/"), Instant.now());
+        replace(f.id(), List.of(route, route2));
 
         assertThat(REPO.listByFunction(f.id())).hasSize(2);
         assertThat(REPO.listByHostname(host)).extracting(FunctionRoute::functionId).containsExactly(f.id());
-        assertThat(REPO.findPublic(host, HttpMethod.GET, pattern)).map(FunctionRoute::functionId).contains(f.id());
+        assertThat(REPO.findPublic(host, prefix)).map(FunctionRoute::functionId).contains(f.id());
         assertThat(REPO.listByFunctions(List.of(f.id()))).containsOnlyKeys(f.id());
         assertThat(REPO.listByFunctions(List.of(f.id())).get(f.id())).hasSize(2);
 
         // wholesale replace: only the new list survives
-        FunctionRoute onlyOne = FunctionRoute.of(f.id(), null, HttpMethod.DELETE, RoutePattern.parse("/invoices/{id}"), Instant.now());
+        FunctionRoute onlyOne = FunctionRoute.of(f.id(), host, RoutePattern.parse("/only-one"), Instant.now());
         replace(f.id(), List.of(onlyOne));
         assertThat(REPO.listByFunction(f.id())).hasSize(1);
-        assertThat(REPO.listByFunction(f.id()).get(0).method()).isEqualTo(HttpMethod.DELETE);
+        assertThat(REPO.listByFunction(f.id()).get(0).pathPrefix()).isEqualTo(RoutePattern.parse("/only-one"));
     }
 
-    // ── §8 M13: public uniqueness is cross-function, private is per-function ──
+    // ── §8 M13 (amended): public uniqueness is cross-function ────────────────
 
     @Test
     void aSecondFunctionCannotClaimTheSamePublicRoute() {
         Function f1 = createFunction();
         Function f2 = createFunction();
         Hostname host = Hostname.parse("shared-" + RUN + "-" + fresh() + ".acme.com");
-        RoutePattern pattern = RoutePattern.parse("/shared-path");
+        RoutePattern prefix = RoutePattern.parse("/shared-path");
 
-        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, HttpMethod.GET, pattern, Instant.now())));
+        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, prefix, Instant.now())));
 
-        assertThatThrownBy(() -> replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, HttpMethod.GET, pattern, Instant.now()))))
-                .as("the same public (hostname, method, path) on a second function is a unique violation")
+        assertThatThrownBy(() -> replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, prefix, Instant.now()))))
+                .as("the same public (hostname, pathPrefix) on a second function is a unique violation")
                 .isInstanceOf(RuntimeException.class);
     }
 
     @Test
-    void twoFunctionsMayEachRegisterTheSamePrivateRoute() {
+    void twoFunctionsMayUseDifferentPrefixesOnTheSameHostname() {
         Function f1 = createFunction();
         Function f2 = createFunction();
-        RoutePattern pattern = RoutePattern.parse("/shared-private-" + fresh());
+        Hostname host = Hostname.parse("multi-" + RUN + "-" + fresh() + ".acme.com");
 
-        assertThatCode(() -> replace(f1.id(), List.of(FunctionRoute.of(f1.id(), null, HttpMethod.GET, pattern, Instant.now()))))
-                .doesNotThrowAnyException();
-        assertThatCode(() -> replace(f2.id(), List.of(FunctionRoute.of(f2.id(), null, HttpMethod.GET, pattern, Instant.now()))))
-                .as("private routes are scoped per function, not global")
-                .doesNotThrowAnyException();
+        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, RoutePattern.parse("/a"), Instant.now())));
+        replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, RoutePattern.parse("/b"), Instant.now())));
+
+        assertThat(REPO.listByHostname(host)).hasSize(2);
     }
 }

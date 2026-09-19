@@ -43,7 +43,8 @@ class FunctionRepositoryTest {
             {
               "runtime": "jvm",
               "entrypoint": "com.acme.billing.CreateInvoice",
-              "triggers": [ { "type": "event", "eventType": "billing:invoices:invoice:created" } ]
+              "endpoints": [ { "path": "/events/invoice-created", "auth": "webhook" } ],
+              "subscriptions": [ { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created" } ]
             }
             """;
 
@@ -273,15 +274,17 @@ class FunctionRepositoryTest {
         persist(f1.promote(Function.LIVE, v1, "prn_1", Instant.now()).function());
         persist(f2.promote(Function.LIVE, v2, "prn_1", Instant.now()).function());
 
+        Hostname routeHost1 = Hostname.parse("m18a-" + fresh() + ".acme.com");
+        Hostname routeHost2 = Hostname.parse("m18b-" + fresh() + ".acme.com");
         UOW.inTransaction(tx -> {
             ROUTE_REPO.replaceForFunction(f1.id(), List.of(
-                    FunctionRoute.of(f1.id(), null, HttpMethod.GET, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    FunctionRoute.of(f1.id(), routeHost1, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
                     tx.dbTx());
             return null;
         });
         UOW.inTransaction(tx -> {
             ROUTE_REPO.replaceForFunction(f2.id(), List.of(
-                    FunctionRoute.of(f2.id(), null, HttpMethod.GET, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    FunctionRoute.of(f2.id(), routeHost2, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
                     tx.dbTx());
             return null;
         });

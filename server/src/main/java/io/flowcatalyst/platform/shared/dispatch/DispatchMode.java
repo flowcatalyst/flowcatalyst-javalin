@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.shared.dispatch;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -97,6 +98,26 @@ public enum DispatchMode {
     @JsonValue
     public String wireValue() {
         return name();
+    }
+
+    /// The wire-**strict** reader (spec `function-invocation.md` §3): unlike
+    /// [#parse], never defaults — an absent or unrecognised value throws.
+    /// A manifest's `subscriptions[].mode` is a value someone wrote into a
+    /// version's frozen, validated document, not the router's lenient
+    /// fallback path; the caller (`Manifest`) applies the manifest's own
+    /// default (`IMMEDIATE`, spec §3 — deliberately not [#DEFAULT]) only
+    /// when the field is *absent*, and lets this reject anything present
+    /// but wrong.
+    ///
+    /// @throws UseCaseException validation `DISPATCH_MODE_INVALID`
+    public static DispatchMode parseStrict(String raw) {
+        return switch (raw) {
+            case "IMMEDIATE" -> IMMEDIATE;
+            case "NEXT_ON_ERROR" -> NEXT_ON_ERROR;
+            case "BLOCK_ON_ERROR" -> BLOCK_ON_ERROR;
+            case null, default -> throw UseCaseException.validation("DISPATCH_MODE_INVALID",
+                    "mode must be IMMEDIATE, NEXT_ON_ERROR or BLOCK_ON_ERROR");
+        };
     }
 
     /// Whether a message/job in this mode must be sequenced within its

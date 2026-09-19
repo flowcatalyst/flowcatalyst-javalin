@@ -546,6 +546,44 @@ class ScheduledJobOperationsTest {
         assertThat(jobYAfter.version()).as("Y's row must not even be touched, not just left ACTIVE").isEqualTo(1);
     }
 
+    /// V4 (`function-invocation.md` §4.2, §10): a job id in `protectedIds`
+    /// (a function's own scheduled job) survives an `archiveUnlisted` sweep
+    /// and is never reconciled/updated even when a batch happens to declare
+    /// its code again — while an ordinary unlisted job in the same call is
+    /// still archived, so this is not "archiveUnlisted stopped archiving
+    /// anything".
+    @Test
+    void archiveUnlistedNeverTouchesAProtectedJob() {
+        String clientId = "cli_" + RUN + "_fnp";
+        String appId = "app_" + RUN + "_fnp";
+        String appCode = "sjfnprotect" + RUN;
+        var seeded = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand(appCode, appId, clientId, List.of(entry("sjfnprotect-owned", "Function Owned")), false));
+        String fnJobId = seeded.created().getFirst();
+        var protectedIds = java.util.Set.of(fnJobId);
+
+        // The protected job's code happens to be declared again — must not be updated.
+        var withMatchingCode = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand(appCode, appId, clientId,
+                        List.of(entry("sjfnprotect-owned", "Renamed By Sync")), false, protectedIds));
+        assertThat(withMatchingCode.updated()).as("the protected job is skipped, not reconciled").isEmpty();
+        assertThat(reload(fnJobId).name()).isEqualTo("Function Owned");
+
+        // archiveUnlisted, the protected job absent from this batch, plus an
+        // ordinary job in the same call to prove the sweep still runs.
+        var ordinaryCreate = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand(appCode, appId, clientId,
+                        List.of(entry("sjfnprotect-ordinary", "Ordinary")), false));
+        String ordinaryId = ordinaryCreate.created().getFirst();
+        var swept = runAsAnchor(SyncScheduledJobs.of(repo),
+                new SyncScheduledJobsCommand(appCode, appId, clientId, List.of(), true, protectedIds));
+        assertThat(swept.archived()).as("only the ordinary job is archived; the protected job is skipped and not counted")
+                .containsExactly(ordinaryId);
+        assertThat(reload(fnJobId).status()).as("archiveUnlisted never archives a protected job")
+                .isEqualTo(ScheduledJobStatus.ACTIVE);
+        assertThat(reload(ordinaryId).status()).isEqualTo(ScheduledJobStatus.ARCHIVED);
+    }
+
     /// X-02(d): the platform-scope refusal is anchor-tier only — an anchor
     /// caller may still perform a clientId-less sweep.
     @Test

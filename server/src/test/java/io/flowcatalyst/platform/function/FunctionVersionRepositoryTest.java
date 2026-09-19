@@ -40,7 +40,8 @@ class FunctionVersionRepositoryTest {
             {
               "runtime": "jvm",
               "entrypoint": "com.acme.billing.CreateInvoice",
-              "triggers": [ { "type": "event", "eventType": "billing:invoices:invoice:created" } ]
+              "endpoints": [ { "path": "/events/invoice-created", "auth": "webhook" } ],
+              "subscriptions": [ { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created" } ]
             }
             """;
 

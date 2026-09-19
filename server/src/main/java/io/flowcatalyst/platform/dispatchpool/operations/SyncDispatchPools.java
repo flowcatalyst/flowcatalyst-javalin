@@ -28,6 +28,12 @@ import java.util.stream.Collectors;
 /// from the batch is **archived** (never hard-deleted). One per-row event
 /// per row touched plus one [DispatchPoolsSynced] rollup.
 ///
+/// A pool named in `cmd.protectedIds()` (a function's own pool,
+/// `function-invocation.md` §4.2) is skipped entirely: not updated even if
+/// this batch declares its code, and not archived by `removeUnlisted` —
+/// neither counted. This operation never learns *why* a pool is protected;
+/// it only ever sees the id set the sdksync handler hands it.
+///
 /// Authorization is resource-level against the application the sync is
 /// scoped to ([Access#checkApplicationAccess]); the coarse sync permission
 /// and the `appCode → id` resolution belong to the sdksync handler.
@@ -57,6 +63,7 @@ public final class SyncDispatchPools {
                     for (SyncDispatchPoolInput in : cmd.pools()) {
                         DispatchPool existing = existingByCode.get(in.code());
                         if (existing != null) {
+                            if (cmd.protectedIds().contains(existing.id())) continue; // a function's own pool — untouched
                             DispatchPool p = applySettings(existing, in);
                             saves.add(new SyncSave<>(p, DispatchPoolUpdated.of(ec, p)));
                             updated++;
@@ -69,6 +76,7 @@ public final class SyncDispatchPools {
                     if (cmd.removeUnlisted()) {
                         for (DispatchPool existing : existingByCode.values()) {
                             if (incomingCodes.contains(existing.code()) || existing.isArchived()) continue;
+                            if (cmd.protectedIds().contains(existing.id())) continue; // a function's own pool — never archived by an SDK sync
                             DispatchPool p = existing.archive();
                             saves.add(new SyncSave<>(p, DispatchPoolArchived.of(ec, p)));
                             archived++;

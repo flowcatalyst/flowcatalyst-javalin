@@ -93,9 +93,9 @@ class GoAdoptionTest {
                 rs.next();
                 assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
             }
-            // V11's seven fn_ tables are genuinely new here too (Java-only,
-            // spec `function-registry.md` §0/§2: there is no Go for the
-            // function service at all).
+            // V11's eight fn_ tables are genuinely new here too (Java-only,
+            // spec `function-registry.md` §0/§2 and `function-invocation.md`
+            // §3/§4: there is no Go for the function service at all).
             try (ResultSet rs = st.executeQuery("""
                     SELECT table_name FROM information_schema.tables
                     WHERE table_schema = 'public' AND table_name LIKE 'fn\\_%' ESCAPE '\\'
@@ -106,7 +106,7 @@ class GoAdoptionTest {
                 }
                 assertThat(fnTables).as("V11 creates each fn_ table exactly once").containsExactly(
                         "fn_aliases", "fn_client_policies", "fn_domains", "fn_functions", "fn_hosts", "fn_routes",
-                        "fn_versions");
+                        "fn_trigger_objects", "fn_versions");
             }
             // V2..V7, V9 and V10 are no-ops on a Go-HEAD database: the schema they
             // add is already there exactly once, not duplicated or altered.
@@ -171,22 +171,41 @@ class GoAdoptionTest {
             }
         }
         // V2..V7, V9 and V10 still change nothing (flyway_schema_history is
-        // ignored by the fingerprint); V8 (`mail_outbox`) and V11 (the seven
+        // ignored by the fingerprint); V8 (`mail_outbox`) and V11 (the eight
         // fn_ tables) are the genuine additions — assert the only lines the
-        // fingerprint gained are theirs.
+        // fingerprint gained are theirs, plus V11's one named, exact widening
+        // of the Go-shared chk_msg_subscriptions_source constraint
+        // (function-invocation.md §4.1) — asserted to the exact definition,
+        // not blanket-ignored, and excluded from the "nothing else changed" check.
         java.util.Set<String> javaOnlyTables = java.util.Set.of(
                 "mail_outbox", "fn_functions", "fn_versions", "fn_aliases", "fn_hosts", "fn_client_policies",
-                "fn_domains", "fn_routes");
+                "fn_domains", "fn_routes", "fn_trigger_objects");
         List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
         List<String> javaOnlyTableLines = afterLines.stream()
                 .filter(l -> l.split("\t", -1).length > 1 && javaOnlyTables.contains(l.split("\t", -1)[1]))
                 .toList();
+
+        List<String> afterDivergent = afterLines.stream()
+                .filter(SchemaFingerprintTest::isDivergentConstraintLine).toList();
+        assertThat(afterDivergent).as("exactly one divergent-constraint line").hasSize(1);
+        assertThat(afterDivergent.getFirst())
+                .as("V11 widens chk_msg_subscriptions_source to exactly the Java definition, nothing else")
+                .endsWith(SchemaFingerprintTest.DIVERGENT_CONSTRAINT_JAVA_DEF);
+        List<String> beforeDivergent = before.lines()
+                .filter(SchemaFingerprintTest::isDivergentConstraintLine).toList();
+        assertThat(beforeDivergent).as("Go's own (un-widened) definition, present before V11 runs").hasSize(1);
+        assertThat(beforeDivergent.getFirst()).isNotEqualTo(afterDivergent.getFirst());
+
         List<String> afterWithoutNewLines = afterLines.stream()
                 .filter(l -> !javaOnlyTableLines.contains(l))
+                .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
+                .toList();
+        List<String> beforeWithoutDivergent = before.lines()
+                .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9 and V10 change nothing beyond V8's/V11's new Java-only tables")
-                .containsExactlyInAnyOrderElementsOf(before.lines().toList());
+                .as("V2..V7, V9 and V10 change nothing beyond V8's/V11's new Java-only tables and the one named divergent constraint")
+                .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
         assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V11 adds the fn_ tables").isNotEmpty();
 
         // And a second run is still a no-op.

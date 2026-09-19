@@ -233,7 +233,7 @@ public class MsgSubscriptions extends TableImpl<MsgSubscriptionsRecord> {
     @Override
     public List<Check<MsgSubscriptionsRecord>> getChecks() {
         return Arrays.asList(
-            Internal.createCheck(this, DSL.name("chk_msg_subscriptions_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[])))", true),
+            Internal.createCheck(this, DSL.name("chk_msg_subscriptions_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying, 'FUNCTION'::character varying])::text[])))", true),
             Internal.createCheck(this, DSL.name("chk_msg_subscriptions_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))", true)
         );
     }

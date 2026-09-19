@@ -7,6 +7,15 @@ no operations, no events, no host. Those are B–F and get their own specs.
 There is no Go for this. The function service is Java-first; nothing here is checked against
 `../flowcatalyst-go`, and the tables are Java-only (§2.1).
 
+> **Amended by `function-invocation.md`.** §2's `fn_routes` shape, all of §4
+> (`Manifest`'s `triggers`), and §6.6 (`FunctionRoute`) are superseded by that
+> spec's §3-§5: a function is always invoked over HTTP, the manifest carries
+> `endpoints`/`subscriptions`/`schedules`/`public` instead of `triggers`, and
+> `fn_routes` is public-only (`hostname` NOT NULL, no `method`). This document
+> is left as the historical record of package A's original design;
+> `function-invocation.md` is the contract the code implements. `fn_trigger_objects`
+> (invocation spec §4) is a genuinely new table, not a reshape of anything here.
+
 ## 0. Where this departs from the workplan, and why
 
 | Workplan says | This spec says | Why |
@@ -89,18 +98,26 @@ CASCADE` · `alias VARCHAR(63)` LABEL · `version_id` not null references `fn_ve
 `hostname = lower(hostname)` · `verification_token VARCHAR(64)` not null · `verified_at` nullable ·
 `created_at`. Unique `(hostname)`. Index `(client_id)`.
 
-**`fn_routes`** — `id` pk · `function_id` not null references `fn_functions(id) ON DELETE CASCADE` ·
+**`fn_routes`** — superseded by `function-invocation.md` §3, §6.6: `hostname` is now NOT NULL (every
+row is public — a private call needs no route row at all) and there is no `method` column;
+`path_pattern` is renamed `path_prefix`, unique on `(hostname, path_prefix)` alone. The shape below
+is the original design, kept for history only:
+~~`id` pk · `function_id` not null references `fn_functions(id) ON DELETE CASCADE` ·
 `hostname VARCHAR(253)` **null** (null = private-only route, design §4a) · `method VARCHAR(10)` not
 null check in (`GET`,`HEAD`,`POST`,`PUT`,`PATCH`,`DELETE`,`OPTIONS`) · `path_pattern VARCHAR(1024)`
 not null · `created_at`.
 Unique `(hostname, method, path_pattern)` — Postgres treats nulls as distinct, so this constrains
 public routes only, across all functions, which is the conflict the design wants rejected. Private
 routes are scoped to their function: unique index `(function_id, method, path_pattern) WHERE
-hostname IS NULL`. Index `(function_id)`.
+hostname IS NULL`. Index `(function_id)`.~~
 
 ### 2.1 Java-only tables
 
-`SchemaFingerprintTest.JAVA_ONLY_TABLES` gains the seven tables, each naming this spec. Its
+`function-invocation.md` §4 adds an eighth Java-only table, `fn_trigger_objects` (not a reshape of
+anything here — a genuinely new table), and widens one Go-shared constraint
+(`chk_msg_subscriptions_source`) on a table that is NOT Java-only; see that spec §4.1.
+
+`SchemaFingerprintTest.JAVA_ONLY_TABLES` gains the seven tables below, each naming this spec. Its
 `isJavaOnly` matcher is substring-based and was written for one table; with the naming rule above it
 is enough that a line's table column equals a Java-only table **or** its object name starts with
 `<table>_` or `idx_<table>_`. Tighten it to that — and keep `mail_outbox` passing. `GoAdoptionTest`
@@ -175,7 +192,12 @@ The repository turns a pattern into column equalities (§6.1), never a `LIKE`.
 
 ## 4. Manifest
 
-### 4.1 Shape (the wire and stored JSON)
+> **Superseded by `function-invocation.md` §3.** `Trigger` (`event`/`schedule`/`http`) is gone;
+> the manifest carries `endpoints` (the HTTP surface + auth), `subscriptions`, `schedules` and
+> `public` instead. §4.2 (the two readers), §4.4-§4.6 (enums, defaults, limit resolution) still
+> apply to the amended shape; §4.1 and §4.3's `Trigger`/`HttpRoute` rows below are historical.
+
+### 4.1 Shape (the wire and stored JSON) — superseded, see above
 
 ```json
 {
@@ -480,16 +502,20 @@ owned by that owner (`Platform` matches only `Platform`). `toString` masks the t
 Repository: `findById`, `findByHostname(Hostname)`, `listByOwner(FunctionOwner)`, `persist` (SET:
 `verified_at` only), `delete`.
 
-### 6.6 `FunctionRoute`
+### 6.6 `FunctionRoute` — superseded by `function-invocation.md` §3, §6.6
 
-`FunctionRoute(id, functionId, Hostname hostname /* null = private */, HttpMethod method,
-RoutePattern pattern, createdAt)`. Not an aggregate with transitions — a materialisation.
+`FunctionRoute(id, functionId, Hostname hostname, RoutePattern pathPrefix, createdAt)` — `hostname`
+is never `null` (every row is public; a private call needs no route row, invocation spec §2). Not an
+aggregate with transitions — a materialisation.
 
 `FunctionRouteRepository`: `listByFunction`, `listByHostname`, `listByFunctions(Collection)` (the
-desired-state batch read), `Optional<FunctionRoute> findPublic(Hostname, HttpMethod, RoutePattern)`
-(the conflict lookup B's RouteSync names the other function from), and
+desired-state batch read), `Optional<FunctionRoute> findPublic(Hostname, RoutePattern)` (the conflict
+lookup package F's RouteSync names the other function from), and
 `replaceForFunction(String functionId, List<FunctionRoute> routes, DbTx tx)` — delete-then-insert
 in the caller's transaction.
+
+The original shape (`HttpMethod method`, `RoutePattern pattern`, nullable `hostname`) is historical;
+see the superseding spec.
 
 ## 7. Out of scope for A
 

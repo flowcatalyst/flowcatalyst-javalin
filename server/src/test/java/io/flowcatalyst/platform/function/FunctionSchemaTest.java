@@ -76,10 +76,9 @@ class FunctionSchemaTest {
                 freshId(), functionId, version, digest, state, freshId(), readyAt, retiredAt);
     }
 
-    private void insertRoute(String functionId, String hostname, String method, String pathPattern)
-            throws SQLException {
-        exec("INSERT INTO fn_routes (id, function_id, hostname, method, path_pattern) VALUES (?, ?, ?, ?, ?)",
-                freshId(), functionId, hostname, method, pathPattern);
+    private void insertRoute(String functionId, String hostname, String pathPrefix) throws SQLException {
+        exec("INSERT INTO fn_routes (id, function_id, hostname, path_prefix) VALUES (?, ?, ?, ?)",
+                freshId(), functionId, hostname, pathPrefix);
     }
 
     private void insertClientPolicy(String clientId, Integer maxDurationMs) throws SQLException {
@@ -152,31 +151,30 @@ class FunctionSchemaTest {
                 .doesNotThrowAnyException();
     }
 
-    // -- fn_routes uniqueness (§8 M13) ---------------------------------------
+    // -- fn_routes uniqueness (spec `function-invocation.md` §3, amending §8 M13) --
 
     @Test
     void publicRouteUniquenessSpansAllFunctionsAndRejectsTheSecondInsert() throws SQLException {
         String f1 = createFunction();
         String f2 = createFunction();
-        insertRoute(f1, "api.example.com", "GET", "/shared-public-path");
-        assertThatThrownBy(() -> insertRoute(f2, "api.example.com", "GET", "/shared-public-path"))
-                .hasMessageContaining("fn_routes_hostname_method_path_pattern_key");
+        insertRoute(f1, "api.example.com", "/shared-public-path");
+        assertThatThrownBy(() -> insertRoute(f2, "api.example.com", "/shared-public-path"))
+                .hasMessageContaining("fn_routes_hostname_path_prefix_key");
     }
 
     @Test
-    void privateRoutesWithEqualMethodAndPatternOnDifferentFunctionsBothInsert() throws SQLException {
+    void twoFunctionsMayUseDifferentPrefixesOnTheSameHostname() throws SQLException {
         String f1 = createFunction();
         String f2 = createFunction();
-        assertThatCode(() -> insertRoute(f1, null, "GET", "/shared-private-path")).doesNotThrowAnyException();
-        assertThatCode(() -> insertRoute(f2, null, "GET", "/shared-private-path")).doesNotThrowAnyException();
+        assertThatCode(() -> insertRoute(f1, "shared.example.com", "/a")).doesNotThrowAnyException();
+        assertThatCode(() -> insertRoute(f2, "shared.example.com", "/b")).doesNotThrowAnyException();
     }
 
     @Test
-    void sameFunctionCannotRegisterTheSamePrivateRouteTwice() throws SQLException {
-        String f1 = createFunction();
-        insertRoute(f1, null, "GET", "/dup-private-path");
-        assertThatThrownBy(() -> insertRoute(f1, null, "GET", "/dup-private-path"))
-                .hasMessageContaining("idx_fn_routes_function_id_method_path_pattern_private");
+    void hostnameIsRequired() {
+        assertThatThrownBy(() -> insertRoute(createFunction(), null, "/no-hostname"))
+                .as("every fn_routes row is public — a private call needs no route row at all (spec §2)")
+                .hasMessageContaining("null value in column \"hostname\"");
     }
 
     // -- fn_client_policies ceiling checks -----------------------------------

@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.dispatchpool.operations.SyncDispatchPoolInput;
 import io.flowcatalyst.platform.dispatchpool.operations.SyncDispatchPoolsCommand;
 
 import java.util.List;
+import java.util.Set;
 
 /// `SyncDispatchPoolsRequest` (lockfile): `{pools[]: {code, name, description,
 /// rateLimit, concurrency}}`. `concurrency` travels as-is (`null` = absent);
@@ -16,8 +17,14 @@ public record SyncDispatchPoolsRequest(List<Input> pools) {
         }
     }
 
-    SyncDispatchPoolsCommand toCommand(String applicationId, String applicationCode, boolean removeUnlisted) {
+    /// @param protectedIds pool ids a function owns (`function-invocation.md`
+    ///                      §4.2), read by the handler from
+    ///                      `TriggerObjectRepository` — this DTO carries no
+    ///                      `fn_` knowledge of its own.
+    SyncDispatchPoolsCommand toCommand(String applicationId, String applicationCode, boolean removeUnlisted,
+                                        Set<String> protectedIds) {
         return new SyncDispatchPoolsCommand(applicationId, applicationCode,
-                pools == null ? List.of() : pools.stream().map(Input::toInput).toList(), removeUnlisted);
+                pools == null ? List.of() : pools.stream().map(Input::toInput).toList(), removeUnlisted,
+                protectedIds);
     }
 }

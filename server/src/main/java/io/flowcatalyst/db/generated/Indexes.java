@@ -14,6 +14,7 @@ import io.flowcatalyst.db.generated.tables.AudLogs;
 import io.flowcatalyst.db.generated.tables.FnDomains;
 import io.flowcatalyst.db.generated.tables.FnHosts;
 import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnTriggerObjects;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
 import io.flowcatalyst.db.generated.tables.IamClientAccessGrants;
@@ -119,7 +120,7 @@ public class Indexes {
     public static final Index IDX_FN_DOMAINS_CLIENT_ID = Internal.createIndex(DSL.name("idx_fn_domains_client_id"), FnDomains.FN_DOMAINS, new OrderField[] { FnDomains.FN_DOMAINS.CLIENT_ID }, false);
     public static final Index IDX_FN_HOSTS_POOL_LAST_HEARTBEAT = Internal.createIndex(DSL.name("idx_fn_hosts_pool_last_heartbeat"), FnHosts.FN_HOSTS, new OrderField[] { FnHosts.FN_HOSTS.POOL, FnHosts.FN_HOSTS.LAST_HEARTBEAT }, false);
     public static final Index IDX_FN_ROUTES_FUNCTION_ID = Internal.createIndex(DSL.name("idx_fn_routes_function_id"), FnRoutes.FN_ROUTES, new OrderField[] { FnRoutes.FN_ROUTES.FUNCTION_ID }, false);
-    public static final Index IDX_FN_ROUTES_FUNCTION_ID_METHOD_PATH_PATTERN_PRIVATE = Internal.createIndex(DSL.name("idx_fn_routes_function_id_method_path_pattern_private"), FnRoutes.FN_ROUTES, new OrderField[] { FnRoutes.FN_ROUTES.FUNCTION_ID, FnRoutes.FN_ROUTES.METHOD, FnRoutes.FN_ROUTES.PATH_PATTERN }, true);
+    public static final Index IDX_FN_TRIGGER_OBJECTS_FUNCTION_ID = Internal.createIndex(DSL.name("idx_fn_trigger_objects_function_id"), FnTriggerObjects.FN_TRIGGER_OBJECTS, new OrderField[] { FnTriggerObjects.FN_TRIGGER_OBJECTS.FUNCTION_ID }, false);
     public static final Index IDX_FN_VERSIONS_FUNCTION_ID_STATE = Internal.createIndex(DSL.name("idx_fn_versions_function_id_state"), FnVersions.FN_VERSIONS, new OrderField[] { FnVersions.FN_VERSIONS.FUNCTION_ID, FnVersions.FN_VERSIONS.STATE }, false);
     public static final Index IDX_IAM_AUTH_CODES_CLIENT = Internal.createIndex(DSL.name("idx_iam_auth_codes_client"), IamAuthorizationCodes.IAM_AUTHORIZATION_CODES, new OrderField[] { IamAuthorizationCodes.IAM_AUTHORIZATION_CODES.CLIENT_ID }, false);
     public static final Index IDX_IAM_AUTH_CODES_EXPIRES = Internal.createIndex(DSL.name("idx_iam_auth_codes_expires"), IamAuthorizationCodes.IAM_AUTHORIZATION_CODES, new OrderField[] { IamAuthorizationCodes.IAM_AUTHORIZATION_CODES.EXPIRES_AT }, false);

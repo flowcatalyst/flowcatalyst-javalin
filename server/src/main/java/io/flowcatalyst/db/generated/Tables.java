@@ -17,6 +17,7 @@ import io.flowcatalyst.db.generated.tables.FnDomains;
 import io.flowcatalyst.db.generated.tables.FnFunctions;
 import io.flowcatalyst.db.generated.tables.FnHosts;
 import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnTriggerObjects;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
 import io.flowcatalyst.db.generated.tables.IamClientAccessGrants;
@@ -154,6 +155,11 @@ public class Tables {
      * The table <code>public.fn_routes</code>.
      */
     public static final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_trigger_objects</code>.
+     */
+    public static final FnTriggerObjects FN_TRIGGER_OBJECTS = FnTriggerObjects.FN_TRIGGER_OBJECTS;
 
     /**
      * The table <code>public.fn_versions</code>.

@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.scheduledjob.operations.SyncScheduledJobsCommand
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
+import java.util.Set;
 
 /// `SyncScheduledJobsRequest` (lockfile). The odd one out on this surface in
 /// two ways, both the lockfile's (spec §3):
@@ -29,9 +30,12 @@ public record SyncScheduledJobsRequest(String clientId, List<Input> jobs, Boolea
         }
     }
 
-    SyncScheduledJobsCommand toCommand(String applicationCode, String applicationId) {
+    /// @param protectedIds scheduled-job ids a function owns
+    ///                      (`function-invocation.md` §4.2), read by the
+    ///                      handler from `TriggerObjectRepository`.
+    SyncScheduledJobsCommand toCommand(String applicationCode, String applicationId, Set<String> protectedIds) {
         return new SyncScheduledJobsCommand(applicationCode, applicationId, clientId,
                 jobs == null ? List.of() : jobs.stream().map(Input::toEntry).toList(),
-                Boolean.TRUE.equals(archiveUnlisted));
+                Boolean.TRUE.equals(archiveUnlisted), protectedIds);
     }
 }

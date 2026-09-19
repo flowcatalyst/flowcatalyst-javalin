@@ -28,15 +28,39 @@ class SchemaFingerprintTest {
     /// removed from the Java fingerprint before the byte-for-byte comparison
     /// instead of being pretended away. Each entry names its spec.
     static final java.util.Set<String> JAVA_ONLY_TABLES = java.util.Set.of(
-            "mail_outbox",         // docs/spec/mail-outbox.md §2, V8
-            "fn_functions",        // docs/spec/function-registry.md §2, V11
-            "fn_versions",         // docs/spec/function-registry.md §2, V11
-            "fn_aliases",          // docs/spec/function-registry.md §2, V11
-            "fn_hosts",            // docs/spec/function-registry.md §2, V11
-            "fn_client_policies",  // docs/spec/function-registry.md §2, V11
-            "fn_domains",          // docs/spec/function-registry.md §2, V11
-            "fn_routes"            // docs/spec/function-registry.md §2, V11
+            "mail_outbox",           // docs/spec/mail-outbox.md §2, V8
+            "fn_functions",          // docs/spec/function-registry.md §2, V11
+            "fn_versions",           // docs/spec/function-registry.md §2, V11
+            "fn_aliases",            // docs/spec/function-registry.md §2, V11
+            "fn_hosts",              // docs/spec/function-registry.md §2, V11
+            "fn_client_policies",    // docs/spec/function-registry.md §2, V11
+            "fn_domains",            // docs/spec/function-registry.md §2, V11
+            "fn_routes",             // docs/spec/function-invocation.md §3, reshaping function-registry.md §2, V11
+            "fn_trigger_objects"     // docs/spec/function-invocation.md §4, V11
     );
+
+    /// The one line this suite permits to differ from Go on a table Go
+    /// **shares** (`msg_subscriptions` is not in [#JAVA_ONLY_TABLES]) —
+    /// `chk_msg_subscriptions_source`, widened in `V11` to admit the new
+    /// `FUNCTION` source (`function-invocation.md` §4.1, ruling R6). Named
+    /// and exact, not a blanket exclusion: every other line on
+    /// `msg_subscriptions`, and every other table, is still compared
+    /// byte-for-byte against Go.
+    static final String DIVERGENT_CONSTRAINT_TABLE = "msg_subscriptions";
+    static final String DIVERGENT_CONSTRAINT_NAME = "chk_msg_subscriptions_source";
+    static final String DIVERGENT_CONSTRAINT_JAVA_DEF =
+            "CHECK (((source) = ANY (ARRAY['CODE', 'API', 'UI', 'FUNCTION'])))";
+
+    /// True for the one `CONSTRAINT` line named by
+    /// [#DIVERGENT_CONSTRAINT_TABLE]/[#DIVERGENT_CONSTRAINT_NAME] — matched
+    /// by table and constraint name only, never by definition, so this
+    /// still finds Go's un-widened line to exclude it from the strict
+    /// comparison too.
+    static boolean isDivergentConstraintLine(String line) {
+        String[] fields = line.split("\t", -1);
+        return fields.length >= 3 && "CONSTRAINT".equals(fields[0])
+                && DIVERGENT_CONSTRAINT_TABLE.equals(fields[1]) && DIVERGENT_CONSTRAINT_NAME.equals(fields[2]);
+    }
 
     /// Every constraint and index is named explicitly, starting with its table's
     /// name or `idx_<table>_` (V8, V11); a line is Java-only iff its own table
@@ -85,9 +109,22 @@ class SchemaFingerprintTest {
             expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
         var javaLines = actual.lines().filter(l -> !isJavaOnly(l)).toList();
-        assertThat(javaLines)
-                .as("schema fingerprint: Java-migrated vs Go (src/test/resources/db/go-schema-fingerprint.txt), Java-only tables %s removed", JAVA_ONLY_TABLES)
-                .containsExactlyElementsOf(expected.lines().toList());
+
+        // The one named, exact divergent-constraint allowance (function-invocation.md
+        // §4.1): assert the Java line is exactly the widened definition — not "any
+        // definition" (a blanket-ignore mutant) — before excluding it from the
+        // otherwise-exact comparison against Go.
+        var actualDivergent = javaLines.stream().filter(SchemaFingerprintTest::isDivergentConstraintLine).toList();
+        assertThat(actualDivergent).as("exactly one divergent-constraint line").hasSize(1);
+        assertThat(actualDivergent.getFirst())
+                .as("the divergent constraint is widened to exactly the Java definition, nothing else")
+                .endsWith(DIVERGENT_CONSTRAINT_JAVA_DEF);
+
+        var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l)).toList();
+        var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l)).toList();
+        assertThat(javaLinesExceptDivergent)
+                .as("schema fingerprint: Java-migrated vs Go (src/test/resources/db/go-schema-fingerprint.txt), Java-only tables %s removed, the one divergent constraint line excluded", JAVA_ONLY_TABLES)
+                .containsExactlyElementsOf(expectedLinesExceptDivergent);
         assertThat(actual.lines().filter(SchemaFingerprintTest::isJavaOnly).count())
                 .as("every declared Java-only table is actually in the Java schema")
                 .isGreaterThan(0);
@@ -116,6 +153,11 @@ class SchemaFingerprintTest {
         assertThat(isJavaOnly(
                 "INDEX\tfn_hosts\tidx_fn_hosts_pool_last_heartbeat\tCREATE INDEX idx_fn_hosts_pool_last_heartbeat ON public.fn_hosts USING btree (pool, last_heartbeat)\ttrue"))
                 .isTrue();
+
+        // fn_trigger_objects (V11, function-invocation.md §4) is hidden exactly.
+        assertThat(isJavaOnly("TABLE\tfn_trigger_objects\tr\t")).isTrue();
+        assertThat(isJavaOnly("CONSTRAINT\tfn_trigger_objects\tfn_trigger_objects_pkey\tp\tPRIMARY KEY (function_id, kind, trigger_key)")).isTrue();
+        assertThat(isJavaOnly("TABLE\txfn_trigger_objects_archive\tr\t")).isFalse();
 
         // mail_outbox keeps passing.
         assertThat(isJavaOnly("TABLE\tmail_outbox\tr\t")).isTrue();

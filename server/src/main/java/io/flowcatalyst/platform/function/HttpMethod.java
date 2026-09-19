@@ -26,15 +26,15 @@ public enum HttpMethod {
         };
     }
 
-    /// Wire reader — case-insensitive (spec §4.3 `ROUTE_INVALID`: "an
-    /// unknown method").
+    /// Wire reader — case-insensitive (`function-invocation.md` §3: an
+    /// unknown method is `ENDPOINT_INVALID`).
     ///
-    /// @throws UseCaseException validation `ROUTE_INVALID`
+    /// @throws UseCaseException validation `ENDPOINT_INVALID`
     public static HttpMethod parseStrict(String raw) {
         try {
             return parse(raw == null ? null : raw.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            throw UseCaseException.validation("ROUTE_INVALID", "unknown HTTP method: " + raw);
+            throw UseCaseException.validation("ENDPOINT_INVALID", "unknown HTTP method: " + raw);
         }
     }
 }

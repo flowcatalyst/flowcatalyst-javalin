@@ -41,7 +41,7 @@ class HttpMethodTest {
                 .extracting(t -> ((UseCaseException) t).error())
                 .satisfies(err -> {
                     assertThat(err).isInstanceOf(UseCaseError.Validation.class);
-                    assertThat(err.code()).isEqualTo("ROUTE_INVALID");
+                    assertThat(err.code()).isEqualTo("ENDPOINT_INVALID");
                 });
     }
 }

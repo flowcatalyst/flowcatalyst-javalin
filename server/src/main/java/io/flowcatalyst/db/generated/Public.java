@@ -17,6 +17,7 @@ import io.flowcatalyst.db.generated.tables.FnDomains;
 import io.flowcatalyst.db.generated.tables.FnFunctions;
 import io.flowcatalyst.db.generated.tables.FnHosts;
 import io.flowcatalyst.db.generated.tables.FnRoutes;
+import io.flowcatalyst.db.generated.tables.FnTriggerObjects;
 import io.flowcatalyst.db.generated.tables.FnVersions;
 import io.flowcatalyst.db.generated.tables.IamAuthorizationCodes;
 import io.flowcatalyst.db.generated.tables.IamClientAccessGrants;
@@ -169,6 +170,11 @@ public class Public extends SchemaImpl {
      * The table <code>public.fn_routes</code>.
      */
     public final FnRoutes FN_ROUTES = FnRoutes.FN_ROUTES;
+
+    /**
+     * The table <code>public.fn_trigger_objects</code>.
+     */
+    public final FnTriggerObjects FN_TRIGGER_OBJECTS = FnTriggerObjects.FN_TRIGGER_OBJECTS;
 
     /**
      * The table <code>public.fn_versions</code>.
@@ -525,6 +531,7 @@ public class Public extends SchemaImpl {
             FnFunctions.FN_FUNCTIONS,
             FnHosts.FN_HOSTS,
             FnRoutes.FN_ROUTES,
+            FnTriggerObjects.FN_TRIGGER_OBJECTS,
             FnVersions.FN_VERSIONS,
             IamAuthorizationCodes.IAM_AUTHORIZATION_CODES,
             IamClientAccessGrants.IAM_CLIENT_ACCESS_GRANTS,

@@ -15,7 +15,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
-import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.ForeignKey;
@@ -74,17 +73,12 @@ public class FnRoutes extends TableImpl<FnRoutesRecord> {
     /**
      * The column <code>public.fn_routes.hostname</code>.
      */
-    public final TableField<FnRoutesRecord, String> HOSTNAME = createField(DSL.name("hostname"), SQLDataType.VARCHAR(253), this, "");
+    public final TableField<FnRoutesRecord, String> HOSTNAME = createField(DSL.name("hostname"), SQLDataType.VARCHAR(253).nullable(false), this, "");
 
     /**
-     * The column <code>public.fn_routes.method</code>.
+     * The column <code>public.fn_routes.path_prefix</code>.
      */
-    public final TableField<FnRoutesRecord, String> METHOD = createField(DSL.name("method"), SQLDataType.VARCHAR(10).nullable(false), this, "");
-
-    /**
-     * The column <code>public.fn_routes.path_pattern</code>.
-     */
-    public final TableField<FnRoutesRecord, String> PATH_PATTERN = createField(DSL.name("path_pattern"), SQLDataType.VARCHAR(1024).nullable(false), this, "");
+    public final TableField<FnRoutesRecord, String> PATH_PREFIX = createField(DSL.name("path_prefix"), SQLDataType.VARCHAR(1024).nullable(false), this, "");
 
     /**
      * The column <code>public.fn_routes.created_at</code>.
@@ -160,7 +154,7 @@ public class FnRoutes extends TableImpl<FnRoutesRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_FN_ROUTES_FUNCTION_ID, Indexes.IDX_FN_ROUTES_FUNCTION_ID_METHOD_PATH_PATTERN_PRIVATE);
+        return Arrays.asList(Indexes.IDX_FN_ROUTES_FUNCTION_ID);
     }
 
     @Override
@@ -170,7 +164,7 @@ public class FnRoutes extends TableImpl<FnRoutesRecord> {
 
     @Override
     public List<UniqueKey<FnRoutesRecord>> getUniqueKeys() {
-        return Arrays.asList(Keys.FN_ROUTES_HOSTNAME_METHOD_PATH_PATTERN_KEY);
+        return Arrays.asList(Keys.FN_ROUTES_HOSTNAME_PATH_PREFIX_KEY);
     }
 
     @Override
@@ -188,13 +182,6 @@ public class FnRoutes extends TableImpl<FnRoutesRecord> {
             _fnFunctions = new FnFunctionsPath(this, Keys.FN_ROUTES__FN_ROUTES_FUNCTION_ID_FKEY, null);
 
         return _fnFunctions;
-    }
-
-    @Override
-    public List<Check<FnRoutesRecord>> getChecks() {
-        return Arrays.asList(
-            Internal.createCheck(this, DSL.name("fn_routes_method_check"), "(((method)::text = ANY ((ARRAY['GET'::character varying, 'HEAD'::character varying, 'POST'::character varying, 'PUT'::character varying, 'PATCH'::character varying, 'DELETE'::character varying, 'OPTIONS'::character varying])::text[])))", true)
-        );
     }
 
     @Override

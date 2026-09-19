@@ -63,45 +63,31 @@ public class FnRoutesRecord extends UpdatableRecordImpl<FnRoutesRecord> {
     }
 
     /**
-     * Setter for <code>public.fn_routes.method</code>.
+     * Setter for <code>public.fn_routes.path_prefix</code>.
      */
-    public void setMethod(String value) {
+    public void setPathPrefix(String value) {
         set(3, value);
     }
 
     /**
-     * Getter for <code>public.fn_routes.method</code>.
+     * Getter for <code>public.fn_routes.path_prefix</code>.
      */
-    public String getMethod() {
+    public String getPathPrefix() {
         return (String) get(3);
-    }
-
-    /**
-     * Setter for <code>public.fn_routes.path_pattern</code>.
-     */
-    public void setPathPattern(String value) {
-        set(4, value);
-    }
-
-    /**
-     * Getter for <code>public.fn_routes.path_pattern</code>.
-     */
-    public String getPathPattern() {
-        return (String) get(4);
     }
 
     /**
      * Setter for <code>public.fn_routes.created_at</code>.
      */
     public void setCreatedAt(OffsetDateTime value) {
-        set(5, value);
+        set(4, value);
     }
 
     /**
      * Getter for <code>public.fn_routes.created_at</code>.
      */
     public OffsetDateTime getCreatedAt() {
-        return (OffsetDateTime) get(5);
+        return (OffsetDateTime) get(4);
     }
 
     // -------------------------------------------------------------------------
@@ -127,14 +113,13 @@ public class FnRoutesRecord extends UpdatableRecordImpl<FnRoutesRecord> {
     /**
      * Create a detached, initialised FnRoutesRecord
      */
-    public FnRoutesRecord(String id, String functionId, String hostname, String method, String pathPattern, OffsetDateTime createdAt) {
+    public FnRoutesRecord(String id, String functionId, String hostname, String pathPrefix, OffsetDateTime createdAt) {
         super(FnRoutes.FN_ROUTES);
 
         setId(id);
         setFunctionId(functionId);
         setHostname(hostname);
-        setMethod(method);
-        setPathPattern(pathPattern);
+        setPathPrefix(pathPrefix);
         setCreatedAt(createdAt);
         resetTouchedOnNotNull();
     }

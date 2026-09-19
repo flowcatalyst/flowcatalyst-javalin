@@ -148,6 +148,29 @@ print(sorted(n for n in names if n not in java))
 EOF
 ```
 
+## 4.1 Functions are post-cutover while Go shares the database
+
+`function-invocation.md` §4.1 (ruling R6): the function service's platform-managed subscriptions
+carry a new `SubscriptionSource.FUNCTION`, stored in `msg_subscriptions.source` under a widened
+`chk_msg_subscriptions_source` (`V11`). Go's own subscription reader is as strict as Java's
+(`UnrecognisedSubscriptionSourceException`'s twin) and does not know this value — **while Go runs
+against the same database, a `FUNCTION`-sourced row breaks Go's subscription reads.**
+
+Consequences for this rehearsal and for production cutover:
+
+- **Functions are a post-cutover feature.** Do not publish a function version whose manifest
+  declares `subscriptions` (or promote one that already has, per `function-invocation.md` §4)
+  until Go is retired, or until Go itself gains the `FUNCTION` constant first.
+- **Rollback to Go after the first function subscription exists needs those rows deleted first.**
+  The rollback procedure (§3) must check `SELECT 1 FROM msg_subscriptions WHERE source = 'FUNCTION'
+  LIMIT 1` before switching traffic back to Go, and delete every such row (and, by cascade from its
+  owning function, whatever other `fn_trigger_objects` rows go with it) if it finds any — otherwise
+  Go's boot-time or first-touch read of that row throws.
+- This is a deliberate, owner-accepted divergence (`function-invocation.md` §4.1), not a defect:
+  `SchemaFingerprintTest` and `GoAdoptionTest` each carry a named, exact allowance for exactly the
+  one widened constraint line, and everything else on `msg_subscriptions` is still compared
+  byte-for-byte against Go.
+
 ## 4b. Sizing and the pool (owner rulings 2026-09-06, `docs/spec/admission.md`)
 
 - **Pods:** 1 CPU for small, low-throughput deployments; 2 CPUs for serious work,

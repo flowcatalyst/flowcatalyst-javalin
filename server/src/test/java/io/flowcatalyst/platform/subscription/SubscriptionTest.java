@@ -191,9 +191,13 @@ class SubscriptionTest {
         assertThat(SubscriptionSource.parse("CODE")).isEqualTo(SubscriptionSource.CODE);
         assertThat(SubscriptionSource.parse("API")).isEqualTo(SubscriptionSource.API);
         assertThat(SubscriptionSource.parse("UI")).isEqualTo(SubscriptionSource.UI);
+        assertThat(SubscriptionSource.parse("FUNCTION")).isEqualTo(SubscriptionSource.FUNCTION);
         assertThat(SubscriptionSource.API.isSyncManaged()).isTrue();
         assertThat(SubscriptionSource.CODE.isSyncManaged()).isTrue();
         assertThat(SubscriptionSource.UI.isSyncManaged()).isFalse();
+        // function-invocation.md §4.1: a FUNCTION-sourced row is never
+        // touched by an application SDK's removeUnlisted sync either.
+        assertThat(SubscriptionSource.FUNCTION.isSyncManaged()).isFalse();
     }
 
     @Test

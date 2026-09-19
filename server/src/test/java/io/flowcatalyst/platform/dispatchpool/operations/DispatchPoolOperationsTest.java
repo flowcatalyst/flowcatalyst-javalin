@@ -482,6 +482,37 @@ class DispatchPoolOperationsTest {
         assertThat(eventsFor(archivedBefore.poolId(), DispatchPoolEvents.ARCHIVED)).as("already-archived rows are skipped").hasSize(1);
     }
 
+    /// V4 (`function-invocation.md` §4.2, §10): a pool id in `protectedIds`
+    /// (a function's own pool) survives a `removeUnlisted` sweep run by a
+    /// DIFFERENT application than the function's, and is never updated even
+    /// when the batch happens to declare its code — while an ordinary
+    /// unlisted pool in the same call is still archived, so this is not
+    /// "removeUnlisted stopped archiving anything".
+    @Test
+    void removeUnlistedNeverTouchesAProtectedPoolEvenFromADifferentApplication() {
+        var fnPool = created(code("dpfnprotected"), "Function Pool");
+        String syncingApp = "dpfnprot" + RUN; // deliberately a DIFFERENT application from the function's owner
+        var protectedIds = java.util.Set.of(fnPool.poolId());
+
+        // The protected pool's code happens to be declared — must not be updated.
+        var withMatchingCode = runAsAnchor(SyncDispatchPools.of(repo),
+                new SyncDispatchPoolsCommand(APP_ID, syncingApp,
+                        List.of(input(code("dpfnprotected"), "Renamed By Sync", null, 5)), false, protectedIds));
+        assertThat(withMatchingCode.updated()).as("the protected pool is skipped, not updated").isZero();
+        assertThat(reload(fnPool.poolId()).name()).isEqualTo("Function Pool");
+
+        // removeUnlisted, the protected pool absent from this sync's batch,
+        // alongside an ordinary unlisted pool to prove the sweep still runs.
+        String ordinary = code("dpfnprotected-ordinary");
+        runAsAnchor(SyncDispatchPools.of(repo), sync(syncingApp, false, input(ordinary, "Ordinary", null, 2)));
+        runAsAnchor(SyncDispatchPools.of(repo),
+                new SyncDispatchPoolsCommand(APP_ID, syncingApp, List.of(), true, protectedIds));
+        assertThat(reload(fnPool.poolId()).status()).as("removeUnlisted never archives a protected pool")
+                .isEqualTo(DispatchPoolStatus.ACTIVE);
+        assertThat(repo.findByCode(ordinary, null).orElseThrow().status())
+                .as("an ordinary unlisted pool is still archived in the same call").isEqualTo(DispatchPoolStatus.ARCHIVED);
+    }
+
     static Stream<Arguments> badSyncCommands() {
         return Stream.of(
                 Arguments.of("missing application code", new SyncDispatchPoolsCommand(APP_ID, null, List.of(), false), "APPLICATION_CODE_REQUIRED"),

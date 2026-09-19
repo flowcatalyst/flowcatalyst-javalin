@@ -8,6 +8,7 @@ import io.flowcatalyst.db.generated.Keys;
 import io.flowcatalyst.db.generated.Public;
 import io.flowcatalyst.db.generated.tables.FnAliases.FnAliasesPath;
 import io.flowcatalyst.db.generated.tables.FnRoutes.FnRoutesPath;
+import io.flowcatalyst.db.generated.tables.FnTriggerObjects.FnTriggerObjectsPath;
 import io.flowcatalyst.db.generated.tables.FnVersions.FnVersionsPath;
 import io.flowcatalyst.db.generated.tables.records.FnFunctionsRecord;
 
@@ -217,6 +218,19 @@ public class FnFunctions extends TableImpl<FnFunctionsRecord> {
             _fnRoutes = new FnRoutesPath(this, null, Keys.FN_ROUTES__FN_ROUTES_FUNCTION_ID_FKEY.getInverseKey());
 
         return _fnRoutes;
+    }
+
+    private transient FnTriggerObjectsPath _fnTriggerObjects;
+
+    /**
+     * Get the implicit to-many join path to the
+     * <code>public.fn_trigger_objects</code> table
+     */
+    public FnTriggerObjectsPath fnTriggerObjects() {
+        if (_fnTriggerObjects == null)
+            _fnTriggerObjects = new FnTriggerObjectsPath(this, null, Keys.FN_TRIGGER_OBJECTS__FN_TRIGGER_OBJECTS_FUNCTION_ID_FKEY.getInverseKey());
+
+        return _fnTriggerObjects;
     }
 
     private transient FnVersionsPath _fnVersions;

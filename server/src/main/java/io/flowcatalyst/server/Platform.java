@@ -593,9 +593,14 @@ public final class Platform {
         // This is also where `openapispecs` reaches the router: the unit was
         // complete but unregistered, and `/openapi/sync` is its only route.
         var openApiSpecRepo = new OpenApiSpecRepository(pool);
+        // function-invocation.md §4.2: the two generic syncs below (pools, scheduled
+        // jobs) have no `source` column of their own, so they read the linked-object
+        // ids from fn_trigger_objects to skip a function-owned row in their
+        // remove/archive sweep — the operations themselves stay free of `fn_` knowledge.
+        var triggerObjectRepo = new io.flowcatalyst.platform.function.TriggerObjectRepository(pool);
         SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
                 connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
-                appDocRepo, principalRepo, uow));
+                appDocRepo, principalRepo, uow, triggerObjectRepo));
 
         // function platform API (docs/spec/function-api.md, work package B, slices B1-B3): Java-first,
         // outside the lockfile (spec §0) — every route is named in parity/surface.json instead.

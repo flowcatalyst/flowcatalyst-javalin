@@ -36,6 +36,12 @@ import java.util.stream.Collectors;
 /// survive a sync that never mentions it). One per-row event per row
 /// touched plus one [ScheduledJobsSynced] rollup carrying the affected ids.
 ///
+/// A job named in `cmd.protectedIds()` (a function's own schedule entry,
+/// `function-invocation.md` §4.2) is skipped entirely — never reconciled by
+/// a matching declared entry, never archived by `archiveUnlisted` — and not
+/// counted either way. This operation never learns *why* a job is
+/// protected; it only ever sees the id set the sdksync handler hands it.
+///
 /// Authorization is resource-level on both dimensions: the application the
 /// sync is scoped to (`Checks.checkApplicationAccess`) and the target client
 /// scope (`checkScopeAccess`) — except a platform scope (`clientId == null`)
@@ -74,6 +80,7 @@ public final class SyncScheduledJobs {
                     for (ScheduledJobSyncEntry entry : cmd.jobs()) {
                         ScheduledJob existing = existingByCode.remove(entry.code());
                         if (existing != null) {
+                            if (cmd.protectedIds().contains(existing.id())) continue; // a function's own job — untouched
                             existing.reconcile(definitionOf(entry), cmd.applicationId(), ec.principalId()).ifPresent(j -> {
                                 saves.add(new SyncSave<>(j, ScheduledJobUpdated.of(ec, j)));
                                 updated.add(j.id());
@@ -97,6 +104,7 @@ public final class SyncScheduledJobs {
                             if (cmd.applicationId() != null && !cmd.applicationId().equals(unlisted.applicationId())) {
                                 continue;
                             }
+                            if (cmd.protectedIds().contains(unlisted.id())) continue; // a function's own job — never archived by an SDK sync
                             ScheduledJob j = unlisted.archive(ec.principalId());
                             saves.add(new SyncSave<>(j, ScheduledJobArchived.of(ec, j)));
                             archived.add(j.id());

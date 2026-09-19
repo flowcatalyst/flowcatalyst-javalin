@@ -9,6 +9,8 @@ import io.flowcatalyst.platform.docs.operations.SyncAppDocs;
 import io.flowcatalyst.platform.dispatchpool.operations.SyncDispatchPools;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.operations.SyncEventTypes;
+import io.flowcatalyst.platform.function.TriggerObjectKind;
+import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.openapispecs.OpenApiSpecRepository;
 import io.flowcatalyst.platform.openapispecs.operations.SyncOpenApiSpec;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
@@ -81,11 +83,13 @@ public final class SdkSyncApi {
                         SubscriptionRepository subscriptions, ConnectionRepository connections,
                         ProcessRepository processes, DispatchPoolRepository dispatchPools,
                         ScheduledJobRepository scheduledJobs, OpenApiSpecRepository specs,
-                        AppDocRepository appDocs, PrincipalRepository principals, UnitOfWork uow) {
+                        AppDocRepository appDocs, PrincipalRepository principals, UnitOfWork uow,
+                        TriggerObjectRepository triggerObjects) {
 
         public State {
             Objects.requireNonNull(apps, "apps");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(triggerObjects, "triggerObjects");
         }
     }
 
@@ -137,7 +141,12 @@ public final class SdkSyncApi {
     private static void syncDispatchPools(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_SYNC, DISPATCH_POOL_MANAGE);
         var app = application(ctx, s);
-        var cmd = ctx.bodyAsClass(SyncDispatchPoolsRequest.class).toCommand(app.id(), app.code(), removeUnlisted(ctx));
+        // function-invocation.md §4.2: pools have no source column, so a
+        // function's one dispatch pool is protected by id here, read fresh
+        // from fn_trigger_objects — the operation never learns why.
+        var protectedIds = s.triggerObjects().objectIds(TriggerObjectKind.POOL);
+        var cmd = ctx.bodyAsClass(SyncDispatchPoolsRequest.class)
+                .toCommand(app.id(), app.code(), removeUnlisted(ctx), protectedIds);
         ctx.json(SyncResultResponse.from(SyncDispatchPools.of(s.dispatchPools()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
@@ -178,8 +187,11 @@ public final class SdkSyncApi {
     private static void syncScheduledJobs(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), APP_SVC_SCHEDULED_JOB_SYNC, SCHEDULED_JOB_SYNC, SCHEDULED_JOB_MANAGE);
         var app = application(ctx, s);
+        // function-invocation.md §4.2: scheduled jobs have no source column,
+        // so a function's schedule entries are protected by id here.
+        var protectedIds = s.triggerObjects().objectIds(TriggerObjectKind.SCHEDULED_JOB);
         // archiveUnlisted travels in the body here, not as the query flag.
-        var cmd = ctx.bodyAsClass(SyncScheduledJobsRequest.class).toCommand(app.code(), app.id());
+        var cmd = ctx.bodyAsClass(SyncScheduledJobsRequest.class).toCommand(app.code(), app.id(), protectedIds);
         var event = SyncScheduledJobs.of(s.scheduledJobs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(SyncScheduledJobsResultResponse.from(event));
     }

@@ -1,8 +1,12 @@
--- Function registry, work package A (docs/spec/function-registry.md §2). Java-only:
--- there is no Go for the function service (spec §0), so these seven fn_ tables are
--- never read or written by Go and carry no goose counterpart. Additive, like V8's
--- mail_outbox: SchemaFingerprintTest.JAVA_ONLY_TABLES hides them from the Go
--- fingerprint comparison (spec §2.1).
+-- Function registry, work package A (docs/spec/function-registry.md §2), reshaped by
+-- docs/spec/function-invocation.md §3-§4 (I1). Java-only: there is no Go for the
+-- function service (spec §0), so these eight fn_ tables are never read or written by
+-- Go and carry no goose counterpart. Additive, like V8's mail_outbox:
+-- SchemaFingerprintTest.JAVA_ONLY_TABLES hides them from the Go fingerprint comparison
+-- (spec §2.1). The one exception is chk_msg_subscriptions_source below, widened on the
+-- Go-shared msg_subscriptions table to admit the new FUNCTION source (invocation spec
+-- §4.1) — SchemaFingerprintTest and GoAdoptionTest carry a named, exact allowance for
+-- that one line, not a blanket exclusion.
 --
 -- Every constraint and index below is named explicitly, starting with the table
 -- name (constraints) or `idx_<table>_` (indexes), because the fingerprint filter
@@ -140,27 +144,71 @@ CREATE TABLE IF NOT EXISTS fn_domains (
 
 CREATE INDEX IF NOT EXISTS idx_fn_domains_client_id ON fn_domains (client_id);
 
--- fn_routes: hostname (nullable = private-only, design §4a), method, path pattern
--- and the function they resolve to (§6.6). Auth mode, CORS, body cap and timeout
--- stay in the manifest (§0), so this table names nothing else. Public routes
--- (hostname IS NOT NULL) are unique across all functions; Postgres treats NULLs
--- as distinct in a plain unique constraint, so the same constraint does not
--- constrain private routes — those are scoped to their own function by the
--- partial unique index below.
+-- fn_routes: public (hostname, path_prefix) pairs and the function they resolve to
+-- (invocation spec §3, §6.6 as amended). Auth mode, methods, CORS, body cap and
+-- timeout stay in the manifest, so this table names nothing else; a private call
+-- (`/functions/{address}/...`) needs no route row at all, so hostname is NOT NULL
+-- here — unlike the registry spec's original private-route design, superseded by
+-- invocation spec §2/§3. Unique across every function: the conflict the design
+-- wants rejected (two functions cannot claim the same public prefix).
 CREATE TABLE IF NOT EXISTS fn_routes (
     id VARCHAR(17) NOT NULL,
     function_id VARCHAR(17) NOT NULL,
-    hostname VARCHAR(253),
-    method VARCHAR(10) NOT NULL,
-    path_pattern VARCHAR(1024) NOT NULL,
+    hostname VARCHAR(253) NOT NULL,
+    path_prefix VARCHAR(1024) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fn_routes_pkey PRIMARY KEY (id),
     CONSTRAINT fn_routes_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
-    CONSTRAINT fn_routes_method_check CHECK (method IN ('GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')),
-    CONSTRAINT fn_routes_hostname_method_path_pattern_key UNIQUE (hostname, method, path_pattern)
+    CONSTRAINT fn_routes_hostname_path_prefix_key UNIQUE (hostname, path_prefix)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fn_routes_function_id_method_path_pattern_private
-    ON fn_routes (function_id, method, path_pattern) WHERE hostname IS NULL;
-
 CREATE INDEX IF NOT EXISTS idx_fn_routes_function_id ON fn_routes (function_id);
+
+-- fn_trigger_objects: the platform-managed objects (dispatch pool, subscriptions,
+-- scheduled jobs) a function's live manifest created at promote (invocation spec
+-- §4), so a later promote can reconcile (create / update-if-different / delete what
+-- the new manifest no longer lists) and the two generic SDK syncs
+-- (SyncDispatchPools, SyncScheduledJobs — invocation spec §4.2) can tell a
+-- function-owned object apart from an ordinary application-owned one without either
+-- operation knowing anything about functions. kind is one of POOL, SUBSCRIPTION,
+-- SCHEDULED_JOB (TriggerObjectKind); trigger_key is the manifest-derived key the pk
+-- is scoped by (a function has at most one pool, but many subscriptions/schedules);
+-- object_id is the fn_-external row's id (msg_subscriptions.id, dsp_pools.id,
+-- sched_jobs.id) — unique per kind, so "is this object linked to any function"
+-- (cleanup by id) is one lookup.
+CREATE TABLE IF NOT EXISTS fn_trigger_objects (
+    function_id VARCHAR(17) NOT NULL,
+    kind VARCHAR(20) NOT NULL,
+    object_id VARCHAR(17) NOT NULL,
+    trigger_key VARCHAR(200) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fn_trigger_objects_pkey PRIMARY KEY (function_id, kind, trigger_key),
+    CONSTRAINT fn_trigger_objects_function_id_fkey FOREIGN KEY (function_id) REFERENCES fn_functions (id) ON DELETE CASCADE,
+    CONSTRAINT fn_trigger_objects_kind_check CHECK (kind IN ('POOL', 'SUBSCRIPTION', 'SCHEDULED_JOB')),
+    CONSTRAINT fn_trigger_objects_kind_object_id_key UNIQUE (kind, object_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fn_trigger_objects_function_id ON fn_trigger_objects (function_id);
+
+-- msg_subscriptions.source (V6 chk_msg_subscriptions_source, subscription.Source in
+-- Go) widened to admit the new FUNCTION source (invocation spec §4.1, ruling R6): a
+-- function's subscription is never touched by an application SDK's
+-- removeUnlisted sync (SubscriptionSource.isSyncManaged() is false for it). This is
+-- a deliberate, documented divergence from Go on a table Go shares — see
+-- docs/cutover.md §4.1: functions are a post-cutover feature while Go reads the same
+-- database, and rollback to Go after the first function subscription needs those
+-- rows deleted first. Idempotent like V6's original DO block: drop-then-add so a
+-- second run (or a Go-adopted database that never had the narrower V6 constraint
+-- applied under this name) still ends up with exactly the widened definition.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_msg_subscriptions_source'
+    ) THEN
+        ALTER TABLE msg_subscriptions DROP CONSTRAINT chk_msg_subscriptions_source;
+    END IF;
+    ALTER TABLE msg_subscriptions
+        ADD CONSTRAINT chk_msg_subscriptions_source
+        CHECK (source IN ('CODE', 'API', 'UI', 'FUNCTION'));
+END $$;
+

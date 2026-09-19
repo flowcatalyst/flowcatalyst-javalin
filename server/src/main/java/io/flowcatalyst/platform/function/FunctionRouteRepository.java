@@ -22,9 +22,10 @@ import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
 
-/// `fn_routes` via jOOQ (spec `function-registry.md` §6.6). Not an aggregate
-/// — [#replaceForFunction] materialises a function's published manifest
-/// wholesale; nothing here writes a single route in isolation.
+/// `fn_routes` via jOOQ (spec `function-invocation.md` §3, amending
+/// `function-registry.md` §6.6). Not an aggregate — [#replaceForFunction]
+/// materialises a function's published manifest's `public[]` list wholesale;
+/// nothing here writes a single route in isolation.
 public final class FunctionRouteRepository {
 
     private static final FnRoutes T = FN_ROUTES;
@@ -37,13 +38,13 @@ public final class FunctionRouteRepository {
 
     public List<FunctionRoute> listByFunction(String functionId) {
         return List.copyOf(dsl.selectFrom(T).where(T.FUNCTION_ID.eq(functionId))
-                .orderBy(T.METHOD.asc(), T.PATH_PATTERN.asc()).fetch().map(FunctionRouteRepository::toEntity));
+                .orderBy(T.HOSTNAME.asc(), T.PATH_PREFIX.asc()).fetch().map(FunctionRouteRepository::toEntity));
     }
 
     public List<FunctionRoute> listByHostname(Hostname hostname) {
         Objects.requireNonNull(hostname, "hostname");
         return List.copyOf(dsl.selectFrom(T).where(T.HOSTNAME.eq(hostname.value()))
-                .orderBy(T.METHOD.asc(), T.PATH_PATTERN.asc()).fetch().map(FunctionRouteRepository::toEntity));
+                .orderBy(T.HOSTNAME.asc(), T.PATH_PREFIX.asc()).fetch().map(FunctionRouteRepository::toEntity));
     }
 
     /// The desired-state batch read: every route of every function named by
@@ -53,25 +54,24 @@ public final class FunctionRouteRepository {
             return Map.of();
         }
         return dsl.selectFrom(T).where(T.FUNCTION_ID.in(functionIds))
-                .orderBy(T.FUNCTION_ID.asc(), T.METHOD.asc(), T.PATH_PATTERN.asc())
+                .orderBy(T.FUNCTION_ID.asc(), T.HOSTNAME.asc(), T.PATH_PREFIX.asc())
                 .fetch().stream()
                 .collect(groupingBy(FnRoutesRecord::getFunctionId, mapping(FunctionRouteRepository::toEntity, toList())));
     }
 
-    /// The conflict lookup RouteSync (package B) names the other function
-    /// from: the public route with this exact hostname, method and pattern.
-    public Optional<FunctionRoute> findPublic(Hostname hostname, HttpMethod method, RoutePattern pattern) {
+    /// The conflict lookup RouteSync (package F) names the other function
+    /// from: the public route with this exact hostname and path prefix.
+    public Optional<FunctionRoute> findPublic(Hostname hostname, RoutePattern pathPrefix) {
         Objects.requireNonNull(hostname, "hostname");
-        Objects.requireNonNull(method, "method");
-        Objects.requireNonNull(pattern, "pattern");
+        Objects.requireNonNull(pathPrefix, "pathPrefix");
         return dsl.selectFrom(T)
-                .where(T.HOSTNAME.eq(hostname.value())).and(T.METHOD.eq(method.name())).and(T.PATH_PATTERN.eq(pattern.value()))
+                .where(T.HOSTNAME.eq(hostname.value())).and(T.PATH_PREFIX.eq(pathPrefix.value()))
                 .fetchOptional().map(FunctionRouteRepository::toEntity);
     }
 
     /// Delete-then-insert, in the caller's transaction: a function's routes
     /// are always replaced wholesale from its manifest, never patched
-    /// piecemeal (spec §6.6).
+    /// piecemeal (spec `function-registry.md` §6.6).
     public void replaceForFunction(String functionId, List<FunctionRoute> routes, DbTx tx) {
         Objects.requireNonNull(functionId, "functionId");
         Objects.requireNonNull(routes, "routes");
@@ -82,9 +82,8 @@ public final class FunctionRouteRepository {
             txDsl.insertInto(T)
                     .set(T.ID, r.id())
                     .set(T.FUNCTION_ID, r.functionId())
-                    .set(T.HOSTNAME, r.hostname() == null ? null : r.hostname().value())
-                    .set(T.METHOD, r.method().name())
-                    .set(T.PATH_PATTERN, r.pattern().value())
+                    .set(T.HOSTNAME, r.hostname().value())
+                    .set(T.PATH_PREFIX, r.pathPrefix().value())
                     .set(T.CREATED_AT, utc(r.createdAt()))
                     .execute();
         }
@@ -94,9 +93,8 @@ public final class FunctionRouteRepository {
         return new FunctionRoute(
                 row.getId(),
                 row.getFunctionId(),
-                row.getHostname() == null ? null : new Hostname(row.getHostname()),
-                HttpMethod.parse(row.getMethod()),
-                RoutePattern.parse(row.getPathPattern()),
+                new Hostname(row.getHostname()),
+                RoutePattern.parse(row.getPathPrefix()),
                 row.getCreatedAt().toInstant());
     }
 

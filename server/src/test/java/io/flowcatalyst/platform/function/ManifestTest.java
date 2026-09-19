@@ -1,21 +1,27 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import tools.jackson.databind.JsonNode;
+
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// Spec `function-registry.md` §4: every code of §4.3's rule table, the full
-/// happy path of §4.1, and `readStored`'s tolerance contract (§4.2).
+/// Spec `function-invocation.md` §3 (amending `function-registry.md` §4):
+/// the full happy path, every rule of the amended manifest, and
+/// `readStored`'s tolerance contract.
 ///
-/// Note (report): §4.1's example JSON shows `wasmMemoryMb` on a `jvm`
-/// manifest, but §4.3's `LIMIT_NOT_APPLICABLE` forbids exactly that
-/// combination. The JVM fixtures below omit `wasmMemoryMb`; a dedicated Wasm
-/// fixture exercises it instead.
+/// Note (report): §4.1's example JSON of `function-registry.md` shows
+/// `wasmMemoryMb` on a `jvm` manifest, but §4.3's `LIMIT_NOT_APPLICABLE`
+/// forbids exactly that combination. The JVM fixtures below omit
+/// `wasmMemoryMb`; a dedicated Wasm fixture exercises it instead.
 class ManifestTest {
 
     private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
@@ -25,7 +31,8 @@ class ManifestTest {
             {
               "runtime": "jvm",
               "entrypoint": "com.acme.billing.CreateInvoice",
-              "triggers": [ { "type": "event", "eventType": "billing:invoices:invoice:created" } ]
+              "endpoints": [ { "path": "/events/invoice-created", "auth": "webhook" } ],
+              "subscriptions": [ { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created" } ]
             }
             """;
 
@@ -60,7 +67,7 @@ class ManifestTest {
         void run();
     }
 
-    // ── the full happy path — spec §4.1 ──────────────────────────────────────
+    // ── the full happy path — spec §3 ────────────────────────────────────────
 
     private static final String FULL_JVM = """
             {
@@ -69,14 +76,20 @@ class ManifestTest {
               "pool": "default",
               "warm": false,
               "limits": { "maxDurationMs": 30000, "maxConcurrency": 32 },
-              "triggers": [
-                { "type": "event", "eventType": "billing:invoices:invoice:created", "messageGroupKey": "invoiceId" },
-                { "type": "schedule", "cron": "0 * * * *", "timezone": "UTC" },
-                { "type": "http", "routes": [
-                  { "hostnames": ["api.acme.com"], "methods": ["GET", "POST"], "path": "/invoices/{id}",
-                    "auth": "bearer", "cors": { "origins": ["https://app.acme.com"] },
-                    "maxBodyBytes": 1048576, "timeoutMs": 10000 } ] }
+              "endpoints": [
+                { "path": "/events/*",  "auth": "webhook" },
+                { "path": "/jobs/*",    "auth": "webhook" },
+                { "path": "/api/*",     "auth": "platform", "methods": ["GET","POST"],
+                  "cors": { "origins": ["https://app.acme.com"] },
+                  "maxBodyBytes": 1048576, "timeoutMs": 10000 },
+                { "path": "/hooks/stripe", "auth": "none" }
               ],
+              "subscriptions": [
+                { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created",
+                  "mode": "BLOCK_ON_ERROR", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
+              ],
+              "schedules": [ { "cron": "0 * * * *", "timezone": "UTC", "path": "/jobs/hourly", "payload": { "x": 1 } } ],
+              "public":    [ { "hostname": "api.acme.com", "pathPrefix": "/" } ],
               "config": ["INVOICE_PREFIX"],
               "secrets": ["billing/stripe-key"],
               "db": [ { "name": "main", "secretRef": "billing/dsn", "poolSize": 4 } ],
@@ -96,22 +109,39 @@ class ManifestTest {
         assertThat(manifest.limits().maxConcurrency()).isEqualTo(32);
         assertThat(manifest.limits().wasmMemoryMb()).isNull();
 
-        assertThat(manifest.triggers()).hasSize(3);
-        assertThat(manifest.triggers().get(0)).isEqualTo(
-                new Manifest.Trigger.Event("billing:invoices:invoice:created", "invoiceId"));
-        assertThat(manifest.triggers().get(1)).isEqualTo(new Manifest.Trigger.Schedule("0 * * * *", "UTC"));
-
-        Manifest.Trigger.Http http = (Manifest.Trigger.Http) manifest.triggers().get(2);
-        assertThat(http.routes()).hasSize(1);
-        Manifest.HttpRoute route = http.routes().get(0);
-        assertThat(route.hostnames()).containsExactly(Hostname.parse("api.acme.com"));
-        assertThat(route.methods()).containsExactly(HttpMethod.GET, HttpMethod.POST);
-        assertThat(route.path()).isEqualTo(RoutePattern.parse("/invoices/{id}"));
-        assertThat(route.auth()).isEqualTo(AuthMode.BEARER);
-        assertThat(route.cors()).isEqualTo(new Manifest.Cors(java.util.List.of("https://app.acme.com"),
+        assertThat(manifest.endpoints()).hasSize(4);
+        Manifest.Endpoint api = manifest.endpoints().get(2);
+        assertThat(api.path()).isEqualTo(RoutePattern.parse("/api/*"));
+        assertThat(api.auth()).isEqualTo(EndpointAuth.PLATFORM);
+        assertThat(api.methods()).containsExactly(HttpMethod.GET, HttpMethod.POST);
+        assertThat(api.cors()).isEqualTo(new Manifest.Cors(java.util.List.of("https://app.acme.com"),
                 java.util.List.of(), java.util.List.of(), false));
-        assertThat(route.maxBodyBytes()).isEqualTo(1_048_576);
-        assertThat(route.timeoutMs()).isEqualTo(10_000);
+        assertThat(api.maxBodyBytes()).isEqualTo(1_048_576);
+        assertThat(api.timeoutMs()).isEqualTo(10_000);
+        assertThat(manifest.endpoints().get(0).auth()).isEqualTo(EndpointAuth.WEBHOOK);
+        assertThat(manifest.endpoints().get(3).auth()).isEqualTo(EndpointAuth.NONE);
+
+        assertThat(manifest.subscriptions()).hasSize(1);
+        Manifest.SubscriptionSpec sub = manifest.subscriptions().get(0);
+        assertThat(sub.eventType()).isEqualTo("billing:invoices:invoice:created");
+        assertThat(sub.path()).isEqualTo(RoutePattern.parse("/events/invoice-created"));
+        assertThat(sub.mode()).isEqualTo(DispatchMode.BLOCK_ON_ERROR);
+        assertThat(sub.filter()).isNull();
+        assertThat(sub.maxRetries()).isEqualTo(3);
+        assertThat(sub.timeoutSeconds()).isEqualTo(30);
+        assertThat(sub.dataOnly()).isFalse();
+
+        assertThat(manifest.schedules()).hasSize(1);
+        Manifest.ScheduleSpec sched = manifest.schedules().get(0);
+        assertThat(sched.cron()).isEqualTo("0 * * * *");
+        assertThat(sched.timezone()).isEqualTo("UTC");
+        assertThat(sched.path()).isEqualTo(RoutePattern.parse("/jobs/hourly"));
+        assertThat(sched.payload().path("x").asInt()).isEqualTo(1);
+
+        assertThat(manifest.publicRoutes()).hasSize(1);
+        Manifest.PublicRoute pub = manifest.publicRoutes().get(0);
+        assertThat(pub.hostname()).isEqualTo(Hostname.parse("api.acme.com"));
+        assertThat(pub.pathPrefix()).isEqualTo(RoutePattern.parse("/"));
 
         assertThat(manifest.config()).containsExactly("INVOICE_PREFIX");
         assertThat(manifest.secrets()).containsExactly("billing/stripe-key");
@@ -124,10 +154,12 @@ class ManifestTest {
     void toJsonSpellings() {
         JsonNode tree = parseJvm(FULL_JVM).toJson();
         assertThat(tree.path("runtime").asString()).as("lower-case runtime").isEqualTo("jvm");
-        JsonNode route = tree.path("triggers").get(2).path("routes").get(0);
-        assertThat(route.path("auth").asString()).as("lower-case auth").isEqualTo("bearer");
-        assertThat(route.path("methods").get(0).asString()).as("upper-case methods").isEqualTo("GET");
-        assertThat(route.path("methods").get(1).asString()).isEqualTo("POST");
+        JsonNode endpoint = tree.path("endpoints").get(2);
+        assertThat(endpoint.path("auth").asString()).as("lower-case auth").isEqualTo("platform");
+        assertThat(endpoint.path("methods").get(0).asString()).as("upper-case methods").isEqualTo("GET");
+        assertThat(endpoint.path("methods").get(1).asString()).isEqualTo("POST");
+        assertThat(tree.path("subscriptions").get(0).path("mode").asString()).as("upper-case mode")
+                .isEqualTo("BLOCK_ON_ERROR");
     }
 
     @Test
@@ -144,7 +176,8 @@ class ManifestTest {
                   "runtime": "wasm",
                   "entrypoint": "handle",
                   "limits": { "wasmMemoryMb": 32 },
-                  "triggers": [ { "type": "event", "eventType": "billing:invoices:invoice:created" } ]
+                  "endpoints": [ { "path": "/events/*", "auth": "webhook" } ],
+                  "subscriptions": [ { "eventType": "billing:invoices:invoice:created", "path": "/events/invoice-created" } ]
                 }
                 """;
         Manifest manifest = parseWasm(json);
@@ -153,7 +186,7 @@ class ManifestTest {
         assertThat(reread).isEqualTo(manifest);
     }
 
-    // ── §4.3 rule table — one violation per code ─────────────────────────────
+    // ── unknown-key / basic structural rules ─────────────────────────────────
 
     @Test
     void manifestRequiredWhenNull() {
@@ -171,7 +204,7 @@ class ManifestTest {
     void manifestUnknownFieldTopLevel() {
         String json = """
                 {"runtime":"jvm","entrypoint":"x","bogus":1,
-                 "triggers":[{"type":"event","eventType":"a:b:c"}]}
+                 "endpoints":[{"path":"/a","auth":"none"}]}
                 """;
         assertThatThrownBy(() -> parseJvm(json))
                 .isInstanceOf(UseCaseException.class)
@@ -184,10 +217,10 @@ class ManifestTest {
 
     @Test
     void manifestUnknownFieldNestedInLimits() {
-        // the exact example named by spec §4.3: "limits.maxConcurency"
+        // the exact example named by spec (function-registry.md §4.3): "limits.maxConcurency"
         String json = """
                 {"runtime":"jvm","entrypoint":"x","limits":{"maxConcurency":1},
-                 "triggers":[{"type":"event","eventType":"a:b:c"}]}
+                 "endpoints":[{"path":"/a","auth":"none"}]}
                 """;
         assertThatThrownBy(() -> parseJvm(json))
                 .isInstanceOf(UseCaseException.class)
@@ -199,61 +232,35 @@ class ManifestTest {
     }
 
     @Test
-    void manifestUnknownFieldDeeplyNestedInRoute() {
-        // the exact example named by spec §4.3: "triggers[2].routes[0].pth"
+    void manifestUnknownFieldDeeplyNestedInEndpoint() {
         String json = """
-                {"runtime":"jvm","entrypoint":"x","triggers":[
-                    {"type":"event","eventType":"a:b:c"},
-                    {"type":"schedule","cron":"* * * * *"},
-                    {"type":"http","routes":[{"pth":"/a","methods":["GET"]}]}
-                ]}
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"pth":"/a","auth":"none"}]}
                 """;
         assertThatThrownBy(() -> parseJvm(json))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(t -> ((UseCaseException) t).error())
                 .satisfies(err -> {
                     assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
-                    assertThat(err.message()).contains("triggers[2].routes[0].pth");
+                    assertThat(err.message()).contains("endpoints[0].pth");
                 });
     }
 
     @Test
-    void manifestUnknownFieldCronInsideEventTrigger() {
-        // spec §4.3 (amended): a trigger's allowed keys are those of its own
-        // type — `cron` is not a recognised key of an `event` trigger.
-        String json = withTriggers("{\"type\":\"event\",\"eventType\":\"a:b:c\",\"cron\":\"* * * * *\"}");
+    void manifestUnknownFieldInSubscription() {
+        String json = withWebhookAndSubscription("\"eventType\":\"a:b:c\",\"path\":\"/events/a\",\"bogus\":1");
         assertThatThrownBy(() -> parseJvm(json))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(t -> ((UseCaseException) t).error())
                 .satisfies(err -> {
                     assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
-                    assertThat(err.message()).contains("triggers[0].cron");
+                    assertThat(err.message()).contains("subscriptions[0].bogus");
                 });
     }
 
     @Test
-    void manifestUnknownFieldRoutesInsideScheduleTrigger() {
-        String json = withTriggers("{\"type\":\"schedule\",\"cron\":\"* * * * *\",\"routes\":[]}");
-        assertThatThrownBy(() -> parseJvm(json))
-                .isInstanceOf(UseCaseException.class)
-                .extracting(t -> ((UseCaseException) t).error())
-                .satisfies(err -> {
-                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
-                    assertThat(err.message()).contains("triggers[0].routes");
-                });
-    }
-
-    @Test
-    void manifestUnknownFieldEventTypeInsideHttpTrigger() {
-        String route = "{\"path\":\"/a\",\"methods\":[\"GET\"]}";
-        String json = withTriggers("{\"type\":\"http\",\"routes\":[" + route + "],\"eventType\":\"a:b:c\"}");
-        assertThatThrownBy(() -> parseJvm(json))
-                .isInstanceOf(UseCaseException.class)
-                .extracting(t -> ((UseCaseException) t).error())
-                .satisfies(err -> {
-                    assertThat(err.code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
-                    assertThat(err.message()).contains("triggers[0].eventType");
-                });
+    void manifestInvalidWarmWrongType() {
+        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"warm\":\"yes\"}";
+        assertCode(() -> parseJvm(json), "MANIFEST_INVALID");
     }
 
     @Test
@@ -297,6 +304,8 @@ class ManifestTest {
         assertThat(manifest.pool().value()).isEqualTo("default");
     }
 
+    // ── limits ────────────────────────────────────────────────────────────
+
     @Test
     void limitInvalidNotPositiveInteger() {
         assertCode(() -> parseJvm(withLimits("\"maxDurationMs\": 0")), "LIMIT_INVALID");
@@ -334,120 +343,119 @@ class ManifestTest {
         assertCode(() -> parseJvm(json), "LIMIT_NOT_APPLICABLE");
     }
 
+    // ── §8 M5 (function-registry.md): absent limit frozen to min(default, ceiling) ──
+
     @Test
-    void triggerInvalidTypeAbsentOrUnknown() {
-        assertCode(() -> parseJvm(withTriggers("{\"eventType\":\"a:b:c\"}")), "TRIGGER_INVALID");
-        assertCode(() -> parseJvm(withTriggers("{\"type\":\"cron-job\"}")), "TRIGGER_INVALID");
+    void absentLimitFrozenToMinOfDefaultAndCeiling() {
+        ClientCeilings tightCeilings = new ClientCeilings(30_000, 10, 64, 4);
+        Manifest manifest = parseJvm(MINIMAL_JVM, tightCeilings);
+        assertThat(manifest.limits().maxConcurrency())
+                .as("min(default 32, ceiling 10)").isEqualTo(10);
+
+        Manifest reread = Manifest.readStored(manifest.toJson());
+        assertThat(reread.limits().maxConcurrency())
+                .as("the clamped value round-trips through the stored row, not the platform default")
+                .isEqualTo(10);
+    }
+
+    // ── §10 V1: endpoint `auth` has no default ───────────────────────────────
+
+    @Test
+    void endpointAuthAbsentIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\"")), "ENDPOINT_AUTH_REQUIRED");
     }
 
     @Test
-    void triggerInvalidEventWithoutEventType() {
-        assertCode(() -> parseJvm(withTriggers("{\"type\":\"event\"}")), "TRIGGER_INVALID");
+    void endpointAuthUnrecognisedIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"bearer\"")), "ENDPOINT_INVALID");
+    }
+
+    // ── endpoints: rule table ─────────────────────────────────────────────
+
+    @Test
+    void endpointInvalidPathNotARoutePattern() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"not-a-path\",\"auth\":\"none\"")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void triggerInvalidScheduleWithoutCron() {
-        assertCode(() -> parseJvm(withTriggers("{\"type\":\"schedule\"}")), "TRIGGER_INVALID");
+    void endpointMethodsAbsentMeansAll() {
+        Manifest manifest = parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\""));
+        assertThat(manifest.endpoints().get(0).methods()).isEmpty();
     }
 
     @Test
-    void triggerInvalidHttpWithNoRoutes() {
-        assertCode(() -> parseJvm(withTriggers("{\"type\":\"http\",\"routes\":[]}")), "TRIGGER_INVALID");
+    void endpointInvalidEmptyMethodsArray() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"methods\":[]")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void triggerInvalidTriggersWrongType() {
-        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"triggers\":{}}";
-        assertCode(() -> parseJvm(json), "TRIGGER_INVALID");
+    void endpointInvalidUnknownMethod() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"methods\":[\"TRACE\"]")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void triggerDuplicateEventType() {
-        String json = withTriggers(
-                "{\"type\":\"event\",\"eventType\":\"a:b:c\"}, {\"type\":\"event\",\"eventType\":\"a:b:c\"}");
-        assertCode(() -> parseJvm(json), "TRIGGER_DUPLICATE");
+    void endpointInvalidDuplicateMethodCaseInsensitive() {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"methods\":[\"GET\",\"get\"]")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void triggerDuplicateMoreThanOneHttp() {
-        String route = "{\"path\":\"/a\",\"methods\":[\"GET\"]}";
-        String json = withTriggers(
-                "{\"type\":\"http\",\"routes\":[" + route + "]}, {\"type\":\"http\",\"routes\":[" + route + "]}");
-        assertCode(() -> parseJvm(json), "TRIGGER_DUPLICATE");
+    void endpointInvalidMaxBodyBytesNotPositive() {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"maxBodyBytes\":0")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void routeInvalidNoMethods() {
-        assertCode(() -> parseJvm(withHttpRoute("\"path\":\"/a\",\"methods\":[]")), "ROUTE_INVALID");
+    void endpointInvalidMaxBodyBytesOutOfIntRange() {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"maxBodyBytes\":5000000000")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void routeInvalidUnknownMethod() {
-        assertCode(() -> parseJvm(withHttpRoute("\"path\":\"/a\",\"methods\":[\"TRACE\"]")), "ROUTE_INVALID");
+    void endpointInvalidTimeoutMsNotPositive() {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"timeoutMs\":-5")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void routeInvalidPathNotARoutePattern() {
-        assertCode(() -> parseJvm(withHttpRoute("\"path\":\"not-a-path\",\"methods\":[\"GET\"]")), "ROUTE_INVALID");
+    void endpointInvalidCorsBlankEntry() {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"  \"]}")), "ENDPOINT_INVALID");
+    }
+
+    // ── §3: webhook endpoint methods must be exactly ["POST"] ────────────────
+
+    @Test
+    void webhookEndpointWithNoMethodsIsAccepted() {
+        Manifest manifest = parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"webhook\""));
+        assertThat(manifest.endpoints().get(0).methods()).isEmpty();
     }
 
     @Test
-    void routeInvalidHostnameNotAHostname() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"hostnames\":[\"not a hostname\"]")), "ROUTE_INVALID");
+    void webhookEndpointWithExactlyPostIsAccepted() {
+        Manifest manifest = parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"webhook\",\"methods\":[\"POST\"]"));
+        assertThat(manifest.endpoints().get(0).methods()).containsExactly(HttpMethod.POST);
     }
 
     @Test
-    void routeInvalidAuthNotBearerOrNone() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"auth\":\"basic\"")), "ROUTE_INVALID");
+    void webhookEndpointWithGetIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"webhook\",\"methods\":[\"GET\"]")), "ENDPOINT_INVALID");
     }
 
     @Test
-    void routeInvalidMaxBodyBytesNotPositive() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"maxBodyBytes\":0")), "ROUTE_INVALID");
+    void webhookEndpointWithPostAndGetIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"webhook\",\"methods\":[\"POST\",\"GET\"]")), "ENDPOINT_INVALID");
     }
 
-    @Test
-    void routeInvalidTimeoutMsNotPositive() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"timeoutMs\":-5")), "ROUTE_INVALID");
-    }
-
-    @Test
-    void routeInvalidDuplicateMethodCaseInsensitive() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\",\"get\"]")), "ROUTE_INVALID");
-    }
-
-    @Test
-    void routeInvalidDuplicateHostnameCaseInsensitive() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"hostnames\":[\"API.acme.com\",\"api.acme.com\"]")),
-                "ROUTE_INVALID");
-    }
-
-    @Test
-    void routeInvalidMaxBodyBytesOutOfIntRange() {
-        // 5_000_000_000 overflows int; must be rejected, not silently truncated by asInt()
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"maxBodyBytes\":5000000000")), "ROUTE_INVALID");
-    }
-
-    @Test
-    void routeInvalidCorsBlankEntry() {
-        assertCode(() -> parseJvm(withHttpRoute(
-                "\"path\":\"/a\",\"methods\":[\"GET\"],\"cors\":{\"origins\":[\"  \"]}")), "ROUTE_INVALID");
-    }
+    // ── ROUTE_AMBIGUOUS for endpoints ────────────────────────────────────────
 
     @Test
     void routeAmbiguousNamesBothPatterns() {
-        String json = withTriggers("""
-                {"type":"http","routes":[
-                    {"path":"/a/{x}","methods":["GET"]},
-                    {"path":"/a/{y}","methods":["GET"]}
-                ]}""");
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[
+                    {"path":"/a/{x}","auth":"none"},
+                    {"path":"/a/{y}","auth":"none"}
+                ]}""";
         assertThatThrownBy(() -> parseJvm(json))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(t -> ((UseCaseException) t).error())
@@ -455,48 +463,194 @@ class ManifestTest {
                     assertThat(err.code()).isEqualTo("ROUTE_AMBIGUOUS");
                     assertThat(err.message()).contains("/a/{x}").contains("/a/{y}");
                 });
-    }
-
-    @Test
-    void routeAmbiguousAcrossDifferentHostnames() {
-        // spec §4.3 (amended): hostnames do not separate routes within one
-        // manifest — the private entry reaches a function by address with no
-        // hostname, so every route is a candidate there regardless of which
-        // public hostnames it lists.
-        String json = withTriggers("""
-                {"type":"http","routes":[
-                    {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
-                    {"path":"/a/{y}","methods":["GET"],"hostnames":["other.acme.com"]}
-                ]}""");
-        assertThatThrownBy(() -> parseJvm(json))
-                .isInstanceOf(UseCaseException.class)
-                .extracting(t -> ((UseCaseException) t).error())
-                .satisfies(err -> {
-                    assertThat(err.code()).isEqualTo("ROUTE_AMBIGUOUS");
-                    assertThat(err.message()).contains("/a/{x}").contains("/a/{y}");
-                });
-    }
-
-    @Test
-    void routeAmbiguousBetweenPublicAndPrivate() {
-        String json = withTriggers("""
-                {"type":"http","routes":[
-                    {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
-                    {"path":"/a/{y}","methods":["GET"]}
-                ]}""");
-        assertCode(() -> parseJvm(json), "ROUTE_AMBIGUOUS");
     }
 
     @Test
     void routeNotAmbiguousWhenMethodsDisjoint() {
-        String json = withTriggers("""
-                {"type":"http","routes":[
-                    {"path":"/a/{x}","methods":["GET"],"hostnames":["api.acme.com"]},
-                    {"path":"/a/{y}","methods":["POST"],"hostnames":["other.acme.com"]}
-                ]}""");
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[
+                    {"path":"/a/{x}","auth":"none","methods":["GET"]},
+                    {"path":"/a/{y}","auth":"none","methods":["POST"]}
+                ]}""";
         Manifest manifest = parseJvm(json);
-        assertThat(manifest.triggers()).hasSize(1);
+        assertThat(manifest.endpoints()).hasSize(2);
     }
+
+    @Test
+    void routeAmbiguousWhenOneSideHasNoMethods() {
+        // absent methods == "all" for the ambiguity check too
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[
+                    {"path":"/a/{x}","auth":"none"},
+                    {"path":"/a/{y}","auth":"none","methods":["POST"]}
+                ]}""";
+        assertCode(() -> parseJvm(json), "ROUTE_AMBIGUOUS");
+    }
+
+    // ── §10 V1: subscriptions/schedules — literal path + webhook endpoint ────
+
+    static Stream<org.junit.jupiter.params.provider.Arguments> noWebhookMatchCases() {
+        return Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of("no endpoint at all", "[]"),
+                org.junit.jupiter.params.provider.Arguments.of("only a platform endpoint",
+                        "[{\"path\":\"/events/invoice-created\",\"auth\":\"platform\"}]"),
+                org.junit.jupiter.params.provider.Arguments.of("only a none endpoint",
+                        "[{\"path\":\"/events/invoice-created\",\"auth\":\"none\"}]"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("noWebhookMatchCases")
+    void subscriptionPathNotWebhookWhenNoWebhookEndpointMatches(String label, String endpoints) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":%s,
+                 "subscriptions":[{"eventType":"a:b:c","path":"/events/invoice-created"}]}
+                """.formatted(endpoints);
+        assertCode(() -> parseJvm(json), "SUBSCRIPTION_PATH_NOT_WEBHOOK");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("noWebhookMatchCases")
+    void schedulePathNotWebhookWhenNoWebhookEndpointMatches(String label, String endpoints) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":%s,
+                 "schedules":[{"cron":"* * * * *","path":"/jobs/hourly"}]}
+                """.formatted(endpoints);
+        assertCode(() -> parseJvm(json), "SCHEDULE_PATH_NOT_WEBHOOK");
+    }
+
+    @Test
+    void subscriptionPathMatchingAWebhookEndpointIsAccepted() {
+        Manifest manifest = parseJvm(withWebhookAndSubscription("\"eventType\":\"a:b:c\",\"path\":\"/events/a\""));
+        assertThat(manifest.subscriptions()).hasSize(1);
+    }
+
+    @Test
+    void mostSpecificEndpointDecidesWhichAuthGoverns() {
+        // /events/* is webhook, but the MORE SPECIFIC /events/special is
+        // platform — the subscription path resolves to the specific one and
+        // must be rejected, even though a broader webhook endpoint also matches.
+        String json = """
+                {"runtime":"jvm","entrypoint":"x",
+                 "endpoints":[{"path":"/events/*","auth":"webhook"},{"path":"/events/special","auth":"platform"}],
+                 "subscriptions":[{"eventType":"a:b:c","path":"/events/special"}]}
+                """;
+        assertCode(() -> parseJvm(json), "SUBSCRIPTION_PATH_NOT_WEBHOOK");
+    }
+
+    @Test
+    void subscriptionInvalidPathIsAPattern() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/events/*","auth":"webhook"}],
+                 "subscriptions":[{"eventType":"a:b:c","path":"/events/{id}"}]}
+                """;
+        assertCode(() -> parseJvm(json), "SUBSCRIPTION_INVALID");
+    }
+
+    @Test
+    void subscriptionInvalidMissingEventType() {
+        assertCode(() -> parseJvm(withWebhookAndSubscription("\"path\":\"/events/a\"")), "SUBSCRIPTION_INVALID");
+    }
+
+    @Test
+    void subscriptionInvalidUnrecognisedMode() {
+        assertCode(() -> parseJvm(withWebhookAndSubscription(
+                "\"eventType\":\"a:b:c\",\"path\":\"/events/a\",\"mode\":\"immediate\"")), "SUBSCRIPTION_INVALID");
+    }
+
+    @Test
+    void subscriptionDuplicateEventType() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/events/*","auth":"webhook"}],
+                 "subscriptions":[
+                    {"eventType":"a:b:c","path":"/events/a"},
+                    {"eventType":"a:b:c","path":"/events/a"}]}
+                """;
+        assertCode(() -> parseJvm(json), "SUBSCRIPTION_DUPLICATE");
+    }
+
+    @Test
+    void subscriptionDefaultsWhenAbsent() {
+        Manifest manifest = parseJvm(withWebhookAndSubscription("\"eventType\":\"a:b:c\",\"path\":\"/events/a\""));
+        Manifest.SubscriptionSpec sub = manifest.subscriptions().get(0);
+        assertThat(sub.mode()).as("manifest default is IMMEDIATE, not DispatchMode.DEFAULT (NEXT_ON_ERROR)")
+                .isEqualTo(DispatchMode.IMMEDIATE);
+        assertThat(sub.maxRetries()).isEqualTo(io.flowcatalyst.platform.subscription.Subscription.DEFAULT_MAX_RETRIES);
+        assertThat(sub.timeoutSeconds()).isEqualTo(io.flowcatalyst.platform.subscription.Subscription.DEFAULT_TIMEOUT_SECONDS);
+        assertThat(sub.dataOnly()).as("dataOnly default is false, unlike the subscription aggregate's own true default").isFalse();
+    }
+
+    @Test
+    void scheduleInvalidMissingCron() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                 "schedules":[{"path":"/jobs/hourly"}]}
+                """;
+        assertCode(() -> parseJvm(json), "SCHEDULE_INVALID");
+    }
+
+    @Test
+    void scheduleDuplicateCronAndTimezone() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                 "schedules":[
+                    {"cron":"0 * * * *","timezone":"UTC","path":"/jobs/hourly"},
+                    {"cron":"0 * * * *","timezone":"UTC","path":"/jobs/hourly"}]}
+                """;
+        assertCode(() -> parseJvm(json), "SCHEDULE_DUPLICATE");
+    }
+
+    @Test
+    void scheduleSameCronDifferentTimezoneIsNotADuplicate() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                 "schedules":[
+                    {"cron":"0 * * * *","timezone":"UTC","path":"/jobs/hourly"},
+                    {"cron":"0 * * * *","timezone":"America/New_York","path":"/jobs/hourly"}]}
+                """;
+        Manifest manifest = parseJvm(json);
+        assertThat(manifest.schedules()).hasSize(2);
+    }
+
+    // ── public routes ─────────────────────────────────────────────────────
+
+    @Test
+    void publicRouteInvalidBadHostname() {
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"not a hostname\"")), "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void publicRoutePathPrefixDefaultsToRoot() {
+        Manifest manifest = parseJvm(withPublic("\"hostname\":\"api.acme.com\""));
+        assertThat(manifest.publicRoutes().get(0).pathPrefix()).isEqualTo(RoutePattern.parse("/"));
+    }
+
+    @Test
+    void publicRouteInvalidPathPrefixIsAPattern() {
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"pathPrefix\":\"/a/{id}\"")), "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void publicRouteDuplicateHostnameAndPrefix() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","public":[
+                    {"hostname":"api.acme.com","pathPrefix":"/a"},
+                    {"hostname":"api.acme.com","pathPrefix":"/a"}]}
+                """;
+        assertCode(() -> parseJvm(json), "PUBLIC_ROUTE_DUPLICATE");
+    }
+
+    @Test
+    void publicRouteSameHostnameDifferentPrefixIsNotADuplicate() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","public":[
+                    {"hostname":"api.acme.com","pathPrefix":"/a"},
+                    {"hostname":"api.acme.com","pathPrefix":"/b"}]}
+                """;
+        Manifest manifest = parseJvm(json);
+        assertThat(manifest.publicRoutes()).hasSize(2);
+    }
+
+    // ── db / config (unchanged from function-registry.md §4.3) ──────────────
 
     @Test
     void dbInvalidNameNotADnsLabel() {
@@ -530,37 +684,7 @@ class ManifestTest {
         assertCode(() -> parseJvm(json), "CONFIG_INVALID");
     }
 
-    @Test
-    void manifestInvalidWarmWrongType() {
-        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"warm\":\"yes\"}";
-        assertCode(() -> parseJvm(json), "MANIFEST_INVALID");
-    }
-
-    // ── §8 M6: auth absent ⇒ BEARER ───────────────────────────────────────────
-
-    @Test
-    void authAbsentDefaultsToBearer() {
-        Manifest manifest = parseJvm(withHttpRoute("\"path\":\"/a\",\"methods\":[\"GET\"]"));
-        Manifest.Trigger.Http http = (Manifest.Trigger.Http) manifest.triggers().get(0);
-        assertThat(http.routes().get(0).auth()).isEqualTo(AuthMode.BEARER);
-    }
-
-    // ── §8 M5: absent limit frozen to min(default, ceiling) ──────────────────
-
-    @Test
-    void absentLimitFrozenToMinOfDefaultAndCeiling() {
-        ClientCeilings tightCeilings = new ClientCeilings(30_000, 10, 64, 4);
-        Manifest manifest = parseJvm(MINIMAL_JVM, tightCeilings);
-        assertThat(manifest.limits().maxConcurrency())
-                .as("min(default 32, ceiling 10)").isEqualTo(10);
-
-        Manifest reread = Manifest.readStored(manifest.toJson());
-        assertThat(reread.limits().maxConcurrency())
-                .as("the clamped value round-trips through the stored row, not the platform default")
-                .isEqualTo(10);
-    }
-
-    // ── readStored — tolerance contract (spec §4.2) ──────────────────────────
+    // ── readStored — tolerance contract ──────────────────────────────────────
 
     @Test
     void readStoredThrowsOnlyWhenRuntimeUnreadable() {
@@ -589,12 +713,11 @@ class ManifestTest {
         String json = """
                 {"runtime":"jvm","entrypoint":"x","bogus":1,
                  "limits":{"maxDurationMs":30000,"maxConcurrency":32,"extra":true},
-                 "triggers":[{"type":"http","routes":[
-                    {"path":"/a","methods":["GET"],"weird":true}]}]}
+                 "endpoints":[{"path":"/a","auth":"none","weird":true}]}
                 """;
         Manifest manifest = Manifest.readStored(readTree(json));
         assertThat(manifest.runtime()).isEqualTo(Runtime.JVM);
-        assertThat(manifest.triggers()).hasSize(1);
+        assertThat(manifest.endpoints()).hasSize(1);
     }
 
     @Test
@@ -605,7 +728,10 @@ class ManifestTest {
         assertThat(manifest.warm()).isFalse();
         assertThat(manifest.limits().maxDurationMs()).isEqualTo(FunctionLimits.DEFAULT_MAX_DURATION_MS);
         assertThat(manifest.limits().wasmMemoryMb()).isNull();
-        assertThat(manifest.triggers()).isEmpty();
+        assertThat(manifest.endpoints()).isEmpty();
+        assertThat(manifest.subscriptions()).isEmpty();
+        assertThat(manifest.schedules()).isEmpty();
+        assertThat(manifest.publicRoutes()).isEmpty();
         assertThat(manifest.config()).isEmpty();
         assertThat(manifest.secrets()).isEmpty();
         assertThat(manifest.db()).isEmpty();
@@ -622,55 +748,57 @@ class ManifestTest {
     }
 
     @Test
-    void readStoredDropsAMalformedTriggerButKeepsTheRest() {
+    void readStoredDropsAMalformedEndpointButKeepsTheRest() {
         String json = """
-                {"runtime":"jvm","entrypoint":"x","triggers":[
-                    {"type":"event"},
-                    {"type":"event","eventType":"a:b:c"}
+                {"runtime":"jvm","entrypoint":"x","endpoints":[
+                    {"path":"not-a-path","auth":"none"},
+                    {"path":"/a","auth":"none"}
                 ]}
                 """;
         Manifest manifest = Manifest.readStored(readTree(json));
-        assertThat(manifest.triggers()).containsExactly(new Manifest.Trigger.Event("a:b:c", null));
+        assertThat(manifest.endpoints()).hasSize(1);
+        assertThat(manifest.endpoints().get(0).path()).isEqualTo(RoutePattern.parse("/a"));
     }
 
     @Test
-    void readStoredDropsAMalformedRouteButKeepsTheRest() {
+    void readStoredDropsASubscriptionThatNoLongerMatchesAWebhookEndpoint() {
+        // the manifest was stored valid; if a later reader's rules ever
+        // tightened, the stored reader drops rather than throws
         String json = """
-                {"runtime":"jvm","entrypoint":"x","triggers":[
-                    {"type":"http","routes":[
-                        {"path":"not-a-path","methods":["GET"]},
-                        {"path":"/a","methods":["GET"]}
-                    ]}
-                ]}
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/events/*","auth":"platform"}],
+                 "subscriptions":[{"eventType":"a:b:c","path":"/events/a"}]}
                 """;
         Manifest manifest = Manifest.readStored(readTree(json));
-        Manifest.Trigger.Http http = (Manifest.Trigger.Http) manifest.triggers().get(0);
-        assertThat(http.routes()).hasSize(1);
-        assertThat(http.routes().get(0).path()).isEqualTo(RoutePattern.parse("/a"));
+        assertThat(manifest.subscriptions()).isEmpty();
     }
 
     // ── fixture builders ──────────────────────────────────────────────────────
 
     private static String withLimits(String limitsBody) {
         return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"limits\":{" + limitsBody + "},"
-                + "\"triggers\":[{\"type\":\"event\",\"eventType\":\"a:b:c\"}]}";
+                + "\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\"}]}";
     }
 
-    private static String withTriggers(String triggersBody) {
-        return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"triggers\":[" + triggersBody + "]}";
+    private static String withEndpoint(String endpointBody) {
+        return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"endpoints\":[{" + endpointBody + "}]}";
     }
 
-    private static String withHttpRoute(String routeBody) {
-        return withTriggers("{\"type\":\"http\",\"routes\":[{" + routeBody + "}]}");
+    private static String withWebhookAndSubscription(String subscriptionBody) {
+        return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"endpoints\":[{\"path\":\"/events/*\",\"auth\":\"webhook\"}],"
+                + "\"subscriptions\":[{" + subscriptionBody + "}]}";
+    }
+
+    private static String withPublic(String publicBody) {
+        return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"public\":[{" + publicBody + "}]}";
     }
 
     private static String withDb(String dbBody) {
         return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"db\":[" + dbBody + "],"
-                + "\"triggers\":[{\"type\":\"event\",\"eventType\":\"a:b:c\"}]}";
+                + "\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\"}]}";
     }
 
     private static String withConfig(String configBody) {
         return "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"config\":[" + configBody + "],"
-                + "\"triggers\":[{\"type\":\"event\",\"eventType\":\"a:b:c\"}]}";
+                + "\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\"}]}";
     }
 }

@@ -87,7 +87,8 @@ class SdkSyncApiTest {
                 new SubscriptionRepository(TestPg.dataSource()), new ConnectionRepository(TestPg.dataSource()),
                 new ProcessRepository(TestPg.dataSource()), new DispatchPoolRepository(TestPg.dataSource()),
                 new ScheduledJobRepository(TestPg.dataSource()), new OpenApiSpecRepository(TestPg.dataSource()),
-                new AppDocRepository(TestPg.dataSource()), new PrincipalRepository(TestPg.dataSource()), UOW);
+                new AppDocRepository(TestPg.dataSource()), new PrincipalRepository(TestPg.dataSource()), UOW,
+                new io.flowcatalyst.platform.function.TriggerObjectRepository(TestPg.dataSource()));
 
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));

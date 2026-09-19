@@ -544,6 +544,42 @@ class SubscriptionOperationsTest {
         assertThat(rollups).extracting(r -> json(r.get("data", String.class)).get("syncedCodes").size()).containsExactlyInAnyOrder(3, 1);
     }
 
+    /// V4 (`function-invocation.md` §4.1, §4.2, §10): a FUNCTION-sourced row
+    /// is `isSyncManaged() == false`, so a `removeUnlisted` sync neither
+    /// updates one that happens to share a declared code, nor deletes one
+    /// left unlisted — while an ordinary API-sourced row in the same batch
+    /// still gets deleted, so this is not "removeUnlisted stopped deleting
+    /// anything".
+    @Test
+    void removeUnlistedNeverTouchesAFunctionSourcedRow() {
+        String appCode = "subsyncfn" + RUN;
+        Subscription fnRow = Subscription.create(code("subsyncfn-owned"), "Function Owned", ENDPOINT)
+                .withApplicationCode(appCode).withSource(SubscriptionSource.FUNCTION);
+        uow.inTransaction(tx -> {
+            repo.persist(fnRow, tx.dbTx());
+            return null;
+        });
+        var ordinary = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                row(code("subsyncfn-ordinary"), "Ordinary")));
+        assertThat(ordinary.created()).isEqualTo(1);
+
+        // First call: ONLY the function row's code is declared (as if a
+        // coincidentally-matching SDK entry existed) — it must still not be
+        // updated (isolated from the ordinary row so `updated()` pins this
+        // alone, not diluted by the ordinary row's own no-op "update").
+        var withMatchingCode = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                row(code("subsyncfn-owned"), "Renamed By Sync")));
+        assertThat(withMatchingCode.updated()).as("the function row is skipped, not updated, even when its code is declared").isZero();
+        assertThat(reload(fnRow.id()).name()).isEqualTo("Function Owned");
+
+        // Second call: removeUnlisted, function row absent from the batch —
+        // it must survive while the ordinary row is deleted.
+        var swept = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, true));
+        assertThat(swept.deleted()).as("the ordinary unlisted row is still removed in the same call").isEqualTo(1);
+        assertThat(repo.findById(fnRow.id())).as("removeUnlisted never removes a FUNCTION-sourced row").isPresent();
+        assertThat(repo.findByCodeAndClient(code("subsyncfn-ordinary"), null)).isEmpty();
+    }
+
     /// X-08: two applications' syncs land in two different FIFO lanes.
     @Test
     void syncOfDifferentApplicationsProduceDifferentMessageGroups() {
