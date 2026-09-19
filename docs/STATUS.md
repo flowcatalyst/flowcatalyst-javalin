@@ -21,12 +21,32 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
 - **Go schema fixture re-dumped at goose 54** on branch `fix/go-schema-redump` (`818623a5`, cut from
   `main`, merged here at `1cabc008`). **`main` is still red on `SchemaFingerprintTest` until that
   branch lands there** — owner's call.
-- **Next: package B** (platform API + services) — spec first. Carry-overs for it: `DeleteApplication`
-  while the application has functions (no FK); `ClientPolicy.id()` is null for the platform owner
-  and the audit trail will want a value.
-- **Package C** (signatures + artifact store) waits on two owner answers: `sigstore-java` (measured:
-  39 jars / 35 MB, gRPC-Netty, BouncyCastle, Guava, protobuf) vs JDK-only bundle verification against
-  a pinned trust root; and signer-subject matching (spec Q5).
+- **Package C landed** (`7d7465b6`, tests deepened `a5e24094`): spec `docs/spec/function-artifacts.md`. Artifact
+  store by blob digest (`file://`, `oci://`; `s3://` and ECR credentials deferred — no SDK module) and
+  **JDK-only** Sigstore bundle verification (owner ruling 2026-09-19; no new dependency), proven
+  against a real cosign bundle from `sigstore/sigstore-conformance`. Written-down limits: no SCT
+  check; **Rekor v1 bundles only** — raise again at package E (the pipeline must pin cosign).
+- **Package B phase 1 landed** (`6ca75936`..`22dee1ab`): spec `docs/spec/function-api.md`. Functions and
+  signer policies, permissions + `platform:function-publisher` / `platform:function-host` roles, events
+  (`platform:function:*`), publish/promote/retire with `FC_FN_SIGNATURES` (`off` only in dev mode),
+  control plane (desired state + ETag, heartbeat, exactly-one `version:ready`), status, pools,
+  `DeleteApplication` guard, parity scenario `functions/functions.json` (17 routes hit, Java-first).
+  Routes are outside the lockfile (`/api/function` prefix) — an OpenAPI document is owed to package E.
+- **Lesson recorded in the specs:** mutation-check **one condition at a time**. Twice an agent's
+  "all mutants killed" report removed whole steps; the orchestrator's single-condition mutants then
+  survived (a Sigstore checkpoint unbound from its proof; platform functions leaking into a tenant
+  list). Re-run your own mutants on every slice.
+- **Waiting on the owner:** `docs/spec/function-triggers.md` is a *proposal* — D1 materialise
+  triggers at promote, D2 `UI`-sourced subscriptions + link table, D3 a dispatch pool per function,
+  D4 `mode` replaces `messageGroupKey`; Q8 pool URL convention `http://fn-{pool}:8080`; Q9 land
+  delivery signing (T0 — `DeliveryCredentials.none()` means Java sends webhooks **unsigned**,
+  `backlog.md:714`) on `main` first. Also: fcdev should set `FC_FN_SIGNATURES=off` itself (package E).
+- **Unverified claim to check on the next full parity run:** the B4 agent saw `assign-router-role`
+  succeed on the Go leg and called `router-config`'s expected-diffs stale. Go has no such role in
+  code (`grep` clean at `da983c4`); the role row most likely comes from the Java seeder the harness
+  runs into the shared seed. The full-corpus stale-entry check will settle it.
+- **Next: package D** (the host) — spec first; `function-api` module and the loader/isolation core
+  have no open questions. The invoke path needs the trigger rulings and T0.
 
 ## Next: the verification plan (2026-09-11)
 
