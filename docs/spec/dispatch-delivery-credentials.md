@@ -53,7 +53,7 @@ schema, no env var.
 | S1 | **End to end**: a job whose subscription belongs to an application with an active service account is delivered to a local HTTP server carrying a bearer token equal to the service account's and a signature that the SDK's own `WebhookSignature` verification accepts with that account's secret **and rejects with another secret** | wire `none()`; sign with a constant; sign a different body than the one sent |
 | S2 | subscription → `applicationCode` wins over the job code's first segment when both exist and differ | prefer the job code |
 | S3 | direct job, code `billing:invoice:created` ⇒ application `billing`'s credentials; code `legacy` (no colon) ⇒ bare; code `:x` ⇒ bare | take the whole code; accept an empty segment |
-| S4 | unknown application code ⇒ bare; application with no active service account ⇒ bare; an **inactive** account is skipped for an older… no: the *oldest active* is chosen when there are two active, and a deactivated older one is ignored | pick newest; ignore status |
+| S4 | unknown application code ⇒ bare; application with no active service account ⇒ bare; with two active accounts the **oldest** is chosen; a deactivated account older than both is ignored | pick newest; ignore status |
 | S5 | token-only and secret-only accounts each send exactly their one header (assert the other header is **absent**) | send an empty header |
 | S6 | the cache: two deliveries for one application inside a minute resolve once; after the TTL, again (drive the clock) | no cache; cache for ever |
 | S7 | a throwing resolver ⇒ the delivery still goes out, bare, and a WARN is logged (Logback `ListAppender`); no secret appears in any captured log line during S1–S7 | let it abort the delivery; log the secret |
