@@ -214,6 +214,80 @@ class FunctionApiTest {
         assertThat(ok.statusCode()).as(ok.body()).isEqualTo(200);
     }
 
+    // ── P2: out of reach is 404 on a read AND absent from the list — every reach clause ──
+
+    private static java.util.List<String> idsOf(JsonNode list) {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        list.get("data").forEach(n -> ids.add(n.get("id").asText()));
+        return ids;
+    }
+
+    /// A client-scoped principal's list: its own client's function is
+    /// present; another client's and a platform-owned function are absent —
+    /// from both `data` and `total`. Repository-level coverage of the same
+    /// clauses lives in `FunctionRepositoryTest`; this pins the HTTP wiring
+    /// (query params → [io.flowcatalyst.platform.function.FunctionRepository.PageFilter]).
+    @Test
+    void listExcludesAnotherClientsAndAPlatformOwnedFunctionForAClientScopedPrincipal() {
+        String appCode = "p2list-" + RUN + "-a";
+        testApplication("p2list-a", appCode);
+        String own = testClient("p2list-own");
+        String other = testClient("p2list-other");
+        var ownFn = create(appCode, "svc1", "reach", own);
+        var otherClientFn = create(appCode, "svc2", "other-client", other);
+        var platformFn = create(appCode, "svc3", "platform", null);
+
+        var list = json(http.get("/api/functions?address=" + appCode + ".*",
+                view(Authenticator.TEST_CLIENTS, own)));
+        assertThat(idsOf(list)).as("sees its own client's function").contains(ownFn.get("id").asText());
+        assertThat(idsOf(list)).as("not another client's function").doesNotContain(otherClientFn.get("id").asText());
+        assertThat(idsOf(list)).as("not a platform-owned function").doesNotContain(platformFn.get("id").asText());
+        assertThat(list.get("total").asLong()).as("total excludes both hidden rows").isEqualTo(1);
+    }
+
+    /// An anchor's list under the SAME address pattern reaches every owner —
+    /// the counterpart to the client-scoped case above, both seeded together
+    /// so a mutant that widens `Visibility.Tenants` cannot be masked by one
+    /// that narrows `Visibility.Everything`, or vice versa.
+    @Test
+    void listIncludesEveryOwnerForAnAnchor() {
+        String appCode = "p2list-" + RUN + "-c";
+        testApplication("p2list-c", appCode);
+        String clientA = testClient("p2list-anchor-a");
+        String clientB = testClient("p2list-anchor-b");
+        var fnA = create(appCode, "svc1", "a", clientA);
+        var fnB = create(appCode, "svc2", "b", clientB);
+        var fnPlatform = create(appCode, "svc3", "platform", null);
+
+        var list = json(http.get("/api/functions?address=" + appCode + ".*", ANCHOR));
+        assertThat(idsOf(list)).as("anchor sees every owner").containsExactlyInAnyOrder(
+                fnA.get("id").asText(), fnB.get("id").asText(), fnPlatform.get("id").asText());
+        assertThat(list.get("total").asLong()).isEqualTo(3);
+    }
+
+    /// An application-scoped principal (an explicit `X-FC-Test-Applications`
+    /// header) does not reach another application's function even within its
+    /// own reachable client — scoped by `clientId=` (a fresh, unique client
+    /// id) rather than an address pattern, since the two functions live
+    /// under two different application codes.
+    @Test
+    void listExcludesAnotherApplicationsFunctionForAnApplicationScopedPrincipalEvenWithinItsOwnClient() {
+        String client = testClient("p2list-app");
+        String ownAppCode = "p2list-" + RUN + "-own";
+        String otherAppCode = "p2list-" + RUN + "-other";
+        String ownAppId = testApplication("p2list-app-own", ownAppCode);
+        testApplication("p2list-app-other", otherAppCode);
+        var ownAppFn = create(ownAppCode, "svc", "fn", client);
+        var otherAppFn = create(otherAppCode, "svc", "fn", client);
+
+        var list = json(http.get("/api/functions?clientId=" + client,
+                view(Authenticator.TEST_CLIENTS, client, Authenticator.TEST_APPLICATIONS, ownAppId)));
+        assertThat(idsOf(list)).as("sees its own application's function").contains(ownAppFn.get("id").asText());
+        assertThat(idsOf(list)).as("not another application's function, same client")
+                .doesNotContain(otherAppFn.get("id").asText());
+        assertThat(list.get("total").asLong()).as("total excludes the other application's row").isEqualTo(1);
+    }
+
     // ── P3: PUT with an immutable field is 400 ───────────────────────────────
 
     @Test

@@ -247,8 +247,11 @@ class FunctionOperationsTest {
         assertThat(after.owner()).as("owner unchanged").isEqualTo(before.owner());
         assertThat(after.runtime()).as("runtime unchanged").isEqualTo(before.runtime());
 
-        // P5: exactly one updated event and one audit row.
-        assertThat(eventsFor("platform.function." + created.functionId(), FunctionEvents.UPDATED)).hasSize(1);
+        // P5: exactly one updated event, the function's message group, and one audit row.
+        var updatedEvents = eventsFor("platform.function." + created.functionId(), FunctionEvents.UPDATED);
+        assertThat(updatedEvents).hasSize(1);
+        assertThat(updatedEvents.getFirst().get("message_group")).as("P5 mutant guard: wrong message group")
+                .isEqualTo("platform:function:" + created.functionId());
         assertThat(auditsFor(created.functionId(), "UpdateCommand")).hasSize(1);
     }
 
@@ -299,7 +302,11 @@ class FunctionOperationsTest {
         assertThat(ev.functionId()).isEqualTo(created.functionId());
         assertThat(functions.findByAddress(address)).as("row is gone").isEmpty();
 
-        assertThat(eventsFor("platform.function." + created.functionId(), FunctionEvents.DELETED)).hasSize(1);
+        // P5: exactly one deleted event, the function's message group, and one audit row.
+        var deletedEvents = eventsFor("platform.function." + created.functionId(), FunctionEvents.DELETED);
+        assertThat(deletedEvents).hasSize(1);
+        assertThat(deletedEvents.getFirst().get("message_group")).as("P5 mutant guard: wrong message group")
+                .isEqualTo("platform:function:" + created.functionId());
         assertThat(auditsFor(created.functionId(), "DeleteCommand")).hasSize(1);
     }
 

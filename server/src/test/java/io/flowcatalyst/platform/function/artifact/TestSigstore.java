@@ -14,6 +14,7 @@ import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
@@ -173,9 +174,7 @@ final class TestSigstore {
             X509Certificate leafCert = (X509Certificate) ks.getCertificate("leaf");
             PrivateKey leafPrivateKey = (PrivateKey) ks.getKey("leaf", storepass.toCharArray());
 
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-            kpg.initialize(new ECGenParameterSpec("secp256r1"));
-            KeyPair logKey = kpg.generateKeyPair();
+            KeyPair logKey = freshEcKeyPair();
 
             return new Ecosystem(rootCert, leafCert, leafPrivateKey, logKey);
         } catch (GeneralSecurityException | IOException e) {
@@ -268,6 +267,86 @@ final class TestSigstore {
     static String bundleJson(X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey,
                               byte[] declaredDigest, byte[] signOverDigest, String rekorHashValueHex,
                               Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
+        return buildBundle(leafCert, leafPrivateKey, logKey, declaredDigest, signOverDigest, rekorHashValueHex,
+                null, null, integratedTime, entryLogIndex, 1, 0, null, null, null);
+    }
+
+    /// C5-step-3 broken variant, isolating the SIGNATURE binding alone: the
+    /// entry's `spec.signature.content` is `overrideSignature`, a value the
+    /// bundle's own `messageSignature.signature` (still the real one) does
+    /// not match — `hash.value` and `publicKey.content` stay exactly right.
+    static String bundleJsonWithEntrySignatureOverride(Ecosystem eco, byte[] artifactDigest, byte[] overrideSignature,
+                                                         Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
+        return buildBundle(eco.leafCert(), eco.leafPrivateKey(), eco.logKey(), artifactDigest, artifactDigest,
+                HexFormat.of().formatHex(artifactDigest), overrideSignature, null, integratedTime, entryLogIndex,
+                1, 0, null, null, null);
+    }
+
+    /// C5-step-3 broken variant, isolating the PUBLIC-KEY binding alone: the
+    /// entry's `spec.signature.publicKey.content` is `overrideCertDer` (some
+    /// other certificate), which the bundle's own leaf certificate (still the
+    /// real one) does not match — `hash.value` and `signature.content` stay
+    /// exactly right.
+    static String bundleJsonWithEntryPublicKeyOverride(Ecosystem eco, byte[] artifactDigest, byte[] overrideCertDer,
+                                                         Instant integratedTime, long entryLogIndex) throws GeneralSecurityException {
+        return buildBundle(eco.leafCert(), eco.leafPrivateKey(), eco.logKey(), artifactDigest, artifactDigest,
+                HexFormat.of().formatHex(artifactDigest), null, overrideCertDer, integratedTime, entryLogIndex,
+                1, 0, null, null, null);
+    }
+
+    /// A genuine RFC 6962 multi-leaf tree of `treeSize` leaves (`leafIndex`'s
+    /// leaf is the real entry; the rest are opaque 32-byte stand-ins — their
+    /// content never matters, only their position) — a correct,
+    /// self-consistent, VERIFIABLE bundle whose audit path is non-trivial
+    /// (spec §3.2 step 5's happy path with `treeSize > 1`).
+    static String validBundleJsonWithTree(Ecosystem eco, byte[] artifactDigest, Instant integratedTime,
+                                           long entryLogIndex, int treeSize, int leafIndex) throws GeneralSecurityException {
+        return buildBundle(eco.leafCert(), eco.leafPrivateKey(), eco.logKey(), artifactDigest, artifactDigest,
+                HexFormat.of().formatHex(artifactDigest), null, null, integratedTime, entryLogIndex,
+                treeSize, leafIndex, null, null, null);
+    }
+
+    /// C5-step-5 broken variant, isolating the CHECKPOINT↔PROOF binding
+    /// alone: the inclusion proof is internally self-consistent (its own
+    /// `rootHash` really is what the audit path — empty, one-leaf tree —
+    /// produces), but the checkpoint that is supposed to vouch for that same
+    /// root/size is built from `rootOverride`/`sizeOverride` (`null` = use
+    /// the proof's real value) and signed by `checkpointSigningKey` (`null` =
+    /// the pinned log key, for the "right key, wrong content" variants; a
+    /// different key for the "right content, wrong key" variant).
+    static String bundleJsonWithCheckpointOverride(Ecosystem eco, byte[] artifactDigest, Instant integratedTime,
+                                                     long entryLogIndex, KeyPair checkpointSigningKey,
+                                                     byte[] rootOverride, Long sizeOverride) throws GeneralSecurityException {
+        return buildBundle(eco.leafCert(), eco.leafPrivateKey(), eco.logKey(), artifactDigest, artifactDigest,
+                HexFormat.of().formatHex(artifactDigest), null, null, integratedTime, entryLogIndex,
+                1, 0, checkpointSigningKey, rootOverride, sizeOverride);
+    }
+
+    /// A fresh, unpinned P-256 log key — used to build a checkpoint validly
+    /// signed by a key the [TrustRoot] never pinned.
+    static KeyPair freshEcKeyPair() throws GeneralSecurityException {
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+        kpg.initialize(new ECGenParameterSpec("secp256r1"));
+        return kpg.generateKeyPair();
+    }
+
+    static byte[] randomBytes(int n) {
+        byte[] b = new byte[n];
+        new SecureRandom().nextBytes(b);
+        return b;
+    }
+
+    /// The one bundle builder every `bundleJson*`/`validBundleJson*` method
+    /// above delegates to — every broken variant is a deliberate divergence
+    /// from an otherwise wholly self-consistent bundle, never a shortcut that
+    /// skips building a piece for real.
+    private static String buildBundle(X509Certificate leafCert, PrivateKey leafPrivateKey, KeyPair logKey,
+                                       byte[] declaredDigest, byte[] signOverDigest, String rekorHashValueHex,
+                                       byte[] entrySignatureContentOverride, byte[] entryPublicKeyCertDerOverride,
+                                       Instant integratedTime, long entryLogIndex,
+                                       int treeSize, int leafIndex,
+                                       KeyPair checkpointSigningKey, byte[] checkpointRootHashOverride,
+                                       Long checkpointTreeSizeOverride) throws GeneralSecurityException {
         byte[] leafDer = certDer(leafCert);
         // NONEwithECDSA cannot init with a non-EC key; for the "non-EC key ⇒ UNSUPPORTED_BUNDLE"
         // test the exact bytes never matter — SignatureVerifier rejects on key type first.
@@ -283,20 +362,31 @@ final class TestSigstore {
         hash.put("algorithm", "sha256");
         hash.put("value", rekorHashValueHex);
         ObjectNode sigNode = spec.putObject("signature");
-        sigNode.put("content", b64(signature));
-        sigNode.putObject("publicKey").put("content", b64(pem(leafDer)));
+        byte[] entrySignatureBytes = entrySignatureContentOverride != null ? entrySignatureContentOverride : signature;
+        sigNode.put("content", b64(entrySignatureBytes));
+        byte[] entryPublicKeyDer = entryPublicKeyCertDerOverride != null ? entryPublicKeyCertDerOverride : leafDer;
+        sigNode.putObject("publicKey").put("content", b64(pem(entryPublicKeyDer)));
         byte[] canonicalizedBody = Json.MAPPER.writeValueAsBytes(bodyRoot);
         String canonicalizedBodyB64 = b64(canonicalizedBody);
 
         byte[] logSpki = logKey.getPublic().getEncoded();
         byte[] logIdBytes = sha256(logSpki);
-        byte[] leafHash = sha256(concat(new byte[]{0x00}, canonicalizedBody));
-        byte[] rootHash = leafHash; // one-leaf tree
-        long treeSize = 1;
-        long proofLogIndex = 0;
+        byte[] realLeafHash = sha256(concat(new byte[]{0x00}, canonicalizedBody));
 
-        String checkpointBody = LOG_ORIGIN + "\n" + treeSize + "\n" + b64(rootHash) + "\n";
-        byte[] checkpointSig = sign("SHA256withECDSA", logKey.getPrivate(), checkpointBody.getBytes(StandardCharsets.UTF_8));
+        List<byte[]> leaves = new ArrayList<>();
+        for (int i = 0; i < treeSize; i++) {
+            leaves.add(i == leafIndex ? realLeafHash : randomBytes(32));
+        }
+        byte[] rootHash = merkleRoot(leaves, 0, treeSize);
+        List<byte[]> proofHashes = treeSize == 1 ? List.of() : auditPath(leaves, leafIndex, 0, treeSize);
+        long proofTreeSize = treeSize;
+        long proofLogIndex = leafIndex;
+
+        KeyPair signerForCheckpoint = checkpointSigningKey != null ? checkpointSigningKey : logKey;
+        byte[] checkpointRoot = checkpointRootHashOverride != null ? checkpointRootHashOverride : rootHash;
+        long checkpointSize = checkpointTreeSizeOverride != null ? checkpointTreeSizeOverride : proofTreeSize;
+        String checkpointBody = LOG_ORIGIN + "\n" + checkpointSize + "\n" + b64(checkpointRoot) + "\n";
+        byte[] checkpointSig = sign("SHA256withECDSA", signerForCheckpoint.getPrivate(), checkpointBody.getBytes(StandardCharsets.UTF_8));
         byte[] sigLine = concat(new byte[]{0, 0, 0, 0}, checkpointSig);
         String checkpointEnvelope = checkpointBody + "\n— test.rekor.local " + b64(sigLine) + "\n";
 
@@ -321,8 +411,11 @@ final class TestSigstore {
         ObjectNode proof = entryNode.putObject("inclusionProof");
         proof.put("logIndex", String.valueOf(proofLogIndex));
         proof.put("rootHash", b64(rootHash));
-        proof.put("treeSize", String.valueOf(treeSize));
-        proof.putArray("hashes");
+        proof.put("treeSize", String.valueOf(proofTreeSize));
+        ArrayNode hashesNode = proof.putArray("hashes");
+        for (byte[] h : proofHashes) {
+            hashesNode.add(b64(h));
+        }
         proof.putObject("checkpoint").put("envelope", checkpointEnvelope);
         entryNode.put("canonicalizedBody", canonicalizedBodyB64);
         ObjectNode msgSig = bundle.putObject("messageSignature");
@@ -332,6 +425,40 @@ final class TestSigstore {
         msgSig.put("signature", b64(signature));
 
         return Json.MAPPER.writeValueAsString(bundle);
+    }
+
+    // ---- RFC 6962 Merkle helpers — mirror SignatureVerifier's client-side
+    // audit-path algorithm exactly (verified by hand against RFC 6962 §2.1.1's
+    // recursive MTH/PATH definitions) so a test tree really round-trips ----
+
+    private static byte[] merkleRoot(List<byte[]> leaves, int lo, int hi) {
+        if (hi - lo == 1) {
+            return leaves.get(lo);
+        }
+        int k = Integer.highestOneBit(hi - lo - 1);
+        byte[] left = merkleRoot(leaves, lo, lo + k);
+        byte[] right = merkleRoot(leaves, lo + k, hi);
+        return hashChildren(left, right);
+    }
+
+    private static List<byte[]> auditPath(List<byte[]> leaves, int m, int lo, int hi) {
+        if (hi - lo == 1) {
+            return new ArrayList<>();
+        }
+        int k = Integer.highestOneBit(hi - lo - 1);
+        List<byte[]> path = new ArrayList<>();
+        if (m - lo < k) {
+            path.addAll(auditPath(leaves, m, lo, lo + k));
+            path.add(merkleRoot(leaves, lo + k, hi));
+        } else {
+            path.addAll(auditPath(leaves, m, lo + k, hi));
+            path.add(merkleRoot(leaves, lo, lo + k));
+        }
+        return path;
+    }
+
+    private static byte[] hashChildren(byte[] left, byte[] right) {
+        return sha256(concat(new byte[]{0x01}, concat(left, right)));
     }
 
     private static byte[] certDer(X509Certificate cert) {

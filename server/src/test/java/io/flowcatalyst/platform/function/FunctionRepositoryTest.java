@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -328,6 +329,96 @@ class FunctionRepositoryTest {
         List<Function> everyone = REPO.list(new FunctionRepository.ListFilter(
                 FunctionAddressPattern.parse(app.value() + ".*"), null, null));
         assertThat(everyone).extracting(Function::id).containsExactlyInAnyOrder(platformFn.id(), clientFn.id());
+    }
+
+    // ── §4.2 PageFilter reach — mandatory, never widened by the caller (spec §2, §8 P2) ──
+
+    /// A client-scoped principal's page: its own function is present,
+    /// another client's is absent, and a platform-owned one is absent — from
+    /// BOTH the returned page and [FunctionRepository#countWithFilters]'s
+    /// total. Kills the `.or(T.CLIENT_ID.isNull())` leak (a platform-owned
+    /// function would then appear for every tenant) and any mutant that
+    /// makes `countWithFilters` ignore reach (the total would then include
+    /// the two hidden rows).
+    @Test
+    void findWithFiltersAppliesReachForAClientScopedPrincipal() {
+        DnsLabel app = randomAppCode();
+        String ownClient = fresh();
+        String otherClient = fresh();
+        String applicationId = fresh();
+        Function ownFn = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc1"), new DnsLabel("reach")),
+                FunctionOwner.ofClientId(ownClient), Runtime.JVM, null));
+        Function otherClientFn = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc2"), new DnsLabel("other-client")),
+                FunctionOwner.ofClientId(otherClient), Runtime.JVM, null));
+        Function platformFn = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc3"), new DnsLabel("platform")),
+                new FunctionOwner.Platform(), Runtime.JVM, null));
+
+        var filter = new FunctionRepository.PageFilter(FunctionAddressPattern.parse(app.value() + ".*"),
+                null, null, new Visibility.Tenants(List.of(ownClient)), List.of());
+
+        List<Function> page = REPO.findWithFilters(filter, 100, 0);
+        assertThat(page).extracting(Function::id).as("sees its own client's function").contains(ownFn.id());
+        assertThat(page).extracting(Function::id).as("not another client's function").doesNotContain(otherClientFn.id());
+        assertThat(page).extracting(Function::id).as("not a platform-owned function").doesNotContain(platformFn.id());
+        assertThat(REPO.countWithFilters(filter)).as("total excludes both hidden rows").isEqualTo(1);
+    }
+
+    /// An application-scoped principal (non-empty `applicationIds`) does not
+    /// reach another application's function even though BOTH functions
+    /// belong to its own reachable client. Kills dropping the
+    /// `T.APPLICATION_ID.in(...)` clause.
+    @Test
+    void findWithFiltersAppliesReachForAnApplicationScopedPrincipal() {
+        DnsLabel app = randomAppCode();
+        String client = fresh();
+        String ownApplicationId = fresh();
+        String otherApplicationId = fresh();
+        Function ownAppFn = persist(Function.create(ownApplicationId,
+                FunctionAddress.of(app, new DnsLabel("svc1"), new DnsLabel("own-app")),
+                FunctionOwner.ofClientId(client), Runtime.JVM, null));
+        Function otherAppFn = persist(Function.create(otherApplicationId,
+                FunctionAddress.of(app, new DnsLabel("svc2"), new DnsLabel("other-app")),
+                FunctionOwner.ofClientId(client), Runtime.JVM, null));
+
+        var filter = new FunctionRepository.PageFilter(FunctionAddressPattern.parse(app.value() + ".*"),
+                null, null, new Visibility.Tenants(List.of(client)), List.of(ownApplicationId));
+
+        List<Function> page = REPO.findWithFilters(filter, 100, 0);
+        assertThat(page).extracting(Function::id).as("sees its own application's function").contains(ownAppFn.id());
+        assertThat(page).extracting(Function::id).as("not another application's function, same client")
+                .doesNotContain(otherAppFn.id());
+        assertThat(REPO.countWithFilters(filter)).as("total excludes the other application's row").isEqualTo(1);
+    }
+
+    /// An anchor ([Visibility.Everything]) reaches every owner: its own
+    /// client's, another client's, and a platform-owned function. Kills a
+    /// mutant that makes `Everything` apply a tenant filter after all.
+    @Test
+    void findWithFiltersAppliesNoRestrictionForAnAnchor() {
+        DnsLabel app = randomAppCode();
+        String clientA = fresh();
+        String clientB = fresh();
+        String applicationId = fresh();
+        Function fnA = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc1"), new DnsLabel("a")),
+                FunctionOwner.ofClientId(clientA), Runtime.JVM, null));
+        Function fnB = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc2"), new DnsLabel("b")),
+                FunctionOwner.ofClientId(clientB), Runtime.JVM, null));
+        Function fnPlatform = persist(Function.create(applicationId,
+                FunctionAddress.of(app, new DnsLabel("svc3"), new DnsLabel("platform")),
+                new FunctionOwner.Platform(), Runtime.JVM, null));
+
+        var filter = new FunctionRepository.PageFilter(FunctionAddressPattern.parse(app.value() + ".*"),
+                null, null, Visibility.Everything.INSTANCE, List.of());
+
+        List<Function> page = REPO.findWithFilters(filter, 100, 0);
+        assertThat(page).extracting(Function::id)
+                .as("anchor sees every owner").containsExactlyInAnyOrder(fnA.id(), fnB.id(), fnPlatform.id());
+        assertThat(REPO.countWithFilters(filter)).as("total counts every owner").isEqualTo(3);
     }
 
     private static int aliasRowCount(String functionId) {
