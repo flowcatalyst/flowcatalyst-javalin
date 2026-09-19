@@ -54,10 +54,18 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
 - **Platform facts found on the way, both in `docs/backlog.md` / `Result`'s doc:** a subscription
   binding's `filter` has no column and is silently dropped for every subscription; no delivery path
   lets a subscriber force a non-retryable failure, and scheduled-job deliveries ignore `429`/`Retry-After`.
-- **In progress: D3 the host listener** (spec `function-host-listener.md`); its H15 test is the
-  package D acceptance (signed publish → promote → signed webhook delivery → function acks → job
-  `COMPLETED`). Then D4 (`FunctionContext` services), D5 (`main`, metrics, Dockerfile), E (fcdev +
-  CLI + sample), F (public routes, domains).
+- **Package D so far:** D1 loader core, D2 reconciler, **D3 listener** (`4e242ede`; its H15 test is
+  the in-process acceptance: publish → promote → signed webhook delivery → function acks → job
+  `COMPLETED`; `retry` ⇒ deferred, no attempt spent), **D5 process** (`3838fe50`: `fc-fnhost` main,
+  `/health` `/ready` `/metrics`, JFR, image 133.7 MB run to `/ready` 200). `FC_FN_POOL_URL`'s `{pool}`
+  is optional.
+- **Owner rulings 2026-09-20 — R12** config and secrets are platform-stored per function, delivered in
+  desired state (declared keys only); **R13** a function emits through the host on its behalf and only
+  event types its application owns. Spec `docs/spec/function-context.md`. **In progress: D4a**
+  (platform config/secrets); then D4b (host context: logger with MDC on the worker thread, shared
+  gated DB pools, allow-listed HTTP), D4c (emit route). Then E (fcdev + CLI + sample), F (public routes).
+- **New backlog item from R13:** ordinary event ingest checks no event-type ownership at all
+  (`docs/backlog.md`, 2026-09-20) — its own unit on `main`, needs a rollout ruling.
 - **Working rules learned here:** one mutant per *condition*; re-run orchestrator mutants every slice
   (survivors on six slices); restore a mutated file from a copy, never `git checkout`; tell coders
   not to spawn forks (one slice was implemented five times concurrently in one tree); `caffeinate -dims`.

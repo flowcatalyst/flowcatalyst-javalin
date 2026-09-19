@@ -1557,3 +1557,14 @@ was amended (2026-09-19/20 rulings) to make it an unknown field
 (`MANIFEST_UNKNOWN_FIELD`) rather than promise filtering that never
 happens. The underlying gap — no filter storage anywhere in the platform —
 is still open for the admin/SDK subscription surface too.
+
+## Event ingest does not check who owns the event type (2026-09-20, **owner**)
+
+`POST /api/events` and `/api/events/batch` (`IngestApi`) gate on the coarse `BATCH_EVENTS_WRITE`
+permission only: any principal holding it can emit **any application's** event types. The owner's
+ruling for functions (R13, `docs/spec/function-context.md` §3.1) is that an emitter may emit only
+event types it owns, *and that this should hold on the outbox/ingest path too*. That is a change to
+a Go-parity route every SDK and outbox producer uses, so it is its own unit on `main`: spec what
+"owns" means (application-scoped service account → its applications' types; users?), and the
+rollout (log-then-enforce?). The function emit route (`POST /control/functions/events`) enforces it
+from day one.
