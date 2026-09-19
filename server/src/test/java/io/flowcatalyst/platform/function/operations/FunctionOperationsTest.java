@@ -340,9 +340,11 @@ class FunctionOperationsTest {
         assertThat(saved.maxDurationMs()).isEqualTo(1000);
 
         // P5: message group + audit — the platform's key (never null, spec §4.3).
-        assertThat(eventsFor("platform.function." + clientId, FunctionEvents.POLICY_UPDATED)).hasSize(1);
-        assertThat(eventsFor("platform.function." + clientId, FunctionEvents.POLICY_UPDATED).getFirst().get("message_group"))
-                .as("P5 mutant guard: wrong message group").isEqualTo("platform:function:" + clientId);
+        // Item 0 (spec §3's parenthesis): the policy event's subject/group are
+        // `function-policy`, not `function` — a policy is not itself a function.
+        assertThat(eventsFor("platform.function-policy." + clientId, FunctionEvents.POLICY_UPDATED)).hasSize(1);
+        assertThat(eventsFor("platform.function-policy." + clientId, FunctionEvents.POLICY_UPDATED).getFirst().get("message_group"))
+                .as("P5 mutant guard: wrong message group").isEqualTo("platform:function-policy:" + clientId);
         assertThat(auditsFor(clientId, "PutPolicyCommand")).hasSize(1);
     }
 

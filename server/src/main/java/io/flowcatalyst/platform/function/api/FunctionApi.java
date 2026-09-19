@@ -3,9 +3,13 @@ package io.flowcatalyst.platform.function.api;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionAddressPattern;
+import io.flowcatalyst.platform.function.FunctionHost;
+import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
+import io.flowcatalyst.platform.function.FunctionVersion;
+import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.operations.Access;
 import io.flowcatalyst.platform.function.operations.CreateCommand;
 import io.flowcatalyst.platform.function.operations.CreateFunction;
@@ -31,6 +35,8 @@ import io.flowcatalyst.http.Routes;
 import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
@@ -51,6 +57,13 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// | GET | `/api/functions/{address}` | 200 [FunctionResponse] |
 /// | PUT | `/api/functions/{address}` | 204 |
 /// | DELETE | `/api/functions/{address}` | 204 |
+/// | GET | `/api/functions/{address}/status` | 200 [StatusResponse] |
+/// | GET | `/api/function-pools` | 200 `[`[PoolSummaryResponse]`]` |
+///
+/// The last two (spec §6.3, work package B2) are gated `requireAnchor` +
+/// `FUNCTION_VIEW` — NOT the per-function reach every other route above
+/// applies — the coordinator's explicit instruction for this slice: hosts and
+/// pools are cross-tenant infrastructure state, not a client-scoped resource.
 public final class FunctionApi {
 
     private FunctionApi() {
@@ -63,12 +76,14 @@ public final class FunctionApi {
             List.of("serviceName", "name", "applicationCode", "clientId", "runtime");
 
     public record State(FunctionRepository repo, ApplicationRepository applications, ClientRepository clients,
-                        UnitOfWork uow) {
+                        UnitOfWork uow, FunctionVersionRepository versions, FunctionHostRepository hosts) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(applications, "applications");
             Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(versions, "versions");
+            Objects.requireNonNull(hosts, "hosts");
         }
     }
 
@@ -79,6 +94,8 @@ public final class FunctionApi {
         routes.get("/api/functions/{address}", Auth.scoped(ctx -> getOne(ctx, s)));
         write.put("/api/functions/{address}", Auth.scoped(ctx -> update(ctx, s)));
         write.delete("/api/functions/{address}", Auth.scoped(ctx -> delete(ctx, s)));
+        routes.get("/api/functions/{address}/status", Auth.scoped(ctx -> status(ctx, s)));
+        routes.get("/api/function-pools", Auth.scoped(ctx -> pools(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
@@ -127,6 +144,79 @@ public final class FunctionApi {
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
         DeleteFunction.of(s.repo()).run(s.uow(), new DeleteCommand(address), Auth.executionContext());
         ctx.status(204);
+    }
+
+    /// spec §6.3: `requireAnchor` + `FUNCTION_VIEW`, not the per-function
+    /// reach the other routes above apply (this slice's explicit
+    /// instruction — see the class doc). [FunctionHostRepository#listAll] is
+    /// the "hosts reporting this address" read: an in-memory filter over
+    /// every host, any pool, since a function's versions can each name a
+    /// different pool.
+    private static void status(Exchange ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        Function f = s.repo().findByAddress(address).orElseThrow(() -> HttpError.notFound("Function", address.render()));
+
+        List<FunctionVersion> versions = s.versions().listByFunction(f.id());
+        List<StatusResponse.VersionSummary> versionSummaries = versions.stream()
+                .map(v -> new StatusResponse.VersionSummary(v.version(), versionStateWire(v.state())))
+                .toList();
+
+        StatusResponse.Live live = f.liveVersionId()
+                .flatMap(id -> versions.stream().filter(v -> v.id().equals(id)).findFirst())
+                .map(v -> new StatusResponse.Live(v.version()))
+                .orElse(null);
+
+        Instant now = Instant.now();
+        List<StatusResponse.HostSummary> hostSummaries = new ArrayList<>();
+        for (FunctionHost h : s.hosts().listAll()) {
+            List<StatusResponse.LoadedSummary> matching = h.loaded().stream()
+                    .filter(lv -> lv.address().equals(address))
+                    .map(lv -> new StatusResponse.LoadedSummary(lv.version(), loadStateWire(lv.state()), errorOf(lv.state())))
+                    .toList();
+            if (!matching.isEmpty()) {
+                boolean stale = h.lastHeartbeat().isBefore(now.minus(FunctionHost.LIVE_WINDOW));
+                hostSummaries.add(new StatusResponse.HostSummary(
+                        h.id(), h.pool().value(), h.state().name(), h.lastHeartbeat(), stale, matching));
+            }
+        }
+        hostSummaries.sort(Comparator.comparing(StatusResponse.HostSummary::hostId));
+
+        ctx.json(new StatusResponse(address.render(), f.status().name(), live, versionSummaries, hostSummaries));
+    }
+
+    /// spec §6.3: `requireAnchor` + `FUNCTION_VIEW`; counts reuse
+    /// [FunctionHostRepository#pools], the same "seen since" cut-off
+    /// [FunctionHost#LIVE_WINDOW] gives every other host-liveness read.
+    private static void pools(Exchange ctx, State s) {
+        Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Instant seenSince = Instant.now().minus(FunctionHost.LIVE_WINDOW);
+        List<PoolSummaryResponse> out = s.hosts().pools(seenSince).stream()
+                .map(p -> new PoolSummaryResponse(p.pool().value(), p.hosts()))
+                .toList();
+        ctx.json(out);
+    }
+
+    private static String versionStateWire(FunctionVersion.VersionState state) {
+        return switch (state) {
+            case FunctionVersion.VersionState.Published ignored -> "PUBLISHED";
+            case FunctionVersion.VersionState.Ready ignored -> "READY";
+            case FunctionVersion.VersionState.Retired ignored -> "RETIRED";
+        };
+    }
+
+    private static String loadStateWire(FunctionHost.LoadState state) {
+        return switch (state) {
+            case FunctionHost.LoadState.Registered ignored -> "REGISTERED";
+            case FunctionHost.LoadState.Loaded ignored -> "LOADED";
+            case FunctionHost.LoadState.Failed ignored -> "FAILED";
+        };
+    }
+
+    private static String errorOf(FunctionHost.LoadState state) {
+        return state instanceof FunctionHost.LoadState.Failed(String error) ? error : null;
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────
@@ -227,5 +317,28 @@ public final class FunctionApi {
         /// shape now so the field never needs to be added later.
         public record Live(String version, String versionId) {
         }
+    }
+
+    /// `GET /api/functions/{address}/status` (spec §6.3). `hosts` lists only
+    /// hosts that report THIS address, and only their entries for it.
+    public record StatusResponse(String address, String status, Live live, List<VersionSummary> versions,
+                                 List<HostSummary> hosts) {
+
+        public record Live(int version) {
+        }
+
+        public record VersionSummary(int version, String state) {
+        }
+
+        public record HostSummary(String hostId, String pool, String state, Instant lastHeartbeat, boolean stale,
+                                  List<LoadedSummary> loaded) {
+        }
+
+        public record LoadedSummary(int version, String state, String error) {
+        }
+    }
+
+    /// `GET /api/function-pools` (spec §6.3).
+    public record PoolSummaryResponse(String pool, int hosts) {
     }
 }

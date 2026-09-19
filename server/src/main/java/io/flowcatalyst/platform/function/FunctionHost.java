@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.function;
 
 import io.flowcatalyst.sdk.usecase.HasId;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -23,6 +24,13 @@ public record FunctionHost(
         List<LoadedVersion> loaded,
         Instant startedAt,
         Instant lastHeartbeat) implements HasId {
+
+    /// Three missed 15 s beats (spec `function-api.md` §6.1: "45 s = three
+    /// missed 15 s beats") — the window [io.flowcatalyst.platform.function.FunctionHostRepository#listLive]
+    /// / `#pools` and Status's `stale` all key off, driven by an explicit
+    /// `now` everywhere it is used rather than `Instant.now()` so a test can
+    /// move it without sleeping.
+    public static final Duration LIVE_WINDOW = Duration.ofSeconds(45);
 
     public FunctionHost {
         Objects.requireNonNull(id, "id");

@@ -7,7 +7,9 @@ import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -43,6 +45,8 @@ class FunctionApiTest {
     private static final ApplicationRepository applications = new ApplicationRepository(TestPg.dataSource());
     private static final ClientRepository clients = new ClientRepository(TestPg.dataSource());
     private static final FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+    private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
+    private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
 
     private static final String[] ANCHOR = {
@@ -59,7 +63,7 @@ class FunctionApiTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before("/api/*", auth);
-            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow));
+            FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts));
         });
     }
 
@@ -334,5 +338,177 @@ class FunctionApiTest {
 
         var get = http.get("/api/functions/delete-" + RUN + ".svc.fn", ANCHOR);
         assertThat(get.statusCode()).isEqualTo(404);
+    }
+
+    // ── Status / pools (spec §6.3) ───────────────────────────────────────────
+
+    private static final io.flowcatalyst.platform.function.FunctionLimits STATUS_DEFAULTS =
+            io.flowcatalyst.platform.function.FunctionLimits.defaults();
+    private static final io.flowcatalyst.platform.function.ClientCeilings STATUS_UNRESTRICTED =
+            io.flowcatalyst.platform.function.ClientCeilings.of(STATUS_DEFAULTS);
+
+    /// A CLIENT-scoped principal with `FUNCTION_VIEW` — reaches its own
+    /// function under the ordinary `/api/functions/{address}` rule, but
+    /// status/pools require anchor (this slice's instruction).
+    private static String[] clientViewer(String clientId) {
+        return new String[]{Authenticator.TEST_PRINCIPAL, "usr_clientview_" + RUN, Authenticator.TEST_SCOPE, "CLIENT",
+                Authenticator.TEST_CLIENTS, clientId, Authenticator.TEST_PERMISSIONS, "platform:function:function:view"};
+    }
+
+    private static final String[] ANCHOR_VIEW_ONLY = {
+            Authenticator.TEST_PRINCIPAL, "usr_anchorviewonly_" + RUN, Authenticator.TEST_SCOPE, "ANCHOR",
+            Authenticator.TEST_PERMISSIONS, "platform:function:function:view"};
+
+    private static io.flowcatalyst.platform.function.Manifest statusManifest(String pool) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s"}
+                """.formatted(pool);
+        return io.flowcatalyst.platform.function.Manifest.parseStrict(Json.MAPPER.readTree(json),
+                io.flowcatalyst.platform.function.Runtime.JVM, STATUS_DEFAULTS, STATUS_UNRESTRICTED);
+    }
+
+    private static io.flowcatalyst.platform.function.FunctionVersion publishVersion(
+            io.flowcatalyst.platform.function.Function f, int version, String pool) {
+        String hex = Integer.toHexString((f.id() + version).hashCode()) + "0".repeat(64);
+        var digest = io.flowcatalyst.platform.function.Digest.parse("sha256:" + hex.substring(0, 64));
+        var v = io.flowcatalyst.platform.function.FunctionVersion.publish(f.id(), version, "oci://artifact", digest,
+                null, null, null, statusManifest(pool), "prn_publisher", java.time.Instant.now());
+        uow.inTransaction(tx -> {
+            versions.persist(v, tx.dbTx());
+            return null;
+        });
+        return v;
+    }
+
+    private static io.flowcatalyst.platform.function.Function promoteVersion(
+            io.flowcatalyst.platform.function.Function f, io.flowcatalyst.platform.function.FunctionVersion v) {
+        var promoted = f.promote(io.flowcatalyst.platform.function.Function.LIVE, v, "prn_promoter", java.time.Instant.now());
+        uow.inTransaction(tx -> {
+            functions.persist(promoted.function(), tx.dbTx());
+            return null;
+        });
+        return promoted.function();
+    }
+
+    @Test
+    void statusRequiresAnchorEvenForTheOwningClient() {
+        String clientId = testClient("status-anchor");
+        testApplication("status-anchor", "statusanchor-" + RUN);
+        create("statusanchor-" + RUN, "svc", "fn", clientId);
+
+        var r = http.get("/api/functions/statusanchor-" + RUN + ".svc.fn/status", clientViewer(clientId));
+        assertThat(r.statusCode()).as("mutant: apply the ordinary reach rule instead of requireAnchor").isEqualTo(403);
+    }
+
+    @Test
+    void statusRequiresTheViewPermission() {
+        testApplication("status-perm", "statusperm-" + RUN);
+        create("statusperm-" + RUN, "svc", "fn", null);
+        String[] anchorNoPermission = {Authenticator.TEST_PRINCIPAL, "usr_anp_" + RUN, Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, ""};
+        var r = http.get("/api/functions/statusperm-" + RUN + ".svc.fn/status", anchorNoPermission);
+        assertThat(r.statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void statusReportsLiveVersionsAndHostsReportingThisAddressOnly() {
+        testApplication("status", "status-" + RUN);
+        var created = create("status-" + RUN, "svc", "fn", null);
+        var other = create("status-" + RUN, "svc", "other", null);
+        io.flowcatalyst.platform.function.Function f = functions.findById(created.get("id").asString()).orElseThrow();
+        io.flowcatalyst.platform.function.Function otherFn = functions.findById(other.get("id").asString()).orElseThrow();
+
+        var v1 = publishVersion(f, 1, "statuspool" + RUN);
+        f = promoteVersion(f, v1);
+        var v2 = publishVersion(f, 2, "statuspool" + RUN); // a candidate, still PUBLISHED
+
+        // One host reports THIS function's address; a second host reports only the OTHER function.
+        var hostSame = io.flowcatalyst.platform.function.FunctionHost.register("host-status-a-" + RUN,
+                new io.flowcatalyst.platform.function.DnsLabel("statuspool" + RUN), java.time.Instant.now());
+        var loadedSame = hostSame.heartbeat(io.flowcatalyst.platform.function.FunctionHost.HostState.ACTIVE,
+                java.util.List.of(new io.flowcatalyst.platform.function.FunctionHost.LoadedVersion(
+                        f.address(), 1, new io.flowcatalyst.platform.function.FunctionHost.LoadState.Loaded())),
+                java.time.Instant.now());
+        var hostOther = io.flowcatalyst.platform.function.FunctionHost.register("host-status-b-" + RUN,
+                new io.flowcatalyst.platform.function.DnsLabel("statuspool" + RUN), java.time.Instant.now());
+        var loadedOther = hostOther.heartbeat(io.flowcatalyst.platform.function.FunctionHost.HostState.ACTIVE,
+                java.util.List.of(new io.flowcatalyst.platform.function.FunctionHost.LoadedVersion(
+                        otherFn.address(), 1, new io.flowcatalyst.platform.function.FunctionHost.LoadState.Loaded())),
+                java.time.Instant.now());
+        uow.inTransaction(tx -> {
+            hosts.persist(loadedSame, tx.dbTx());
+            hosts.persist(loadedOther, tx.dbTx());
+            return null;
+        });
+
+        var r = http.get("/api/functions/status-" + RUN + ".svc.fn/status", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        JsonNode body = json(r);
+        assertThat(body.get("address").asString()).isEqualTo("status-" + RUN + ".svc.fn");
+        assertThat(body.get("live").get("version").asInt()).isEqualTo(1);
+        assertThat(body.get("versions")).hasSize(2);
+
+        JsonNode hostsNode = body.get("hosts");
+        assertThat(hostsNode).as("only the host reporting THIS address").hasSize(1);
+        assertThat(hostsNode.get(0).get("hostId").asString()).isEqualTo("host-status-a-" + RUN);
+        assertThat(hostsNode.get(0).get("loaded")).as("only its entries for THIS address").hasSize(1);
+        assertThat(hostsNode.get(0).get("loaded").get(0).get("version").asInt()).isEqualTo(1);
+        assertThat(hostsNode.get(0).get("stale").asBoolean()).as("just heartbeated").isFalse();
+    }
+
+    @Test
+    void statusMarksAHostStaleOutsideTheLiveWindow() {
+        testApplication("status-stale", "statusstale-" + RUN);
+        var created = create("statusstale-" + RUN, "svc", "fn", null);
+        io.flowcatalyst.platform.function.Function f = functions.findById(created.get("id").asString()).orElseThrow();
+        var v1 = publishVersion(f, 1, "stalepool" + RUN);
+        promoteVersion(f, v1);
+
+        java.time.Instant longAgo = java.time.Instant.now()
+                .minus(io.flowcatalyst.platform.function.FunctionHost.LIVE_WINDOW).minusSeconds(60);
+        var staleHost = new io.flowcatalyst.platform.function.FunctionHost("host-status-stale-" + RUN,
+                new io.flowcatalyst.platform.function.DnsLabel("stalepool" + RUN),
+                io.flowcatalyst.platform.function.FunctionHost.HostState.ACTIVE,
+                java.util.List.of(new io.flowcatalyst.platform.function.FunctionHost.LoadedVersion(
+                        f.address(), 1, new io.flowcatalyst.platform.function.FunctionHost.LoadState.Loaded())),
+                longAgo, longAgo);
+        uow.inTransaction(tx -> {
+            hosts.persist(staleHost, tx.dbTx());
+            return null;
+        });
+
+        var r = json(http.get("/api/functions/statusstale-" + RUN + ".svc.fn/status", ANCHOR));
+        assertThat(r.get("hosts")).hasSize(1);
+        assertThat(r.get("hosts").get(0).get("stale").asBoolean()).as("mutant: never mark a host stale").isTrue();
+    }
+
+    @Test
+    void poolsRequiresAnchorAndCountsOnlyLiveHosts() {
+        String pool = "poolsview" + RUN;
+        var live = io.flowcatalyst.platform.function.FunctionHost.register("host-pools-live-" + RUN,
+                new io.flowcatalyst.platform.function.DnsLabel(pool), java.time.Instant.now());
+        java.time.Instant longAgo = java.time.Instant.now()
+                .minus(io.flowcatalyst.platform.function.FunctionHost.LIVE_WINDOW).minusSeconds(60);
+        var stale = new io.flowcatalyst.platform.function.FunctionHost("host-pools-stale-" + RUN,
+                new io.flowcatalyst.platform.function.DnsLabel(pool),
+                io.flowcatalyst.platform.function.FunctionHost.HostState.ACTIVE, java.util.List.of(), longAgo, longAgo);
+        uow.inTransaction(tx -> {
+            hosts.persist(live, tx.dbTx());
+            hosts.persist(stale, tx.dbTx());
+            return null;
+        });
+
+        var forbidden = http.get("/api/function-pools", clientViewer("clt_irrelevant"));
+        assertThat(forbidden.statusCode()).isEqualTo(403);
+
+        var r = json(http.get("/api/function-pools", ANCHOR));
+        boolean found = false;
+        for (JsonNode entry : r) {
+            if (entry.get("pool").asString().equals(pool)) {
+                found = true;
+                assertThat(entry.get("hosts").asInt()).as("mutant: count the stale host too").isEqualTo(1);
+            }
+        }
+        assertThat(found).as("the live host's pool is listed").isTrue();
     }
 }

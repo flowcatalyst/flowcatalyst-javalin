@@ -75,6 +75,24 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
         return byId;
     }
 
+    /// The desired-state candidate read (spec `function-api.md` §6.1, R3):
+    /// the newest `PUBLISHED`-state version per function — one query, one
+    /// hydration path (`CONVENTIONS.md` §8). Ordered `function_id`, `version
+    /// desc` so the first row seen per function is its highest-numbered
+    /// `PUBLISHED` row; a function with none is simply absent from the map.
+    public Map<String, FunctionVersion> newestPublishedByFunctions(Collection<String> functionIds) {
+        Objects.requireNonNull(functionIds, "functionIds");
+        if (functionIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, FunctionVersion> newestByFunction = new HashMap<>();
+        dsl.selectFrom(T)
+                .where(T.FUNCTION_ID.in(functionIds).and(T.STATE.eq("PUBLISHED")))
+                .orderBy(T.FUNCTION_ID.asc(), T.VERSION.desc())
+                .forEach(row -> newestByFunction.putIfAbsent(row.getFunctionId(), toEntity(row)));
+        return newestByFunction;
+    }
+
     private Optional<FunctionVersion> findOne(Condition where) {
         return dsl.selectFrom(T).where(where).fetchOptional().map(FunctionVersionRepository::toEntity);
     }

@@ -2,20 +2,21 @@ package io.flowcatalyst.platform.function.operations;
 
 import io.flowcatalyst.platform.function.ClientPolicy;
 import io.flowcatalyst.platform.function.Function;
+import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventConventions;
 import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 
-/// The function aggregate's domain events, function/policy slice only (spec
-/// `function-api.md` §3 — version/alias events are B2/B3). Source
-/// `platform:function`; subject `platform.function.{id}`; message group
-/// `platform:function:{id}` for every event, so one aggregate's history is
-/// ordered (spec §3): `{id}` is the function id for the three function
-/// events, and the policy owner's [io.flowcatalyst.platform.function.FunctionOwner#key]
-/// for [PolicyUpdated] — a policy is not itself a function, but it lives in
-/// this same aggregate family and needs the identical ordering guarantee for
-/// its own history.
+/// The function aggregate's domain events (spec `function-api.md` §3).
+/// Source `platform:function`; subject `platform.function.{id}`; message
+/// group `platform:function:{id}` for every event below EXCEPT
+/// [PolicyUpdated] (spec §3): `{id}` is the function id for the
+/// function/version/alias events. The policy event has no function — its
+/// subject is `platform.function-policy.{owner key}` and its group
+/// `platform:function-policy:{owner key}` (spec §3's parenthesis), built by
+/// [#policyMetadataFor] from [io.flowcatalyst.platform.function.FunctionOwner#key],
+/// never [#metadataFor].
 public final class FunctionEvents {
 
     public static final String SOURCE = "platform:function";
@@ -23,6 +24,7 @@ public final class FunctionEvents {
     public static final String CREATED = "platform:function:function:created";
     public static final String UPDATED = "platform:function:function:updated";
     public static final String DELETED = "platform:function:function:deleted";
+    public static final String VERSION_READY = "platform:function:version:ready";
     public static final String POLICY_UPDATED = "platform:function:policy:updated";
 
     private FunctionEvents() {
@@ -38,6 +40,16 @@ public final class FunctionEvents {
 
     private static EventMetadata metadataFor(ExecutionContext ec, String type, String id) {
         return EventMetadata.of(ec, type, SOURCE, subjectFor(id)).withMessageGroup(messageGroupFor(id));
+    }
+
+    /// [PolicyUpdated] alone (spec §3's parenthesis): subject
+    /// `platform.function-policy.{ownerKey}`, group
+    /// `platform:function-policy:{ownerKey}` — never [#metadataFor], which
+    /// would group a policy write into the (nonexistent) function's stream.
+    private static EventMetadata policyMetadataFor(ExecutionContext ec, String ownerKey) {
+        String subject = EventConventions.buildSubject("platform", "function-policy", ownerKey);
+        String messageGroup = EventConventions.buildMessageGroup("platform", "function-policy", ownerKey);
+        return EventMetadata.of(ec, POLICY_UPDATED, SOURCE, subject).withMessageGroup(messageGroup);
     }
 
     /// `{functionId, address, applicationId, clientId?, runtime}` (spec §3).
@@ -92,12 +104,34 @@ public final class FunctionEvents {
         }
     }
 
+    /// `{functionId, address, versionId, version, hostId}` (spec §3) — a
+    /// host's heartbeat marking a version `READY` (`MarkVersionReady`, spec
+    /// §6.2). Grouped with the function's own message group, NOT the
+    /// policy's carve-out (spec §3: "for every event below" excludes only
+    /// [PolicyUpdated]).
+    public record VersionReady(EventMetadata metadata, String functionId, String address, String versionId,
+                               int version, String hostId) implements DomainEvent {
+
+        public static VersionReady of(ExecutionContext ec, Function f, FunctionVersion v, String hostId) {
+            return new VersionReady(metadataFor(ec, VERSION_READY, f.id()), f.id(), f.address().render(), v.id(),
+                    v.version(), hostId);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, versionId, version, hostId);
+        }
+
+        private record Data(String functionId, String address, String versionId, int version, String hostId) {
+        }
+    }
+
     /// `{owner, signerCount}` — never the signer list itself: counts, not
     /// contents (spec §3).
     public record PolicyUpdated(EventMetadata metadata, String owner, int signerCount) implements DomainEvent {
 
         public static PolicyUpdated of(ExecutionContext ec, ClientPolicy p) {
-            return new PolicyUpdated(metadataFor(ec, POLICY_UPDATED, p.owner().key()), p.owner().toWire(), p.signers().size());
+            return new PolicyUpdated(policyMetadataFor(ec, p.owner().key()), p.owner().toWire(), p.signers().size());
         }
 
         @Override

@@ -45,6 +45,15 @@ public final class FunctionHostRepository implements Persist<FunctionHost> {
         return dsl.selectFrom(T).where(T.ID.eq(id)).fetchOptional().map(FunctionHostRepository::toEntity);
     }
 
+    /// Every host, any pool, any age (spec §6.3's Status route: "hosts that
+    /// report this address" — a function's versions can move pools, so
+    /// Status cannot narrow to one pool the way the per-pool desired-state
+    /// and pool-summary reads do). An in-memory filter over this is Status's
+    /// own job (`FunctionApi`), not this repository's.
+    public List<FunctionHost> listAll() {
+        return List.copyOf(dsl.selectFrom(T).orderBy(T.ID.asc()).fetch().map(FunctionHostRepository::toEntity));
+    }
+
     public List<FunctionHost> listByPool(DnsLabel pool) {
         Objects.requireNonNull(pool, "pool");
         return List.copyOf(dsl.selectFrom(T).where(T.POOL.eq(pool.value())).orderBy(T.ID.asc())

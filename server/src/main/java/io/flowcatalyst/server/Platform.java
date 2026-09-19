@@ -597,14 +597,22 @@ public final class Platform {
                 connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow));
 
-        // function platform API (docs/spec/function-api.md, work package B, slice B1): Java-first,
+        // function platform API (docs/spec/function-api.md, work package B, slices B1+B2): Java-first,
         // outside the lockfile (spec §0) — every route is named in parity/surface.json instead.
         // functionRepo/clientRepo/applicationRepo are the same instances built above.
+        var functionVersionRepo = new io.flowcatalyst.platform.function.FunctionVersionRepository(pool);
+        var functionHostRepo = new io.flowcatalyst.platform.function.FunctionHostRepository(pool);
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
-                new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow));
+                new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow,
+                        functionVersionRepo, functionHostRepo));
         io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
                         new io.flowcatalyst.platform.function.ClientPolicyRepository(pool), clientRepo, uow, env.functionLimits()));
+        // B2 (spec §6): the control plane a function host calls — /control/functions/*, already
+        // inside the authenticator (Platform#isPlatformPath).
+        io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
+                new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
+                        functionRepo, functionVersionRepo, functionHostRepo, uow));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));
