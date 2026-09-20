@@ -139,14 +139,26 @@ public final class FnHost implements AutoCloseable {
                     t, START_RECONCILE_FAILURE_FALLBACK);
         }
         loop.start();
+        // Spec `function-public-routes.md` §3: the public listener is bound here too, from
+        // the SAME HostEnv — a mutant that never wires env.publicPort()/env.trustedProxies()
+        // through would leave `off`/8081 dead regardless of what an operator configured.
         server = FnHttpServer.start(reconciler,
-                FnHttpServer.Options.of(env.port(), env.maxConcurrency(), env.platformUrl(), metrics));
+                FnHttpServer.Options.of(env.port(), env.maxConcurrency(), env.platformUrl(), metrics,
+                        env.publicPort(), env.trustedProxies()));
         startupComplete = true;
     }
 
     public int port() {
         FnHttpServer s = server;
         return s == null ? -1 : s.port();
+    }
+
+    /// The PUBLIC listener's bound port (spec `function-public-routes.md`
+    /// §3), or [FnHttpServer#PUBLIC_PORT_DISABLED] before [#start] or when
+    /// `FC_FN_PUBLIC_PORT=off`.
+    public int publicPort() {
+        FnHttpServer s = server;
+        return s == null ? FnHttpServer.PUBLIC_PORT_DISABLED : s.publicPort();
     }
 
     /// The observability listener's bound port (`/health`, `/ready`,

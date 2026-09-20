@@ -379,7 +379,9 @@ every claim below as "what the Java code expects", not as "what is deployed".
 | `FC_FN_TRUST_ROOT` | — | Sigstore trust-root override, same variable the platform's own publish-side signature verification reads |
 | `FC_FN_MAX_LOADED` | `200` | the [FunctionRegistry]'s capacity |
 | `FC_FN_CACHE_DIR` | `${java.io.tmpdir}/fc-fn-cache` | fetched/verified artifact cache — `function-host/Dockerfile` points this at a named volume instead |
-| `FC_FN_PORT` | `8080` | the function listener (`/functions/...`) |
+| `FC_FN_PORT` | `8080` | the PRIVATE function listener (`/functions/...`) — Service Connect only, never internet-reachable |
+| `FC_FN_PUBLIC_PORT` | `8081` | the PUBLIC listener (`docs/spec/function-public-routes.md` §3: `Host`-routed, no by-address/versioned access) — the load balancer's target; `0` binds an ephemeral port (tests only); `off` disables the public listener entirely (a deployment that publishes no public routes may turn it off) |
+| `FC_FN_TRUSTED_PROXIES` | RFC 1918 + loopback + IPv6 ULA/loopback | comma-separated CIDR list; the public listener's `remoteAddress` trusts the right-most `X-Forwarded-For` entry only when the TCP peer matches one of these — set this to the load balancer's own subnet(s) if they fall outside the default |
 | `FC_FN_MAX_CONCURRENCY` | `512` | host-global invocation permit ceiling |
 | `FC_DRAIN_TIMEOUT_SECONDS` | `60` | how long `close()` waits for in-flight requests before closing anyway |
 | `FC_METRICS_PORT` | `9090` | the observability listener — `/health`, `/ready`, `/metrics` |
@@ -430,11 +432,27 @@ fixture, cited as a starting point, not a guarantee for every workload.
 
 ### Ports
 
-`8080` (function listener, HTTP/1.1 + h2c) and `9090` (observability
-listener, HTTP/1.1) — the same split as `fc-platform`/`fc-router`'s
-`8080` + the shared metrics convention, on two entirely independent Vert.x
-servers (`function-host-process.md` §2 P7: a saturated function port must
-never make `9090` look dead).
+`8080` (the PRIVATE function listener, HTTP/1.1 + h2c), `8081` (the PUBLIC
+listener, spec `function-public-routes.md` §3, same protocol) and `9090`
+(observability listener, HTTP/1.1) — the same split as
+`fc-platform`/`fc-router`'s `8080` + the shared metrics convention, now on
+THREE entirely independent Vert.x servers sharing one process
+(`function-host-process.md` §2 P7: a saturated function port must never make
+`9090` look dead; the same isolation now also means a saturated PUBLIC port
+must never starve the PRIVATE one, or vice versa — they share permits and
+the registry, never an event loop).
+
+**The load balancer's target group is `8081` (public) ONLY.** `8080`
+(private) is Service Connect only and MUST NOT be reachable from the
+internet — it serves by address (`/functions/{address}/...`) and the
+versioned smoke-test form (`/functions/{address}:{n}/...`), neither of which
+carries the public listener's `Host`-based route gate at all: anyone who can
+reach `8080` can invoke any function on the host directly, bypassing every
+domain claim/route the platform ever validated. Security-group / Service
+Connect configuration must enforce this the same way `fc-platform`'s own
+internal listener (§0/§1 above) is never exposed. `8081` MAY be turned off
+entirely (`FC_FN_PUBLIC_PORT=off`) for a deployment that publishes no public
+routes at all.
 
 ### Health checks
 

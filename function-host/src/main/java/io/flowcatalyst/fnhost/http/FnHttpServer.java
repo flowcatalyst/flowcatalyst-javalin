@@ -4,17 +4,21 @@ import io.flowcatalyst.fnhost.FunctionInvocationEvent;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.fnhost.reconcile.Reconciler;
+import io.flowcatalyst.fnhost.route.PublicRouteTable;
+import io.flowcatalyst.fnhost.route.TrustedProxies;
 import io.flowcatalyst.function.Caller;
 import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
 import io.flowcatalyst.platform.function.EndpointAuth;
 import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.HttpMethod;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.sdk.tsid.Tsid;
+import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.server.Logging;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
@@ -35,6 +39,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -80,16 +85,25 @@ public final class FnHttpServer implements AutoCloseable {
 
     private final Vertx vertx;
     private final HttpServer httpServer;
+    private final HttpServer publicHttpServer;
     private final Reconciler reconciler;
     private final Permits permits;
     private final PinnedVersions pinnedVersions;
     private final BearerAuthenticator bearerAuthenticator;
     private final InvocationObserver observer;
     private final Clock clock;
+    private final TrustedProxies trustedProxies;
     private volatile boolean draining;
     private volatile int port;
+    private volatile int publicPort;
 
-    /// What [#start] needs beyond the [Reconciler] (spec §2, §5).
+    /// `Options#publicPort`'s "no public listener" sentinel — spec
+    /// `function-public-routes.md` §3's wire value `off`, mirroring
+    /// [io.flowcatalyst.fnhost.reconcile.HostEnv#PUBLIC_PORT_DISABLED].
+    public static final int PUBLIC_PORT_DISABLED = -1;
+
+    /// What [#start] needs beyond the [Reconciler] (spec §2, §5, and §3/§4 of
+    /// `function-public-routes.md` for the public listener + CORS).
     ///
     /// @param maxConcurrency    the host-global permit ceiling (`FC_FN_MAX_CONCURRENCY`)
     /// @param platformUrl       where the platform's `/.well-known/jwks.json` lives (`auth: platform`)
@@ -100,25 +114,39 @@ public final class FnHttpServer implements AutoCloseable {
     ///                          entry/exit/outcome — `NOOP` unless a caller (`FnHost`) wires
     ///                          `FnMetrics` in. Kept as this interface, not a Prometheus type,
     ///                          so this class stays free of any metrics-library dependency.
+    /// @param publicPort        the public listener's bind port; [#PUBLIC_PORT_DISABLED] (the
+    ///                          default on every pre-F2 constructor below) starts no public
+    ///                          listener at all — same host as `host` above
+    /// @param trustedProxies    spec `function-public-routes.md` §3's CIDR allow-list for the
+    ///                          public listener's `X-Forwarded-For` trust decision
     public record Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
-                           int eventLoopPoolSize, InvocationObserver observer) {
+                           int eventLoopPoolSize, InvocationObserver observer, int publicPort,
+                           TrustedProxies trustedProxies) {
         public Options {
             Objects.requireNonNull(host, "host");
             Objects.requireNonNull(platformUrl, "platformUrl");
             Objects.requireNonNull(clock, "clock");
             Objects.requireNonNull(observer, "observer");
+            Objects.requireNonNull(trustedProxies, "trustedProxies");
             if (eventLoopPoolSize <= 0) {
                 throw new IllegalArgumentException("eventLoopPoolSize must be positive: " + eventLoopPoolSize);
             }
         }
 
-        /// No observer wired.
+        /// Pre-F2 shape: no public listener.
+        public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
+                        int eventLoopPoolSize, InvocationObserver observer) {
+            this(host, port, maxConcurrency, platformUrl, clock, eventLoopPoolSize, observer, PUBLIC_PORT_DISABLED,
+                    TrustedProxies.DEFAULT);
+        }
+
+        /// No observer wired; no public listener.
         public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock,
                         int eventLoopPoolSize) {
             this(host, port, maxConcurrency, platformUrl, clock, eventLoopPoolSize, InvocationObserver.NOOP);
         }
 
-        /// Vert.x's own default event-loop pool size; no observer wired.
+        /// Vert.x's own default event-loop pool size; no observer wired; no public listener.
         public Options(String host, int port, int maxConcurrency, String platformUrl, Clock clock) {
             this(host, port, maxConcurrency, platformUrl, clock, VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE,
                     InvocationObserver.NOOP);
@@ -132,19 +160,28 @@ public final class FnHttpServer implements AutoCloseable {
             return new Options("0.0.0.0", port, maxConcurrency, platformUrl, Clock.systemUTC(),
                     VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE, observer);
         }
+
+        /// With a public listener — [io.flowcatalyst.fnhost.FnHost]'s own composition root.
+        public static Options of(int port, int maxConcurrency, String platformUrl, InvocationObserver observer,
+                                  int publicPort, TrustedProxies trustedProxies) {
+            return new Options("0.0.0.0", port, maxConcurrency, platformUrl, Clock.systemUTC(),
+                    VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE, observer, publicPort, trustedProxies);
+        }
     }
 
-    private FnHttpServer(Vertx vertx, HttpServer httpServer, Reconciler reconciler, Permits permits,
-                          PinnedVersions pinnedVersions, BearerAuthenticator bearerAuthenticator,
-                          InvocationObserver observer, Clock clock) {
+    private FnHttpServer(Vertx vertx, HttpServer httpServer, HttpServer publicHttpServer, Reconciler reconciler,
+                          Permits permits, PinnedVersions pinnedVersions, BearerAuthenticator bearerAuthenticator,
+                          InvocationObserver observer, Clock clock, TrustedProxies trustedProxies) {
         this.vertx = vertx;
         this.httpServer = httpServer;
+        this.publicHttpServer = publicHttpServer;
         this.reconciler = reconciler;
         this.permits = permits;
         this.pinnedVersions = pinnedVersions;
         this.bearerAuthenticator = bearerAuthenticator;
         this.observer = observer;
         this.clock = clock;
+        this.trustedProxies = trustedProxies;
     }
 
     /// Builds and binds. Returns once the socket is listening.
@@ -172,22 +209,45 @@ public final class FnHttpServer implements AutoCloseable {
         HttpServer server = vertx.createHttpServer(serverOptions)
                 .requestHandler(req -> holder[0].handle(req));
 
-        FnHttpServer instance = new FnHttpServer(vertx, server, reconciler, permits, pinnedVersions,
-                bearerAuthenticator, options.observer(), options.clock());
+        // Spec `function-public-routes.md` §3: a SECOND entry, same Vert.x instance, sharing
+        // permits/registry/reconciler/observer — bound only when a public port was configured
+        // (PUBLIC_PORT_DISABLED, the default on every pre-F2 Options constructor, binds nothing).
+        HttpServer publicServer = null;
+        if (options.publicPort() != PUBLIC_PORT_DISABLED) {
+            HttpServerOptions publicServerOptions = new HttpServerOptions()
+                    .setHost(options.host())
+                    .setPort(options.publicPort())
+                    .setHttp2ClearTextEnabled(true);
+            publicServer = vertx.createHttpServer(publicServerOptions)
+                    .requestHandler(req -> holder[0].handlePublic(req));
+        }
+
+        FnHttpServer instance = new FnHttpServer(vertx, server, publicServer, reconciler, permits, pinnedVersions,
+                bearerAuthenticator, options.observer(), options.clock(), options.trustedProxies());
         holder[0] = instance;
         try {
             server.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
+            if (publicServer != null) {
+                publicServer.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
+            }
         } catch (Exception e) {
             vertx.close();
-            throw new IllegalStateException("binding the function host listener on "
-                    + options.host() + ":" + options.port(), e);
+            throw new IllegalStateException("binding the function host listener(s) on "
+                    + options.host() + ":" + options.port() + (publicServer == null ? "" : " / :" + options.publicPort()), e);
         }
         instance.port = server.actualPort();
+        instance.publicPort = publicServer == null ? PUBLIC_PORT_DISABLED : publicServer.actualPort();
         return instance;
     }
 
     public int port() {
         return port;
+    }
+
+    /// The public listener's bound port, or [#PUBLIC_PORT_DISABLED] when
+    /// none was configured (spec §3).
+    public int publicPort() {
+        return publicPort;
     }
 
     /// Reported `DRAINING` (spec §5): new requests get `503 DRAINING`
@@ -247,11 +307,124 @@ public final class FnHttpServer implements AutoCloseable {
             // address = null: an unknown address is never a metrics label value
             // (spec `function-host-process.md` §2's cardinality rule) — see
             // InvocationObserver's own doc for why.
-            observer.refused("not_found", null);
+            observer.refused("not_found", null, InvocationObserver.Entry.PRIVATE);
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("FUNCTION_NOT_FOUND", "no such function"));
             return;
         }
-        EndpointMatch match = matchEndpoint(entry.manifest(), path.functionPath(), req.method().name());
+        handleEntry(req, requestContext, entry, path.functionPath(), InvocationObserver.Entry.PRIVATE, null);
+    }
+
+    // ── public entry (function-public-routes.md §3) ─────────────────────────
+
+    /// The public listener's own request path: `Host` (or `:authority`, spec
+    /// §3 step 1) → longest whole-segment prefix over the current
+    /// [PublicRouteTable] → the shared pipeline ([#handleEntry]) — NEVER
+    /// [RoutePath] parsing, so `/functions/…` is just an ordinary path here
+    /// (spec: "is not special here"; there is no by-address and no versioned
+    /// access on this listener at all).
+    private void handlePublic(HttpServerRequest req) {
+        io.vertx.core.Context requestContext = vertx.getOrCreateContext();
+
+        if (draining) {
+            answer(req, requestContext, 503, Map.of("Retry-After", List.of("5")),
+                    ErrorBody.json("DRAINING", "the host is draining"));
+            return;
+        }
+
+        String hostname = publicHostname(req);
+        if (hostname == null) {
+            observer.refused("not_found", null, InvocationObserver.Entry.PUBLIC);
+            answer(req, requestContext, 404, Map.of(), ErrorBody.json("NOT_FOUND", "not found"));
+            return;
+        }
+
+        Optional<PublicRouteTable.Match> matched = reconciler.publicRouteTable().match(hostname, req.path());
+        if (matched.isEmpty()) {
+            observer.refused("not_found", null, InvocationObserver.Entry.PUBLIC);
+            answer(req, requestContext, 404, Map.of(), ErrorBody.json("NOT_FOUND", "not found"));
+            return;
+        }
+
+        PublicRouteTable.Match m = matched.get();
+        DesiredDocument.Entry entry = reconciler.liveEntry(m.address());
+        if (entry == null) {
+            // The route table can briefly name a function the live-entry lookup no longer
+            // finds (a reconcile in between the two reads) — 404, same anti-leak shape,
+            // never a 500; the next reconcile's swapped table clears this up either way.
+            observer.refused("not_found", null, InvocationObserver.Entry.PUBLIC);
+            answer(req, requestContext, 404, Map.of(), ErrorBody.json("NOT_FOUND", "not found"));
+            return;
+        }
+
+        String remoteAddress = publicRemoteAddress(req);
+        handleEntry(req, requestContext, entry, m.functionPath(), InvocationObserver.Entry.PUBLIC, remoteAddress);
+    }
+
+    /// spec §3 step 1: `Host` (HTTP/1.1) or `:authority` (HTTP/2, Vert.x
+    /// unifies both as [HttpServerRequest#authority]) — lower-cased, port
+    /// stripped, must parse as a [Hostname] or the request is 404.
+    /// `X-Forwarded-Host` is deliberately never consulted (spec: "ignored" —
+    /// only the load balancer may pick the route).
+    private static String publicHostname(HttpServerRequest req) {
+        var authority = req.authority();
+        if (authority == null || authority.host() == null || authority.host().isBlank()) {
+            return null;
+        }
+        String lower = authority.host().toLowerCase(Locale.ROOT);
+        try {
+            return Hostname.parse(lower).value();
+        } catch (UseCaseException e) {
+            return null;
+        }
+    }
+
+    /// spec §3's trust rule: the right-most `X-Forwarded-For` entry ONLY
+    /// when the TCP peer is in [#trustedProxies]; an untrusted peer, a
+    /// missing header, or a malformed entry (not a parseable IP literal)
+    /// all fall back to the TCP peer itself.
+    private String publicRemoteAddress(HttpServerRequest req) {
+        var peer = req.remoteAddress();
+        String peerHost = peer == null ? null : peer.host();
+        if (peerHost == null) {
+            return null;
+        }
+        if (!trustedProxies.isTrusted(peerHost)) {
+            return peerHost;
+        }
+        String xff = req.getHeader("X-Forwarded-For");
+        if (xff == null || xff.isBlank()) {
+            return peerHost;
+        }
+        String[] parts = xff.split(",");
+        String rightmost = parts[parts.length - 1].trim();
+        // spec §3: "malformed entry ⇒ the peer" — TrustedProxies.isIpLiteral is a
+        // syntactic-only check (never DNS), shared with its own isTrusted(String).
+        return !rightmost.isEmpty() && TrustedProxies.isIpLiteral(rightmost) ? rightmost : peerHost;
+    }
+
+    // ── shared pipeline: endpoint match → CORS preflight → body cap → auth → invoke ──
+
+    /// Spec §2 steps 4-10, shared by BOTH the private (unversioned) and
+    /// public entries once each has resolved its own [DesiredDocument.Entry]
+    /// and function-path: a genuine CORS preflight (spec §4) is answered
+    /// here, by the host, BEFORE the ordinary method-based endpoint match —
+    /// a preflight's method is `OPTIONS`, which an endpoint's own `methods`
+    /// list would otherwise 405.
+    private void handleEntry(HttpServerRequest req, io.vertx.core.Context requestContext, DesiredDocument.Entry entry,
+                              String functionPath, InvocationObserver.Entry entryKind, String remoteAddressOverride) {
+        if (CorsPolicy.isPreflight(req.method().name(), req.headers())) {
+            Optional<Manifest.Endpoint> byPath = matchEndpointByPathOnly(entry.manifest(), functionPath);
+            if (byPath.isPresent() && byPath.get().cors() != null) {
+                HttpAnswer preflight = CorsPolicy.preflight(byPath.get(), req.headers());
+                observer.refused("preflight", entry.address(), entryKind);
+                answer(req, requestContext, preflight.status(), preflight.headers(), preflight.body());
+                return;
+            }
+            // Not a CORS-declared endpoint at this path — spec §4's last bullet: falls
+            // through to ordinary handling, which will very likely 405 on OPTIONS.
+        }
+
+        EndpointMatch match = matchEndpoint(entry.manifest(), functionPath, req.method().name());
         if (match instanceof EndpointMatch.NotFound) {
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("ENDPOINT_NOT_FOUND", "no endpoint matches this path"));
             return;
@@ -263,7 +436,8 @@ public final class FnHttpServer implements AutoCloseable {
         }
         EndpointMatch.Ok ok = (EndpointMatch.Ok) match;
         readBodyThenRun(req, requestContext, ok.endpoint().maxBodyBytes(),
-                body -> continueUnversionedAfterBody(req, entry, ok.endpoint(), path.functionPath(), ok.pathParams(), body));
+                body -> continueAfterBody(req, entry, ok.endpoint(), functionPath, ok.pathParams(), body, entryKind,
+                        remoteAddressOverride));
     }
 
     /// Spec §4: NOTHING about the entry, its manifest or its endpoints may be
@@ -341,19 +515,28 @@ public final class FnHttpServer implements AutoCloseable {
         });
     }
 
-    // ── unversioned: auth (endpoint's own) → invoke (virtual thread) ────────
+    // ── shared: auth (endpoint's own) → invoke (virtual thread) → CORS on the actual response ──
 
-    private HttpAnswer continueUnversionedAfterBody(HttpServerRequest req, DesiredDocument.Entry entry,
-                                                      Manifest.Endpoint endpoint, String functionPath,
-                                                      Map<String, String> pathParams, byte[] body) {
+    /// Spec §3's own auth step for BOTH the private unversioned entry and
+    /// the public entry (identical rules — the endpoint's `auth` decides,
+    /// regardless of which listener the call arrived on), followed by the
+    /// CORS §4 "actual request" rule applied to whatever the function (or a
+    /// host-generated error) answered — the host is the sole authority for
+    /// any endpoint that declares `cors`, on both listeners.
+    private HttpAnswer continueAfterBody(HttpServerRequest req, DesiredDocument.Entry entry,
+                                          Manifest.Endpoint endpoint, String functionPath,
+                                          Map<String, String> pathParams, byte[] body,
+                                          InvocationObserver.Entry entryKind, String remoteAddressOverride) {
         AuthResult authResult = authenticateUnversioned(endpoint, req.headers(), body, entry);
         if (authResult instanceof AuthResult.Failed(HttpAnswer failure)) {
-            observer.refused("unauthorized", entry.address());
-            return failure;
+            observer.refused("unauthorized", entry.address(), entryKind);
+            return CorsPolicy.applyToActualResponse(endpoint, req.getHeader("Origin"), failure);
         }
         Caller caller = ((AuthResult.Ok) authResult).caller();
         boolean stripAuthHeaders = endpoint.auth() != EndpointAuth.NONE;
-        return invoke(req, entry, endpoint, functionPath, pathParams, body, caller, stripAuthHeaders, false);
+        HttpAnswer answer = invoke(req, entry, endpoint, functionPath, pathParams, body, caller, stripAuthHeaders,
+                false, entryKind, remoteAddressOverride);
+        return CorsPolicy.applyToActualResponse(endpoint, req.getHeader("Origin"), answer);
     }
 
     // ── versioned: token → permission → entry/reach → endpoint match → own body cap → invoke ──
@@ -372,12 +555,12 @@ public final class FnHttpServer implements AutoCloseable {
             // address = null: spec §4's own anti-leak requirement — an unauthenticated
             // caller must not be able to tell a version exists by the shape of the
             // failure, so the metrics label must not either.
-            observer.refused("unauthorized", null);
+            observer.refused("unauthorized", null, InvocationObserver.Entry.PRIVATE);
             return HttpAnswer.of(401, Map.of("WWW-Authenticate", List.of("Bearer")), "UNAUTHORIZED", reason);
         }
         TokenClaims claims = ((BearerAuthenticator.Authenticated) auth).claims();
         if (!Permission.grants(claims.permissions(), Permission.FUNCTION_VERSION_INVOKE.code())) {
-            observer.refused("unauthorized", null);
+            observer.refused("unauthorized", null, InvocationObserver.Entry.PRIVATE);
             return HttpAnswer.of(403, Map.of(), "PERMISSION_REQUIRED", "platform:function:version:invoke required");
         }
 
@@ -386,7 +569,7 @@ public final class FnHttpServer implements AutoCloseable {
             // Spec §4: reach failure (or no such version) is 404, not 403 — "same rule as
             // the platform API" — and indistinguishable from each other. address = null
             // for the same reason.
-            observer.refused("not_found", null);
+            observer.refused("not_found", null, InvocationObserver.Entry.PRIVATE);
             return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "no such version");
         }
 
@@ -404,7 +587,8 @@ public final class FnHttpServer implements AutoCloseable {
         }
 
         Caller.Principal caller = principalFrom(claims);
-        return invoke(req, entry, ok.endpoint(), path.functionPath(), ok.pathParams(), body, caller, true, true);
+        return invoke(req, entry, ok.endpoint(), path.functionPath(), ok.pathParams(), body, caller, true, true,
+                InvocationObserver.Entry.PRIVATE, null);
     }
 
     private static boolean hasReach(TokenClaims claims, DesiredDocument.Entry entry) {
@@ -469,16 +653,32 @@ public final class FnHttpServer implements AutoCloseable {
         return new EndpointMatch.Ok(endpoint, match.get().params());
     }
 
+    /// spec §4's own need: whether SOME endpoint owns `functionPath` at all
+    /// — ignoring method entirely — so a genuine CORS preflight (always
+    /// `OPTIONS`, essentially never itself a configured method) can find the
+    /// endpoint whose `cors` policy applies before the ordinary method-based
+    /// match would 405 it.
+    private static Optional<Manifest.Endpoint> matchEndpointByPathOnly(Manifest manifest, String functionPath) {
+        List<Manifest.Endpoint> endpoints = manifest.endpoints();
+        List<RoutePattern> patterns = endpoints.stream().map(Manifest.Endpoint::path).toList();
+        var match = RoutePattern.firstMatch(patterns, functionPath);
+        if (match.isEmpty()) {
+            return Optional.empty();
+        }
+        return endpoints.stream().filter(e -> e.path().equals(match.get().pattern())).findFirst();
+    }
+
     // ── permits, load, invoke, respond (spec §2 steps 7-10; already on a virtual thread) ──
 
     private HttpAnswer invoke(HttpServerRequest req, DesiredDocument.Entry entry, Manifest.Endpoint endpoint,
                                String functionPath, Map<String, String> pathParams, byte[] body, Caller caller,
-                               boolean stripAuthHeaders, boolean versioned) {
+                               boolean stripAuthHeaders, boolean versioned, InvocationObserver.Entry entryKind,
+                               String remoteAddressOverride) {
         // Step 7: permits.
         int maxConcurrency = entry.manifest().limits().maxConcurrency();
         Permits.Grant grant = permits.tryAcquire(entry.address(), maxConcurrency);
         if (!grant.granted()) {
-            observer.refused("busy", entry.address());
+            observer.refused("busy", entry.address(), entryKind);
             return HttpAnswer.of(429, Map.of("Retry-After", List.of("1")), "BUSY", "the function is at capacity");
         }
 
@@ -489,10 +689,10 @@ public final class FnHttpServer implements AutoCloseable {
                 permits.release(grant);
                 if (versioned) {
                     // address = null, same anti-leak reasoning as the entry/reach check above.
-                    observer.refused("not_found", null);
+                    observer.refused("not_found", null, entryKind);
                     return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "version is not loadable");
                 }
-                observer.refused("unavailable", entry.address());
+                observer.refused("unavailable", entry.address(), entryKind);
                 return HttpAnswer.of(503, Map.of("Retry-After", List.of("15")), "FUNCTION_UNAVAILABLE",
                         "the function could not be loaded");
             }
@@ -500,8 +700,10 @@ public final class FnHttpServer implements AutoCloseable {
             // Step 9: invoke.
             String invocationId = Tsid.generate();
             io.flowcatalyst.function.FunctionAddress apiAddress = toApiAddress(entry.address());
+            String remoteAddress = remoteAddressOverride != null ? remoteAddressOverride
+                    : (req.remoteAddress() == null ? null : req.remoteAddress().host());
             Request request = buildRequest(apiAddress, fn.version(), invocationId, req, functionPath,
-                    pathParams, body, stripAuthHeaders, caller);
+                    pathParams, body, stripAuthHeaders, caller, remoteAddress);
             // D4b: the version's OWN context, built once at load time (Reconciler) and
             // attached to it — the same instance for every call, never a fresh throwaway
             // per request (docs/spec/function-context.md §2).
@@ -539,11 +741,11 @@ public final class FnHttpServer implements AutoCloseable {
                                 .addKeyValue("address", entry.address().render())
                                 .addKeyValue("invocation_id", invocationId)
                                 .log();
-                        recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
+                        recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error", entryKind);
                         return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
                     }
                     HttpAnswer answer = toAnswer(result);
-                    recordOutcome(event, entry, fn, invocationId, startNanos, answer.status(), outcomeFor(answer.status()));
+                    recordOutcome(event, entry, fn, invocationId, startNanos, answer.status(), outcomeFor(answer.status()), entryKind);
                     return answer;
                 } catch (TimeoutException e) {
                     invocation.worker().interrupt();
@@ -554,7 +756,7 @@ public final class FnHttpServer implements AutoCloseable {
                         permits.release(grant);
                         observer.exited(entry.address());
                     });
-                    recordOutcome(event, entry, fn, invocationId, startNanos, 504, "timeout");
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 504, "timeout", entryKind);
                     return HttpAnswer.of(504, Map.of(), "FUNCTION_TIMEOUT", "the invocation exceeded its deadline");
                 } catch (ExecutionException e) {
                     permits.release(grant);
@@ -564,13 +766,13 @@ public final class FnHttpServer implements AutoCloseable {
                             .addKeyValue("invocation_id", invocationId)
                             .setCause(e.getCause())
                             .log();
-                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error", entryKind);
                     return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "the function failed");
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     permits.release(grant);
                     observer.exited(entry.address());
-                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error");
+                    recordOutcome(event, entry, fn, invocationId, startNanos, 500, "error", entryKind);
                     return HttpAnswer.of(500, Map.of(), "FUNCTION_ERROR", "interrupted");
                 }
             } finally {
@@ -587,9 +789,10 @@ public final class FnHttpServer implements AutoCloseable {
     /// [FunctionInvocationEvent] — every return path through [#invoke] above
     /// calls this exactly once, right before returning.
     private void recordOutcome(FunctionInvocationEvent event, DesiredDocument.Entry entry, LoadedFunction fn,
-                                String invocationId, long startNanos, int status, String outcome) {
+                                String invocationId, long startNanos, int status, String outcome,
+                                InvocationObserver.Entry entryKind) {
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-        observer.completed(entry.address(), fn.version(), outcome, elapsed);
+        observer.completed(entry.address(), fn.version(), outcome, elapsed, entryKind);
         if (event.shouldCommit()) {
             event.address = entry.address().render();
             event.version = fn.version();
@@ -683,10 +886,9 @@ public final class FnHttpServer implements AutoCloseable {
     private static Request buildRequest(io.flowcatalyst.function.FunctionAddress apiAddress, int version,
                                          String invocationId, HttpServerRequest req, String functionPath,
                                          Map<String, String> pathParams, byte[] body, boolean stripAuthHeaders,
-                                         Caller caller) {
+                                         Caller caller, String remoteAddress) {
         Map<String, List<String>> headers = collectHeaders(req.headers(), stripAuthHeaders);
         Map<String, List<String>> query = collectQuery(req);
-        String remoteAddress = req.remoteAddress() == null ? null : req.remoteAddress().host();
         String host = originalHost(req);
         return new Request(apiAddress, version, invocationId, req.method().name(), functionPath, host, req.path(),
                 pathParams, query, headers, body, remoteAddress, caller);
@@ -704,10 +906,22 @@ public final class FnHttpServer implements AutoCloseable {
         return authority.port() > 0 ? authority.host() + ":" + authority.port() : authority.host();
     }
 
+    /// spec `function-public-routes.md` §3: `X-FlowCatalyst-Function` is an
+    /// inbound, caller-controllable header (never something a legitimate
+    /// caller needs to send — it names the internal routing outcome) and is
+    /// therefore ALWAYS stripped, on both listeners, regardless of the
+    /// endpoint's `auth` — unlike [#CONSUMED_AUTH_HEADERS], which are only
+    /// stripped when the host itself consumed them for authentication.
+    private static final String INBOUND_ROUTING_HEADER = "x-flowcatalyst-function";
+
     private static Map<String, List<String>> collectHeaders(MultiMap headers, boolean stripAuthHeaders) {
         Map<String, List<String>> out = new LinkedHashMap<>();
         for (String name : headers.names()) {
-            if (stripAuthHeaders && CONSUMED_AUTH_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+            String lower = name.toLowerCase(Locale.ROOT);
+            if (lower.equals(INBOUND_ROUTING_HEADER)) {
+                continue;
+            }
+            if (stripAuthHeaders && CONSUMED_AUTH_HEADERS.contains(lower)) {
                 continue;
             }
             out.put(name, List.copyOf(headers.getAll(name)));
@@ -725,7 +939,8 @@ public final class FnHttpServer implements AutoCloseable {
 
     // ── step 10: respond ─────────────────────────────────────────────────────
 
-    private record HttpAnswer(int status, Map<String, List<String>> headers, byte[] body) {
+    // Package-visible (not private): CorsPolicy, in this same package, builds/reads these too.
+    record HttpAnswer(int status, Map<String, List<String>> headers, byte[] body) {
         static HttpAnswer of(int status, Map<String, List<String>> headers, String code, String message) {
             return new HttpAnswer(status, headers, ErrorBody.json(code, message));
         }
@@ -790,6 +1005,14 @@ public final class FnHttpServer implements AutoCloseable {
             httpServer.close().toCompletionStage().toCompletableFuture().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             LOG.atWarn().setMessage("closing the function host listener did not complete cleanly within the drain timeout").log();
+        }
+        if (publicHttpServer != null) {
+            try {
+                publicHttpServer.close().toCompletionStage().toCompletableFuture()
+                        .get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                LOG.atWarn().setMessage("closing the function host public listener did not complete cleanly within the drain timeout").log();
+            }
         }
         pinnedVersions.close();
         try {

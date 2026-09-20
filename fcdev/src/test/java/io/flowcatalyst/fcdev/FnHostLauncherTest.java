@@ -24,7 +24,7 @@ class FnHostLauncherTest {
 
     private static FnHostLauncher.Settings settings(Path hostJar, Path cacheDir) {
         return new FnHostLauncher.Settings("default", "http://localhost:18080",
-                "fcdev-fn-host", "s3cr3t", 18090, 18091, cacheDir, hostJar);
+                "fcdev-fn-host", "s3cr3t", 18090, 18092, 18091, cacheDir, hostJar);
     }
 
     // ── E2: the native (child-process) branch ───────────────────────────
@@ -147,7 +147,7 @@ class FnHostLauncherTest {
             deadPort = probe.getLocalPort();
         }
         var settings = new FnHostLauncher.Settings("default", "http://127.0.0.1:" + deadPort,
-                "fcdev-fn-host", "s3cr3t", 0, 0, dir.resolve("cache"), null);
+                "fcdev-fn-host", "s3cr3t", 0, 0, 0, dir.resolve("cache"), null);
 
         FnHostLauncher.Result result = FnHostLauncher.launch(settings, () -> false,
                 FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
@@ -155,6 +155,8 @@ class FnHostLauncherTest {
         assertThat(result).isInstanceOf(FnHostLauncher.InProcess.class);
         var host = ((FnHostLauncher.InProcess) result).host();
         assertThat(host.port()).as("the function listener must be bound").isGreaterThan(0);
+        assertThat(host.publicPort()).as("the public listener must be bound too (Settings#toHostEnv wires it)")
+                .isGreaterThan(0);
 
         FnHostLauncher.close(result);
     }

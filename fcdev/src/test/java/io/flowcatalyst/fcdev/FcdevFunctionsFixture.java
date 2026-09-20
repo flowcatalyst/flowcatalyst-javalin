@@ -90,7 +90,10 @@ public final class FcdevFunctionsFixture implements AutoCloseable {
         var sub = new StartCommand.Sub(env);
         new CommandLine(sub, new EnvFactory(env)).parseArgs("--api-port", "0", "--metrics-port", "0",
                 "--embedded-db-port", "0", "--router=false", "--stream=false", "--scheduler=false",
-                "--scheduled-job=false", "--fn-port", Integer.toString(fnPort));
+                "--scheduled-job=false", "--fn-port", Integer.toString(fnPort),
+                // Hard rule #4: never probe-and-release a port — 0 is ephemeral, the real bound
+                // port is read back afterwards through FnHost#publicPort().
+                "--fn-public-port", "0");
         var paths = new DevPaths(root, cache);
         try {
             // A fresh PrometheusRegistry per boot: Server#start registers

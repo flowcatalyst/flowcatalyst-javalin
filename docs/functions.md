@@ -110,7 +110,8 @@ first, on the platform, not at runtime on a host. **Unknown keys at any level ar
   "limits": { "maxDurationMs": 10000, "maxConcurrency": 8 },
   "endpoints": [
     { "path": "/events/greeting-requested", "auth": "webhook" },
-    { "path": "/api/hello/{name}", "auth": "platform", "methods": ["GET"] },
+    { "path": "/api/hello/{name}", "auth": "platform", "methods": ["GET"],
+      "cors": { "origins": ["https://app.acme.com"], "methods": ["GET"] } },
     { "path": "/healthz", "auth": "none", "methods": ["GET"] }
   ],
   "subscriptions": [
@@ -118,7 +119,7 @@ first, on the platform, not at runtime on a host. **Unknown keys at any level ar
       "mode": "IMMEDIATE", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
   ],
   "schedules": [ ],
-  "public": [ ],
+  "public": [ { "hostname": "api.acme.com", "pathPrefix": "/hello" } ],
   "config": ["GREETING"],
   "secrets": ["API_KEY"],
   "db": [ ],
@@ -139,12 +140,13 @@ first, on the platform, not at runtime on a host. **Unknown keys at any level ar
 | `endpoints[].methods` | no | absent/empty = every method; a `webhook` endpoint's methods, if given, must be exactly `["POST"]` |
 | `endpoints[].maxBodyBytes` | no | default 1 MiB |
 | `endpoints[].timeoutMs` | no | default is `limits.maxDurationMs` |
+| `endpoints[].cors` | no | `{ origins, methods, headers, allowCredentials }` — CORS for this endpoint on BOTH listeners (§6a); absent means the host does nothing CORS-related for it at all |
 | `subscriptions[].eventType` | yes | the event type to subscribe to |
 | `subscriptions[].path` | yes | **must be a literal path** (no `{}`/`*`) matching a `webhook`-authed endpoint, or publish is rejected |
 | `subscriptions[].mode` | no | a `DispatchMode`; **default `IMMEDIATE`** — not the router's own ordinary default, because a manifest author who wants ordering asks for it explicitly |
 | `subscriptions[].dataOnly` | no | default **`false`** — your function sees the whole envelope by default |
 | `schedules[].cron` / `.timezone` / `.path` / `.payload` | — | same literal-path/webhook-endpoint rule as subscriptions |
-| `public[].hostname` / `.pathPrefix` | — | a public HTTP route (domain verification, package F — not built yet) |
+| `public[].hostname` / `.pathPrefix` | — | a public HTTP route on a verified domain you own (§6a); `pathPrefix` defaults to `/` |
 | `config` / `secrets` | no | the keys your function needs; each must match `^[A-Za-z][A-Za-z0-9_./-]{0,99}$`; promote refuses (`SETTINGS_MISSING`) if any declared key has no value set |
 | `db[].name` / `.secretRef` / `.poolSize` | no | a database connection; `secretRef` names a secret holding the DSN |
 | `httpAllow` | no | outbound hosts `ctx.http()` may call (exact host, or `*.suffix` for subdomains) |
@@ -173,6 +175,84 @@ Every endpoint names exactly one, and the host checks it *before your function e
 
 `auth` has no default — an endpoint that forgets it is rejected at publish, not silently treated as
 open or closed.
+
+## 6a. Public routes, domains, and CORS
+
+By default a function is reachable only by address (`/functions/{address}/...`, on the PRIVATE
+listener — in-VPC / Service Connect / fcdev's own port) or as a webhook/schedule target the
+platform itself calls. `public[]` in the manifest exposes it on the internet-facing **public
+listener** instead, at a hostname you have claimed and verified.
+
+### Claiming and verifying a hostname
+
+```
+fcdev fn domain claim api.acme.com [--client <id>]     # --client omitted = platform-owned
+fcdev fn domain verify api.acme.com
+fcdev fn domain list [--client <id>]
+fcdev fn domain release api.acme.com
+```
+
+`claim` prints a DNS record to create:
+
+```
+create this DNS record to verify ownership:
+  type:  TXT
+  name:  _flowcatalyst.api.acme.com
+  value: fc-verify=<token>
+```
+
+Create it with your DNS provider, then `fn domain verify api.acme.com`. Only a domain you own AND
+have verified may appear in a `public[]` entry — publishing against an unclaimed, still-pending, or
+someone-else's-verified hostname fails the same way for all three (`PUBLIC_HOSTNAME_NOT_VERIFIED`;
+the platform never tells you which of the three it was, so it can never be used to discover who
+holds a hostname).
+
+**Local development**: any hostname whose last label is exactly `localhost` (e.g.
+`hello.localhost`) auto-verifies the instant you claim it — no DNS record, no `verify` call — because
+`.localhost` always resolves to loopback (RFC 6761) and `fcdev` runs in dev mode. `fcdev start`
+opens the public listener on `--fn-public-port` (default **8091**), so once you `fn domain claim
+hello.localhost` and publish a function with `"public": [{"hostname": "hello.localhost"}]`,
+`http://hello.localhost:8091/` reaches it immediately.
+
+### Reaching the function
+
+The public listener matches the request's `Host` header against your claimed hostnames, then the
+LONGEST `pathPrefix` whose whole segments prefix the request path (`/billing` matches `/billing` and
+`/billing/x`, never `/billingx`) — the matched prefix is stripped before your function sees the
+path, so the same handler serves both entries: `https://api.acme.com/invoices/7` (prefix `/`) and
+`/functions/billing.invoices.api/invoices/7` both arrive as `path = "/invoices/7"`. There is **no
+by-address or versioned access on the public listener** — `/functions/...` is just an ordinary
+(almost certainly unmatched) path there, never special-cased.
+
+`request.remoteAddress()` is the right-most `X-Forwarded-For` entry when the TCP peer is a trusted
+proxy (your load balancer; `FC_FN_TRUSTED_PROXIES`, default RFC 1918 + loopback), else the TCP peer
+itself — a client-supplied `X-Forwarded-For` is never trusted directly, and `X-Forwarded-Host` is
+never consulted for routing at all (only the load balancer picks the route, via the real `Host`).
+
+### CORS
+
+Add `cors` to an endpoint (not the `public[]` entry — CORS is per-endpoint, and applies on BOTH
+listeners) to let a browser call it cross-origin:
+
+```json
+{ "path": "/api/hello/{name}", "auth": "platform", "methods": ["GET"],
+  "cors": { "origins": ["https://app.acme.com"], "methods": ["GET"], "headers": ["X-Request-Id"],
+            "allowCredentials": false } }
+```
+
+- A preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) is answered by the **host**
+  directly — your function is never invoked, no permit is taken, and **no auth runs** (a preflight
+  carries no credentials, so this is true even for a `platform`-authed endpoint).
+- On an actual request, the host sets `Access-Control-Allow-Origin`/`-Allow-Credentials`/`Vary` on
+  whatever your function returns, **replacing** anything your function set for those headers itself
+  — the host is the one authority for a `cors`-declaring endpoint.
+- **CORS is not access control.** A disallowed `Origin` still reaches your function and runs
+  normally — the browser is what refuses to hand the response to the calling page, because the
+  response carries no CORS headers at all. If you need to reject a caller, do it with `auth` (or
+  your own logic), never by relying on CORS to block anything.
+- `origins` entries are exact origins (`scheme://host[:port]`, no path) or `*`; `*` together with
+  `allowCredentials: true` is rejected at publish (`ENDPOINT_INVALID`) — browsers refuse that
+  combination anyway, and it is the classic "reflect any origin with credentials" hole.
 
 ## 7. Events
 
@@ -345,6 +425,10 @@ two forms, or a two-part address, is a usage error (exit 2).
 | `fn secret set [<address>] <KEY> [--from-file <file>]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |
 | `fn watch <dir> [<address>] [--jar <glob>] [--manifest manifest.json]` | debounced (500 ms) file watch; every change runs a deploy cycle; a failing cycle prints its error and the watch keeps going |
+| `fn domain claim <hostname> [--client <id>]` | claims a hostname (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
+| `fn domain verify <hostname>` | resolves the TXT record and marks the domain `VERIFIED` |
+| `fn domain list [--client <id>]` | lists claimed hostnames and their verification state (`--client` omitted = platform-owned) |
+| `fn domain release <hostname>` | releases a hostname — refused while any `public[]` route still uses it |
 
 ## 10. What the sample proves, end to end
 
@@ -368,6 +452,10 @@ two forms, or a two-part address, is a usage error (exit 2).
   directly, not paraphrased from memory)
 - §4 — `server/src/main/java/io/flowcatalyst/platform/function/Manifest.java`;
   `docs/spec/function-invocation.md` §3
+- §6a — `docs/spec/function-public-routes.md` §1, §3, §4, §5;
+  `function-host/src/main/java/io/flowcatalyst/fnhost/http/{FnHttpServer,CorsPolicy}.java`,
+  `function-host/src/main/java/io/flowcatalyst/fnhost/route/{PublicRouteTable,TrustedProxies}.java`;
+  `fcdev/src/main/java/io/flowcatalyst/fcdev/fn/DomainCommand.java`
 - §7 — `function-api/src/main/java/io/flowcatalyst/function/{Events,OutboundEvent,EventEmitException}.java`;
   `docs/spec/function-context.md` §3
 - §8 — `Result`'s own class doc (`function-api/src/main/java/io/flowcatalyst/function/Result.java`);

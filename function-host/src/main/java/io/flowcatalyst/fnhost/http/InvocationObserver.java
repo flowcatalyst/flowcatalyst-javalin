@@ -27,6 +27,18 @@ public interface InvocationObserver {
     InvocationObserver NOOP = new InvocationObserver() {
     };
 
+    /// Which listener a call arrived on (spec `function-public-routes.md`
+    /// §3's `entry` label on `fc_fn_invocations_total` — bounded cardinality:
+    /// exactly two values). [#wireValue] is the metrics label; kept an enum,
+    /// not a `String`, so a caller can never pass an arbitrary third value.
+    enum Entry {
+        PRIVATE, PUBLIC;
+
+        public String wireValue() {
+            return name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
     /// Once, from [FnHttpServer#start], the moment the per-listener
     /// [Permits] exists — spec §2's `fc_fn_permits_available` needs it for
     /// its scrape-time callback and [Permits] is otherwise owned entirely by
@@ -42,6 +54,19 @@ public interface InvocationObserver {
     /// requirement), `unavailable` (an unversioned lazy load failed —
     /// `address` known) or `not_found` (`address` always `null`, see above).
     default void refused(String outcome, FunctionAddress address) {
+    }
+
+    /// Same as {@link #refused(String, FunctionAddress)}, plus which entry
+    /// (private/public listener) the refusal happened on — defaults to
+    /// forwarding to the two-argument form, so an implementation that never
+    /// cared about `entry` (every existing test double, `RecordingObserver`)
+    /// still sees exactly the calls it always saw. [io.flowcatalyst.fnhost.http.FnHttpServer]
+    /// calls THIS overload; a preflight the host answers without ever
+    /// entering the function also reports here, with `outcome = "preflight"`
+    /// (spec §4: "preflights counted under outcome `preflight` and never as
+    /// `ok`").
+    default void refused(String outcome, FunctionAddress address, Entry entry) {
+        refused(outcome, address);
     }
 
     /// The function was entered (permits + load succeeded; the worker
@@ -62,5 +87,14 @@ public interface InvocationObserver {
     /// `fc_fn_duration_seconds{address}` (observed only here — spec §2 P3:
     /// "only when the function was entered").
     default void completed(FunctionAddress address, int version, String outcome, Duration elapsed) {
+    }
+
+    /// Same as {@link #completed(FunctionAddress, int, String, Duration)},
+    /// plus `entry` — default forwards to the four-argument form, same
+    /// backward-compatibility reasoning as {@link #refused(String, FunctionAddress, Entry)}.
+    /// [io.flowcatalyst.fnhost.http.FnHttpServer] calls THIS overload for
+    /// every entered invocation, on both listeners.
+    default void completed(FunctionAddress address, int version, String outcome, Duration elapsed, Entry entry) {
+        completed(address, version, outcome, elapsed);
     }
 }

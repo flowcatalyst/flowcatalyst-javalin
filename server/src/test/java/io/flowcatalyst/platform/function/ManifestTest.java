@@ -437,6 +437,61 @@ class ManifestTest {
                 "\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"  \"]}")), "ENDPOINT_INVALID");
     }
 
+    // ── §4 (function-public-routes.md): CORS publish-time rules ─────────────
+
+    @Test
+    void corsWildcardOriginWithCredentialsIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\","
+                + "\"cors\":{\"origins\":[\"*\"],\"allowCredentials\":true}")), "ENDPOINT_INVALID");
+    }
+
+    /// Mutant pin: a wildcard origin ALONGSIDE a real one must still be
+    /// rejected when credentials are allowed — a manifest author cannot
+    /// dodge the rule by adding a second, harmless-looking entry.
+    @Test
+    void corsWildcardAmongOtherOriginsWithCredentialsIsRejected() {
+        assertCode(() -> parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\","
+                + "\"cors\":{\"origins\":[\"https://app.acme.com\",\"*\"],\"allowCredentials\":true}")),
+                "ENDPOINT_INVALID");
+    }
+
+    @Test
+    void corsWildcardOriginWithoutCredentialsIsAccepted() {
+        Manifest manifest = parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"*\"]}"));
+        assertThat(manifest.endpoints().get(0).cors().origins()).containsExactly("*");
+    }
+
+    @Test
+    void corsRealOriginWithCredentialsIsAccepted() {
+        Manifest manifest = parseJvm(withEndpoint("\"path\":\"/a\",\"auth\":\"none\","
+                + "\"cors\":{\"origins\":[\"https://app.acme.com\"],\"allowCredentials\":true}"));
+        assertThat(manifest.endpoints().get(0).cors().allowCredentials()).isTrue();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidCorsOriginFormats")
+    void corsOriginNotSchemeHostPortIsRejected(String label, String origin) {
+        assertCode(() -> parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"" + origin + "\"]}")), "ENDPOINT_INVALID");
+    }
+
+    static Stream<Object[]> invalidCorsOriginFormats() {
+        return Stream.of(
+                new Object[] {"has a path", "https://app.acme.com/"},
+                new Object[] {"has a path segment", "https://app.acme.com/callback"},
+                new Object[] {"no scheme", "app.acme.com"},
+                new Object[] {"has userinfo", "https://user@app.acme.com"},
+                new Object[] {"has a query string", "https://app.acme.com?x=1"});
+    }
+
+    @Test
+    void corsOriginWithPortIsAccepted() {
+        Manifest manifest = parseJvm(withEndpoint(
+                "\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"https://app.acme.com:8443\"]}"));
+        assertThat(manifest.endpoints().get(0).cors().origins()).containsExactly("https://app.acme.com:8443");
+    }
+
     // ── §3: webhook endpoint methods must be exactly ["POST"] ────────────────
 
     @Test

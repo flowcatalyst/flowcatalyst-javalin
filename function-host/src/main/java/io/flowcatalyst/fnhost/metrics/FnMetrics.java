@@ -54,8 +54,8 @@ public final class FnMetrics implements InvocationObserver, ReconcileObserver {
 
         this.invocations = Counter.builder()
                 .name("fc_fn_invocations_total")
-                .help("Function invocations, by outcome")
-                .labelNames("address", "version", "outcome")
+                .help("Function invocations, by outcome and listener entry")
+                .labelNames("address", "version", "outcome", "entry")
                 .register(prometheusRegistry);
         this.duration = Histogram.builder()
                 .name("fc_fn_duration_seconds")
@@ -125,8 +125,13 @@ public final class FnMetrics implements InvocationObserver, ReconcileObserver {
 
     @Override
     public void refused(String outcome, FunctionAddress address) {
+        refused(outcome, address, InvocationObserver.Entry.PRIVATE);
+    }
+
+    @Override
+    public void refused(String outcome, FunctionAddress address, InvocationObserver.Entry entry) {
         String label = address == null ? "-" : address.render();
-        invocations.labelValues(label, "-", outcome).inc();
+        invocations.labelValues(label, "-", outcome, entry.wireValue()).inc();
     }
 
     @Override
@@ -141,8 +146,14 @@ public final class FnMetrics implements InvocationObserver, ReconcileObserver {
 
     @Override
     public void completed(FunctionAddress address, int version, String outcome, Duration elapsed) {
+        completed(address, version, outcome, elapsed, InvocationObserver.Entry.PRIVATE);
+    }
+
+    @Override
+    public void completed(FunctionAddress address, int version, String outcome, Duration elapsed,
+                           InvocationObserver.Entry entry) {
         String rendered = address.render();
-        invocations.labelValues(rendered, String.valueOf(version), outcome).inc();
+        invocations.labelValues(rendered, String.valueOf(version), outcome, entry.wireValue()).inc();
         duration.labelValues(rendered).observe(elapsed.toNanos() / 1_000_000_000.0);
     }
 

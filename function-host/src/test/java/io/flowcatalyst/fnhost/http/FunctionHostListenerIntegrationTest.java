@@ -6,6 +6,7 @@ import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
 import io.flowcatalyst.fnhost.reconcile.HttpControlPlane;
 import io.flowcatalyst.fnhost.reconcile.Reconciler;
 import io.flowcatalyst.fnhost.reconcile.TokenSource;
+import io.flowcatalyst.fnhost.route.TrustedProxies;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
@@ -125,7 +126,7 @@ class FunctionHostListenerIntegrationTest {
                     "platform:function:function:manage", "platform:function:function:view",
                     "platform:function:version:publish", "platform:function:alias:promote",
                     "platform:function:policy:manage", "platform:admin:application:create",
-                    "platform:iam:service-account:view")
+                    "platform:iam:service-account:view", "platform:function:domain:manage")
     };
 
     @BeforeAll
@@ -412,6 +413,121 @@ class FunctionHostListenerIntegrationTest {
                     .where(MSG_EVENTS.DEDUPLICATION_ID.eq("dedup-notowned-" + jobId)).fetchOne();
             assertThat(notOwnedRow).as("mutant: a row was written even though ownership was refused").isNull();
         }
+    }
+
+    /// **F11** (`docs/spec/function-public-routes.md` §6): claim → verify →
+    /// publish with `public` → promote → reconcile → `GET` on the PUBLIC
+    /// port with `Host: <hostname>` reaches the function with `path=/x`, and
+    /// the SAME function by address on the PRIVATE port sees the same path.
+    ///
+    /// Ambiguity/choice (task brief): `Platform`'s `FunctionDomainApi` wires
+    /// a fixed `JndiTxtResolver` at `Server`'s own composition root
+    /// (`io/flowcatalyst/server/Platform.java`) with no test seam to inject
+    /// a fake — there is no way to hand a fake `TxtResolver` into a real
+    /// `Server` from here. Per the task brief's own fallback, this test uses
+    /// a `.localhost` hostname under dev mode instead (`FLOWCATALYST_DEV_MODE=true`
+    /// is already set for this whole class in `@BeforeAll`): `ClaimFunctionDomain`
+    /// auto-verifies a hostname whose LAST LABEL is exactly `localhost`, no
+    /// DNS at all (spec §1, §6 F3) — so the claim step's response already
+    /// reports `VERIFIED` and there is no separate `verify` HTTP call to make.
+    @Test
+    void publicRouteReachesTheFunctionAndThePrivateEntrySeesTheSamePath(@TempDir Path dir) throws Exception {
+        DnsLabel pool = new DnsLabel("f11pool" + RUN);
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("f11" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
+        String hostname = "f11-" + RUN + ".localhost";
+
+        // ── claim (dev-mode .localhost auto-verifies at claim time — no separate verify call) ──
+        JsonNode claimed = adminPost("/api/function-domains", obj("hostname", hostname), 201);
+        assertThat(claimed.path("verification").path("state").asString())
+                .as("mutant: .localhost must auto-verify under dev mode").isEqualTo("VERIFIED");
+
+        // ── the function itself, platform-owned (same convention as H15/X10 above) ──
+        String appCode = "f11-app-" + RUN;
+        JsonNode app = adminPost("/api/applications", obj("code", appCode, "name", "F11 " + RUN, "type", "APPLICATION"), 201);
+        String applicationId = app.path("id").asString();
+
+        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+        Function fn = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        var uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        uow.inTransaction(tx -> {
+            functions.persist(fn, tx.dbTx());
+            return null;
+        });
+
+        // ── publish v1 with a public route + promote ──
+        Path jar = publicRouteFunctionJar(dir);
+        Digest digest = digestOf(jar);
+        JsonNode manifest = obj("runtime", "jvm", "entrypoint", "fixture.f11.PathFn", "pool", pool.value(), "warm", false,
+                "endpoints", array(obj("path", "/*", "auth", "none")),
+                "public", array(obj("hostname", hostname, "pathPrefix", "/")));
+        adminPost("/api/functions/" + address.render() + "/versions",
+                obj("artifactRef", fileRef(jar), "digest", digest.value(), "manifest", manifest), 201);
+
+        // ── the host's own control-plane service principal (same pattern as H15 above) ──
+        String hostAppCode = "f11-host-" + RUN;
+        JsonNode hostApp = adminPost("/api/applications", obj("code", hostAppCode, "name", "F11 Host " + RUN, "type", "APPLICATION"), 201);
+        String hostAppId = hostApp.path("id").asString();
+        JsonNode provisioned = adminPost("/api/applications/" + hostAppId + "/provision-service-account", null, 201);
+        String hostClientId = provisioned.path("serviceAccount").path("oauthClient").path("clientId").asString();
+        String hostClientSecret = provisioned.path("serviceAccount").path("oauthClient").path("clientSecret").asString();
+        JsonNode hostServiceAccount = adminGet("/api/service-accounts/code/app:" + hostAppCode);
+        adminPut("/api/service-accounts/" + hostServiceAccount.path("id").asString() + "/roles",
+                obj("roles", array("platform:application-service", "platform:function-host")), 200);
+
+        // ── the host's own Reconciler + FnHttpServer — BOTH ports ephemeral (port 0), read
+        // back after bind (never probe-and-release: a live TCP listener binds 0 and reports
+        // its own bound port). Independent of the class-level `hostPort`/pool URL: this test
+        // uses no subscription, so no PoolUrlTemplate target is ever constructed. ──
+        FunctionRegistry registry = new FunctionRegistry(50);
+        HttpControlPlane controlPlane = new HttpControlPlane(baseUrl, new TokenSource(HTTP, baseUrl,
+                hostClientId, hostClientSecret));
+        Reconciler reconciler = new Reconciler(pool, "f11-host-" + RUN, controlPlane,
+                new FileArtifactStore(dir.resolve("cache")), new Signatures.Off(), new JvmFunctionLoader(), registry);
+        try (FnHttpServer fnServer = FnHttpServer.start(reconciler,
+                FnHttpServer.Options.of(0, 512, baseUrl, io.flowcatalyst.fnhost.http.InvocationObserver.NOOP, 0,
+                        TrustedProxies.DEFAULT))) {
+
+            reconciler.reconcileOnce(Instant.now());
+            awaitCondition(() -> readVersionState(address, 1).equals("READY"), "v1 must become READY");
+
+            adminPut("/api/functions/" + address.render() + "/aliases/live", obj("version", 1), 200);
+            reconciler.reconcileOnce(Instant.now());
+
+            // ── PUBLIC port: Host-based routing (java.net.http forbids setting Host directly
+            // — see RawHttpClient's own doc) ──
+            var pub = RawHttpClient.send(fnServer.publicPort(), "GET", "/x", Map.of("Host", hostname), null);
+            assertThat(pub.status()).as(pub.bodyAsString()).isEqualTo(200);
+            JsonNode pubBody = Json.MAPPER.readTree(pub.bodyAsString());
+            assertThat(pubBody.path("path").asString()).isEqualTo("/x");
+
+            // ── PRIVATE port: same function, by address, same function-path ──
+            var priv = HTTP.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + fnServer.port()
+                            + "/functions/" + address.render() + "/x")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertThat(priv.statusCode()).isEqualTo(200);
+            JsonNode privBody = Json.MAPPER.readTree(priv.body());
+            assertThat(privBody.path("path").asString()).as("mutant: prefix stripping differs between listeners")
+                    .isEqualTo(pubBody.path("path").asString());
+            // F7's own dedicated tests (`FnHttpServerPublicListenerTest`) pin "never by
+            // address" with a NARROW prefix — this route's prefix is "/" (owns the whole
+            // host), so an address-shaped path would 200 here too, for an unrelated reason
+            // (the function legitimately owns every path on this host); asserting 404 for
+            // it here would be a false pin, not a real one.
+        }
+    }
+
+    private static Path publicRouteFunctionJar(Path dir) {
+        Path jar = dir.resolve("f11-fn.jar");
+        FixtureJars.builder().source("fixture.f11.PathFn", """
+                package fixture.f11;
+                import io.flowcatalyst.function.*;
+                public final class PathFn implements Function {
+                    public Result handle(Request in, FunctionContext ctx) throws Exception {
+                        return Result.json(200, "{\\"path\\":\\"" + in.path() + "\\"}");
+                    }
+                }
+                """).build(jar);
+        return jar;
     }
 
     private static Path emitFunctionJar(Path dir, String ownedType, String notOwnedType) {

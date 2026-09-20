@@ -117,3 +117,43 @@ mode's `.localhost` rule, `hello.localhost:8091` works out of the box. `fn` CLI:
 | F9 | CORS: preflight allowed/disallowed (headers present/absent exactly), not invoked, no permit, no auth on a `platform` endpoint's preflight; actual request gets host-set headers replacing the function's own; `*`+credentials rejected at publish; `Vary: Origin` always with an origin-specific allow | reflect any origin; invoke the function on preflight; let the function's header win |
 | F10 | desired-state `publicRoutes` sorted and per pool; bytes deterministic; ETag moves on a route change | — |
 | F11 | in-process end to end (extends D3's acceptance harness): claim → verify (fake resolver) → publish → promote → `GET http://127.0.0.1:<public port>/x` with `Host: api.example.test` reaches the function with `path=/x`; the same function by address on the private port gets the same `path` | — |
+
+## 7. Slice F2 implementation notes (session addendum, 2026-09-20)
+
+- **F11's fake `TxtResolver` seam**: `Platform.java`'s composition root wires a fixed
+  `JndiTxtResolver` into `FunctionDomainApi.State` with no injection point for a real `Server` built
+  from this repo's test harnesses. F11 uses the documented fallback instead: a `.localhost` hostname
+  under dev mode (`FLOWCATALYST_DEV_MODE=true`, already set for `FunctionHostListenerIntegrationTest`),
+  which auto-verifies at claim time (§1, F3) — no DNS, no separate `verify` call. A future slice that
+  wants the fake-resolver path exercised end to end needs `Server`/`Platform` to accept an injectable
+  `TxtResolver`.
+- **CORS `Access-Control-Allow-Methods` when an endpoint's own `methods` is empty** ("every method"):
+  the header cannot enumerate "every method", so the host echoes `cors.methods` plus the SPECIFIC
+  method the preflight requested (already known allowed, since the endpoint declares no restriction
+  of its own) rather than refusing or guessing a fixed list.
+- **CORS origin equality**: compared as `(scheme, host, port)` via `java.net.URI`, lower-casing
+  scheme and host; a configured entry omitting the port and a request `Origin` naming the scheme's
+  default port explicitly (`https://a.com` vs `https://a.com:443`) are NOT treated as equal — an
+  edge case narrow enough that over-engineering default-port normalisation seemed the wrong
+  trade-off for this slice.
+- **CORS is unversioned-only**: the versioned smoke-test path (`/functions/{address}:{n}/...`)
+  never runs CORS handling — its own auth must resolve strictly before the entry/endpoint may be
+  looked at at all (spec `function-host-listener.md` §4), which is incompatible with a preflight
+  that carries no auth by definition; nothing in this spec asks a browser to smoke-test a candidate
+  version anyway.
+- **`fc_fn_invocations_total{entry}`**: added as a 4th label (`address`, `version`, `outcome`,
+  `entry`), 2 bounded values (`private`, `public`); `InvocationObserver#refused`/`#completed` grew a
+  `(..., Entry)` overload defaulting to the pre-F2 signature (`Entry.PRIVATE`), so every existing
+  observer/test double keeps compiling and behaving unchanged.
+- **`X-Forwarded-For` "malformed entry ⇒ the peer"**: the right-most entry is used only when it is
+  syntactically an IPv4 or IPv6 literal (`TrustedProxies#isIpLiteral`, no DNS); this is also what
+  the class's own `isTrusted(String)` uses to avoid ever resolving arbitrary caller-supplied text.
+- **No IPv4-mapped-IPv6 "unwrap" step in `TrustedProxies`**: an early version normalised a 16-byte
+  IPv4-mapped candidate to 4 bytes before comparing. Direct experiment
+  (`TrustedProxiesTest#jdkFoldsIpv4MappedAddressesToInet4AddressAlways`) showed `java.net.InetAddress`
+  itself already folds `::ffff:a.b.c.d` — both via `getByName` on the literal and via `getByAddress`
+  on the raw 16 mapped bytes — down to a plain `Inet4Address` before any caller ever sees it, so a
+  genuinely 16-byte mapped candidate can never reach this class through a standard JDK path; the
+  original "unwrap" test passed for the wrong reason (both sides already matched at 4 bytes either
+  way) — decorative by the Testing Policy's own definition. The unwrap code was removed rather than
+  kept as untested defensive dead code.

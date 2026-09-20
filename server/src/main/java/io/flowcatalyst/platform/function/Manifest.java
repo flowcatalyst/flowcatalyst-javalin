@@ -445,6 +445,12 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         return List.copyOf(methods);
     }
 
+    /// A publish-time origin: exactly `*`, or `scheme://host[:port]` with no
+    /// path/query/fragment/userinfo (spec `function-public-routes.md` §4:
+    /// "rejects an origin that is not `scheme://host[:port]` with no path").
+    private static final Pattern ORIGIN_FORMAT =
+            Pattern.compile("^[A-Za-z][A-Za-z0-9+.-]*://[^/@?#\\s]+(:\\d+)?$");
+
     private static Cors parseCors(JsonNode node, String path) {
         JsonNode corsNode = node.path("cors");
         if (corsNode.isMissingNode() || corsNode.isNull()) return null;
@@ -454,6 +460,12 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         String corsPath = path + ".cors";
         rejectUnknown(corsNode, CORS_KEYS, corsPath);
         List<String> origins = parseStringList(corsNode, "origins", corsPath);
+        for (String origin : origins) {
+            if (!"*".equals(origin) && !ORIGIN_FORMAT.matcher(origin).matches()) {
+                throw UseCaseException.validation("ENDPOINT_INVALID",
+                        corsPath + ".origins entry '" + origin + "' must be '*' or 'scheme://host[:port]' with no path");
+            }
+        }
         List<String> methods = parseStringList(corsNode, "methods", corsPath);
         List<String> headers = parseStringList(corsNode, "headers", corsPath);
         JsonNode credNode = corsNode.path("allowCredentials");
@@ -464,6 +476,12 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             allowCredentials = credNode.asBoolean();
         } else {
             throw UseCaseException.validation("ENDPOINT_INVALID", corsPath + ".allowCredentials must be a boolean");
+        }
+        // Spec §4: "*" with allowCredentials is rejected at publish — browsers refuse it,
+        // and "reflect any origin with credentials" is the classic hole.
+        if (allowCredentials && origins.contains("*")) {
+            throw UseCaseException.validation("ENDPOINT_INVALID",
+                    corsPath + ": origins must not contain '*' when allowCredentials is true");
         }
         return new Cors(origins, methods, headers, allowCredentials);
     }

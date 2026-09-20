@@ -206,13 +206,19 @@ public final class StartCommand implements Callable<Integer> {
                 var settings = new FnHostLauncher.Settings("default",
                         "http://localhost:" + running.apiPort(),
                         fnCreds.host().clientId(), fnCreds.host().secret(),
-                        opts.fnPort(), opts.fnMetricsPort(), paths.fnCacheDir(),
+                        opts.fnPort(), opts.fnPublicPort(), opts.fnMetricsPort(), paths.fnCacheDir(),
                         resolveHostJar(opts));
                 fnHost = FnHostLauncher.launch(settings, FnHostLauncher.DEFAULT_IS_NATIVE,
                         FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
-                fnCliJson = writeFnCliCredentials(paths, running.apiPort(), opts.fnPort(), fnCreds.cli());
+                fnCliJson = writeFnCliCredentials(paths, running.apiPort(), opts.fnPort(), opts.fnPublicPort(),
+                        fnCreds.cli());
                 LOG.atInfo().setMessage("function host")
                         .addKeyValue("url", "http://127.0.0.1:" + opts.fnPort() + "/functions/…")
+                        .log();
+                // spec `function-public-routes.md` §5: "fcdev start also opens the public
+                // listener ... banner line" — a literal `<name>.localhost` template, since no
+                // real function is published yet at banner time.
+                LOG.atInfo().setMessage("functions (public)  http://<name>.localhost:" + opts.fnPublicPort() + "/")
                         .log();
             }
 
@@ -243,18 +249,24 @@ public final class StartCommand implements Callable<Integer> {
     }
 
     /// `fn-cli.json` (owner-only): the `fcdev-fn-cli` credentials, so `fcdev
-    /// fn …` needs no flags locally.
-    private static Path writeFnCliCredentials(DevPaths paths, int apiPort, int fnPort,
+    /// fn …` needs no flags locally. `publicUrl` (spec
+    /// `function-public-routes.md` §5) is informational only today — no `fn`
+    /// command reads it back yet, the way `hostUrl` feeds `fn invoke`'s
+    /// default target (`FnCredentials#hostUrlFromFile`) — but it is written
+    /// so a future `fn invoke --public`/documentation reader has it without
+    /// a wire-shape change.
+    private static Path writeFnCliCredentials(DevPaths paths, int apiPort, int fnPort, int fnPublicPort,
                                                FunctionDevBootstrap.Credentials cli) throws IOException {
         Path path = paths.fnCliCredentialsPath();
         var body = new FnCliCredentialsFile("http://localhost:" + apiPort, cli.clientId(), cli.secret(),
-                "http://127.0.0.1:" + fnPort);
+                "http://127.0.0.1:" + fnPort, "http://127.0.0.1:" + fnPublicPort);
         OwnerOnlyFile.write(path, Json.MAPPER.writeValueAsString(body));
         return path;
     }
 
-    /// The wire shape `fn-cli.json` carries (spec §1).
-    private record FnCliCredentialsFile(String platformUrl, String clientId, String clientSecret, String hostUrl) {
+    /// The wire shape `fn-cli.json` carries (spec §1, extended by §5).
+    private record FnCliCredentialsFile(String platformUrl, String clientId, String clientSecret, String hostUrl,
+                                         String publicUrl) {
     }
 
     /// `banner`: the startup summary.

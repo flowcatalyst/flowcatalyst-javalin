@@ -173,4 +173,25 @@ class StartOptionsTest {
         var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z");
         assertThat(env.routerConfigUrl()).isEmpty();
     }
+
+    // ── fn-port / fn-public-port (spec `function-public-routes.md` §5) ──
+
+    @Test
+    void fnPortAndFnPublicPortDefaults() {
+        var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
+        assertThat(o.fnPort()).isEqualTo(8090);
+        assertThat(o.fnPublicPort()).isEqualTo(8091);
+    }
+
+    @Test
+    void fnPublicPortFromEnvironment() {
+        var o = new StartOptions(DevEnv.of(Map.of("FC_FN_PUBLIC_PORT", "9500")), PATHS);
+        assertThat(o.fnPublicPort()).isEqualTo(9500);
+    }
+
+    @Test
+    void fnPublicPortExplicitFlagWinsOverEnvironment() {
+        var o = parse(Map.of("FC_FN_PUBLIC_PORT", "9500"), "--fn-public-port", "9600");
+        assertThat(o.fnPublicPort()).isEqualTo(9600);
+    }
 }

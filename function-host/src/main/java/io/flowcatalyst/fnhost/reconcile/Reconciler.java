@@ -12,6 +12,7 @@ import io.flowcatalyst.fnhost.load.LoadOutcome;
 import io.flowcatalyst.fnhost.load.MetaspaceGuard;
 import io.flowcatalyst.fnhost.load.Reason;
 import io.flowcatalyst.fnhost.load.Refused;
+import io.flowcatalyst.fnhost.route.PublicRouteTable;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.Runtime;
@@ -136,6 +137,13 @@ public final class Reconciler {
     private volatile String etag;
     private volatile DesiredDocument document;
     private volatile boolean draining;
+
+    /// F2 (`function-public-routes.md` §3): an immutable snapshot built ONCE
+    /// per reconcile from [DesiredDocument#publicRoutes] and swapped
+    /// atomically here — [io.flowcatalyst.fnhost.http.FnHttpServer]'s public
+    /// entry reads this field per request; it never recomputes a table
+    /// itself.
+    private volatile PublicRouteTable publicRouteTable = PublicRouteTable.EMPTY;
 
     /// D5 (`function-host-process.md` §2 P1): has a desired-state fetch ever
     /// RESOLVED (succeeded or failed — set only once [#reconcileOnce]'s fetch
@@ -338,6 +346,7 @@ public final class Reconciler {
                 case ControlPlane.Fetched.Changed(String newEtag, DesiredDocument newDoc) -> {
                     etag = newEtag;
                     document = newDoc;
+                    publicRouteTable = PublicRouteTable.of(newDoc.publicRoutes());
                     updateSecretHistory(newDoc, reconcileNumber);
                     everReconciledSuccessfully = true;
                     observer.reconciled("changed", true, now);
@@ -997,6 +1006,13 @@ public final class Reconciler {
             }
         }
         return null;
+    }
+
+    /// The current, immutable public-route snapshot (spec
+    /// `function-public-routes.md` §3) — [PublicRouteTable#EMPTY] before the
+    /// first reconcile or when the document names no public routes.
+    public PublicRouteTable publicRouteTable() {
+        return publicRouteTable;
     }
 
     /// Every address named anywhere in the current document — live or

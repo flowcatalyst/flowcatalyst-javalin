@@ -195,6 +195,23 @@ final class FnHttpTestSupport {
         return new DesiredDocument(List.of(entry), List.of(), List.of());
     }
 
+    /// F6-F9/F11: a document whose top-level `publicRoutes` names `entry`
+    /// under `(hostname, pathPrefix)` — the public listener's own route
+    /// table is built from exactly this list (spec `function-public-routes.md`
+    /// §3).
+    static DesiredDocument oneFunctionWithPublicRoute(DesiredDocument.Entry entry, String hostname,
+                                                       String pathPrefix) {
+        return new DesiredDocument(List.of(entry), List.of(), List.of(),
+                List.of(new DesiredDocument.PublicRouteRef(hostname, pathPrefix, entry.address())));
+    }
+
+    /// Same, with several `(hostname, pathPrefix)` pairs for ONE entry —
+    /// prefix-overlap / longest-wins fixtures.
+    static DesiredDocument oneFunctionWithPublicRoutes(DesiredDocument.Entry entry,
+                                                        List<DesiredDocument.PublicRouteRef> routes) {
+        return new DesiredDocument(List.of(entry), List.of(), List.of(), routes);
+    }
+
     /// A fixture bug class of its own (H6's own finding: two entries sharing one
     /// `versionId` raced for the SAME `prepared` slot in the reconciler and hung a run one
     /// time in three) — `versionId` keys `Reconciler`'s own `prepared` map regardless of

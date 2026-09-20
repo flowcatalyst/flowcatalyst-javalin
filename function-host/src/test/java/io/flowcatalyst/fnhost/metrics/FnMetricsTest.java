@@ -110,16 +110,16 @@ class FnMetricsTest {
 
         String scrape = scrape(registry);
         String rendered = ADDR_A.render();
-        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "busy")))
+        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "busy", "entry", "private")))
                 .isEqualTo(1);
-        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "unauthorized")))
+        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "unauthorized", "entry", "private")))
                 .isEqualTo(1);
-        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "unavailable")))
+        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "-", "outcome", "unavailable", "entry", "private")))
                 .isEqualTo(1);
-        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", "-", "version", "-", "outcome", "not_found")))
+        assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", "-", "version", "-", "outcome", "not_found", "entry", "private")))
                 .isEqualTo(1);
         for (String outcome : new String[] {"ok", "client_error", "retry", "error", "timeout"}) {
-            assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "1", "outcome", outcome)))
+            assertThat(valueOf(scrape, "fc_fn_invocations_total", java.util.Map.of("address", rendered, "version", "1", "outcome", outcome, "entry", "private")))
                     .as("outcome " + outcome).isEqualTo(1);
         }
         // Absence: exactly 9 series exist for fc_fn_invocations_total — no collapsing,
@@ -216,7 +216,7 @@ class FnMetricsTest {
         // A 404 for an unknown address is address="-", never the requested (nonexistent) address.
         metrics.refused("not_found", null);
         String afterUnknown = scrape(registry);
-        assertThat(hasLine(afterUnknown, "fc_fn_invocations_total", java.util.Map.of("address", "-", "version", "-", "outcome", "not_found")))
+        assertThat(hasLine(afterUnknown, "fc_fn_invocations_total", java.util.Map.of("address", "-", "version", "-", "outcome", "not_found", "entry", "private")))
                 .isTrue();
         for (MetricLine line : linesFor(afterUnknown, "fc_fn_invocations_total")) {
             assertThat(line.labels().values()).as("mutant: label by requested address")

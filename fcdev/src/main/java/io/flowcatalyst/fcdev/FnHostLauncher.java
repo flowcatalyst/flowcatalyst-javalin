@@ -60,6 +60,10 @@ public final class FnHostLauncher {
     /// @param hostClientId    `fcdev-fn-host`'s client id ([FunctionDevBootstrap])
     /// @param hostClientSecret `fcdev-fn-host`'s freshly minted secret
     /// @param port            the function listener's bind port (`--fn-port` / `FC_FN_PORT`)
+    /// @param publicPort      the PUBLIC listener's bind port (`--fn-public-port` /
+    ///                        `FC_FN_PUBLIC_PORT`, spec `function-public-routes.md`
+    ///                        §5) — [io.flowcatalyst.fnhost.reconcile.HostEnv#PUBLIC_PORT_DISABLED]
+    ///                        starts no public listener at all
     /// @param metricsPort     the host's own observability port (`FC_FN_METRICS_PORT`)
     /// @param cacheDir        the host's artifact cache directory
     /// @param hostJar         the child-process branch's exec jar, or `null`
@@ -67,7 +71,7 @@ public final class FnHostLauncher {
     ///                        `FC_FN_HOST_JAR`, else `fc-fnhost.jar` beside
     ///                        the fcdev binary)
     public record Settings(String pool, String platformUrl, String hostClientId, String hostClientSecret,
-                            int port, int metricsPort, Path cacheDir, Path hostJar) {
+                            int port, int publicPort, int metricsPort, Path cacheDir, Path hostJar) {
         public Settings {
             Objects.requireNonNull(pool, "pool");
             Objects.requireNonNull(platformUrl, "platformUrl");
@@ -81,23 +85,26 @@ public final class FnHostLauncher {
         /// process, so there is no environment to build). Signatures are
         /// hard OFF (fcdev is dev-mode by definition, spec §1); the host id
         /// is derived from this JVM's own pid so two fcdev instances never
-        /// collide.
+        /// collide. `trustedProxies` is the production default (RFC 1918 +
+        /// loopback) — fcdev's public listener is only ever reached over
+        /// loopback in the dev loop, so this is never exercised in practice.
         HostEnv toHostEnv() {
             return new HostEnv(new DnsLabel(pool), platformUrl, hostClientId, hostClientSecret,
                     "fcdev-" + ProcessHandle.current().pid(),
                     Signatures.resolve(SignaturesMode.OFF, true), 200, cacheDir,
-                    port, 512, 10, metricsPort, false, 16);
+                    port, 512, 10, metricsPort, false, 16, publicPort,
+                    io.flowcatalyst.fnhost.route.TrustedProxies.DEFAULT);
         }
 
         /// The child process's environment: the host's OWN variable names
         /// ([HostEnv#load]) — `FC_FN_POOL`, `FC_FN_PLATFORM_URL`,
         /// `FC_FN_CLIENT_ID`, `FC_FN_CLIENT_SECRET`, `FC_FN_PORT`,
-        /// `FC_FN_CACHE_DIR`, `FC_FN_SIGNATURES=off` — plus `FC_METRICS_PORT`
-        /// (the host's own observability port; fcdev's OWN flag for this is
-        /// `FC_FN_METRICS_PORT`, kept a distinct name so it can never be
-        /// confused with the PLATFORM's `FC_METRICS_PORT` fcdev also sets)
-        /// and `FLOWCATALYST_DEV_MODE=true` (`FC_FN_SIGNATURES=off` refuses
-        /// to start without it, [Signatures#resolve]).
+        /// `FC_FN_PUBLIC_PORT`, `FC_FN_CACHE_DIR`, `FC_FN_SIGNATURES=off` —
+        /// plus `FC_METRICS_PORT` (the host's own observability port;
+        /// fcdev's OWN flag for this is `FC_FN_METRICS_PORT`, kept a
+        /// distinct name so it can never be confused with the PLATFORM's
+        /// `FC_METRICS_PORT` fcdev also sets) and `FLOWCATALYST_DEV_MODE=true`
+        /// (`FC_FN_SIGNATURES=off` refuses to start without it, [Signatures#resolve]).
         Map<String, String> childProcessEnv() {
             var env = new LinkedHashMap<String, String>();
             env.put("FC_FN_POOL", pool);
@@ -105,6 +112,7 @@ public final class FnHostLauncher {
             env.put("FC_FN_CLIENT_ID", hostClientId);
             env.put("FC_FN_CLIENT_SECRET", hostClientSecret);
             env.put("FC_FN_PORT", Integer.toString(port));
+            env.put("FC_FN_PUBLIC_PORT", Integer.toString(publicPort));
             env.put("FC_FN_CACHE_DIR", cacheDir.toString());
             env.put("FC_FN_SIGNATURES", "off");
             env.put("FC_METRICS_PORT", Integer.toString(metricsPort));

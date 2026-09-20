@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.fnhost.route.TrustedProxies;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.server.EnvReader;
@@ -34,14 +35,29 @@ import java.util.regex.Pattern;
 /// @param maxDbPools `FC_FN_MAX_DB_POOLS` — the most distinct database DSNs
 ///                    [io.flowcatalyst.fnhost.context.DbPools] may have open
 ///                    at once (default 16, spec `function-context.md` §2)
+/// @param publicPort  `FC_FN_PUBLIC_PORT` (spec `function-public-routes.md`
+///                     §3) — the public listener's bind port; default 8081,
+///                     `0` binds an ephemeral port (tests), [#PUBLIC_PORT_DISABLED]
+///                     (the wire value `off`) starts no public listener at all
+/// @param trustedProxies `FC_FN_TRUSTED_PROXIES` — the CIDR allow-list the
+///                        public listener trusts an `X-Forwarded-For` from
+///                        (spec §3); default RFC 1918 + loopback + IPv6
+///                        ULA/loopback ([TrustedProxies#DEFAULT])
 public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String clientSecret, String hostId,
                        Signatures signatures, int maxLoaded, Path cacheDir, int port, int maxConcurrency,
-                       int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart, int maxDbPools) {
+                       int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart, int maxDbPools,
+                       int publicPort, TrustedProxies trustedProxies) {
 
     /// The heartbeat's own host-id rule (`function-api.md` §6.2): 1-100
     /// characters of `[A-Za-z0-9._:-]`.
     private static final Pattern HOST_ID = Pattern.compile("^[A-Za-z0-9._:-]{1,100}$");
     private static final String BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+    /// `publicPort`'s "no public listener" sentinel — spec §3's `off`.
+    public static final int PUBLIC_PORT_DISABLED = -1;
+
+    /// `FC_FN_PUBLIC_PORT`'s default when unset (spec §3).
+    public static final int DEFAULT_PUBLIC_PORT = 8081;
 
     public HostEnv {
         Objects.requireNonNull(pool, "pool");
@@ -51,6 +67,20 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         Objects.requireNonNull(hostId, "hostId");
         Objects.requireNonNull(signatures, "signatures");
         Objects.requireNonNull(cacheDir, "cacheDir");
+        Objects.requireNonNull(trustedProxies, "trustedProxies");
+    }
+
+    /// Pre-F2 shape: no public listener ([#PUBLIC_PORT_DISABLED]), the
+    /// default trusted-proxy list — every caller built before `publicPort`/
+    /// `trustedProxies` existed keeps compiling and behaving exactly as
+    /// before (no public listener starts unless a caller opts in through the
+    /// full canonical constructor or [#load]).
+    public HostEnv(DnsLabel pool, String platformUrl, String clientId, String clientSecret, String hostId,
+                    Signatures signatures, int maxLoaded, Path cacheDir, int port, int maxConcurrency,
+                    int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart, int maxDbPools) {
+        this(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir, port,
+                maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart, maxDbPools, PUBLIC_PORT_DISABLED,
+                TrustedProxies.DEFAULT);
     }
 
     /// @throws IllegalStateException one message naming every required
@@ -129,8 +159,48 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         boolean exitAfterStart = e.bool("FC_EXIT_AFTER_START", false);
         int maxDbPools = e.integer("FC_FN_MAX_DB_POOLS", 16);
 
+        int publicPort = parsePublicPort(e, missing);
+        TrustedProxies trustedProxies;
+        try {
+            trustedProxies = TrustedProxies.parseCsv(e.get("FC_FN_TRUSTED_PROXIES"));
+        } catch (RuntimeException ex) {
+            missing.add("FC_FN_TRUSTED_PROXIES (not a valid CIDR list: '" + e.get("FC_FN_TRUSTED_PROXIES") + "')");
+            trustedProxies = TrustedProxies.DEFAULT;
+        }
+
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("missing or invalid required environment variable(s): "
+                    + String.join(", ", missing));
+        }
+
         return new HostEnv(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir,
-                port, maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart, maxDbPools);
+                port, maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart, maxDbPools, publicPort,
+                trustedProxies);
+    }
+
+    /// `FC_FN_PUBLIC_PORT` (spec §3): unset ⇒ [#DEFAULT_PUBLIC_PORT] (8081);
+    /// `off` (case-insensitive) ⇒ [#PUBLIC_PORT_DISABLED] — no public
+    /// listener; `0` ⇒ ephemeral (tests); anything else must parse as a
+    /// non-negative port number.
+    private static int parsePublicPort(EnvReader e, List<String> missing) {
+        String raw = e.get("FC_FN_PUBLIC_PORT").trim();
+        if (raw.isEmpty()) {
+            return DEFAULT_PUBLIC_PORT;
+        }
+        if (raw.equalsIgnoreCase("off")) {
+            return PUBLIC_PORT_DISABLED;
+        }
+        try {
+            int port = Integer.parseInt(raw);
+            if (port < 0) {
+                missing.add("FC_FN_PUBLIC_PORT (must be a non-negative port number or 'off': '" + raw + "')");
+                return DEFAULT_PUBLIC_PORT;
+            }
+            return port;
+        } catch (NumberFormatException ex) {
+            missing.add("FC_FN_PUBLIC_PORT (must be a non-negative port number or 'off': '" + raw + "')");
+            return DEFAULT_PUBLIC_PORT;
+        }
     }
 
     private static String defaultHostId() {
@@ -167,6 +237,7 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
                 + ", maxLoaded=" + maxLoaded + ", cacheDir=" + cacheDir + ", port=" + port
                 + ", maxConcurrency=" + maxConcurrency + ", drainTimeoutSeconds=" + drainTimeoutSeconds
                 + ", metricsPort=" + metricsPort + ", exitAfterStart=" + exitAfterStart
-                + ", maxDbPools=" + maxDbPools + "]";
+                + ", maxDbPools=" + maxDbPools + ", publicPort=" + publicPort
+                + ", trustedProxies=" + trustedProxies + "]";
     }
 }

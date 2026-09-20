@@ -29,6 +29,7 @@ import java.util.Objects;
 /// | `--pid-file` | `FC_DEV_PID_FILE` | `<userDataDir>/flowcatalyst/fcdev.pid` |
 /// | `--no-functions` | `FC_DEV_FUNCTIONS` | on (`--no-functions` always disables) |
 /// | `--fn-port` | `FC_FN_PORT` | 8090 |
+/// | `--fn-public-port` | `FC_FN_PUBLIC_PORT` | 8091 |
 /// | `--fn-host-jar` | `FC_FN_HOST_JAR` | `""` (resolve `fc-fnhost.jar` beside the fcdev binary) |
 /// | — | `FC_FN_METRICS_PORT` | 9091 (no CLI flag, spec §1) |
 ///
@@ -103,6 +104,13 @@ public final class StartOptions {
     @Option(names = "--fn-port", paramLabel = "<port>", description = "function host listener port (FC_FN_PORT; default: ${DEFAULT-VALUE})")
     int fnPort;
 
+    /// `docs/spec/function-public-routes.md` §5: the public listener's own
+    /// bind port — 8091 in fcdev (8081 is the production default; fcdev's
+    /// ports are all shifted the same way `--fn-port` 8090 is shifted from
+    /// production's 8080).
+    @Option(names = "--fn-public-port", paramLabel = "<port>", description = "function host PUBLIC listener port (FC_FN_PUBLIC_PORT; default: ${DEFAULT-VALUE})")
+    int fnPublicPort;
+
     @Option(names = "--fn-host-jar", paramLabel = "<file>",
             description = "the function host exec jar for the native child-process branch (FC_FN_HOST_JAR; default: fc-fnhost.jar beside the fcdev binary)")
     String fnHostJar;
@@ -142,6 +150,7 @@ public final class StartOptions {
         pidFile = env.str("FC_DEV_PID_FILE", paths.pidFilePath().toString());
         noFunctions = !env.bool("FC_DEV_FUNCTIONS", true);
         fnPort = env.integer("FC_FN_PORT", 8090);
+        fnPublicPort = env.integer("FC_FN_PUBLIC_PORT", 8091);
         fnHostJar = env.str("FC_FN_HOST_JAR", "");
         fnMetricsPort = env.integer("FC_FN_METRICS_PORT", 9091);
     }
@@ -163,6 +172,7 @@ public final class StartOptions {
     public String pidFile() { return pidFile; }
     public boolean functions() { return !noFunctions; }
     public int fnPort() { return fnPort; }
+    public int fnPublicPort() { return fnPublicPort; }
     public String fnHostJar() { return fnHostJar; }
     public int fnMetricsPort() { return fnMetricsPort; }
 }
