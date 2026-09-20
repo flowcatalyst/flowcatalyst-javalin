@@ -2,8 +2,11 @@ package io.flowcatalyst.platform.function.operations;
 
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.FunctionDomain;
+import io.flowcatalyst.platform.function.FunctionDomainRepository;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -58,5 +61,43 @@ public final class Access {
 
     private static UseCaseException notFound(FunctionAddress address) {
         return UseCaseException.resourceNotFound("Function", address.render());
+    }
+
+    // ── Domains (spec `function-public-routes.md` §1) ───────────────────────
+    //
+    // A domain has no owning application (unlike a function) — reach is
+    // "its owner's, exactly as for a function" (spec §1), so only the owner
+    // clause of #canReach applies here; there is no application-reach clause
+    // to AND it with.
+
+    /// @throws UseCaseException not-found `FunctionDomain_NOT_FOUND` when the
+    ///                          row is absent, or present but out of reach
+    public static FunctionDomain byHostname(FunctionDomainRepository repo, Hostname hostname, AuthContext ac) {
+        FunctionDomain d = repo.findByHostname(hostname).orElseThrow(() -> domainNotFound(hostname));
+        requireDomainReach(ac, d);
+        return d;
+    }
+
+    /// @throws UseCaseException not-found `FunctionDomain_NOT_FOUND` when `d` is out of reach
+    public static void requireDomainReach(AuthContext ac, FunctionDomain d) {
+        if (!canReachDomain(ac, d)) {
+            throw domainNotFound(d.hostname());
+        }
+    }
+
+    /// Whether `ac` may act on / see `d`: reach to the owner alone. `null`
+    /// (unauthenticated) never reaches anything.
+    public static boolean canReachDomain(AuthContext ac, FunctionDomain d) {
+        if (ac == null) {
+            return false;
+        }
+        return switch (d.owner()) {
+            case FunctionOwner.Platform ignored -> ac.isAnchor();
+            case FunctionOwner.Client(String clientId) -> Checks.canAccessScope(ac, clientId);
+        };
+    }
+
+    private static UseCaseException domainNotFound(Hostname hostname) {
+        return UseCaseException.resourceNotFound("FunctionDomain", hostname.value());
     }
 }

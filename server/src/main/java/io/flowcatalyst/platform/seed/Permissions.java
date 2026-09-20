@@ -230,6 +230,7 @@ public final class Permissions {
     public static final String FUNCTION_HOST_CONTROL = "platform:function:host:control";
     public static final String FUNCTION_VERSION_INVOKE = "platform:function:version:invoke";
     public static final String FUNCTION_SECRET_MANAGE = "platform:function:secret:manage";
+    public static final String FUNCTION_DOMAIN_MANAGE = "platform:function:domain:manage";
 
     /// Wildcard.
     public static final String ADMIN_ALL = "platform:*:*:*";

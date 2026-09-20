@@ -7,6 +7,8 @@ import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRoute;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
@@ -42,18 +44,22 @@ public final class DesiredState {
     private final FunctionHostRepository hosts;
     private final ServiceAccountRepository serviceAccounts;
     private final FunctionSettingsRepository settings;
+    private final FunctionRouteRepository routes;
 
     /// `serviceAccounts` feeds [OutboundCredentials#resolve] — the SAME
     /// resolver chain the dispatch processor uses (spec §6, R9): "the
     /// application's oldest active service account's signing secret".
     /// `settings` feeds [#configAndSecretsFor] (`function-context.md` §1).
+    /// `routes` feeds the top-level `publicRoutes` (spec
+    /// `function-public-routes.md` §2).
     public DesiredState(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
-            ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings) {
+            ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings, FunctionRouteRepository routes) {
         this.functions = Objects.requireNonNull(functions, "functions");
         this.versions = Objects.requireNonNull(versions, "versions");
         this.hosts = Objects.requireNonNull(hosts, "hosts");
         this.serviceAccounts = Objects.requireNonNull(serviceAccounts, "serviceAccounts");
         this.settings = Objects.requireNonNull(settings, "settings");
+        this.routes = Objects.requireNonNull(routes, "routes");
     }
 
     /// One consistent read: every `ACTIVE` function's `live` + `candidate`
@@ -78,11 +84,15 @@ public final class DesiredState {
         Map<String, Optional<String>> secretByApplication = new HashMap<>();
 
         List<FunctionEntry> entries = new ArrayList<>();
+        // spec `function-public-routes.md` §2: publicRoutes is per the LIVE version's
+        // pool only — a candidate is never served, so it never contributes a route.
+        List<Function> liveInPool = new ArrayList<>();
         for (Function f : active) {
             FunctionVersion live = f.liveVersionId().map(liveVersions::get).orElse(null);
             if (live != null && live.manifest().pool().equals(pool)) {
                 entries.add(FunctionEntry.of(f, live, "live", signingSecretFor(f, live, secretByApplication),
                         configAndSecretsFor(f, live)));
+                liveInPool.add(f);
             }
             FunctionVersion candidate = candidates.get(f.id());
             if (candidate != null
@@ -112,7 +122,27 @@ public final class DesiredState {
                 .sorted(Comparator.comparing(UnloadEntry::address).thenComparingInt(UnloadEntry::version))
                 .toList();
 
-        return new Document(pool.value(), List.copyOf(entries), unload);
+        List<PublicRouteEntry> publicRoutes = publicRoutesFor(liveInPool);
+
+        return new Document(pool.value(), List.copyOf(entries), unload, publicRoutes);
+    }
+
+    /// spec §2: one entry per `(hostname, pathPrefix)` of every function
+    /// whose LIVE version is in the requested pool — batch-read (one query,
+    /// like every other desired-state read), sorted `(hostname, pathPrefix)`
+    /// for deterministic bytes (spec §8 P14).
+    private List<PublicRouteEntry> publicRoutesFor(List<Function> liveInPool) {
+        Map<String, List<FunctionRoute>> byFunction =
+                routes.listByFunctions(liveInPool.stream().map(Function::id).toList());
+        List<PublicRouteEntry> out = new ArrayList<>();
+        for (Function f : liveInPool) {
+            for (FunctionRoute r : byFunction.getOrDefault(f.id(), List.of())) {
+                out.add(new PublicRouteEntry(r.hostname().value(), r.pathPrefix().value(), f.address().render()));
+            }
+        }
+        return out.stream()
+                .sorted(Comparator.comparing(PublicRouteEntry::hostname).thenComparing(PublicRouteEntry::pathPrefix))
+                .toList();
     }
 
     /// Whether `f`'s live version, or its newest PUBLISHED candidate, IS
@@ -207,12 +237,20 @@ public final class DesiredState {
 
     // ── The wire document (spec §6.1) ────────────────────────────────────
 
-    public record Document(String pool, List<FunctionEntry> functions, List<UnloadEntry> unload) {
+    public record Document(String pool, List<FunctionEntry> functions, List<UnloadEntry> unload,
+                           List<PublicRouteEntry> publicRoutes) {
         public Document {
             Objects.requireNonNull(pool, "pool");
             functions = List.copyOf(functions);
             unload = List.copyOf(unload);
+            publicRoutes = List.copyOf(publicRoutes);
         }
+    }
+
+    /// One top-level `publicRoutes` entry (spec §2): `{hostname, pathPrefix,
+    /// address}` — the same shape `FunctionDomainApi`'s `GET
+    /// /api/function-routes` returns for a route.
+    public record PublicRouteEntry(String hostname, String pathPrefix, String address) {
     }
 
     /// `role` is `"live"` or `"candidate"`; `mode` is `"warm"` when the

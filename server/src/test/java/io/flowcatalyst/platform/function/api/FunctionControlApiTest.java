@@ -14,10 +14,14 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRoute;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.Manifest;
+import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
@@ -52,6 +56,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -72,6 +77,7 @@ class FunctionControlApiTest {
     private static final FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(TestPg.dataSource());
     private static final FunctionHostRepository hosts = new FunctionHostRepository(TestPg.dataSource());
+    private static final FunctionRouteRepository routes = new FunctionRouteRepository(TestPg.dataSource());
     private static final ClientPolicyRepository policies = new ClientPolicyRepository(TestPg.dataSource());
     private static final TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
     private static final SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
@@ -112,7 +118,7 @@ class FunctionControlApiTest {
                     dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
             FunctionControlApi.register(routes,
                     new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts, settings,
-                            applications, eventTypes, events));
+                            applications, eventTypes, events, FunctionControlApiTest.routes));
         });
     }
 
@@ -132,6 +138,42 @@ class FunctionControlApiTest {
                 {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s"}
                 """.formatted(pool);
         return Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+    }
+
+    /// spec `function-public-routes.md` §2 (F10): a manifest with exactly one
+    /// `public[]` entry, for the desired-state top-level `publicRoutes` tests.
+    private static FunctionVersion publishWithPublic(Function f, int version, String pool, String hostname,
+            String pathPrefix) {
+        String json = """
+                {"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"%s",
+                 "endpoints":[{"path":"/","auth":"none"}],
+                 "public":[{"hostname":"%s","pathPrefix":"%s"}]}
+                """.formatted(pool, hostname, pathPrefix);
+        Manifest manifest = Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+        String hex = Integer.toHexString((f.id() + version + hostname + pathPrefix).hashCode()) + "0".repeat(64);
+        io.flowcatalyst.platform.function.Digest digest =
+                io.flowcatalyst.platform.function.Digest.parse("sha256:" + hex.substring(0, 64));
+        FunctionVersion v = FunctionVersion.publish(f.id(), version, "oci://artifact", digest, null, null, null,
+                manifest, "prn_publisher", Instant.now());
+        uow.inTransaction(tx -> {
+            versions.persist(v, tx.dbTx());
+            return null;
+        });
+        return v;
+    }
+
+    /// The desired-state read is the fn_routes table as it stands — this
+    /// test file bypasses `FunctionTriggerSync` entirely (it writes
+    /// `Function`/`FunctionVersion` rows directly, spec §7's own doc), so it
+    /// writes the materialised route directly too, matching what a real
+    /// promote would have written.
+    private static void persistRoute(Function f, String hostname, String pathPrefix) {
+        FunctionRoute route =
+                FunctionRoute.of(f.id(), Hostname.parse(hostname), RoutePattern.parse(pathPrefix), Instant.now());
+        uow.inTransaction(tx -> {
+            routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
+            return null;
+        });
     }
 
     private static Function testFunction(String tag) {
@@ -260,6 +302,55 @@ class FunctionControlApiTest {
         String etagAfter = after.headers().firstValue("ETag").orElseThrow();
         assertThat(etagAfter).as("mutant: hash something that does not reflect the promote").isNotEqualTo(etagBefore);
         assertThat(after.body()).as("the body still returns on a genuine change").isNotBlank();
+    }
+
+    // ── F10 (spec `function-public-routes.md` §2, §6): publicRoutes sorted, per
+    // pool, deterministic; ETag moves on a route change ─────────────────────
+
+    @Test
+    void desiredStatePublicRoutesAreSortedPerPoolAndMoveTheETagOnAChangeAlone() {
+        String pool = "f10pool" + RUN;
+        String otherPool = "f10other" + RUN;
+        Function f1 = testFunction("f10a");
+        Function f2 = testFunction("f10b");
+        Function f3 = testFunction("f10c");
+        String hostZ = "zzz-" + RUN + ".example.com";
+        String hostA = "aaa-" + RUN + ".example.com";
+        String hostOther = "other-" + RUN + ".example.com";
+
+        FunctionVersion v1 = publishWithPublic(f1, 1, pool, hostZ, "/b");
+        FunctionVersion v2 = publishWithPublic(f2, 1, pool, hostA, "/a");
+        // f3's LIVE version is in a DIFFERENT pool — its route must never appear
+        // in THIS pool's publicRoutes (spec §2: "per pool").
+        FunctionVersion v3 = publishWithPublic(f3, 1, otherPool, hostOther, "/");
+        promote(f1, v1);
+        promote(f2, v2);
+        promote(f3, v3);
+        persistRoute(f1, hostZ, "/b");
+        persistRoute(f2, hostA, "/a");
+        persistRoute(f3, hostOther, "/");
+
+        var r = http.get("/control/functions/desired-state?pool=" + pool, HOST);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        JsonNode pr = json(r).get("publicRoutes");
+        assertThat(pr).as("mutant: ignore the per-pool filter").hasSize(2);
+        // Sorted (hostname, pathPrefix): "aaa..." before "zzz...".
+        assertThat(pr.get(0).get("hostname").asString()).isEqualTo(hostA);
+        assertThat(pr.get(0).get("pathPrefix").asString()).isEqualTo("/a");
+        assertThat(pr.get(0).get("address").asString()).isEqualTo(f2.address().render());
+        assertThat(pr.get(1).get("hostname").asString()).isEqualTo(hostZ);
+        assertThat(pr.get(1).get("pathPrefix").asString()).isEqualTo("/b");
+
+        String etagBefore = r.headers().firstValue("ETag").orElseThrow();
+
+        // A route CHANGE alone (no version/alias change at all) must move the ETag.
+        persistRoute(f2, hostA, "/a-changed");
+        var after = http.get("/control/functions/desired-state?pool=" + pool, HOST);
+        assertThat(after.statusCode()).as(after.body()).isEqualTo(200);
+        String etagAfter = after.headers().firstValue("ETag").orElseThrow();
+        assertThat(etagAfter).as("mutant: ETag ignores publicRoutes").isNotEqualTo(etagBefore);
+        JsonNode prAfter = json(after).get("publicRoutes");
+        assertThat(prAfter.get(0).get("pathPrefix").asString()).isEqualTo("/a-changed");
     }
 
     private static String[] concat(String[] a, String[] b) {

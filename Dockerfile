@@ -32,11 +32,17 @@ COPY . .
 RUN mvn -q -B -DskipTests -pl server -am package \
  && cp server/target/flowcatalyst-server-*-exec.jar /fc-server.jar
 # jlink: the modules jdeps finds in the jar, plus the ones reached only by
-# reflection (TLS EC curves, Unsafe users, JNDI in Hikari/logback, JMX, zipfs).
+# reflection (TLS EC curves, Unsafe users, JNDI in Hikari/logback, JMX, zipfs) or by
+# a service-provider lookup jdeps' bytecode scan cannot see: jdk.naming.dns provides
+# com.sun.jndi.dns.DnsContextFactory, which JndiTxtResolver (docs/spec/
+# function-public-routes.md §1) names only as a string
+# (`java.naming.factory.initial`), never a static import — java.naming alone does
+# NOT include it, it is a distinct module, so jdeps' class-reference scan of the jar
+# can never find it and it must be listed here by hand, same as jdk.crypto.ec.
 # --strip-debug/--compress halve the modules image; no JIT is removed — this is
 # still HotSpot with full peak performance, just without unused modules.
 RUN MODS=$(jdeps --ignore-missing-deps --multi-release 25 --print-module-deps /fc-server.jar) \
- && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.management,jdk.zipfs" \
+ && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.naming.dns,jdk.management,jdk.zipfs" \
           --strip-debug --no-header-files --no-man-pages --compress zip-6 \
           --output /jre \
  && /jre/bin/java -version

@@ -16,6 +16,7 @@ import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
@@ -82,7 +83,8 @@ public final class FunctionControlApi {
 
     public record State(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
                         UnitOfWork uow, ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings,
-                        ApplicationRepository applications, EventTypeRepository eventTypes, EventRepository events) {
+                        ApplicationRepository applications, EventTypeRepository eventTypes, EventRepository events,
+                        FunctionRouteRepository routes) {
         public State {
             Objects.requireNonNull(functions, "functions");
             Objects.requireNonNull(versions, "versions");
@@ -93,6 +95,7 @@ public final class FunctionControlApi {
             Objects.requireNonNull(applications, "applications");
             Objects.requireNonNull(eventTypes, "eventTypes");
             Objects.requireNonNull(events, "events");
+            Objects.requireNonNull(routes, "routes");
         }
     }
 
@@ -103,7 +106,7 @@ public final class FunctionControlApi {
 
     public static void register(Routes routes, State s) {
         DesiredState desiredState =
-                new DesiredState(s.functions(), s.versions(), s.hosts(), s.serviceAccounts(), s.settings());
+                new DesiredState(s.functions(), s.versions(), s.hosts(), s.serviceAccounts(), s.settings(), s.routes());
         routes.in(Group.API_READ).get("/control/functions/desired-state", Auth.scoped(ctx -> desiredState(ctx, desiredState)));
         routes.in(Group.API_WRITE).post("/control/functions/heartbeat", Auth.scoped(ctx -> heartbeat(ctx, s)));
         routes.in(Group.API_WRITE).post("/control/functions/events", Auth.scoped(ctx -> emitEvents(ctx, s, desiredState)));

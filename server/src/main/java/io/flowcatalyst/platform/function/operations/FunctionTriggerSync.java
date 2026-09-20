@@ -9,15 +9,23 @@ import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeStatus;
 import io.flowcatalyst.platform.function.Function;
+import io.flowcatalyst.platform.function.FunctionDomain;
+import io.flowcatalyst.platform.function.FunctionDomainRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
+import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRoute;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.PoolUrlTemplate;
 import io.flowcatalyst.platform.function.TriggerObject;
 import io.flowcatalyst.platform.function.TriggerObjectKind;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import org.jooq.exception.DataAccessException;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJob;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobCode;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
@@ -71,6 +79,8 @@ public final class FunctionTriggerSync implements TriggerSync {
 
     private static final String KEY_PREFIX = "fn-";
 
+    private static final String PUBLIC_ROUTE_UNIQUE_CONSTRAINT = "fn_routes_hostname_path_prefix_key";
+
     private final SubscriptionRepository subscriptions;
     private final DispatchPoolRepository pools;
     private final ScheduledJobRepository jobs;
@@ -81,14 +91,18 @@ public final class FunctionTriggerSync implements TriggerSync {
     private final FunctionVersionRepository functionVersions;
     private final FunctionLimits functionLimits;
     private final PoolUrlTemplate poolUrlTemplate;
+    private final FunctionDomainRepository domains;
+    private final FunctionRouteRepository routes;
+    private final FunctionRepository functions;
     private final java.util.function.Function<String, String> hasher;
 
     public FunctionTriggerSync(SubscriptionRepository subscriptions, DispatchPoolRepository pools,
             ScheduledJobRepository jobs, EventTypeRepository eventTypes, TriggerObjectRepository triggerObjects,
             ApplicationRepository applications, ServiceAccountRepository serviceAccounts,
-            FunctionVersionRepository functionVersions, FunctionLimits functionLimits, PoolUrlTemplate poolUrlTemplate) {
+            FunctionVersionRepository functionVersions, FunctionLimits functionLimits, PoolUrlTemplate poolUrlTemplate,
+            FunctionDomainRepository domains, FunctionRouteRepository routes, FunctionRepository functions) {
         this(subscriptions, pools, jobs, eventTypes, triggerObjects, applications, serviceAccounts, functionVersions,
-                functionLimits, poolUrlTemplate, FunctionTriggerSync::hash8);
+                functionLimits, poolUrlTemplate, domains, routes, functions, FunctionTriggerSync::hash8);
     }
 
     /// Test seam (review fix): a forced `hasher` lets a test simulate a
@@ -100,6 +114,7 @@ public final class FunctionTriggerSync implements TriggerSync {
             ScheduledJobRepository jobs, EventTypeRepository eventTypes, TriggerObjectRepository triggerObjects,
             ApplicationRepository applications, ServiceAccountRepository serviceAccounts,
             FunctionVersionRepository functionVersions, FunctionLimits functionLimits, PoolUrlTemplate poolUrlTemplate,
+            FunctionDomainRepository domains, FunctionRouteRepository routes, FunctionRepository functions,
             java.util.function.Function<String, String> hasher) {
         this.subscriptions = Objects.requireNonNull(subscriptions, "subscriptions");
         this.pools = Objects.requireNonNull(pools, "pools");
@@ -111,6 +126,9 @@ public final class FunctionTriggerSync implements TriggerSync {
         this.functionVersions = Objects.requireNonNull(functionVersions, "functionVersions");
         this.functionLimits = Objects.requireNonNull(functionLimits, "functionLimits");
         this.poolUrlTemplate = Objects.requireNonNull(poolUrlTemplate, "poolUrlTemplate");
+        this.domains = Objects.requireNonNull(domains, "domains");
+        this.routes = Objects.requireNonNull(routes, "routes");
+        this.functions = Objects.requireNonNull(functions, "functions");
         this.hasher = Objects.requireNonNull(hasher, "hasher");
     }
 
@@ -159,6 +177,68 @@ public final class FunctionTriggerSync implements TriggerSync {
                                 + functionLimits.maxWarmPerHost() + ")");
             }
         }
+
+        // spec `function-public-routes.md` §1, §2: validated at publish, materialised at
+        // promote — nothing is written here, same as every other onPublish check.
+        validatePublicRoutes(function, manifest);
+    }
+
+    /// Spec `function-public-routes.md` §2: every `public[]` entry's hostname
+    /// must be a `VERIFIED` domain OF THIS FUNCTION'S OWNER — checked as
+    /// three independent conditions (unclaimed / pending / another owner's),
+    /// each throwing the SAME `PUBLIC_HOSTNAME_NOT_VERIFIED` (spec §6 M2:
+    /// "same code for all three ... no oracle") — and `(hostname,
+    /// pathPrefix)` must not already be routed to ANOTHER function
+    /// (`PUBLIC_ROUTE_TAKEN`, naming it only when the caller can reach it,
+    /// spec §6 M5). Checked against `fn_routes` as it stands right now — the
+    /// only rows there are what an earlier PROMOTE materialised, so two
+    /// functions can both pass this at publish when neither has promoted yet
+    /// (spec §6 M4's race); [#reconcilePublicRoutes] re-checks at promote.
+    private void validatePublicRoutes(Function function, Manifest manifest) {
+        for (Manifest.PublicRoute route : manifest.publicRoutes()) {
+            requireVerifiedOwnedDomain(function, route.hostname());
+            FunctionRoute existing = routes.findPublic(route.hostname(), route.pathPrefix()).orElse(null);
+            if (existing != null && !existing.functionId().equals(function.id())) {
+                throw publicRouteTaken(existing, route.hostname(), route.pathPrefix());
+            }
+        }
+    }
+
+    /// The three independent clauses of `PUBLIC_HOSTNAME_NOT_VERIFIED`
+    /// (spec §6 M2) — deliberately three separate `if`s, not one boolean
+    /// expression, so a mutant dropping any single clause is caught by its
+    /// own dedicated test rather than being masked by the others.
+    private void requireVerifiedOwnedDomain(Function function, Hostname hostname) {
+        FunctionDomain domain = domains.findByHostname(hostname).orElse(null);
+        if (domain == null) {
+            throw publicHostnameNotVerified(hostname);
+        }
+        if (!(domain.verification() instanceof FunctionDomain.Verification.Verified)) {
+            throw publicHostnameNotVerified(hostname);
+        }
+        if (!domain.owner().equals(function.owner())) {
+            throw publicHostnameNotVerified(hostname);
+        }
+    }
+
+    private static UseCaseException publicHostnameNotVerified(Hostname hostname) {
+        return UseCaseException.validation("PUBLIC_HOSTNAME_NOT_VERIFIED",
+                "hostname '" + hostname.value() + "' is not a verified domain of this function's owner");
+    }
+
+    /// Spec §6 M5: names the other function's address only when the CURRENT
+    /// caller (`Auth.current()`) can reach it — [Access#canReach] is the
+    /// exact same predicate the read/write routes share, so this can never
+    /// disagree with what `GET /api/functions/{address}` would itself reveal.
+    private UseCaseException publicRouteTaken(FunctionRoute existing, Hostname hostname,
+            io.flowcatalyst.platform.function.RoutePattern pathPrefix) {
+        String routeText = hostname.value() + pathPrefix.value();
+        Function other = functions.findById(existing.functionId()).orElse(null);
+        if (other != null && Access.canReach(Auth.current(), other)) {
+            return UseCaseException.conflict("PUBLIC_ROUTE_TAKEN",
+                    "route '" + routeText + "' is already taken by function '" + other.address().render() + "'");
+        }
+        return UseCaseException.conflict("PUBLIC_ROUTE_TAKEN", "route '" + routeText + "' is already taken");
     }
 
     /// Spec §4, §6: the same resolver chain delivery signing uses — the
@@ -210,6 +290,89 @@ public final class FunctionTriggerSync implements TriggerSync {
                 case POOL -> throw new IllegalStateException("a function's pool is never reconciliation-deleted");
             }
         }
+
+        // spec `function-public-routes.md` §2: fn_routes := this manifest's public[] set,
+        // re-checking the same conflict onPublish checked (another function may have
+        // promoted in between) — not a fn_trigger_objects-linked kind (a route is a
+        // materialisation, not an aggregate with its own event, spec `function-registry.md`
+        // §6.6), so it is reconciled directly rather than through the toDelete loop above.
+        reconcilePublicRoutes(scoped, function, manifest);
+    }
+
+    /// Spec §2: re-checks the `PUBLIC_ROUTE_TAKEN` conflict (spec §6 M4: "the
+    /// race: both published before either promoted" — the fn_routes rows may
+    /// have changed since publish), then materialises `fn_routes` to exactly
+    /// this manifest's `public[]` set via
+    /// [FunctionRouteRepository#replaceForFunction] — skipped entirely when
+    /// the desired set already matches (spec §2: "no difference ⇒ no
+    /// write"). The unique constraint is the race backstop: two promotes of
+    /// two different functions racing past the re-check both above would
+    /// otherwise surface as an unhandled 500 from the second `INSERT`; caught
+    /// here BY THE SPECIFIC CONSTRAINT NAME (never a bare `DataAccessException`,
+    /// which would also swallow an unrelated failure, e.g. a dropped
+    /// connection, as if it were this one conflict) and mapped to the SAME
+    /// `409 PUBLIC_ROUTE_TAKEN` (spec §6 M4: "never a 500").
+    private void reconcilePublicRoutes(TxScopedUnitOfWork scoped, Function function, Manifest manifest) {
+        Instant now = Instant.now();
+        for (Manifest.PublicRoute route : manifest.publicRoutes()) {
+            FunctionRoute existing = routes.findPublic(route.hostname(), route.pathPrefix()).orElse(null);
+            if (existing != null && !existing.functionId().equals(function.id())) {
+                throw publicRouteTaken(existing, route.hostname(), route.pathPrefix());
+            }
+        }
+
+        List<FunctionRoute> current = routes.listByFunction(function.id());
+        if (sameRoutes(current, manifest.publicRoutes())) {
+            return; // no difference: no write (spec §2)
+        }
+
+        List<FunctionRoute> desired = manifest.publicRoutes().stream()
+                .map(r -> FunctionRoute.of(function.id(), r.hostname(), r.pathPrefix(), now))
+                .toList();
+        try {
+            routes.replaceForFunction(function.id(), desired, scoped.dbTx());
+        } catch (DataAccessException e) {
+            if (isUniqueViolation(e, PUBLIC_ROUTE_UNIQUE_CONSTRAINT)) {
+                throw UseCaseException.conflict("PUBLIC_ROUTE_TAKEN",
+                        "route is already taken (detected by the database's own unique constraint)");
+            }
+            throw e;
+        }
+    }
+
+    private static boolean sameRoutes(List<FunctionRoute> current, List<Manifest.PublicRoute> desired) {
+        if (current.size() != desired.size()) {
+            return false;
+        }
+        java.util.Set<String> currentKeys = new java.util.HashSet<>();
+        for (FunctionRoute r : current) {
+            currentKeys.add(r.hostname().value() + "|" + r.pathPrefix().value());
+        }
+        java.util.Set<String> desiredKeys = new java.util.HashSet<>();
+        for (Manifest.PublicRoute r : desired) {
+            desiredKeys.add(r.hostname().value() + "|" + r.pathPrefix().value());
+        }
+        return currentKeys.equals(desiredKeys);
+    }
+
+    /// Walks the cause chain for a PostgreSQL unique-violation naming
+    /// EXACTLY `constraintName` — a `PSQLException`'s own `ServerErrorMessage#getConstraint()`,
+    /// never a bare SQLSTATE check (which would match ANY unique violation on
+    /// this table, or any other) and never a bare `DataAccessException` catch
+    /// (spec §6 M4's own mutant: "let the constraint surface as 500" is what
+    /// happens if this check is skipped and the exception simply rethrown).
+    private static boolean isUniqueViolation(Throwable e, String constraintName) {
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof org.postgresql.util.PSQLException psql) {
+                var serverError = psql.getServerErrorMessage();
+                if (serverError != null && constraintName.equals(serverError.getConstraint())) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 
     private DispatchPool reconcilePool(TxScopedUnitOfWork scoped, ExecutionContext ec, Function function,
@@ -420,6 +583,12 @@ public final class FunctionTriggerSync implements TriggerSync {
 
     // ── onDelete (spec §4) ────────────────────────────────────────────────
 
+    /// spec `function-public-routes.md` §2: this function's `fn_routes` rows
+    /// need no code here at all — `fn_routes_function_id_fkey` is
+    /// `ON DELETE CASCADE` (`V11__functions.sql`), so they are gone the
+    /// instant `DeleteFunction` deletes the function row itself, in the same
+    /// transaction. `FunctionTriggerSyncTest` asserts this directly rather
+    /// than trusting the schema silently.
     @Override
     public void onDelete(TxScopedUnitOfWork scoped, Function function, ExecutionContext ec) {
         List<TriggerObject> linked = triggerObjects.listByFunction(function.id());

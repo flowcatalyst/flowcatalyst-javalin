@@ -10,6 +10,8 @@ import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRoute;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
@@ -65,8 +67,10 @@ class DesiredStateTest {
             new ServiceAccountRepository(DS, java.util.Optional.empty());
     private static final FunctionSettingsRepository settings =
             new FunctionSettingsRepository(DS, java.util.Optional.empty());
+    private static final FunctionRouteRepository routes = new FunctionRouteRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
-    private static final DesiredState DESIRED = new DesiredState(functions, versions, hosts, serviceAccounts, settings);
+    private static final DesiredState DESIRED =
+            new DesiredState(functions, versions, hosts, serviceAccounts, settings, routes);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final AtomicLong SEQ = new AtomicLong(System.nanoTime());
@@ -742,7 +746,8 @@ class DesiredStateTest {
         Encryption encryption = Encryption.withKey(Encryption.generateKey());
         FunctionSettingsRepository settingsWithKey =
                 new FunctionSettingsRepository(DS, java.util.Optional.of(encryption));
-        DesiredState desiredWithKey = new DesiredState(functions, versions, hosts, serviceAccounts, settingsWithKey);
+        DesiredState desiredWithKey =
+                new DesiredState(functions, versions, hosts, serviceAccounts, settingsWithKey, routes);
 
         Function f = createFunction("x2" + fresh());
         FunctionVersion v = publish(f, 1, manifestWithConfigAndSecrets(pool.value()));

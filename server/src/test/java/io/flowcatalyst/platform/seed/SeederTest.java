@@ -81,13 +81,15 @@ class SeederTest {
     // `docs/spec/reach-only-routes.md` §2 (IdP + email-domain-mapping on
     // iam-admin/iam-readonly; config + CORS-origin on admin/admin-readonly/
     // viewer) are Java-first the same way. `platform:function-publisher` /
-    // `platform:function-host` and the seven function permissions added to
+    // `platform:function-host` and the eight function permissions added to
     // `platform:messaging-admin` (`docs/spec/function-api.md` §2;
     // `platform:function:version:invoke` added by `docs/spec/function-invocation.md`
     // §1, package D slice D3; `platform:function:secret:manage` added by
-    // `docs/spec/function-context.md` §1, package D slice D4a) are Java-first
+    // `docs/spec/function-context.md` §1, package D slice D4a;
+    // `platform:function:domain:manage` added by `docs/spec/function-public-routes.md`
+    // §1, package F slice F1) are Java-first
     // again — there is no Go for the function platform. The fixture's
-    // role/perm counts (17/186, not Go's 14/151)
+    // role/perm counts (17/187, not Go's 14/151)
     // and its own comment record that until Go mirrors all of it.
     @Test
     void rolesMatchGo() {
@@ -108,7 +110,7 @@ class SeederTest {
                 .fetch().stream()
                 .map(r -> line("perm", r.value1(), r.value2()))
                 .toList();
-        assertThat(actual).hasSize(186).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
+        assertThat(actual).hasSize(187).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
     }
 
     @Test
@@ -253,7 +255,7 @@ class SeederTest {
     void secondRunChangesNothing() {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(17);
-        assertThat(firstRun.get("iam_role_permissions")).hasSize(186);
+        assertThat(firstRun.get("iam_role_permissions")).hasSize(187);
         assertThat(firstRun.get("msg_event_types")).hasSize(72);
         assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(72);
         assertThat(firstRun.get("app_applications")).hasSize(1);

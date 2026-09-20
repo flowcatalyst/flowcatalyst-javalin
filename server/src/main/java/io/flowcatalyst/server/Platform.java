@@ -635,10 +635,15 @@ public final class Platform {
         // `serviceAccountRepo` are the SAME instances already built above for their own aggregates'
         // APIs — the reconciliation reads and writes through the one repository each aggregate uses
         // everywhere else, never a second connection's view of the same rows.
+        // function-public-routes.md §1 (slice F1): domain claim/verify/release + route
+        // sync. functionDomainRepo/functionRouteRepo are shared with FunctionDomainApi
+        // below — the same instances FunctionTriggerSync reconciles fn_routes through.
+        var functionDomainRepo = new io.flowcatalyst.platform.function.FunctionDomainRepository(pool);
+        var functionRouteRepo = new io.flowcatalyst.platform.function.FunctionRouteRepository(pool);
         var functionTriggerSync = new io.flowcatalyst.platform.function.operations.FunctionTriggerSync(
                 subscriptionRepo, dispatchPoolRepo, scheduledJobRepo, eventTypeRepo, triggerObjectRepo,
                 applicationRepo, serviceAccountRepo, functionVersionRepo, env.functionLimits(),
-                env.fnPoolUrlTemplate());
+                env.fnPoolUrlTemplate(), functionDomainRepo, functionRouteRepo, functionRepo);
         // function-context.md §1 (D4a): platform-stored config/secrets. Same
         // Encryption.fromKeys(...) resolution every other secret-at-rest repository uses
         // (ServiceAccountRepository, ClientSecretEncryption) — Optional.empty() when
@@ -658,7 +663,14 @@ public final class Platform {
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
                         functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo,
-                        applicationRepo, eventTypeRepo, eventRepo));
+                        applicationRepo, eventTypeRepo, eventRepo, functionRouteRepo));
+        // function-public-routes.md §1 (slice F1): domains + route sync's own routes.
+        // devMode (spec §1: "dev mode taken from Env and passed into the operation
+        // factory") is env.routerDevMode() — the SAME flag Signatures#resolve above
+        // reads, never re-derived from the process environment inside the operation.
+        io.flowcatalyst.platform.function.api.FunctionDomainApi.register(routes,
+                new io.flowcatalyst.platform.function.api.FunctionDomainApi.State(functionDomainRepo, functionRouteRepo,
+                        functionRepo, uow, new io.flowcatalyst.platform.function.JndiTxtResolver(), env.routerDevMode()));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));

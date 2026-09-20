@@ -123,8 +123,9 @@ public final class PlatformRoles {
 
             // platform:messaging-admin — the platform admin role that already holds the
             // messaging manage/administer permissions; it gains the function context's
-            // view/manage/publish/promote/policy-manage (spec function-api.md §2). Host
-            // control is deliberately NOT included: that is platform:function-host alone.
+            // view/manage/publish/promote/policy-manage (spec function-api.md §2) and
+            // domain-manage (spec function-public-routes.md §1). Host control is
+            // deliberately NOT included: that is platform:function-host alone.
             mk("messaging-admin", "Messaging Administrator",
                     "Manages event types, subscriptions, dispatch jobs, and scheduled jobs",
                     List.of(
@@ -146,7 +147,7 @@ public final class PlatformRoles {
                             ADMIN_PROCESS_READ, ADMIN_PROCESS_CREATE, ADMIN_PROCESS_UPDATE,
                             ADMIN_PROCESS_DELETE, ADMIN_PROCESS_ARCHIVE, ADMIN_PROCESS_SYNC,
                             FUNCTION_VIEW, FUNCTION_MANAGE, FUNCTION_PUBLISH, FUNCTION_PROMOTE, FUNCTION_POLICY_MANAGE,
-                            FUNCTION_VERSION_INVOKE, FUNCTION_SECRET_MANAGE)),
+                            FUNCTION_VERSION_INVOKE, FUNCTION_SECRET_MANAGE, FUNCTION_DOMAIN_MANAGE)),
 
             // platform:viewer
             mk("viewer", "Platform Viewer",

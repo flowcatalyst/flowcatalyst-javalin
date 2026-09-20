@@ -11,12 +11,17 @@ import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.FunctionDomain;
+import io.flowcatalyst.platform.function.FunctionDomainRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
+import io.flowcatalyst.platform.function.FunctionRoute;
+import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.PoolUrlTemplate;
 import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.TriggerObject;
@@ -57,6 +62,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
@@ -84,13 +94,15 @@ class FunctionTriggerSyncTest {
     private static final ApplicationRepository applications = new ApplicationRepository(DS);
     private static final ServiceAccountRepository serviceAccounts = new ServiceAccountRepository(DS, Optional.empty());
     private static final FunctionSettingsRepository settings = new FunctionSettingsRepository(DS, Optional.empty());
+    private static final FunctionDomainRepository domains = new FunctionDomainRepository(DS);
+    private static final FunctionRouteRepository routes = new FunctionRouteRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
     private static final Signatures OFF = new Signatures.Off();
     private static final PoolUrlTemplate POOL_URL = PoolUrlTemplate.parse("http://fn-{pool}:8080");
     private static final FunctionTriggerSync SYNC = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes,
-            triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL);
+            triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, domains, routes, functions);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final String PRINCIPAL = "usr_fts_" + RUN;
@@ -101,6 +113,14 @@ class FunctionTriggerSyncTest {
 
     private static String fresh() {
         return "t" + Long.toString(SEQ.incrementAndGet(), 36);
+    }
+
+    /// A client-scoped principal (spec `function-public-routes.md` §6 M5's
+    /// own fixture need — `AccessTest`'s `clientScoped` helper, copied here
+    /// so this class does not need a cross-package dependency for one helper).
+    private static AuthContext clientScoped(String clientId, boolean allApplications, List<String> applications) {
+        return new AuthContext("usr_fts_scoped_" + fresh(), Scope.CLIENT, null, List.of(clientId), List.of(),
+                applications, allApplications, List.of());
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────
@@ -159,9 +179,13 @@ class FunctionTriggerSyncTest {
     }
 
     private static PublishVersion.Result publish(FunctionAddress address, String digestSuffix, JsonNode manifest) {
-        var digest = "sha256:" + "0".repeat(63) + (digestSuffix.hashCode() & 0xF);
+        return publishAs(ANCHOR, address, digestSuffix, manifest);
+    }
+
+    private static PublishVersion.Result publishAs(AuthContext ac, FunctionAddress address, String digestSuffix,
+            JsonNode manifest) {
         var cmd = new PublishCommand(address, "oci://artifact/" + digestSuffix, sha256(digestSuffix), null, manifest);
-        return Auth.runAs(ANCHOR, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, SYNC).run(uow, cmd, EC));
+        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, SYNC).run(uow, cmd, EC));
     }
 
     private static String sha256(String s) {
@@ -175,8 +199,12 @@ class FunctionTriggerSyncTest {
     }
 
     private static AliasChanged promote(FunctionAddress address, int version) {
+        return promoteAs(ANCHOR, address, version);
+    }
+
+    private static AliasChanged promoteAs(AuthContext ac, FunctionAddress address, int version) {
         markReady(address, version);
-        return Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, SYNC, settings)
+        return Auth.runAs(ac, () -> PromoteVersion.of(functions, versions, SYNC, settings)
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
@@ -236,6 +264,52 @@ class FunctionTriggerSyncTest {
 
     private static String sched(String cron, String path) {
         return "{\"cron\":\"" + cron + "\",\"path\":\"" + path + "\"}";
+    }
+
+    /// A minimal manifest declaring exactly one `public[]` entry (spec
+    /// `function-public-routes.md` §1, §2) — no subscriptions/schedules, so
+    /// none of `requireApplicationSigningSecret`'s ceremony is needed.
+    private static JsonNode manifestWithPublic(String pool, String hostname, String pathPrefix) {
+        String json = "{"
+                + "\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\","
+                + "\"pool\":\"" + pool + "\",\"warm\":false,"
+                + "\"limits\":{},"
+                + "\"endpoints\":[{\"path\":\"/\",\"auth\":\"none\"}],"
+                + "\"public\":[{\"hostname\":\"" + hostname + "\",\"pathPrefix\":\"" + pathPrefix + "\"}]"
+                + "}";
+        return Json.MAPPER.readTree(json);
+    }
+
+    // ── Domain fixtures (spec `function-public-routes.md` §1) ───────────────
+
+    private static FunctionDomain persistVerifiedDomain(FunctionOwner owner, String hostname) {
+        FunctionDomain d = FunctionDomain.claim(owner, Hostname.parse(hostname), "tok-" + fresh(), Instant.now())
+                .verified(Instant.now());
+        uow.inTransaction(tx -> {
+            domains.persist(d, tx.dbTx());
+            return null;
+        });
+        return d;
+    }
+
+    private static FunctionDomain persistPendingDomain(FunctionOwner owner, String hostname) {
+        FunctionDomain d = FunctionDomain.claim(owner, Hostname.parse(hostname), "tok-" + fresh(), Instant.now());
+        uow.inTransaction(tx -> {
+            domains.persist(d, tx.dbTx());
+            return null;
+        });
+        return d;
+    }
+
+    private static void assertUseCaseError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call,
+            Class<? extends UseCaseError> kind, String code) {
+        assertThatThrownBy(call)
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err).as("error kind").isInstanceOf(kind);
+                    assertThat(err.code()).as("error code").isEqualTo(code);
+                });
     }
 
     private static String fid(Function f) {
@@ -356,7 +430,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         // First warm function in this pool: fits exactly at the cap of 1.
         Function first = createFunction(appId, new FunctionOwner.Platform());
@@ -393,7 +467,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -424,7 +498,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -454,7 +528,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -484,7 +558,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -514,7 +588,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -581,7 +655,8 @@ class FunctionTriggerSyncTest {
         persistEventType(et2);
         Function f = createFunction(appId, new FunctionOwner.Platform());
         FunctionTriggerSync collidingSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes,
-                triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, ignored -> "deadbeef");
+                triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, domains, routes, functions,
+                ignored -> "deadbeef");
 
         JsonNode m = manifest("default", false, null, List.of(sub(et1, "/events/a"), sub(et2, "/events/b")), List.of());
         var cmd = new PublishCommand(f.address(), "oci://artifact/kc2", sha256("kc2"), null, m);
@@ -1355,5 +1430,254 @@ class FunctionTriggerSyncTest {
         // not emit any extra function-level events.
         assertThat(eventsFor(io.flowcatalyst.sdk.usecase.EventConventions.buildSubject("platform", "function", f.id()),
                 FunctionEvents.ALIAS_CHANGED)).hasSize(1);
+    }
+
+    // ── F2 (spec `function-public-routes.md` §6): publish is refused for an
+    // unclaimed hostname, a pending one, and another owner's verified one —
+    // SAME code for all three, each its own test so a mutant dropping any one
+    // clause dies without killing the others ──────────────────────────────
+
+    @Test
+    void publishRefusesAnUnclaimedHostname() {
+        String appId = persistApplication("f2a");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "f2unclaimed-" + fresh() + ".example.com";
+
+        assertUseCaseError(() -> publish(f.address(), "f2a", manifestWithPublic("default", host, "/")),
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+        assertThat(versions.listByFunction(f.id())).as("nothing persists on a refused publish").isEmpty();
+    }
+
+    @Test
+    void publishRefusesAPendingHostname() {
+        String appId = persistApplication("f2b");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "f2pending-" + fresh() + ".example.com";
+        persistPendingDomain(new FunctionOwner.Platform(), host);
+
+        assertUseCaseError(() -> publish(f.address(), "f2b", manifestWithPublic("default", host, "/")),
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+    }
+
+    @Test
+    void publishRefusesAnotherOwnersVerifiedHostname() {
+        String appId = persistApplication("f2c");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "f2otherowner-" + fresh() + ".example.com";
+        persistVerifiedDomain(FunctionOwner.ofClientId("clt_" + fresh()), host);
+
+        assertUseCaseError(() -> publish(f.address(), "f2c", manifestWithPublic("default", host, "/")),
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+    }
+
+    /// The positive control (mutant: "always throw" / "skip the owner
+    /// comparison" masking a false negative) — a hostname verified by the
+    /// SAME owner publishes cleanly.
+    @Test
+    void publishSucceedsWithAVerifiedHostnameOfTheSameOwner() {
+        String appId = persistApplication("f2ok");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "f2ok-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        PublishVersion.Result result = publish(f.address(), "f2ok", manifestWithPublic("default", host, "/"));
+        assertThat(result.version().version()).isEqualTo(1);
+    }
+
+    // ── F4 (spec §6): promote materialises exactly the manifest's set; a
+    // dropped route frees it for another function; equal routes on two
+    // functions conflict at publish AND at promote; the unique-violation
+    // path is a 409, never a 500 ─────────────────────────────────────────
+
+    @Test
+    void promoteMaterialisesExactlyTheManifestsPublicRouteSet() {
+        String appId = persistApplication("f4mat");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "f4mat-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        var p = publish(f.address(), "f4mat", manifestWithPublic("default", host, "/api"));
+        assertThat(routes.listByFunction(f.id())).as("publish validates only, never materialises").isEmpty();
+
+        promote(f.address(), p.version().version());
+
+        List<FunctionRoute> materialised = routes.listByFunction(f.id());
+        assertThat(materialised).hasSize(1);
+        assertThat(materialised.get(0).hostname().value()).isEqualTo(host);
+        assertThat(materialised.get(0).pathPrefix().value()).isEqualTo("/api");
+    }
+
+    @Test
+    void promoteV2DropsARouteFreeingItForAnotherFunctionInTheSameTransactionVisibleWay() {
+        String appId = persistApplication("f4free");
+        String host = "f4free-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        Function a = createFunction(appId, new FunctionOwner.Platform());
+        var pa1 = publish(a.address(), "f4freea1", manifestWithPublic("default", host, "/"));
+        promote(a.address(), pa1.version().version());
+        assertThat(routes.listByFunction(a.id())).hasSize(1);
+
+        // v2 drops the public route entirely (an ordinary manifest() with no "public" key).
+        var pa2 = publish(a.address(), "f4freea2", manifest("default", false, null, List.of(), List.of()));
+        promote(a.address(), pa2.version().version());
+        assertThat(routes.listByFunction(a.id())).as("dropped route is gone").isEmpty();
+
+        // Function B, same owner, can now take the freed route — in the same
+        // transaction-visible way: nothing but A's own promote had to run first.
+        Function b = createFunction(appId, new FunctionOwner.Platform());
+        var pb = publish(b.address(), "f4freeb", manifestWithPublic("default", host, "/"));
+        promote(b.address(), pb.version().version());
+        assertThat(routes.listByFunction(b.id())).hasSize(1);
+    }
+
+    @Test
+    void equalRouteOnTwoFunctionsConflictsAtPublishFreeAndAtPromoteTaken() {
+        String appId = persistApplication("f4race");
+        String host = "f4race-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        Function a = createFunction(appId, new FunctionOwner.Platform());
+        Function b = createFunction(appId, new FunctionOwner.Platform());
+
+        // Both PUBLISH successfully — neither is materialised yet (spec §6 M4's race).
+        var pa = publish(a.address(), "f4racea", manifestWithPublic("default", host, "/"));
+        var pb = publish(b.address(), "f4raceb", manifestWithPublic("default", host, "/"));
+
+        // A promotes first — fine.
+        promote(a.address(), pa.version().version());
+
+        // B promotes second — the SAME (hostname, prefix) is now taken, re-checked at promote.
+        assertUseCaseError(() -> promote(b.address(), pb.version().version()), UseCaseError.Conflict.class,
+                "PUBLIC_ROUTE_TAKEN");
+        assertThat(routes.listByFunction(b.id())).as("refused promote materialises nothing for B").isEmpty();
+        assertThat(routes.listByFunction(a.id())).as("A's own route is untouched by B's refused promote").hasSize(1);
+
+        // The promote-time conflict names A too (ANCHOR reaches everything) — this is
+        // ONLY true through the explicit re-check's own message; the unique-constraint
+        // catch's fallback message never names anyone (mutant: skip the re-check).
+        assertThatThrownBy(() -> promote(b.address(), pb.version().version()))
+                .as("mutant: skip the promote-time re-check — the DB-catch fallback message names no one")
+                .hasMessageContaining(a.address().render());
+    }
+
+    /// Spec §6 M4: "the unique-violation path is a 409, not a 500" — forced
+    /// by REAL concurrency rather than a test double: two threads, released
+    /// simultaneously by a latch, both promote a function wanting the SAME
+    /// (hostname, prefix). Under Postgres READ COMMITTED, both `findPublic`
+    /// pre-checks can legitimately see no conflict (neither has committed
+    /// yet) — the two `INSERT`s then race for real, and the loser must hit
+    /// `FunctionTriggerSync#isUniqueViolation`'s catch, not an unhandled 500.
+    /// Mutant this pins: skip the promote-time re-check (already pinned by
+    /// the sequential test above) and — the one THIS test alone can kill —
+    /// let the constraint surface as an uncaught `DataAccessException`.
+    @Test
+    void concurrentPromotesRacingPastTheReCheckStillMapTheLosingInsertTo409NotA500() throws Exception {
+        String appId = persistApplication("f4uv");
+        String host = "f4uv-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        Function a = createFunction(appId, new FunctionOwner.Platform());
+        Function b = createFunction(appId, new FunctionOwner.Platform());
+        var pa = publish(a.address(), "f4uva", manifestWithPublic("default", host, "/"));
+        var pb = publish(b.address(), "f4uvb", manifestWithPublic("default", host, "/"));
+        markReady(a.address(), pa.version().version());
+        markReady(b.address(), pb.version().version());
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<AliasChanged> fa = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return promote(a.address(), pa.version().version());
+            });
+            Future<AliasChanged> fb = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return promote(b.address(), pb.version().version());
+            });
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+
+            int succeeded = 0;
+            int conflicted = 0;
+            for (Future<AliasChanged> f : List.of(fa, fb)) {
+                try {
+                    f.get(20, TimeUnit.SECONDS);
+                    succeeded++;
+                } catch (java.util.concurrent.ExecutionException e) {
+                    assertThat(e.getCause()).as("mutant: let the constraint surface as an uncaught 500")
+                            .isInstanceOf(UseCaseException.class);
+                    UseCaseException uce = (UseCaseException) e.getCause();
+                    assertThat(uce.error()).isInstanceOf(UseCaseError.Conflict.class);
+                    assertThat(uce.error().code()).isEqualTo("PUBLIC_ROUTE_TAKEN");
+                    conflicted++;
+                }
+            }
+            assertThat(succeeded).as("exactly one promote wins the race").isEqualTo(1);
+            assertThat(conflicted).as("the loser is a 409, not a crash").isEqualTo(1);
+        } finally {
+            pool.shutdown();
+        }
+    }
+
+    // ── F5 (spec §6): PUBLIC_ROUTE_TAKEN names the other function only to a
+    // caller who can reach it ────────────────────────────────────────────
+
+    @Test
+    void publicRouteTakenNamesTheOtherFunctionOnlyWhenTheCallerCanReachIt() {
+        String clientId = "clt_" + fresh();
+        String appIdA = persistApplication("f5a");
+        String appIdB = persistApplication("f5b");
+        String host = "f5-" + fresh() + ".example.com";
+        persistVerifiedDomain(FunctionOwner.ofClientId(clientId), host);
+
+        Function a = createFunction(appIdA, FunctionOwner.ofClientId(clientId));
+        Function b = createFunction(appIdB, FunctionOwner.ofClientId(clientId));
+
+        var pa = publish(a.address(), "f5a", manifestWithPublic("default", host, "/"));
+        promote(a.address(), pa.version().version());
+
+        // Reaches the owning CLIENT but not A's application — owner reach alone is
+        // not enough (Access.canReach ANDs it with application reach).
+        AuthContext strangerToAppA = clientScoped(clientId, false, List.of(appIdB));
+        assertThatThrownBy(() -> publishAs(strangerToAppA, b.address(), "f5b-hidden",
+                manifestWithPublic("default", host, "/")))
+                .isInstanceOf(UseCaseException.class)
+                .satisfies(t -> {
+                    UseCaseException uce = (UseCaseException) t;
+                    assertThat(uce.error().code()).isEqualTo("PUBLIC_ROUTE_TAKEN");
+                    assertThat(uce.error().message()).as("mutant: always name it — caller cannot reach A")
+                            .doesNotContain(a.address().render());
+                });
+
+        // The identical conflict, as a caller who reaches everything (anchor) — names A.
+        assertThatThrownBy(() -> publish(b.address(), "f5b-named", manifestWithPublic("default", host, "/")))
+                .isInstanceOf(UseCaseException.class)
+                .satisfies(t -> {
+                    UseCaseException uce = (UseCaseException) t;
+                    assertThat(uce.error().code()).isEqualTo("PUBLIC_ROUTE_TAKEN");
+                    assertThat(uce.error().message()).as("caller reaches A: address IS named")
+                            .contains(a.address().render());
+                });
+    }
+
+    // ── onDelete (spec §2): fn_routes cascades with the function row ───────
+
+    @Test
+    void deleteFunctionCascadesItsPublicRoutesToo() {
+        String appId = persistApplication("f1del");
+        String host = "f1del-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        var p = publish(f.address(), "f1del", manifestWithPublic("default", host, "/"));
+        promote(f.address(), p.version().version());
+        assertThat(routes.listByFunction(f.id())).hasSize(1);
+
+        deleteFunction(f.address());
+
+        assertThat(routes.listByFunction(f.id())).as("fn_routes_function_id_fkey ON DELETE CASCADE").isEmpty();
     }
 }

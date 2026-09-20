@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.function.operations;
 
 import io.flowcatalyst.platform.function.ClientPolicy;
 import io.flowcatalyst.platform.function.Function;
+import io.flowcatalyst.platform.function.FunctionDomain;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventConventions;
@@ -35,6 +36,15 @@ public final class FunctionEvents {
     public static final String SECRET_SET = "platform:function:secret:set";
     public static final String SECRET_DELETED = "platform:function:secret:deleted";
 
+    /// spec `function-public-routes.md` §1 — the domain aggregate's own
+    /// event types. Subject `platform.function-domain.{domainId}`, group
+    /// `platform:function-domain:{domainId}` ([#domainMetadataFor]) — a
+    /// domain is not a function, so it gets its own message-group namespace,
+    /// the same treatment [#POLICY_UPDATED] gets via [#policyMetadataFor].
+    public static final String DOMAIN_CLAIMED = "platform:function:domain:claimed";
+    public static final String DOMAIN_VERIFIED = "platform:function:domain:verified";
+    public static final String DOMAIN_RELEASED = "platform:function:domain:released";
+
     private FunctionEvents() {
     }
 
@@ -58,6 +68,16 @@ public final class FunctionEvents {
         String subject = EventConventions.buildSubject("platform", "function-policy", ownerKey);
         String messageGroup = EventConventions.buildMessageGroup("platform", "function-policy", ownerKey);
         return EventMetadata.of(ec, POLICY_UPDATED, SOURCE, subject).withMessageGroup(messageGroup);
+    }
+
+    /// [DomainClaimed] / [DomainVerified] / [DomainReleased]'s metadata:
+    /// subject `platform.function-domain.{domainId}`, group
+    /// `platform:function-domain:{domainId}` — never [#metadataFor], which
+    /// would group a domain event into a (nonexistent) function's stream.
+    private static EventMetadata domainMetadataFor(ExecutionContext ec, String type, String domainId) {
+        String subject = EventConventions.buildSubject("platform", "function-domain", domainId);
+        String messageGroup = EventConventions.buildMessageGroup("platform", "function-domain", domainId);
+        return EventMetadata.of(ec, type, SOURCE, subject).withMessageGroup(messageGroup);
     }
 
     /// `{functionId, address, applicationId, clientId?, runtime}` (spec §3).
@@ -270,6 +290,62 @@ public final class FunctionEvents {
         }
 
         private record Data(String owner, int signerCount) {
+        }
+    }
+
+    // ── Domains (spec `function-public-routes.md` §1) ───────────────────────
+
+    /// `{domainId, hostname, owner}` — never the token (spec §1: "no token").
+    public record DomainClaimed(EventMetadata metadata, String domainId, String hostname, String owner)
+            implements DomainEvent {
+
+        public static DomainClaimed of(ExecutionContext ec, FunctionDomain d) {
+            return new DomainClaimed(domainMetadataFor(ec, DOMAIN_CLAIMED, d.id()), d.id(), d.hostname().value(),
+                    d.owner().toWire());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(domainId, hostname, owner);
+        }
+
+        private record Data(String domainId, String hostname, String owner) {
+        }
+    }
+
+    /// `{domainId, hostname, owner}`.
+    public record DomainVerified(EventMetadata metadata, String domainId, String hostname, String owner)
+            implements DomainEvent {
+
+        public static DomainVerified of(ExecutionContext ec, FunctionDomain d) {
+            return new DomainVerified(domainMetadataFor(ec, DOMAIN_VERIFIED, d.id()), d.id(), d.hostname().value(),
+                    d.owner().toWire());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(domainId, hostname, owner);
+        }
+
+        private record Data(String domainId, String hostname, String owner) {
+        }
+    }
+
+    /// `{domainId, hostname, owner}`.
+    public record DomainReleased(EventMetadata metadata, String domainId, String hostname, String owner)
+            implements DomainEvent {
+
+        public static DomainReleased of(ExecutionContext ec, FunctionDomain d) {
+            return new DomainReleased(domainMetadataFor(ec, DOMAIN_RELEASED, d.id()), d.id(), d.hostname().value(),
+                    d.owner().toWire());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(domainId, hostname, owner);
+        }
+
+        private record Data(String domainId, String hostname, String owner) {
         }
     }
 }

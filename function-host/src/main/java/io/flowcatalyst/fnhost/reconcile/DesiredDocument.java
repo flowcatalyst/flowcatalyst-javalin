@@ -21,7 +21,8 @@ import java.util.Objects;
 /// keys this host does not know about, and one bad entry must never take
 /// the rest of the document down (`docs/spec/function-host-reconciler.md`
 /// §1.1).
-public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, List<UnreadableEntry> unreadable) {
+public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, List<UnreadableEntry> unreadable,
+                              List<PublicRouteRef> publicRoutes) {
 
     private static final Logger LOG = LoggerFactory.getLogger(DesiredDocument.class);
 
@@ -29,6 +30,16 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         functions = List.copyOf(functions);
         unload = List.copyOf(unload);
         unreadable = List.copyOf(unreadable);
+        publicRoutes = List.copyOf(publicRoutes);
+    }
+
+    /// Convenience constructor for every existing test fixture that built a
+    /// document before `publicRoutes` existed — `publicRoutes` empty. Kept so
+    /// this slice (`function-public-routes.md` §1: "no use yet") does not
+    /// need to touch dozens of unrelated `ReconcilerTest`/`FnHttpTestSupport`
+    /// call sites for a field nothing reads yet.
+    public DesiredDocument(List<Entry> functions, List<UnloadRef> unload, List<UnreadableEntry> unreadable) {
+        this(functions, unload, unreadable, List.of());
     }
 
     public enum Role {
@@ -103,6 +114,17 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         }
     }
 
+    /// One entry of the top-level `publicRoutes` (spec
+    /// `function-public-routes.md` §2): `{hostname, pathPrefix, address}`.
+    /// Parsed here, no caller yet — the public listener is slice F2.
+    public record PublicRouteRef(String hostname, String pathPrefix, FunctionAddress address) {
+        public PublicRouteRef {
+            Objects.requireNonNull(hostname, "hostname");
+            Objects.requireNonNull(pathPrefix, "pathPrefix");
+            Objects.requireNonNull(address, "address");
+        }
+    }
+
     /// An entry of `functions` the host could NOT read (spec §1.1: "dropped
     /// with a WARN and reported FAILED if it has an address and version, and
     /// never takes the rest of the document down with it"). Only entries
@@ -154,7 +176,23 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
             }
         }
 
-        return new DesiredDocument(functions, unload, unreadable);
+        List<PublicRouteRef> publicRoutes = new ArrayList<>();
+        for (JsonNode node : root.path("publicRoutes")) {
+            try {
+                publicRoutes.add(parsePublicRouteRef(node));
+            } catch (RuntimeException e) {
+                LOG.atWarn().setMessage("dropping unreadable publicRoutes entry").setCause(e).log();
+            }
+        }
+
+        return new DesiredDocument(functions, unload, unreadable, publicRoutes);
+    }
+
+    private static PublicRouteRef parsePublicRouteRef(JsonNode node) {
+        String hostname = requireText(node, "hostname");
+        String pathPrefix = requireText(node, "pathPrefix");
+        FunctionAddress address = FunctionAddress.parse(requireText(node, "address"));
+        return new PublicRouteRef(hostname, pathPrefix, address);
     }
 
     private static Entry parseEntry(JsonNode node) {

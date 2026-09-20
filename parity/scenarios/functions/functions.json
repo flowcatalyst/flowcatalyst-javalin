@@ -150,6 +150,22 @@
                    "body": { "applicationCode": "pf_bad_${run}", "serviceName": "svc", "name": "fn", "runtime": "jvm" } } },
 
     { "id": "delete-function",
-      "request": { "method": "DELETE", "path": "/api/functions/pf-${run}.svc.fn" } }
+      "request": { "method": "DELETE", "path": "/api/functions/pf-${run}.svc.fn" } },
+
+    { "id": "claim-domain",
+      "request": { "method": "POST", "path": "/api/function-domains",
+                   "body": { "hostname": "pf-${run}.parity.example" } } },
+
+    { "id": "list-domains",
+      "request": { "method": "GET", "path": "/api/function-domains", "query": { "clientId": "platform" } } },
+
+    { "id": "verify-domain-not-verified",
+      "request": { "method": "POST", "path": "/api/function-domains/pf-${run}.parity.example/verify" } },
+
+    { "id": "list-routes-requires-filter",
+      "request": { "method": "GET", "path": "/api/function-routes" } },
+
+    { "id": "release-domain",
+      "request": { "method": "DELETE", "path": "/api/function-domains/pf-${run}.parity.example" } }
   ]
 }

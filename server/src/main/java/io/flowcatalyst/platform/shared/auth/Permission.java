@@ -282,6 +282,9 @@ public enum Permission {
     // function / secret (platform-side config/secrets, function-context.md §1, D4a)
     FUNCTION_SECRET_MANAGE("platform:function:secret:manage"),
 
+    // function / domain (public hostname claim/verify/release, function-public-routes.md §1)
+    FUNCTION_DOMAIN_MANAGE("platform:function:domain:manage"),
+
     // super-admin wildcard
     SUPER_ADMIN("platform:*:*:*");
 

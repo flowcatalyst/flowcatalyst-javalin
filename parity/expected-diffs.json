@@ -733,5 +733,40 @@
     "pointer": "/**",
     "reason": "Java-first: the function service has no Go implementation (docs/spec/function-api.md §0); Go's SPA catch-all or 404 answers instead of Java's 204",
     "ruling": "owner 2026-09-18, function-runner-plan.md §10; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "claim-domain",
+    "pointer": "/**",
+    "reason": "Java-first: public-route domains have no Go implementation (docs/spec/function-public-routes.md §1, package F slice F1); Go's SPA catch-all or 404 answers instead of Java's 201 with the PENDING verification record",
+    "ruling": "owner 2026-09-20, function-public-routes.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "list-domains",
+    "pointer": "/**",
+    "reason": "Java-first: public-route domains have no Go implementation (docs/spec/function-public-routes.md §1, package F slice F1); Go's SPA catch-all or 404 answers instead of the Java domain list",
+    "ruling": "owner 2026-09-20, function-public-routes.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "verify-domain-not-verified",
+    "pointer": "/**",
+    "reason": "Java-first: public-route domains have no Go implementation (docs/spec/function-public-routes.md §1, package F slice F1); Go's SPA catch-all or 404 answers instead of Java's DOMAIN_NOT_VERIFIED (no real TXT record exists for this parity-harness hostname) or, if the harness's outbound DNS is itself unavailable, 503 DNS_UNAVAILABLE — either is Java-only and covered by this wildcard",
+    "ruling": "owner 2026-09-20, function-public-routes.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "list-routes-requires-filter",
+    "pointer": "/**",
+    "reason": "Java-first: route sync has no Go implementation (docs/spec/function-public-routes.md §2, package F slice F1); Go's SPA catch-all or 404 answers instead of Java's 400 FUNCTION_ROUTE_FILTER_REQUIRED",
+    "ruling": "owner 2026-09-20, function-public-routes.md §2; never retires unless Go builds it"
+  },
+  {
+    "scenario": "functions*",
+    "step": "release-domain",
+    "pointer": "/**",
+    "reason": "Java-first: public-route domains have no Go implementation (docs/spec/function-public-routes.md §1, package F slice F1); Go's SPA catch-all or 404 answers instead of Java's 204",
+    "ruling": "owner 2026-09-20, function-public-routes.md §1; never retires unless Go builds it"
   }
 ]
