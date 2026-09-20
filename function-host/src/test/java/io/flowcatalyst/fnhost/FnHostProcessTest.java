@@ -38,7 +38,7 @@ class FnHostProcessTest {
 
     private static HostEnv env(Path cacheDir) {
         return new HostEnv(new DnsLabel("pool"), "http://127.0.0.1:1", "client-1", "secret-1", "host-1",
-                new Signatures.Off(), 50, cacheDir, 0, 512, 3, 0, false);
+                new Signatures.Off(), 50, cacheDir, 0, 512, 3, 0, false, 16);
     }
 
     private static HttpResponse<String> get(int port, String path) throws Exception {

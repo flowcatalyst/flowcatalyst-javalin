@@ -31,9 +31,12 @@ import java.util.regex.Pattern;
 ///                        convention (`function-host-process.md` §1): exit 0
 ///                        right after a successful start instead of running
 ///                        forever
+/// @param maxDbPools `FC_FN_MAX_DB_POOLS` — the most distinct database DSNs
+///                    [io.flowcatalyst.fnhost.context.DbPools] may have open
+///                    at once (default 16, spec `function-context.md` §2)
 public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String clientSecret, String hostId,
                        Signatures signatures, int maxLoaded, Path cacheDir, int port, int maxConcurrency,
-                       int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart) {
+                       int drainTimeoutSeconds, int metricsPort, boolean exitAfterStart, int maxDbPools) {
 
     /// The heartbeat's own host-id rule (`function-api.md` §6.2): 1-100
     /// characters of `[A-Za-z0-9._:-]`.
@@ -124,9 +127,10 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
         int drainTimeoutSeconds = e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60);
         int metricsPort = e.integer("FC_METRICS_PORT", 9090);
         boolean exitAfterStart = e.bool("FC_EXIT_AFTER_START", false);
+        int maxDbPools = e.integer("FC_FN_MAX_DB_POOLS", 16);
 
         return new HostEnv(pool, platformUrl, clientId, clientSecret, hostId, signatures, maxLoaded, cacheDir,
-                port, maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart);
+                port, maxConcurrency, drainTimeoutSeconds, metricsPort, exitAfterStart, maxDbPools);
     }
 
     private static String defaultHostId() {
@@ -162,6 +166,7 @@ public record HostEnv(DnsLabel pool, String platformUrl, String clientId, String
                 + ", clientSecret=<redacted>, hostId=" + hostId + ", signatures=" + signatures
                 + ", maxLoaded=" + maxLoaded + ", cacheDir=" + cacheDir + ", port=" + port
                 + ", maxConcurrency=" + maxConcurrency + ", drainTimeoutSeconds=" + drainTimeoutSeconds
-                + ", metricsPort=" + metricsPort + ", exitAfterStart=" + exitAfterStart + "]";
+                + ", metricsPort=" + metricsPort + ", exitAfterStart=" + exitAfterStart
+                + ", maxDbPools=" + maxDbPools + "]";
     }
 }

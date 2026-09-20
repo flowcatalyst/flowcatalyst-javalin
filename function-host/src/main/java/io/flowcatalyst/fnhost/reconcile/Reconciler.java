@@ -1,5 +1,9 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.fnhost.context.ContextFactory;
+import io.flowcatalyst.fnhost.context.ContextLoadException;
+import io.flowcatalyst.fnhost.context.HostFunctionContext;
+import io.flowcatalyst.fnhost.context.SettingsFingerprint;
 import io.flowcatalyst.fnhost.load.FunctionRegistry;
 import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
 import io.flowcatalyst.fnhost.load.Loaded;
@@ -65,6 +69,7 @@ public final class Reconciler {
     private final Signatures signatures;
     private final JvmFunctionLoader loader;
     private final FunctionRegistry registry;
+    private final ContextFactory contextFactory;
 
     /// `versionId → Prepared`. Entries that failed to prepare are never
     /// added here, which is what makes them retried automatically the next
@@ -89,6 +94,17 @@ public final class Reconciler {
     /// One lock object per address, so two concurrent [#ensureLoaded] calls
     /// for the same address load it exactly once (spec §1.2 step 3, R1).
     private final Map<FunctionAddress, Object> loadLocks = new ConcurrentHashMap<>();
+
+    /// D4b (`function-context.md` §2, X5): the settings fingerprint the
+    /// address's CURRENTLY LOADED version was built with — a live/lazy/pinned
+    /// reload compares against this even when the version NUMBER is
+    /// unchanged, since a config/secret edit reloads the function in place
+    /// (same version, new context). Not cleaned up on unload, same convention
+    /// as [#currentSecretByAddress]/[#previousSecretByAddress] below — a
+    /// stale entry for an address that later reappears is harmless (the
+    /// address is unloaded, so every load path reloads regardless of what
+    /// this map says).
+    private final Map<FunctionAddress, String> settingsFingerprintByAddress = new ConcurrentHashMap<>();
 
     /// D3 (`function-host-listener.md` §3, H3): the live entry's CURRENT
     /// webhook signing secret per address, as last seen in an applied
@@ -137,8 +153,22 @@ public final class Reconciler {
     /// itself.
     private final List<Runnable> postReconcileListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+    /// A trivial [io.flowcatalyst.fnhost.context.ContextFactory] (16 database
+    /// pools, a fresh shared [java.net.http.HttpClient], the system clock) —
+    /// every pre-D4b test/caller that has no opinion about database/HTTP
+    /// context wiring keeps compiling unchanged.
     public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
                        Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry) {
+        this(pool, hostId, controlPlane, artifactStore, signatures, loader, registry,
+                ContextFactory.production(16));
+    }
+
+    /// D4b (`docs/spec/function-context.md` §2): `contextFactory` builds each
+    /// loaded version's [io.flowcatalyst.function.FunctionContext] at load
+    /// time — see [#attachContextAndInit].
+    public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
+                       Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry,
+                       ContextFactory contextFactory) {
         this.pool = Objects.requireNonNull(pool, "pool");
         this.hostId = Objects.requireNonNull(hostId, "hostId");
         this.controlPlane = Objects.requireNonNull(controlPlane, "controlPlane");
@@ -146,6 +176,7 @@ public final class Reconciler {
         this.signatures = Objects.requireNonNull(signatures, "signatures");
         this.loader = Objects.requireNonNull(loader, "loader");
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.contextFactory = Objects.requireNonNull(contextFactory, "contextFactory");
     }
 
     /// Reported as `DRAINING` in every heartbeat from now on (spec §1.2
@@ -411,28 +442,43 @@ public final class Reconciler {
 
     private void loadWarm(DesiredDocument.Entry entry, Prepared p, Key key) {
         LoadedFunction current = registry.peek(entry.address());
-        if (current != null && current.version() == entry.version()) {
-            return; // already the live version
+        if (current != null && current.version() == entry.version() && !settingsChanged(entry)) {
+            return; // already the live version, unchanged settings
         }
         LoadOutcome outcome = loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
-        applyLoadOutcome(outcome, key, true);
+        applyLoadOutcome(outcome, key, true, entry);
         if (outcome instanceof Loaded) {
             lazyRoutes.remove(entry.address()); // it is warm now, not lazily routed
         }
     }
 
     /// A lazy function already resident must not keep serving an old version
-    /// until it happens to idle out (spec §1.2 step 3) — only when a
-    /// DIFFERENT version is currently loaded does this replace it now;
+    /// (or stale settings, D4b/X5) until it happens to idle out (spec §1.2
+    /// step 3) — only when a DIFFERENT version, or the SAME version with
+    /// changed settings, is currently loaded does this replace it now;
     /// otherwise the first invocation loads it ([#ensureLoaded]).
     private void loadLazy(DesiredDocument.Entry entry, Prepared p, Key key) {
         lazyRoutes.put(entry.address(), entry);
         LoadedFunction current = registry.peek(entry.address());
-        if (current == null || current.version() == entry.version()) {
-            return;
+        if (current == null) {
+            return; // not loaded yet at all — first invocation loads it
+        }
+        if (current.version() == entry.version() && !settingsChanged(entry)) {
+            return; // already the right version, unchanged settings
         }
         LoadOutcome outcome = loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
-        applyLoadOutcome(outcome, key, false);
+        applyLoadOutcome(outcome, key, false, entry);
+    }
+
+    /// D4b (`function-context.md` §2, X5): true when `entry`'s config+secrets
+    /// fingerprint differs from the one the address's currently loaded
+    /// version was built with — a settings edit reloads the function even
+    /// when the version NUMBER is unchanged, exactly like a promote (new
+    /// context/instance before the old one is closed).
+    private boolean settingsChanged(DesiredDocument.Entry entry) {
+        String newFingerprint = SettingsFingerprint.of(entry.config(), entry.secrets());
+        String oldFingerprint = settingsFingerprintByAddress.get(entry.address());
+        return !Objects.equals(oldFingerprint, newFingerprint);
     }
 
     /// **New before old** (spec §1.2, pinned): [FunctionRegistry#put] returns
@@ -447,9 +493,12 @@ public final class Reconciler {
     /// document's entries, and never the reconcile loop itself (R10 depends
     /// on [Reconciler#reconcileOnce] only ever throwing for something a run
     /// truly cannot recover from).
-    private void applyLoadOutcome(LoadOutcome outcome, Key key, boolean warm) {
+    private void applyLoadOutcome(LoadOutcome outcome, Key key, boolean warm, DesiredDocument.Entry entry) {
         switch (outcome) {
             case Loaded(LoadedFunction fn) -> {
+                if (!attachContextAndInit(fn, entry, key)) {
+                    return; // fn already closed, failure already recorded
+                }
                 LoadedFunction displaced;
                 try {
                     displaced = registry.put(fn, warm);
@@ -457,7 +506,7 @@ public final class Reconciler {
                     failures.put(key, "LOAD:REGISTRY_FULL");
                     observer.loadError("LOAD:REGISTRY_FULL");
                     logRegistryFullFailure(key, e);
-                    fn.close(); // never registered — release what was just loaded
+                    fn.close(); // never registered — release what was just loaded (and its context)
                     return;
                 }
                 failures.remove(key);
@@ -481,6 +530,49 @@ public final class Reconciler {
                 .log();
     }
 
+    /// D4b (`function-context.md` §2): builds `entry`'s [io.flowcatalyst.fnhost.context.HostFunctionContext],
+    /// attaches it to `fn` and runs `Function#init` — the same "load failure,
+    /// old version keeps serving" treatment as every other prepare/load
+    /// failure (spec §2 item 6, R3's own pattern): on either failure, `fn` is
+    /// closed (which also releases any database pools its context already
+    /// acquired, `LoadedFunction#close`) WITHOUT ever being registered, and
+    /// this returns `false` so the caller leaves whatever was already loaded
+    /// (if anything) serving.
+    private boolean attachContextAndInit(LoadedFunction fn, DesiredDocument.Entry entry, Key key) {
+        HostFunctionContext ctx;
+        try {
+            ctx = contextFactory.build(entry, fn);
+        } catch (ContextLoadException e) {
+            failures.put(key, e.code());
+            observer.loadError(e.code());
+            logContextFailure(entry, e.code(), e);
+            fn.close();
+            return false;
+        }
+        fn.attachContext(ctx);
+        try {
+            fn.init(ctx);
+        } catch (Exception e) {
+            failures.put(key, "LOAD:INIT_FAILED");
+            observer.loadError("LOAD:INIT_FAILED");
+            logContextFailure(entry, "LOAD:INIT_FAILED", e);
+            fn.close(); // releases ctx's acquired database pools too
+            return false;
+        }
+        settingsFingerprintByAddress.put(entry.address(),
+                SettingsFingerprint.of(entry.config(), entry.secrets()));
+        return true;
+    }
+
+    private void logContextFailure(DesiredDocument.Entry entry, String reason, Throwable cause) {
+        LOG.atWarn().setMessage("failed to build this version's context or run its init()")
+                .addKeyValue("address", entry.address().render())
+                .addKeyValue("version", entry.version())
+                .addKeyValue("reason", reason)
+                .setCause(cause)
+                .log();
+    }
+
     /// What D3 calls on first invocation of a lazy address (spec §1.2 step 3).
     /// Loads from `prepared` under a per-address lock, so two concurrent
     /// first callers load exactly once (R1). Returns whatever ends up
@@ -493,13 +585,13 @@ public final class Reconciler {
         if (route == null) {
             return current;
         }
-        if (current != null && current.version() == route.version()) {
+        if (current != null && current.version() == route.version() && !settingsChanged(route)) {
             return current;
         }
         Object lock = loadLocks.computeIfAbsent(address, a -> new Object());
         synchronized (lock) {
             current = registry.get(address);
-            if (current != null && current.version() == route.version()) {
+            if (current != null && current.version() == route.version() && !settingsChanged(route)) {
                 return current;
             }
             Prepared p = prepared.get(route.versionId());
@@ -510,6 +602,9 @@ public final class Reconciler {
             Key key = new Key(route.address(), route.version());
             return switch (outcome) {
                 case Loaded(LoadedFunction fn) -> {
+                    if (!attachContextAndInit(fn, route, key)) {
+                        yield current; // failure recorded already; whatever was loaded (if anything) keeps serving
+                    }
                     LoadedFunction displaced = registry.put(fn, false);
                     failures.remove(key);
                     if (displaced != null) {
@@ -760,7 +855,10 @@ public final class Reconciler {
         LoadOutcome outcome =
                 loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
         return switch (outcome) {
-            case Loaded(LoadedFunction fn) -> fn;
+            case Loaded(LoadedFunction fn) -> {
+                Key key = new Key(entry.address(), entry.version());
+                yield attachContextAndInit(fn, entry, key) ? fn : null;
+            }
             case Refused ignored -> null;
         };
     }

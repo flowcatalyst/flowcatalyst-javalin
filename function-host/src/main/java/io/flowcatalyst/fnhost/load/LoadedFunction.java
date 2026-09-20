@@ -33,6 +33,15 @@ public final class LoadedFunction implements AutoCloseable {
     private final Object drainLock = new Object();
     private volatile boolean closed;
 
+    /// This version's [FunctionContext] (D4b, `docs/spec/function-context.md`
+    /// §2): built and attached exactly once, by whoever loaded this instance
+    /// ([io.flowcatalyst.fnhost.reconcile.Reconciler]), before [#init] runs —
+    /// the SAME instance for every [#invoke] over this object's whole
+    /// lifetime. `null` until [#attachContext] runs (D1 isolation tests that
+    /// never go through the reconciler pass their own context explicitly to
+    /// [#init]/[#invoke] instead of relying on this field).
+    private volatile FunctionContext context;
+
     LoadedFunction(Function function, URLClassLoader loader,
             FunctionAddress address, int version) {
         this.function = Objects.requireNonNull(function, "function");
@@ -47,6 +56,28 @@ public final class LoadedFunction implements AutoCloseable {
 
     public int version() {
         return version;
+    }
+
+    /// Attaches this version's [FunctionContext] (D4b) — called exactly once
+    /// by the loader ([io.flowcatalyst.fnhost.reconcile.Reconciler]), before
+    /// [#init]. [#close] releases it (via [AutoCloseable] if the context
+    /// implements it, e.g. [io.flowcatalyst.fnhost.context.HostFunctionContext]'s
+    /// database-pool bookkeeping) exactly once, regardless of how this
+    /// version's load attempt ends.
+    ///
+    /// @throws IllegalStateException a context is already attached
+    public void attachContext(FunctionContext ctx) {
+        Objects.requireNonNull(ctx, "ctx");
+        if (context != null) {
+            throw new IllegalStateException("a FunctionContext is already attached to " + address + "@" + version);
+        }
+        context = ctx;
+    }
+
+    /// This version's attached [FunctionContext] (D4b), or `null` if
+    /// [#attachContext] was never called.
+    public FunctionContext context() {
+        return context;
     }
 
     /// Whether [#close()] has already run — the loader's classes are then
@@ -156,6 +187,23 @@ public final class LoadedFunction implements AutoCloseable {
                     .addKeyValue("version", version)
                     .setCause(e)
                     .log();
+        }
+
+        // D4b: release whatever this version's context holds (DbPools' reference
+        // counts) — exactly once, regardless of how this close() was reached, and
+        // regardless of whether a context was ever attached at all (D1 isolation
+        // tests never attach one).
+        if (context instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                LOG.atWarn()
+                        .setMessage("closing function context failed")
+                        .addKeyValue("address", address.render())
+                        .addKeyValue("version", version)
+                        .setCause(e)
+                        .log();
+            }
         }
     }
 

@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost;
 
+import io.flowcatalyst.fnhost.context.ContextFactory;
 import io.flowcatalyst.fnhost.http.FnHttpServer;
 import io.flowcatalyst.fnhost.http.FnObservability;
 import io.flowcatalyst.fnhost.load.FunctionRegistry;
@@ -56,8 +57,9 @@ public final class FnHost implements AutoCloseable {
         HttpClient http = HttpClient.newHttpClient();
         TokenSource tokenSource = new TokenSource(http, env.platformUrl(), env.clientId(), env.clientSecret());
         HttpControlPlane controlPlane = new HttpControlPlane(env.platformUrl(), tokenSource);
+        ContextFactory contextFactory = ContextFactory.production(env.maxDbPools());
         this.reconciler = new Reconciler(env.pool(), env.hostId(), controlPlane, stores, env.signatures(),
-                new JvmFunctionLoader(), registry);
+                new JvmFunctionLoader(), registry, contextFactory);
         this.loop = new ReconcileLoop(reconciler);
         this.prometheusRegistry = new PrometheusRegistry();
         this.metrics = wireMetrics(prometheusRegistry, registry, reconciler);

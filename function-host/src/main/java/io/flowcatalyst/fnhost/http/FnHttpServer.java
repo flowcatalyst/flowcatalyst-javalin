@@ -2,7 +2,6 @@ package io.flowcatalyst.fnhost.http;
 
 import io.flowcatalyst.fnhost.FunctionInvocationEvent;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
-import io.flowcatalyst.fnhost.load.UnimplementedFunctionContext;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.fnhost.reconcile.Reconciler;
 import io.flowcatalyst.function.Caller;
@@ -86,6 +85,7 @@ public final class FnHttpServer implements AutoCloseable {
     private final PinnedVersions pinnedVersions;
     private final BearerAuthenticator bearerAuthenticator;
     private final InvocationObserver observer;
+    private final Clock clock;
     private volatile boolean draining;
     private volatile int port;
 
@@ -136,7 +136,7 @@ public final class FnHttpServer implements AutoCloseable {
 
     private FnHttpServer(Vertx vertx, HttpServer httpServer, Reconciler reconciler, Permits permits,
                           PinnedVersions pinnedVersions, BearerAuthenticator bearerAuthenticator,
-                          InvocationObserver observer) {
+                          InvocationObserver observer, Clock clock) {
         this.vertx = vertx;
         this.httpServer = httpServer;
         this.reconciler = reconciler;
@@ -144,6 +144,7 @@ public final class FnHttpServer implements AutoCloseable {
         this.pinnedVersions = pinnedVersions;
         this.bearerAuthenticator = bearerAuthenticator;
         this.observer = observer;
+        this.clock = clock;
     }
 
     /// Builds and binds. Returns once the socket is listening.
@@ -172,7 +173,7 @@ public final class FnHttpServer implements AutoCloseable {
                 .requestHandler(req -> holder[0].handle(req));
 
         FnHttpServer instance = new FnHttpServer(vertx, server, reconciler, permits, pinnedVersions,
-                bearerAuthenticator, options.observer());
+                bearerAuthenticator, options.observer(), options.clock());
         holder[0] = instance;
         try {
             server.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
@@ -501,15 +502,17 @@ public final class FnHttpServer implements AutoCloseable {
             io.flowcatalyst.function.FunctionAddress apiAddress = toApiAddress(entry.address());
             Request request = buildRequest(apiAddress, fn.version(), invocationId, req, functionPath,
                     pathParams, body, stripAuthHeaders, caller);
-            UnimplementedFunctionContext ctx = new UnimplementedFunctionContext(apiAddress, fn.version());
+            // D4b: the version's OWN context, built once at load time (Reconciler) and
+            // attached to it — the same instance for every call, never a fresh throwaway
+            // per request (docs/spec/function-context.md §2).
+            io.flowcatalyst.function.FunctionContext ctx = fn.context();
 
-            // MDC (spec §2 step 9): set on THIS thread before the invocation starts — the
-            // worker thread InvocationRunner spawns inherits a snapshot of it at creation
-            // time (SLF4J/Logback's MDC is an InheritableThreadLocal), which is what makes
-            // it visible both to the function's own FunctionContext#logger() (its javadoc:
-            // "a logger carrying the host's MDC keys") and to every host log line emitted
-            // here while the invocation is in flight. Cleared in `finally` regardless of
-            // outcome.
+            // MDC (spec §2 step 9): set on THIS thread too, independently of the worker
+            // thread InvocationRunner spawns (which sets its own copy — D4b/X6 moved the
+            // authoritative set there, since Logback's MDC does not reliably reach a
+            // function's own log lines otherwise) — so the HOST's own log lines below
+            // (timeout/error) still carry the keys while the call is in flight. Cleared in
+            // `finally` regardless of outcome; nothing after this method returns carries them.
             Map<String, String> mdc = new LinkedHashMap<>();
             mdc.put(Logging.MdcKeys.FUNCTION, entry.address().render());
             mdc.put(Logging.MdcKeys.VERSION, String.valueOf(fn.version()));
@@ -524,8 +527,9 @@ public final class FnHttpServer implements AutoCloseable {
             event.begin();
             long startNanos = System.nanoTime();
             try {
-                InvocationRunner.Invocation invocation = InvocationRunner.start(fn, request, ctx);
                 long timeoutMs = endpoint.timeoutMs();
+                java.time.Instant deadline = clock.instant().plusMillis(timeoutMs);
+                InvocationRunner.Invocation invocation = InvocationRunner.start(fn, request, ctx, deadline);
                 try {
                     Result result = invocation.future().get(timeoutMs, TimeUnit.MILLISECONDS);
                     permits.release(grant);

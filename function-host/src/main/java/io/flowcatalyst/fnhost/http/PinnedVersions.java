@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.fnhost.context.SettingsFingerprint;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.fnhost.reconcile.Reconciler;
@@ -27,9 +28,16 @@ public final class PinnedVersions {
     private record Key(FunctionAddress address, int version) {
     }
 
+    /// D4b (`docs/spec/function-context.md` §2): the settings fingerprint a
+    /// cached entry was loaded with, so [#sweep] can tell a genuine settings
+    /// edit (same address/version, different config/secrets) from nothing
+    /// having changed — "pinned: simply evict so the next call reloads".
+    private record Cached(LoadedFunction function, String settingsFingerprint) {
+    }
+
     /// `accessOrder=true`: eldest-accessed-first iteration, so the head is
     /// always the LRU eviction candidate once the map exceeds [#CAPACITY].
-    private final LinkedHashMap<Key, LoadedFunction> cache = new LinkedHashMap<>(16, 0.75f, true);
+    private final LinkedHashMap<Key, Cached> cache = new LinkedHashMap<>(16, 0.75f, true);
 
     public PinnedVersions(Reconciler reconciler) {
         this.reconciler = Objects.requireNonNull(reconciler, "reconciler");
@@ -44,9 +52,9 @@ public final class PinnedVersions {
         Objects.requireNonNull(entry, "entry");
         Key key = new Key(entry.address(), entry.version());
         synchronized (lock) {
-            LoadedFunction cached = cache.get(key); // reorders for LRU
+            Cached cached = cache.get(key); // reorders for LRU
             if (cached != null) {
-                return cached;
+                return cached.function();
             }
             LoadedFunction loaded = reconciler.loadPinned(entry);
             if (loaded == null) {
@@ -55,31 +63,38 @@ public final class PinnedVersions {
             if (cache.size() >= CAPACITY) {
                 evictOldest();
             }
-            cache.put(key, loaded);
+            cache.put(key, new Cached(loaded, fingerprintOf(entry)));
             return loaded;
         }
     }
 
+    private static String fingerprintOf(DesiredDocument.Entry entry) {
+        return SettingsFingerprint.of(entry.config(), entry.secrets());
+    }
+
     private void evictOldest() {
-        Iterator<Map.Entry<Key, LoadedFunction>> it = cache.entrySet().iterator();
+        Iterator<Map.Entry<Key, Cached>> it = cache.entrySet().iterator();
         if (it.hasNext()) {
-            LoadedFunction victim = it.next().getValue();
+            Cached victim = it.next().getValue();
             it.remove();
-            victim.close();
+            victim.function().close();
         }
     }
 
     /// Drops and closes every entry whose version is no longer present in
     /// the reconciler's current document ("closed when its version leaves
-    /// desired state", spec §4) — called after each reconcile.
+    /// desired state", spec §4), AND every entry whose settings changed
+    /// underneath it (D4b/X5: "pinned: simply evict so the next call
+    /// reloads") — called after each reconcile.
     public void sweep() {
         synchronized (lock) {
-            Iterator<Map.Entry<Key, LoadedFunction>> it = cache.entrySet().iterator();
+            Iterator<Map.Entry<Key, Cached>> it = cache.entrySet().iterator();
             while (it.hasNext()) {
-                Map.Entry<Key, LoadedFunction> e = it.next();
-                if (reconciler.entryFor(e.getKey().address(), e.getKey().version()) == null) {
+                Map.Entry<Key, Cached> e = it.next();
+                DesiredDocument.Entry current = reconciler.entryFor(e.getKey().address(), e.getKey().version());
+                if (current == null || !fingerprintOf(current).equals(e.getValue().settingsFingerprint())) {
                     it.remove();
-                    e.getValue().close();
+                    e.getValue().function().close();
                 }
             }
         }
@@ -94,7 +109,7 @@ public final class PinnedVersions {
 
     public void close() {
         synchronized (lock) {
-            cache.values().forEach(LoadedFunction::close);
+            cache.values().forEach(c -> c.function().close());
             cache.clear();
         }
     }
