@@ -84,6 +84,10 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   `docs/functions.md` (`c939dce3`). Default shrinker is shade's `minimizeJar`: ProGuard needs `jmods/`,
   which Temurin 25 no longer ships; ProGuard is the opt-in `shrink-proguard` profile (CLI-verified on
   GraalVM, not via Maven).
+- **Corrupt-manifest containment** (`0f345b3d`): one unreadable `fn_versions.manifest` used to fail desired
+  state for every pool (found by running the suite in random order). Batch reads now report corrupt
+  rows; a corrupt live version fails only its own pool's build (hosts unload what vanishes from the
+  document but ride out an outage); `docs/function-runner-report.md` has the what-shipped table.
 - **Package F complete** (spec `function-public-routes.md`): F1 domains (TXT verification, `.localhost`
   only in dev mode — pinned at the composed Server), route sync at promote, `publicRoutes` in desired
   state (`525e5219`); F2 the public listener (route by `Host` + longest whole-segment prefix, no
