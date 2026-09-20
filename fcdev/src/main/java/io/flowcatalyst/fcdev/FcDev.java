@@ -1,5 +1,6 @@
 package io.flowcatalyst.fcdev;
 
+import io.flowcatalyst.fcdev.fn.FnCommand;
 import io.flowcatalyst.server.Logging;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,7 @@ import java.util.concurrent.Callable;
 /// fcdev fresh        truncate every FlowCatalyst table (preserves schema)
 /// fcdev db upgrade   re-initialise the embedded Postgres onto the bundled major
 /// fcdev mcp          run the FlowCatalyst MCP server (stdio by default; --http to listen)
+/// fcdev fn           manage functions: publish, promote, deploy, status, versions, retire, config, secret, invoke, watch
 /// fcdev outbox       standalone outbox poller against an external app DB (+ create-table)
 /// fcdev upgrade      update fcdev to the latest GitHub release
 /// fcdev init         bootstrap a local environment (admin, default client, application, .env)
@@ -47,6 +49,7 @@ import java.util.concurrent.Callable;
                 McpCommand.class,
                 OutboxCommand.class,
                 DbCommand.class,
+                FnCommand.class,
                 UpgradeCommand.class,
                 VersionCommand.class,
                 CompletionCommand.class,

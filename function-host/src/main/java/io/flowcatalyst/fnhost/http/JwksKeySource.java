@@ -1,6 +1,8 @@
 package io.flowcatalyst.fnhost.http;
 
 import io.flowcatalyst.platform.shared.json.Json;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigInteger;
@@ -23,14 +25,30 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/// Caches the platform's `<platform>/.well-known/jwks.json` (spec
-/// `function-host-listener.md` §3): an unknown `kid` refetches **at most
-/// once per 30 s** — a flood of bad tokens must not become a flood of JWKS
-/// requests. The JWK → [RSAPublicKey] decoding is the inverse of the
-/// platform's own encoder ([io.flowcatalyst.platform.auth.oauth.OAuthDiscoveryApi#jwk]):
-/// unpadded base64url big-endian `n`/`e`.
+/// Caches the platform's JWKS (spec `function-host-listener.md` §3): an
+/// unknown `kid` refetches **at most once per 30 s** — a flood of bad tokens
+/// must not become a flood of JWKS requests. The JWK → [RSAPublicKey]
+/// decoding is the inverse of the platform's own encoder
+/// ([io.flowcatalyst.platform.auth.oauth.OAuthDiscoveryApi#jwk]): unpadded
+/// base64url big-endian `n`/`e`.
+///
+/// **Issuer discovery (defect fix).** `platformUrl` is the address the HOST
+/// uses to reach the platform (`FC_FN_PLATFORM_URL` — a Service Connect
+/// alias in production, `http://127.0.0.1:<port>` in fcdev); it is NOT the
+/// value a token's `iss` carries, which is always the platform's own
+/// external base URL. So this class first fetches
+/// `<platformUrl>/.well-known/openid-configuration` and uses ITS `issuer` —
+/// lazily, cached alongside the JWKS, subject to the same 30 s floor on
+/// failure. `jwks_uri` from that document is followed only when it names the
+/// SAME origin as `platformUrl`; a `jwks_uri` on another origin is the
+/// platform's own EXTERNAL address, which the host may not be able to reach
+/// at all (it is behind the alias/loopback `platformUrl` names instead) — in
+/// that case keys still come from `<platformUrl>/.well-known/jwks.json`.
+/// Until discovery has succeeded at least once, [#issuer] returns `null` and
+/// [BearerAuthenticator] answers every `platform`-auth call `401`.
 public final class JwksKeySource {
 
+    private static final Logger LOG = LoggerFactory.getLogger(JwksKeySource.class);
     private static final Duration REFETCH_FLOOR = Duration.ofSeconds(30);
 
     private final HttpClient http;
@@ -41,7 +59,18 @@ public final class JwksKeySource {
     private volatile Instant lastFetch = Instant.EPOCH;
     private final Object fetchLock = new Object();
 
-    /// Test seam: how many times [#fetch] actually hit the network.
+    /// `null` until discovery (`<platformUrl>/.well-known/openid-configuration`)
+    /// has succeeded at least once; cached indefinitely once set (spec: "cached
+    /// with the JWKS" — never re-discovered just because a kid is unknown).
+    private volatile String discoveredIssuer;
+
+    /// Where the JWKS is actually fetched from — `<platformUrl>/.well-known/jwks.json`
+    /// unless discovery's own `jwks_uri` is on the SAME origin as `platformUrl`, in
+    /// which case that exact URL is used instead. Set together with [#discoveredIssuer].
+    private volatile String jwksFetchUrl;
+
+    /// Test seam: how many times [#fetch] actually hit the JWKS endpoint
+    /// (discovery fetches are not counted here).
     private final AtomicInteger fetchCount = new AtomicInteger();
 
     public JwksKeySource(HttpClient http, String platformUrl) {
@@ -59,6 +88,14 @@ public final class JwksKeySource {
     /// platform's own JWKS lists them.
     public List<RSAPublicKey> keys() {
         return List.copyOf(keysByKid.values());
+    }
+
+    /// The issuer discovered from `<platformUrl>/.well-known/openid-configuration`,
+    /// or `null` if discovery has never yet succeeded — the caller
+    /// ([BearerAuthenticator]) must treat `null` as "not authenticated", never
+    /// fall back to `platformUrl` itself (that was the original defect).
+    public String issuer() {
+        return discoveredIssuer;
     }
 
     /// Refetches — subject to the 30 s floor — only when `kid` is not
@@ -90,9 +127,15 @@ public final class JwksKeySource {
         return fetchCount.get();
     }
 
+    /// Called only from inside [#ensureKnown]'s floor-gated section — so a
+    /// discovery failure logs at most once per [#REFETCH_FLOOR] interval,
+    /// never once per request.
     private void fetch() {
+        if (discoveredIssuer == null && !discover()) {
+            return; // no issuer yet: nothing to verify a token against (caller answers 401)
+        }
         try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(platformUrl + "/.well-known/jwks.json"))
+            HttpRequest request = HttpRequest.newBuilder(URI.create(jwksFetchUrl))
                     .timeout(Duration.ofSeconds(10))
                     .GET()
                     .build();
@@ -105,6 +148,73 @@ public final class JwksKeySource {
         } catch (Exception e) {
             // Network/parse failure: leave the previous cache in place.
         }
+    }
+
+    /// Fetches `<platformUrl>/.well-known/openid-configuration` and, on
+    /// success, sets [#discoveredIssuer] and [#jwksFetchUrl]. `jwks_uri` is
+    /// followed only when it names the same origin as `platformUrl` — see the
+    /// class doc: a foreign origin is the platform's own EXTERNAL address,
+    /// which the host may not be able to reach, so keys still come from
+    /// `<platformUrl>/.well-known/jwks.json` in that case.
+    ///
+    /// @return whether discovery succeeded
+    private boolean discover() {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(platformUrl + "/.well-known/openid-configuration"))
+                    .timeout(Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                LOG.atWarn().setMessage("could not discover the platform's issuer: unexpected status")
+                        .addKeyValue("platformUrl", platformUrl)
+                        .addKeyValue("status", response.statusCode())
+                        .log();
+                return false;
+            }
+            JsonNode root = Json.MAPPER.readTree(response.body());
+            String issuer = root.path("issuer").asString(null);
+            if (issuer == null || issuer.isBlank()) {
+                LOG.atWarn().setMessage("platform discovery document has no issuer")
+                        .addKeyValue("platformUrl", platformUrl)
+                        .log();
+                return false;
+            }
+            String defaultJwksUrl = platformUrl + "/.well-known/jwks.json";
+            String discoveredJwksUri = root.path("jwks_uri").asString(null);
+            jwksFetchUrl = (discoveredJwksUri != null && sameOrigin(discoveredJwksUri, platformUrl))
+                    ? discoveredJwksUri
+                    : defaultJwksUrl;
+            discoveredIssuer = issuer;
+            return true;
+        } catch (Exception e) {
+            LOG.atWarn().setMessage("could not discover the platform's issuer via /.well-known/openid-configuration; "
+                            + "bearer auth will reject platform tokens until this succeeds")
+                    .addKeyValue("platformUrl", platformUrl)
+                    .log();
+            return false;
+        }
+    }
+
+    /// Scheme + host + port match — the same-origin test that decides
+    /// whether a discovered `jwks_uri` is safe to follow (see [#discover]).
+    private static boolean sameOrigin(String a, String b) {
+        try {
+            URI ua = URI.create(a);
+            URI ub = URI.create(b);
+            return Objects.equals(ua.getScheme(), ub.getScheme())
+                    && Objects.equals(ua.getHost(), ub.getHost())
+                    && normalizedPort(ua) == normalizedPort(ub);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static int normalizedPort(URI u) {
+        if (u.getPort() != -1) {
+            return u.getPort();
+        }
+        return "https".equalsIgnoreCase(u.getScheme()) ? 443 : 80;
     }
 
     private static Map<String, RSAPublicKey> parse(String body) {

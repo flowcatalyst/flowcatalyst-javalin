@@ -475,6 +475,127 @@ class FnHttpServerTest {
         }
     }
 
+    /// Defect fix: the issuer comes from discovery
+    /// (`<platformUrl>/.well-known/openid-configuration`'s `issuer`), never
+    /// from `platformUrl` itself — [TestJwks]'s own address (`issuer`) and its
+    /// discovery document's `issuer` (`discoveryIssuer`) are deliberately
+    /// different, mirroring the real gap between the host's internal reach
+    /// address and the platform's external base URL.
+    @Test
+    void h4_issuerTakenFromDiscovery(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path jar = FnHttpTestSupport.functionJar(dir, "echo-disc", "fixture.http.EchoFn",
+                    echoSource(dir.resolve("counter-disc")));
+            var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                    """
+                    [{"path":"/api/*","auth":"platform"}]
+                    """);
+            var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_disc", "v1", 1, jar, manifest, null, null, null);
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                // A token whose `iss` is the DISCOVERED issuer is accepted.
+                String good = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
+                        Instant.now().plusSeconds(60));
+                var okResp = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + good);
+                assertThat(okResp.statusCode()).as("iss = the discovered issuer must be accepted").isEqualTo(200);
+
+                // A token whose `iss` is platformUrl itself (the address the host reaches the
+                // platform BY, not the platform's own external base URL) must be rejected —
+                // this is the original defect: comparing against platformUrl directly.
+                String usingPlatformUrlAsIssuer = jwks.mintWithIssuer(jwks.issuer, "prn_1", "SERVICE", "CLIENT", "x",
+                        List.of(), List.of(), false, Instant.now().plusSeconds(60));
+                var wrongResp = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization",
+                        "Bearer " + usingPlatformUrlAsIssuer);
+                assertThat(wrongResp.statusCode()).as("mutant: use platformUrl as issuer").isEqualTo(401);
+            }
+        }
+    }
+
+    /// Defect fix: `jwks_uri` from the discovery document is followed only
+    /// when it names the SAME origin as `platformUrl`; a foreign origin (the
+    /// platform's own external address, which the host may not be able to
+    /// reach) is ignored and keys keep coming from
+    /// `<platformUrl>/.well-known/jwks.json`.
+    @Test
+    void h4_foreignJwksUriIsNotFollowed(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            // A JWKS endpoint on a DIFFERENT origin serving keys that can never verify this
+            // test's tokens — if the host mistakenly followed a foreign `jwks_uri`, the call
+            // would end up 401 (no matching key) instead of the 200 correctly ignoring it
+            // produces (the real, same-origin jwks.json still has the right key).
+            var decoy = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+            decoy.createContext("/.well-known/jwks.json", ex -> {
+                byte[] body = "{\"keys\":[]}".getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().add("Content-Type", "application/json");
+                ex.sendResponseHeaders(200, body.length);
+                ex.getResponseBody().write(body);
+                ex.close();
+            });
+            decoy.start();
+            try {
+                jwks.useForeignJwksUri("http://127.0.0.1:" + decoy.getAddress().getPort() + "/.well-known/jwks.json");
+
+                Path jar = FnHttpTestSupport.functionJar(dir, "echo-foreign", "fixture.http.EchoFn",
+                        echoSource(dir.resolve("counter-foreign")));
+                var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                        """
+                        [{"path":"/api/*","auth":"platform"}]
+                        """);
+                var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_foreign", "v1", 1, jar, manifest, null, null, null);
+                var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+                try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                    String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
+                            Instant.now().plusSeconds(60));
+                    var resp = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                    assertThat(resp.statusCode()).as("mutant: follow a foreign jwks_uri").isEqualTo(200);
+                }
+            } finally {
+                decoy.stop(0);
+            }
+        }
+    }
+
+    /// Defect fix: discovery is lazy and floor-gated exactly like the JWKS
+    /// fetch. While the platform's discovery endpoint is down, every
+    /// `platform`-auth call is 401 (never the OLD platformUrl-as-issuer
+    /// fallback) and a retry inside the 30 s floor does not re-hit the
+    /// network; once discovery is back up and the floor has elapsed, the very
+    /// next call succeeds.
+    @Test
+    void h4_discoveryDownThenUp(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            jwks.breakDiscovery();
+            Path jar = FnHttpTestSupport.functionJar(dir, "echo-down", "fixture.http.EchoFn",
+                    echoSource(dir.resolve("counter-down")));
+            var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                    """
+                    [{"path":"/api/*","auth":"platform"}]
+                    """);
+            var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_down", "v1", 1, jar, manifest, null, null, null);
+            MutableClock clock = new MutableClock(Instant.now());
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, clock);
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
+                        Instant.now().plusSeconds(60));
+
+                var down = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                assertThat(down.statusCode()).as("discovery down: no issuer yet, every platform call is 401")
+                        .isEqualTo(401);
+                assertThat(down.headers().firstValue("WWW-Authenticate")).contains("Bearer");
+
+                // Still down, still inside the 30s floor: no retry yet.
+                var stillDown = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                assertThat(stillDown.statusCode()).isEqualTo(401);
+                assertThat(jwks.discoveryRequestCount()).as("mutant: refetch discovery on every request").isEqualTo(1);
+
+                jwks.fixDiscovery();
+                clock.advance(Duration.ofSeconds(31));
+                var up = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                assertThat(up.statusCode()).as("discovery back up, past the floor: succeeds").isEqualTo(200);
+            }
+        }
+    }
+
     // ── H5: header stripping ────────────────────────────────────────────
 
     @Test

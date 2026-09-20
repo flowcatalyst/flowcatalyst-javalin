@@ -162,7 +162,7 @@ public final class FnHttpServer implements AutoCloseable {
         JwksKeySource keySource =
                 new JwksKeySource(HttpClient.newHttpClient(), options.platformUrl(), options.clock());
         BearerAuthenticator bearerAuthenticator =
-                new BearerAuthenticator(keySource, options.platformUrl(), options.clock());
+                new BearerAuthenticator(keySource, options.clock());
 
         FnHttpServer[] holder = new FnHttpServer[1];
         HttpServerOptions serverOptions = new HttpServerOptions()

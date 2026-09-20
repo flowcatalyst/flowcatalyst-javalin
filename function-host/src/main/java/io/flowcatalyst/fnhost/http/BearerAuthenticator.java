@@ -14,10 +14,15 @@ import java.util.Objects;
 /// verified locally with the server's own [JwtVerifier] over keys from
 /// [JwksKeySource] — issuer and expiry checked the same way the platform's
 /// own authenticator does, because it IS the same [JwtVerifier].
+///
+/// The issuer is never a constructor argument (that was the original
+/// defect: `FC_FN_PLATFORM_URL`, the address the HOST uses to reach the
+/// platform, is not what a token's `iss` carries — the platform's own
+/// external base URL is). [JwksKeySource] discovers it lazily; until
+/// discovery has succeeded once, every `platform`-auth call is rejected.
 public final class BearerAuthenticator {
 
     private final JwksKeySource keySource;
-    private final String issuer;
     private final Clock clock;
 
     public sealed interface Outcome permits Authenticated, Rejected {
@@ -35,14 +40,13 @@ public final class BearerAuthenticator {
         }
     }
 
-    public BearerAuthenticator(JwksKeySource keySource, String issuer) {
-        this(keySource, issuer, Clock.systemUTC());
+    public BearerAuthenticator(JwksKeySource keySource) {
+        this(keySource, Clock.systemUTC());
     }
 
     /// @param clock injectable so a test can fix "now" for expiry checks without sleeping
-    public BearerAuthenticator(JwksKeySource keySource, String issuer, Clock clock) {
+    public BearerAuthenticator(JwksKeySource keySource, Clock clock) {
         this.keySource = Objects.requireNonNull(keySource, "keySource");
-        this.issuer = Objects.requireNonNull(issuer, "issuer");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -59,9 +63,13 @@ public final class BearerAuthenticator {
             return new Rejected("token is malformed: " + e.getMessage());
         }
 
-        // An unknown kid refetches the JWKS at most once per 30 s (spec §3) —
+        // An unknown kid refetches discovery+JWKS at most once per 30 s (spec §3) —
         // JwksKeySource itself owns the floor; a known kid never touches the network.
         keySource.ensureKnown(kid);
+        String issuer = keySource.issuer();
+        if (issuer == null) {
+            return new Rejected("platform issuer could not be discovered");
+        }
         List<RSAPublicKey> keys = keySource.keys();
         if (keys.isEmpty()) {
             return new Rejected("no verification keys available");

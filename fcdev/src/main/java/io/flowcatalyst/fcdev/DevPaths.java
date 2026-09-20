@@ -120,6 +120,17 @@ public record DevPaths(Path userDataDir, Path userCacheDir) {
         return flowcatalystDir().resolve("fn-cli.json");
     }
 
+    /// `docs/spec/function-developer-surface.md` §2 (`fn publish`, local
+    /// mode): `<state>/fn-artifacts/<hex-of-sha256>.jar` — the published copy
+    /// a local `file://` artifactRef points at, since the build directory's
+    /// jar is about to be overwritten by the next build. Persistent (not the
+    /// re-creatable cache dir) and distinct from {@link #fnCacheDir()}, which
+    /// is the function HOST's own download cache for `oci://`/`s3://`
+    /// artifacts, not the CLI's local-publish store.
+    public Path fnArtifactsDir() {
+        return flowcatalystDir().resolve("fn-artifacts");
+    }
+
     /// The function host's artifact cache directory — a sibling of the
     /// embedded-Postgres data dir under the persistent state dir, not the
     /// re-creatable cache dir (a developer's published functions should

@@ -120,9 +120,12 @@ public final class PublishVersion {
                     // Step 6: duplicate digest, checked before the insert (spec §5.1 step 6).
                     Optional<FunctionVersion> duplicate = versions.findByFunctionAndDigest(f.id(), digest);
                     if (duplicate.isPresent()) {
-                        throw UseCaseException.conflict("VERSION_DIGEST_EXISTS",
-                                "digest is already published as version " + duplicate.get().version()
-                                        + " for this function");
+                        throw new UseCaseException(UseCaseError.conflict("VERSION_DIGEST_EXISTS",
+                                        "digest is already published as version " + duplicate.get().version()
+                                                + " for this function")
+                                // `details.version` lets a caller (fcdev `fn deploy`) recover the
+                                // existing version number without parsing the message's prose.
+                                .withDetails(Map.of("version", duplicate.get().version())));
                     }
 
                     // Step 7: nextVersion under the row lock, in this same transaction (spec §8 P11).

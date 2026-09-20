@@ -253,6 +253,13 @@ class PublishPromoteRetireTest {
         assertThatThrownBy(() -> publish(ANCHOR, f.address(), "same"))
                 .hasMessageContaining("version 1");
 
+        // details.version lets a caller (fcdev `fn deploy`) recover the existing
+        // version number without parsing the message's prose.
+        assertThatThrownBy(() -> publish(ANCHOR, f.address(), "same"))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error().details())
+                .isEqualTo(java.util.Map.of("version", 1));
+
         // Only the first version row exists — the duplicate attempt never persisted.
         assertThat(versions.listByFunction(f.id())).hasSize(1);
     }

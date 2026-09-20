@@ -11,40 +11,43 @@ import io.flowcatalyst.platform.function.TriggerObjectKind;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.server.EnvReader;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.slf4j.LoggerFactory;
-import picocli.CommandLine;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.ArrayNode;
-import tools.jackson.databind.node.ObjectNode;
 
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.HTTP;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.adminPost;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.array;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.awaitCondition;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.cliPost;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.cliPut;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.digestOf;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.get;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.mintToken;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.mintTokenRaw;
+import static io.flowcatalyst.fcdev.FcdevFunctionsFixture.obj;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// E1 (`docs/spec/function-developer-surface.md` §1, §4 E1/E3): boots the
-/// REAL `fcdev start` wiring (`StartCommand`, exactly as `StartIntegrationTest`
-/// does — embedded Postgres, ephemeral ports) with functions ON, then drives
-/// the whole local loop end to end with the `fn-cli.json` credentials the
-/// real boot wrote. `fcdev-fn-cli` holds only `function-publisher`/
-/// `messaging-admin` (`FunctionDevBootstrapTest`) — neither grants
-/// `ADMIN_APPLICATION_CREATE` — so the owning application (needed for its
-/// service account's signing secret, which a subscription requires) is
-/// provisioned by a wildcard ANCHOR test-header fixture first, same as
-/// `RouterConfigEndpointTest`'s own `ANCHOR`; the function itself, its
-/// event type, its publish and its promote all go through the REAL
+/// REAL `fcdev start` wiring ([FcdevFunctionsFixture], the extracted form of
+/// this test's own original harness — `StartCommand`, exactly as
+/// `StartIntegrationTest` does — embedded Postgres, ephemeral ports) with
+/// functions ON, then drives the whole local loop end to end with the
+/// `fn-cli.json` credentials the real boot wrote. `fcdev-fn-cli` holds only
+/// `function-publisher`/`messaging-admin` (`FunctionDevBootstrapTest`) —
+/// neither grants `ADMIN_APPLICATION_CREATE` — so the owning application
+/// (needed for its service account's signing secret, which a subscription
+/// requires) is provisioned by a wildcard ANCHOR test-header fixture first,
+/// same as `RouterConfigEndpointTest`'s own `ANCHOR`; the function itself,
+/// its event type, its publish and its promote all go through the REAL
 /// `fcdev-fn-cli` bearer token. Publishes a
 /// [io.flowcatalyst.fnhost.load.FixtureJars] jar, triggers the host's own
 /// reconcile loop, polls for `READY`, promotes, invokes the host directly
@@ -56,68 +59,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// have actually started `FnHostLauncher` — the orchestrator's own note that
 /// "wired a constant/none() in the composition root" is the recurring defect
 /// on this branch applies directly here.
+///
+/// `fcdev.fn`'s own end-to-end tests (`FnCliEndToEndTest`) reuse this SAME
+/// [FcdevFunctionsFixture] rather than a second copy of this boot logic.
 @SuppressWarnings("deprecation")
 class StartFunctionsIntegrationTest {
 
-    private static final HttpClient HTTP = HttpClient.newHttpClient();
-
-    private Path root;
-    private StartCommand.Started started;
+    private final FcdevFunctionsFixture fixture = new FcdevFunctionsFixture();
     private Pools sidePools;
 
     @AfterEach
-    void shutdown() throws Exception {
+    void shutdown() {
         if (sidePools != null) sidePools.close();
-        if (started != null) started.close();
-        if (root != null) EmbeddedPg.deleteTree(root);
-    }
-
-    /// Boots exactly as `StartIntegrationTest` does, functions left ON
-    /// (the default) with ephemeral fn ports.
-    private StartCommand.Started boot(Map<String, String> extraEnv) throws Exception {
-        io.flowcatalyst.server.Logging.init(Map.of("FC_LOG_LEVEL", "warn", "FC_LOG_FORMAT", "text"));
-        root = Files.createTempDirectory("fcdev-fn-it");
-        Path dataPath = root.resolve("flowcatalyst/embedded-pg");
-        Path pidFile = root.resolve("flowcatalyst/fcdev.pid");
-        Path cache = root.resolve("cache");
-        // Two REAL, ephemerally-allocated ports, probed and released — the
-        // same convention `RouterStartupOrderTest`/`FunctionHostListenerIntegrationTest`
-        // use. `--fn-port 0` cannot be used here: the platform's own
-        // FC_FN_POOL_URL default is computed BEFORE Server#start (Env is
-        // immutable once built), while the function host's REAL bound port
-        // is only known AFTER FnHost#start, which runs after Server#start —
-        // an inherent ordering constraint for an ephemeral fn port, not a
-        // concern in production (where --fn-port is always a concrete value).
-        int fnPort;
-        int fnMetricsPort;
-        try (var p1 = new java.net.ServerSocket(0); var p2 = new java.net.ServerSocket(0)) {
-            fnPort = p1.getLocalPort();
-            fnMetricsPort = p2.getLocalPort();
-        }
-        var vars = new java.util.LinkedHashMap<String, String>(Map.of(
-                "FC_EMBEDDED_DB_PATH", dataPath.toString(),
-                "FC_DEV_PID_FILE", pidFile.toString(),
-                "XDG_CACHE_HOME", cache.toString(),
-                "FC_FN_METRICS_PORT", Integer.toString(fnMetricsPort)));
-        vars.putAll(extraEnv);
-        var env = DevEnv.of(vars);
-        var sub = new StartCommand.Sub(env);
-        new CommandLine(sub, new EnvFactory(env)).parseArgs("--api-port", "0", "--metrics-port", "0",
-                "--embedded-db-port", "0", "--router=false", "--stream=false", "--scheduler=false",
-                "--scheduled-job=false", "--fn-port", Integer.toString(fnPort));
-        var paths = new DevPaths(root, cache);
-        try {
-            // A fresh PrometheusRegistry per boot (StartCommand's own doc on its
-            // package-private 4-arg constructor): Server#start registers
-            // process-global collectors the JVM-wide default registry never
-            // deregisters, and this class boots more than once per fork.
-            return new StartCommand(env, paths, sub.opts, new io.prometheus.metrics.model.registry.PrometheusRegistry()).launch();
-        } catch (Exception | ExceptionInInitializerError e) {
-            LoggerFactory.getLogger(StartFunctionsIntegrationTest.class)
-                    .warn("embedded PostgreSQL could not start here; skipping", e);
-            Assumptions.abort("embedded PostgreSQL cannot start in this environment: " + e);
-            throw e;
-        }
+        fixture.close();
     }
 
     // ── E3: --no-functions ──────────────────────────────────────────────
@@ -127,11 +81,11 @@ class StartFunctionsIntegrationTest {
     /// `opts.functions()` guard anywhere in `StartCommand#launch`/`#devEnv`.
     @Test
     void noFunctionsStartsNoHostCreatesNoClientsAndWritesNoCredentialsFile() throws Exception {
-        started = boot(Map.of("FC_DEV_FUNCTIONS", "false"));
+        StartCommand.Started started = fixture.boot(Map.of("FC_DEV_FUNCTIONS", "false"));
 
         assertThat(started.fnHost()).as("no launcher result at all under --no-functions").isNull();
 
-        Path fnCliJson = new DevPaths(root, root.resolve("cache")).fnCliCredentialsPath();
+        Path fnCliJson = fixture.paths().fnCliCredentialsPath();
         assertThat(fnCliJson).as("fn-cli.json must not be written").doesNotExist();
 
         // No fcdev-fn-host / fcdev-fn-cli client rows: minting a token for
@@ -160,7 +114,7 @@ class StartFunctionsIntegrationTest {
 
     @Test
     void publishReadyPromoteInvokeEndToEndThroughTheRealFnCliCredentials(@TempDir Path work) throws Exception {
-        started = boot(Map.of());
+        StartCommand.Started started = fixture.boot(Map.of());
 
         // ── the real wiring: FnHostLauncher actually started (JVM branch on this test run) ──
         assertThat(started.fnHost()).as("FnHostLauncher must have run under the real StartCommand wiring")
@@ -169,7 +123,7 @@ class StartFunctionsIntegrationTest {
         assertThat(host.port()).as("the function listener must be bound").isGreaterThan(0);
 
         // ── fn-cli.json, written by the real boot ──
-        Path fnCliJson = new DevPaths(root, root.resolve("cache")).fnCliCredentialsPath();
+        Path fnCliJson = fixture.paths().fnCliCredentialsPath();
         assertThat(fnCliJson).exists();
         JsonNode creds = Json.MAPPER.readTree(Files.readString(fnCliJson));
         assertThat(creds.path("clientId").asText()).isEqualTo("fcdev-fn-cli");
@@ -339,111 +293,5 @@ class StartFunctionsIntegrationTest {
         } catch (Exception e) {
             return "";
         }
-    }
-
-    private static String digestOf(Path file) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        try (var in = Files.newInputStream(file)) {
-            byte[] buffer = new byte[8192];
-            int n;
-            while ((n = in.read(buffer)) != -1) md.update(buffer, 0, n);
-        }
-        return "sha256:" + java.util.HexFormat.of().formatHex(md.digest());
-    }
-
-    private static void awaitCondition(java.util.function.BooleanSupplier condition, String description, Duration timeout) {
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (System.nanoTime() < deadline) {
-            if (condition.getAsBoolean()) return;
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new AssertionError(e);
-            }
-        }
-        assertThat(condition.getAsBoolean()).as(description).isTrue();
-    }
-
-    private static String mintToken(int apiPort, String clientId, String clientSecret) throws Exception {
-        var r = mintTokenRaw(apiPort, clientId, clientSecret);
-        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
-        return Json.MAPPER.readTree(r.body()).path("access_token").asText();
-    }
-
-    private static HttpResponse<String> mintTokenRaw(int apiPort, String clientId, String clientSecret) throws Exception {
-        String form = "grant_type=client_credentials"
-                + "&client_id=" + java.net.URLEncoder.encode(clientId, StandardCharsets.UTF_8)
-                + "&client_secret=" + java.net.URLEncoder.encode(clientSecret, StandardCharsets.UTF_8);
-        var request = HttpRequest.newBuilder(URI.create("http://localhost:" + apiPort + "/oauth/token"))
-                .POST(HttpRequest.BodyPublishers.ofString(form))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .build();
-        return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
-    }
-
-    private static HttpResponse<String> get(int apiPort, String path, String token) throws Exception {
-        var b = HttpRequest.newBuilder(URI.create("http://localhost:" + apiPort + path)).GET();
-        if (token != null) b.header("Authorization", "Bearer " + token);
-        return HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
-    }
-
-    /// Anchor test-header setup helper (`X-FC-Test-Principal` etc.) — used
-    /// only to provision the application infrastructure the fn-cli client
-    /// itself has no permission to create; never for a load-bearing
-    /// assertion (same discipline as `RouterConfigEndpointTest`'s `ANCHOR`).
-    private static JsonNode adminPost(int apiPort, String[] headers, String path, ObjectNode body, int expectedStatus) throws Exception {
-        var b = HttpRequest.newBuilder(URI.create("http://localhost:" + apiPort + path));
-        if (body == null) {
-            b.method("POST", HttpRequest.BodyPublishers.noBody());
-        } else {
-            b.header("Content-Type", "application/json")
-                    .method("POST", HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8));
-        }
-        for (int i = 0; i + 1 < headers.length; i += 2) b.header(headers[i], headers[i + 1]);
-        var r = HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
-        assertThat(r.statusCode()).as(path + " -> " + r.body()).isEqualTo(expectedStatus);
-        return r.body().isBlank() ? Json.MAPPER.createObjectNode() : Json.MAPPER.readTree(r.body());
-    }
-
-    private static JsonNode cliPost(int apiPort, String token, String path, ObjectNode body, int expectedStatus) throws Exception {
-        return cliSend(apiPort, token, "POST", path, body, expectedStatus);
-    }
-
-    private static JsonNode cliPut(int apiPort, String token, String path, ObjectNode body, int expectedStatus) throws Exception {
-        return cliSend(apiPort, token, "PUT", path, body, expectedStatus);
-    }
-
-    private static JsonNode cliSend(int apiPort, String token, String method, String path, ObjectNode body, int expectedStatus)
-            throws Exception {
-        var b = HttpRequest.newBuilder(URI.create("http://localhost:" + apiPort + path))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + token)
-                .method(method, HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8));
-        var r = HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
-        assertThat(r.statusCode()).as(method + " " + path + " -> " + r.body()).isEqualTo(expectedStatus);
-        return r.body().isBlank() ? Json.MAPPER.createObjectNode() : Json.MAPPER.readTree(r.body());
-    }
-
-    private static ObjectNode obj(Object... kv) {
-        ObjectNode node = Json.MAPPER.createObjectNode();
-        for (int i = 0; i + 1 < kv.length; i += 2) {
-            String key = (String) kv[i];
-            Object value = kv[i + 1];
-            switch (value) {
-                case String s -> node.put(key, s);
-                case Boolean bo -> node.put(key, bo);
-                case Integer n -> node.put(key, n);
-                case JsonNode n -> node.set(key, n);
-                default -> throw new IllegalArgumentException("unsupported value type: " + value);
-            }
-        }
-        return node;
-    }
-
-    private static ArrayNode array(JsonNode... values) {
-        ArrayNode node = Json.MAPPER.createArrayNode();
-        for (JsonNode v : values) node.add(v);
-        return node;
     }
 }

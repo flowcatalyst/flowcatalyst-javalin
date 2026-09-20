@@ -23,20 +23,44 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/// A tiny loopback `/.well-known/jwks.json` (H4: `BearerAuthenticator`'s
-/// `platform` auth mode) and an RS256 minter — self-contained, JDK-only
-/// (`com.sun.net.httpserver`) plus the nimbus classes [JwtVerifier]/
-/// [BearerAuthenticator] already pull in.
+/// A tiny loopback `/.well-known/jwks.json` + `/.well-known/openid-configuration`
+/// (H4: `BearerAuthenticator`'s `platform` auth mode) and an RS256 minter —
+/// self-contained, JDK-only (`com.sun.net.httpserver`) plus the nimbus
+/// classes [JwtVerifier]/[BearerAuthenticator] already pull in.
+///
+/// **Mirrors the real issuer/platformUrl split (defect fix).** {@link #issuer}
+/// is this server's own address — what a test passes as `FnHttpServer.Options`'
+/// `platformUrl` (the address the HOST uses to reach "the platform"). It is
+/// DELIBERATELY different from {@link #discoveryIssuer}, the value the
+/// `/.well-known/openid-configuration` document reports as `issuer` and that
+/// {@link #mint} signs tokens with — exactly the real-world gap between an
+/// internal reach address and the platform's external base URL. A token
+/// minted with `iss = issuer` (the address) must be REJECTED once discovery
+/// is wired correctly; {@link #mintWithIssuer} lets a test build that token
+/// explicitly.
 final class TestJwks implements AutoCloseable {
 
     final String issuer;
+    final String discoveryIssuer;
     private final HttpServer server;
     private final AtomicInteger jwksRequestCount = new AtomicInteger();
+    private final AtomicInteger discoveryRequestCount = new AtomicInteger();
     private RSAPrivateKey currentPrivate;
     private RSAPublicKey currentPublic;
     private String currentKid = "kid-1";
     private RSAPublicKey previousPublic;
     private String previousKid;
+
+    /// `null` (default): the discovery document's `jwks_uri` names THIS
+    /// server's own `/.well-known/jwks.json` (same origin as {@link #issuer},
+    /// the `platformUrl` a test configures) — the ordinary case. Set via
+    /// {@link #useForeignJwksUri} to test that a `jwks_uri` on another origin
+    /// is never followed.
+    private volatile String jwksUriOverride;
+
+    /// When true, `/.well-known/openid-configuration` answers 503 — for the
+    /// "discovery down at first, then up" case.
+    private volatile boolean discoveryDown;
 
     TestJwks() throws IOException {
         KeyPair pair = generate();
@@ -44,8 +68,30 @@ final class TestJwks implements AutoCloseable {
         this.currentPublic = (RSAPublicKey) pair.getPublic();
         this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         this.server.createContext("/.well-known/jwks.json", this::serveJwks);
+        this.server.createContext("/.well-known/openid-configuration", this::serveDiscovery);
         this.server.start();
         this.issuer = "http://127.0.0.1:" + server.getAddress().getPort();
+        // Deliberately not equal to `issuer` above — see the class doc.
+        this.discoveryIssuer = "https://platform.example.test";
+    }
+
+    /// Makes the discovery document's `jwks_uri` point somewhere else
+    /// entirely (a foreign origin) — the host must ignore it and keep using
+    /// `<platformUrl>/.well-known/jwks.json`.
+    void useForeignJwksUri(String url) {
+        this.jwksUriOverride = url;
+    }
+
+    void breakDiscovery() {
+        discoveryDown = true;
+    }
+
+    void fixDiscovery() {
+        discoveryDown = false;
+    }
+
+    int discoveryRequestCount() {
+        return discoveryRequestCount.get();
     }
 
     private static KeyPair generate() {
@@ -99,9 +145,11 @@ final class TestJwks implements AutoCloseable {
         releaseFetch.countDown();
     }
 
+    /// A validly-issued token: signed with the CURRENT key, `iss` = the
+    /// discovered issuer (never {@link #issuer}, the address — see the class doc).
     String mint(String subject, String type, String tier, String scope, List<String> clients,
                 List<String> applications, boolean allApplications, Instant expiresAt) {
-        return mint(currentPrivate, currentKid, issuer, subject, type, tier, scope, clients, applications,
+        return mint(currentPrivate, currentKid, discoveryIssuer, subject, type, tier, scope, clients, applications,
                 allApplications, expiresAt);
     }
 
@@ -135,6 +183,22 @@ final class TestJwks implements AutoCloseable {
         } catch (com.nimbusds.jose.JOSEException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private void serveDiscovery(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+        discoveryRequestCount.incrementAndGet();
+        if (discoveryDown) {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+            return;
+        }
+        String jwksUri = jwksUriOverride != null ? jwksUriOverride : issuer + "/.well-known/jwks.json";
+        String body = "{\"issuer\":\"" + discoveryIssuer + "\",\"jwks_uri\":\"" + jwksUri + "\"}";
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
     }
 
     private void serveJwks(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
