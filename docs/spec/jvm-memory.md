@@ -2,7 +2,7 @@
 
 Status: spec + owner rulings, 2026-09-14 (§0–3); compact object headers and
 the AOT cache ruled 2026-09-15 (§1a); the function host's metaspace addition,
-2026-09-19 (§4). §0–3 apply to the `fc-server` image (`Dockerfile`) in every
+2026-09-19 (§4), turned into a runtime percent setting 2026-09-21 (§4). §0–3 apply to the `fc-server` image (`Dockerfile`) in every
 role — API tier, worker, router — and to the bench rig's image, which since
 §1a is built from that same `Dockerfile` (not a separate
 `bench/real/Dockerfile.java`), so what is measured is what is deployed.
@@ -194,43 +194,139 @@ ms, 2% of wall time) but queueing behind the request-worker admission
 (`admission.md` §11.7) — recorded in `docs/backlog.md` for the
 verification plan; the "explicit -Xmx" question is closed by this spec.
 
-## 4. The function host's own addition: metaspace (2026-09-19, package D slice D5)
+## 4. The function host's own addition: metaspace (2026-09-19, package D
+slice D5; turned into a runtime percent setting by owner ruling 2026-09-21)
 
 `function-host/Dockerfile` (`fc-fnhost`) shares `docker/jvm-opts.sh` verbatim
-with `fc-server` but sets `FC_JVM_METASPACE_FENCE=true` in its own
-`function-host/docker/entrypoint.sh` — a variable the fence script only acts
-on when it is exactly `"true"`, so `fc-server`'s own computed flags (never
-setting it) are byte-identical before and after this addition. Why the host
-needs this and the server does not: **a loaded function is its own class
-loader** (`docs/spec/function-host-core.md` §2) — many short-lived functions
-loading and unloading over the host's life is exactly the workload that
-grows metaspace, and an unbounded metaspace turns one function's classloader
-leak into a host-wide OOM-kill instead of a catchable `OutOfMemoryError:
-Metaspace` that fails just that one function's load (spec
-`function-host-process.md` §3). `fc-server` has no such workload — every
-class it ever loads is its own, fixed at build time — so it gets no fence.
+with `fc-server` but sets `FC_JVM_METASPACE_PERCENT=${FC_JVM_METASPACE_PERCENT:-50}`
+in its own `function-host/docker/entrypoint.sh` — a variable the fence script
+only derives `-XX:MaxMetaspaceSize` from when it is SET (to any value, even
+an invalid one — see the validation rule below), so `fc-server`'s own
+computed flags (never setting it) are byte-identical before and after this
+addition. Why the host needs this and the server does not: **a loaded
+function is its own class loader** (`docs/spec/function-host-core.md` §2) —
+many short-lived functions loading and unloading over the host's life is
+exactly the workload that grows metaspace, and an unbounded metaspace turns
+one function's classloader leak into a host-wide OOM-kill instead of a
+catchable `OutOfMemoryError: Metaspace` that fails just that one function's
+load (spec `function-host-process.md` §3). `fc-server` has no such workload
+— every class it ever loads is its own, fixed at build time — so it gets no
+fence.
 
-Derivation, same shape as §1's heap/direct split:
+### 4.1 The percent is a runtime setting, not a build-time constant
+
+Owner ruling 2026-09-21: the original 2026-09-19 slice hardcoded 25% and, more
+importantly, **added the metaspace budget on top of `-Xmx` instead of
+subtracting it** — at a 4 GiB limit the script emitted `-Xmx3481m
+-XX:MaxDirectMemorySize=307m -XX:MaxMetaspaceSize=1024m`, which sums to
+4.8 GiB of permission in a 4 GiB container. Fixed by making the percentage an
+operator-set env var, `FC_JVM_METASPACE_PERCENT` (integer, valid range
+**10–70**), and by changing the derivation so metaspace is carved OUT of
+`-Xmx`, never added beside it:
 
 ```
--XX:MaxMetaspaceSize = 25% of the container limit L, floored at 32 MiB
+metaspace = FC_JVM_METASPACE_PERCENT% of the container limit L
+-Xmx       = L - reserve - direct - metaspace     (reserve, direct: same formulas as §1)
 ```
 
-25% is a starting point (flagged in the slice's own spec as *load-bearing or
-arbitrary?* — revisit with real numbers once a host has run under load), not
-tuned against measured data the way §1's 15%/192 MiB reserve was. What each
-region gets, from one container limit `L`:
+so the invariant **heap + direct + metaspace + reserve ≤ L, always** — the
+bug this fixes. Unlike §1's reserve/direct split (tuned against measured
+data), 10–70% remains a validated RANGE rather than a single tuned number,
+because the right share depends on the workload (how metaspace-heavy the
+functions landing on a given pool are) in a way `fc-server`'s uniform,
+build-time-fixed class set never has to account for — see §4.3 below for what
+one real fixture actually costs.
 
-| Region | Formula | 512 MiB example |
-|---|---|---:|
-| Heap (`-Xmx`) | `L - reserve` (§1) | 320 MiB |
-| Direct (`-XX:MaxDirectMemorySize`) | `reserve / 2` (§1) | 96 MiB |
-| Metaspace (`-XX:MaxMetaspaceSize`) | `25% of L`, floor 32 MiB | 128 MiB |
-| Everything else (thread stacks, code cache, GC bookkeeping) | whatever of `reserve` metaspace didn't claim, plus the JVM's own fixed overhead | — |
+**Validation** (`docker/jvm-opts.sh`): unset ⇒ no metaspace flag at all, and
+every other computed number is byte-identical to the script's behaviour
+before this variable existed (the `fc-server` image's own path, verified by
+`JvmOptsScriptTest`'s UNSET golden tests). Set, but not an integer in
+`[10,70]` (out of range, non-numeric, or the empty string) ⇒ the script
+prints one line to stderr naming the variable and the range, and **exits
+non-zero** — `function-host/docker/entrypoint.sh` captures that exit status
+explicitly and refuses to start the container rather than falling back to an
+unfenced (or default-percent) metaspace silently.
 
-Metaspace is carved from the same non-heap territory `reserve` already
-represents in §1, not added on top of it — a 512 MiB container still fits
-Go/Java's usual footprint; it is not being asked for more memory than the
-container has, only told to fail loudly (a catchable
-`OutOfMemoryError: Metaspace`) instead of being OOM-killed by the kernel
-when metaspace growth and heap growth compete for the same container.
+**Which one gives way at the 64 MiB heap floor**: §1's existing rule floors
+`-Xmx` at 64 MiB on a mis-sized container ("the JVM should say so rather than
+fail to start obscurely"). With metaspace now subtracted from the SAME
+budget, a large-enough percent request on a small-enough container can drive
+the naive `-Xmx` calculation negative. **The heap floor wins: `-Xmx` is
+always floored at 64 MiB, and the metaspace budget shrinks** to whatever is
+left after `reserve + direct + 64 MiB` is taken out of the limit (clamped at
+0, never negative) — a smaller metaspace fence is a better failure mode than
+a host that cannot allocate anything at all. Example: a 512 MiB container at
+70% would naively want ~358 MiB of metaspace, which leaves less than 64 MiB
+for heap; the script instead emits `-Xmx64m -XX:MaxDirectMemorySize=96m
+-XX:MaxMetaspaceSize=160m` (metaspace shrunk to the 160 MiB that's actually
+left), with a warning naming both the floor and the shrink.
+
+### 4.2 The split, by limit and percent
+
+What each region gets, from one container limit `L` and percent `p`
+(`reserve`/`direct` computed exactly as in §1):
+
+| Region | Formula |
+|---|---|
+| Heap (`-Xmx`) | `L - reserve - direct - metaspace`, floored at 64 MiB (metaspace shrinks first, see above) |
+| Direct (`-XX:MaxDirectMemorySize`) | `reserve / 2` (§1, unaffected by `p`) |
+| Metaspace (`-XX:MaxMetaspaceSize`) | `p% of L` (or the floor-forced shrunk value) |
+| Everything else (thread stacks, code cache, GC bookkeeping) | `reserve / 2` (the half `direct` doesn't claim), plus the JVM's own fixed overhead |
+
+Measured flags (`JvmOptsScriptTest`'s own table, run against the real
+script):
+
+| limit | unset | 10% | 25% | 50% (the function host's default) | 70% |
+|---|---|---|---|---|---|
+| 512 MiB | `-Xmx320m -XX:MaxDirectMemorySize=96m` | `-Xmx172m … -XX:MaxMetaspaceSize=51m` | `-Xmx96m … =128m` | `-Xmx64m … =160m` (heap-floored, metaspace shrunk from a requested 256m) | `-Xmx64m … =160m` (heap-floored, shrunk from 358m) |
+| 1 GiB | `-Xmx832m -XX:MaxDirectMemorySize=96m` | `-Xmx633m … =102m` | `-Xmx480m … =256m` | `-Xmx224m … =512m` | `-Xmx64m … =672m` (heap-floored, shrunk from 716m) |
+| 2 GiB | `-Xmx1740m -XX:MaxDirectMemorySize=153m` | `-Xmx1382m … =204m` | `-Xmx1075m … =512m` | `-Xmx563m … =1024m` | `-Xmx153m … =1433m` |
+| 4 GiB | `-Xmx3481m -XX:MaxDirectMemorySize=307m` | `-Xmx2764m … =409m` | `-Xmx2150m … =1024m` | `-Xmx1126m … =2048m` | `-Xmx307m … =2867m` |
+| 8 GiB | `-Xmx6963m -XX:MaxDirectMemorySize=614m` | `-Xmx5529m … =819m` | `-Xmx4300m … =2048m` | `-Xmx2252m … =4096m` | `-Xmx614m … =5734m` |
+
+Every row above satisfies `heap + direct + metaspace + reserve ≤ limit`
+exactly (`JvmOptsScriptTest#metaspacePercentMatrix` asserts this per row, not
+just the flag strings) — the invariant the 2026-09-19 slice's on-top addition
+violated.
+
+### 4.3 `/ready` reports the live split
+
+The function host's observability listener (`FnObservability`,
+`docs/spec/function-host-process.md` §2) adds a `memory` object to `/ready`'s
+JSON body, read live from the running JVM rather than re-derived from env
+vars (`FnMemorySnapshot`): `limitBytes` (the same cgroup-limit file
+`docker/jvm-opts.sh` itself reads, via the same `FC_JVM_MEMORY_LIMIT_FILE`
+test seam and v2/v1 fallback), `heapMaxBytes` (`Runtime.maxMemory()`, always
+present), `metaspaceMaxBytes` (the `Metaspace` `MemoryPoolMXBean`'s max),
+`directMaxBytes` (`MaxDirectMemorySize` via `HotSpotDiagnosticMXBean`). A
+ceiling that is unbounded or unknown is OMITTED from the JSON, never printed
+as a literal `-1` — an operator can tell "no fence configured" from "fenced
+to N bytes" without inferring it from absence-of-a-flag in a process listing.
+
+### 4.4 Measured cost per function, and where the fence binds at 50%
+
+`docs/function-runner-report.md` §Performance's "Metaspace at 50%"
+subsection has the full re-measurement; headline numbers: the "typical"
+fixture (jackson-databind + json-schema-validator shaded, ~700 classes) costs
+**~4.4 MB of metaspace per loaded instance** (unchanged from the original
+25%-fence measurement — the per-function cost is a property of the fixture,
+not the fence percentage). At the new 50% default this predicts the fence at
+`(512×0.5 − 34) / 4.4 ≈ 50` typical functions on a 512 MiB container†, `(1024
+− 34) / 4.4 ≈ 225` on 2 GiB, and `(2048 − 34) / 4.4 ≈ 458` on 4 GiB — the 2
+GiB and 4 GiB predictions matched what was actually measured (226 and 458)
+almost exactly. († not separately re-measured; within the report's own ±20%
+extrapolation rule of the 2 GiB/4 GiB points that were.)
+
+**A residual gap found while re-measuring, not fixed here**: pushing an
+all-warm document meaningfully PAST the fence (2 GiB/300 requested vs. a
+~226 capacity; 4 GiB/500 vs. a ~458 capacity) reproducibly crashed the
+function host's synchronous startup reconcile with an uncaught
+`OutOfMemoryError` on the `main` thread once metaspace was driven deep enough
+into exhaustion that even the per-entry recovery/logging path started
+failing — see the report's own dated subsection for the full detail. The
+observability listener (`/ready`, `/metrics`) stayed up throughout (it binds
+before the first reconcile even runs), but the FUNCTION listener never
+bound at all in that state, so the functions that HAD loaded successfully
+were not actually reachable — a materially worse failure mode than "the
+fenced-out entries fail cleanly and the rest keeps serving," out of scope
+for this slice (a runtime-setting change plus measurement) to fix.

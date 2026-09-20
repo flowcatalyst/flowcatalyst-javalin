@@ -39,13 +39,26 @@ under `results/`.
 - `scripts/run-b1.sh` — the memory-per-loaded-function sweep.
 - `scripts/run-b3.sh` — throughput/p99 at one (endpoint, concurrency, cpus)
   point.
+- `scripts/LoadClient.java` — closed-loop load generator (fixed concurrency,
+  wrk's own model) that ALSO posts a body and round-robins across N distinct
+  addresses, which `wrk` cannot do without a Lua script: `java
+  --enable-preview LoadClient.java <baseUrl> <addressPrefix> <addressCount>
+  <concurrency> <seconds>`, e.g. `java --enable-preview LoadClient.java
+  http://127.0.0.1:18080 bench.typical.f 100 256 60`. Forces `HTTP_1_1`
+  explicitly — the JDK client's default h2c negotiation against this
+  listener multiplexes many virtual threads onto ONE connection and hits its
+  own max-concurrent-streams limit long before the server is under any real
+  load (found running the "typical fixture under load" check,
+  `docs/function-runner-report.md`'s "Metaspace at 50%" subsection).
 
 ## Re-running
 
 ```
 # 1. one-time: build both fixtures and stamp N distinct copies of each
-#    (JAVA_HOME must point at a JDK — never hardcode it, see CLAUDE.md)
-JAVA_HOME=$(mise where java) bash bench/function-host/scripts/gen-artifacts.sh 200
+#    (JAVA_HOME must point at a JDK — never hardcode it, see CLAUDE.md).
+#    500 (not 200) so a metaspace-fence sweep past ~226/~458 (2g/4g at the
+#    function host's 50% default) has enough DISTINCT jars to request.
+JAVA_HOME=$(mise where java) bash bench/function-host/scripts/gen-artifacts.sh 500
 
 # 2. build the bench-tooling image (adds jcmd/jmap only — see Dockerfile.bench's header)
 docker build -f bench/function-host/Dockerfile.bench -t fnhost-bench-tools .

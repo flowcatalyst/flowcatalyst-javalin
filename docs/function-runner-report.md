@@ -303,6 +303,130 @@ specific to the **lean** fixture's throughput; a heavier (e.g. "typical"-shaped)
 narrow the gap substantially — B3 was not run against the typical fixture (out of the time box), so
 that comparison is not available here.
 
+### Metaspace at 50% (2026-09-20)
+
+Owner ruling: `FC_JVM_METASPACE_FENCE` (boolean, 25% fixed, added ON TOP of
+`-Xmx`) replaced by `FC_JVM_METASPACE_PERCENT` (integer 10–70, function host
+default 50, SUBTRACTED from `-Xmx` — `docs/spec/jvm-memory.md` §4). Re-ran B1
+against the rebuilt production-equivalent bench image
+(`bench/function-host/Dockerfile.bench`, which shares `docker/jvm-opts.sh`
+and `function-host/docker/entrypoint.sh` verbatim with the real
+`function-host/Dockerfile`) at the new default. `bench/function-host/artifacts`
+regenerated at N=500 per fixture first (the existing 200 distinct jars were
+not enough to request the higher N points below — `FakePlatform`'s
+`desiredState` handler throws, uncaught, when asked to digest a jar index
+that does not exist, which the JDK's built-in `HttpServer` turns into a bare
+closed connection with no response; a benchmark-tooling gap, not a
+`function-host` defect, worth noting for whoever runs this next).
+
+**Typical fixture, `--memory 2g`, N = 100, 200, 300, all warm**, and
+**`--memory 4g`, N = 200, 400, 500, all warm** (same methodology as the
+original B1: settle-wait on `fc_fn_loaded`, two `jcmd GC.run` cycles, RSS
+median of 3 samples 1.5s apart):
+
+| fixture | mem | N requested | N loaded | RSS (MB) | heap used (MB) | metaspace used (MB) | compressed class space (MB) | loaded classes | threads |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 2g | 100 | 100 | 717.3 | 79.1 | 472.2 | 56.5 | 75705 | 28 |
+| typical | 2g | 200 | 200 | 1227.8 | 146.1 | 909.2 | 108.7 | 145002 | 28 |
+| typical | 2g | 300 | **226** (fence) | 1362.9 | 158.8 | 1021.4 | 122.4 | 162773 | 21 |
+| typical | 4g | 200 | 200 | 1223.7 | 145.5 | 909.2 | 108.7 | 145001 | 28 |
+| typical | 4g | 400 | 400 | 2399.2 | 278.8 | 1782.7 | 212.3 | 283609 | 28 |
+| typical | 4g | 500 | **458** (fence) | 2654.2 | 310.0 | 2036.3 | 242.5 | 323763 | 21 |
+
+(raw: `bench/function-host/results/b1-50pct.csv`, server logs
+`bench/function-host/results/typical-n{100,200,300}-w{…}-2g.server.log` and
+`typical-n{200,400,500}-w{…}-4g.server.log`)
+
+**Where the fence binds**: the per-function metaspace slope is unchanged from
+the original 25%-fence measurement — it is a property of the fixture, not the
+fence percentage — **4.4 MB/function**, ~34 MB baseline. The prediction from
+that slope was **≈225 at 2 GiB** (`(1024 − 34) / 4.4`) and **≈458 at 4 GiB**
+(`(2048 − 34) / 4.4`); measured **226** and **458** — matches almost exactly,
+the closest the prediction-vs-measurement gap has been in this whole report.
+`docker inspect -f '{{.State.OOMKilled}}'` on a live container at both fence
+points (a manually-held 2g/N=300 and 4g/N=500 run, checked before removal):
+**`false`** — the container itself is never OOM-killed by the kernel; the
+JVM fails loudly with a catchable `OutOfMemoryError: Metaspace` instead, as
+designed. The fenced-out entries are logged `"function version failed to
+load: out of metaspace"` (`Reason.LOAD:OUT_OF_METASPACE`), confirmed present
+in both server logs above.
+
+**A new finding, not present at the original (smaller) fence overshoot**:
+pushing well PAST the fence in one all-warm document — 300 requested against
+a ~226 capacity (a 33% overshoot) at 2 GiB, 500 against ~458 (a 9% overshoot)
+at 4 GiB — reproducibly crashed the function host's *synchronous startup*
+reconcile (`FnHost.start` → `Reconciler.reconcileOnce`, on the `main` thread)
+with an uncaught `OutOfMemoryError` once metaspace was driven deep enough
+into exhaustion that even the per-entry recovery path's OWN logging started
+falling back to the emergency `System.err` line (every one of the 20 failures
+logged at 4g/N=500 needed that fallback, not just the first one the original
+report found). At that point roughly 20–50 further entries were never even
+attempted (neither loaded nor logged as failed) before `main` died. Because
+`FnObservability` (the `/ready`/`/metrics` listener) binds BEFORE the first
+reconcile runs, but `FnHttpServer` (the actual `/functions/...` listener)
+only binds AFTER `reconcileOnce` returns, a crashed startup reconcile leaves
+`/ready` reporting `UP` with real metrics (confirmed directly: `docker exec
+… jcmd 1 Thread.print` on the held 4g/N=500 container showed no `"main"`
+thread and only ONE Vert.x event-loop thread instead of two) while the
+FUNCTION port never opens at all — an invocation of an already-successfully-
+loaded function (`f000`) got a connection failure, not a 200. This is a
+materially worse failure mode than "the fenced-out entries fail cleanly and
+the rest keeps serving" (what the smaller-overshoot points, and the original
+report's own N=109/200 case, showed) and was NOT fixed here — this slice's
+scope was the runtime-setting change and its measurement, not a further
+`Reconciler` change; flagged in `docs/spec/jvm-memory.md` §4.4 as owed.
+
+**Load check** (the one the first benchmark lacked): 100 typical functions
+warm, `--memory 2g --cpus 2` (well inside the ~226 fence — no crash risk),
+closed-loop `c=256` for 60s spread round-robin across all 100 addresses, each
+POST carrying a 1971-byte JSON body valid against the fixture's own schema
+(`bench/function-host/scripts/LoadClient.java` — `wrk` itself cannot post a
+body and round-robin across N addresses without a Lua script; the JDK
+`HttpClient` had to be forced to `HTTP_1_1` explicitly, since its default h2c
+negotiation against this listener multiplexes 256 virtual threads onto ONE
+connection and trips its own max-concurrent-streams limit long before the
+server is under any real load — found and fixed while first running this):
+
+| req/s | p50 | p99 | mean | peak heap used | GC pause total (Δ over the run) | RSS (post-run) | `OutOfMemoryError` in log |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 11,708 | 1.68ms | 81.92ms | 11.65ms | 211.6 MB (of 591.4 MB max) | 1.611s (of 60s, ~2.7%) | 879 MB / 2048 MB (43%) | **0** |
+
+702,492 requests, 0 client-side errors, 0 non-200 responses over the full
+60s. `docker logs` over the whole run carries zero `OutOfMemoryError` lines
+of any kind (checked `grep -i outofmemory`) and zero application-level
+`ERROR` lines beyond the one `"function host started"` `INFO` line — the
+fence at 50% costs nothing extra under real concurrent load well inside its
+own capacity. (raw: `bench/function-host/results/` — this check's own
+client/server logs were not saved as separate files, per the numbers above;
+re-run with `scripts/LoadClient.java` per the README to reproduce.)
+
+**Five lines of findings**:
+
+1. The prediction from the 4.4 MB/function slope, `(percent% × limit − 34) /
+   4.4`, matched the measured fence almost exactly at both 2 GiB (226 vs.
+   ≈225 predicted) and 4 GiB (458 vs. ≈458 predicted) — the formula in
+   `docs/deployments.md`'s function-host section is trustworthy for this
+   fixture shape.
+2. The container is never OOM-killed at the fence (`OOMKilled=false`
+   confirmed directly); the JVM fails loudly with a catchable
+   `OutOfMemoryError: Metaspace` per fenced-out entry instead, exactly as
+   designed.
+3. Pushed far enough past the fence in one all-warm document, the startup
+   reconcile's `main` thread can still die with an UNCAUGHT `OutOfMemoryError`
+   once metaspace is driven into full exhaustion — worse than the per-entry
+   catchable case, and worse than previously measured, because it leaves the
+   FUNCTION listener never bound at all while `/ready` reports `UP`; not
+   fixed in this slice, flagged for the next one.
+4. Well inside the fence, under real closed-loop load (c=256, 60s, 100
+   distinct addresses), the fence costs nothing measurable: zero errors,
+   zero `OutOfMemoryError`s, GC pause time ~2.7% of wall time, heap peaking
+   at 36% of its own cap.
+5. The bench tooling itself had two gaps worth fixing for whoever re-runs
+   this: `gen-artifacts.sh` needs N ≥ the highest point tested (not just
+   ≥ the largest *loaded* count), and a load generator against this
+   listener needs `HTTP_1_1` forced or it silently self-limits on
+   max-concurrent-streams rather than reflecting server capacity.
+
 ---
 
 *Raw CSVs, server logs and re-run scripts: `bench/function-host/results/` and

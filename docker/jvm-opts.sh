@@ -1,25 +1,64 @@
 #!/bin/sh
-# Derives -Xmx / -XX:MaxDirectMemorySize from the container's cgroup memory
-# limit. See docs/spec/jvm-memory.md for the rules this implements.
+# Derives -Xmx / -XX:MaxDirectMemorySize (and, when FC_JVM_METASPACE_PERCENT
+# is set, -XX:MaxMetaspaceSize) from the container's cgroup memory limit.
+# See docs/spec/jvm-memory.md for the rules this implements.
 #
 # Prints the derived flags on ONE line to stdout (or nothing, per the rules
 # below); an explanation always goes to stderr, prefixed "jvm-opts:".
 #
+# Exit codes: 0 in every case except an invalid FC_JVM_METASPACE_PERCENT (§4
+# below), which exits non-zero with nothing on stdout — a config typo must
+# fail the container start, never silently fall back to an unfenced
+# metaspace. Every other "can't compute a fence" case (no cgroup limit,
+# JAVA_TOOL_OPTIONS already set, an unlimited sentinel) is still a soft
+# no-op: exit 0, JVM defaults apply.
+#
 # Runs under busybox ash on Alpine: POSIX sh only, no bashisms, no `bc`.
 # $(( )) is 64-bit there, which the arithmetic below relies on.
 #
-# FC_JVM_METASPACE_FENCE=true (default: unset/off — the fc-server image never
-# sets it, so its computed flags are byte-identical to before this variable
-# existed): also derives -XX:MaxMetaspaceSize, a fraction (25%) of the same
-# container limit, floored at 32 MiB. Function-host-only (function-host/Dockerfile
-# sets it): a function is a class loader, so an unbounded metaspace turns a
-# leak into a host OOM-kill instead of a catchable `OutOfMemoryError:
-# Metaspace` that fails one load (docs/spec/function-host-process.md §3).
+# FC_JVM_METASPACE_PERCENT=<integer 10-70> (default: unset — the fc-server
+# image never sets it, so its computed -Xmx/-XX:MaxDirectMemorySize are
+# byte-identical to before this variable existed): also derives
+# -XX:MaxMetaspaceSize as that percent of the container limit, and — unlike
+# the fc-server-only flags, which are unaffected — SUBTRACTS metaspace (and
+# the existing direct-memory carve-out) from -Xmx, so heap + direct +
+# metaspace + reserve never exceeds the container limit (previously this was
+# added on top of -Xmx, over-subscribing the container). Function-host-only
+# (function-host/docker/entrypoint.sh sets
+# FC_JVM_METASPACE_PERCENT=${FC_JVM_METASPACE_PERCENT:-50}): a function is
+# its own class loader, so an unbounded metaspace turns one function's leak
+# into a host-wide OOM-kill instead of a catchable `OutOfMemoryError:
+# Metaspace` that fails just that one function's load
+# (docs/spec/function-host-process.md §3).
 set -eu
 
 warn() {
     printf 'jvm-opts: %s\n' "$1" >&2
 }
+
+fail() {
+    printf 'jvm-opts: %s\n' "$1" >&2
+    exit 1
+}
+
+# Rule 0: validate FC_JVM_METASPACE_PERCENT before anything else, including
+# the JAVA_TOOL_OPTIONS step-aside below — a bad value is a config defect
+# that must fail the container regardless of what else is set.
+# ${FC_JVM_METASPACE_PERCENT+set} is true whenever the variable is SET, even
+# to an empty string, distinguishing "unset" (skip validation, no metaspace
+# fence at all) from "set to ''" (invalid, must fail) under `set -u`.
+metaspace_percent=""
+if [ -n "${FC_JVM_METASPACE_PERCENT+set}" ]; then
+    case "$FC_JVM_METASPACE_PERCENT" in
+        ''|*[!0-9]*)
+            fail "FC_JVM_METASPACE_PERCENT must be an integer in [10,70] (got '${FC_JVM_METASPACE_PERCENT}')"
+            ;;
+    esac
+    if [ "$FC_JVM_METASPACE_PERCENT" -lt 10 ] || [ "$FC_JVM_METASPACE_PERCENT" -gt 70 ]; then
+        fail "FC_JVM_METASPACE_PERCENT must be an integer in [10,70] (got '${FC_JVM_METASPACE_PERCENT}')"
+    fi
+    metaspace_percent=$FC_JVM_METASPACE_PERCENT
+fi
 
 # Rule 2: if the operator has already set a heap/direct-memory flag via
 # JAVA_TOOL_OPTIONS, that is the only override — step aside entirely.
@@ -73,6 +112,8 @@ fi
 
 one_mib=1048576
 reserve_min=201326592   # 192 MiB, in bytes
+floor_mib=64
+floor_bytes=67108864    # 64 MiB, in bytes
 
 reserve_pct=$(( L * 15 / 100 ))
 if [ "$reserve_pct" -gt "$reserve_min" ]; then
@@ -81,29 +122,53 @@ else
     reserve=$reserve_min
 fi
 
-xmx_bytes=$(( L - reserve ))
-xmx_mib=$(( xmx_bytes / one_mib ))
-
 direct_bytes=$(( reserve / 2 ))
 direct_mib=$(( direct_bytes / one_mib ))
 
-if [ "$xmx_mib" -lt 64 ]; then
-    warn "limit $L bytes gives a computed -Xmx below the 64 MiB floor; flooring to 64m (container is mis-sized) -> -Xmx64m -XX:MaxDirectMemorySize=${direct_mib}m"
-    xmx_mib=64
+xmx_bytes=$(( L - reserve ))
+
+# §4: when a metaspace percent is set, its share is carved out of -Xmx too
+# (on top of direct, which -Xmx already implicitly made room for via
+# `reserve`) — see the header comment. `metaspace_bytes` is the REQUESTED
+# amount here; it may still shrink below if the heap floor binds.
+metaspace_bytes=""
+if [ -n "$metaspace_percent" ]; then
+    metaspace_bytes=$(( L * metaspace_percent / 100 ))
+    xmx_bytes=$(( xmx_bytes - direct_bytes - metaspace_bytes ))
+fi
+
+if [ "$xmx_bytes" -lt "$floor_bytes" ]; then
+    # The heap floor wins: -Xmx is floored at 64 MiB no matter what, and if a
+    # metaspace fence is active it gives way (shrinks) so the sum invariant
+    # (heap + direct + metaspace + reserve <= limit) still holds — never the
+    # other way around, since a function host with no headroom to load
+    # anything is a worse failure mode than a smaller metaspace fence.
+    xmx_mib=$floor_mib
+    if [ -n "$metaspace_percent" ]; then
+        requested_mib=$(( metaspace_bytes / one_mib ))
+        shrunk_bytes=$(( L - reserve - direct_bytes - floor_bytes ))
+        if [ "$shrunk_bytes" -lt 0 ]; then
+            shrunk_bytes=0
+        fi
+        metaspace_bytes=$shrunk_bytes
+        metaspace_mib=$(( metaspace_bytes / one_mib ))
+        warn "limit $L bytes gives a computed -Xmx below the 64 MiB floor; flooring -Xmx to 64m and shrinking -XX:MaxMetaspaceSize from the requested ${requested_mib}m to ${metaspace_mib}m so heap + direct + metaspace + reserve never exceeds the limit (container is mis-sized) -> -Xmx64m -XX:MaxDirectMemorySize=${direct_mib}m -XX:MaxMetaspaceSize=${metaspace_mib}m"
+    else
+        warn "limit $L bytes gives a computed -Xmx below the 64 MiB floor; flooring to 64m (container is mis-sized) -> -Xmx64m -XX:MaxDirectMemorySize=${direct_mib}m"
+    fi
 else
-    warn "limit $L bytes -> -Xmx${xmx_mib}m -XX:MaxDirectMemorySize=${direct_mib}m"
+    xmx_mib=$(( xmx_bytes / one_mib ))
+    if [ -n "$metaspace_percent" ]; then
+        metaspace_mib=$(( metaspace_bytes / one_mib ))
+        warn "limit $L bytes -> -Xmx${xmx_mib}m -XX:MaxDirectMemorySize=${direct_mib}m -XX:MaxMetaspaceSize=${metaspace_mib}m"
+    else
+        warn "limit $L bytes -> -Xmx${xmx_mib}m -XX:MaxDirectMemorySize=${direct_mib}m"
+    fi
 fi
 
 metaspace_flag=""
-if [ "${FC_JVM_METASPACE_FENCE:-false}" = "true" ]; then
-    metaspace_bytes=$(( L * 25 / 100 ))
+if [ -n "$metaspace_percent" ]; then
     metaspace_mib=$(( metaspace_bytes / one_mib ))
-    if [ "$metaspace_mib" -lt 32 ]; then
-        warn "limit $L bytes gives a computed -XX:MaxMetaspaceSize below the 32 MiB floor; flooring to 32m"
-        metaspace_mib=32
-    else
-        warn "limit $L bytes -> -XX:MaxMetaspaceSize=${metaspace_mib}m"
-    fi
     metaspace_flag=" -XX:MaxMetaspaceSize=${metaspace_mib}m"
 fi
 

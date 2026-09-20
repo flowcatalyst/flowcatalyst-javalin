@@ -54,9 +54,10 @@ RUN apk add --no-cache ca-certificates wget \
  && mkdir -p /var/lib/fc-fnhost/cache && chown flowcatalyst:flowcatalyst /var/lib/fc-fnhost/cache
 COPY --from=build /jre /opt/jre
 COPY --from=build /fc-fnhost.jar /usr/local/lib/fc-fnhost.jar
-# docker/jvm-opts.sh (root, UNCHANGED — see that file's own comment: this image is
-# the only one that ever sets FC_JVM_METASPACE_FENCE, so the fc-server image's
-# computed flags stay byte-identical) + this image's own entrypoint.
+# docker/jvm-opts.sh (root, shared verbatim — see that file's own comment: this
+# image is the only one that ever sets FC_JVM_METASPACE_PERCENT, so the
+# fc-server image's computed flags stay byte-identical) + this image's own
+# entrypoint.
 COPY --chmod=0755 docker/jvm-opts.sh /usr/local/bin/jvm-opts.sh
 COPY --chmod=0755 function-host/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER flowcatalyst

@@ -102,14 +102,42 @@ public final class FnObservability implements AutoCloseable {
     /// Spec §2: 200 once the first reconcile has SUCCEEDED and the host is
     /// not draining; else 503 naming which of `STARTING`/`DRAINING`/
     /// `PLATFORM_UNREACHABLE` applies — [Reconciler.Readiness]'s own names.
+    /// Either way the body carries a `memory` object (docs/spec/jvm-memory.md
+    /// §4) — the split `docker/jvm-opts.sh` actually fenced this process
+    /// into, read live off the running JVM, so an operator never has to
+    /// shell into the container to see it.
     private static void ready(HttpServerRequest req, Reconciler reconciler) {
         Reconciler.Readiness readiness = reconciler.readiness();
-        if (readiness == Reconciler.Readiness.READY) {
-            respond(req, 200, "application/json", HEALTH_BODY);
-            return;
+        String status = readiness == Reconciler.Readiness.READY ? "UP" : readiness.name();
+        int statusCode = readiness == Reconciler.Readiness.READY ? 200 : 503;
+        respond(req, statusCode, "application/json", readyBody(status, FnMemorySnapshot.capture()));
+    }
+
+    private static byte[] readyBody(String status, FnMemorySnapshot.Info memory) {
+        StringBuilder memoryJson = new StringBuilder("{");
+        boolean first = true;
+        first = appendOptional(memoryJson, "limitBytes", memory.limitBytes(), first);
+        first = appendField(memoryJson, "heapMaxBytes", memory.heapMaxBytes(), first);
+        first = appendOptional(memoryJson, "metaspaceMaxBytes", memory.metaspaceMaxBytes(), first);
+        appendOptional(memoryJson, "directMaxBytes", memory.directMaxBytes(), first);
+        memoryJson.append('}');
+        String body = "{\"status\":\"" + status + "\",\"memory\":" + memoryJson + "}";
+        return body.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static boolean appendOptional(StringBuilder sb, String name, Long value, boolean first) {
+        if (value == null) {
+            return first;
         }
-        byte[] body = ("{\"status\":\"" + readiness.name() + "\"}").getBytes(StandardCharsets.UTF_8);
-        respond(req, 503, "application/json", body);
+        return appendField(sb, name, value, first);
+    }
+
+    private static boolean appendField(StringBuilder sb, String name, long value, boolean first) {
+        if (!first) {
+            sb.append(',');
+        }
+        sb.append('"').append(name).append("\":").append(value);
+        return false;
     }
 
     private static void scrape(HttpServerRequest req, PrometheusRegistry registry, ExpositionFormats formats) {

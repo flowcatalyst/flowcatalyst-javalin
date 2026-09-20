@@ -23,15 +23,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfSystemProperty(named = "fc.fnhost.metaspaceTest", matches = "true")
 class MetaspaceFenceForkTest {
 
-    /// The SAME fence a real `--memory 2g` container gets
-    /// (`docker/jvm-opts.sh`'s 25% rule, `FC_JVM_METASPACE_FENCE`) — chosen
-    /// deliberately, not shrunk for speed: a "typical" fixture (jackson-databind
-    /// + json-schema-validator shaded, ~700 classes, ~4.4 MB metaspace/instance
-    /// measured in `docs/function-runner-report.md` B1) still blows through
-    /// this well before 200 of them are loaded (~110-115, matching the
-    /// benchmark's own N=109/200 fence hit almost exactly), reproducing the
-    /// SAME fence-mid-document shape at the SAME tightness the real anomaly
-    /// was found at. An artificially tighter fence (64-256 MB, tried first)
+    /// A fence a real `--memory 2g` container could get from
+    /// `docker/jvm-opts.sh`'s `FC_JVM_METASPACE_PERCENT` (now a runtime
+    /// setting, `docs/spec/jvm-memory.md` §4 — this value corresponds to the
+    /// 25% this slice originally measured against, before the owner's
+    /// 2026-09-21 ruling moved the default to 50%; picked deliberately here,
+    /// not shrunk for speed, and not re-derived from the new default because
+    /// the point is reproducing the SAME fence-mid-document shape the real
+    /// anomaly was found at, not tracking today's default): a "typical"
+    /// fixture (jackson-databind + json-schema-validator shaded, ~700
+    /// classes, ~4.4 MB metaspace/instance measured in
+    /// `docs/function-runner-report.md` B1) still blows through this well
+    /// before 200 of them are loaded (~110-115, matching the benchmark's own
+    /// N=109/200 fence hit almost exactly), reproducing the SAME
+    /// fence-mid-document shape at the SAME tightness the real anomaly was
+    /// found at. An artificially tighter fence (64-256 MB, tried first)
     /// is a materially DIFFERENT, harder scenario: it leaves so little spare
     /// metaspace that even the recovery path (closing a failed load's own
     /// class loader) or the diagnostic log line for it can occasionally need

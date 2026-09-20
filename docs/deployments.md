@@ -391,6 +391,33 @@ through the `server` module: `FLOWCATALYST_DEV_MODE` (above), and whatever
 `FC_LOG_LEVEL`/`RUST_LOG`) — same two variables the platform/router tasks
 already carry.
 
+Not a `HostEnv` field either, but set by `function-host/docker/entrypoint.sh`
+itself (a `docker/jvm-opts.sh` variable, not an application one —
+`docs/spec/jvm-memory.md` §4):
+
+| Name | Default | Notes |
+|---|---|---|
+| `FC_JVM_METASPACE_PERCENT` | `50` | integer 10–70, the percent of the container's memory limit reserved for `-XX:MaxMetaspaceSize`; an operator override outside that range (or non-integer) fails the container start rather than falling back silently. `fc-server` never sets this and is unaffected. |
+
+Rule of thumb for sizing a pool against this default: for functions shaped
+like the benchmark's "typical" fixture (a realistic-worst-case shaded
+dependency set, ~700 classes/instance, ~4.4 MB metaspace/instance measured in
+`docs/function-runner-report.md` §Performance), the number of such functions
+one host can hold before hitting the metaspace fence is approximately
+
+```
+functions ≈ (metaspace MiB − 35) ÷ 4.4
+```
+
+where `metaspace MiB = FC_JVM_METASPACE_PERCENT% of the container's memory
+limit`, and 35 MiB is the fixed metaspace baseline every host pays once
+regardless of function count. At the 50% default this is ≈50 functions on a
+512 MiB host, ≈225 on 2 GiB, and ≈458 on 4 GiB (the 2 GiB/4 GiB figures were
+directly measured, not just predicted from the slope — see the report's
+"Metaspace at 50%" subsection). Lighter functions (fewer shaded classes) cost
+proportionally less; this formula is only calibrated against that one
+fixture, cited as a starting point, not a guarantee for every workload.
+
 ### Ports
 
 `8080` (function listener, HTTP/1.1 + h2c) and `9090` (observability
