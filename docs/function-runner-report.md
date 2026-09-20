@@ -1,5 +1,36 @@
 # Function runner report
 
+## What shipped (branch `function-service`, 2026-09-18 → 2026-09-21)
+
+Each package has its own spec under `docs/spec/`; each spec opens with a table of where it departs
+from `function-runner-workplan.md` / `function-runner-plan.md` and why. Owner rulings R1–R13 are
+recorded in the specs that apply them; live state is `docs/STATUS.md`.
+
+| Package | Spec | What it is |
+|---|---|---|
+| A | `function-registry.md` | `fn_` schema (V11, Java-only), addresses, route patterns, manifest (strict + stored readers, limits frozen at publish), entities, repositories |
+| B | `function-api.md` | functions, signer policies, publish / promote / retire, control plane (desired state + ETag, heartbeat), status, permissions and roles, events; routes outside the Go lockfile |
+| C | `function-artifacts.md` | artifact store by blob digest (`file://`, `oci://`), **JDK-only** Sigstore bundle verification (Rekor v1, no SCT check — both written down) |
+| I | `function-invocation.md` | every invocation is HTTP at `/functions/{address}[:{version}]/{path}`; manifest `endpoints` / `subscriptions` / `schedules` / `public`; wiring created at promote with subscription source `FUNCTION` (deliberate divergence from Go) |
+| D | `function-host-core.md`, `-reconciler.md`, `-listener.md`, `-process.md`, `function-context.md` | API jar (release 21, zero deps), filtering class loader, reconciler, listener (webhook / platform / none auth, permits, deadlines, versioned calls), config + secrets + DB pools + HTTP allowlist + emit-owned-events, process (`/health` `/ready` `/metrics`, JFR, image, metaspace share) |
+| E | `function-developer-surface.md` | fcdev hosts functions, `fcdev fn` CLI, `examples/function-hello`, workflow templates, `docs/functions.md` |
+| F | `function-public-routes.md` | domain claims (TXT), route sync at promote, public listener, CORS |
+| — | `dispatch-delivery-credentials.md` | landed on `main`: dispatch-job webhooks are signed (they went out bare) |
+
+**Not built, by decision:** `@AsFunction` SDK annotation (superseded by manifest-declared wiring);
+`s3://` store and ECR credentials (no SDK module on the class path); wasm runtime (phase 3); weighted
+aliases (P4). **Owed:** an OpenAPI document for the function API; a registry for `fnhost-image.yml`;
+the ops runbook beyond `docs/deployments.md`'s sizing rule; the unexplained intermittent test
+failures and the random-order fragility listed in `docs/STATUS.md`.
+
+**What the process found that tests alone had not** (orchestrator single-condition mutants and
+end-to-end steps, after agents reported green): a Sigstore checkpoint not bound to its inclusion
+proof; platform functions leaking into tenant lists; a candidate version routable as live; a DSN
+password in a `toString`; `/health` wired to a constant; the host validating tokens against the
+wrong issuer; `.localhost` auto-verification wired on for every deployment; one corrupt manifest
+failing desired state for every pool; an uncaught metaspace `OutOfMemoryError` leaving a host
+half-started with `/ready` 200.
+
 ## Performance
 
 Benchmark plan: `docs/spec/function-host-benchmark.md`. Scripts, fixtures and raw CSVs:
