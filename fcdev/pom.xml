@@ -32,6 +32,15 @@
       <version>${project.version}</version>
     </dependency>
 
+    <!-- `docs/spec/function-developer-surface.md` §1 (slice E1): fcdev hosts
+         a function host beside the platform — `FnHostLauncher`'s JVM branch
+         runs `io.flowcatalyst.fnhost.FnHost` in this same process. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-host</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
@@ -100,6 +109,20 @@
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- E1's in-process acceptance test builds real fixture function jars via
+         `io.flowcatalyst.fnhost.load.FixtureJars` (function-host's own test
+         support) rather than a second copy — function-host/pom.xml now builds
+         a test-jar the same way server/pom.xml does. CLAUDE.md build hygiene:
+         never `mvn install` from a worktree — the reactor resolves this from
+         function-host's own target/test-classes when built with `-pl fcdev -am`. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-host</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
       <scope>test</scope>
     </dependency>
   </dependencies>

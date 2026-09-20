@@ -1,6 +1,8 @@
 package io.flowcatalyst.fcdev;
 
+import io.flowcatalyst.platform.seed.FunctionDevBootstrap;
 import io.flowcatalyst.platform.shared.database.Pools;
+import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.server.Env;
 import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.server.Frontend;
@@ -13,6 +15,7 @@ import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.concurrent.Callable;
@@ -175,6 +178,13 @@ public final class StartCommand implements Callable<Integer> {
             // are dev-environment setup, not conditional on the router being on.
             DevBootstrap.bootstrapRouterCredentials(pools.api(), dev, opts.apiPort());
 
+            // `docs/spec/function-developer-surface.md` §1: the function clients —
+            // idempotent, fresh secrets every boot, same as the router's above.
+            // Skipped entirely under --no-functions (E3: no clients created).
+            FunctionDevBootstrap.Result fnCreds = opts.functions()
+                    ? DevBootstrap.bootstrapFunctionCredentials(pools.api(), dev)
+                    : null;
+
             // ── the shared server ─────────────────────────────────────────
             Env serverEnv = devEnv(dev, opts, databaseUrl);
             Server.Spa spa = Frontend.embeddedOrNone();
@@ -183,13 +193,68 @@ public final class StartCommand implements Callable<Integer> {
                 case Server.Spa.None _ -> LOG.warn("frontend not embedded — this flowcatalyst-server build carries no SPA; API only");
             }
             Server.Running running = new Server(serverEnv, new Server.Mode.Platform(pools), spa, registry).start();
-            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid);
+
+            // ── the function host ────────────────────────────────────────
+            // Built AFTER Server#start, not before: the real bound API port is
+            // needed for FC_FN_PLATFORM_URL (opts.apiPort() may be 0, an
+            // ephemeral port picked at bind time — same reasoning as
+            // #devEnv's own FLOWCATALYST_CONFIG_URL default and
+            // DevBootstrap#bootstrapRouterCredentials's apiPort<=0 guard).
+            FnHostLauncher.Result fnHost = null;
+            Path fnCliJson = null;
+            if (opts.functions() && fnCreds != null) {
+                var settings = new FnHostLauncher.Settings("default",
+                        "http://localhost:" + running.apiPort(),
+                        fnCreds.host().clientId(), fnCreds.host().secret(),
+                        opts.fnPort(), opts.fnMetricsPort(), paths.fnCacheDir(),
+                        resolveHostJar(opts));
+                fnHost = FnHostLauncher.launch(settings, FnHostLauncher.DEFAULT_IS_NATIVE,
+                        FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                fnCliJson = writeFnCliCredentials(paths, running.apiPort(), opts.fnPort(), fnCreds.cli());
+                LOG.atInfo().setMessage("function host")
+                        .addKeyValue("url", "http://127.0.0.1:" + opts.fnPort() + "/functions/…")
+                        .log();
+            }
+
+            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid, fnHost, fnCliJson);
         } catch (IOException | RuntimeException e) {
             if (pools != null) pools.close();
             if (pg != null) pg.close();
             if (ownsPid) PidFile.removeIfOwned(pidFile, pid);
             throw e;
         }
+    }
+
+    /// `--fn-host-jar` / `FC_FN_HOST_JAR`, else `fc-fnhost.jar` beside the
+    /// running fcdev artifact (`UpgradeCommand#selfPath`'s own resolution) —
+    /// `null` when neither is resolvable, so [FnHostLauncher] reports
+    /// `Disabled` rather than fail `fcdev start`.
+    private static Path resolveHostJar(StartOptions opts) {
+        if (!opts.fnHostJar().isEmpty()) {
+            return Path.of(opts.fnHostJar());
+        }
+        try {
+            Path self = UpgradeCommand.selfPath();
+            Path dir = self.getParent();
+            return dir == null ? null : dir.resolve("fc-fnhost.jar");
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /// `fn-cli.json` (owner-only): the `fcdev-fn-cli` credentials, so `fcdev
+    /// fn …` needs no flags locally.
+    private static Path writeFnCliCredentials(DevPaths paths, int apiPort, int fnPort,
+                                               FunctionDevBootstrap.Credentials cli) throws IOException {
+        Path path = paths.fnCliCredentialsPath();
+        var body = new FnCliCredentialsFile("http://localhost:" + apiPort, cli.clientId(), cli.secret(),
+                "http://127.0.0.1:" + fnPort);
+        OwnerOnlyFile.write(path, Json.MAPPER.writeValueAsString(body));
+        return path;
+    }
+
+    /// The wire shape `fn-cli.json` carries (spec §1).
+    private record FnCliCredentialsFile(String platformUrl, String clientId, String clientSecret, String hostUrl) {
     }
 
     /// `banner`: the startup summary.
@@ -246,6 +311,17 @@ public final class StartCommand implements Callable<Integer> {
                 // setDefault, not set: FLOWCATALYST_DEV_MODE=false still wins.
                 .setDefault("FLOWCATALYST_DEV_MODE", "true")
                 .setDefault("FC_DEFAULT_BROKER", "postgres");
+        // `docs/spec/function-developer-surface.md` §1: the PLATFORM's own
+        // function-publish settings — signature verification off (dev mode is
+        // already on) and the pool-URL template pointed at fcdev's own
+        // function host, no {pool} placeholder (a single-pool dev setup names
+        // the host directly, PoolUrlTemplate R8). setDefault, not set: an
+        // operator who already pointed either elsewhere keeps their value.
+        // Skipped entirely under --no-functions (E3).
+        if (opts.functions()) {
+            dev.setDefault("FC_FN_SIGNATURES", "off");
+            dev.setDefault("FC_FN_POOL_URL", "http://127.0.0.1:" + opts.fnPort());
+        }
         // `--api-port 0` (an ephemeral port picked at bind time, e.g. the
         // integration tests) is not knowable here: Env is built and handed
         // to Server BEFORE the API listener binds. "http://localhost:0/..."
@@ -272,15 +348,26 @@ public final class StartCommand implements Callable<Integer> {
         private final EmbeddedPg pg;
         private final Path pidFile;
         private final long pid;
+        private final FnHostLauncher.Result fnHost;
+        private final Path fnCliJson;
         // Guards the once-only teardown; set by whichever of the hook / call() gets there first.
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        Started(Server.Running running, Pools pools, EmbeddedPg pg, Path pidFile, long pid) {
+        Started(Server.Running running, Pools pools, EmbeddedPg pg, Path pidFile, long pid,
+                FnHostLauncher.Result fnHost, Path fnCliJson) {
             this.running = running;
             this.pools = pools;
             this.pg = pg;
             this.pidFile = pidFile;
             this.pid = pid;
+            this.fnHost = fnHost;
+            this.fnCliJson = fnCliJson;
+        }
+
+        /// The function host launch result — `null` under `--no-functions`.
+        /// Package-visible: this module's own tests drive it (E1/E2).
+        FnHostLauncher.Result fnHost() {
+            return fnHost;
         }
 
         /// The bound API port (differs from the flag when it was 0).
@@ -312,15 +399,31 @@ public final class StartCommand implements Callable<Integer> {
         public void close() {
             if (closed.getAndSet(true)) return;
             try {
-                running.stop();
+                // The function host stops BEFORE the platform (spec §1): it
+                // heartbeats `DRAINING` on the way down, which needs a
+                // platform that is still up to heartbeat to.
+                if (fnHost != null) {
+                    FnHostLauncher.close(fnHost);
+                }
             } finally {
+                if (fnCliJson != null) {
+                    try {
+                        Files.deleteIfExists(fnCliJson);
+                    } catch (IOException ignored) {
+                        // best effort — a leftover credentials file is not fatal
+                    }
+                }
                 try {
-                    pools.close();
+                    running.stop();
                 } finally {
                     try {
-                        if (pg != null) pg.close();
+                        pools.close();
                     } finally {
-                        if (pidFile != null) PidFile.removeIfOwned(pidFile, pid);
+                        try {
+                            if (pg != null) pg.close();
+                        } finally {
+                            if (pidFile != null) PidFile.removeIfOwned(pidFile, pid);
+                        }
                     }
                 }
             }

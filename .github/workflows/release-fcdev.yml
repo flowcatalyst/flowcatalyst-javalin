@@ -245,9 +245,72 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # docs/spec/function-developer-surface.md §1 (slice E1): the function-host
+  # exec jar, attached beside fcdev's own artifacts as a FIXED name
+  # (fc-fnhost.jar — no version in the filename) so `fcdev upgrade` can fetch
+  # it "beside the binary" the same way it fetches fcdev itself, and so an
+  # older release that predates this job (no fc-fnhost.jar asset) is simply
+  # an asset `fcdev upgrade` does not find — never an error (see UpgradeCommand).
+  # Platform-independent (a plain jar), so one runner, no matrix — same shape
+  # as the `jar` job above.
+  fnhost-jar:
+    name: Build fc-fnhost exec jar
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "25"
+          distribution: temurin
+          cache: maven
+
+      - name: Build function-host exec jar
+        run: |
+          mvn -B -q -DskipTests -pl function-host -am package
+
+      # maven-shade-plugin attaches the exec jar with the "exec" classifier
+      # (shadedArtifactAttached=true, shadedClassifierName=exec —
+      # function-host/pom.xml's fc-fnhost execution) alongside the unshaded
+      # main artifact; match on the classifier rather than hardcoding the
+      # Maven version, which is a SNAPSHOT and unrelated to the release version.
+      - name: Stage fc-fnhost.jar
+        run: |
+          set -euo pipefail
+          exec_jar=$(find function-host/target -maxdepth 1 -name '*-exec.jar' -print | head -1)
+          if [ -z "$exec_jar" ]; then echo "no function-host exec jar produced" >&2; exit 1; fi
+          echo "exec jar: $exec_jar"
+          mkdir -p dist
+          cp "$exec_jar" "dist/fc-fnhost.jar"
+          ( cd dist && sha256sum "fc-fnhost.jar" > "fc-fnhost.jar.sha256" )
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign sign-blob --yes \
+            --output-signature "fc-fnhost.jar.sig" \
+            --output-certificate "fc-fnhost.jar.pem" \
+            "fc-fnhost.jar"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fcdev-release-fnhost
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: [meta, build, jar]
+    needs: [meta, build, jar, fnhost-jar]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -283,6 +346,11 @@ jobs:
 
           A platform-independent \`fcdev-v${VERSION}.jar\` is also published for
           running on a JVM (Java 25+): \`java -jar fcdev-v${VERSION}.jar\`.
+
+          A native \`fcdev\` writing functions locally shells out to a JVM
+          function host (\`docs/spec/function-developer-surface.md\` §1); this
+          release also publishes \`fc-fnhost.jar\` (a fixed name, no version) —
+          \`fcdev upgrade\` fetches it beside the binary automatically.
 
           ### Verify
           Each archive ships a \`.sha256\` sidecar:

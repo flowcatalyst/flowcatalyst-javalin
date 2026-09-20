@@ -165,10 +165,36 @@ public final class UpgradeCommand implements Callable<Integer> {
             replaceFile(dest, newContent);
         } else {
             replaceExecutable(dest, newContent);
+            // `docs/spec/function-developer-surface.md` §1: only the native
+            // branch ever shells out to a function host jar (the JVM branch
+            // runs it in-process) — fetch fc-fnhost.jar beside the binary,
+            // same directory, same atomic-replace helper. A missing asset
+            // (a release predating this) is not an error.
+            fetchFunctionHostJarIfPresent(rel, dest.getParent(), out);
         }
 
         out.printf("upgraded fcdev %s -> %s (%s)%n", current, rel.version(), dest);
         return 0;
+    }
+
+    /// `fcdev upgrade` fetching `fc-fnhost.jar` "beside the binary" (spec
+    /// §1): a fixed asset name, no version in it, verified against its
+    /// `.sha256` sidecar exactly like the main asset when one is published.
+    /// Package-visible for direct testing without staging a full native
+    /// release fixture.
+    void fetchFunctionHostJarIfPresent(Release rel, Path dir, PrintWriter out) throws IOException, InterruptedException {
+        String assetUrl = rel.assets().get("fc-fnhost.jar");
+        if (assetUrl == null) {
+            return;
+        }
+        out.println("downloading fc-fnhost.jar…");
+        byte[] jarBytes = httpGet(assetUrl);
+        String shaUrl = rel.assets().get("fc-fnhost.jar.sha256");
+        if (shaUrl != null) {
+            verifySha256(jarBytes, httpGet(shaUrl));
+        }
+        replaceFile(dir.resolve("fc-fnhost.jar"), jarBytes);
+        out.println("fc-fnhost.jar updated.");
     }
 
     // ── which artifact ───────────────────────────────────────────────────

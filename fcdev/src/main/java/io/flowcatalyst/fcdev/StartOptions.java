@@ -27,9 +27,15 @@ import java.util.Objects;
 /// | `--router` | `FC_ROUTER_ENABLED` | true |
 /// | `--mcp` | `FC_MCP_ENABLED` | false |
 /// | `--pid-file` | `FC_DEV_PID_FILE` | `<userDataDir>/flowcatalyst/fcdev.pid` |
+/// | `--no-functions` | `FC_DEV_FUNCTIONS` | on (`--no-functions` always disables) |
+/// | `--fn-port` | `FC_FN_PORT` | 8090 |
+/// | `--fn-host-jar` | `FC_FN_HOST_JAR` | `""` (resolve `fc-fnhost.jar` beside the fcdev binary) |
+/// | — | `FC_FN_METRICS_PORT` | 9091 (no CLI flag, spec §1) |
 ///
 /// Boolean flags take Go's `--flag=false` form (picocli `arity = "0..1"`), so
-/// `fcdev --router=false` reads the same in both binaries.
+/// `fcdev --router=false` reads the same in both binaries. `--no-functions`
+/// is Java-only (`docs/spec/function-developer-surface.md` §1) — a one-way
+/// kill switch, not a `--functions=false` toggle.
 public final class StartOptions {
 
     @Option(names = "--api-port", paramLabel = "<port>", description = "API server port (FC_API_PORT; default: ${DEFAULT-VALUE})")
@@ -86,6 +92,25 @@ public final class StartOptions {
     @Option(names = "--pid-file", paramLabel = "<file>", description = "PID file written while running; used by `fcdev stop` (FC_DEV_PID_FILE; default: ${DEFAULT-VALUE})")
     String pidFile;
 
+    /// `docs/spec/function-developer-surface.md` §1: on by default; a
+    /// one-way kill switch — `--no-functions` always disables regardless of
+    /// what `FC_DEV_FUNCTIONS` said (the CLI flag has no way to force
+    /// functions back ON when the environment already turned them off,
+    /// matching the flag's own name).
+    @Option(names = "--no-functions", description = "do not run a function host beside the platform (FC_DEV_FUNCTIONS)")
+    boolean noFunctions;
+
+    @Option(names = "--fn-port", paramLabel = "<port>", description = "function host listener port (FC_FN_PORT; default: ${DEFAULT-VALUE})")
+    int fnPort;
+
+    @Option(names = "--fn-host-jar", paramLabel = "<file>",
+            description = "the function host exec jar for the native child-process branch (FC_FN_HOST_JAR; default: fc-fnhost.jar beside the fcdev binary)")
+    String fnHostJar;
+
+    /// `FC_FN_METRICS_PORT` — no CLI flag (spec §1 names only the env var):
+    /// the function host's own observability port.
+    int fnMetricsPort;
+
     /// Seeds from the process environment.
     public StartOptions() {
         this(DevEnv.system());
@@ -115,6 +140,10 @@ public final class StartOptions {
         router = env.bool("FC_ROUTER_ENABLED", true);
         mcp = env.bool("FC_MCP_ENABLED", false);
         pidFile = env.str("FC_DEV_PID_FILE", paths.pidFilePath().toString());
+        noFunctions = !env.bool("FC_DEV_FUNCTIONS", true);
+        fnPort = env.integer("FC_FN_PORT", 8090);
+        fnHostJar = env.str("FC_FN_HOST_JAR", "");
+        fnMetricsPort = env.integer("FC_FN_METRICS_PORT", 9091);
     }
 
     public int apiPort() { return apiPort; }
@@ -132,4 +161,8 @@ public final class StartOptions {
     public boolean router() { return router; }
     public boolean mcp() { return mcp; }
     public String pidFile() { return pidFile; }
+    public boolean functions() { return !noFunctions; }
+    public int fnPort() { return fnPort; }
+    public String fnHostJar() { return fnHostJar; }
+    public int fnMetricsPort() { return fnMetricsPort; }
 }

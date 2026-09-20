@@ -1,5 +1,6 @@
 package io.flowcatalyst.fcdev;
 
+import io.flowcatalyst.platform.seed.FunctionDevBootstrap;
 import io.flowcatalyst.platform.seed.RouterClientBootstrap;
 import io.flowcatalyst.platform.seed.Seeder;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
@@ -172,6 +173,25 @@ public final class DevBootstrap {
         LOG.atInfo().setMessage("router credentials bootstrapped")
                 .addKeyValue("client_id", credentials.clientId())
                 .log();
+    }
+
+    /// `docs/spec/function-developer-surface.md` §1: the function-development
+    /// clients — `fcdev-fn-host` and `fcdev-fn-cli` — a thin wrapper around
+    /// [FunctionDevBootstrap#bootstrap], same shape as
+    /// [#bootstrapRouterCredentials] minus the operator-supplied-client guard
+    /// (these two clients exist only for fcdev's own local loop; nothing else
+    /// ever brings its own `fcdev-fn-host`/`fcdev-fn-cli`). Requires
+    /// [#ensureAppKey] to have already put `FLOWCATALYST_APP_KEY` on `dev`.
+    public static FunctionDevBootstrap.Result bootstrapFunctionCredentials(DataSource pool, DevEnv.Mutable dev) {
+        var encryption = Encryption.fromKeys(dev.get(ENV_APP_KEY), "")
+                .orElseThrow(() -> new IllegalStateException(
+                        ENV_APP_KEY + " is not set; cannot bootstrap function credentials"));
+        var credentials = FunctionDevBootstrap.bootstrap(pool, encryption);
+        LOG.atInfo().setMessage("function credentials bootstrapped")
+                .addKeyValue("host_client_id", credentials.host().clientId())
+                .addKeyValue("cli_client_id", credentials.cli().clientId())
+                .log();
+        return credentials;
     }
 
     /// The directory the persistent key files live in: the parent of the

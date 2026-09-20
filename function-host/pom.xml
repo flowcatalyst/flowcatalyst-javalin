@@ -114,6 +114,26 @@
   <build>
     <plugins>
       <!--
+        The test-jar (`docs/spec/function-developer-surface.md` §1, E1): fcdev's
+        in-process acceptance test reuses `FixtureJars` (builds real fixture
+        function jars at test time) rather than a second copy. Same shape as
+        `server/pom.xml`'s own test-jar execution, copied rather than invented —
+        nothing else in this module changes.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!--
         The executable fc-fnhost jar (slice D5, `docs/spec/function-host-process.md`
         §1) — same shape as `server/pom.xml`'s own `fc-server` execution
         (service-file merging, signature-file exclusion), copied rather than

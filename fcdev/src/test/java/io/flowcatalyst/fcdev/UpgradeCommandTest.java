@@ -205,6 +205,52 @@ class UpgradeCommandTest {
                 .hasMessageContaining("not running from a release artifact");
     }
 
+    // ── fc-fnhost.jar (docs/spec/function-developer-surface.md §1) ───────
+
+    /// The asset is present: fetched, verified against its sha256 sidecar,
+    /// and written beside the given directory under the FIXED name
+    /// `fc-fnhost.jar` (no version in the filename — `fcdev upgrade` always
+    /// looks for that exact name).
+    @Test
+    void fetchesAndVerifiesFcFnhostJarWhenTheAssetIsPublished() throws Exception {
+        byte[] fnhostBytes = "FN-HOST-JAR-BYTES".getBytes(StandardCharsets.UTF_8);
+        byte[] shaSidecarBytes = (sha256Hex(fnhostBytes) + "  fc-fnhost.jar").getBytes(StandardCharsets.UTF_8);
+        github.createContext("/download/fnhost", exchange -> {
+            exchange.sendResponseHeaders(200, fnhostBytes.length);
+            exchange.getResponseBody().write(fnhostBytes);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-sha", exchange -> {
+            exchange.sendResponseHeaders(200, shaSidecarBytes.length);
+            exchange.getResponseBody().write(shaSidecarBytes);
+            exchange.close();
+        });
+        var cmd = build(Files.createTempFile("fcdev-upgrade-test", ".jar"));
+        var rel = new UpgradeCommand.Release("0.9.0", Map.of(
+                "fc-fnhost.jar", apiBase + "/download/fnhost",
+                "fc-fnhost.jar.sha256", apiBase + "/download/fnhost-sha"));
+        Path dir = Files.createTempDirectory("fcdev-upgrade-fnhost-test");
+
+        cmd.fetchFunctionHostJarIfPresent(rel, dir, new PrintWriter(new StringWriter()));
+
+        assertThat(dir.resolve("fc-fnhost.jar")).exists();
+        assertThat(Files.readAllBytes(dir.resolve("fc-fnhost.jar"))).isEqualTo(fnhostBytes);
+    }
+
+    /// No asset published (an older release): silently skipped, no file
+    /// written, never an error — mutant: this refusal must not be
+    /// mistaken for a checksum failure or thrown as an exception.
+    @Test
+    void skipsSilentlyWhenNoFcFnhostJarAssetIsPublished() throws Exception {
+        var cmd = build(Files.createTempFile("fcdev-upgrade-test", ".jar"));
+        var rel = new UpgradeCommand.Release("0.9.0", Map.of());
+        Path dir = Files.createTempDirectory("fcdev-upgrade-fnhost-test");
+
+        cmd.fetchFunctionHostJarIfPresent(rel, dir, new PrintWriter(new StringWriter()));
+
+        assertThat(dir.resolve("fc-fnhost.jar")).doesNotExist();
+    }
+
     // ── pure semver helpers ───────────────────────────────────────────────
 
     @Test

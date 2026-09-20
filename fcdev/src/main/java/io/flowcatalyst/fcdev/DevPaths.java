@@ -111,4 +111,21 @@ public record DevPaths(Path userDataDir, Path userCacheDir) {
     public Path mcpCredentialsPath() {
         return userCacheDir.resolve("flowcatalyst-dev").resolve("mcp-credentials.json");
     }
+
+    /// `docs/spec/function-developer-surface.md` §1: `fn-cli.json` — the
+    /// `fcdev-fn-cli` credentials, written into the persistent state dir
+    /// (not the re-creatable cache) so `fcdev fn …` needs no flags locally.
+    /// Removed on `fcdev stop`.
+    public Path fnCliCredentialsPath() {
+        return flowcatalystDir().resolve("fn-cli.json");
+    }
+
+    /// The function host's artifact cache directory — a sibling of the
+    /// embedded-Postgres data dir under the persistent state dir, not the
+    /// re-creatable cache dir (a developer's published functions should
+    /// survive a `flowcatalyst/embedded-pg` cache clear the way the Go/Java
+    /// switch already tolerates for everything else here).
+    public Path fnCacheDir() {
+        return flowcatalystDir().resolve("fn-cache");
+    }
 }
