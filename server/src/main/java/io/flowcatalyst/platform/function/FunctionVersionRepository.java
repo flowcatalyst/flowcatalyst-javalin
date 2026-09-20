@@ -14,6 +14,8 @@ import org.jooq.JSONB;
 import org.jooq.Record1;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 
@@ -21,12 +23,17 @@ import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import static io.flowcatalyst.db.generated.Tables.FN_ALIASES;
 import static io.flowcatalyst.db.generated.Tables.FN_FUNCTIONS;
@@ -36,6 +43,8 @@ import static io.flowcatalyst.db.generated.Tables.FN_VERSIONS;
 /// content is immutable once published — enforced entirely by
 /// [#persist]'s narrow `SET` list, never by application-level checks (§8 M9).
 public final class FunctionVersionRepository implements Persist<FunctionVersion> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FunctionVersionRepository.class);
 
     private static final FnVersions T = FN_VERSIONS;
 
@@ -60,39 +69,104 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
         return findOne(T.FUNCTION_ID.eq(functionId).and(T.DIGEST.eq(digest.value())));
     }
 
-    /// Newest first (spec §6.2).
+    /// Newest first (spec §6.2). Scoped to ONE function, so a corrupt row here throws
+    /// [CorruptFunctionVersionException] like the single-row readers (§8: no unrelated
+    /// function or pool is at risk from failing this one function's own version list).
     public List<FunctionVersion> listByFunction(String functionId) {
         return List.copyOf(dsl.selectFrom(T).where(T.FUNCTION_ID.eq(functionId))
-                .orderBy(T.VERSION.desc()).fetch().map(FunctionVersionRepository::toEntity));
+                .orderBy(T.VERSION.desc()).fetch().map(FunctionVersionRepository::toEntityOrThrow));
     }
 
-    /// The desired-state batch read: every version named by `ids`, one
-    /// query. An id with no matching row is simply absent from the map.
-    public Map<String, FunctionVersion> findByIds(Collection<String> ids) {
+    /// The desired-state batch read: every version named by `ids`, one query. An id
+    /// with no matching row is simply absent from [VersionBatch#versions]. A row whose
+    /// manifest [Manifest#readStored] refuses is reported in [VersionBatch#corrupt]
+    /// instead of throwing — see [CorruptFunctionVersionException]'s javadoc for why
+    /// this batch reader deliberately departs from the general "a corrupt row fails the
+    /// whole list" policy.
+    public VersionBatch findByIds(Collection<String> ids) {
         if (ids.isEmpty()) {
-            return Map.of();
+            return VersionBatch.EMPTY;
         }
         Map<String, FunctionVersion> byId = new HashMap<>();
-        dsl.selectFrom(T).where(T.ID.in(ids)).forEach(row -> byId.put(row.getId(), toEntity(row)));
-        return byId;
+        List<CorruptVersion> corrupt = new ArrayList<>();
+        dsl.selectFrom(T).where(T.ID.in(ids)).forEach(row -> readRow(row, row.getId(), byId::put, corrupt::add));
+        return new VersionBatch(byId, corrupt);
     }
 
     /// The desired-state candidate read (spec `function-api.md` §6.1, R3):
     /// the newest `PUBLISHED`-state version per function — one query, one
     /// hydration path (`CONVENTIONS.md` §8). Ordered `function_id`, `version
     /// desc` so the first row seen per function is its highest-numbered
-    /// `PUBLISHED` row; a function with none is simply absent from the map.
-    public Map<String, FunctionVersion> newestPublishedByFunctions(Collection<String> functionIds) {
+    /// `PUBLISHED` row; a function with none is simply absent from
+    /// [VersionBatch#versions]. When that highest-numbered row's manifest is
+    /// corrupt, it is reported in [VersionBatch#corrupt] instead — never
+    /// silently replaced by an OLDER `PUBLISHED` row of the same function,
+    /// which would misreport what "newest" actually is.
+    public VersionBatch newestPublishedByFunctions(Collection<String> functionIds) {
         Objects.requireNonNull(functionIds, "functionIds");
         if (functionIds.isEmpty()) {
-            return Map.of();
+            return VersionBatch.EMPTY;
         }
         Map<String, FunctionVersion> newestByFunction = new HashMap<>();
+        List<CorruptVersion> corrupt = new ArrayList<>();
+        Set<String> decided = new HashSet<>();
         dsl.selectFrom(T)
                 .where(T.FUNCTION_ID.in(functionIds).and(T.STATE.eq("PUBLISHED")))
                 .orderBy(T.FUNCTION_ID.asc(), T.VERSION.desc())
-                .forEach(row -> newestByFunction.putIfAbsent(row.getFunctionId(), toEntity(row)));
-        return newestByFunction;
+                .forEach(row -> {
+                    if (decided.add(row.getFunctionId())) {
+                        readRow(row, row.getFunctionId(), newestByFunction::put, corrupt::add);
+                    }
+                });
+        return new VersionBatch(newestByFunction, corrupt);
+    }
+
+    /// Reads one row for a BATCH caller: on success, `onOk` gets `(key, entity)` — `key`
+    /// is the caller's own map key ([#findByIds]: the version id; [#newestPublishedByFunctions]:
+    /// the function id), NOT necessarily the row's own id. On a corrupt manifest (bad
+    /// JSON, or [Manifest#readStored] refusing `runtime`/`entrypoint`), `onCorrupt` gets
+    /// a [CorruptVersion] (always keyed by the row's OWN id/functionId, regardless of
+    /// `key`) instead of the row failing the whole batch. [CorruptVersion#pool] is
+    /// peeked independently of the failing fields when the manifest at least parsed as
+    /// JSON ([Manifest#peekStoredPool]); `null` only when the `manifest` column itself
+    /// is not valid JSON.
+    private static void readRow(FnVersionsRecord row, String key, BiConsumer<String, FunctionVersion> onOk,
+            Consumer<CorruptVersion> onCorrupt) {
+        JsonNode manifestJson;
+        try {
+            manifestJson = Json.MAPPER.readTree(row.getManifest().data());
+        } catch (JacksonException e) {
+            onCorrupt.accept(new CorruptVersion(row.getId(), row.getFunctionId(), null,
+                    new IllegalStateException("fn_versions.manifest is not valid JSON", e)));
+            return;
+        }
+        try {
+            onOk.accept(key, toEntity(row, manifestJson));
+        } catch (IllegalStateException e) {
+            onCorrupt.accept(new CorruptVersion(row.getId(), row.getFunctionId(), Manifest.peekStoredPool(manifestJson), e));
+        }
+    }
+
+    /// [#findByIds] / [#newestPublishedByFunctions]'s result. A caller that must react
+    /// to a corrupt row (`DesiredState#build`) reads [#corrupt]; one that doesn't (a
+    /// plain function listing) can ignore it — that row is simply absent from
+    /// [#versions], same as an id naming no row at all.
+    public record VersionBatch(Map<String, FunctionVersion> versions, List<CorruptVersion> corrupt) {
+        public VersionBatch {
+            versions = Map.copyOf(versions);
+            corrupt = List.copyOf(corrupt);
+        }
+
+        static final VersionBatch EMPTY = new VersionBatch(Map.of(), List.of());
+    }
+
+    /// A batch-read row [Manifest#readStored] refused — everything the caller can know
+    /// WITHOUT the manifest. `pool` is a best-effort peek ([Manifest#peekStoredPool]),
+    /// `null` only when `manifest` was not even valid JSON. `cause`'s message never
+    /// contains manifest content ([Manifest#readStored]'s own messages are fixed
+    /// strings; the JSON-parse failure's message is the only exception and is a Jackson
+    /// syntax-error message, not a value from the document).
+    public record CorruptVersion(String versionId, String functionId, DnsLabel pool, IllegalStateException cause) {
     }
 
     /// The publish-time warm-capacity read (spec `function-invocation.md`
@@ -107,17 +181,32 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
     /// own validation adds the version being published, if it too is warm,
     /// on top of this count (spec: "live warm versions of other functions in
     /// that pool + this one").
+    ///
+    /// Same blast-radius concern as [#findByIds] (a corrupt `fn_versions` row must never
+    /// take down a read about OTHER functions/versions): a live version whose manifest
+    /// [Manifest#readStored] refuses is skipped — undercounting the warm cap by one is
+    /// the safe direction (worst case: one extra warm function briefly over a soft cap),
+    /// unlike throwing here, which would block EVERY publish platform-wide.
     public int countLiveWarmInPool(DnsLabel pool, String excludingFunctionId) {
         Objects.requireNonNull(pool, "pool");
         Objects.requireNonNull(excludingFunctionId, "excludingFunctionId");
         FnAliases a = FN_ALIASES;
         int count = 0;
-        for (var row : dsl.select(T.MANIFEST).from(T)
+        for (var row : dsl.select(T.ID, T.FUNCTION_ID, T.MANIFEST).from(T)
                 .join(a).on(a.VERSION_ID.eq(T.ID))
                 .where(a.ALIAS.eq(Function.LIVE))
                 .and(T.FUNCTION_ID.ne(excludingFunctionId))
                 .fetch()) {
-            Manifest manifest = Manifest.readStored(readManifestJson(row.value1()));
+            Manifest manifest;
+            try {
+                manifest = Manifest.readStored(readManifestJson(row.value3()));
+            } catch (IllegalStateException e) {
+                LOG.atError().setMessage("fn_versions row has an unreadable manifest; excluded from the warm-capacity count")
+                        .addKeyValue("functionId", row.value2())
+                        .addKeyValue("versionId", row.value1())
+                        .log();
+                continue;
+            }
             if (manifest.warm() && manifest.pool().equals(pool)) {
                 count++;
             }
@@ -133,8 +222,11 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
         }
     }
 
+    /// A SINGLE-row read: unlike the batch readers, a corrupt manifest here fails with
+    /// [CorruptFunctionVersionException] naming the row id — this read is about THAT one
+    /// version, so there is no unrelated function/pool for it to take down.
     private Optional<FunctionVersion> findOne(Condition where) {
-        return dsl.selectFrom(T).where(where).fetchOptional().map(FunctionVersionRepository::toEntity);
+        return dsl.selectFrom(T).where(where).fetchOptional().map(FunctionVersionRepository::toEntityOrThrow);
     }
 
     /// `SELECT … FOR UPDATE` on the version row, inside the caller's open
@@ -148,7 +240,8 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(tx, "tx");
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
-        return txDsl.selectFrom(T).where(T.ID.eq(id)).forUpdate().fetchOptional().map(FunctionVersionRepository::toEntity);
+        return txDsl.selectFrom(T).where(T.ID.eq(id)).forUpdate().fetchOptional()
+                .map(FunctionVersionRepository::toEntityOrThrow);
     }
 
     // ── nextVersion (spec §6.2, §8 M10) ─────────────────────────────────────
@@ -220,7 +313,27 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
 
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
-    private static FunctionVersion toEntity(FnVersionsRecord row) {
+    /// The single-row readers' path: parses the manifest itself, wrapping BOTH a
+    /// JSON-syntax failure and [#toEntity]'s own `IllegalStateException` (unreadable
+    /// `runtime`/`entrypoint`, or an unrecognised `state`) into
+    /// [CorruptFunctionVersionException] naming this row — the batch readers use
+    /// [#readRow] instead, which never throws.
+    private static FunctionVersion toEntityOrThrow(FnVersionsRecord row) {
+        JsonNode manifestJson;
+        try {
+            manifestJson = Json.MAPPER.readTree(row.getManifest().data());
+        } catch (JacksonException e) {
+            throw new CorruptFunctionVersionException(row.getId(),
+                    new IllegalStateException("fn_versions.manifest is not valid JSON", e));
+        }
+        try {
+            return toEntity(row, manifestJson);
+        } catch (IllegalStateException e) {
+            throw new CorruptFunctionVersionException(row.getId(), e);
+        }
+    }
+
+    private static FunctionVersion toEntity(FnVersionsRecord row, JsonNode manifestJson) {
         SignerIdentity signer = row.getSignerIssuer() == null || row.getSignerSubject() == null
                 ? null : new SignerIdentity(row.getSignerIssuer(), row.getSignerSubject());
         return new FunctionVersion(
@@ -232,18 +345,10 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
                 row.getSignatureBundle(),
                 row.getSignatureBundleRef(),
                 signer,
-                Manifest.readStored(readManifest(row)),
+                Manifest.readStored(manifestJson),
                 state(row),
                 row.getPublishedBy(),
                 row.getPublishedAt().toInstant());
-    }
-
-    private static JsonNode readManifest(FnVersionsRecord row) {
-        try {
-            return Json.MAPPER.readTree(row.getManifest().data());
-        } catch (JacksonException e) {
-            throw new IllegalStateException("fn_versions.manifest is not valid JSON for " + row.getId(), e);
-        }
     }
 
     private static FunctionVersion.VersionState state(FnVersionsRecord row) {

@@ -178,9 +178,11 @@ public final class FunctionApi {
         FunctionRepository.PageFilter filter = listFilter(ctx, ac);
         List<Function> rows = s.repo().findWithFilters(filter, page.pageSize(), (int) page.offset());
         long total = s.repo().countWithFilters(filter);
-        // One batch read for every row's live version (spec §4.4), not one per row.
+        // One batch read for every row's live version (spec §4.4), not one per row. A row
+        // whose live version has a corrupt manifest is simply absent from the map (never
+        // fails this list for every OTHER row) — see FunctionVersionRepository.VersionBatch.
         List<String> liveIds = rows.stream().map(Function::liveVersionId).flatMap(Optional::stream).toList();
-        Map<String, FunctionVersion> liveVersions = s.versions().findByIds(liveIds);
+        Map<String, FunctionVersion> liveVersions = s.versions().findByIds(liveIds).versions();
         ctx.json(OffsetPage.of(rows.stream()
                 .map(f -> FunctionResponse.from(f, f.liveVersionId().map(liveVersions::get).orElse(null)))
                 .toList(), page, total));

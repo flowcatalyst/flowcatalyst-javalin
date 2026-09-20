@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function.operations;
 
+import io.flowcatalyst.platform.function.CorruptFunctionVersionException;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.EndpointAuth;
 import io.flowcatalyst.platform.function.Function;
@@ -13,16 +14,21 @@ import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.FunctionVersionRepository.CorruptVersion;
+import io.flowcatalyst.platform.function.FunctionVersionRepository.VersionBatch;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.SignerIdentity;
 import io.flowcatalyst.platform.serviceaccount.OutboundCredentials;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +44,8 @@ import java.util.TreeMap;
 /// P14): [#build] always sorts `functions` and `unload`; nothing here
 /// depends on row insertion order or `HashMap`/`HashSet` iteration order.
 public final class DesiredState {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DesiredState.class);
 
     private final FunctionRepository functions;
     private final FunctionVersionRepository versions;
@@ -74,9 +82,11 @@ public final class DesiredState {
         List<Function> active = functions.list(new FunctionRepository.ListFilter(null, null, FunctionStatus.ACTIVE));
 
         List<String> liveIds = active.stream().map(Function::liveVersionId).flatMap(Optional::stream).toList();
-        Map<String, FunctionVersion> liveVersions = versions.findByIds(liveIds);
-        Map<String, FunctionVersion> candidates =
-                versions.newestPublishedByFunctions(active.stream().map(Function::id).toList());
+        VersionBatch liveLookup = versions.findByIds(liveIds);
+        Map<String, FunctionVersion> liveVersions = liveLookup.versions();
+        VersionBatch candidateLookup = versions.newestPublishedByFunctions(active.stream().map(Function::id).toList());
+        Map<String, FunctionVersion> candidates = candidateLookup.versions();
+        reportAndGuardCorrupt(liveLookup.corrupt(), candidateLookup.corrupt(), pool);
 
         // Spec §6, R9: the application's webhook signing secret, resolved at most
         // once per application per call — several functions of one application
@@ -127,6 +137,48 @@ public final class DesiredState {
         return new Document(pool.value(), List.copyOf(entries), unload, publicRoutes);
     }
 
+    /// Logs ONE ERROR per build for every corrupt version this call touched (live or
+    /// candidate, deduplicated by version id — structured fields only, never manifest
+    /// content), then decides whether the build itself must fail.
+    ///
+    /// A corrupt CANDIDATE is safe to just skip: `function-host-reconciler.md` §1.2 step
+    /// 3 — "a candidate is never loaded and never routed" — so a candidate silently
+    /// missing from the document unloads nothing.
+    ///
+    /// A corrupt LIVE version is NOT safe to just skip. §1.2 step 4 unloads "everything
+    /// loaded or in `lazyRoutes` whose address is no longer a `live` entry" — if the
+    /// function's address is simply left out of `functions` because its live version
+    /// can't be read, every host that already has it loaded unloads it on its next
+    /// reconcile. That is worse than serving the stale-but-working version (§1.2 step 1:
+    /// "a platform outage must never unload a function" — that is exactly the guarantee
+    /// we'd be breaking). The smallest safe alternative: fail this build with the house
+    /// corrupt-row error (500) so hosts of the affected pool treat it as a
+    /// `ControlPlaneException` and keep serving what they have (§1.2 step 1), while
+    /// OTHER pools' builds are unaffected. Since the version's own manifest can't be
+    /// read, its `pool` is only a best-effort peek ([Manifest#peekStoredPool] — the ONE
+    /// field that never depends on `runtime`/`entrypoint`); when even that peek fails
+    /// (manifest not valid JSON at all), we cannot rule THIS pool out, so we fail safe.
+    private void reportAndGuardCorrupt(List<CorruptVersion> live, List<CorruptVersion> candidates, DnsLabel pool) {
+        Map<String, CorruptVersion> distinct = new LinkedHashMap<>();
+        for (CorruptVersion c : live) {
+            distinct.putIfAbsent(c.versionId(), c);
+        }
+        for (CorruptVersion c : candidates) {
+            distinct.putIfAbsent(c.versionId(), c);
+        }
+        for (CorruptVersion c : distinct.values()) {
+            LOG.atError().setMessage("fn_versions row has an unreadable manifest; excluded from the desired-state document")
+                    .addKeyValue("functionId", c.functionId())
+                    .addKeyValue("versionId", c.versionId())
+                    .log();
+        }
+        for (CorruptVersion c : live) {
+            if (c.pool() == null || c.pool().equals(pool)) {
+                throw new CorruptFunctionVersionException(c.versionId(), c.cause());
+            }
+        }
+    }
+
     /// spec §2: one entry per `(hostname, pathPrefix)` of every function
     /// whose LIVE version is in the requested pool — batch-read (one query,
     /// like every other desired-state read), sorted `(hostname, pathPrefix)`
@@ -160,11 +212,15 @@ public final class DesiredState {
         if (f.status() != FunctionStatus.ACTIVE) {
             return false;
         }
-        FunctionVersion live = f.liveVersionId().map(id -> versions.findByIds(List.of(id)).get(id)).orElse(null);
+        // A corrupt live/candidate version is simply absent here too (never thrown) —
+        // `serves` then falls through to "no match", which safely DENIES the host
+        // rather than confirming reach for a version nobody can verify.
+        FunctionVersion live =
+                f.liveVersionId().map(id -> versions.findByIds(List.of(id)).versions().get(id)).orElse(null);
         if (live != null && live.id().equals(v.id()) && live.manifest().pool().equals(pool)) {
             return true;
         }
-        FunctionVersion candidate = versions.newestPublishedByFunctions(List.of(f.id())).get(f.id());
+        FunctionVersion candidate = versions.newestPublishedByFunctions(List.of(f.id())).versions().get(f.id());
         return candidate != null && candidate.id().equals(v.id())
                 && (live == null || candidate.version() > live.version())
                 && candidate.manifest().pool().equals(pool);

@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.function.operations;
 
 import io.flowcatalyst.platform.function.ClientCeilings;
+import io.flowcatalyst.platform.function.CorruptFunctionVersionException;
 import io.flowcatalyst.platform.function.Digest;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Function;
@@ -23,6 +24,7 @@ import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.shared.database.Migrator;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -30,6 +32,7 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import org.jooq.DSLContext;
+import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.junit.jupiter.api.Test;
@@ -48,8 +51,10 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import static io.flowcatalyst.db.generated.Tables.FN_VERSIONS;
 import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// `DesiredState.build` (spec `function-api.md` §6.1, §8 P13, P14). Every
 /// clause of P13 pinned with its own fixture; P14's determinism pinned by
@@ -58,7 +63,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// insertion order.
 class DesiredStateTest {
 
-    private static final DataSource DS = TestPg.dataSource();
+    /// Its OWN database, migrated fresh — not the shared `TestPg.dataSource()`.
+    /// `build()` reads EVERY `ACTIVE` function in the database (spec §6.1: it filters to
+    /// `pool` only after loading each function's live/candidate versions), so on the
+    /// shared instance a row left behind by an unrelated class — e.g. a `fn_versions`
+    /// row with an unreadable manifest — poisons every fixture here, whichever pool it
+    /// asserts on (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20;
+    /// same mechanism as `ef190de3`'s four classes). `DesiredState` itself also over-reads
+    /// for this reason — it loads versions for every active function up front rather than
+    /// scoping the initial read to `pool` — worth narrowing some day, not redesigned here.
+    private static final DataSource DS = newDatabase();
     private static final FunctionRepository functions = new FunctionRepository(DS);
     private static final FunctionVersionRepository versions = new FunctionVersionRepository(DS);
     private static final FunctionHostRepository hosts = new FunctionHostRepository(DS);
@@ -79,6 +93,12 @@ class DesiredStateTest {
 
     private static String fresh() {
         return "t" + Long.toString(SEQ.incrementAndGet(), 36);
+    }
+
+    private static DataSource newDatabase() {
+        DataSource ds = TestPg.newDatabase("desired_state_test");
+        Migrator.migrate(ds);
+        return ds;
     }
 
     private static Manifest manifestForPool(String pool, boolean warm) {
@@ -185,6 +205,35 @@ class DesiredStateTest {
             return null;
         });
         return f;
+    }
+
+    /// Raw-inserts a `fn_versions` row [Manifest#readStored] refuses (`runtime` is not
+    /// `jvm`/`wasm`) — the same shape the blast-radius fix defends against
+    /// (`FunctionSchemaTest`'s `digestCheckAcceptsSha256WithSixtyFourHexChars` leaves an
+    /// equivalent row behind on the SHARED `TestPg` database, which is what broke this
+    /// class before it got its own). `pool` IS still readable (`Manifest#peekStoredPool`
+    /// never depends on `runtime`) — callers pick it to control whether
+    /// [DesiredState#build] should treat the row as possibly theirs.
+    private static FunctionVersion insertCorruptVersion(Function f, int version, String pool) {
+        String id = "fnv_" + fresh();
+        String manifestJson = """
+                {"runtime":"not-a-runtime","entrypoint":"x","pool":"%s"}""".formatted(pool);
+        DSLContext db = DSL.using(DS, SQLDialect.POSTGRES);
+        db.insertInto(FN_VERSIONS)
+                .set(FN_VERSIONS.ID, id)
+                .set(FN_VERSIONS.FUNCTION_ID, f.id())
+                .set(FN_VERSIONS.VERSION, version)
+                .set(FN_VERSIONS.ARTIFACT_REF, "oci://corrupt")
+                .set(FN_VERSIONS.DIGEST, digest(f.id() + version).value())
+                .set(FN_VERSIONS.MANIFEST, JSONB.jsonb(manifestJson))
+                .set(FN_VERSIONS.STATE, "PUBLISHED")
+                .set(FN_VERSIONS.PUBLISHED_BY, "prn_test")
+                .execute();
+        // In-memory placeholder ONLY to satisfy Function#promote's own-function/state
+        // checks (it never reads the manifest) — the persisted row above is what
+        // DesiredState actually reads back; this placeholder's manifest is never stored.
+        return new FunctionVersion(id, f.id(), version, "oci://corrupt", digest(f.id() + version), null, null, null,
+                manifestForPool(pool, false), new FunctionVersion.VersionState.Published(), "prn_test", Instant.now());
     }
 
     private static Manifest manifestWebhook(String pool) {
@@ -783,5 +832,145 @@ class DesiredStateTest {
 
         String afterEtag = sha256Hex(Json.write(after));
         assertThat(afterEtag).as("mutant: a settings change does not move the ETag").isNotEqualTo(beforeEtag);
+    }
+
+    // ── blast radius: a corrupt fn_versions.manifest must not take down reads about
+    // ── OTHER functions/pools (function-registry.md §4.2, function-host-reconciler.md
+    // ── §1.2 step 4) ──────────────────────────────────────────────────────────────
+
+    /// A corrupt LIVE version's manifest peek ([Manifest#peekStoredPool]) says it does
+    /// NOT belong to the pool under build — so the build must simply omit it and carry
+    /// on for every OTHER function, never fail. Pins the "unaffected" half of "fails
+    /// ONLY for the affected pool": a corrupt row elsewhere must not deny service to
+    /// this pool.
+    @Test
+    void aCorruptLiveVersionInAnUnrelatedPoolIsOmittedWithoutFailingThisPoolsBuildOrOtherFunctions() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        DnsLabel otherPool = new DnsLabel("otherpool" + fresh());
+
+        Function corruptFn = createFunction("corruptlive" + fresh());
+        promote(corruptFn, insertCorruptVersion(corruptFn, 1, otherPool.value()));
+
+        Function okFn = createFunction("okfn" + fresh());
+        FunctionVersion okVersion = publish(okFn, 1, manifestForPool(pool.value(), false));
+        promote(okFn, okVersion);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+
+        assertThat(doc.functions()).as("mutant: a corrupt row anywhere fails every pool's build")
+                .extracting(DesiredState.FunctionEntry::address)
+                .containsExactly(okFn.address().render());
+    }
+
+    /// A corrupt LIVE version's peeked pool DOES match (or can't be ruled out for) the
+    /// pool under build — omitting it would leave the function's address out of
+    /// `functions`, and `function-host-reconciler.md` §1.2 step 4 unloads any address
+    /// that is "no longer a live entry". The smallest safe alternative: fail the WHOLE
+    /// build with the house corrupt-row error (500 `CORRUPT_ROW`) so hosts treat it as a
+    /// control-plane outage (§1.2 step 1: "a platform outage must never unload a
+    /// function") and keep serving what they have, instead of silently dropping a
+    /// running function.
+    @Test
+    void aCorruptLiveVersionWhosePeekedPoolMatchesFailsTheBuildWithTheHouseCorruptRowError() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function corruptFn = createFunction("corruptlive" + fresh());
+        FunctionVersion corrupt = insertCorruptVersion(corruptFn, 1, pool.value());
+        promote(corruptFn, corrupt);
+
+        assertThatThrownBy(() -> DESIRED.build(pool, Instant.now()))
+                .as("mutant: omit a same-pool corrupt live version instead of failing the build "
+                        + "(a host would then unload the function it has loaded)")
+                .isInstanceOf(CorruptFunctionVersionException.class)
+                .hasMessageContaining(corrupt.id());
+    }
+
+    /// The fail-safe: when even the manifest's POOL cannot be read (the JSON is not an
+    /// object at all), the corrupt live version could belong to ANY pool — so every
+    /// pool's build must fail rather than let some host unload a function it is
+    /// serving. Mutant: treat "pool unknown" as "not this pool".
+    @Test
+    void aCorruptLiveVersionWhosePoolCannotEvenBeReadFailsEveryPoolsBuild() {
+        Function corruptFn = createFunction("corruptnopool" + fresh());
+        FunctionVersion corrupt = insertCorruptVersion(corruptFn, 1, "whatever");
+        DSL.using(DS, SQLDialect.POSTGRES).update(FN_VERSIONS)
+                .set(FN_VERSIONS.MANIFEST, JSONB.jsonb("[]"))
+                .where(FN_VERSIONS.ID.eq(corrupt.id())).execute();
+        promote(corruptFn, corrupt);
+        try {
+            assertThatThrownBy(() -> DESIRED.build(new DnsLabel("anypool" + fresh()), Instant.now()))
+                    .isInstanceOf(CorruptFunctionVersionException.class)
+                    .hasMessageContaining(corrupt.id());
+        } finally {
+            // This row poisons EVERY pool's build by design — remove it so the class's
+            // other tests (which share this class's own database) are unaffected.
+            DSL.using(DS, SQLDialect.POSTGRES).deleteFrom(io.flowcatalyst.db.generated.Tables.FN_ALIASES)
+                    .where(io.flowcatalyst.db.generated.Tables.FN_ALIASES.FUNCTION_ID.eq(corruptFn.id())).execute();
+            DSL.using(DS, SQLDialect.POSTGRES).deleteFrom(FN_VERSIONS).where(FN_VERSIONS.ID.eq(corrupt.id())).execute();
+        }
+    }
+
+    /// A corrupt CANDIDATE (never live) is always safe to just skip — a host never loads
+    /// or routes a candidate (`function-host-reconciler.md` §1.2 step 3), so it unloads
+    /// nothing when the document simply omits it. The build must succeed even when the
+    /// corrupt candidate's own pool matches the one being built.
+    @Test
+    void aCorruptCandidateIsSkippedWithoutFailingTheBuildEvenInItsOwnPool() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+
+        Function corruptFn = createFunction("corruptcand" + fresh());
+        insertCorruptVersion(corruptFn, 1, pool.value()); // PUBLISHED, never promoted — a candidate only
+
+        Function okFn = createFunction("okfn2" + fresh());
+        promote(okFn, publish(okFn, 1, manifestForPool(pool.value(), false)));
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+
+        assertThat(doc.functions()).as("mutant: a corrupt candidate fails the build too")
+                .extracting(DesiredState.FunctionEntry::address)
+                .containsExactly(okFn.address().render());
+    }
+
+    /// One ERROR per build, naming the function and version ids as structured fields —
+    /// never the manifest content.
+    @Test
+    void aCorruptVersionLogsOneErrorNamingTheIdsWithoutManifestContent() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function corruptFn = createFunction("corruptlog" + fresh());
+        FunctionVersion corrupt = insertCorruptVersion(corruptFn, 1, "otherpool" + fresh());
+
+        var log = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger("io.flowcatalyst");
+        var captured = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            DESIRED.build(pool, Instant.now());
+
+            // Filtered to THIS test's own version id: the class shares one database across
+            // its methods (`newDatabase()`'s own javadoc — `build` over-reads every ACTIVE
+            // function), so an EARLIER test's own corrupt row is legitimately logged again
+            // on every later build() too. "Once per build" means once for THIS row in THIS
+            // call, not that the whole class only ever logs one line.
+            var errors = captured.list.stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.ERROR)
+                    .filter(e -> e.getFormattedMessage().contains("unreadable manifest"))
+                    .filter(e -> keyValue(e, "versionId").map(v -> v.equals(corrupt.id())).orElse(false))
+                    .toList();
+            assertThat(errors).as("mutant: log nothing, or log this row more than once per build").hasSize(1);
+
+            var event = errors.get(0);
+            assertThat(keyValue(event, "functionId")).as("mutant: don't name the offending function")
+                    .contains(corruptFn.id());
+            assertThat(event.getFormattedMessage()).as("mutant: leak the manifest into the log line")
+                    .doesNotContain("not-a-runtime", "\"runtime\"");
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    private static java.util.Optional<Object> keyValue(ch.qos.logback.classic.spi.ILoggingEvent event, String key) {
+        if (event.getKeyValuePairs() == null) {
+            return java.util.Optional.empty();
+        }
+        return event.getKeyValuePairs().stream().filter(kv -> kv.key.equals(key)).map(kv -> kv.value).findFirst();
     }
 }

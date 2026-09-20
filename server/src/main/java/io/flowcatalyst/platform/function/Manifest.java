@@ -913,6 +913,19 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
                 publicRoutes, config, secrets, db, httpAllow);
     }
 
+    /// Best-effort `pool` for a manifest [#readStored] itself refused (`runtime`/
+    /// `entrypoint` unreadable) — [#readPool] never looks at either field, so it is
+    /// always safe to call even on an otherwise-corrupt manifest. This is the ONLY way
+    /// `DesiredState`'s blast-radius fix (`function-registry.md` §4.2,
+    /// `function-host-reconciler.md` §1.2 step 4) can tell whether a corrupt LIVE
+    /// version would have appeared in a given pool's document without being able to
+    /// read the rest of its manifest. Same fallback as [#readPool]: an absent/invalid
+    /// `pool` field reads as [#DEFAULT_POOL], never `null` — `root` itself not being a
+    /// JSON object is the one case genuinely unreadable.
+    public static DnsLabel peekStoredPool(JsonNode root) {
+        return root != null && root.isObject() ? readPool(root) : null;
+    }
+
     private static DnsLabel readPool(JsonNode root) {
         JsonNode node = root.path("pool");
         if (node.isString() && DnsLabel.isValid(node.asString())) {

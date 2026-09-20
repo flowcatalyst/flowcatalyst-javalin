@@ -93,7 +93,7 @@ class FunctionVersionRepositoryTest {
         assertThat(REPO.findByFunctionAndVersion(f.id(), 1)).map(FunctionVersion::id).contains(v.id());
         assertThat(REPO.findByFunctionAndDigest(f.id(), digest("a"))).map(FunctionVersion::id).contains(v.id());
         assertThat(REPO.listByFunction(f.id())).extracting(FunctionVersion::id).containsExactly(v.id());
-        assertThat(REPO.findByIds(java.util.List.of(v.id(), "fnv_doesnotexist"))).containsOnlyKeys(v.id());
+        assertThat(REPO.findByIds(java.util.List.of(v.id(), "fnv_doesnotexist")).versions()).containsOnlyKeys(v.id());
     }
 
     // ── §8 M5: absent limit frozen to min(default, ceiling) in the row ────────
@@ -348,5 +348,92 @@ class FunctionVersionRepositoryTest {
         assertThat(reloaded.manifest().entrypoint()).isEqualTo("com.acme.Foo");
         assertThat(reloaded.manifest().limits().maxDurationMs()).isEqualTo(5000);
         assertThat(reloaded.manifest().limits().maxConcurrency()).isEqualTo(10);
+    }
+
+    // ── blast radius: a corrupt fn_versions.manifest must not take down reads about
+    // ── OTHER versions/functions (function-registry.md §4.2) ────────────────────────
+
+    private static String insertCorruptManifest(String functionId, int version, String manifestJson, String state)
+            throws SQLException {
+        String id = "fnv_" + fresh();
+        try (Connection c = DS.getConnection(); PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fn_versions (id, function_id, version, artifact_ref, digest, manifest, state, published_by)
+                VALUES (?, ?, ?, 'oci://x', ?, ?::jsonb, ?, ?)""")) {
+            ps.setString(1, id);
+            ps.setString(2, functionId);
+            ps.setInt(3, version);
+            ps.setString(4, digest("c").value());
+            ps.setString(5, manifestJson);
+            ps.setString(6, state);
+            ps.setString(7, "prn_1");
+            ps.executeUpdate();
+        }
+        return id;
+    }
+
+    /// A SINGLE-row read is about THAT one version — no unrelated function or pool is
+    /// at risk, so it may fail with the house corrupt-row error, same as
+    /// `CorruptSubscriptionException`/`CorruptDispatchJobException`.
+    @Test
+    void findByIdOnACorruptManifestThrowsTheHouseCorruptRowErrorNamingTheRow() throws SQLException {
+        Function f = createFunction();
+        String id = insertCorruptManifest(f.id(), 1, "{\"runtime\":\"not-a-runtime\"}", "PUBLISHED");
+
+        assertThatThrownBy(() -> REPO.findById(id))
+                .as("mutant: silently return an unreadable manifest instead of failing this single-row read")
+                .isInstanceOf(CorruptFunctionVersionException.class)
+                .hasMessageContaining(id);
+    }
+
+    /// The desired-state batch read must NOT let one function's corrupt row take down
+    /// the read for a completely different function — that would fail
+    /// `/control/functions/desired-state` (every pool) and the plain function listing
+    /// (`GET /api/functions`) for everyone whenever ANY one row anywhere is corrupt.
+    @Test
+    void findByIdsSkipsACorruptRowAndStillReturnsAnUnrelatedFunctionsVersion() throws SQLException {
+        Function corruptFn = createFunction();
+        String corruptId = insertCorruptManifest(corruptFn.id(), 1, "{\"runtime\":\"not-a-runtime\"}", "PUBLISHED");
+
+        Function okFn = createFunction();
+        FunctionVersion ok = FunctionVersion.publish(okFn.id(), 1, "oci://artifact", digest("d1"), null, null, null,
+                manifest(), "prn_1", Instant.now());
+        UOW.inTransaction(tx -> {
+            REPO.persist(ok, tx.dbTx());
+            return null;
+        });
+
+        FunctionVersionRepository.VersionBatch batch = REPO.findByIds(java.util.List.of(corruptId, ok.id()));
+
+        assertThat(batch.versions()).as("mutant: one corrupt row fails the whole batch")
+                .containsOnlyKeys(ok.id());
+        assertThat(batch.corrupt()).extracting(FunctionVersionRepository.CorruptVersion::versionId)
+                .as("mutant: swallow the corrupt row instead of reporting it")
+                .containsExactly(corruptId);
+        assertThat(batch.corrupt().get(0).functionId()).isEqualTo(corruptFn.id());
+    }
+
+    /// Same blast-radius guarantee for the desired-state CANDIDATE read: one function's
+    /// corrupt newest-`PUBLISHED` row must not take down `newestPublishedByFunctions`
+    /// for every OTHER function in the same call.
+    @Test
+    void newestPublishedByFunctionsSkipsACorruptRowAndStillReturnsAnUnrelatedFunctionsCandidate() throws SQLException {
+        Function corruptFn = createFunction();
+        insertCorruptManifest(corruptFn.id(), 1, "{\"runtime\":\"not-a-runtime\"}", "PUBLISHED");
+
+        Function okFn = createFunction();
+        FunctionVersion ok = FunctionVersion.publish(okFn.id(), 1, "oci://artifact", digest("d2"), null, null, null,
+                manifest(), "prn_1", Instant.now());
+        UOW.inTransaction(tx -> {
+            REPO.persist(ok, tx.dbTx());
+            return null;
+        });
+
+        FunctionVersionRepository.VersionBatch batch =
+                REPO.newestPublishedByFunctions(java.util.List.of(corruptFn.id(), okFn.id()));
+
+        assertThat(batch.versions()).as("mutant: one corrupt row fails the whole candidate batch")
+                .containsOnlyKeys(okFn.id());
+        assertThat(batch.corrupt()).extracting(FunctionVersionRepository.CorruptVersion::functionId)
+                .containsExactly(corruptFn.id());
     }
 }
