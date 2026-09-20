@@ -3,7 +3,9 @@ package io.flowcatalyst.fnhost.reconcile;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpServer;
+import io.flowcatalyst.function.EventEmitException;
 import io.flowcatalyst.platform.function.DnsLabel;
+import io.flowcatalyst.platform.function.FunctionAddress;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -140,6 +142,79 @@ class HttpControlPlaneTest {
 
         assertThat(receivedAuth).containsExactly("Bearer heartbeat-tok");
         assertThat(receivedBody.toString()).contains("\"hostId\":\"host-1\"").contains("\"state\":\"ACTIVE\"");
+    }
+
+    // ── emit (spec function-context.md §3, D4c) ─────────────────────────────
+
+    private static ControlPlane.EmitRequest emitRequest(String dedupId) {
+        return new ControlPlane.EmitRequest("host-1", FunctionAddress.parse("a.svc.fn"), 1,
+                List.of(new ControlPlane.EmitItem("app:sub:agg:evt", "subj-1", dedupId, "{}", null, null, null)));
+    }
+
+    @Test
+    void emitRefreshesTheTokenOnceOn401AndRetriesTheSameRequestOnce() throws Exception {
+        AtomicInteger mints = new AtomicInteger();
+        AtomicInteger emitCalls = new AtomicInteger();
+        HttpServer server = startServer();
+        server.createContext("/oauth/token", exchange -> {
+            mints.incrementAndGet();
+            respondJson(exchange, 200, "{\"access_token\":\"tok-" + mints.get() + "\",\"expires_in\":3600}");
+        });
+        server.createContext("/control/functions/events", exchange -> {
+            int call = emitCalls.incrementAndGet();
+            if (call == 1) {
+                respondJson(exchange, 401, "{}");
+            } else {
+                respondJson(exchange, 201, "{\"results\":[{\"id\":\"evt_1\",\"status\":\"SUCCESS\"}]}");
+            }
+        });
+
+        HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
+                new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
+
+        cp.emit(emitRequest("dedup-refresh"));
+
+        assertThat(emitCalls.get()).as("mutant: retry more than once, or never retry after a 401").isEqualTo(2);
+        assertThat(mints.get()).as("a 401 on emit must trigger exactly one refresh mint").isEqualTo(2);
+    }
+
+    @Test
+    void aNon2xxEmitResponseBecomesAnEventEmitExceptionCarryingItsCodeAndStatus() throws Exception {
+        HttpServer server = startServer();
+        server.createContext("/oauth/token", exchange ->
+                respondJson(exchange, 200, "{\"access_token\":\"tok\",\"expires_in\":3600}"));
+        server.createContext("/control/functions/events", exchange ->
+                respondJson(exchange, 403, "{\"error\":\"EVENT_TYPE_NOT_OWNED\",\"message\":\"nope\"}"));
+
+        HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
+                new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
+
+        assertThatThrownBy(() -> cp.emit(emitRequest("dedup-403")))
+                .isInstanceOf(EventEmitException.class)
+                .satisfies(e -> assertThat(((EventEmitException) e).code())
+                        .as("mutant: a fixed/wrong code instead of the platform's own").isEqualTo("EVENT_TYPE_NOT_OWNED"))
+                .satisfies(e -> assertThat(((EventEmitException) e).status())
+                        .as("mutant: a fixed status instead of the response's own").isEqualTo(403));
+    }
+
+    @Test
+    void aTransportFailureOnEmitBecomesUnavailable503() throws Exception {
+        // The token mint succeeds against a real server; the emit POST itself targets an
+        // unreachable port, so this exercises sendEmit's own IOException branch specifically
+        // (not TokenSource#token's — those are two different catch sites in HttpControlPlane#emit).
+        HttpServer tokenServer = startServer();
+        tokenServer.createContext("/oauth/token", exchange ->
+                respondJson(exchange, 200, "{\"access_token\":\"tok\",\"expires_in\":3600}"));
+
+        HttpControlPlane cp = new HttpControlPlane("http://localhost:1",
+                new TokenSource(HttpClient.newHttpClient(), baseUrl(tokenServer), "client-1", "secret-1"));
+
+        assertThatThrownBy(() -> cp.emit(emitRequest("dedup-unavailable")))
+                .isInstanceOf(EventEmitException.class)
+                .satisfies(e -> assertThat(((EventEmitException) e).code())
+                        .as("mutant: some other code for a transport failure").isEqualTo("UNAVAILABLE"))
+                .satisfies(e -> assertThat(((EventEmitException) e).status())
+                        .as("mutant: some other status for a transport failure").isEqualTo(503));
     }
 
     // ── R9: the secret and every minted token appear in no log line, no exception message ──

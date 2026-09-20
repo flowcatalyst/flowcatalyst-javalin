@@ -200,7 +200,8 @@ class DbPoolsTest {
                         "sha256:0000000000000000000000000000000000000000000000000000000000000000"),
                 "file:///dev/null", null, null, manifest, null, null, null, java.util.Map.of(),
                 java.util.Map.of("the_dsn", rawDsn), java.util.List.of());
-        ContextFactory factory = new ContextFactory(pools, java.net.http.HttpClient.newHttpClient(), java.time.Clock.systemUTC());
+        ContextFactory factory = new ContextFactory(pools, java.net.http.HttpClient.newHttpClient(), java.time.Clock.systemUTC(),
+                new io.flowcatalyst.fnhost.reconcile.FakeControlPlane(), "host-1");
         return factory.build(entry, new Object());
     }
 

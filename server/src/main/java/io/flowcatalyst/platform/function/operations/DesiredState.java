@@ -115,6 +115,31 @@ public final class DesiredState {
         return new Document(pool.value(), List.copyOf(entries), unload);
     }
 
+    /// Whether `f`'s live version, or its newest PUBLISHED candidate, IS
+    /// `v` in `pool` — the exact same selection [#build] itself computes for
+    /// `functions` (live: its own manifest's pool matches; candidate: newer
+    /// than live, its own manifest's pool matches), reused rather than
+    /// re-derived so `FunctionControlApi`'s `/control/functions/events`
+    /// route (spec `function-context.md` §3 check 2: "a host can speak only
+    /// for what it runs") can never drift from what a host's own
+    /// desired-state document actually told it.
+    public boolean serves(Function f, FunctionVersion v, DnsLabel pool) {
+        Objects.requireNonNull(f, "f");
+        Objects.requireNonNull(v, "v");
+        Objects.requireNonNull(pool, "pool");
+        if (f.status() != FunctionStatus.ACTIVE) {
+            return false;
+        }
+        FunctionVersion live = f.liveVersionId().map(id -> versions.findByIds(List.of(id)).get(id)).orElse(null);
+        if (live != null && live.id().equals(v.id()) && live.manifest().pool().equals(pool)) {
+            return true;
+        }
+        FunctionVersion candidate = versions.newestPublishedByFunctions(List.of(f.id())).get(f.id());
+        return candidate != null && candidate.id().equals(v.id())
+                && (live == null || candidate.version() > live.version())
+                && candidate.manifest().pool().equals(pool);
+    }
+
     /// Spec §6, R9: only for a version whose manifest has at least one
     /// `webhook` endpoint (§4.1's `webhook` — the one auth mode the host
     /// must verify a signature for), and only when the application actually

@@ -28,6 +28,10 @@ public record OutboundEvent(
 
     public OutboundEvent {
         Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(dedupId, "dedupId");
+        if (dedupId.isBlank()) {
+            throw new IllegalArgumentException("dedupId must not be blank");
+        }
         data = Copies.bytes(data);
     }
 

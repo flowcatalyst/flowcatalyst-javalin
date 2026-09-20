@@ -111,9 +111,9 @@ no-op, reported per event as the ingest routes report it), with `source = functi
 Response `{results: [...]}` in the ingest routes' shape.
 
 Host: `Events.emit(OutboundEvent)` ⇒ one POST (batch of one) with the host's own token;
-`dedupId` is required by the API type; correlation/causation default to the current invocation's
-(`X-Correlation-Id`, and the inbound event's id when the request was a webhook delivery — `Webhook`
-exposes it); non-2xx ⇒ `EventEmitException` (API-jar type) carrying the platform's error code, so a
+`dedupId` is required by the API type; `correlationId` defaults to the inbound event's own `correlationId` when the request was a
+webhook delivery that carries one (the emitted event belongs to that flow), else `X-Correlation-Id`,
+else the invocation id; `causationId` defaults to the inbound event's id; non-2xx ⇒ `EventEmitException` (API-jar type) carrying the platform's error code, so a
 function can `Result.retry` on a 5xx and fail loudly on `EVENT_TYPE_NOT_OWNED`.
 
 ### 3.1 The same gap on the ordinary ingest path — not fixed here, written down

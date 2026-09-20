@@ -86,6 +86,12 @@
       "request": { "method": "GET", "path": "/control/functions/desired-state", "auth": "${hostToken}", "headers": { "Cookie": "" },
                    "query": { "pool": "pf-pool-${run}" } } },
 
+    { "id": "emit-events",
+      "request": { "method": "POST", "path": "/control/functions/events", "auth": "${hostToken}", "headers": { "Cookie": "" },
+                   "body": { "hostId": "beat-${run}", "address": "pf-${run}.svc.fn", "version": 1,
+                             "events": [ { "type": "pf-${run}:orders:order:created", "subject": "s",
+                                           "dedupId": "parity-emit-${run}", "data": {} } ] } } },
+
     { "id": "promote-not-ready",
       "request": { "method": "PUT", "path": "/api/functions/pf-${run}.svc.fn/aliases/live", "body": { "version": 1 } } },
 

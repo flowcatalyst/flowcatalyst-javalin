@@ -1,10 +1,14 @@
 package io.flowcatalyst.fnhost.http;
 
 import io.flowcatalyst.fnhost.context.InvocationDeadline;
+import io.flowcatalyst.fnhost.context.InvocationEmitDefaults;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
+import io.flowcatalyst.function.Caller;
 import io.flowcatalyst.function.FunctionContext;
 import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
+import io.flowcatalyst.function.Webhook;
+import io.flowcatalyst.function.WebhookFormatException;
 import io.flowcatalyst.server.Logging;
 import org.slf4j.MDC;
 
@@ -64,6 +68,7 @@ public final class InvocationRunner {
             mdc.forEach(MDC::put);
             try {
                 Result result = ScopedValue.where(InvocationDeadline.CURRENT, deadline)
+                        .where(InvocationEmitDefaults.CURRENT, emitDefaults(request))
                         .call(() -> fn.invoke(request, ctx));
                 future.complete(result);
             } catch (Throwable t) {
@@ -84,5 +89,33 @@ public final class InvocationRunner {
         mdc.put(Logging.MdcKeys.EXECUTION_ID, request.invocationId());
         request.header("X-Correlation-Id").ifPresent(v -> mdc.put(Logging.MdcKeys.CORRELATION_ID, v));
         return mdc;
+    }
+
+    /// Spec `function-context.md` §3. `correlationId`: the inbound event's own
+    /// `correlationId` when the delivery carries one — correlation exists to
+    /// tie a whole flow together, and an event emitted while handling a
+    /// delivery belongs to that delivery's flow — else the `X-Correlation-Id`
+    /// header, else this invocation's id. `causationId`: the inbound event's
+    /// id. Both inbound values exist only when the request arrived as a
+    /// verified webhook delivery ([Caller.Platform]; `auth: none`/`platform`
+    /// endpoints never get them) AND its body parses as an event envelope (a
+    /// scheduled-job firing parses as [io.flowcatalyst.function.Schedule]
+    /// instead, so it offers neither).
+    static InvocationEmitDefaults.Defaults emitDefaults(Request request) {
+        String correlationId = request.header("X-Correlation-Id").orElse(request.invocationId());
+        String causationId = null;
+        if (request.caller() instanceof Caller.Platform) {
+            try {
+                var inbound = Webhook.event(request);
+                causationId = inbound.id();
+                if (inbound.correlationId() != null && !inbound.correlationId().isBlank()) {
+                    correlationId = inbound.correlationId();
+                }
+            } catch (WebhookFormatException e) {
+                // Not a parseable event envelope (e.g. a scheduled-job firing) — no default.
+                causationId = null;
+            }
+        }
+        return new InvocationEmitDefaults.Defaults(correlationId, causationId);
     }
 }

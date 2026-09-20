@@ -1,9 +1,11 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.function.EventEmitException;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -93,6 +95,96 @@ public final class HttpControlPlane implements ControlPlane {
             }
             return null;
         });
+    }
+
+    /// `POST /control/functions/events` (spec `function-context.md` §3).
+    /// Same 401-refresh-once handling as [#desiredState]/[#heartbeat] (a
+    /// stale HOST bearer token, orthogonal to the platform's own business
+    /// outcome for the emit itself) — but every OTHER non-2xx, and any
+    /// transport failure, becomes an [EventEmitException] rather than a
+    /// [ControlPlaneException], per this method's own contract.
+    @Override
+    public void emit(ControlPlane.EmitRequest request) {
+        Objects.requireNonNull(request, "request");
+        String body = Json.write(toWire(request));
+        String token;
+        try {
+            token = tokenSource.token();
+        } catch (ControlPlaneException e) {
+            throw new EventEmitException("UNAVAILABLE", 503, "minting a control-plane token failed");
+        }
+        HttpResponse<String> response = sendEmit(token, body);
+        if (response.statusCode() == 401) {
+            LOG.atDebug().setMessage("control plane rejected the bearer token on emit; refreshing and retrying once").log();
+            try {
+                token = tokenSource.refresh();
+            } catch (ControlPlaneException e) {
+                throw new EventEmitException("UNAVAILABLE", 503, "refreshing a control-plane token failed");
+            }
+            response = sendEmit(token, body);
+        }
+        if (response.statusCode() / 100 != 2) {
+            throw errorFrom(response);
+        }
+        // Spec §3: the response body is the ingest routes' `{results: […]}` shape, per-item —
+        // this host always sends a batch of one and [io.flowcatalyst.function.Events#emit] is
+        // `void`, so nothing here needs to read it back; a non-2xx status is the only outcome
+        // a caller distinguishes.
+    }
+
+    private HttpResponse<String> sendEmit(String token, String body) {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(platformUrl + "/control/functions/events"))
+                .timeout(REQUEST_TIMEOUT)
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build();
+        try {
+            return client.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new EventEmitException("UNAVAILABLE", 503, "control plane request failed: POST /control/functions/events");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new EventEmitException("UNAVAILABLE", 503, "control plane request was interrupted");
+        }
+    }
+
+    /// The platform's own `{error, message, details}` envelope (`HttpError`)
+    /// read back into an [EventEmitException] naming its code and this
+    /// response's status — an unreadable/absent body still carries a real
+    /// status, so the code falls back to `"UNKNOWN"` rather than losing it.
+    private static EventEmitException errorFrom(HttpResponse<String> response) {
+        String code = "UNKNOWN";
+        try {
+            JsonNode body = Json.MAPPER.readTree(response.body());
+            String fromBody = body.path("error").asString(null);
+            if (fromBody != null && !fromBody.isBlank()) {
+                code = fromBody;
+            }
+        } catch (RuntimeException ignored) {
+            // Body was not readable JSON — fall through with the status alone.
+        }
+        return new EventEmitException(code, response.statusCode());
+    }
+
+    private static Object toWire(ControlPlane.EmitRequest request) {
+        ObjectNode node = Json.MAPPER.createObjectNode();
+        node.put("hostId", request.hostId());
+        node.put("address", request.address().render());
+        node.put("version", request.version());
+        ArrayNode events = node.putArray("events");
+        for (ControlPlane.EmitItem item : request.events()) {
+            ObjectNode e = Json.MAPPER.createObjectNode();
+            e.put("type", item.type());
+            if (item.subject() != null) e.put("subject", item.subject());
+            e.put("dedupId", item.dedupId());
+            e.set("data", Json.MAPPER.readTree(item.data()));
+            if (item.correlationId() != null) e.put("correlationId", item.correlationId());
+            if (item.causationId() != null) e.put("causationId", item.causationId());
+            if (item.messageGroup() != null) e.put("messageGroup", item.messageGroup());
+            events.add(e);
+        }
+        return node;
     }
 
     /// Sends `requestBuilder.apply(token)` with the cached token; on a 401,

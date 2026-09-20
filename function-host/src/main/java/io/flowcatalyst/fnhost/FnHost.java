@@ -57,7 +57,7 @@ public final class FnHost implements AutoCloseable {
         HttpClient http = HttpClient.newHttpClient();
         TokenSource tokenSource = new TokenSource(http, env.platformUrl(), env.clientId(), env.clientSecret());
         HttpControlPlane controlPlane = new HttpControlPlane(env.platformUrl(), tokenSource);
-        ContextFactory contextFactory = ContextFactory.production(env.maxDbPools());
+        ContextFactory contextFactory = ContextFactory.production(env.maxDbPools(), controlPlane, env.hostId());
         this.reconciler = new Reconciler(env.pool(), env.hostId(), controlPlane, stores, env.signatures(),
                 new JvmFunctionLoader(), registry, contextFactory);
         this.loop = new ReconcileLoop(reconciler);

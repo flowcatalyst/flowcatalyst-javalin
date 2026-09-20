@@ -154,13 +154,15 @@ public final class Reconciler {
     private final List<Runnable> postReconcileListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /// A trivial [io.flowcatalyst.fnhost.context.ContextFactory] (16 database
-    /// pools, a fresh shared [java.net.http.HttpClient], the system clock) —
-    /// every pre-D4b test/caller that has no opinion about database/HTTP
-    /// context wiring keeps compiling unchanged.
+    /// pools, a fresh shared [java.net.http.HttpClient], the system clock,
+    /// and THIS SAME `controlPlane`/`hostId` — spec §3's `events()` speaks
+    /// through the one control plane this reconciler itself polls/heartbeats
+    /// through) — every pre-D4c test/caller that has no other opinion about
+    /// database/HTTP context wiring keeps compiling unchanged.
     public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
                        Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry) {
         this(pool, hostId, controlPlane, artifactStore, signatures, loader, registry,
-                ContextFactory.production(16));
+                ContextFactory.production(16, controlPlane, hostId));
     }
 
     /// D4b (`docs/spec/function-context.md` §2): `contextFactory` builds each

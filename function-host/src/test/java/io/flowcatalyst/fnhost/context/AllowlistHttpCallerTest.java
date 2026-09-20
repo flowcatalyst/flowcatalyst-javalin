@@ -134,4 +134,36 @@ class AllowlistHttpCallerTest {
         assertThat(elapsed).as("mutant: use the default 30s ceiling regardless of the deadline")
                 .isLessThan(Duration.ofSeconds(3));
     }
+
+    @Test
+    void x8b_theCallsOwnTimeoutIsHonouredWhenTighterThanTheDefault() throws Exception {
+        HttpServer s = start("/slow", ex -> {
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            try {
+                ex.sendResponseHeaders(200, -1);
+            } catch (Exception ignored) {
+                // client will already have given up
+            }
+            ex.close();
+        });
+        AllowlistHttpCaller caller = new AllowlistHttpCaller(
+                AllowlistHttpCaller.newSharedClient(), List.of("localhost"), Clock.systemUTC());
+        // No InvocationDeadline bound here (NO_DEADLINE_BUDGET = 30s applies) — the call's OWN
+        // 300ms timeout is the only thing tighter than the server's 5s sleep, so it alone can be
+        // what causes a timeout this fast.
+        HttpCall call = new HttpCall("GET", "http://localhost:" + s.getAddress().getPort() + "/slow",
+                Map.of(), new byte[0], Duration.ofMillis(300));
+
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> caller.send(call))
+                .as("mutant: ignore HttpCall#timeout and always use the host default")
+                .isInstanceOf(HttpTimeoutException.class);
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+        assertThat(elapsed).as("mutant: ignore HttpCall#timeout and always use the host default")
+                .isLessThan(Duration.ofSeconds(3));
+    }
 }

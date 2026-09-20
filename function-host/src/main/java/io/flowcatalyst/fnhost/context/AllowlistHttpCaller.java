@@ -19,22 +19,15 @@ import java.util.Objects;
 /// §2): the target host must be on `manifest.httpAllow` ([HttpAllowlist]);
 /// `https` only, except a loopback host; redirects are never followed (the
 /// client is built with [HttpClient.Redirect#NEVER] — the function sees the
-/// 3xx itself); the request timeout is the smaller of a fixed per-call
-/// ceiling and the time left before the invocation's own deadline
+/// 3xx itself); the request timeout is `min(call.timeout() or
+/// [#DEFAULT_CALL_TIMEOUT], time left before the invocation's own deadline)`
 /// ([InvocationDeadline]).
-///
-/// **Spec/API mismatch, flagged rather than silently resolved** (the slice's
-/// handback report carries the full note): `function-context.md` §2 says the
-/// timeout is `min(HttpCall.timeout, …)`, but [HttpCall] — the API jar's own
-/// value type — has no `timeout` field, and this slice's brief forbids
-/// widening `function-api` beyond [HttpCallRefusedException]. [#DEFAULT_CALL_TIMEOUT]
-/// stands in for the missing `HttpCall.timeout` until the API type gains one.
 public final class AllowlistHttpCaller implements HttpCaller {
 
-    /// Stand-in for the spec's `HttpCall.timeout`, which does not exist on
-    /// the API type today (see class doc) — generous enough never to be the
-    /// binding constraint in practice; the invocation deadline is almost
-    /// always the tighter of the two.
+    /// The host's own default call timeout, used when [HttpCall#timeout()]
+    /// is `null` — generous enough never to be the binding constraint in
+    /// practice; the invocation deadline is almost always the tighter of
+    /// the two.
     public static final Duration DEFAULT_CALL_TIMEOUT = Duration.ofSeconds(30);
 
     private final HttpClient client;
@@ -77,7 +70,8 @@ public final class AllowlistHttpCaller implements HttpCaller {
         }
 
         Duration remaining = InvocationDeadline.remaining(clock);
-        Duration timeout = remaining.compareTo(DEFAULT_CALL_TIMEOUT) < 0 ? remaining : DEFAULT_CALL_TIMEOUT;
+        Duration ceiling = call.timeout() != null ? call.timeout() : DEFAULT_CALL_TIMEOUT;
+        Duration timeout = remaining.compareTo(ceiling) < 0 ? remaining : ceiling;
         if (timeout.isZero() || timeout.isNegative()) {
             throw new HttpCallRefusedException(String.valueOf(host), "no time left before the invocation deadline");
         }

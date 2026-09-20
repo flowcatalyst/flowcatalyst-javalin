@@ -657,7 +657,8 @@ public final class Platform {
         // inside the authenticator (Platform#isPlatformPath).
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
-                        functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo));
+                        functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo,
+                        applicationRepo, eventTypeRepo, eventRepo));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));

@@ -34,7 +34,8 @@ public interface FunctionContext {
     /// The host-mediated outbound HTTP client.
     HttpCaller http();
 
-    /// Emits platform events on this function's behalf.
+    /// Emits platform events on this function's behalf, through the host
+    /// (`docs/spec/function-context.md` §3).
     Events events();
 
     /// The host's clock — never `Clock.systemUTC()` read directly, so a test

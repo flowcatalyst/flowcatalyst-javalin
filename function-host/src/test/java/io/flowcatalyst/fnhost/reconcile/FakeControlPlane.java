@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.function.EventEmitException;
 import io.flowcatalyst.platform.function.DnsLabel;
 
 import java.util.ArrayList;
@@ -28,13 +29,22 @@ public final class FakeControlPlane implements ControlPlane {
         void apply(HeartbeatReport report) throws ControlPlaneException;
     }
 
+    @FunctionalInterface
+    public interface EmitScript {
+        void apply(ControlPlane.EmitRequest request) throws EventEmitException;
+    }
+
     private volatile DesiredStateScript desiredStateScript = (pool, etag) -> new Fetched.NotModified();
     private volatile HeartbeatScript heartbeatScript = report -> {
     };
+    private volatile EmitScript emitScript = request -> {
+    };
 
     private final List<HeartbeatReport> heartbeats = Collections.synchronizedList(new ArrayList<>());
+    private final List<ControlPlane.EmitRequest> emits = Collections.synchronizedList(new ArrayList<>());
     private final AtomicInteger desiredStateCalls = new AtomicInteger();
     private final AtomicInteger heartbeatCalls = new AtomicInteger();
+    private final AtomicInteger emitCalls = new AtomicInteger();
 
     public void desiredStateReturns(DesiredStateScript script) {
         this.desiredStateScript = script;
@@ -44,9 +54,21 @@ public final class FakeControlPlane implements ControlPlane {
         this.heartbeatScript = script;
     }
 
+    /// Scripts [#emit] (`docs/spec/function-context.md` §3, D4c) — e.g. throw
+    /// [EventEmitException] to simulate the platform refusing an event.
+    public void emitDoes(EmitScript script) {
+        this.emitScript = script;
+    }
+
     public List<HeartbeatReport> heartbeats() {
         synchronized (heartbeats) {
             return List.copyOf(heartbeats);
+        }
+    }
+
+    public List<ControlPlane.EmitRequest> emits() {
+        synchronized (emits) {
+            return List.copyOf(emits);
         }
     }
 
@@ -56,6 +78,10 @@ public final class FakeControlPlane implements ControlPlane {
 
     public int heartbeatCallCount() {
         return heartbeatCalls.get();
+    }
+
+    public int emitCallCount() {
+        return emitCalls.get();
     }
 
     @Override
@@ -77,5 +103,12 @@ public final class FakeControlPlane implements ControlPlane {
         heartbeatCalls.incrementAndGet();
         heartbeats.add(report);
         heartbeatScript.apply(report);
+    }
+
+    @Override
+    public void emit(ControlPlane.EmitRequest request) {
+        emitCalls.incrementAndGet();
+        emits.add(request);
+        emitScript.apply(request);
     }
 }

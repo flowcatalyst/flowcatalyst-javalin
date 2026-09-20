@@ -110,6 +110,7 @@
   "POST /bff/roles",
   "POST /bff/roles/permissions",
   "POST /bff/roles/sync-platform",
+  "POST /control/functions/events",
   "POST /control/functions/heartbeat",
   "POST /oauth/introspect",
   "POST /oauth/revoke",

@@ -610,6 +610,13 @@
   },
   {
     "scenario": "functions*",
+    "step": "emit-events",
+    "pointer": "/**",
+    "reason": "Java-first: /control/functions/events has no Go implementation (docs/spec/function-context.md §3, D4c); Go's SPA catch-all or 404 answers instead of Java's 409 FUNCTION_NOT_SERVED_BY_HOST — the host is live (the heartbeat step already registered it) but no version was ever published (the publish step stops at 400 SIGNATURE_REQUIRED), so check 2 refuses before ownership is ever reached",
+    "ruling": "owner 2026-09-20, function-context.md §3; never retires unless Go builds the function feature"
+  },
+  {
+    "scenario": "functions*",
     "step": "promote-not-ready",
     "pointer": "/**",
     "reason": "Java-first: alias routes have no Go implementation (docs/spec/function-api.md §0, §5.2); Go's SPA catch-all or 404 answers instead of Java's 404 FunctionVersion_NOT_FOUND — no version was ever published (the publish step stops at 400 SIGNATURE_REQUIRED), so this is 404, not the 409 VERSION_NOT_READY a signed publish would show",

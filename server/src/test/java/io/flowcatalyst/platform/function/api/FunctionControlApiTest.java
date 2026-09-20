@@ -23,6 +23,9 @@ import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
+import io.flowcatalyst.platform.event.EventRepository;
+import io.flowcatalyst.platform.eventtype.EventType;
+import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
@@ -52,6 +55,7 @@ import java.time.Instant;
 import java.util.Locale;
 import java.util.UUID;
 
+import static io.flowcatalyst.db.generated.Tables.MSG_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `/control/functions/*` end to end (spec `function-api.md` §6, §8 P6, P14,
@@ -77,6 +81,8 @@ class FunctionControlApiTest {
             new ServiceAccountRepository(TestPg.dataSource(), java.util.Optional.empty());
     private static final FunctionSettingsRepository settings =
             new FunctionSettingsRepository(TestPg.dataSource(), java.util.Optional.empty());
+    private static final EventTypeRepository eventTypes = new EventTypeRepository(TestPg.dataSource());
+    private static final EventRepository events = new EventRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
 
@@ -105,7 +111,8 @@ class FunctionControlApiTest {
                     policies, DEFAULTS, new Signatures.Off(), TriggerSync.none(), triggerObjects, subscriptions,
                     dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
             FunctionControlApi.register(routes,
-                    new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts, settings));
+                    new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts, settings,
+                            applications, eventTypes, events));
         });
     }
 
@@ -486,5 +493,281 @@ class FunctionControlApiTest {
         var r = http.post("/control/functions/heartbeat", body, HOST);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(204);
         assertThat(versionReadyEventsFor(f.id())).isEmpty();
+    }
+
+    // ── POST /control/functions/events (spec §3, X9) ─────────────────────────
+
+    private static void registerHost(String hostId, String pool) {
+        var r = http.post("/control/functions/heartbeat",
+                "{\"hostId\":\"" + hostId + "\",\"pool\":\"" + pool + "\",\"state\":\"ACTIVE\",\"loaded\":[]}", HOST);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(204);
+    }
+
+    private static EventType eventType(String code) {
+        EventType et = EventType.create(code, "X9 " + code);
+        uow.inTransaction(tx -> {
+            eventTypes.persist(et, tx.dbTx());
+            return null;
+        });
+        return et;
+    }
+
+    private static void archive(EventType et) {
+        EventType archived = et.archive();
+        uow.inTransaction(tx -> {
+            eventTypes.persist(archived, tx.dbTx());
+            return null;
+        });
+    }
+
+    private static String eventJson(String type, String dedupId, String dataJson) {
+        return "{\"type\":\"" + type + "\",\"dedupId\":\"" + dedupId + "\",\"data\":" + dataJson + "}";
+    }
+
+    private static String emitBody(String hostId, String address, int version, String eventsArrayJson) {
+        return "{\"hostId\":\"" + hostId + "\",\"address\":\"" + address + "\",\"version\":" + version
+                + ",\"events\":" + eventsArrayJson + "}";
+    }
+
+    private static org.jooq.Record eventRowByDedup(String dedupId) {
+        return DB.selectFrom(MSG_EVENTS).where(MSG_EVENTS.DEDUPLICATION_ID.eq(dedupId)).fetchOne();
+    }
+
+    @Test
+    void emitEventsWithNoCredentialIs401() {
+        var r = http.post("/control/functions/events", "{}");
+        assertThat(r.statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void emitEventsWithoutTheHostRoleIs403() {
+        var r = http.post("/control/functions/events", "{}", NO_ROLE);
+        assertThat(r.statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void anUnknownOrStaleHostIsHostUnknown409() {
+        Function f = testFunction("emithostunknown");
+        FunctionVersion v = publish(f, 1, "emithupool" + RUN);
+        promote(f, v);
+
+        var rUnknownHost = http.post("/control/functions/events",
+                emitBody("no-such-host-" + RUN, f.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-hostunknown-1-" + RUN, "{}") + "]"), HOST);
+        assertThat(rUnknownHost.statusCode()).isEqualTo(409);
+        assertThat(json(rUnknownHost).get("error").asString()).isEqualTo("HOST_UNKNOWN");
+
+        // Absence, not just a nonsense id: a REAL host row whose heartbeat is outside
+        // LIVE_WINDOW must fail exactly the same way (mutant: check only that the row exists).
+        String staleHostId = "host-stale-" + RUN;
+        Instant longAgo = Instant.now().minus(FunctionHost.LIVE_WINDOW).minusSeconds(30);
+        FunctionHost stale = FunctionHost.register(staleHostId, new DnsLabel("emithupool" + RUN), longAgo);
+        uow.inTransaction(tx -> {
+            hosts.persist(stale, tx.dbTx());
+            return null;
+        });
+        var rStaleHost = http.post("/control/functions/events",
+                emitBody(staleHostId, f.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-hostunknown-2-" + RUN, "{}") + "]"), HOST);
+        assertThat(rStaleHost.statusCode()).as("mutant: skip the LIVE_WINDOW check on hostId").isEqualTo(409);
+        assertThat(json(rStaleHost).get("error").asString()).isEqualTo("HOST_UNKNOWN");
+    }
+
+    @Test
+    void aFunctionOrVersionThisHostDoesNotServeIsFunctionNotServedByHost409() {
+        String hostId = "host-fnsb-" + RUN;
+        String pool = "fnsbpool" + RUN;
+        registerHost(hostId, pool);
+
+        // unknown address entirely
+        var rUnknownAddr = http.post("/control/functions/events",
+                emitBody(hostId, "nosuch." + RUN + ".fn", 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-fnsb-1-" + RUN, "{}") + "]"), HOST);
+        assertThat(rUnknownAddr.statusCode()).isEqualTo(409);
+        assertThat(json(rUnknownAddr).get("error").asString()).isEqualTo("FUNCTION_NOT_SERVED_BY_HOST");
+
+        // known function, but no version was ever published
+        Function f = testFunction("fnsb");
+        var rNoVersion = http.post("/control/functions/events",
+                emitBody(hostId, f.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-fnsb-2-" + RUN, "{}") + "]"), HOST);
+        assertThat(rNoVersion.statusCode()).as("mutant: treat a never-published version as served").isEqualTo(409);
+        assertThat(json(rNoVersion).get("error").asString()).isEqualTo("FUNCTION_NOT_SERVED_BY_HOST");
+
+        // published + promoted, but in a DIFFERENT pool than this host's own
+        FunctionVersion v = publish(f, 1, "otherpool" + RUN);
+        f = promote(f, v);
+        var rWrongPool = http.post("/control/functions/events",
+                emitBody(hostId, f.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-fnsb-3-" + RUN, "{}") + "]"), HOST);
+        assertThat(rWrongPool.statusCode()).as("mutant: ignore pool when deciding what a host serves").isEqualTo(409);
+        assertThat(json(rWrongPool).get("error").asString()).isEqualTo("FUNCTION_NOT_SERVED_BY_HOST");
+
+        // disabled function, live version IS in this host's pool
+        Function f2 = testFunction("fnsbdisabled");
+        FunctionVersion v2 = publish(f2, 1, pool);
+        f2 = promote(f2, v2);
+        Function disabled = f2.disable(Instant.now());
+        uow.inTransaction(tx -> {
+            functions.persist(disabled, tx.dbTx());
+            return null;
+        });
+        var rDisabled = http.post("/control/functions/events",
+                emitBody(hostId, f2.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-fnsb-4-" + RUN, "{}") + "]"), HOST);
+        assertThat(rDisabled.statusCode()).as("mutant: skip the ACTIVE check").isEqualTo(409);
+        assertThat(json(rDisabled).get("error").asString()).isEqualTo("FUNCTION_NOT_SERVED_BY_HOST");
+
+        // the positive case: live version, matching pool -> checks 1+2 both pass (this
+        // request still fails later, at ownership, since no event type is registered for
+        // it — but NOT with FUNCTION_NOT_SERVED_BY_HOST, proving checks 1+2 passed).
+        Function f3 = testFunction("fnsbok");
+        FunctionVersion v3 = publish(f3, 1, pool);
+        f3 = promote(f3, v3);
+        var rServed = http.post("/control/functions/events",
+                emitBody(hostId, f3.address().render(), 1,
+                        "[" + eventJson("whatever:sub:agg:evt", "dd-fnsb-5-" + RUN, "{}") + "]"), HOST);
+        assertThat(rServed.statusCode()).as("must clear checks 1+2 once the pool matches the live version").isNotEqualTo(409);
+    }
+
+    @Test
+    void batchValidationRequiresOneToOneHundredUniqueDedupIdsAndBoundedObjectData() {
+        String hostId = "host-batch-" + RUN;
+        String pool = "batchpool" + RUN;
+        registerHost(hostId, pool);
+        Function f = testFunction("batch");
+        FunctionVersion v = publish(f, 1, pool);
+        f = promote(f, v);
+        String address = f.address().render();
+
+        var rEmpty = http.post("/control/functions/events", emitBody(hostId, address, 1, "[]"), HOST);
+        assertThat(rEmpty.statusCode()).as(rEmpty.body()).isEqualTo(400);
+        assertThat(json(rEmpty).get("error").asString()).isEqualTo("BATCH_SIZE_INVALID");
+
+        var rMissingDedup = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[{\"type\":\"whatever:sub:agg:evt\",\"data\":{}}]"), HOST);
+        assertThat(rMissingDedup.statusCode()).as(rMissingDedup.body()).isEqualTo(400);
+        assertThat(json(rMissingDedup).get("error").asString()).isEqualTo("DEDUP_ID_REQUIRED");
+
+        var rDupDedup = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson("whatever:sub:agg:evt", "same-dd-" + RUN, "{}") + ","
+                        + eventJson("whatever:sub:agg:evt2", "same-dd-" + RUN, "{}") + "]"), HOST);
+        assertThat(rDupDedup.statusCode()).as(rDupDedup.body()).isEqualTo(400);
+        assertThat(json(rDupDedup).get("error").asString()).isEqualTo("DEDUP_ID_DUPLICATE");
+
+        String bigValue = "x".repeat(300_000);
+        var rTooBig = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[{\"type\":\"whatever:sub:agg:evt\",\"dedupId\":\"dd-big-" + RUN + "\",\"data\":{\"v\":\""
+                        + bigValue + "\"}}]"), HOST);
+        assertThat(rTooBig.statusCode()).as(rTooBig.body()).isEqualTo(400);
+        assertThat(json(rTooBig).get("error").asString()).isEqualTo("EVENT_DATA_TOO_LARGE");
+    }
+
+    @Test
+    void ownershipGatesEmitUnknownAndArchivedAreBoth403AndTheBatchIsAllOrNothing() {
+        String hostId = "host-own-" + RUN;
+        String pool = "ownpool" + RUN;
+        registerHost(hostId, pool);
+        Function f = testFunction("own");
+        FunctionVersion v = publish(f, 1, pool);
+        f = promote(f, v);
+        String address = f.address().render();
+        String appCode = "fc-" + RUN + "-own"; // testFunction's own naming (see #testFunction)
+
+        String ownedType = appCode + ":orders:order:created";
+        eventType(ownedType);
+
+        String otherAppCode = "fc-" + RUN + "-notmine";
+        String notOwnedType = otherAppCode + ":orders:order:created";
+        eventType(notOwnedType);
+
+        String archivedTypeCode = appCode + ":orders:order:archived";
+        archive(eventType(archivedTypeCode));
+
+        // unknown type -> 403, not 404
+        var rUnknown = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(appCode + ":no:such:type", "dd-own-unknown-" + RUN, "{}") + "]"), HOST);
+        assertThat(rUnknown.statusCode()).as("mutant: unknown type -> 404 instead of 403").isEqualTo(403);
+        assertThat(json(rUnknown).get("error").asString()).isEqualTo("EVENT_TYPE_NOT_OWNED");
+
+        // archived type (owned application, but archived) -> 403
+        var rArchived = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(archivedTypeCode, "dd-own-archived-" + RUN, "{}") + "]"), HOST);
+        assertThat(rArchived.statusCode()).as("mutant: allow an archived type").isEqualTo(403);
+        assertThat(json(rArchived).get("error").asString()).isEqualTo("EVENT_TYPE_NOT_OWNED");
+
+        // type owned by ANOTHER application -> 403
+        var rOther = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(notOwnedType, "dd-own-other-" + RUN, "{}") + "]"), HOST);
+        assertThat(rOther.statusCode()).isEqualTo(403);
+        assertThat(json(rOther).get("error").asString()).isEqualTo("EVENT_TYPE_NOT_OWNED");
+
+        // ALL-OR-NOTHING: a batch of [owned, not-owned] writes NO row for the owned one either
+        String goodDedup = "dd-allornothing-good-" + RUN;
+        var rMixed = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(ownedType, goodDedup, "{}") + ","
+                        + eventJson(notOwnedType, "dd-allornothing-bad-" + RUN, "{}") + "]"), HOST);
+        assertThat(rMixed.statusCode()).isEqualTo(403);
+        assertThat(eventRowByDedup(goodDedup))
+                .as("mutant: validate every event but write the passing ones anyway").isNull();
+
+        // success: source, clientId
+        String successDedup = "dd-success-" + RUN;
+        var rOk = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(ownedType, successDedup, "{\"k\":1}") + "]"), HOST);
+        assertThat(rOk.statusCode()).as(rOk.body()).isEqualTo(201);
+        assertThat(json(rOk).get("results").get(0).get("status").asString()).isEqualTo("SUCCESS");
+        var row = eventRowByDedup(successDedup);
+        assertThat(row).isNotNull();
+        assertThat(row.get(MSG_EVENTS.SOURCE)).as("mutant: wrong/omitted source").isEqualTo("function:" + address);
+        assertThat(row.get(MSG_EVENTS.CLIENT_ID)).as("mutant: omit/misresolve clientId for a client-owned function")
+                .isEqualTo(f.owner().clientIdOrNull());
+
+        // Idempotent repeat: same as the ingest routes (IngestApiTest#aRepeatedDeduplicationIdStillReportsSuccessOnTheWire)
+        // — a repeated dedupId is never an error, reported SUCCESS exactly as a fresh one is.
+        // The composite (deduplication_id, created_at) conflict target only actually drops the
+        // duplicate row when both share the same instant (proven for the shared writer path by
+        // IngestApiTest#aRepeatedDeduplicationIdWritesExactlyOneRow, with an explicit shared
+        // timestamp) — two real, wall-clock-separated HTTP calls are not guaranteed to land on
+        // the same microsecond, so this asserts what the wire path actually guarantees: no error.
+        var rRepeat = http.post("/control/functions/events", emitBody(hostId, address, 1,
+                "[" + eventJson(ownedType, successDedup, "{\"k\":1}") + "]"), HOST);
+        assertThat(rRepeat.statusCode()).as(rRepeat.body()).isEqualTo(201);
+        assertThat(json(rRepeat).get("results").get(0).get("status").asString())
+                .as("mutant: a repeated dedupId becomes an error instead of the ingest path's own idempotent SUCCESS")
+                .isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void aPlatformOwnedFunctionsEmitCarriesNoClientId() {
+        String hostId = "host-plat-" + RUN;
+        String pool = "platpool" + RUN;
+        registerHost(hostId, pool);
+
+        String appCode = "fc-" + RUN + "-plat";
+        Application a = Application.create(ApplicationType.APPLICATION, appCode, "Platform Owned " + RUN);
+        uow.inTransaction(tx -> {
+            applications.persist(a, tx.dbTx());
+            return null;
+        });
+        FunctionAddress address = FunctionAddress.of(new DnsLabel(appCode), new DnsLabel("svc"), new DnsLabel("fn"));
+        Function f = Function.create(a.id(), address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+        FunctionVersion v = publish(f, 1, pool);
+        promote(f, v);
+
+        String type = appCode + ":orders:order:created";
+        eventType(type);
+
+        String dedup = "dd-platform-" + RUN;
+        var r = http.post("/control/functions/events", emitBody(hostId, address.render(), 1,
+                "[" + eventJson(type, dedup, "{}") + "]"), HOST);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var row = eventRowByDedup(dedup);
+        assertThat(row).isNotNull();
+        assertThat(row.get(MSG_EVENTS.CLIENT_ID)).as("mutant: a platform-owned function's emit carries a clientId").isNull();
     }
 }

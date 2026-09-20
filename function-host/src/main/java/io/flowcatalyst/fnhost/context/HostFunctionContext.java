@@ -22,7 +22,11 @@ import java.util.Objects;
 /// brand-new [io.flowcatalyst.fnhost.load.LoadedFunction] with a brand-new
 /// context instead of mutating this one in place).
 ///
-/// [#events()] still throws — `events()` lands in slice D4c (spec §3).
+/// [#events()] (D4c, spec §3) is [ControlPlaneEvents] over the SAME
+/// [io.flowcatalyst.fnhost.reconcile.ControlPlane] the reconciler itself
+/// polls/heartbeats through — never a mutable field, since correlation/
+/// causation defaults are per-invocation state carried by
+/// [InvocationEmitDefaults] instead.
 ///
 /// [AutoCloseable]: releases every database pool this context's
 /// [#dataSource] entries acquired. Called exactly once, by
@@ -37,6 +41,7 @@ public final class HostFunctionContext implements FunctionContext, AutoCloseable
     private final Secrets secrets;
     private final Map<String, DataSource> dataSources;
     private final HttpCaller http;
+    private final Events events;
     private final Clock clock;
     private final Logger logger;
     private final DbPools dbPools;
@@ -44,7 +49,7 @@ public final class HostFunctionContext implements FunctionContext, AutoCloseable
     private final Object dbPoolToken;
 
     HostFunctionContext(FunctionAddress address, int version, Config config, Secrets secrets,
-                         Map<String, DataSource> dataSources, HttpCaller http, Clock clock,
+                         Map<String, DataSource> dataSources, HttpCaller http, Events events, Clock clock,
                          DbPools dbPools, List<String> acquiredPoolIdentities, Object dbPoolToken) {
         this.address = Objects.requireNonNull(address, "address");
         this.version = version;
@@ -52,6 +57,7 @@ public final class HostFunctionContext implements FunctionContext, AutoCloseable
         this.secrets = Objects.requireNonNull(secrets, "secrets");
         this.dataSources = Map.copyOf(dataSources);
         this.http = Objects.requireNonNull(http, "http");
+        this.events = Objects.requireNonNull(events, "events");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.dbPools = Objects.requireNonNull(dbPools, "dbPools");
         this.acquiredPoolIdentities = List.copyOf(acquiredPoolIdentities);
@@ -92,7 +98,7 @@ public final class HostFunctionContext implements FunctionContext, AutoCloseable
 
     @Override
     public Events events() {
-        throw new UnsupportedOperationException("events: slice D4c");
+        return events;
     }
 
     @Override

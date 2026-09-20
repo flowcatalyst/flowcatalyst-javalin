@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.context;
 
+import io.flowcatalyst.fnhost.reconcile.ControlPlane;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.platform.function.Manifest;
 
@@ -24,18 +25,30 @@ public final class ContextFactory {
     private final DbPools dbPools;
     private final HttpClient httpClient;
     private final Clock clock;
+    private final ControlPlane controlPlane;
+    private final String hostId;
 
-    public ContextFactory(DbPools dbPools, HttpClient httpClient, Clock clock) {
+    /// @param controlPlane what [HostFunctionContext#events()] emits
+    ///                       through (spec §3) — the SAME [ControlPlane]
+    ///                       instance the reconciler itself polls/heartbeats
+    ///                       through, never a second copy
+    /// @param hostId        this host's own id, carried on every emit so the
+    ///                       platform can check it against what this host
+    ///                       actually serves
+    public ContextFactory(DbPools dbPools, HttpClient httpClient, Clock clock, ControlPlane controlPlane, String hostId) {
         this.dbPools = Objects.requireNonNull(dbPools, "dbPools");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.controlPlane = Objects.requireNonNull(controlPlane, "controlPlane");
+        this.hostId = Objects.requireNonNull(hostId, "hostId");
     }
 
     /// Production convenience: [DbPools] sized from `maxDbPools`
     /// (`FC_FN_MAX_DB_POOLS`), [AllowlistHttpCaller#newSharedClient] (redirects
     /// disabled), the system clock.
-    public static ContextFactory production(int maxDbPools) {
-        return new ContextFactory(new DbPools(maxDbPools), AllowlistHttpCaller.newSharedClient(), Clock.systemUTC());
+    public static ContextFactory production(int maxDbPools, ControlPlane controlPlane, String hostId) {
+        return new ContextFactory(new DbPools(maxDbPools), AllowlistHttpCaller.newSharedClient(), Clock.systemUTC(),
+                controlPlane, hostId);
     }
 
     /// @param token reference-counts this context's database pool usage in
@@ -77,8 +90,9 @@ public final class ContextFactory {
 
         io.flowcatalyst.function.FunctionAddress apiAddress = toApiAddress(entry.address());
         AllowlistHttpCaller http = new AllowlistHttpCaller(httpClient, entry.manifest().httpAllow(), clock);
+        ControlPlaneEvents events = new ControlPlaneEvents(controlPlane, hostId, entry.address(), entry.version());
         return new HostFunctionContext(apiAddress, entry.version(), new MapConfig(entry.config()),
-                new MapSecrets(entry.secrets()), dataSources, http, clock, dbPools, acquired, token);
+                new MapSecrets(entry.secrets()), dataSources, http, events, clock, dbPools, acquired, token);
     }
 
     private void release(List<String> acquired, Object token) {

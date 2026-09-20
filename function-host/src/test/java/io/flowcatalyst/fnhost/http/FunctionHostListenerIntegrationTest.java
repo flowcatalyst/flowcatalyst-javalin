@@ -38,6 +38,10 @@ import io.flowcatalyst.server.Env;
 import io.flowcatalyst.server.Server;
 import io.flowcatalyst.testpg.TestPg;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
+import org.jooq.DSLContext;
+import org.jooq.Record;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -45,6 +49,8 @@ import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
+
+import static io.flowcatalyst.db.generated.Tables.MSG_EVENTS;
 
 import java.net.ServerSocket;
 import java.net.URI;
@@ -280,6 +286,210 @@ class FunctionHostListenerIntegrationTest {
             assertThat(delaySeconds).as("mutant: the requested 7s Retry-After must reach the reschedule")
                     .isBetween(4L, 20L);
         }
+    }
+
+    /// X10 (`docs/spec/function-context.md` §4, extends H15 above): the
+    /// function handles a webhook delivery and calls `ctx.events().emit(…)`
+    /// twice — once with a type its OWN application owns, once with a type
+    /// owned by ANOTHER application. The owned emit lands a real
+    /// `msg_events` row, written by the platform's `/control/functions/events`
+    /// route through the SAME path the acceptance test above drives for
+    /// subscriptions; its `correlation_id`/`causation_id` are the DEFAULTS
+    /// the host filled in (spec §3): `correlation_id` = this invocation's
+    /// own id (no `X-Correlation-Id` header reaches this delivery — the
+    /// dispatch job carries no `correlationId`, `DeliveryPayload` never sets
+    /// the header), `causation_id` = the inbound webhook event's id (the
+    /// dispatch job's own id, [Event#id]). The not-owned emit throws
+    /// [EventEmitException] with `EVENT_TYPE_NOT_OWNED`/403, caught by the
+    /// fixture and reported through evidence rather than the response (the
+    /// dispatch/webhook plumbing does not hand the response body back to
+    /// this test) — and writes NO row.
+    @Test
+    void emitEventsThroughTheHostOwnedSucceedsAndNotOwnedThrows(@TempDir Path dir) throws Exception {
+        DnsLabel pool = new DnsLabel("emitpool" + RUN);
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("em" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
+
+        // ── the function's owning application — its CODE is the owned event type's first segment ──
+        String appCode = "h15emit" + RUN;
+        JsonNode app = adminPost("/api/applications", obj("code", appCode, "name", "H15 Emit " + RUN, "type", "APPLICATION"), 201);
+        String applicationId = app.path("id").asString();
+        adminPost("/api/applications/" + applicationId + "/provision-service-account", null, 201);
+
+        // ── the host's own control-plane service principal ──
+        String hostAppCode = "h15emit-host-" + RUN;
+        JsonNode hostApp = adminPost("/api/applications", obj("code", hostAppCode, "name", "Emit Host " + RUN, "type", "APPLICATION"), 201);
+        String hostAppId = hostApp.path("id").asString();
+        JsonNode provisioned = adminPost("/api/applications/" + hostAppId + "/provision-service-account", null, 201);
+        String hostClientId = provisioned.path("serviceAccount").path("oauthClient").path("clientId").asString();
+        String hostClientSecret = provisioned.path("serviceAccount").path("oauthClient").path("clientSecret").asString();
+        JsonNode hostServiceAccount = adminGet("/api/service-accounts/code/app:" + hostAppCode);
+        String hostServiceAccountId = hostServiceAccount.path("id").asString();
+        adminPut("/api/service-accounts/" + hostServiceAccountId + "/roles",
+                obj("roles", array("platform:application-service", "platform:function-host")), 200);
+
+        // ── one event type this function's OWN application owns, one owned by ANOTHER ──
+        String ownedType = appCode + ":orders:order:created";
+        String notOwnedType = "h15emit-other" + RUN + ":orders:order:created";
+        var eventTypes = new EventTypeRepository(TestPg.dataSource());
+        var uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        EventType owned = EventType.create(ownedType, "H15 emit owned");
+        EventType notOwned = EventType.create(notOwnedType, "H15 emit not owned");
+        uow.inTransaction(tx -> {
+            eventTypes.persist(owned, tx.dbTx());
+            eventTypes.persist(notOwned, tx.dbTx());
+            return null;
+        });
+
+        // ── the function itself, platform-owned, publish v1 with a webhook endpoint + subscription ──
+        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+        Function fn = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(fn, tx.dbTx());
+            return null;
+        });
+
+        Path jar = emitFunctionJar(dir, ownedType, notOwnedType);
+        Digest digest = digestOf(jar);
+        JsonNode manifest = obj("runtime", "jvm", "entrypoint", "fixture.h15emit.EmitFn", "pool", pool.value(), "warm", false,
+                "endpoints", array(obj("path", "/events/*", "auth", "webhook")),
+                "subscriptions", array(obj("eventType", ownedType, "path", "/events/created", "mode", "IMMEDIATE")));
+        adminPost("/api/functions/" + address.render() + "/versions",
+                obj("artifactRef", fileRef(jar), "digest", digest.value(), "manifest", manifest), 201);
+
+        FunctionRegistry registry = new FunctionRegistry(50);
+        HttpControlPlane controlPlane = new HttpControlPlane(baseUrl,
+                new TokenSource(HTTP, baseUrl, hostClientId, hostClientSecret));
+        Reconciler reconciler = new Reconciler(pool, "emit-host-" + RUN, controlPlane,
+                new FileArtifactStore(dir.resolve("cache")), new Signatures.Off(), new JvmFunctionLoader(), registry);
+        try (FnHttpServer fnServer = FnHttpServer.start(reconciler, new FnHttpServer.Options(
+                "127.0.0.1", hostPort, 512, baseUrl, java.time.Clock.systemUTC()))) {
+            assertThat(fnServer.port()).isEqualTo(hostPort);
+
+            reconciler.reconcileOnce(Instant.now());
+            awaitCondition(() -> readVersionState(address, 1).equals("READY"), "v1 must become READY");
+
+            adminPut("/api/functions/" + address.render() + "/aliases/live", obj("version", 1), 200);
+            reconciler.reconcileOnce(Instant.now());
+
+            TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
+            SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
+            TriggerObject subLink = triggerObjects.listByFunction(fn.id()).stream()
+                    .filter(t -> t.kind() == TriggerObjectKind.SUBSCRIPTION).findFirst()
+                    .orElseThrow(() -> new AssertionError("promote must have created the subscription"));
+            Subscription subscription = subscriptions.findById(subLink.objectId()).orElseThrow();
+
+            String jobId = createDispatchJobForSubscription(subscription, ownedType, "{}");
+            var processResp = processDispatchJob(jobId);
+            assertThat(processResp.path("ack").asBoolean()).isTrue();
+
+            Path evidence = dir.resolve("emit-evidence.jsonl");
+            awaitCondition(() -> Files.exists(evidence) && !Files.readAllLines(evidence).isEmpty(),
+                    "the function must have run and recorded what it saw");
+            EmitEvidenceLine seen = lastEmitEvidenceLine(evidence);
+
+            assertThat(seen.caller()).as("mutant: the function saw something other than Caller.Platform")
+                    .isEqualTo("Platform");
+            assertThat(seen.ownedOk()).as("mutant: the owned emit did not succeed: " + seen.ownedError()).isTrue();
+            assertThat(seen.notOwnedThrew())
+                    .as("mutant: emitting a type owned by another application did not throw").isTrue();
+            assertThat(seen.notOwnedCode())
+                    .as("mutant: EventEmitException carries the wrong code").isEqualTo("EVENT_TYPE_NOT_OWNED");
+            assertThat(seen.notOwnedStatus())
+                    .as("mutant: EventEmitException carries the wrong status").isEqualTo("403");
+
+            DSLContext db = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
+            Record ownedRow = db.selectFrom(MSG_EVENTS)
+                    .where(MSG_EVENTS.DEDUPLICATION_ID.eq("dedup-owned-" + jobId)).fetchOne();
+            assertThat(ownedRow).as("mutant: the owned event was never written").isNotNull();
+            assertThat(ownedRow.get(MSG_EVENTS.CORRELATION_ID))
+                    .as("mutant: correlationId does not default to this invocation's own id")
+                    .isEqualTo(seen.invocationId());
+            assertThat(ownedRow.get(MSG_EVENTS.CAUSATION_ID))
+                    .as("mutant: causationId does not default to the inbound webhook event's id")
+                    .isEqualTo(jobId);
+
+            Record notOwnedRow = db.selectFrom(MSG_EVENTS)
+                    .where(MSG_EVENTS.DEDUPLICATION_ID.eq("dedup-notowned-" + jobId)).fetchOne();
+            assertThat(notOwnedRow).as("mutant: a row was written even though ownership was refused").isNull();
+        }
+    }
+
+    private static Path emitFunctionJar(Path dir, String ownedType, String notOwnedType) {
+        Path jar = dir.resolve("h15-emit-fn.jar");
+        FixtureJars.builder().source("fixture.h15emit.EmitFn",
+                emitFnSource(dir.resolve("emit-evidence.jsonl"), ownedType, notOwnedType)).build(jar);
+        return jar;
+    }
+
+    /// Pipe-delimited, Base64-valued fields — same convention as
+    /// [#webhookFnSource] and for the same reason (no nested-quote escaping
+    /// through the double text-block nesting).
+    private static String emitFnSource(Path evidenceFile, String ownedType, String notOwnedType) {
+        return """
+                package fixture.h15emit;
+                import io.flowcatalyst.function.*;
+                import java.nio.file.*;
+                import java.nio.charset.StandardCharsets;
+                import java.util.Base64;
+
+                public final class EmitFn implements Function {
+                    public Result handle(Request in, FunctionContext ctx) throws Exception {
+                        Event event = Webhook.event(in);
+                        String caller = in.caller().getClass().getSimpleName();
+                        String invocationId = in.invocationId();
+
+                        boolean ownedOk;
+                        String ownedError = "";
+                        try {
+                            ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-" + event.id(),
+                                    "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
+                                    "dedup-owned-" + event.id()));
+                            ownedOk = true;
+                        } catch (Exception e) {
+                            ownedOk = false;
+                            ownedError = String.valueOf(e.getMessage());
+                        }
+
+                        boolean notOwnedThrew;
+                        String notOwnedCode = "";
+                        int notOwnedStatus = 0;
+                        try {
+                            ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-not-owned",
+                                    "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
+                                    "dedup-notowned-" + event.id()));
+                            notOwnedThrew = false;
+                        } catch (EventEmitException e) {
+                            notOwnedThrew = true;
+                            notOwnedCode = e.code();
+                            notOwnedStatus = e.status();
+                        }
+
+                        String line = b64(caller) + "|" + b64(invocationId) + "|" + b64(String.valueOf(ownedOk)) + "|"
+                                + b64(ownedError) + "|" + b64(String.valueOf(notOwnedThrew)) + "|" + b64(notOwnedCode)
+                                + "|" + b64(String.valueOf(notOwnedStatus)) + System.lineSeparator();
+                        Files.writeString(Path.of("%s"), line, StandardCharsets.UTF_8,
+                                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                        return Result.ack();
+                    }
+                    private static String b64(String s) {
+                        if (s == null) return "";
+                        return Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                """.formatted(ownedType, notOwnedType, evidenceFile.toString().replace("\\", "\\\\"));
+    }
+
+    /// The wire shape [#emitFnSource]'s fixture writes: pipe-delimited, each
+    /// field Base64-encoded.
+    private record EmitEvidenceLine(String caller, String invocationId, boolean ownedOk, String ownedError,
+                                     boolean notOwnedThrew, String notOwnedCode, String notOwnedStatus) {
+    }
+
+    private static EmitEvidenceLine lastEmitEvidenceLine(Path evidence) throws Exception {
+        List<String> lines = Files.readAllLines(evidence);
+        String[] fields = lines.get(lines.size() - 1).split("\\|", -1);
+        return new EmitEvidenceLine(b64(fields[0]), b64(fields[1]), Boolean.parseBoolean(b64(fields[2])), b64(fields[3]),
+                Boolean.parseBoolean(b64(fields[4])), b64(fields[5]), b64(fields[6]));
     }
 
     // ── dispatch job creation "the way a matched subscription would" ───────

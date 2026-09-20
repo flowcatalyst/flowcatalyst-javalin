@@ -3,18 +3,28 @@ package io.flowcatalyst.platform.function.api;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
+import io.flowcatalyst.platform.application.Application;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.event.Event;
+import io.flowcatalyst.platform.event.EventRepository;
+import io.flowcatalyst.platform.eventtype.EventType;
+import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionHost;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
+import io.flowcatalyst.platform.function.FunctionOwner;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
+import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.operations.DesiredState;
 import io.flowcatalyst.platform.function.operations.MarkVersionReady;
 import io.flowcatalyst.platform.function.operations.MarkVersionReadyCommand;
+import io.flowcatalyst.platform.ingest.EventIngestMapper;
+import io.flowcatalyst.platform.ingest.api.IngestApi;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -25,16 +35,19 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_HOST_CONTROL;
@@ -68,7 +81,8 @@ public final class FunctionControlApi {
     private static final int MAX_ERROR_LENGTH = 1000;
 
     public record State(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
-                        UnitOfWork uow, ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings) {
+                        UnitOfWork uow, ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings,
+                        ApplicationRepository applications, EventTypeRepository eventTypes, EventRepository events) {
         public State {
             Objects.requireNonNull(functions, "functions");
             Objects.requireNonNull(versions, "versions");
@@ -76,14 +90,23 @@ public final class FunctionControlApi {
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(serviceAccounts, "serviceAccounts");
             Objects.requireNonNull(settings, "settings");
+            Objects.requireNonNull(applications, "applications");
+            Objects.requireNonNull(eventTypes, "eventTypes");
+            Objects.requireNonNull(events, "events");
         }
     }
+
+    /// 1–100 events per `/control/functions/events` call (spec §3 check 3).
+    static final int MAX_EMIT_BATCH = 100;
+    /// `data` ≤ 256 KiB (spec §3 check 3).
+    static final int MAX_EMIT_DATA_BYTES = 256 * 1024;
 
     public static void register(Routes routes, State s) {
         DesiredState desiredState =
                 new DesiredState(s.functions(), s.versions(), s.hosts(), s.serviceAccounts(), s.settings());
         routes.in(Group.API_READ).get("/control/functions/desired-state", Auth.scoped(ctx -> desiredState(ctx, desiredState)));
         routes.in(Group.API_WRITE).post("/control/functions/heartbeat", Auth.scoped(ctx -> heartbeat(ctx, s)));
+        routes.in(Group.API_WRITE).post("/control/functions/events", Auth.scoped(ctx -> emitEvents(ctx, s, desiredState)));
     }
 
     // ── GET /control/functions/desired-state (spec §6.1) ────────────────────
@@ -184,6 +207,145 @@ public final class FunctionControlApi {
         ctx.status(204);
     }
 
+    // ── POST /control/functions/events (spec §3) ─────────────────────────────
+
+    /// The four checks, in order, each its own code — nothing is written
+    /// unless every event of the batch passes every check (spec §3):
+    /// 1. `hostId` names a host live within [FunctionHost#LIVE_WINDOW]
+    ///    (`HOST_UNKNOWN`, 409).
+    /// 2. The function exists, is `ACTIVE`, and `version` is its live
+    ///    version or its newest published candidate IN THIS HOST'S POOL
+    ///    ([DesiredState#serves] — the exact rule a host's own desired-state
+    ///    document used to hand it that version, spec §6.1)
+    ///    (`FUNCTION_NOT_SERVED_BY_HOST`, 409).
+    /// 3. 1–100 events; each `dedupId` non-blank and unique in the batch;
+    ///    `data` an object ≤ 256 KiB (400).
+    /// 4. Ownership (R13): each `type` is an existing, non-archived event
+    ///    type whose `application` equals the function's OWN application —
+    ///    an unknown or archived type is the SAME 403 `EVENT_TYPE_NOT_OWNED`,
+    ///    naming the type and both applications.
+    ///
+    /// Then every event is written through the SAME mapper/repository
+    /// `POST /api/events/batch` uses ([EventIngestMapper], [EventRepository]),
+    /// `source = "function:<address>"`, `clientId` = the function's owner
+    /// (absent for a platform function) — one batch insert, so a repeated
+    /// `dedupId` is the ingest path's own idempotent no-op (`ON CONFLICT DO
+    /// NOTHING`), reported `SUCCESS` exactly as the ingest routes report it.
+    private static void emitEvents(Exchange ctx, State s, DesiredState desiredState) {
+        if (gate(ctx)) {
+            return;
+        }
+        var req = ctx.bodyAsClass(EmitEventsRequest.class);
+
+        FunctionHost host = requireLiveHost(s, req.hostId());
+        Served served = resolveServedVersion(s, desiredState, host, req.address(), req.version());
+
+        List<EmitEventItem> items = req.events() == null ? List.of() : req.events();
+        if (items.isEmpty() || items.size() > MAX_EMIT_BATCH) {
+            throw UseCaseException.validation("BATCH_SIZE_INVALID", "events must carry 1-100 items");
+        }
+        Set<String> seenDedup = new HashSet<>();
+        for (int i = 0; i < items.size(); i++) {
+            EmitEventItem item = items.get(i);
+            if (item.dedupId() == null || item.dedupId().isBlank()) {
+                throw UseCaseException.validation("DEDUP_ID_REQUIRED", "events[" + i + "].dedupId is required");
+            }
+            if (!seenDedup.add(item.dedupId())) {
+                throw UseCaseException.validation("DEDUP_ID_DUPLICATE",
+                        "events[" + i + "].dedupId '" + item.dedupId() + "' is duplicated in this batch");
+            }
+            if (item.data() == null || item.data().isNull() || !item.data().isObject()) {
+                throw UseCaseException.validation("EVENT_DATA_INVALID", "events[" + i + "].data must be an object");
+            }
+            int bytes = Json.write(item.data()).getBytes(StandardCharsets.UTF_8).length;
+            if (bytes > MAX_EMIT_DATA_BYTES) {
+                throw UseCaseException.validation("EVENT_DATA_TOO_LARGE",
+                        "events[" + i + "].data is " + bytes + " bytes, which exceeds the limit of " + MAX_EMIT_DATA_BYTES);
+            }
+        }
+
+        String functionAppCode = s.applications().findById(served.function().applicationId())
+                .map(Application::code)
+                .orElseThrow(() -> new IllegalStateException(
+                        "function " + served.function().id() + " names an application that no longer exists"));
+        for (int i = 0; i < items.size(); i++) {
+            EmitEventItem item = items.get(i);
+            Optional<EventType> type = s.eventTypes().findByCode(item.type());
+            boolean owned = type.isPresent() && !type.get().isArchived() && functionAppCode.equals(type.get().application());
+            if (!owned) {
+                String typeApp = type.map(EventType::application).orElse("(unknown event type)");
+                throw UseCaseException.authorization("EVENT_TYPE_NOT_OWNED",
+                        "events[" + i + "]: event type '" + item.type() + "' is owned by '" + typeApp
+                                + "', not by this function's own application '" + functionAppCode + "'");
+            }
+        }
+
+        // Every check passed for every event — now, and only now, write (spec §3: "nothing
+        // is written unless every event passes"). One batch insert, same as the ingest routes.
+        String source = "function:" + served.function().address().render();
+        String clientId = served.function().owner() instanceof FunctionOwner.Client(String id) ? id : null;
+        List<Event> toInsert = new ArrayList<>(items.size());
+        for (EmitEventItem item : items) {
+            toInsert.add(EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
+                    null, null, item.type(), source, item.subject(), item.data(), item.dedupId(),
+                    item.correlationId(), item.causationId(), item.messageGroup(), clientId, List.of())));
+        }
+        s.events().insertBatch(toInsert);
+
+        List<IngestApi.BatchResultItem> results = new ArrayList<>(toInsert.size());
+        for (Event e : toInsert) {
+            results.add(new IngestApi.BatchResultItem(e.id(), "SUCCESS", null));
+        }
+        ctx.status(201).json(new IngestApi.BatchResponse(results));
+    }
+
+    /// Check 1: `hostId` names a [FunctionHost] whose last heartbeat is
+    /// within [FunctionHost#LIVE_WINDOW] of now.
+    ///
+    /// @throws UseCaseException conflict `HOST_UNKNOWN`
+    private static FunctionHost requireLiveHost(State s, String hostId) {
+        Instant now = Instant.now();
+        return (hostId == null ? Optional.<FunctionHost>empty() : s.hosts().findById(hostId))
+                .filter(h -> !h.lastHeartbeat().isBefore(now.minus(FunctionHost.LIVE_WINDOW)))
+                .orElseThrow(() -> UseCaseException.conflict("HOST_UNKNOWN",
+                        "no host named '" + hostId + "' has a heartbeat inside the live window"));
+    }
+
+    private record Served(Function function, FunctionVersion version) {
+    }
+
+    /// Check 2: the function exists, is `ACTIVE`, and `version` is served
+    /// by `host`'s own pool ([DesiredState#serves]).
+    ///
+    /// @throws UseCaseException conflict `FUNCTION_NOT_SERVED_BY_HOST`
+    private static Served resolveServedVersion(State s, DesiredState desiredState, FunctionHost host,
+                                                String rawAddress, Integer versionNumber) {
+        FunctionAddress address;
+        try {
+            address = FunctionAddress.parse(rawAddress);
+        } catch (UseCaseException e) {
+            throw notServed();
+        }
+        Function function = s.functions().findByAddress(address).orElseThrow(FunctionControlApi::notServed);
+        if (function.status() != FunctionStatus.ACTIVE) {
+            throw notServed();
+        }
+        if (versionNumber == null || versionNumber <= 0) {
+            throw notServed();
+        }
+        FunctionVersion version = s.versions().findByFunctionAndVersion(function.id(), versionNumber)
+                .orElseThrow(FunctionControlApi::notServed);
+        if (!desiredState.serves(function, version, host.pool())) {
+            throw notServed();
+        }
+        return new Served(function, version);
+    }
+
+    private static UseCaseException notServed() {
+        return UseCaseException.conflict("FUNCTION_NOT_SERVED_BY_HOST",
+                "this host does not currently serve that function/version");
+    }
+
     private static FunctionHost.HostState parseHostState(String raw) {
         try {
             return FunctionHost.HostState.parse(raw);
@@ -277,5 +439,14 @@ public final class FunctionControlApi {
     public record HeartbeatRequest(String hostId, String pool, String state, List<LoadedEntry> loaded) {
         public record LoadedEntry(String address, Integer version, String state, String error) {
         }
+    }
+
+    // ── Wire DTOs (spec §3) ──────────────────────────────────────────────
+
+    public record EmitEventsRequest(String hostId, String address, Integer version, List<EmitEventItem> events) {
+    }
+
+    public record EmitEventItem(String type, String subject, String dedupId, JsonNode data,
+                                String correlationId, String causationId, String messageGroup) {
     }
 }
