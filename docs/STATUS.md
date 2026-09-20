@@ -72,8 +72,11 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   generator not cgroup-isolated); noisy-neighbour p99 12 → 29 ms. It found one real defect, fixed:
   an `OutOfMemoryError: Metaspace` escaped the reconcile (now one function's load failure). The
   "lazy 404" was the script's address padding.
-- **Open for the owner:** the metaspace share of the container (25 % today) is what caps functions
-  per host — raising it is a ruling, not tuning.
+- **Owner ruling 2026-09-21:** metaspace is `FC_JVM_METASPACE_PERCENT` of the container, **default 50**
+  in the function-host image (runtime env, 10–70), heap is what is left (`e32ec61e`). Measured usable
+  capacity with the host's reserve: **212 typical functions in 2 GiB, 438 in 4 GiB**; 100 typical under
+  load at 2 GiB/2 CPUs: 11.7k req/s, p99 82 ms, peak heap 212/591 MB. Over-capacity no longer wedges
+  the host: loads are refused on headroom, `/health` goes 503 if the listener or loop is down.
 - **Next:** E (fcdev hosting + `fn` CLI + sample + pipeline: fcdev sets `FC_FN_SIGNATURES=off`; pin
   cosign — Rekor v1 only; scheduled image rebuild), then F (public routes, domains, CORS).
 - **Watch, not yet reproduced uncontended:** `MainTest.exitAfterStartActuallyStopsTheServer` failed
