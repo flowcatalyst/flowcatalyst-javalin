@@ -61,9 +61,16 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   is optional.
 - **Owner rulings 2026-09-20 — R12** config and secrets are platform-stored per function, delivered in
   desired state (declared keys only); **R13** a function emits through the host on its behalf and only
-  event types its application owns. Spec `docs/spec/function-context.md`. **In progress: D4a**
-  (platform config/secrets); then D4b (host context: logger with MDC on the worker thread, shared
-  gated DB pools, allow-listed HTTP), D4c (emit route). Then E (fcdev + CLI + sample), F (public routes).
+  event types its application owns. Spec `docs/spec/function-context.md`. **Package D is complete:**
+  D4a platform config/secrets (`02860307`), D4b host context (`3025f6a3`: logger MDC on the worker
+  thread, shared gated DB pools, allow-listed HTTP, settings change ⇒ reload), D4c emit route.
+- **Next:** the benchmark (`docs/spec/function-host-benchmark.md` — memory per loaded function decides
+  instance sizing; owner wants it before committing to low-CPU/high-memory EC2 capacity), then E
+  (fcdev hosting + `fn` CLI + sample + pipeline: fcdev sets `FC_FN_SIGNATURES=off`; pin cosign —
+  Rekor v1 only; scheduled image rebuild), then F (public routes, domains, CORS).
+- **Watch, not yet reproduced uncontended:** `MainTest.exitAfterStartActuallyStopsTheServer` failed
+  once in a quiet full-suite run (passes 10/10 alone); `FnHttpServerTest.h8…` and
+  `DispatchDeliveryCredentialsWiringTest` each answered 404 once under a *contended* run.
 - **New backlog item from R13:** ordinary event ingest checks no event-type ownership at all
   (`docs/backlog.md`, 2026-09-20) — its own unit on `main`, needs a rollout ruling.
 - **Working rules learned here:** one mutant per *condition*; re-run orchestrator mutants every slice
