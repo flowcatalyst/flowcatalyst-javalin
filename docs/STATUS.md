@@ -84,15 +84,27 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   `docs/functions.md` (`c939dce3`). Default shrinker is shade's `minimizeJar`: ProGuard needs `jmods/`,
   which Temurin 25 no longer ships; ProGuard is the opt-in `shrink-proguard` profile (CLI-verified on
   GraalVM, not via Maven).
-- **In progress: package F** (spec `function-public-routes.md`): F1 domains + route sync (platform),
-  then F2 public listener + CORS (host), fcdev public port, `fn domain`.
-- **To investigate before merge — intermittent 404s in full-suite runs** (each passed on re-run):
-  `FnHttpServerTest.h8…`, `DispatchDeliveryCredentialsWiringTest`, `RouterConfigEndpointTest`
-  (provision helper), plus one `Http2Test.h2cByUpgrade` port-bind `IllegalState`, and
-  `MainTest.exitAfterStartActuallyStopsTheServer` once. A 404 is what a request gets from *another*
-  test's still-running server: prime suspect is "probe a free port, release it, bind later" colliding
-  with an ephemeral port; second suspect, tests seeding the shared `TestPg` database. New tests must
-  bind port 0 and use their own database.
+- **Package F complete** (spec `function-public-routes.md`): F1 domains (TXT verification, `.localhost`
+  only in dev mode — pinned at the composed Server), route sync at promote, `publicRoutes` in desired
+  state (`525e5219`); F2 the public listener (route by `Host` + longest whole-segment prefix, no
+  by-address/versioned access, `X-Forwarded-Host` ignored, trusted-proxy client address), CORS answered
+  by the host, fcdev public port 8091, `fn domain …` (`ed3dde9d`). **Every package of the workplan
+  (A–F) is now on `function-service`.** Whole reactor green at the end of F2: usecase 30, sdk 51,
+  function-api 125, server 4912, function-host 331, fcdev 202, parity 48.
+- **To investigate before merge — intermittent failures in full-suite runs** (each passed on re-run,
+  none yet reproduced alone): 404s in `FnHttpServerTest.h8…`, `DispatchDeliveryCredentialsWiringTest`,
+  `RouterConfigEndpointTest` (provision helper); `Http2Test.h2cByUpgrade` port-bind `IllegalState`;
+  `MainTest.exitAfterStartActuallyStopsTheServer`. **Ruled out by experiment (2026-09-21):** an
+  IPv4-wildcard server and a JDK `HttpServer` *can* share a port number, but ephemeral allocation
+  never produced that clash (0 of 200) and `localhost` reached the IPv4 server — so "a request landed
+  on another test's fake server via `::1`" is not the mechanism. **Still suspect:** the eight places
+  that probe a free port with `new ServerSocket(0)`, release it and bind later
+  (`TransportTestSupport`, `RouterStartupOrderTest`, `HttpConfigSourceTest`, `SmtpMailServiceTest`, the
+  two function-host integration tests, parity's `JavaSide`/`GoSide`) — that explains the bind failure
+  directly; and tests that seed the shared `TestPg` database (`RouterConfigEndpointTest`,
+  `RouterStartupOrderTest`, the two function-host integration tests) — a 404 for a row another class
+  deleted or never saw. Next step: run the server suite 5× capturing the failing request's URL, port
+  and body; do not label any of these flaky before that.
 - **New backlog item from R13:** ordinary event ingest checks no event-type ownership at all
   (`docs/backlog.md`, 2026-09-20) — its own unit on `main`, needs a rollout ruling.
 - **Working rules learned here:** one mutant per *condition*; re-run orchestrator mutants every slice
