@@ -34,5 +34,14 @@ public enum Reason {
     ENTRYPOINT_NOT_INSTANTIABLE,
 
     /// The jar file itself could not be opened or read.
-    UNREADABLE_JAR
+    UNREADABLE_JAR,
+
+    /// Class loading, entrypoint construction, or `init` hit the metaspace
+    /// fence (`docs/spec/function-host-process.md` §3): a catchable
+    /// `OutOfMemoryError` naming Metaspace or Compressed class space. This
+    /// ONE version fails to load; the fence itself, and every other
+    /// function, is untouched — a Java-heap `OutOfMemoryError` is never
+    /// this reason (it is not caught at all: it is not one function's
+    /// problem to swallow).
+    OUT_OF_METASPACE
 }

@@ -516,10 +516,13 @@ public final class Reconciler {
                     displaced.close();
                 }
             }
-            case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) -> {
+            case Refused(io.flowcatalyst.fnhost.load.Reason reason, String detail) -> {
                 String loadReason = "LOAD:" + reason.name();
                 failures.put(key, loadReason);
                 observer.loadError(loadReason);
+                if (reason == io.flowcatalyst.fnhost.load.Reason.OUT_OF_METASPACE) {
+                    logMetaspaceRefusalSafely(entry.address(), entry.version(), detail);
+                }
             }
         }
     }
@@ -554,6 +557,33 @@ public final class Reconciler {
         fn.attachContext(ctx);
         try {
             fn.init(ctx);
+        } catch (Error e) {
+            // `function-host-process.md` §3: a catchable `OutOfMemoryError: Metaspace` (or
+            // Compressed class space) fails ONLY this one load — the class loader is closed
+            // below so the space can be reclaimed, the old version (if any) keeps serving
+            // (this method just returns false), and the rest of the document is unaffected.
+            // A Java-heap OOM is not this call's to swallow — it is not one function's problem.
+            //
+            // Broadened from `OutOfMemoryError` alone to `Error`, then unwrapped via
+            // JvmFunctionLoader#findMetaspaceOom: `init()` bootstrapping a lambda/string-concat
+            // call site (or running a class's own static initialiser) under a tight fence does
+            // NOT always throw a bare OutOfMemoryError — observed directly, forking a real JVM
+            // at a real fence, `com.networknt.schema.ValidatorTypeCode`'s `<clinit>`
+            // bootstrapping a lambda threw `InternalError` wrapping the real OOM one level down.
+            OutOfMemoryError oom = io.flowcatalyst.fnhost.load.JvmFunctionLoader.findMetaspaceOom(e);
+            if (oom == null) {
+                throw e;
+            }
+            failures.put(key, "LOAD:OUT_OF_METASPACE");
+            observer.loadError("LOAD:OUT_OF_METASPACE");
+            // Close BEFORE logging: closing is the load-bearing side effect (reclaims the
+            // loader; the old version, if any, is already known to be serving) — observed
+            // directly, at a real fence, that the log call below can ITSELF throw a second
+            // OutOfMemoryError once metaspace is this tight, and that must never undo the
+            // close.
+            fn.close();
+            logMetaspaceFailureSafely(entry.address(), entry.version(), oom);
+            return false;
         } catch (Exception e) {
             failures.put(key, "LOAD:INIT_FAILED");
             observer.loadError("LOAD:INIT_FAILED");
@@ -573,6 +603,78 @@ public final class Reconciler {
                 .addKeyValue("reason", reason)
                 .setCause(cause)
                 .log();
+    }
+
+    /// `function-host-process.md` §3: logged at ERROR (not WARN, unlike every
+    /// other prepare/load failure here) — a load refused for lack of
+    /// metaspace is evidence the fence is being approached and is worth an
+    /// operator's attention even though the host itself handled it cleanly.
+    /// `init()`'s own `OutOfMemoryError` is on hand — logged as the cause.
+    /// Wrapped the same way as [#logMetaspaceRefusalSafely] below: at a real
+    /// fence, metaspace can be tight enough that EVEN emitting this log line
+    /// needs a class Logback has not loaded yet (observed directly, forking
+    /// a real JVM at a 128 MB fence: `ch.qos.logback.classic.Logger.log`
+    /// itself threw `OutOfMemoryError: Metaspace`). That must never undo the
+    /// guarantee this whole catch exists to make.
+    private void logMetaspaceFailureSafely(FunctionAddress address, int version, OutOfMemoryError cause) {
+        try {
+            LOG.atError().setMessage("function version failed to load: out of metaspace")
+                    .addKeyValue("address", address.render())
+                    .addKeyValue("version", version)
+                    .setCause(cause)
+                    .log();
+        } catch (Error logFailure) {
+            // Broadened from `OutOfMemoryError` alone: observed directly, forking a real JVM —
+            // Logback's OWN `ThrowableProxy` (needed to render `.setCause(...)`) had never been
+            // touched by this process before, and ITS <clinit> failing under the same exhausted
+            // metaspace surfaces on every later reference as `NoClassDefFoundError: Could not
+            // initialize class ...ThrowableProxy`, not a bare OutOfMemoryError.
+            fallBackToStderrIfMetaspace(address, version, logFailure);
+        }
+    }
+
+    /// Same shape as [#logMetaspaceFailureSafely], for the classloading-time
+    /// refusal path (`JvmFunctionLoader#load` already turned its own
+    /// `OutOfMemoryError` into a [Refused] — `detail` is that Error's
+    /// message, not a live Throwable to attach as the cause).
+    private void logMetaspaceRefusalSafely(FunctionAddress address, int version, String detail) {
+        try {
+            LOG.atError().setMessage("function version failed to load: out of metaspace")
+                    .addKeyValue("address", address.render())
+                    .addKeyValue("version", version)
+                    .addKeyValue("detail", detail)
+                    .log();
+        } catch (Error logFailure) {
+            fallBackToStderrIfMetaspace(address, version, logFailure);
+        }
+    }
+
+    /// A Java-heap `OutOfMemoryError` (or any OTHER `Error` with no metaspace
+    /// `OutOfMemoryError` anywhere in its cause chain) from the logging call
+    /// itself is still a real emergency, same rule as everywhere else in
+    /// this class — rethrown UNCHANGED, never routed here. Only one that
+    /// traces back to a metaspace exhaustion falls back to a bare
+    /// `System.err` line, built with `StringBuilder` rather than `+`:
+    /// `StringBuilder#append` and `PrintStream` are plain virtual dispatch on
+    /// already-loaded classes (unlike `+`, which is `invokedynamic` and can
+    /// itself need to spin up a fresh hidden class — see that fix's own
+    /// history), so this cannot fail the same way the logging attempt did.
+    private static void fallBackToStderrIfMetaspace(FunctionAddress address, int version, Error logFailure) {
+        OutOfMemoryError oom = io.flowcatalyst.fnhost.load.JvmFunctionLoader.findMetaspaceOom(logFailure);
+        if (oom == null) {
+            throw logFailure;
+        }
+        // `+` on a non-constant String compiles to `invokedynamic` (StringConcatFactory),
+        // which spins up a fresh hidden class PER CALL SITE THE FIRST TIME IT RUNS — itself
+        // capable of throwing OutOfMemoryError: Metaspace (observed directly: this exact
+        // fallback line crashed the fork with a BootstrapMethodError wrapping one, at a 128 MB
+        // fence, before this fix). StringBuilder#append is plain virtual dispatch on an
+        // already-loaded class — no new class definition, so it cannot fail the same way.
+        StringBuilder line = new StringBuilder(128);
+        line.append("ERROR out of metaspace loading ").append(address.render()).append('@').append(version)
+                .append(" — the structured log line for it could not itself be emitted "
+                        + "(metaspace exhausted further still)");
+        System.err.println(line);
     }
 
     /// What D3 calls on first invocation of a lazy address (spec §1.2 step 3).
@@ -614,10 +716,13 @@ public final class Reconciler {
                     }
                     yield fn;
                 }
-                case Refused(io.flowcatalyst.fnhost.load.Reason reason, String ignored) -> {
+                case Refused(io.flowcatalyst.fnhost.load.Reason reason, String detail) -> {
                     String loadReason = "LOAD:" + reason.name();
                     failures.put(key, loadReason);
                     observer.loadError(loadReason);
+                    if (reason == io.flowcatalyst.fnhost.load.Reason.OUT_OF_METASPACE) {
+                        logMetaspaceRefusalSafely(route.address(), route.version(), detail);
+                    }
                     yield current;
                 }
             };

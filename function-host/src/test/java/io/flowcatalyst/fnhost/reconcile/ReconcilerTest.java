@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.fnhost.load.FixtureJars;
 import io.flowcatalyst.fnhost.load.FunctionRegistry;
 import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
@@ -17,6 +18,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -848,6 +850,230 @@ class ReconcilerTest {
         HeartbeatReport.LoadedEntry wasmReport = fake.heartbeats().getLast().loaded().stream()
                 .filter(e -> e.address().equals(TestFixtures.ADDR_B)).findFirst().orElseThrow();
         assertThat(((HeartbeatReport.LoadState.Failed) wasmReport.state()).error()).isEqualTo("RUNTIME_UNSUPPORTED");
+    }
+
+    // ── metaspace fence (`docs/spec/function-host-process.md` §3): an
+    //    OutOfMemoryError from a version's OWN `init()` is a load failure
+    //    LIKE ANY OTHER — FAILED "LOAD:OUT_OF_METASPACE", the old version (if
+    //    any) keeps serving, its loader is closed, reconcileOnce/ensureLoaded/
+    //    loadPinned all return normally, never propagating the Error. Every
+    //    fixture's `stop()` (called ONLY by LoadedFunction#close) writes a
+    //    marker file — proof, from outside the fixture's own isolated
+    //    classloader, that the failed load really was closed and not merely
+    //    discarded (mutant: skip closing the failed loader). ──────────────
+
+    @Test
+    void warmPromoteThatOutOfMetaspacesOnInitLeavesTheOldVersionServingAndClosesTheFailedLoad(@TempDir Path dir) {
+        Path jarV1 = TestFixtures.functionJar(dir, "oom-warm-v1", "oom-warm-1");
+        Path stopMarker = dir.resolve("v2.stopped");
+        Path jarV2 = oomOnInitJar(dir, "oom-warm-v2", "WarmMetaspaceOnInitFn", stopMarker);
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry v1 = liveEntry(TestFixtures.ADDR_A, "v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarV1), TestFixtures.fileRef(jarV1), null, null, true);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(v1), List.of(), List.of())));
+        r.reconcileOnce(Instant.now());
+        assertThat(registry.peek(TestFixtures.ADDR_A).version()).isEqualTo(1);
+
+        DesiredDocument.Entry v2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jarV2),
+                TestFixtures.fileRef(jarV2), null, null,
+                TestFixtures.jvmManifest(POOL.value(), true, "fixture.oom.WarmMetaspaceOnInitFn"),
+                null, null, null, Map.of(), Map.of(), List.of());
+        // A second, unrelated, perfectly-loadable warm entry in the SAME document — this is
+        // the original defect verbatim (`docs/function-runner-report.md`'s "Anomaly"): an
+        // uncaught OutOfMemoryError on function #109 of 200 killed the eager warm-load loop
+        // MID-WAY, so nothing after it was even attempted. Ordered AFTER v2 in the document's
+        // own list so an abort-on-first-failure mutant is caught even if #load happens to
+        // process entries in list order.
+        Path jarOther = TestFixtures.functionJar(dir, "oom-warm-other", "oom-warm-other-1");
+        DesiredDocument.Entry other = liveEntry(TestFixtures.ADDR_B, "other-v1", 1, DesiredDocument.Mode.WARM,
+                TestFixtures.digestOf(jarOther), TestFixtures.fileRef(jarOther), null, null, true);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag2",
+                new DesiredDocument(List.of(v2, other), List.of(), List.of())));
+
+        assertThatCode(() -> r.reconcileOnce(Instant.now()))
+                .as("mutant: let the OutOfMemoryError propagate out of reconcileOnce instead of catching it")
+                .doesNotThrowAnyException();
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("mutant: unload v1 anyway even though v2 never loaded").isNotNull();
+        assertThat(registry.peek(TestFixtures.ADDR_A).version())
+                .as("mutant: the old version must keep serving when the promote's init() fails").isEqualTo(1);
+        assertThat(Files.exists(stopMarker))
+                .as("mutant: skip closing the failed loader — stop()/close() never ran, metaspace never reclaimed")
+                .isTrue();
+        assertThat(registry.peek(TestFixtures.ADDR_B))
+                .as("mutant: abort the rest of the document — a later entry must still load in the SAME cycle")
+                .isNotNull();
+
+        HeartbeatReport.LoadedEntry v2Report = fake.heartbeats().getLast().loaded().stream()
+                .filter(e -> e.version() == 2).findFirst().orElseThrow();
+        assertThat(((HeartbeatReport.LoadState.Failed) v2Report.state()).error())
+                .as("mutant: report some other reason, or LOADED/REGISTERED, for a metaspace-failed load")
+                .isEqualTo("LOAD:OUT_OF_METASPACE");
+
+        // The heartbeat itself must still be sent (spec: "reconcileOnce returns normally,
+        // the heartbeat is sent") and the NEXT cycle must retry — proven here as "the failure
+        // is still present a cycle later, not silently dropped from bookkeeping".
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.NotModified());
+        r.reconcileOnce(Instant.now());
+        assertThat(fake.heartbeatCallCount()).as("mutant: skip the heartbeat after a metaspace failure").isEqualTo(3);
+    }
+
+    @Test
+    void lazyEnsureLoadedThatOutOfMetaspacesOnInitReturnsNullAndClosesTheFailedLoad(@TempDir Path dir) {
+        Path stopMarker = dir.resolve("lazy.stopped");
+        Path jar = oomOnInitJar(dir, "oom-lazy-v1", "LazyMetaspaceOnInitFn", stopMarker);
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v1", 1,
+                DesiredDocument.Role.LIVE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null,
+                TestFixtures.jvmManifest(POOL.value(), false, "fixture.oom.LazyMetaspaceOnInitFn"),
+                null, null, null, Map.of(), Map.of(), List.of());
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+        r.reconcileOnce(Instant.now());
+        assertThat(registry.peek(TestFixtures.ADDR_A)).as("lazy: not loaded until first call").isNull();
+
+        LoadedFunction result = null;
+        Throwable escaped = null;
+        try {
+            result = r.ensureLoaded(TestFixtures.ADDR_A);
+        } catch (Throwable t) {
+            escaped = t;
+        }
+        assertThat(escaped).as("mutant: let the OutOfMemoryError propagate out of ensureLoaded — H12's caller "
+                + "(FnHttpServer) must get null (-> 503), never a dead request thread").isNull();
+        assertThat(result).as("mutant: return something non-null for a load that never registered").isNull();
+        assertThat(registry.peek(TestFixtures.ADDR_A)).isNull();
+        assertThat(Files.exists(stopMarker))
+                .as("mutant: skip closing the failed loader").isTrue();
+
+        // A follow-up cycle's heartbeat reflects the failure recorded by ensureLoaded itself.
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.NotModified());
+        r.reconcileOnce(Instant.now());
+        HeartbeatReport.LoadedEntry report = fake.heartbeats().getLast().loaded().stream()
+                .filter(e -> e.address().equals(TestFixtures.ADDR_A)).findFirst().orElseThrow();
+        assertThat(((HeartbeatReport.LoadState.Failed) report.state()).error()).isEqualTo("LOAD:OUT_OF_METASPACE");
+    }
+
+    @Test
+    void pinnedLoadThatOutOfMetaspacesOnInitReturnsNullAndClosesTheFailedLoad(@TempDir Path dir) {
+        Path stopMarker = dir.resolve("pinned.stopped");
+        Path jar = oomOnInitJar(dir, "oom-pinned-v2", "PinnedMetaspaceOnInitFn", stopMarker);
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry candidate = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null,
+                TestFixtures.jvmManifest(POOL.value(), false, "fixture.oom.PinnedMetaspaceOnInitFn"),
+                null, null, null, Map.of(), Map.of(), List.of());
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(candidate), List.of(), List.of())));
+        r.reconcileOnce(Instant.now()); // prepares (but never loads) the candidate
+
+        LoadedFunction result = null;
+        Throwable escaped = null;
+        try {
+            result = r.loadPinned(candidate);
+        } catch (Throwable t) {
+            escaped = t;
+        }
+        assertThat(escaped).as("mutant: let the OutOfMemoryError propagate out of loadPinned — the versioned "
+                + "caller (PinnedVersions/FnHttpServer) must get null, never a dead request thread").isNull();
+        assertThat(result).as("mutant: return a LoadedFunction for a load whose init() failed").isNull();
+        assertThat(Files.exists(stopMarker))
+                .as("mutant: skip closing the failed loader").isTrue();
+    }
+
+    /// The fence is deliberately narrow: only an `OutOfMemoryError` naming
+    /// Metaspace/Compressed class space is caught. A Java-heap
+    /// `OutOfMemoryError` from `init()` is a real, whole-process emergency —
+    /// it must propagate out of `reconcileOnce` uncaught (mutant: catch
+    /// every `OutOfMemoryError` regardless of message).
+    @Test
+    void warmInitThatThrowsJavaHeapOomIsNotSwallowed(@TempDir Path dir) {
+        Path stopMarker = dir.resolve("heap.stopped");
+        Path jar = heapOomOnInitJar(dir, "heap-oom-v1", "HeapOomOnInitFn", stopMarker);
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v1", 1,
+                DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null,
+                TestFixtures.jvmManifest(POOL.value(), true, "fixture.oom.HeapOomOnInitFn"),
+                null, null, null, Map.of(), Map.of(), List.of());
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+
+        assertThatThrownBy(() -> r.reconcileOnce(Instant.now()))
+                .as("mutant: swallow heap OOM too — a Java-heap OutOfMemoryError is not this fence's to catch")
+                .isInstanceOf(OutOfMemoryError.class)
+                .hasMessage("Java heap space");
+    }
+
+    /// A fixture whose `init` always throws a catchable metaspace
+    /// `OutOfMemoryError` (the honest-without-real-exhaustion pin, per
+    /// `docs/spec/function-host-process.md` §3) and whose `stop()` — called
+    /// ONLY by `LoadedFunction#close`, never on a load that was merely
+    /// discarded without closing — writes `stopMarker`.
+    private static Path oomOnInitJar(Path dir, String jarName, String simpleClassName, Path stopMarker) {
+        String stopMarkerPath = stopMarker.toString().replace("\\", "\\\\");
+        Path jar = dir.resolve(jarName + ".jar");
+        FixtureJars.builder()
+                .source("fixture.oom." + simpleClassName, """
+                        package fixture.oom;
+                        import io.flowcatalyst.function.*;
+                        public final class %s implements Function {
+                            public void init(FunctionContext ctx) throws Exception {
+                                throw new OutOfMemoryError("Metaspace");
+                            }
+                            public void stop() {
+                                try {
+                                    java.nio.file.Files.writeString(java.nio.file.Path.of("%s"), "closed");
+                                } catch (Exception ignored) { }
+                            }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                        }
+                        """.formatted(simpleClassName, stopMarkerPath))
+                .build(jar);
+        return jar;
+    }
+
+    /// Same shape as [#oomOnInitJar], but the message names Java heap —
+    /// the fence's negative case: this must NOT be caught as a metaspace
+    /// failure.
+    private static Path heapOomOnInitJar(Path dir, String jarName, String simpleClassName, Path stopMarker) {
+        String stopMarkerPath = stopMarker.toString().replace("\\", "\\\\");
+        Path jar = dir.resolve(jarName + ".jar");
+        FixtureJars.builder()
+                .source("fixture.oom." + simpleClassName, """
+                        package fixture.oom;
+                        import io.flowcatalyst.function.*;
+                        public final class %s implements Function {
+                            public void init(FunctionContext ctx) throws Exception {
+                                throw new OutOfMemoryError("Java heap space");
+                            }
+                            public void stop() {
+                                try {
+                                    java.nio.file.Files.writeString(java.nio.file.Path.of("%s"), "closed");
+                                } catch (Exception ignored) { }
+                            }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                        }
+                        """.formatted(simpleClassName, stopMarkerPath))
+                .build(jar);
+        return jar;
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────

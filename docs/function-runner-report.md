@@ -8,18 +8,26 @@ container memory limit, CPU quota, fixture and N — nothing here is extrapolate
 run, except where explicitly marked and bounded to within ±20% of a measured point.
 
 **What ran**: B1 (memory per loaded function) — complete, both fixtures, both memory limits,
-including a clean re-run after an initial methodology bug (see below). B3 (throughput/p99) — the
+including a clean re-run after an initial methodology bug (see below). B2 (first-call latency,
+p50/p99 over 100 distinct functions) — complete, both fixtures, re-run after the padding fix
+below. The workplan's headline row (100 lazy + 20 warm, before/after invoking 30 of the lazy ones)
+— complete, re-measured clean after the two defects below were fixed. B3 (throughput/p99) — the
 time-boxed minimum (`--cpus 2`, `c=256`, both `/io` and `/cpu`) plus three extra points for a
 fuller picture (`c=64`, `c=1000`, `--cpus 1`). B4 (noisy neighbour) — complete, one comparison.
 B5 (cost line) — complete, computed from B3's measured numbers plus today's fetched prices.
 
-**What was skipped or incomplete**: B2 (first-call latency, p50/p99 over 100-200 distinct
-functions) was not run — time-boxed out after B1/B3/B4/B5. The workplan's headline B1 row ("100
-lazy + 20 warm, before/after invoking 30 of the lazy ones") could not be cleanly measured: see
-"Anomaly" below — reported honestly rather than tuned into a clean-looking number. B3/B4 ran on
-Docker Desktop for Mac, where the load generator (host process) is not cgroup-isolated from the
-container's `--cpus` quota (see `bench/function-host/README.md`) — treat those numbers as
-directional, not isolated-core numbers.
+**What was skipped or incomplete**: B3/B4 ran on Docker Desktop for Mac, where the load generator
+(host process) is not cgroup-isolated from the container's `--cpus` quota (see
+`bench/function-host/README.md`) — treat those numbers as directional, not isolated-core numbers.
+B3 was not run against the typical fixture (out of the original time box).
+
+**Two defects found and fixed** (full detail below): (1) an uncaught `OutOfMemoryError: Metaspace`
+escaped the reconciler's eager warm-load loop and killed the rest of that cycle's document — fixed
+in `Reconciler`/`JvmFunctionLoader` (function-host); (2) the "lazy 404" seen while probing the
+headline row was traced to the AD HOC invocation commands (and `bench/function-host/scripts/run-b1.sh`'s
+own invoke step) not zero-padding function indices to FakePlatform's fixed 3-digit address format —
+a benchmark bug, not a host defect; fixed in `run-b1.sh`, and the headline row/B2 re-measured with
+correct addressing.
 
 ### B1 — memory per loaded function
 
@@ -99,9 +107,9 @@ container). The script now polls `fc_fn_loaded` until it is unchanged for three 
 before measuring. The corrected run is what's tabulated above; the numbers below are why the fix
 mattered.
 
-**Anomaly — an uncaught `OutOfMemoryError: Metaspace` crashes the eager warm-load loop, not just
-one function's load**: at 2g/typical/N=200 (fence hit), `docker logs` shows, reproduced identically
-on two independent runs:
+**Defect 1 (found, fixed) — an uncaught `OutOfMemoryError: Metaspace` crashed the eager warm-load
+loop, not just one function's load**: at 2g/typical/N=200 (fence hit), `docker logs` showed,
+reproduced identically on two independent runs:
 
 ```
 Exception in thread "main" java.lang.OutOfMemoryError: Metaspace
@@ -119,33 +127,101 @@ Exception in thread "main" java.lang.OutOfMemoryError: Metaspace
 	at io.flowcatalyst.fnhost.FnHostMain.main(FnHostMain.java:24)
 ```
 
-This is **on the `main` thread**, inside the synchronous startup reconcile — the design intent
-documented in `docs/spec/function-host-process.md` §3 is "a catchable `OutOfMemoryError: Metaspace`
-that fails one load", i.e. the *function's* load should be refused (`LoadOutcome.Refused`) while
-the host keeps running everything else. What was actually observed is the whole eager warm-load
-loop dying with an *uncaught* `Error` partway through (index 109 of 200, both times) — the process
-survived only because other non-daemon threads (the Vert.x listeners) were already running by that
-point, so `/health`/`/metrics`/`/ready` kept answering with whatever had loaded before the crash
-(109/200), but nothing after index 109 was attempted — not a clean per-function refusal. This was
-NOT tuned away or hidden; it is reported verbatim because it directly contradicts the fence's
-documented failure mode and is worth the owner's attention. (`bench/function-host/results/typical-n200-w200-2g.server.log`)
+Root cause: `Reconciler#attachContextAndInit` caught `Exception` around `Function#init`, but
+`OutOfMemoryError` is an `Error`, not an `Exception` — it fell straight through, uncaught, out of
+the synchronous startup reconcile, killing the eager warm-load loop mid-document (index 109 of
+200) and leaving every entry after it never even attempted. `JvmFunctionLoader#load` had the same
+gap around class definition and the entrypoint's constructor.
 
-**Anomaly — the workplan's headline row ("100 lazy + 20 warm, before/after invoking 30 lazy ones")
-could not be cleanly measured**: with 20 warm + 100 lazy typical functions declared and the host
-fully `/ready` (waited 20s past readiness), invoking lazy addresses that are demonstrably present
-in the served desired-state document (verified byte-for-byte) returned `404` (`fc_fn_invocations_total{address="-",outcome="not_found"}`)
-for the large majority of first attempts — 29 of 29 in one run — with only isolated, non-deterministic
-individual successes on retry. This does not match H12's documented contract ("lazy function loads
-on first call... an unloadable one is 503, not 404"). Per this task's own rule ("if something is not
-explainable in one pass, stop and report verbatim — do not tune anything to make a number look
-better"), this was **not** chased further or retried into a clean number; the raw sequence is in
-`bench/function-host/results/headline-lazy-anomaly.server.log`. This is a second, independent signal
-(alongside the metaspace crash above) that the reconciler's handling of a large, lazily-loaded
-desired-state document deserves engineering attention before relying on lazy-loading at scale.
+Fixed in `function-host/src/main/java/io/flowcatalyst/fnhost/reconcile/Reconciler.java`
+(`attachContextAndInit`, `applyLoadOutcome`, `ensureLoaded`) and
+`function-host/src/main/java/io/flowcatalyst/fnhost/load/JvmFunctionLoader.java` (`load`): a
+metaspace `OutOfMemoryError` — matched by message, `Reason.OUT_OF_METASPACE` /
+`LOAD:OUT_OF_METASPACE` — is now caught around exactly one function's class loading/construction/
+`init`, closes that one class loader (reclaiming the metaspace it consumed), leaves the old version
+(if any) serving, logs at ERROR, and lets the reconcile continue to the rest of the document; a
+Java-heap `OutOfMemoryError` is deliberately **not** caught anywhere. Two related findings surfaced
+while proving this against a REAL metaspace exhaustion (a forked JVM at the SAME 512 MiB fence a
+real `--memory 2g` container gets, `MetaspaceFenceForkTest`, gated behind
+`-Dfc.fnhost.metaspaceTest=true`, run by hand — see test tables below): (a) the metaspace exhaustion
+does not always arrive as a bare `OutOfMemoryError` — `invokedynamic` bootstrap (a library's own
+lambda, under `com.networknt.schema.ValidatorTypeCode.<clinit>`) wrapped it in `InternalError`, and
+a class that already failed to initialise once wrapped it in `NoClassDefFoundError` with the
+original error embedded only as text, not a real nested `Throwable` — both are now unwrapped by
+`JvmFunctionLoader#findMetaspaceOom`, which walks the cause chain AND falls back to a message-text
+match for the latter case; (b) the diagnostic log line for the failure can itself need a
+not-yet-loaded Logback class and throw a second `OutOfMemoryError` — `Reconciler` now closes the
+loader BEFORE logging and falls back to a bare `System.err` line (built with `StringBuilder`, never
+`+`, which is `invokedynamic` and can fail the identical way) if logging itself throws.
+
+**Defect 2 (found: benchmark, not the host) — the "lazy 404" seen probing the headline row**: with
+20 warm + 100 lazy typical functions declared and the host fully `/ready`, invoking lazy addresses
+that are demonstrably present in the served desired-state document (verified byte-for-byte)
+returned `404` (`fc_fn_invocations_total{address="-",outcome="not_found"}`) for the large majority
+of first attempts — 29 of 29 in one run, `bench/function-host/results/headline-lazy-anomaly.server.log`.
+Root cause, found by reproducing with a JUnit `FakeControlPlane` harness at the same 20+100 scale
+(100% success, no 404s — ruling out a Reconciler bug), then parsing FakePlatform's exact raw
+desired-state JSON through `DesiredDocument.parse()` (all 120 entries present, none dropped — ruling
+out the lenient parser), then reproducing directly against a real Docker container: FakePlatform
+always names addresses with a fixed 3-digit zero pad (`String.format("%03d", i)`,
+`bench.typical.f020`…`f119`), but the ad hoc invocation commands used to probe the headline row (and
+`bench/function-host/scripts/run-b1.sh`'s own "one invocation each" step, `seq -w`) padded to the
+width of the LARGEST number in THEIR OWN range — for any range under 100, that is 1 or 2 digits
+("bench.typical.f30" instead of "f030"), so the request never matched any entry and the host
+correctly answered `FUNCTION_NOT_FOUND`. Confirmed directly: `seq -w 30 59` → 404 for all 30;
+the same 30 indices, zero-padded to 3 digits, → 200/500 (app-level; no body was posted) for all 30,
+zero 404s. This also explains "isolated, non-deterministic successes on retry" — an index ≥ 100
+needs no padding at all and happens to match by chance. Not a `function-host` defect;
+`bench/function-host/scripts/run-b1.sh` fixed (`seq -f "%03.0f"`, always 3 digits regardless of
+range) — B1 itself was unaffected (its own document is always all-warm, so this step's job is only
+to force an access, and a 404'd access unloads nothing), but the bug was real and latent in that
+script for any `n<100` point.
+
+**Headline row, re-measured clean** (fixture `typical`, `--memory 4g --cpus 2`, both defects fixed,
+image rebuilt): 20 warm + 100 lazy declared, `/ready`, `fc_fn_loaded` settled at 20, waited a further
+20s, then 30 lazy addresses (`f020`–`f049`, correctly zero-padded) invoked concurrently
+(`xargs -P 30`): **30/30 succeeded** (HTTP 500 `EMPTY_BODY` — an application-level outcome from the
+`typical` fixture's own JSON-schema validation, since no body was posted; the host itself never
+answered 404 or hung), `fc_fn_loaded` moved from 20 → 50 (20 warm + the 30 just-loaded lazy ones,
+exactly), and `fc_fn_invocations_total{...,outcome="not_found"}` is absent from `/metrics` entirely
+— zero not-found outcomes over the whole run.
+(`bench/function-host/results/headline-fixed.server.log`)
+
+**The `SLF4J(W): No SLF4J providers were found` noise in every container log** is the FUNCTION's own
+stderr, not a host defect: the `typical` fixture shades its own copy of `slf4j-api` (a transitive
+dependency of json-schema-validator) with no logging backend bound inside that isolated class
+loader, so each loaded instance prints its own one-time "no provider" warning — three lines per
+`typical` load, matching the loaded-function count exactly in every server log above. The HOST's own
+logging is separately confirmed configured and working: `Logging.init(envReader)` runs at
+`FnHostMain` startup (`function-host/src/main/java/io/flowcatalyst/fnhost/FnHostMain.java:34`),
+Logback (`ch.qos.logback:logback-classic`) is a transitive dependency of `function-host` via
+`server`'s `pom.xml` and is present in the exec jar, and every server log captured for this report
+carries the host's own structured JSON lines (`"function host started"`,
+`"function version failed to load: out of metaspace"`, etc.) alongside the fixture noise — the host
+was never silently failing to log. Not suppressed, per instructions: it is the function's output.
 
 ### B2 — first-call latency
 
-**Skipped** (time-boxed out — see "What was skipped" above).
+Fresh container per fixture, all-lazy document (`warm=0`), 100 distinct addresses, one sequential
+`curl` per address (`%{time_total}`) — the FIRST call to each, so this is genuinely cold-start
+(class load + construct + `init`) latency, not steady-state. `--memory 2g` (lean) / `--memory 4g`
+(typical), `--cpus 2`.
+
+| fixture | N | p50 | p90 | p99 | min | max | fc_fn_loaded after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| lean | 100 | 3.18ms | 7.07ms | 9.78ms | 1.70ms | 46.02ms | 100 |
+| typical | 100 | 58.40ms | 66.86ms | 97.10ms | 53.23ms | 126.70ms | 100 |
+
+Every one of the 200 calls across both fixtures succeeded (`fc_fn_loaded` reached the full 100 for
+both; no `not_found`/`unavailable` outcomes) — the lazy-load path (H12) holds at this scale. Lean's
+first call is dominated by the host's own dispatch/JVM overhead (a lean function is ~2 classes);
+typical's ~55-60ms median is almost entirely `TypicalFn.init()` compiling its JSON schema plus
+defining ~700 shaded jackson-databind/json-schema-validator classes into a fresh class loader — the
+same per-instance cost B1 measured in metaspace (~4.4 MB) shows up here as time. The one 46ms lean
+outlier (vs. a 1.7-9.8ms typical range) and the 126.7ms typical max are consistent with ordinary
+JIT/GC warm-up noise on the first few calls of a run, not a distinct mode — not chased further.
+(raw per-call latencies: `bench/function-host/results/b2-lean-latencies-ms-raw.txt`,
+`bench/function-host/results/b2-typical-latencies-ms-raw.txt`)
 
 ### B3 — steady-state throughput / p99
 

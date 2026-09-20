@@ -76,17 +76,24 @@ final class TestFixtures {
     }
 
     static Manifest jvmManifest(String pool, boolean warm) {
-        return manifest("jvm", pool, warm);
+        return manifest("jvm", ENTRYPOINT, pool, warm);
+    }
+
+    /// [#jvmManifest(String, boolean)] naming a caller-supplied entrypoint —
+    /// for a fixture built by hand (e.g. one whose `init`/constructor throws)
+    /// rather than [#functionJar], whose entrypoint is always [#ENTRYPOINT].
+    static Manifest jvmManifest(String pool, boolean warm, String entrypoint) {
+        return manifest("jvm", entrypoint, pool, warm);
     }
 
     static Manifest wasmManifest(String pool) {
-        return manifest("wasm", pool, false);
+        return manifest("wasm", ENTRYPOINT, pool, false);
     }
 
-    private static Manifest manifest(String runtime, String pool, boolean warm) {
+    private static Manifest manifest(String runtime, String entrypoint, String pool, boolean warm) {
         String json = """
                 {"runtime":"%s","entrypoint":"%s","pool":"%s","warm":%s}
-                """.formatted(runtime, ENTRYPOINT, pool, warm);
+                """.formatted(runtime, entrypoint, pool, warm);
         return Manifest.readStored(Json.MAPPER.readTree(json));
     }
 

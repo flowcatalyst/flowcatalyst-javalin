@@ -11,6 +11,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import static io.flowcatalyst.fnhost.load.TestSupport.ADDRESS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// L8 (`docs/spec/function-host-core.md` §3): every [Reason]
 /// [JvmFunctionLoader#load] can return, each from a fixture jar built for
@@ -148,6 +149,76 @@ class RefusalTest {
 
         assertThat(outcome).isInstanceOf(Refused.class);
         assertThat(((Refused) outcome).reason()).isEqualTo(Reason.ENTRYPOINT_NOT_INSTANTIABLE);
+    }
+
+    // ── metaspace fence (`docs/spec/function-host-process.md` §3): a load
+    //    that fails for lack of metaspace is a load failure LIKE ANY OTHER —
+    //    OUT_OF_METASPACE, never an uncaught Error out of #load. A Java-heap
+    //    OutOfMemoryError is a DIFFERENT emergency and must NOT be swallowed. ──
+
+    @Test
+    void entrypointConstructorOutOfMetaspaceIsRefusedNotThrown(@TempDir Path dir) throws Exception {
+        Path jar = FixtureJars.builder()
+                .source("fixture.l8.MetaspaceOnConstruct", """
+                        package fixture.l8;
+                        import io.flowcatalyst.function.*;
+                        public final class MetaspaceOnConstruct implements Function {
+                            public MetaspaceOnConstruct() { throw new OutOfMemoryError("Metaspace"); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                        }
+                        """)
+                .build(TestSupport.tempJar(dir, "metaspace-on-construct"));
+
+        LoadOutcome outcome = new JvmFunctionLoader().load(jar, "fixture.l8.MetaspaceOnConstruct", ADDRESS, 1);
+
+        assertThat(outcome).as("mutant: let the OutOfMemoryError escape #load instead of refusing this one load")
+                .isInstanceOf(Refused.class);
+        assertThat(((Refused) outcome).reason()).isEqualTo(Reason.OUT_OF_METASPACE);
+    }
+
+    @Test
+    void entrypointConstructorCompressedClassSpaceOomIsRefused(@TempDir Path dir) throws Exception {
+        Path jar = FixtureJars.builder()
+                .source("fixture.l8.CcsOnConstruct", """
+                        package fixture.l8;
+                        import io.flowcatalyst.function.*;
+                        public final class CcsOnConstruct implements Function {
+                            public CcsOnConstruct() { throw new OutOfMemoryError("Compressed class space"); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                        }
+                        """)
+                .build(TestSupport.tempJar(dir, "ccs-on-construct"));
+
+        LoadOutcome outcome = new JvmFunctionLoader().load(jar, "fixture.l8.CcsOnConstruct", ADDRESS, 1);
+
+        assertThat(outcome).isInstanceOf(Refused.class);
+        assertThat(((Refused) outcome).reason()).isEqualTo(Reason.OUT_OF_METASPACE);
+    }
+
+    /// The load-refusal guard is a fence-specific safety net, not a blanket
+    /// `catch (OutOfMemoryError)` — a Java-heap exhaustion is a real
+    /// emergency for the WHOLE process, not one function's problem, and
+    /// must keep propagating out of `#load` uncaught (mutant: swallow it
+    /// too, e.g. by matching on `OutOfMemoryError` alone instead of the
+    /// message).
+    @Test
+    void entrypointConstructorJavaHeapOomIsNotSwallowed(@TempDir Path dir) throws Exception {
+        Path jar = FixtureJars.builder()
+                .source("fixture.l8.HeapOnConstruct", """
+                        package fixture.l8;
+                        import io.flowcatalyst.function.*;
+                        public final class HeapOnConstruct implements Function {
+                            public HeapOnConstruct() { throw new OutOfMemoryError("Java heap space"); }
+                            public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                        }
+                        """)
+                .build(TestSupport.tempJar(dir, "heap-on-construct"));
+
+        JvmFunctionLoader loader = new JvmFunctionLoader();
+        assertThatThrownBy(() -> loader.load(jar, "fixture.l8.HeapOnConstruct", ADDRESS, 1))
+                .as("mutant: catch every OutOfMemoryError regardless of message — a heap OOM is not this method's to swallow")
+                .isInstanceOf(OutOfMemoryError.class)
+                .hasMessage("Java heap space");
     }
 
     @Test

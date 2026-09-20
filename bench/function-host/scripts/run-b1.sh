@@ -102,10 +102,21 @@ run_point() {
   fi
 
   # one invocation each — parallel batches of 20 to keep this fast without
-  # pretending to be a throughput test (that's B3).
+  # pretending to be a throughput test (that's B3). `seq -w` pads to the
+  # width of the LARGEST number in ITS OWN range, not to a fixed width — for
+  # n<100 that produces 1- or 2-digit indices ("0".."24"), while FakePlatform
+  # always names addresses with 3-digit zero padding ("f000".."f024",
+  # `String.format("%03d", i)`). That mismatch made every invocation below
+  # 404 FUNCTION_NOT_FOUND for any n<100 (silently harmless for B1 itself —
+  # this step only exists to force a real access, and B1's own document is
+  # always all-warm, so every function is already loaded before this even
+  # runs) — but it is exactly the shape of `docs/function-runner-report.md`'s
+  # "lazy 404 anomaly" headline-row finding, traced back to this same
+  # padding bug in an ad hoc invocation, not a function-host defect. Fixed
+  # here with `-f "%03.0f"`, which always zero-pads to 3 digits.
   local invoked=0
   if [ "$n" -gt 0 ]; then
-    seq -w 0 $((n - 1)) | xargs -P 20 -I{} curl -s -o /dev/null "http://127.0.0.1:$HOST_PORT/functions/bench.$fixture.f{}/x"
+    seq -f "%03.0f" 0 $((n - 1)) | xargs -P 20 -I{} curl -s -o /dev/null "http://127.0.0.1:$HOST_PORT/functions/bench.$fixture.f{}/x"
     invoked=$n
   fi
 

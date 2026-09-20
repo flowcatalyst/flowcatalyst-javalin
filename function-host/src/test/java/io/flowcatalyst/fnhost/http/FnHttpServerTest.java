@@ -1108,6 +1108,36 @@ class FnHttpServerTest {
         }
     }
 
+    /// `docs/spec/function-host-process.md` §3: an `OutOfMemoryError` naming
+    /// Metaspace from a lazy function's OWN `init()` must reach the caller as
+    /// `503 FUNCTION_UNAVAILABLE` — never a hung connection (no answer ever
+    /// written) and never `404` (H12's own contract: known-but-unloadable is
+    /// 503, not 404).
+    @Test
+    void h12_lazyThatOutOfMetaspacesOnInitIs503NotAHangOrFourOhFour(@TempDir Path dir) throws Exception {
+        Path jar = FnHttpTestSupport.functionJar(dir, "oom", "fixture.http.MetaspaceOnInitFn", """
+                package fixture.http;
+                import io.flowcatalyst.function.*;
+                public final class MetaspaceOnInitFn implements Function {
+                    public void init(FunctionContext ctx) throws Exception {
+                        throw new OutOfMemoryError("Metaspace");
+                    }
+                    public Result handle(Request in, FunctionContext ctx) { return Result.ack(); }
+                }
+                """);
+        var manifest = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.MetaspaceOnInitFn",
+                "[{\"path\":\"/*\",\"auth\":\"none\"}]");
+        var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
+        try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry))) {
+            var resp = h.get("/functions/" + ADDR.render() + "/x");
+            assertThat(resp.statusCode())
+                    .as("mutant: let the OutOfMemoryError kill the request thread instead of answering 503")
+                    .isEqualTo(503);
+            assertThat(resp.headers().firstValue("Retry-After")).contains("15");
+            assertThat(FnHttpTestSupport.json(resp.body()).path("error").asString()).isEqualTo("FUNCTION_UNAVAILABLE");
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             latch.await(10, TimeUnit.SECONDS);
