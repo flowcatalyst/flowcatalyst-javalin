@@ -1,0 +1,335 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>function-hello</artifactId>
+  <packaging>jar</packaging>
+
+  <name>FlowCatalyst Sample Function — hello</name>
+  <description>
+    docs/spec/function-developer-surface.md §3 (package E, slice E3): the reference
+    function a developer reads before writing their own. One `webhook` endpoint (parses
+    an inbound event, reads config + a secret, emits an owned event), one `platform`
+    endpoint (reads the caller's principal) and one `none` endpoint (a bare health
+    check). Shades in ONE small library (jackson-databind, already in this repo's own
+    dependencyManagement) so the build's ProGuard shrink step is exercised for real
+    rather than shrinking an empty jar. Only reachable via the `examples` Maven profile
+    (root pom.xml) — never part of the default reactor.
+
+    Build shape (docs/function-runner-plan.md §8, "Shrinking"; ORCHESTRATOR RULING
+    2026-09-20 — see the module's own git history / final report for the full
+    reasoning): this machine's JDK (a mise-managed Temurin 25.0.4, and every other
+    Temurin build checked) ships NO `jmods/` directory (JEP 493, "Linking Run-Time
+    Images without JMODs"), and ProGuard's own library-jar reading has no fallback
+    that works without one — so ProGuard cannot run here, and function authors are
+    expected to be on the same class of JDK. The DEFAULT shrinker is therefore
+    `maven-shade-plugin`'s own `minimizeJar` (named as the class-granular
+    alternative by function-runner-plan.md §8 itself): it needs no JDK class files
+    at all — it works from the dependency jars' own bytecode — and runs anywhere.
+
+      compile (release 21, no --enable-preview — same reasoning as function-api/pom.xml:
+        a function author's own toolchain compiles against this, not ours)
+      -> maven-shade-plugin, minimizeJar=true (shades jackson-databind + its
+         transitive deps in, then drops whichever of THEIR classes nothing
+         reachable from this module's own compiled classes references;
+         `minimizeJar` never touches the project's OWN classes — only a
+         dependency's — so HelloFunction/GreetingPayload are always kept whole,
+         with none of ProGuard's library-interface-boundary problem. function-api
+         stays `provided`, so the shade plugin — which only bundles compile/runtime
+         scope — never puts it in the jar; JvmFunctionLoader's BUNDLES_API scan and
+         this module's own ShrunkJarTest both prove that) writing directly to
+         `${finalName}-shrunk.jar` — no second shrink step in the default build.
+      -> the tests run against the SHRUNK jar (E9): a surefire execution bound to the
+         `verify` phase (this repo has no maven-failsafe-plugin configured anywhere —
+         checked before choosing this shape) loads `target/*-shrunk.jar` through the
+         REAL `io.flowcatalyst.fnhost.load.JvmFunctionLoader` and invokes every
+         endpoint. The default `test`-phase execution is skipped entirely: the only
+         test class needs a jar that `package` has not built yet at that point in the
+         lifecycle, so running it there would just fail to find the file.
+
+    ProGuard stays available, OPT-IN, as the `shrink-proguard` Maven profile below —
+    unchanged shrink-only config, sharing `proguard.conf` — for a JDK that still
+    ships `jmods/` (GraalVM 25, or a Temurin ≤ 23). It is UNVERIFIED BY MAVEN on
+    this machine (cannot be: no `jmods/` to read); it was last verified directly via
+    the ProGuard CLI on a GraalVM 25 JDK — see the module's final report for that
+    run's findings (a clean shrink; the entrypoint needs `-keep class … { *; }`
+    because the host calls it through the `Function` interface, a LIBRARY type from
+    ProGuard's point of view once `function-api` is `-libraryjars`, and ProGuard's
+    reachability analysis cannot see across a library-into-program call it does not
+    itself drive).
+
+    Plugin versions, pinned here (not in the parent's pluginManagement — this is the
+    only module that uses them) and why:
+      - com.github.wvengen:proguard-maven-plugin:2.7.0 — the newest release on Maven
+        Central as of this writing (2.7.1 exists only as a SNAPSHOT); the "successor of
+        the pyx4me ProGuard Maven Plugin" and the actively maintained one.
+      - com.guardsquare:proguard-base:7.10.0 — the newest release on Maven Central as
+        of this writing; passed as an explicit plugin dependency element (the wvengen
+        plugin does not bundle a ProGuard version itself; see the plugin's own
+        proguardVersion mechanism, unused here since we just pin the dependency).
+      - maven-shade-plugin: the version already managed by the root pom
+        (`pluginManagement`, currently 3.6.2) — reused, not re-pinned, so this module
+        never drifts from the version the rest of the repo already trusts.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-api</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <!-- Jackson 3 (tools.jackson) — version resolved from the root pom's
+           jackson-bom import (dependencyManagement), not repeated here. The ONE
+           library this sample shades in, per the design's own instruction: small
+           but real, so the ProGuard shrink step in this build actually shrinks
+           something. -->
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- Test-only: loads the shrunk jar through the REAL host loader (E9). Pulls
+         `flowcatalyst-server` transitively at test scope (Manifest.parseStrict,
+         FunctionAddress, Runtime, FunctionLimits, ClientCeilings) — CLAUDE.md build
+         hygiene: resolved from the reactor's own target/classes via `-am`, never
+         installed. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-host</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Overrides the parent's release-25 / enable-preview flags — same reasoning
+           and same shape as function-api/pom.xml: this is a function author's own
+           build, on their own toolchain, never ours. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>21</release>
+          <failOnWarning>${maven.compiler.failOnWarning}</failOnWarning>
+          <compilerArgs combine.self="override">
+            <arg>-Xlint:all</arg>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <!-- DEFAULT shrinker (ORCHESTRATOR RULING 2026-09-20): shade jackson-databind
+           (+ its transitive tools.jackson/jackson-annotations deps) into the main
+           jar AND minimize in the same pass — `minimizeJar` removes whichever of
+           THOSE dependency classes nothing reachable from this module's own
+           compiled classes (and their own transitive reachability inside the
+           dependency jars) references; it never touches this module's own classes,
+           so HelloFunction/GreetingPayload are always kept whole. function-api is
+           `provided` scope, so the shade plugin (compile+runtime scope only) never
+           bundles it — ShrunkJarTest proves this against the REAL output, it is not
+           just asserted here in a comment. Writes straight to
+           `${finalName}-shrunk.jar` (the `outputFile` override below) so the
+           default build needs no second shrink step at all — that filename is also
+           what `shrink-proguard` produces, so ShrunkJarTest and everything
+           downstream is unaware which shrinker built it. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>shade-dependencies</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <minimizeJar>true</minimizeJar>
+              <outputFile>${project.build.directory}/${project.build.finalName}-shrunk.jar</outputFile>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/*.EC</exclude>
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- E9: the tests run against the SHRUNK jar. This repo has no
+           maven-failsafe-plugin anywhere (checked: `grep -rl maven-failsafe-plugin`
+           over every pom.xml finds nothing) — introducing it for one module is a
+           bigger footprint than reusing surefire with a second, later-bound
+           execution, so: the default `test`-phase run is skipped outright (the one
+           test class this module has needs a jar that `package` has not built yet
+           at that point — the shrunk jar, whichever shrinker built it, does not
+           exist before `package` completes), and a second execution, bound to
+           `verify` (strictly after `package`, so after the shade+minimizeJar
+           execution above — or, under `shrink-proguard`, after shade AND ProGuard
+           — have both run), runs it for real. `mvn verify` is therefore the command
+           that proves anything; `mvn test` alone proves nothing in this module and
+           is expected to report zero tests run. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <skipTests>true</skipTests>
+        </configuration>
+        <executions>
+          <execution>
+            <id>shrunk-jar-test</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <skipTests>false</skipTests>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <!-- OPT-IN alternative shrinker (ORCHESTRATOR RULING 2026-09-20, see this module's
+       description block above): ProGuard, unchanged from before this ruling, for a
+       JDK that still ships `jmods/` (GraalVM 25, or a Temurin ≤ 23) — this machine's
+       JDK does not, so `-Pshrink-proguard` cannot be verified by Maven here; it was
+       last verified directly via the ProGuard CLI on GraalVM 25 (see the final
+       report). Activate with `-Pexamples,shrink-proguard`. -->
+  <profiles>
+    <profile>
+      <id>shrink-proguard</id>
+      <build>
+        <plugins>
+          <!-- Overrides the `shade-dependencies` execution above: same filters and
+               ServicesResourceTransformer (inherited unchanged — a profile's
+               <configuration> merges onto the base plugin's per matching execution
+               id, dominant on elements it redeclares, so only `minimizeJar` and
+               `outputFile` need repeating here), but shades WITHOUT minimizing, and
+               writes to the plain `${finalName}.jar` — ProGuard's own `<injar>`
+               below — instead of straight to `-shrunk.jar`, so ProGuard (not
+               minimizeJar) is what actually shrinks the artifact under this
+               profile. -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>shade-dependencies</id>
+                <configuration>
+                  <minimizeJar>false</minimizeJar>
+                  <outputFile>${project.build.directory}/${project.build.finalName}.jar</outputFile>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+
+          <!-- ProGuard, shrink-only (docs/function-runner-plan.md §8): reads
+               proguard.conf (`-dontobfuscate -dontoptimize` + the keep rules) beside
+               manifest.json. `includeDependency` (plugin default: true) adds this
+               module's own compile-scope dependencies — including `function-api`,
+               `provided` is on the Maven "compile" resolution scope the plugin resolves
+               against — as `-libraryjars` automatically. The JDK's own classes are NOT
+               configured here as a `<libs>` entry: ProGuard's own `<java.home>` macro
+               (documented in its manual as text substituted into a *path you still write
+               the rest of*, e.g. `<java.home>/jmods/java.base.jmod` — NOT a self-contained
+               "read the whole run-time image" directive; there is no such directive in
+               proguard-core 9.4.0/9.1.10, confirmed by inspecting both jars directly: zero
+               classes anywhere under `proguard.io` reference `jrt:` or a JEP 220 run-time
+               image) is a MAVEN property collision waiting to happen if written inside
+               pom.xml (`${java.home}` would be resolved by Maven itself first), so this
+               whole directive lives in `proguard.conf` instead, verbatim, where ProGuard
+               reads it as raw, un-interpolated text.
+
+               KNOWN ENVIRONMENT BLOCKER, reported rather than worked around (see the
+               final report; this repeats CLAUDE.md/the brief's own instruction for exactly
+               this situation): `<java.home>/jmods/*.jmod` is the ONLY input format
+               proguard-core actually supports for a modular JDK's own classes, and this
+               build's own JDK — a mise-managed Temurin 25.0.4.1, but ALSO the raw,
+               official upstream Adoptium tarball for both macOS/aarch64 and linux/x64,
+               downloaded and inspected directly — ships NO `jmods/` directory at all
+               (plausibly JEP 493, "Linking Run-Time Images without JMODs": jlink no
+               longer needs jmods to build a run-time image, so recent Temurin builds stop
+               shipping them — proguard-core's own library-jar reading was never updated
+               for that). Fixing this needs either a third build plugin (`exec-maven-
+               plugin`, to run `jimage extract` first) or a different JDK toolchain for
+               this one step (e.g. this repo's own GraalVM install, which does ship
+               jmods) — both outside what this profile is authorised to add/require on
+               its own, which is exactly why it is opt-in rather than the default. -->
+          <plugin>
+            <groupId>com.github.wvengen</groupId>
+            <artifactId>proguard-maven-plugin</artifactId>
+            <version>2.7.0</version>
+            <executions>
+              <execution>
+                <phase>package</phase>
+                <goals>
+                  <goal>proguard</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <injar>${project.build.finalName}.jar</injar>
+              <outjar>${project.build.finalName}-shrunk.jar</outjar>
+              <obfuscate>false</obfuscate>
+              <proguardInclude>${project.basedir}/proguard.conf</proguardInclude>
+            </configuration>
+            <dependencies>
+              <!-- proguard-maven-plugin 2.7.0's OWN pom declares proguard-core:9.1.10
+                   directly (optional, runtime) — NEARER in Maven's dependency graph than
+                   proguard-base 7.10.0's own transitive proguard-core:9.4.0, so mediation
+                   picks the OLDER, plugin-declared 9.1.10 unless overridden explicitly
+                   here too (confirmed directly: without this, ~/.m2 held both jars and
+                   9.1.10 silently won). Pinned to the SAME 9.4.0 proguard-base 7.10.0
+                   was built and tested against. -->
+              <dependency>
+                <groupId>com.guardsquare</groupId>
+                <artifactId>proguard-core</artifactId>
+                <version>9.4.0</version>
+                <scope>runtime</scope>
+              </dependency>
+              <dependency>
+                <groupId>com.guardsquare</groupId>
+                <artifactId>proguard-base</artifactId>
+                <version>7.10.0</version>
+                <scope>runtime</scope>
+              </dependency>
+            </dependencies>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

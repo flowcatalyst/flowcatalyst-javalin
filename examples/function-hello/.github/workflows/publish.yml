@@ -1,0 +1,192 @@
+name: Publish function-hello (TEMPLATE — not wired into this repo's CI)
+#
+# THIS IS A TEMPLATE. It lives here as the worked example package E's own spec
+# (docs/spec/function-developer-surface.md §3) asks for, but it is not a
+# `.github/workflows/*.yml` of the flowcatalyst-javalin REPO ROOT — that
+# directory only has this sample's own build in `make examples`
+# (docs/functions.md, "Pipeline"). To use it for a real function, copy this
+# file into YOUR function's own repository under `.github/workflows/`, and
+# fill in:
+#   - <YOUR-ORG>/<YOUR-REPO> everywhere below (the OIDC subject the platform's
+#     signer policy must list is built from these — see the final step)
+#   - the platform's real URL, and FLOWCATALYST_CLIENT_ID/_SECRET as repo/org
+#     secrets for the publishing service account
+#     (`platform:function-publisher`, `docs/spec/function-developer-surface.md`
+#     §1 — the same role `fcdev fn` uses locally, minted for real in your own
+#     platform's client/service-account admin instead of `fcdev start`'s
+#     throwaway dev credentials)
+#   - the OCI registry `oras push` targets
+#
+# ── Pipeline shape (docs/function-runner-plan.md §8, "Shrinking"; §10 rulings
+#    1 and 5) ──
+#   build+shrink+test (this repo's own Maven build: shade with minimizeJar=true —
+#     the DEFAULT shrinker, ORCHESTRATOR RULING 2026-09-20: ProGuard needs a JDK
+#     that still ships `jmods/`, which `setup-java`'s Temurin distribution does
+#     not (JEP 493) any more than the local dev machine this ruling was made on
+#     does, so CI runs the same default a function author's own machine does —
+#     the tests run against the SHRUNK jar, `../../pom.xml`'s own comment. ProGuard
+#     remains available, opt-in, as the `shrink-proguard` Maven profile, for a
+#     JDK that still ships `jmods/`; add `,shrink-proguard` to the `-P` list below
+#     only on a runner that provides one.)
+#   -> oras push (OCI is the artifact store; `s3://`/`file://` are the other
+#      two `ArtifactStore` schemes, not used by CI)
+#   -> cosign sign-blob --new-bundle-format --bundle (keyless; the workflow's
+#      own OIDC token identifies the signer — ruling 1, "Publishers: only our
+#      CI. Signer policy lists the pipeline's OIDC identity; nothing else is
+#      accepted for any runtime.")
+#   -> fcdev fn publish --artifact-ref oci://... --bundle ...
+#   -> fcdev fn promote --wait 120s
+#
+# ── READ THIS BEFORE TOUCHING THE COSIGN VERSION
+#    (docs/spec/function-artifacts.md §4, "What this does not verify") ──
+# The platform's SignatureVerifier is JDK-only (no sigstore-java — a 2026-09-19
+# owner ruling to avoid a 35 MB shaded gRPC-Netty/BouncyCastle/protobuf/Guava
+# dependency chain for verification alone) and can therefore only validate
+# Sigstore bundles that carry a Rekor **v1** "hashedrekord" entry with a SIGNED
+# ENTRY TIMESTAMP (the JDK has no public API for the RFC 3161 / CMS SignedData
+# timestamps Rekor v2 uses instead). A cosign version/flag combination that
+# stops producing that shape makes `fcdev fn publish` fail with
+# `UNSUPPORTED_BUNDLE` — not a signature rejection, a format the verifier
+# cannot even read. `cosign-release` below is therefore PINNED to an exact
+# version verified against the platform's own golden fixture
+# (`function-artifacts.md` §5, `server/src/test/resources/function/sigstore/`)
+# — read all of §4 before bumping it, and re-run that module's
+# `SignatureVerifierTest` (or an equivalent publish-and-verify smoke test)
+# against the new cosign's own output before trusting the bump.
+#
+# ── The signer identity the platform's policy must hold exactly
+#    (function-artifacts.md, ClientPolicy.permits — exact match, no
+#    wildcards) ──
+# issuer:  https://token.actions.githubusercontent.com
+# subject: https://github.com/<YOUR-ORG>/<YOUR-REPO>/.github/workflows/publish.yml@refs/heads/main
+# The "print signer identity" step below prints the REAL values for this run
+# so you can paste them into `PUT /api/function-policies/{owner}` verbatim —
+# matching is exact, so a copy-paste is safer than retyping this by hand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/function-hello/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # cosign keyless signing mints its OIDC token from this
+
+env:
+  # A DNS label pool name, not a URL — matches Manifest.pool / FC_FN_POOL_URL's
+  # {pool} template (function-invocation.md §4).
+  FUNCTION_ADDRESS: hello.default.hello
+  OCI_REPO: ghcr.io/<YOUR-ORG>/functions/hello # oras push target — fill in
+
+jobs:
+  publish:
+    name: Build, shrink, sign, publish, promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      # Builds examples/function-hello (release-21 compile -> shade with
+      # minimizeJar=true (the default shrinker; see the comment block above) ->
+      # the tests run against the SHRUNK jar, all inside this one Maven
+      # invocation). Run from the repo root so the reactor can
+      # resolve `flowcatalyst-function-api`/`flowcatalyst-function-host` from
+      # sibling modules (CLAUDE.md: never `mvn install` — the reactor
+      # resolves them from target/classes).
+      - name: Build, shrink and test
+        run: mvn -B -Pexamples -pl examples/function-hello -am verify
+
+      - name: Locate the shrunk jar
+        id: jar
+        working-directory: examples/function-hello
+        run: |
+          set -euo pipefail
+          jar=$(ls target/*-shrunk.jar)
+          digest=$(sha256sum "$jar" | cut -d' ' -f1)
+          echo "path=$jar" >> "$GITHUB_OUTPUT"
+          echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
+
+      # Pinned exact version — see the comment block above before bumping.
+      - name: Install oras
+        uses: oras-project/setup-oras@v1
+        with:
+          version: 1.2.0
+
+      - name: oras push
+        run: |
+          oras push "${{ env.OCI_REPO }}:${{ github.sha }}" \
+            "${{ steps.jar.outputs.path }}:application/java-archive"
+
+      # Pinned exact version — see the comment block above before bumping.
+      # `cosign-release` (NOT just the installer action's own tag) is the pin
+      # that actually matters for bundle format.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.1"
+
+      - name: cosign sign-blob (keyless, new bundle format)
+        run: |
+          cosign sign-blob --yes \
+            --new-bundle-format \
+            --bundle fn.sigstore.json \
+            "${{ steps.jar.outputs.path }}"
+
+      # Matching is EXACT (ClientPolicy.permits) — this is the literal string
+      # to put in the platform's signer policy for this function's owner.
+      - name: Print the signer identity the platform policy must contain
+        run: |
+          echo "issuer:  https://token.actions.githubusercontent.com"
+          echo "subject: https://github.com/${{ github.repository }}/.github/workflows/publish.yml@${{ github.ref }}"
+
+      # `UpgradeCommand`'s own asset naming (fcdev/src/main/java/io/flowcatalyst/fcdev/UpgradeCommand.java):
+      # `fcdev-v<ver>-linux-amd64.tar.gz` off a GitHub Release of
+      # flowcatalyst/flowcatalyst (see .github/workflows/release-fcdev.yml —
+      # CALL-OUT 2 there: that workflow cannot run for real until this repo
+      # has a GitHub remote, so there is no live release to download from
+      # today). Fill in the real tag once one exists.
+      - name: Download fcdev
+        run: |
+          gh release download "fcdev/v<FCDEV-VERSION>" \
+            --repo flowcatalyst/flowcatalyst \
+            --pattern "fcdev-v*-linux-amd64.tar.gz" \
+            --output fcdev.tar.gz
+          tar -xzf fcdev.tar.gz
+          chmod +x fcdev
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # `fcdev fn publish`'s remote mode (docs/spec/function-developer-surface.md
+      # §2): `--artifact-ref oci://…` + `--bundle` — never the local `file://`
+      # copy mode a bare jar path implies. Creates the function on first
+      # publish (the platform-owned default; add `--client <id>` for a
+      # client-owned function, or `--no-create` to require it exist already).
+      - name: fcdev fn publish
+        run: |
+          ./fcdev fn publish "${{ steps.jar.outputs.path }}" "${{ env.FUNCTION_ADDRESS }}" \
+            --manifest examples/function-hello/manifest.json \
+            --artifact-ref "oci://${{ env.OCI_REPO }}:${{ github.sha }}" \
+            --bundle fn.sigstore.json \
+            --platform-url "${{ vars.FLOWCATALYST_PLATFORM_URL }}" \
+            --client-id "${{ secrets.FLOWCATALYST_CLIENT_ID }}" \
+            --client-secret "${{ secrets.FLOWCATALYST_CLIENT_SECRET }}" \
+            --output json > publish.json
+          cat publish.json
+
+      - name: fcdev fn promote --wait
+        run: |
+          version=$(jq -r '.version' publish.json)
+          ./fcdev fn promote "${{ env.FUNCTION_ADDRESS }}" \
+            --version "$version" \
+            --wait 120s \
+            --platform-url "${{ vars.FLOWCATALYST_PLATFORM_URL }}" \
+            --client-id "${{ secrets.FLOWCATALYST_CLIENT_ID }}" \
+            --client-secret "${{ secrets.FLOWCATALYST_CLIENT_SECRET }}"

@@ -344,4 +344,24 @@
       </plugins>
     </pluginManagement>
   </build>
+
+  <!--
+    docs/spec/function-developer-surface.md §0/§3 (package E, slice E3): the sample
+    function `examples/function-hello`. It must resolve `function-api` from the
+    reactor's own `target/classes` (nothing is published to a repository yet, and
+    CLAUDE.md forbids `mvn install` from a worktree), so it is a REAL reactor module —
+    just one the default build never touches. Off by default so `mvn test` / a plain
+    `mvn -pl fcdev -am package` never pays for ProGuard or the sample's own build.
+    `make examples` / `docs/functions.md` are the only doors into it:
+
+      mvn -q -B -Pexamples -pl examples/function-hello -am verify
+  -->
+  <profiles>
+    <profile>
+      <id>examples</id>
+      <modules>
+        <module>examples/function-hello</module>
+      </modules>
+    </profile>
+  </profiles>
 </project>

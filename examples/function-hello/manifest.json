@@ -1,0 +1,27 @@
+{
+  "runtime": "jvm",
+  "entrypoint": "io.flowcatalyst.example.hello.HelloFunction",
+  "pool": "default",
+  "warm": false,
+  "limits": {
+    "maxDurationMs": 10000,
+    "maxConcurrency": 8
+  },
+  "endpoints": [
+    { "path": "/events/greeting-requested", "auth": "webhook" },
+    { "path": "/api/hello/{name}", "auth": "platform", "methods": ["GET"] },
+    { "path": "/healthz", "auth": "none", "methods": ["GET"] }
+  ],
+  "subscriptions": [
+    {
+      "eventType": "hello:greeting:requested",
+      "path": "/events/greeting-requested",
+      "mode": "IMMEDIATE",
+      "maxRetries": 3,
+      "timeoutSeconds": 30,
+      "dataOnly": false
+    }
+  ],
+  "config": ["GREETING"],
+  "secrets": ["API_KEY"]
+}

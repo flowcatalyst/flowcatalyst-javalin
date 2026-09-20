@@ -71,11 +71,22 @@ credentials, cached for the process.
 `examples/function-hello` (reactor module, profile `examples`): one function with a `webhook`
 endpoint + subscription, a `platform` endpoint, config + secret use, an emitted event; `manifest.json`;
 build = compile (release 21) → `maven-shade-plugin` (function-api `provided`, never bundled — the
-host refuses `BUNDLES_API`) → **ProGuard shrink-only** (`-dontobfuscate -dontoptimize`, keep rules
-per design §8, keep file beside the manifest) → **the tests run against the shrunk jar**: an
-integration test loads `target/*-shrunk.jar` through the real `JvmFunctionLoader` (test-scope
-dependency on `function-host`) and invokes each endpoint — a missing keep rule fails there, not in
-production. `proguard-maven-plugin` is a build-time plugin of the sample only.
+host refuses `BUNDLES_API`) → **DEFAULT shrinker: `maven-shade-plugin`'s own `minimizeJar`**
+(ORCHESTRATOR RULING 2026-09-20 — recorded in the sample's own `pom.xml`): ProGuard can only read a
+JDK's own classes from `.jmod` files, and Temurin 25 (JEP 493) — the JDK function authors are
+expected to build with — ships no `jmods/` directory at all, so ProGuard cannot run there.
+`minimizeJar` needs no JDK class files (it works from the dependency jars' own bytecode) and runs
+anywhere; it is the class-granular alternative design §8 itself names. It only removes classes from
+*dependency* jars that nothing reachable from this module's own compiled classes references — it
+never touches the sample's own classes, so it needs no keep rule for the manifest entrypoint the way
+ProGuard does. **ProGuard shrink-only** (`-dontobfuscate -dontoptimize`, keep rules per design §8,
+keep file beside the manifest) stays available as the **opt-in** `shrink-proguard` Maven profile, for
+a JDK that still ships `jmods/` (GraalVM 25, or a Temurin ≤ 23) — unverified by Maven on a JDK
+without one, but last verified directly via the ProGuard CLI on GraalVM 25. Either way, **the tests
+run against the shrunk jar**: an integration test loads `target/*-shrunk.jar` through the real
+`JvmFunctionLoader` (test-scope dependency on `function-host`) and invokes each endpoint — a missing
+keep rule/include filter fails there, not in production. `proguard-maven-plugin` is a build-time
+plugin of the sample only, and only active under `shrink-proguard`.
 
 `examples/function-hello/.github/workflows/publish.yml` (a template, not wired into this repo's CI):
 build → shrink → test → `oras push` → `cosign sign-blob --new-bundle-format --bundle …` with a

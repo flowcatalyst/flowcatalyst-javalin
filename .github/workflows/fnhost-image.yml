@@ -1,0 +1,78 @@
+name: fnhost-image
+
+# Weekly (+ on-demand) rebuild of the function-host image (`function-host/Dockerfile`,
+# `docs/spec/function-host-process.md` §3): JDK/Alpine base-layer patches land here even
+# when nothing in this repo changed — "the one thing a managed Lambda runtime would do
+# for us" (docs/spec/function-developer-surface.md §3). Runs `make fnhost-smoke` first
+# (packages the fc-fnhost exec jar, then runs it for real, P9 in
+# docs/spec/function-host-process.md §4) so a broken host never reaches the image build.
+#
+# The PUSH step is a placeholder: this repo's registry conventions are not established
+# yet (unlike ci.yml's Docker jobs, which only build-and-smoke-test locally, nothing here
+# has ever pushed an image anywhere) — see the TODO on that step before enabling it.
+# Never `mvn install` (CLAUDE.md): `make fnhost-smoke` resolves function-api/server
+# through the reactor.
+
+on:
+  schedule:
+    # Every Monday 03:00 UTC — same shape as a dependency-patch cadence, ahead of the
+    # working week so a break is caught with time to fix it before it is needed.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+env:
+  MAVEN_OPTS: -Dmaven.repo.local=${{ github.workspace }}/.m2/repository
+
+jobs:
+  smoke:
+    name: fnhost-smoke (JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - name: fnhost-smoke
+        run: make fnhost-smoke
+
+  image:
+    name: Build the fc-fnhost image
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build -f function-host/Dockerfile -t flowcatalyst-fnhost:ci .
+
+      # HEALTHCHECK-only smoke: the image needs a real platform to reconcile against
+      # to reach /ready=200 (docs/spec/function-host-listener.md §5's "binds only
+      # after the first reconcile attempt"), which this job does not stand up — so
+      # this only proves the image builds and starts, not that it reconciles.
+      - name: Start and probe (build/startup only — no platform to reconcile against)
+        run: |
+          docker run -d --name fnhost -p 18080:8080 -p 19090:9090 \
+            -e FC_FN_PLATFORM_URL=http://127.0.0.1:1 \
+            -e FC_FN_CLIENT_ID=smoke \
+            -e FC_FN_CLIENT_SECRET=smoke \
+            flowcatalyst-fnhost:ci
+          sleep 5
+          docker logs fnhost
+      - name: Stop
+        if: always()
+        run: docker rm -f fnhost || true
+
+      # TODO(owner): this repo's container registry is not established — no existing
+      # workflow here pushes an image anywhere (checked: `grep -rn "docker push\|registry"
+      # .github/workflows/` finds nothing before this file). Fill in the registry
+      # login + `docker push` (or `docker/build-push-action`) once one is chosen, and
+      # remove this comment and the `if: false` guard below.
+      - name: Push (disabled — no registry configured yet)
+        if: false
+        run: |
+          echo "no registry configured — see the TODO above" >&2
+          exit 1
