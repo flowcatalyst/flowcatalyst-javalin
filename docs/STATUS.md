@@ -64,10 +64,18 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   event types its application owns. Spec `docs/spec/function-context.md`. **Package D is complete:**
   D4a platform config/secrets (`02860307`), D4b host context (`3025f6a3`: logger MDC on the worker
   thread, shared gated DB pools, allow-listed HTTP, settings change ⇒ reload), D4c emit route.
-- **Next:** the benchmark (`docs/spec/function-host-benchmark.md` — memory per loaded function decides
-  instance sizing; owner wants it before committing to low-CPU/high-memory EC2 capacity), then E
-  (fcdev hosting + `fn` CLI + sample + pipeline: fcdev sets `FC_FN_SIGNATURES=off`; pin cosign —
-  Rekor v1 only; scheduled image rebuild), then F (public routes, domains, CORS).
+- **Benchmark done** (`f4313295`, `ace734fd`; `docs/function-runner-report.md` §Performance,
+  scripts in `bench/function-host/`): a *typical* function (shaded Jackson + schema validator) costs
+  **~5.5 MB RSS / 4.4 MB metaspace**, a lean one ~0.1 MB; host baseline ~125 MB; **metaspace is the
+  binding limit** — the 25 % fence stops a 2 GiB host at 109 typical functions, ≈226 at 4 GiB. Lazy
+  first call p50/p99: lean 3/10 ms, typical 58/97 ms. `/io` 50k req/s at 2 CPUs (directional — load
+  generator not cgroup-isolated); noisy-neighbour p99 12 → 29 ms. It found one real defect, fixed:
+  an `OutOfMemoryError: Metaspace` escaped the reconcile (now one function's load failure). The
+  "lazy 404" was the script's address padding.
+- **Open for the owner:** the metaspace share of the container (25 % today) is what caps functions
+  per host — raising it is a ruling, not tuning.
+- **Next:** E (fcdev hosting + `fn` CLI + sample + pipeline: fcdev sets `FC_FN_SIGNATURES=off`; pin
+  cosign — Rekor v1 only; scheduled image rebuild), then F (public routes, domains, CORS).
 - **Watch, not yet reproduced uncontended:** `MainTest.exitAfterStartActuallyStopsTheServer` failed
   once in a quiet full-suite run (passes 10/10 alone); `FnHttpServerTest.h8…` and
   `DispatchDeliveryCredentialsWiringTest` each answered 404 once under a *contended* run.
