@@ -105,6 +105,77 @@ class ReconcileLoopTest {
         }
     }
 
+    // ── §1.3 amended by function-host-process.md §3 item 2: a metaspace-family
+    //    OutOfMemoryError is caught (like RuntimeException) and the loop continues;
+    //    any OTHER Error still ends it ──────────────────────────────────────────
+
+    @Test
+    void aMetaspaceOutOfMemoryErrorInARunIsCaughtAndTheLoopContinues(@TempDir Path dir) {
+        FakeControlPlane fake = new FakeControlPlane();
+        AtomicInteger calls = new AtomicInteger();
+        fake.desiredStateReturns((pool, etag) -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new OutOfMemoryError("Metaspace");
+            }
+            return new ControlPlane.Fetched.NotModified();
+        });
+
+        ReconcileLoop loop = new ReconcileLoop(reconciler(fake, dir), Clock.systemUTC(), Duration.ofMillis(50));
+        loop.start();
+        try {
+            assertThat(pollUntil(() -> calls.get() >= 3, Duration.ofSeconds(3)))
+                    .as("mutant: a metaspace OutOfMemoryError must not end the loop").isTrue();
+            assertThat(loop.isAlive()).as("mutant: the loop thread must survive a metaspace OOM").isTrue();
+        } finally {
+            loop.close();
+        }
+    }
+
+    @Test
+    void aNonMetaspaceErrorInARunEndsTheLoopAndMarksItDead(@TempDir Path dir) {
+        FakeControlPlane fake = new FakeControlPlane();
+        fake.desiredStateReturns((pool, etag) -> {
+            throw new StackOverflowError("boom");
+        });
+
+        ReconcileLoop loop = new ReconcileLoop(reconciler(fake, dir), Clock.systemUTC(), Duration.ofMillis(50));
+        assertThat(loop.isAlive()).as("not started yet").isFalse();
+        loop.start();
+        try {
+            assertThat(pollUntil(() -> !loop.isAlive(), Duration.ofSeconds(3)))
+                    .as("mutant: any OTHER Error must still end the loop").isTrue();
+        } finally {
+            loop.close(); // idempotent-safe against an already-dead thread
+        }
+    }
+
+    @Test
+    void aMetaspaceOutOfMemoryErrorWrappedInAnotherErrorIsStillCaught(@TempDir Path dir) {
+        // JvmFunctionLoader#findMetaspaceOom's own finding: a metaspace exhaustion does not
+        // always arrive as a bare OutOfMemoryError — invokedynamic bootstrapping wraps it in
+        // InternalError. The loop's own catch must unwrap this the same way.
+        FakeControlPlane fake = new FakeControlPlane();
+        AtomicInteger calls = new AtomicInteger();
+        fake.desiredStateReturns((pool, etag) -> {
+            if (calls.incrementAndGet() == 1) {
+                InternalError wrapped = new InternalError("bootstrap method call site failed");
+                wrapped.initCause(new OutOfMemoryError("Metaspace"));
+                throw wrapped;
+            }
+            return new ControlPlane.Fetched.NotModified();
+        });
+
+        ReconcileLoop loop = new ReconcileLoop(reconciler(fake, dir), Clock.systemUTC(), Duration.ofMillis(50));
+        loop.start();
+        try {
+            assertThat(pollUntil(() -> calls.get() >= 2, Duration.ofSeconds(3)))
+                    .as("mutant: only recognise a bare OutOfMemoryError, missing a wrapped one").isTrue();
+            assertThat(loop.isAlive()).isTrue();
+        } finally {
+            loop.close();
+        }
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────
 
     private static Reconciler reconciler(FakeControlPlane fake, Path dir) {

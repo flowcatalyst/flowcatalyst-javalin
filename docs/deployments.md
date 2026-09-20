@@ -406,16 +406,26 @@ dependency set, ~700 classes/instance, ~4.4 MB metaspace/instance measured in
 one host can hold before hitting the metaspace fence is approximately
 
 ```
-functions ≈ (metaspace MiB − 35) ÷ 4.4
+reserve MiB   = max(64, 5% × metaspace MiB)                 the headroom guard's own reserve
+functions    ≈ (metaspace MiB − 35 − reserve MiB) ÷ 4.4
 ```
 
 where `metaspace MiB = FC_JVM_METASPACE_PERCENT% of the container's memory
-limit`, and 35 MiB is the fixed metaspace baseline every host pays once
-regardless of function count. At the 50% default this is ≈50 functions on a
-512 MiB host, ≈225 on 2 GiB, and ≈458 on 4 GiB (the 2 GiB/4 GiB figures were
-directly measured, not just predicted from the slope — see the report's
-"Metaspace at 50%" subsection). Lighter functions (fewer shaded classes) cost
-proportionally less; this formula is only calibrated against that one
+limit`, 35 MiB is the fixed metaspace baseline every host pays once
+regardless of function count, and the reserve subtraction is
+`function-host-process.md` §3's headroom guard: a load is refused before it
+is ever attempted once free metaspace drops below that reserve, which is
+what keeps a host from ever running its own per-function OOM-recovery path
+out of room (the defect `docs/function-runner-report.md`'s "Metaspace at
+50%" section root-caused and fixed). At the 50% default this is ≈35
+functions on a 512 MiB host, ≈210 on 2 GiB, and ≈434 on 4 GiB — the 2 GiB/4
+GiB figures were directly measured against a real container running the
+current image (212 and 438 loaded, `docs/function-runner-report.md`'s
+re-measured rows), not just predicted from the slope. **Capacity is now
+measurably lower than the raw fence** (226/458 before the guard existed) —
+the reserve trades a small amount of capacity for never hitting the wall at
+all. Lighter functions (fewer shaded classes) cost proportionally less; this
+formula is only calibrated against that one
 fixture, cited as a starting point, not a guarantee for every workload.
 
 ### Ports
@@ -425,6 +435,19 @@ listener, HTTP/1.1) — the same split as `fc-platform`/`fc-router`'s
 `8080` + the shared metrics convention, on two entirely independent Vert.x
 servers (`function-host-process.md` §2 P7: a saturated function port must
 never make `9090` look dead).
+
+### Health checks
+
+`function-host/Dockerfile`'s own `HEALTHCHECK` already points at `/health`
+on `FC_METRICS_PORT` — no IaC change needed to wire this up. `/health` is
+liveness (`function-host-process.md` §2/§3 item 3): 200 unconditionally
+before start-up completes (a slow first reconcile/load must not get the
+task killed mid-boot), and after start-up has completed, 503
+`LISTENER_DOWN`/`RECONCILER_DOWN` if the function listener is not bound or
+the reconcile loop's thread has died — either is ECS's signal to replace the
+task, distinct from `/ready` (which additionally reflects control-plane
+outages and draining, and is what a load balancer or orchestrator readiness
+gate should point at instead, once one exists for this service).
 
 ### Service Connect alias convention: `fn-<pool>`
 

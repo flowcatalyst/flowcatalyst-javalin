@@ -1,8 +1,11 @@
 package io.flowcatalyst.fnhost.reconcile;
 
+import io.flowcatalyst.fnhost.GuardedLog;
+import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
@@ -21,6 +24,14 @@ public final class ReconcileLoop implements AutoCloseable {
     static final Duration INTERVAL = Duration.ofSeconds(15);
 
     private static final Duration CLOSE_JOIN_TIMEOUT = Duration.ofSeconds(5);
+
+    /// `function-host-process.md` §3 item 2: a precomputed fallback line —
+    /// built once, ahead of time, no per-failure string concatenation — for
+    /// [GuardedLog#logThrowableSafely] if the ordinary log call for a caught
+    /// metaspace `OutOfMemoryError` itself throws.
+    private static final byte[] METASPACE_OOM_LOG_FALLBACK =
+            ("WARN reconcile run hit a metaspace OutOfMemoryError; continuing" + System.lineSeparator())
+                    .getBytes(StandardCharsets.UTF_8);
 
     private final Reconciler reconciler;
     private final Clock clock;
@@ -84,16 +95,38 @@ public final class ReconcileLoop implements AutoCloseable {
             try {
                 reconciler.reconcileOnce(clock.instant());
             } catch (RuntimeException e) {
-                // Spec §1.3: "logged and the loop continues" — Error is deliberately
-                // NOT caught here (CONVENTIONS §8: panic-recovery scaffolding is
-                // exactly what per-thread failure isolation makes unnecessary; an
-                // Error is a JVM-level condition, not a routine run failure).
+                // Spec §1.3: "logged and the loop continues".
                 LOG.atWarn().setMessage("reconcile run failed; continuing").setCause(e).log();
+            } catch (Error e) {
+                // §1.3 amended by `function-host-process.md` §3 item 2: a metaspace-family
+                // OutOfMemoryError — reusing the SAME cause-chain walker JvmFunctionLoader's
+                // own per-load fence uses, since it does not always arrive as a bare
+                // OutOfMemoryError (see that method's own doc) — is caught here too and the
+                // loop continues. Item 1's per-load guard already prevents most of these from
+                // ever reaching this far, but a failure OUTSIDE any one function's own
+                // try/catch (parsing a control-plane response, say) can still hit the same
+                // wall. Any OTHER Error is a real emergency: rethrown here, which ends the
+                // loop — `Readiness#RECONCILER_DOWN` (item 3) is what makes that visible to
+                // an operator instead of a silently-stopped loop.
+                OutOfMemoryError metaspaceOom = JvmFunctionLoader.findMetaspaceOom(e);
+                if (metaspaceOom == null) {
+                    throw e;
+                }
+                GuardedLog.logThrowableSafely(LOG, "reconcile run hit a metaspace OutOfMemoryError; continuing",
+                        e, METASPACE_OOM_LOG_FALLBACK);
             }
             if (!awaitNextRunOrTrigger()) {
                 return;
             }
         }
+    }
+
+    /// `function-host-process.md` §3 item 3: `/ready`/`/health` read this
+    /// live — the loop's own thread dying (any `Error` OTHER than a
+    /// metaspace-family one, per [#run]'s own catch) must make the process
+    /// report unhealthy rather than silently stop reconciling forever.
+    public boolean isAlive() {
+        return thread.isAlive();
     }
 
     /// Waits up to [#INTERVAL], woken early and consuming exactly one

@@ -2,7 +2,11 @@
 
 Status: spec + owner rulings, 2026-09-14 (§0–3); compact object headers and
 the AOT cache ruled 2026-09-15 (§1a); the function host's metaspace addition,
-2026-09-19 (§4), turned into a runtime percent setting 2026-09-21 (§4). §0–3 apply to the `fc-server` image (`Dockerfile`) in every
+2026-09-19 (§4), turned into a runtime percent setting 2026-09-21 (§4); §4.4's
+own residual gap (an uncaught `OutOfMemoryError` past the fence could leave
+the FUNCTION listener unbound while `/ready` reported `UP`) fixed 2026-09-20
+by the headroom guard + guarded start-up + truthful `/ready`/`/health`
+(`docs/spec/function-host-process.md` §3). §0–3 apply to the `fc-server` image (`Dockerfile`) in every
 role — API tier, worker, router — and to the bench rig's image, which since
 §1a is built from that same `Dockerfile` (not a separate
 `bench/real/Dockerfile.java`), so what is measured is what is deployed.
@@ -317,16 +321,37 @@ GiB and 4 GiB predictions matched what was actually measured (226 and 458)
 almost exactly. († not separately re-measured; within the report's own ±20%
 extrapolation rule of the 2 GiB/4 GiB points that were.)
 
-**A residual gap found while re-measuring, not fixed here**: pushing an
+**A residual gap found while re-measuring, fixed 2026-09-20**: pushing an
 all-warm document meaningfully PAST the fence (2 GiB/300 requested vs. a
 ~226 capacity; 4 GiB/500 vs. a ~458 capacity) reproducibly crashed the
 function host's synchronous startup reconcile with an uncaught
 `OutOfMemoryError` on the `main` thread once metaspace was driven deep enough
 into exhaustion that even the per-entry recovery/logging path started
-failing — see the report's own dated subsection for the full detail. The
-observability listener (`/ready`, `/metrics`) stayed up throughout (it binds
-before the first reconcile even runs), but the FUNCTION listener never
-bound at all in that state, so the functions that HAD loaded successfully
-were not actually reachable — a materially worse failure mode than "the
-fenced-out entries fail cleanly and the rest keeps serving," out of scope
-for this slice (a runtime-setting change plus measurement) to fix.
+failing. The observability listener (`/ready`, `/metrics`) stayed up
+throughout (it binds before the first reconcile even runs), but the FUNCTION
+listener never bound at all in that state, so the functions that HAD loaded
+successfully were not actually reachable — a materially worse failure mode
+than "the fenced-out entries fail cleanly and the rest keeps serving".
+
+Fixed by `docs/spec/function-host-process.md` §3, three parts: (1) a
+`MetaspaceGuard` refuses a load — warm, lazy `ensureLoaded`, or a pinned
+candidate — WITHOUT ATTEMPTING IT whenever free metaspace (read live from
+the `Metaspace` `MemoryPoolMXBean`) is below `max(64 MiB, 5% of the pool's
+own max)`, so the per-function recovery path this gap came from is never
+reached in the first place; (2) `FnHost#start`'s first `reconcileOnce` call
+is wrapped so an escaping `Throwable` is logged (guarded against the log
+call itself throwing) and start-up still goes on to bind the FUNCTION
+listener; `ReconcileLoop` likewise catches a metaspace-family
+`OutOfMemoryError` in any LATER run and keeps going, while any other `Error`
+still ends the loop; (3) `/ready`/`/health` now also require the FUNCTION
+listener to be bound and the reconcile loop's thread to be alive
+(`LISTENER_DOWN`/`RECONCILER_DOWN`, 503) — before start-up completes
+`/health` stays 200 unconditionally (a slow first load must not fail
+liveness), and tells the truth after. Re-measured, real containers, rebuilt
+image: 2 GiB/N=300 → **212** loaded (vs. 226 without the guard), 4 GiB/N=500
+→ **438** loaded (vs. 458) — capacity is measurably LOWER than the raw fence
+because of the reserve, and zero `LOAD:OUT_OF_METASPACE` events at either
+point (the guard heads off the real wall before it is ever hit) — function
+port open and serving, `/ready`/`/health` both 200, `OOMKilled=false`; full
+detail and the exact counts in the report's own dated follow-up
+subsection.

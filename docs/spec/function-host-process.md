@@ -25,12 +25,42 @@ The observability listener binds **before** the first reconcile attempt (so `/re
 Independent of the function listener (its own Vert.x server, one event loop): a saturated function
 port must not make the process look dead.
 
-- `GET /health` — 200 `{"status":"UP"}` while the process runs.
-- `GET /ready` — 200 once the first reconcile has **succeeded** and the host is not draining; else 503
-  with `{"status":"STARTING"|"DRAINING"|"PLATFORM_UNREACHABLE"}`. (`PLATFORM_UNREACHABLE` only before
-  the first success: after that, an outage keeps serving what is loaded and stays ready — D2 R6.)
+- `GET /health` — liveness, not readiness. Before start-up has completed (`FnHost#start` has not yet
+  returned) it is unconditionally 200 `{"status":"UP"}` — a slow first reconcile/load must never fail
+  a liveness probe and get the task killed mid-boot. Once start-up HAS completed it tells the truth
+  about whether this process can still do its job (§3 item 3): 503 `{"status":"LISTENER_DOWN"}` if the
+  FUNCTION listener somehow is not bound, 503 `{"status":"RECONCILER_DOWN"}` if the reconcile loop's
+  thread has died (§1.3's amended `Error` handling — any Error OTHER than a metaspace-family one ends
+  the loop), else 200. Deliberately NOT draining- or platform-outage-aware — those are the process
+  still doing its job — only `/ready` reports those; the container `HEALTHCHECK` points at this
+  endpoint (`docs/deployments.md`), so ECS replaces the task on either 503 reason.
+- `GET /ready` — 200 once the first reconcile has **succeeded**, the host is not draining, the
+  FUNCTION listener is bound and the reconcile loop's thread is alive; else 503 with
+  `{"status":"STARTING"|"DRAINING"|"PLATFORM_UNREACHABLE"|"LISTENER_DOWN"|"RECONCILER_DOWN"}`.
+  (`PLATFORM_UNREACHABLE` only before the first success: after that, an outage keeps serving what is
+  loaded and stays ready — D2 R6.) `LISTENER_DOWN`/`RECONCILER_DOWN` are §3 item 3's own addition: a
+  reconcile that failed catastrophically enough could previously leave `/ready` reporting `UP` forever
+  while the FUNCTION port never opened at all (the original defect, `docs/function-runner-report.md`'s
+  "Metaspace at 50%" dated finding) — precedence is `DRAINING` > `STARTING` > `PLATFORM_UNREACHABLE` >
+  `LISTENER_DOWN` > `RECONCILER_DOWN` > `READY`.
 - `GET /metrics` — Prometheus text from one `PrometheusRegistry` (the library already on the class
   path through `server`), plus `JvmMetricsRegistration` as the server does.
+
+### 2.1 Never running into the wall (§3 item 1) and never leaving the host half-started (§3 item 2)
+
+`JvmFunctionLoader#load` is never even attempted (warm, lazy `ensureLoaded`, or a pinned candidate)
+when free metaspace is already below a reserve (`max(64 MiB, 5% of the Metaspace pool's own max)`,
+`MetaspaceGuard`) — the refusal is an ordinary load failure, `LOAD:METASPACE_HEADROOM`, distinct from
+the backstop `LOAD:OUT_OF_METASPACE` (an actual `OutOfMemoryError` caught around one load). The old
+version (if any) keeps serving, a lazy/pinned caller gets `503 FUNCTION_UNAVAILABLE` + `Retry-After`,
+and the next reconcile cycle re-checks (metaspace is only reclaimed after a collection, so a check
+that is still below the reserve requests at most ONE `System.gc()` per reconcile cycle, never per
+load, before re-reading). Separately, `FnHost#start` wraps the very FIRST `reconcileOnce` call so
+that ANY `Throwable` escaping it (guarded logging: `GuardedLog`, falling back to a preallocated
+`System.err.write` line if the ordinary log call itself throws) never stops start-up from going on to
+bind the FUNCTION listener — a host that serves whatever it managed to load beats a zombie that never
+binds at all. `docs/function-runner-report.md`'s "Metaspace at 50%" dated finding is this defect;
+its own follow-up section has the fix and the re-measured numbers.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
@@ -73,6 +103,9 @@ Service Connect alias convention `fn-<pool>` that `FC_FN_POOL_URL`'s default ass
 | # | Behaviour | Mutant |
 |---|---|---|
 | P1 | `/ready`: 503 `STARTING` before the first reconcile; `PLATFORM_UNREACHABLE` after a failed first one; 200 after a success; **stays 200** through a later outage; 503 `DRAINING` after `drain()`; `/health` 200 throughout | ready on first attempt rather than first success; unready on any failure |
+| P1b | §3 item 3: `/health` stays 200 before start-up completes regardless of listener/loop state; once complete, 503 `LISTENER_DOWN` if the function listener is not bound, 503 `RECONCILER_DOWN` if the loop thread has died, else 200; `/ready` is `READY` only with reconciler-success AND listener-bound AND loop-alive, precedence `DRAINING` > `STARTING` > `PLATFORM_UNREACHABLE` > `LISTENER_DOWN` > `RECONCILER_DOWN` > `READY` | check listener/loop before start-up completes; ignore listenerBound/reconcileLoopAlive entirely; wrong precedence among the two new states |
+| P1c | §3 item 1: a load is refused (`LOAD:METASPACE_HEADROOM`) WITHOUT being attempted when free metaspace is below the reserve, at the exact boundary (`>=`, not `>`); an unbounded pool max turns the guard off; at most one `System.gc()` is requested per reconcile cycle, never per load | attempt the load anyway; off-by-one at the boundary; treat -1 as a real max; request a GC per load |
+| P1d | §3 item 2: an Error (metaspace-family or not) escaping the very first `reconcileOnce` inside `FnHost#start` never stops the FUNCTION listener from binding; inside `ReconcileLoop`, a metaspace-family `OutOfMemoryError` (including one wrapped in `InternalError`/`NoClassDefFoundError`) is caught and the loop continues, but any OTHER `Error` still ends it | let the Error escape `start()` uncaught; swallow every Error in the loop, not just metaspace ones; treat every Error as fatal in the loop |
 | P2 | each `outcome` label is produced by exactly the situation that defines it (ok, client_error, retry, error via 5xx, error via throw, timeout, busy, unauthorized, unavailable), and **only** that one increments | collapse two outcomes; count refusals as `ok` |
 | P3 | duration is observed only when the function was entered (a `busy` refusal adds no observation) | observe always |
 | P4 | `fc_fn_active` rises while a call is parked and returns to 0 after success, throw **and** timeout-then-return | decrement only on success |

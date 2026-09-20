@@ -351,30 +351,68 @@ designed. The fenced-out entries are logged `"function version failed to
 load: out of metaspace"` (`Reason.LOAD:OUT_OF_METASPACE`), confirmed present
 in both server logs above.
 
-**A new finding, not present at the original (smaller) fence overshoot**:
-pushing well PAST the fence in one all-warm document — 300 requested against
-a ~226 capacity (a 33% overshoot) at 2 GiB, 500 against ~458 (a 9% overshoot)
-at 4 GiB — reproducibly crashed the function host's *synchronous startup*
-reconcile (`FnHost.start` → `Reconciler.reconcileOnce`, on the `main` thread)
-with an uncaught `OutOfMemoryError` once metaspace was driven deep enough
-into exhaustion that even the per-entry recovery path's OWN logging started
-falling back to the emergency `System.err` line (every one of the 20 failures
-logged at 4g/N=500 needed that fallback, not just the first one the original
-report found). At that point roughly 20–50 further entries were never even
-attempted (neither loaded nor logged as failed) before `main` died. Because
-`FnObservability` (the `/ready`/`/metrics` listener) binds BEFORE the first
-reconcile runs, but `FnHttpServer` (the actual `/functions/...` listener)
-only binds AFTER `reconcileOnce` returns, a crashed startup reconcile leaves
-`/ready` reporting `UP` with real metrics (confirmed directly: `docker exec
-… jcmd 1 Thread.print` on the held 4g/N=500 container showed no `"main"`
-thread and only ONE Vert.x event-loop thread instead of two) while the
-FUNCTION port never opens at all — an invocation of an already-successfully-
-loaded function (`f000`) got a connection failure, not a 200. This is a
-materially worse failure mode than "the fenced-out entries fail cleanly and
-the rest keeps serving" (what the smaller-overshoot points, and the original
-report's own N=109/200 case, showed) and was NOT fixed here — this slice's
-scope was the runtime-setting change and its measurement, not a further
-`Reconciler` change; flagged in `docs/spec/jvm-memory.md` §4.4 as owed.
+**A finding, root-caused and fixed (2026-09-20 follow-up, `docs/spec/function-host-process.md`
+§3)**: pushing well PAST the fence in one all-warm document — 300 requested against a ~226
+capacity (a 33% overshoot) at 2 GiB, 500 against ~458 (a 9% overshoot) at 4 GiB — reproducibly
+crashed the function host's *synchronous startup* reconcile (`FnHost.start` →
+`Reconciler.reconcileOnce`, on the `main` thread) with an uncaught `OutOfMemoryError` once
+metaspace was driven deep enough into exhaustion that even the per-entry recovery path's OWN
+logging started falling back to the emergency `System.err` line (every one of the 20 failures
+logged at 4g/N=500 needed that fallback, not just the first one the original report found). At
+that point roughly 20–50 further entries were never even attempted (neither loaded nor logged as
+failed) before `main` died. Because `FnObservability` (the `/ready`/`/metrics` listener) binds
+BEFORE the first reconcile runs, but `FnHttpServer` (the actual `/functions/...` listener) only
+bound AFTER `reconcileOnce` returned, a crashed startup reconcile left `/ready` reporting `UP` with
+real metrics while the FUNCTION port never opened at all — an invocation of an already-
+successfully-loaded function (`f000`) got a connection failure, not a 200. Materially worse than
+"the fenced-out entries fail cleanly and the rest keeps serving" (what the smaller-overshoot
+points, and the original report's own N=109/200 case, showed).
+
+**Root cause**: the per-load `OutOfMemoryError` catch (`Reconciler#attachContextAndInit`,
+`JvmFunctionLoader#load`) only fires AFTER a load is attempted — class definition, reflection, and
+the entrypoint's own constructor/`init` all still ran, right up against the wall, every time. Deep
+enough into exhaustion, even the RECOVERY path for that failure (closing the class loader, then
+logging it) needed metaspace that no longer existed, and that second failure was an `Error`
+`Reconciler#reconcileOnce` never expected to see escape.
+
+**Fix, three parts (`docs/spec/function-host-process.md` §3)**: (1) a `MetaspaceGuard` reads the
+`Metaspace` `MemoryPoolMXBean` and refuses a load WITHOUT ATTEMPTING IT — no class definition, no
+reflection, nothing that could itself throw — whenever free metaspace is below `max(64 MiB, 5% of
+the pool's own max)`; the refusal is an ordinary `LOAD:METASPACE_HEADROOM` failure, not an
+`OutOfMemoryError`, and the old version (if any) keeps serving. At most one `System.gc()` is
+requested per reconcile CYCLE (never per load) when a check finds itself below the reserve, since
+metaspace is only reclaimed after a collection. (2) `FnHost#start` wraps the very first
+`reconcileOnce` call so that ANY escaping `Throwable` is logged (guarded: falls back to a
+preallocated `System.err.write` line if the ordinary log call itself throws) and start-up
+CONTINUES to bind the FUNCTION listener regardless — the ORIGINAL defect above is exactly this
+gap. `ReconcileLoop`'s own run loop now also catches a metaspace-family `OutOfMemoryError` the same
+guarded way and keeps going; any OTHER `Error` still ends the loop. (3) `/ready` and `/health` now
+also depend on the FUNCTION listener actually being bound and the reconcile loop's thread actually
+being alive (`LISTENER_DOWN`/`RECONCILER_DOWN`, 503) — so a host that DID end up in the crashed
+state above would no longer silently report `UP` forever; `/health` stays 200 unconditionally
+before start-up completes (so a slow first load never fails a liveness probe) and tells the truth
+after.
+
+**Re-measured** (rebuilt `fnhost-bench-tools` image, same methodology, `fc_fn_loaded` settled, all
+warm, real containers, checked before removal):
+
+| mem | N requested | N loaded | `LOAD:METASPACE_HEADROOM` events (cumulative counter — the reconcile loop retries the still-refused entries every 15 s, so this exceeds the distinct entry count) | `LOAD:OUT_OF_METASPACE` events | `/ready` | `/health` | function port | `OOMKilled` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 GiB | 300 | **212** | 176 | **0** | 200 | 200 | open, invocation of a loaded function → 200 | `false` |
+| 4 GiB | 500 | **438** | 124 | **0** | 200 | 200 | open, invocation of a loaded function → 200 | `false` |
+
+The guard is now the fence: at the 50% default, metaspace ceilings are 1,024 MiB (2 GiB) / 2,048 MiB
+(4 GiB) (`docs/spec/jvm-memory.md` §4.2), and `(ceiling − 34 MiB baseline − reserve) / 4.4 MB` —
+reserve = `max(64 MiB, 5%)` — predicts **≈210** at 2 GiB and **≈434** at 4 GiB; measured 212 and
+438, matching closely. **Capacity is now measurably LOWER than the raw fence** (226/458 without the
+guard vs. 212/438 with it) — the reserve trades a small amount of capacity for never running the
+per-function recovery path itself out of room; `docs/deployments.md`'s rule of thumb is updated
+with the reserve term. Zero `LOAD:OUT_OF_METASPACE` events at either point: the guard heads off the
+wall before a real `OutOfMemoryError` is ever thrown at this fence, which is why `OUT_OF_METASPACE`
+is described as a backstop in the spec, not the primary refusal path any more. The single-fork
+proof at a raw 512 MiB metaspace pool (300 requested) shows the same shape: 98 loaded, 202
+`LOAD:METASPACE_HEADROOM`, 0 `LOAD:OUT_OF_METASPACE` (`MetaspaceFenceForkTest`, run by hand,
+`-Dfc.fnhost.metaspaceTest=true`).
 
 **Load check** (the one the first benchmark lacked): 100 typical functions
 warm, `--memory 2g --cpus 2` (well inside the ~226 fence — no crash risk),
@@ -412,11 +450,19 @@ re-run with `scripts/LoadClient.java` per the README to reproduce.)
    `OutOfMemoryError: Metaspace` per fenced-out entry instead, exactly as
    designed.
 3. Pushed far enough past the fence in one all-warm document, the startup
-   reconcile's `main` thread can still die with an UNCAUGHT `OutOfMemoryError`
-   once metaspace is driven into full exhaustion — worse than the per-entry
-   catchable case, and worse than previously measured, because it leaves the
-   FUNCTION listener never bound at all while `/ready` reports `UP`; not
-   fixed in this slice, flagged for the next one.
+   reconcile's `main` thread could previously die with an UNCAUGHT
+   `OutOfMemoryError` once metaspace was driven into full exhaustion — worse
+   than the per-entry catchable case, because it left the FUNCTION listener
+   never bound at all while `/ready` reported `UP`. Fixed 2026-09-20
+   (`docs/spec/function-host-process.md` §3): a headroom guard refuses a
+   load before it is ever attempted, `FnHost#start`'s first reconcile is
+   guarded against any escaping `Throwable`, and `/ready`/`/health` now also
+   depend on the listener being bound and the reconcile loop being alive.
+   Re-measured at 2 GiB/N=300 and 4 GiB/N=500: 212 and 438 loaded (vs. 226
+   and 458 without the guard — capacity trades down slightly for the
+   reserve), zero `LOAD:OUT_OF_METASPACE` at either point, function port
+   open and serving, `/ready`/`/health` both 200 — see the dated subsection
+   above for the full detail.
 4. Well inside the fence, under real closed-loop load (c=256, 60s, 100
    distinct addresses), the fence costs nothing measurable: zero errors,
    zero `OutOfMemoryError`s, GC pause time ~2.7% of wall time, heap peaking

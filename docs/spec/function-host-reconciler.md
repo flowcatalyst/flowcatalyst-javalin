@@ -95,7 +95,18 @@ One virtual thread. `start()`; `trigger()` (D3 wires the platform's `version:pub
 `alias:changed` deliveries to it) — coalescing: any number of triggers during a run cause exactly one
 more run; `drain()`; `close()` stops the loop and joins (interruption is the stop signal,
 CONVENTIONS §5). Interval 15 s between the end of one run and the start of the next. A run that
-throws anything unexpected is logged and the loop continues; `Error` is not caught.
+throws anything unexpected is logged and the loop continues.
+
+**Amended, `function-host-process.md` §3 item 2**: `Error` is not blanket-uncaught any more. A
+metaspace-family `OutOfMemoryError` — recognised by the same cause-chain walker
+`JvmFunctionLoader#findMetaspaceOom` uses for the per-load fence (§3 item 1), since it does not
+always arrive as a bare `OutOfMemoryError` — is caught here too, logged the same guarded way as
+item 2's other call site (`GuardedLog`), and the loop continues. Item 1's own per-load guard already
+prevents most of these from reaching this far, but a failure OUTSIDE any one function's own
+try/catch (parsing a control-plane response, say) can still hit the same wall. Any OTHER `Error` is
+still a real emergency: it ends the loop, and `ReconcileLoop#isAlive()` — read by `FnObservability`
+— is what turns a dead loop into `/health`/`/ready` reporting `RECONCILER_DOWN` (§3 item 3) instead
+of a process that silently stops reconciling forever while still answering 200.
 
 ### 1.4 `HostEnv`
 

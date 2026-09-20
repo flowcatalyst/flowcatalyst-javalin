@@ -42,6 +42,16 @@ public enum Reason {
     /// ONE version fails to load; the fence itself, and every other
     /// function, is untouched — a Java-heap `OutOfMemoryError` is never
     /// this reason (it is not caught at all: it is not one function's
-    /// problem to swallow).
-    OUT_OF_METASPACE
+    /// problem to swallow). This is the BACKSTOP: [MetaspaceGuard] is meant
+    /// to refuse a load before it ever gets this close, so a healthy host
+    /// should see [#METASPACE_HEADROOM] far more often than this.
+    OUT_OF_METASPACE,
+
+    /// [MetaspaceGuard] refused the load WITHOUT ATTEMPTING IT: free
+    /// metaspace was already below the reserve before class loading even
+    /// began (`docs/spec/function-host-process.md` §3 item 1) — an ordinary,
+    /// routine load failure, distinct from [#OUT_OF_METASPACE] (which means
+    /// an actual `OutOfMemoryError` was caught). The old version (if any)
+    /// keeps serving; the next reconcile cycle re-checks.
+    METASPACE_HEADROOM
 }

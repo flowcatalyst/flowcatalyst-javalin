@@ -18,8 +18,11 @@ import io.flowcatalyst.platform.function.artifact.OciArtifactStore;
 import io.flowcatalyst.platform.function.artifact.RegistryCredentials;
 import io.flowcatalyst.server.JvmMetricsRegistration;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
@@ -34,6 +37,16 @@ import java.util.concurrent.CountDownLatch;
 /// JVM, as tests routinely construct several.
 public final class FnHost implements AutoCloseable {
 
+    private static final Logger LOG = LoggerFactory.getLogger(FnHost.class);
+
+    /// `function-host-process.md` §3 item 2: a precomputed fallback line —
+    /// built once, no per-failure string concatenation — for [GuardedLog]
+    /// if the ordinary log call for a `Throwable` escaping the first
+    /// reconcile itself throws.
+    private static final byte[] START_RECONCILE_FAILURE_FALLBACK =
+            ("ERROR the first reconcile threw during startup; continuing to bind the function listener anyway"
+                    + System.lineSeparator()).getBytes(StandardCharsets.UTF_8);
+
     private final HostEnv env;
     private final FunctionRegistry registry;
     private final Reconciler reconciler;
@@ -42,6 +55,12 @@ public final class FnHost implements AutoCloseable {
     private final FnMetrics metrics;
     private volatile FnHttpServer server;
     private volatile FnObservability observability;
+
+    /// `function-host-process.md` §3 item 3: true once [#start] has fully
+    /// returned — `/health` stays 200 unconditionally before this (a slow
+    /// first load must not kill a liveness probe) and reflects real
+    /// listener/loop health after.
+    private volatile boolean startupComplete;
 
     /// Counted down once, by [#close] — [#awaitStop] is [FnHostMain]'s own
     /// seam for blocking the main thread until a shutdown-hook-driven
@@ -102,11 +121,27 @@ public final class FnHost implements AutoCloseable {
     /// of a first reconcile that has, by construction, always already
     /// happened by the time anything could ask it.
     public void start() {
-        observability = FnObservability.start(reconciler, prometheusRegistry, FnObservability.Options.of(env.metricsPort()));
-        reconciler.reconcileOnce(Instant.now());
+        observability = FnObservability.start(reconciler, prometheusRegistry,
+                FnObservability.Options.of(env.metricsPort()), () -> server != null, loop::isAlive,
+                () -> startupComplete);
+        try {
+            reconciler.reconcileOnce(Instant.now());
+        } catch (Throwable t) {
+            // `function-host-process.md` §3 item 2: an Error escaping the very first
+            // reconcile must never leave the host half-started. This is the ORIGINAL
+            // defect this fixes — before this guard, an OutOfMemoryError here killed
+            // start() before the function listener ever bound, while the observability
+            // listener (already bound above) kept answering /ready 200 forever, with
+            // port 8080 never open. A host that serves whatever it managed to load
+            // beats a zombie that never binds at all — so start-up continues regardless.
+            GuardedLog.logThrowableSafely(LOG,
+                    "first reconcile failed during startup; continuing to bind the function listener regardless",
+                    t, START_RECONCILE_FAILURE_FALLBACK);
+        }
         loop.start();
         server = FnHttpServer.start(reconciler,
                 FnHttpServer.Options.of(env.port(), env.maxConcurrency(), env.platformUrl(), metrics));
+        startupComplete = true;
     }
 
     public int port() {
@@ -119,6 +154,13 @@ public final class FnHost implements AutoCloseable {
     public int metricsPort() {
         FnObservability o = observability;
         return o == null ? -1 : o.port();
+    }
+
+    /// Asks the loop for a reconcile now (coalesced — see [ReconcileLoop#trigger]).
+    /// What an operator action or a platform notification would call; tests use
+    /// it to drive the host's OWN loop rather than a second one beside it.
+    public void triggerReconcile() {
+        loop.trigger();
     }
 
     public Reconciler reconciler() {

@@ -9,6 +9,8 @@ import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
 import io.flowcatalyst.fnhost.load.Loaded;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.load.LoadOutcome;
+import io.flowcatalyst.fnhost.load.MetaspaceGuard;
+import io.flowcatalyst.fnhost.load.Reason;
 import io.flowcatalyst.fnhost.load.Refused;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
@@ -70,6 +72,13 @@ public final class Reconciler {
     private final JvmFunctionLoader loader;
     private final FunctionRegistry registry;
     private final ContextFactory contextFactory;
+
+    /// `function-host-process.md` §3 item 1: checked before every
+    /// [JvmFunctionLoader#load] attempt (warm, lazy [#ensureLoaded], pinned)
+    /// — defaults to the real MXBean-backed [MetaspaceGuard#system], overridable
+    /// by the test-injection constructors below so a test can drive exact
+    /// used/max readings deterministically.
+    private final MetaspaceGuard metaspaceGuard;
 
     /// `versionId → Prepared`. Entries that failed to prepare are never
     /// added here, which is what makes them retried automatically the next
@@ -171,6 +180,19 @@ public final class Reconciler {
     public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
                        Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry,
                        ContextFactory contextFactory) {
+        this(pool, hostId, controlPlane, artifactStore, signatures, loader, registry, contextFactory,
+                MetaspaceGuard.system());
+    }
+
+    /// Test-injection seam (`function-host-process.md` §3 item 1): an
+    /// explicit [MetaspaceGuard] — normally one wrapping a deterministic
+    /// test double for [io.flowcatalyst.fnhost.load.MetaspaceGauge] — instead
+    /// of the real MXBean-backed default, so a test can drive exact used/max
+    /// readings without forking a real JVM at a real fence. Production never
+    /// calls this overload directly.
+    public Reconciler(DnsLabel pool, String hostId, ControlPlane controlPlane, ArtifactStore artifactStore,
+                       Signatures signatures, JvmFunctionLoader loader, FunctionRegistry registry,
+                       ContextFactory contextFactory, MetaspaceGuard metaspaceGuard) {
         this.pool = Objects.requireNonNull(pool, "pool");
         this.hostId = Objects.requireNonNull(hostId, "hostId");
         this.controlPlane = Objects.requireNonNull(controlPlane, "controlPlane");
@@ -179,6 +201,7 @@ public final class Reconciler {
         this.loader = Objects.requireNonNull(loader, "loader");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.contextFactory = Objects.requireNonNull(contextFactory, "contextFactory");
+        this.metaspaceGuard = Objects.requireNonNull(metaspaceGuard, "metaspaceGuard");
     }
 
     /// Reported as `DRAINING` in every heartbeat from now on (spec §1.2
@@ -187,35 +210,61 @@ public final class Reconciler {
         draining = true;
     }
 
-    /// `/ready`'s own vocabulary (`function-host-process.md` §2 P1).
+    /// `/ready`'s own vocabulary (`function-host-process.md` §2 P1, extended
+    /// by §3 item 3).
     public enum Readiness {
         /// No [#reconcileOnce] has completed yet.
         STARTING,
         /// At least one attempt ran, but none has ever succeeded.
         PLATFORM_UNREACHABLE,
-        /// At least one attempt has ever succeeded, and this host is not
-        /// draining — stays `READY` through a LATER outage (D2 R6): once
+        /// A reconcile has succeeded and this host is not draining, but the
+        /// FUNCTION listener is not bound — §3 item 3's own defect: a
+        /// reconcile that failed catastrophically enough could previously
+        /// leave `/ready` reporting `UP` forever while the function port
+        /// never opened at all.
+        LISTENER_DOWN,
+        /// A reconcile has succeeded and the listener is bound, but the
+        /// reconcile loop's own thread has died (an `Error` other than a
+        /// metaspace-family `OutOfMemoryError` — `ReconcileLoop`'s own
+        /// amended §1.3) — nothing loaded is unloaded by this, but desired
+        /// state will never move again.
+        RECONCILER_DOWN,
+        /// At least one attempt has ever succeeded, this host is not
+        /// draining, the listener is bound and the loop is alive — stays
+        /// `READY` through a LATER control-plane outage (D2 R6): once
         /// loaded, already-served functions keep serving.
         READY,
         /// [#drain] was called. One-way; wins over every other state.
         DRAINING
     }
 
-    /// What `/ready` reports (D5, spec §2 P1) — `DRAINING` first (it wins
-    /// over everything else once [#drain] has been called), then whether any
-    /// reconcile has EVER succeeded, then whether one has even been
-    /// attempted yet.
-    public Readiness readiness() {
+    /// What `/ready` (and, after start-up, `/health`) report (D5, spec §2
+    /// P1, extended by §3 item 3) — `DRAINING` first (it wins over
+    /// everything else once [#drain] has been called), then whether any
+    /// reconcile has EVER succeeded, then whether the FUNCTION listener is
+    /// bound, then whether the reconcile loop's thread is still alive.
+    ///
+    /// @param listenerBound       [io.flowcatalyst.fnhost.FnHost]'s own live
+    ///                            read of whether [io.flowcatalyst.fnhost.http.FnHttpServer#start]
+    ///                            has returned
+    /// @param reconcileLoopAlive  [ReconcileLoop#isAlive]
+    public Readiness readiness(boolean listenerBound, boolean reconcileLoopAlive) {
         if (draining) {
             return Readiness.DRAINING;
         }
-        if (everReconciledSuccessfully) {
-            return Readiness.READY;
+        if (!reconcileAttempted) {
+            return Readiness.STARTING;
         }
-        if (reconcileAttempted) {
+        if (!everReconciledSuccessfully) {
             return Readiness.PLATFORM_UNREACHABLE;
         }
-        return Readiness.STARTING;
+        if (!listenerBound) {
+            return Readiness.LISTENER_DOWN;
+        }
+        if (!reconcileLoopAlive) {
+            return Readiness.RECONCILER_DOWN;
+        }
+        return Readiness.READY;
     }
 
     /// Registers `listener` to run once at the end of every future
@@ -268,6 +317,11 @@ public final class Reconciler {
     /// wait and stops there.
     public void reconcileOnce(Instant now) {
         Objects.requireNonNull(now, "now");
+        // §3 item 1: exactly one System.gc() request is allowed per reconcile cycle,
+        // never per load — reset the guard's own bookkeeping here, once, regardless of
+        // how many loads this cycle goes on to attempt (or whether it hits an outage
+        // and attempts none at all).
+        metaspaceGuard.beginCycle();
         long reconcileNumber = reconcileCounter.incrementAndGet();
         DesiredDocument doc;
         boolean outage = false;
@@ -447,7 +501,7 @@ public final class Reconciler {
         if (current != null && current.version() == entry.version() && !settingsChanged(entry)) {
             return; // already the live version, unchanged settings
         }
-        LoadOutcome outcome = loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
+        LoadOutcome outcome = attemptLoad(p, entry);
         applyLoadOutcome(outcome, key, true, entry);
         if (outcome instanceof Loaded) {
             lazyRoutes.remove(entry.address()); // it is warm now, not lazily routed
@@ -468,8 +522,23 @@ public final class Reconciler {
         if (current.version() == entry.version() && !settingsChanged(entry)) {
             return; // already the right version, unchanged settings
         }
-        LoadOutcome outcome = loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
+        LoadOutcome outcome = attemptLoad(p, entry);
         applyLoadOutcome(outcome, key, false, entry);
+    }
+
+    /// `function-host-process.md` §3 item 1: the ONE place every load
+    /// attempt (warm, lazy replace, [#ensureLoaded], [#loadPinned]) funnels
+    /// through — checks [#metaspaceGuard] BEFORE ever calling
+    /// [JvmFunctionLoader#load], and refuses without attempting the load at
+    /// all when headroom is below the reserve. The ternary is deliberate:
+    /// `loader.load(...)` is never evaluated on the refusal branch, so a
+    /// refused load costs nothing (no class definition, no reflection —
+    /// exactly what "WITHOUT ATTEMPTING IT" requires).
+    private LoadOutcome attemptLoad(Prepared p, DesiredDocument.Entry entry) {
+        MetaspaceGuard.Result headroom = metaspaceGuard.check();
+        return headroom.hasHeadroom()
+                ? loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version())
+                : new Refused(Reason.METASPACE_HEADROOM, headroom.detail());
     }
 
     /// D4b (`function-context.md` §2, X5): true when `entry`'s config+secrets
@@ -702,7 +771,7 @@ public final class Reconciler {
             if (p == null) {
                 return current;
             }
-            LoadOutcome outcome = loader.load(p.artifact(), route.manifest().entrypoint(), route.address(), route.version());
+            LoadOutcome outcome = attemptLoad(p, route);
             Key key = new Key(route.address(), route.version());
             return switch (outcome) {
                 case Loaded(LoadedFunction fn) -> {
@@ -959,8 +1028,7 @@ public final class Reconciler {
         if (p == null) {
             return null;
         }
-        LoadOutcome outcome =
-                loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version());
+        LoadOutcome outcome = attemptLoad(p, entry);
         return switch (outcome) {
             case Loaded(LoadedFunction fn) -> {
                 Key key = new Key(entry.address(), entry.version());
