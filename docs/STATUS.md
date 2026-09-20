@@ -77,11 +77,22 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   capacity with the host's reserve: **212 typical functions in 2 GiB, 438 in 4 GiB**; 100 typical under
   load at 2 GiB/2 CPUs: 11.7k req/s, p99 82 ms, peak heap 212/591 MB. Over-capacity no longer wedges
   the host: loads are refused on headroom, `/health` goes 503 if the listener or loop is down.
-- **Next:** E (fcdev hosting + `fn` CLI + sample + pipeline: fcdev sets `FC_FN_SIGNATURES=off`; pin
-  cosign — Rekor v1 only; scheduled image rebuild), then F (public routes, domains, CORS).
-- **Watch, not yet reproduced uncontended:** `MainTest.exitAfterStartActuallyStopsTheServer` failed
-  once in a quiet full-suite run (passes 10/10 alone); `FnHttpServerTest.h8…` and
-  `DispatchDeliveryCredentialsWiringTest` each answered 404 once under a *contended* run.
+- **Package E complete** (spec `function-developer-surface.md`): E1 fcdev hosts functions (`ea6a5b4f`),
+  E2 `fcdev fn` CLI + the host discovers the token issuer from the platform's discovery document
+  (`9bc5d9c6` — it used to compare `iss` with its own route to the platform, true only in unit tests),
+  E3 sample `examples/function-hello` (profile `examples`, `make examples`), workflow templates,
+  `docs/functions.md` (`c939dce3`). Default shrinker is shade's `minimizeJar`: ProGuard needs `jmods/`,
+  which Temurin 25 no longer ships; ProGuard is the opt-in `shrink-proguard` profile (CLI-verified on
+  GraalVM, not via Maven).
+- **In progress: package F** (spec `function-public-routes.md`): F1 domains + route sync (platform),
+  then F2 public listener + CORS (host), fcdev public port, `fn domain`.
+- **To investigate before merge — intermittent 404s in full-suite runs** (each passed on re-run):
+  `FnHttpServerTest.h8…`, `DispatchDeliveryCredentialsWiringTest`, `RouterConfigEndpointTest`
+  (provision helper), plus one `Http2Test.h2cByUpgrade` port-bind `IllegalState`, and
+  `MainTest.exitAfterStartActuallyStopsTheServer` once. A 404 is what a request gets from *another*
+  test's still-running server: prime suspect is "probe a free port, release it, bind later" colliding
+  with an ephemeral port; second suspect, tests seeding the shared `TestPg` database. New tests must
+  bind port 0 and use their own database.
 - **New backlog item from R13:** ordinary event ingest checks no event-type ownership at all
   (`docs/backlog.md`, 2026-09-20) — its own unit on `main`, needs a rollout ruling.
 - **Working rules learned here:** one mutant per *condition*; re-run orchestrator mutants every slice
