@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+#
+# BENCH-ONLY variant of function-host/Dockerfile (docs/spec/function-host-benchmark.md
+# B1: "if jcmd is not in the jlink image ... do NOT modify the production
+# Dockerfile to add tools — build a bench variant image if you must and
+# record the difference"). The production image's jlink runtime carries no
+# jdk.jcmd/jdk.attach (confirmed: /opt/jre/bin has only java, jfr, keytool),
+# so `jcmd GC.run` cannot run in it. The ONLY difference from
+# function-host/Dockerfile is the jlink --add-modules line, which adds
+# jdk.jcmd and jdk.attach (their transitive closure only) so this image can
+# self-attach (`jcmd <pid> GC.run`, `jcmd <pid> VM.class_hierarchy | wc -l`,
+# `jcmd <pid> Thread.print`). Everything else — the app jar, the entrypoint,
+# the memory fence — is byte-identical to the production build.
+#
+# Build:  docker build -f bench/function-host/Dockerfile.bench -t fnhost-bench .
+
+FROM maven:3.9-eclipse-temurin-25-alpine AS build
+WORKDIR /src
+COPY pom.xml ./
+COPY usecase/pom.xml usecase/
+COPY sdk/pom.xml sdk/
+COPY function-api/pom.xml function-api/
+COPY server/pom.xml server/
+COPY function-host/pom.xml function-host/
+RUN mvn -q -B -pl function-host -am dependency:go-offline || true
+COPY . .
+RUN mvn -q -B -DskipTests -pl function-host -am package \
+ && cp function-host/target/flowcatalyst-function-host-*-exec.jar /fc-fnhost.jar
+
+# DIFFERENCE FROM PRODUCTION: +jdk.jcmd,jdk.attach (bench tooling only).
+RUN MODS=$(jdeps --ignore-missing-deps --multi-release 25 --print-module-deps /fc-fnhost.jar) \
+ && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.management,jdk.zipfs,jdk.jcmd,jdk.attach" \
+          --strip-debug --no-header-files --no-man-pages --compress zip-6 \
+          --output /jre \
+ && /jre/bin/java -version
+
+FROM alpine:3.22 AS runtime
+RUN apk add --no-cache ca-certificates wget \
+ && adduser -D -u 10001 flowcatalyst \
+ && mkdir -p /var/lib/fc-fnhost/cache && chown flowcatalyst:flowcatalyst /var/lib/fc-fnhost/cache
+COPY --from=build /jre /opt/jre
+COPY --from=build /fc-fnhost.jar /usr/local/lib/fc-fnhost.jar
+COPY --chmod=0755 docker/jvm-opts.sh /usr/local/bin/jvm-opts.sh
+COPY --chmod=0755 function-host/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+USER flowcatalyst
+ENV JAVA_HOME=/opt/jre \
+    PATH=/opt/jre/bin:$PATH
+ENV FC_FN_CACHE_DIR=/var/lib/fc-fnhost/cache
+VOLUME /var/lib/fc-fnhost/cache
+EXPOSE 8080 9090
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD sh -c 'wget -q -O /dev/null "http://127.0.0.1:${FC_METRICS_PORT:-9090}/health" || exit 1'
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bench fixture — "typical" (docs/spec/function-host-benchmark.md B1): a small,
+  STANDALONE Maven project — deliberately NOT added to the flowcatalyst reactor
+  (CLAUDE.md: never `mvn install` from this checkout; this project resolves
+  function-api from a plain jar built once via `mvn -pl function-api package`,
+  never installed). Shades jackson-databind (classic, com.fasterxml.jackson —
+  what a real function author would pull in, not the platform's own Jackson 3)
+  and networknt's json-schema-validator, against function-api as `provided`
+  (the host's ApiOnlyParentLoader supplies io.flowcatalyst.function.* to every
+  function's isolated class loader — function-api must never be shaded in).
+
+  Build: mvn -q -f bench/function-host/fixtures/typical/pom.xml
+           -Dfunction-api.jar=<repo>/function-api/target/flowcatalyst-function-api-0.0.1-SNAPSHOT.jar
+           package
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.flowcatalyst.bench</groupId>
+  <artifactId>fnhost-bench-typical-fixture</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Overridable so the fixture's own build script points at wherever
+         function-api's jar landed (never installed to ~/.m2). -->
+    <function-api.jar>${project.basedir}/../../../../function-api/target/flowcatalyst-function-api-0.0.1-SNAPSHOT.jar</function-api.jar>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-api</artifactId>
+      <version>0.0.1-SNAPSHOT</version>
+      <scope>system</scope>
+      <systemPath>${function-api.jar}</systemPath>
+    </dependency>
+    <!-- Classic (com.fasterxml.jackson) jackson-databind — a realistic
+         third-party function author's dependency, deliberately NOT the
+         platform's own tools.jackson (Jackson 3). -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.networknt</groupId>
+      <artifactId>json-schema-validator</artifactId>
+      <version>1.5.1</version>
+    </dependency>
+    <!-- Pinned to a version already cached offline (~/.m2) — 1.5.1 asks for
+         2.0.13, which is not. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.16</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>typical-fixture</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <!-- function-api is `provided`-equivalent here (system scope is
+                   excluded from shading by default) — it must NOT be shaded
+                   in: the host's ApiOnlyParentLoader supplies it. -->
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
