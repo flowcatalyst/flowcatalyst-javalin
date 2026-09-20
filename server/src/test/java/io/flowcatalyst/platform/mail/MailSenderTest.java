@@ -95,9 +95,20 @@ class MailSenderTest {
         String to = unique();
         String id = repo.insertPending(new Mail(to, "s", "<p>h</p>"), clock.instant());
 
+        // Scoped to THIS test's own row: `DS` is the shared `TestPg` database
+        // (docs/STATUS.md's intermittent-failure investigation, 2026-09-20) —
+        // a prior test in this same class (`aFailingTransportAdvancesNextAttemptAtByTheLadder`)
+        // leaves its own row behind, still pending and due, once its
+        // `ManualClock`-computed `next_attempt_at` has passed in real wall-clock
+        // time; this test's own `MailSender` polls the whole table (correctly,
+        // by design) and can claim that leftover row too. An unscoped counter
+        // (every delivery attempt, any row) counted those extra attempts as its
+        // own and saw more than 6.
         AtomicInteger calls = new AtomicInteger();
         MailService failing = mail -> {
-            calls.incrementAndGet();
+            if (mail.to().equals(to)) {
+                calls.incrementAndGet();
+            }
             throw new MailException("boom");
         };
         int[] ladder = {5, 15, 30, 60, 120};

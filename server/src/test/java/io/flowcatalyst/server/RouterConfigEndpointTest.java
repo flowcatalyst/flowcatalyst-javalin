@@ -2,6 +2,7 @@ package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.seed.Seeder;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.database.Migrator;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.router.config.RouterConfig;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 
+import javax.sql.DataSource;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -47,6 +49,16 @@ class RouterConfigEndpointTest {
 
     @BeforeAll
     static void start() {
+        // Its own database, migrated fresh — not the shared `TestPg.dataSource()`:
+        // the seeder below writes the well-known, code-unique `platform` application
+        // and built-in roles, and a full-suite run interleaves this class with every
+        // other class that reads or writes that same shared instance in an order
+        // surefire does not promise (`docs/STATUS.md`'s intermittent-failure
+        // investigation, 2026-09-20 — `DeveloperBffTest`'s own `persistApplication("platform")`
+        // is exactly the collision this seeder run created once, on a reordered run).
+        DataSource ds = TestPg.newDatabase("routerconfig_endpoint_test");
+        Migrator.migrate(ds);
+
         Env env = Env.load(Map.of(
                 "FC_API_PORT", "0",
                 "FC_METRICS_PORT", "0",
@@ -63,14 +75,14 @@ class RouterConfigEndpointTest {
         // and a client-credentials mint reads permissions through exactly that table
         // (`DbClaimsResolver#ceiling`), so a token for a role the seeder never wrote
         // carries no permissions at all, seeded or not.
-        new Seeder(TestPg.dataSource()).run();
+        new Seeder(ds).run();
         // Spa.none(), deliberately, not the embedded SPA: with a real SPA
         // mounted, an unmatched GET on the API listener falls through to the
         // SPA's index.html (200), the same as any other unknown path
         // (ServerTest#specAndSpaAreServedFromTheApiListener) — that would
         // mask exactly the absence this test wants to prove on the metrics
         // listener side.
-        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(),
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(ds)), Server.Spa.none(),
                 new PrometheusRegistry()).start();
     }
 

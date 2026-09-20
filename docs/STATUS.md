@@ -91,20 +91,89 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   by the host, fcdev public port 8091, `fn domain …` (`ed3dde9d`). **Every package of the workplan
   (A–F) is now on `function-service`.** Whole reactor green at the end of F2: usecase 30, sdk 51,
   function-api 125, server 4912, function-host 331, fcdev 202, parity 48.
-- **To investigate before merge — intermittent failures in full-suite runs** (each passed on re-run,
-  none yet reproduced alone): 404s in `FnHttpServerTest.h8…`, `DispatchDeliveryCredentialsWiringTest`,
-  `RouterConfigEndpointTest` (provision helper); `Http2Test.h2cByUpgrade` port-bind `IllegalState`;
-  `MainTest.exitAfterStartActuallyStopsTheServer`. **Ruled out by experiment (2026-09-21):** an
-  IPv4-wildcard server and a JDK `HttpServer` *can* share a port number, but ephemeral allocation
-  never produced that clash (0 of 200) and `localhost` reached the IPv4 server — so "a request landed
-  on another test's fake server via `::1`" is not the mechanism. **Still suspect:** the eight places
-  that probe a free port with `new ServerSocket(0)`, release it and bind later
-  (`TransportTestSupport`, `RouterStartupOrderTest`, `HttpConfigSourceTest`, `SmtpMailServiceTest`, the
-  two function-host integration tests, parity's `JavaSide`/`GoSide`) — that explains the bind failure
-  directly; and tests that seed the shared `TestPg` database (`RouterConfigEndpointTest`,
-  `RouterStartupOrderTest`, the two function-host integration tests) — a 404 for a row another class
-  deleted or never saw. Next step: run the server suite 5× capturing the failing request's URL, port
-  and body; do not label any of these flaky before that.
+- **Intermittent-failure investigation closed for the shared-`TestPg`/Seeder family (2026-09-20).**
+  Two root causes found and fixed by reproduction, not by inspection:
+  1. **Shared-database order dependence.** `RouterConfigEndpointTest`, `RouterStartupOrderTest` and
+     the two function-host integration tests (`FunctionHostReconcilerIntegrationTest`,
+     `FunctionHostListenerIntegrationTest`) all ran `new Seeder(TestPg.dataSource()).run()` against
+     the ONE shared embedded-Postgres instance every class in a module shares. The seeder's
+     `seedPlatformApplication` writes the well-known, code-unique `platform` application row
+     (idempotent — skips if present). `DeveloperBffTest.syncPlatformOpenApiCreatesThenReportsUnchangedOnReSync`
+     does a raw `persistApplication("platform")`, assuming that row is absent. Under
+     `-Dsurefire.runOrder=reversealphabetical` (default `filesystem` order happens to avoid it on
+     this machine, but that order is explicitly not stable across machines/CI) a seeding class now
+     runs first and `DeveloperBffTest` gets `duplicate key value violates unique constraint
+     "app_applications_code_key"`. Reproduced deterministically with the minimal pair
+     `-Dtest='RouterConfigEndpointTest,DeveloperBffTest' -Dsurefire.runOrder=reversealphabetical`
+     (fails every time pre-fix, 0/3 post-fix). **Fix:** the four seeding classes now get their own
+     database (`TestPg.newDatabase(name)` + `Migrator.migrate(ds)`) instead of the shared
+     `TestPg.dataSource()` — this also structurally resolves the `RouterConfigEndpointTest`
+     "provision helper 404" sighting, since its whole `Server` now runs against a database nothing
+     else can write to.
+  2. **Leaked thread-context-classloader (a second, independent mechanism the first fix's own
+     regression test exposed).** `ContextClassLoaderTest` (function-host) sets
+     `Thread.currentThread().setContextClassLoader(baseline)` in `@BeforeEach` and never restores
+     the original in `@AfterEach` — only closes the loaders it made. Harmless before (nothing
+     downstream read the thread's context classloader early in a run), but once
+     `FunctionHostListenerIntegrationTest`/`FunctionHostReconcilerIntegrationTest` call
+     `Migrator.migrate()` themselves (fix 1, above), Flyway's default classpath scan
+     (`Thread.currentThread().getContextClassLoader()`) finds `baseline` — empty URLs, no parent —
+     and logs "No migrations found on disk", leaving `app_applications` and friends absent:
+     `relation "public.app_applications" does not exist`. Reproduced with the minimal pair
+     `-Dtest='ContextClassLoaderTest,FunctionHostListenerIntegrationTest'` (fails every time
+     pre-fix, 0/3 post-fix). **Fix:** `ContextClassLoaderTest` now captures and restores the real
+     context classloader in `@AfterEach`.
+
+  Full reactor (`mvn clean test`, all 8 modules) run 5×: default `filesystem` order (clean),
+  `reversealphabetical` pre-fix (reproduced #1), `reversealphabetical` post-fix (clean),
+  `reversealphabetical` once more (clean), `random` (seed `266011286948333`, clean through
+  `DeveloperBffTest`/`MailSenderTest`/`RouterConfigEndpointTest`/`RouterStartupOrderTest`, all of
+  which this pass fixed or touched — see below for what that run also surfaced, unrelated).
+  Files: `server/src/test/java/io/flowcatalyst/server/RouterConfigEndpointTest.java`,
+  `server/src/test/java/io/flowcatalyst/server/RouterStartupOrderTest.java`,
+  `function-host/src/test/java/io/flowcatalyst/fnhost/reconcile/FunctionHostReconcilerIntegrationTest.java`,
+  `function-host/src/test/java/io/flowcatalyst/fnhost/http/FunctionHostListenerIntegrationTest.java`,
+  `function-host/src/test/java/io/flowcatalyst/fnhost/load/ContextClassLoaderTest.java`.
+
+  **A third, independent mechanism, same shared-`TestPg` family, also fixed:**
+  `MailSenderTest.afterSixFailuresTheRowIsDeadAndNoLongerClaimed` used an unscoped delivery counter;
+  a prior test IN THE SAME CLASS (`aFailingTransportAdvancesNextAttemptAtByTheLadder`) leaves its own
+  row pending in the shared `mail_outbox` table with a `next_attempt_at` that has since passed in
+  real wall-clock time (its `ManualClock` only decouples relative timing, not the stored absolute
+  timestamp) — this test's own `MailSender` legitimately polls the whole table and can claim that
+  leftover row too, inflating the "exactly 6" counter to 8. This is intra-class (JUnit5's default
+  method order is reflection-based and can differ per JVM launch, independent of
+  `-Dsurefire.runOrder`, which is class-level only) — reproduced by forcing
+  `@TestMethodOrder(MethodOrderer.MethodName.class)` temporarily (removed after verification): fails
+  every time pre-fix, passes every time post-fix. **Fix:** the counter now only counts deliveries for
+  the test's own `to` address. `server/src/test/java/io/flowcatalyst/platform/mail/MailSenderTest.java`.
+
+  **Of the five originally-sighted failures**, `RouterConfigEndpointTest`'s provision-helper 404 is
+  addressed above (mechanism: family #1). `FnHttpServerTest.h8…`, `DispatchDeliveryCredentialsWiringTest`,
+  `Http2Test.h2cByUpgrade` and `MainTest.exitAfterStartActuallyStopsTheServer` did **not** reproduce
+  in any of the 5 full-reactor runs above (2 of them deliberately reordered) — **not established**.
+  `Http2Test`/`TransportTestSupport.freePort()`'s probe-and-release remains a real but very narrow
+  TOCTOU window (the production listener's own `close()` blocks synchronously on `vertx.close().get()`
+  before returning, so the leak isn't from this repo's own server — it would need a genuinely
+  external process grabbing that exact ephemeral port in the gap, e.g. concurrent agents/builds per
+  this file's own build-hygiene section); left as a documented open risk, not fixed (no reproduction
+  to fix against). Do not label these five flaky; the mechanism for the other four is simply
+  unconfirmed, not absent.
+
+  **New, separate, unresolved finding — random order surfaced a much larger family:** with
+  `-Dsurefire.runOrder=random` (seed `266011286948333`), the server module additionally failed
+  `StreamEventsTest.batchWithMatchesRecordsCounts` (expected 2 claimed events, got 293 — a claim
+  query over a shared events table with no row-scoping, same shape as the `MailSenderTest` bug
+  above), `OutboxProcessorTest` (2 tests timed out waiting on a condition), `PrincipalApiTest` (1
+  failure + 1 NPE), `PrincipalOperationsTest` (3 errors) and **all 25** of
+  `DesiredStateTest` erroring identically on `IllegalStateException: manifest runtime is unreadable`
+  (`RUNTIME_INVALID`) — the last one's uniform, whole-class failure looks like a shared MUTABLE
+  fixture (a static `Manifest`/`JsonNode` template mutated in place by an earlier-run test under
+  this seed) rather than a database issue. None of this reproduces under `filesystem` (the only
+  order any real run — `make test`, CI, or this investigation's other 4 runs — actually uses) or
+  `reversealphabetical`; it is a pre-existing, much broader fragility this investigation was not
+  scoped to fix. Left open, ranked highest risk if `-Dsurefire.runOrder` or JUnit5 parallel execution
+  is ever turned on; **not touched** by this pass beyond the three fixes above.
 - **New backlog item from R13:** ordinary event ingest checks no event-type ownership at all
   (`docs/backlog.md`, 2026-09-20) — its own unit on `main`, needs a rollout ruling.
 - **Working rules learned here:** one mutant per *condition*; re-run orchestrator mutants every slice

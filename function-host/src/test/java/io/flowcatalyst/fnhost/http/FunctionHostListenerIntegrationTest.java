@@ -118,6 +118,13 @@ class FunctionHostListenerIntegrationTest {
     private static String baseUrl;
     private static String appKey;
     private static int hostPort;
+    /// Its own database, migrated fresh — not the shared `TestPg.dataSource()`:
+    /// this class seeds the well-known, code-unique built-in roles/application
+    /// the same way `RouterConfigEndpointTest`/`RouterStartupOrderTest` do, and a
+    /// full-suite run interleaves this class with every other class that reads or
+    /// writes the shared instance in an order surefire does not promise
+    /// (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20).
+    private static javax.sql.DataSource DS;
 
     private static final String[] ADMIN = {
             io.flowcatalyst.platform.shared.auth.Authenticator.TEST_PRINCIPAL, "prn_" + RUN,
@@ -131,7 +138,9 @@ class FunctionHostListenerIntegrationTest {
 
     @BeforeAll
     static void startPlatformAndHost(@TempDir Path sharedDir) throws Exception {
-        new Seeder(TestPg.dataSource()).run();
+        DS = TestPg.newDatabase("fn_host_listener_integration_test");
+        io.flowcatalyst.platform.shared.database.Migrator.migrate(DS);
+        new Seeder(DS).run();
         appKey = Encryption.generateKey();
 
         int apiPort;
@@ -154,7 +163,7 @@ class FunctionHostListenerIntegrationTest {
                 "FC_FN_SIGNATURES", "off",
                 "FC_FN_POOL_URL", poolUrlTemplate));
 
-        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())),
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(DS)),
                 Server.Spa.none(), new PrometheusRegistry()).start();
         baseUrl = "http://127.0.0.1:" + running.apiPort();
     }
@@ -191,8 +200,8 @@ class FunctionHostListenerIntegrationTest {
 
         // ── the event type the subscription binds ──
         String eventTypeCode = "h15" + RUN + ":orders:order:created";
-        var eventTypes = new EventTypeRepository(TestPg.dataSource());
-        var uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        var eventTypes = new EventTypeRepository(DS);
+        var uow = new UnitOfWork(DS, new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
         EventType eventType = EventType.create(eventTypeCode, "H15 order created");
         uow.inTransaction(tx -> {
             eventTypes.persist(eventType, tx.dbTx());
@@ -200,7 +209,7 @@ class FunctionHostListenerIntegrationTest {
         });
 
         // ── the function itself, platform-owned (created directly, same as R12 — no route contract to prove here) ──
-        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+        FunctionRepository functions = new FunctionRepository(DS);
         Function fn = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
         uow.inTransaction(tx -> {
             functions.persist(fn, tx.dbTx());
@@ -238,8 +247,8 @@ class FunctionHostListenerIntegrationTest {
             reconciler.reconcileOnce(Instant.now());
 
             // ── the subscription now exists, source FUNCTION, target under /functions/<address>/… ──
-            TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
-            SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
+            TriggerObjectRepository triggerObjects = new TriggerObjectRepository(DS);
+            SubscriptionRepository subscriptions = new SubscriptionRepository(DS);
             TriggerObject subLink = triggerObjects.listByFunction(fn.id()).stream()
                     .filter(t -> t.kind() == TriggerObjectKind.SUBSCRIPTION).findFirst()
                     .orElseThrow(() -> new AssertionError("promote must have created the subscription"));
@@ -266,7 +275,7 @@ class FunctionHostListenerIntegrationTest {
             assertThat(seen.type()).isEqualTo(eventTypeCode);
             assertThat(seen.dataJson()).contains("orderId").contains("123");
 
-            DispatchJobRepository dispatchJobs = new DispatchJobRepository(TestPg.dataSource());
+            DispatchJobRepository dispatchJobs = new DispatchJobRepository(DS);
             DispatchJob completed = dispatchJobs.findById(jobId).orElseThrow();
             assertThat(completed.status()).as("mutant: ack() must complete the job").isEqualTo(DispatchJobStatus.COMPLETED);
 
@@ -331,8 +340,8 @@ class FunctionHostListenerIntegrationTest {
         // ── one event type this function's OWN application owns, one owned by ANOTHER ──
         String ownedType = appCode + ":orders:order:created";
         String notOwnedType = "h15emit-other" + RUN + ":orders:order:created";
-        var eventTypes = new EventTypeRepository(TestPg.dataSource());
-        var uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        var eventTypes = new EventTypeRepository(DS);
+        var uow = new UnitOfWork(DS, new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
         EventType owned = EventType.create(ownedType, "H15 emit owned");
         EventType notOwned = EventType.create(notOwnedType, "H15 emit not owned");
         uow.inTransaction(tx -> {
@@ -342,7 +351,7 @@ class FunctionHostListenerIntegrationTest {
         });
 
         // ── the function itself, platform-owned, publish v1 with a webhook endpoint + subscription ──
-        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+        FunctionRepository functions = new FunctionRepository(DS);
         Function fn = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
         uow.inTransaction(tx -> {
             functions.persist(fn, tx.dbTx());
@@ -372,8 +381,8 @@ class FunctionHostListenerIntegrationTest {
             adminPut("/api/functions/" + address.render() + "/aliases/live", obj("version", 1), 200);
             reconciler.reconcileOnce(Instant.now());
 
-            TriggerObjectRepository triggerObjects = new TriggerObjectRepository(TestPg.dataSource());
-            SubscriptionRepository subscriptions = new SubscriptionRepository(TestPg.dataSource());
+            TriggerObjectRepository triggerObjects = new TriggerObjectRepository(DS);
+            SubscriptionRepository subscriptions = new SubscriptionRepository(DS);
             TriggerObject subLink = triggerObjects.listByFunction(fn.id()).stream()
                     .filter(t -> t.kind() == TriggerObjectKind.SUBSCRIPTION).findFirst()
                     .orElseThrow(() -> new AssertionError("promote must have created the subscription"));
@@ -398,7 +407,7 @@ class FunctionHostListenerIntegrationTest {
             assertThat(seen.notOwnedStatus())
                     .as("mutant: EventEmitException carries the wrong status").isEqualTo("403");
 
-            DSLContext db = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
+            DSLContext db = DSL.using(DS, SQLDialect.POSTGRES);
             Record ownedRow = db.selectFrom(MSG_EVENTS)
                     .where(MSG_EVENTS.DEDUPLICATION_ID.eq("dedup-owned-" + jobId)).fetchOne();
             assertThat(ownedRow).as("mutant: the owned event was never written").isNotNull();
@@ -446,9 +455,9 @@ class FunctionHostListenerIntegrationTest {
         JsonNode app = adminPost("/api/applications", obj("code", appCode, "name", "F11 " + RUN, "type", "APPLICATION"), 201);
         String applicationId = app.path("id").asString();
 
-        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
+        FunctionRepository functions = new FunctionRepository(DS);
         Function fn = Function.create(applicationId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
-        var uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        var uow = new UnitOfWork(DS, new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
         uow.inTransaction(tx -> {
             functions.persist(fn, tx.dbTx());
             return null;
@@ -616,7 +625,7 @@ class FunctionHostListenerIntegrationTest {
                 "application/json", false, null, null, subscription.clientId(), subscription.id(), null,
                 subscription.dispatchPoolId(), null, "IMMEDIATE", 0, null, 30, 3, null, List.of(), null, null);
         DispatchJob job = DispatchJobIngestMapper.toJob(mapper);
-        new DispatchJobRepository(TestPg.dataSource()).insertBatch(List.of(job));
+        new DispatchJobRepository(DS).insertBatch(List.of(job));
         return job.id();
     }
 

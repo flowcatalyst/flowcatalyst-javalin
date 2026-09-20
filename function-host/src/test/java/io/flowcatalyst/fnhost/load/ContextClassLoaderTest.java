@@ -28,9 +28,18 @@ class ContextClassLoaderTest {
 
     private URLClassLoader baseline;
     private URLClassLoader functionLoader;
+    /// The real context classloader this test displaces — never restoring it
+    /// left every later test on this same (reused, single-fork) thread running
+    /// with `baseline` (empty URLs, no parent) as ITS context classloader too:
+    /// observed directly, `Migrator.migrate()` called from a later class found
+    /// zero `classpath:db/migration` resources because Flyway's default
+    /// classpath scan reads `Thread.currentThread().getContextClassLoader()`
+    /// (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20).
+    private ClassLoader previous;
 
     @BeforeEach
     void setUp() {
+        previous = Thread.currentThread().getContextClassLoader();
         baseline = new URLClassLoader("baseline", new URL[0], null);
         Thread.currentThread().setContextClassLoader(baseline);
         functionLoader = new URLClassLoader("function", new URL[0], null);
@@ -38,6 +47,7 @@ class ContextClassLoaderTest {
 
     @AfterEach
     void tearDown() throws Exception {
+        Thread.currentThread().setContextClassLoader(previous);
         functionLoader.close();
         baseline.close();
     }

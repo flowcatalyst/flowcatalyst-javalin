@@ -71,6 +71,13 @@ class FunctionHostReconcilerIntegrationTest {
     private static String baseUrl;
     private static TestSigstore.Ecosystem ECO;
     private static TrustRoot TRUST_ROOT;
+    /// Its own database, migrated fresh — not the shared `TestPg.dataSource()`:
+    /// this class seeds the well-known, code-unique built-in roles/application
+    /// the same way `RouterConfigEndpointTest`/`RouterStartupOrderTest` do, and a
+    /// full-suite run interleaves this class with every other class that reads or
+    /// writes the shared instance in an order surefire does not promise
+    /// (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20).
+    private static javax.sql.DataSource DS;
 
     private static final String[] ADMIN = {
             // published_by/publishedBy etc. are VARCHAR(17) — "prn_" + RUN(8) fits exactly.
@@ -84,7 +91,9 @@ class FunctionHostReconcilerIntegrationTest {
 
     @BeforeAll
     static void startPlatform(@TempDir Path sharedDir) throws Exception {
-        new Seeder(TestPg.dataSource()).run();
+        DS = TestPg.newDatabase("fn_host_reconciler_integration_test");
+        io.flowcatalyst.platform.shared.database.Migrator.migrate(DS);
+        new Seeder(DS).run();
 
         Instant now = Instant.now();
         ECO = TestSigstore.build(TestSigstore.LeafSpec.valid(now.minusSeconds(60), now.plusSeconds(3600)));
@@ -112,7 +121,7 @@ class FunctionHostReconcilerIntegrationTest {
                 // (signed)" below fails at the platform, before the host is ever involved.
                 "FC_FN_TRUST_ROOT", trustRootFile.toString()));
 
-        running = new Server(env, new Server.Mode.Platform(Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(),
+        running = new Server(env, new Server.Mode.Platform(Pools.ofSingle(DS)), Server.Spa.none(),
                 new PrometheusRegistry()).start();
         baseUrl = "http://127.0.0.1:" + running.apiPort();
     }
@@ -130,8 +139,8 @@ class FunctionHostReconcilerIntegrationTest {
         FunctionAddress address = FunctionAddress.of(new DnsLabel("pf" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
 
         // ── function, owned by the platform (created directly — no route contract to prove here) ──
-        FunctionRepository functions = new FunctionRepository(TestPg.dataSource());
-        UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        FunctionRepository functions = new FunctionRepository(DS);
+        UnitOfWork uow = new UnitOfWork(DS, new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
         Application app = createApplication("pf-app-" + RUN);
         Function fn = Function.create(app.id(), address, new FunctionOwner.Platform(), Runtime.JVM, null);
         uow.inTransaction(tx -> {
@@ -288,8 +297,8 @@ class FunctionHostReconcilerIntegrationTest {
     }
 
     private static Application createApplication(String code) {
-        ApplicationRepository applications = new ApplicationRepository(TestPg.dataSource());
-        UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
+        ApplicationRepository applications = new ApplicationRepository(DS);
+        UnitOfWork uow = new UnitOfWork(DS, new io.flowcatalyst.platform.shared.platformsink.PlatformSink(Json.MAPPER));
         Application a = Application.create(ApplicationType.APPLICATION, code, "Reconciler R12 " + code);
         uow.inTransaction(tx -> {
             applications.persist(a, tx.dbTx());

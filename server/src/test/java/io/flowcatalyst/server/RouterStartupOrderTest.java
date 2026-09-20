@@ -2,12 +2,14 @@ package io.flowcatalyst.server;
 
 import io.flowcatalyst.platform.seed.RouterClientBootstrap;
 import io.flowcatalyst.platform.seed.Seeder;
+import io.flowcatalyst.platform.shared.database.Migrator;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.testpg.TestPg;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
+import javax.sql.DataSource;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Duration;
@@ -78,12 +80,20 @@ class RouterStartupOrderTest {
             metricsPort = metricsProbe.getLocalPort();
         }
 
+        // Its own database, migrated fresh — not the shared `TestPg.dataSource()`:
+        // this seeds the same well-known, code-unique rows `RouterConfigEndpointTest`
+        // does, and a full-suite run interleaves this class with every other class
+        // that reads or writes the shared instance in an order surefire does not
+        // promise (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20).
+        DataSource ds = TestPg.newDatabase("router_startup_order_test");
+        Migrator.migrate(ds);
+
         // The seeder must run before a client-credentials token is minted:
         // `platform:router` (and every other built-in role) only carries
         // permissions once its rows exist in `iam_roles`/`iam_role_permissions`
         // (`DbClaimsResolver#ceiling`) — same reasoning as
         // `RouterConfigEndpointTest`.
-        new Seeder(TestPg.dataSource()).run();
+        new Seeder(ds).run();
 
         // One app key, used both to build the Env the server verifies
         // client secrets under, and to hash the router's freshly minted
@@ -92,7 +102,7 @@ class RouterStartupOrderTest {
         // FLOWCATALYST_APP_KEY to verify the OAuth client's stored secret ref).
         String appKey = Encryption.generateKey();
         Encryption encryption = Encryption.fromKeys(appKey, "").orElseThrow();
-        RouterClientBootstrap.Credentials credentials = RouterClientBootstrap.bootstrap(TestPg.dataSource(), encryption);
+        RouterClientBootstrap.Credentials credentials = RouterClientBootstrap.bootstrap(ds, encryption);
 
         Env env = Env.load(Map.of(
                 "FC_API_PORT", String.valueOf(apiPort),
@@ -107,7 +117,7 @@ class RouterStartupOrderTest {
                 "FC_ROUTER_CLIENT_SECRET", credentials.secret()));
 
         Instant before = Instant.now();
-        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(),
+        running = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(ds)), Server.Spa.none(),
                 new PrometheusRegistry()).start();
 
         // The document served on OUR OWN API listener must be fetched and
