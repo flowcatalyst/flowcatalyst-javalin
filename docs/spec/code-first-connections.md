@@ -11,8 +11,9 @@ answered: per application *and* client, enforced by the database, NULL a real va
 Go reference, `main` at `07184da`: `56aea7c` (subscription sync by `connectionCode` — **Java does
 not have this either**), `291ae7a`, `f06ebc2`, `774a18b`, `abcd9fa` (router log line). Go's
 uncommitted work at the time of writing is SDK-only (a client-side partial-failure result) and asks
-nothing of the server; the SDK copies in this repo (`sdk/`, `clients/`) are **out of scope** until
-the owner says Go's are committed.
+nothing of the server. **Owner, 2026-09-21 (later): the SDK work is committed** — Go `be8a52f` +
+`a2c093b` (java-sdk), `f7b472d` (laravel-sdk), `bb660d5` (typescript-sdk), with `bb1b483`/`a10bc5c`
+before them — so the SDK copies are slice **K4** (§4a).
 
 Evidence, not authority (CONVENTIONS §8): Go's `connection/operations/sync.go`,
 `subscription/operations/sync.go`, `connection/repository.go`, and the `_pg_test.go` files the
@@ -106,6 +107,33 @@ As the hand-off states them. Java specifics:
 | **K1** | lockfile + copies; V12; fixture re-dump; jOOQ; `Connection` fields; the three-part key in both repositories and every caller; create/update `applicationCode`; response fields; `connection.md`/`subscription.md` amended |
 | **K2** | seeds (permissions, roles, event type + schemas) and the roles-sync check; `SyncConnections` + route + events; `sdksync.md` amended |
 | **K3** | `SyncSubscriptions` changes; router log line; parity scenario + surface |
+| **K4** | the SDKs — §4a |
+
+## 4a. Slice K4 — the SDKs (after K1: K1 rewrites the OpenAPI copies inside the same directories)
+
+Two different jobs (`docs/sdk-release-plan.md`, `docs/go-mirror/2026-09-14-sdk-copies.md`):
+
+- **`clients/typescript-sdk`, `clients/laravel-sdk` are copies.** Bring them to Go `HEAD` file for
+  file (same excludes as `tools/sdk-drift.sh`: `node_modules`, `dist`, `vendor`, `.DS_Store`,
+  `openapi-processed.json`); files Go deleted are deleted here (`RoleAssignmentDto` →
+  `RoleAssignmentDTO` is a rename that a case-insensitive filesystem will fight — do it with
+  `git mv` through a temporary name). **Done when `tools/sdk-drift.sh` exits 0.** Their own test
+  suites run if the toolchain is present (`npm test` / `composer test`); say which ran.
+  Version files and changelogs come across as Go has them; **no release is cut** — which repo
+  releases is still the owner's open question (`docs/sdk-release-plan.md`).
+- **`sdk/` is a port, not a copy** (Jackson 3, the sibling `usecase` module; `tools/sdk-drift.sh`
+  does not cover it). Port what Go's `clients/java-sdk` gained: `connectionCode` /
+  `sharedConnection` on subscription definitions; connection definitions in code and the connection
+  sync call; per-client sync (`clientId`); merged definition sets; and a sync with a failed category
+  **throws `DefinitionSyncException` carrying what did sync** (`SdkError.PartialFailure`). Go's
+  `ConnectionSyncTest` and `MergedSyncTest` are the tests to port first. Pin, with a mutant each:
+  the partial result survives the failure (drop it ⇒ test fails); a failed category does not stop
+  the remaining categories (stop at first ⇒ fails); `clientId` absent is omitted from the wire, not
+  sent as null (the server's `SchemaValidation` would refuse `null`).
+- An end-to-end pin, once K2/K3 have landed: the Java `sdk/` synchronizer against the in-process
+  platform — connections then subscriptions by `connectionCode`, for one client — produces the rows
+  the hand-off describes. This is the test that would have caught the original defect (a
+  subscription that could not be defined in code).
 
 ## 5. Tests — port Go's scoped-removal tests first; one mutant per condition
 
