@@ -4,6 +4,21 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Package G — function artifacts uploaded through the platform (R14, 2026-09-21)
+
+Landed on `function-service` (`9997a70d` platform side, then the host + CLI slice). Spec
+`docs/spec/function-artifact-upload.md`, including what review corrected. `fn publish` uploads the
+jar with the caller's service account; the platform writes it to `FC_FN_ARTIFACT_STORE`
+(`file:///…` or `s3://bucket/prefix`; `fcdev start` defaults to its state dir); refs are
+`platform://<functionId>/<hex>`; hosts download from `GET /control/functions/artifacts/{versionId}`.
+Publish-by-reference (`oci://`) still works. The listener gained a streaming request mode and a
+streamed response pump, both with **stall** deadlines; every other route is unchanged.
+The function-host **image** goes to ECR through GitHub OIDC (`fnhost-image.yml`), skipped until the
+owner sets `FNHOST_AWS_ROLE_ARN`, `FNHOST_AWS_REGION`, `FNHOST_ECR_REPOSITORY` (`docs/deployments.md`).
+**Not built:** an OCI/ECR *write* backend for artifacts; GC of blobs for retired versions (only
+function delete collects); `s3://` needs the platform task role's S3 permissions in the IaC.
+Event-ingest ownership is **parked** by owner ruling (`docs/backlog.md`).
+
 ## Function service — branch `function-service` (2026-09-18)
 
 Java-first, no Go counterpart. Design `docs/function-runner-plan.md` (§10 decisions), build order
