@@ -11,6 +11,10 @@
 # a live Go database — the exact strings/JSON are read verbatim from Go
 # `internal/platform/seed/{permissions,roles,event_types,event_schemas}.go` at the hand-off's
 # reference commit (`07184da`+), which the K2 report cites; a live-DB re-dump was not run for this unit.
+# code-first-connections.md slice K3 (2026-09-21): the `platform:admin:subscription:synced` `schema`
+# row's JSON is hand-edited (not re-dumped) to add `"clientId":{"type":["string","null"]}`, read
+# verbatim from Go `internal/platform/seed/event_schemas.go` at `07184da` (`56aea7c`+), which adds
+# `optStr("clientId")` to that schema — mirrors the `connection:synced` row above, same reason.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -349,7 +353,7 @@ schema	platform:admin:subscription:updated	1.0	application/schema+json	JSON_SCHE
 schema	platform:admin:subscription:paused	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
 schema	platform:admin:subscription:resumed	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
 schema	platform:admin:subscription:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
-schema	platform:admin:subscription:synced	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
+schema	platform:admin:subscription:synced	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"clientId":{"type":["string","null"]},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
 application	APPLICATION	platform	FlowCatalyst Platform	Core platform — its own OpenAPI document is published here as one of the applications	true
 process	platform:fulfilment:on-demand-flow	On-Demand Fulfilment Flow	CURRENT	CODE	platform	fulfilment	on-demand-flow	mermaid	{example,fulfilment,platform}
 idp	internal	Internal Authentication	INTERNAL	false	false

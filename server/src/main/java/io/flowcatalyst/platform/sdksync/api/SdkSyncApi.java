@@ -130,11 +130,16 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncRoles.of(s.roles()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
+    /// `code-first-connections.md` §3: the same `clientId` id-or-identifier-slug
+    /// resolution as [#syncConnections], resolved BEFORE authorization so the
+    /// access check sees the id, not a slug.
     private static void syncSubscriptions(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_SYNC, SUBSCRIPTION_MANAGE,
                 APP_SVC_SUBSCRIPTION_CREATE, APP_SVC_SUBSCRIPTION_UPDATE, APP_SVC_SUBSCRIPTION_DELETE);
         var app = application(ctx, s);
-        var cmd = ctx.bodyAsClass(SyncSubscriptionsRequest.class).toCommand(app.id(), app.code(), removeUnlisted(ctx));
+        var body = ctx.bodyAsClass(SyncSubscriptionsRequest.class);
+        String clientId = resolveClientRef(body.clientId(), s);
+        var cmd = body.toCommand(app.id(), app.code(), clientId, removeUnlisted(ctx));
         var op = SyncSubscriptions.of(s.subscriptions(), s.connections(), s.dispatchPools());
         ctx.json(SyncResultResponse.from(op.run(s.uow(), cmd, Auth.executionContext())));
     }
@@ -156,11 +161,12 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(op.run(s.uow(), cmd, Auth.executionContext())));
     }
 
-    /// Canonicalises a connection sync's client reference — the client's
-    /// `clt_…` id or its identifier slug — to the id (hand-off "Connection
-    /// sync (new)"). `null`/blank stays `null` (a client-less sync). Unknown
-    /// → 404: a typo'd identifier must not silently sync against the wrong
-    /// tenant.
+    /// Canonicalises a connection or subscription sync's client reference —
+    /// the client's `clt_…` id or its identifier slug — to the id (hand-off
+    /// "Connection sync (new)" / "Subscription sync",
+    /// `code-first-connections.md` §3). `null`/blank stays `null` (a
+    /// client-less sync). Unknown → 404: a typo'd identifier must not
+    /// silently sync against the wrong tenant.
     private static String resolveClientRef(String ref, State s) {
         if (ref == null || ref.isBlank()) {
             return null;

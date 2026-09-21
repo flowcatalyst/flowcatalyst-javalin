@@ -313,6 +313,40 @@ class SdkSyncApiTest {
         assertThat(json(r).get("error").asText()).isEqualTo("Client_NOT_FOUND");
     }
 
+    // ── Subscriptions (code-first-connections.md §3) — the same HTTP-level
+    // clientId resolution as connections, now on the subscriptions route too.
+
+    /// The subscriptions route resolves `clientId` the same way the
+    /// connections route does — by id OR identifier slug, before authorization.
+    @Test
+    @DisplayName("subscriptions sync: clientId resolves by id or identifier slug")
+    void subscriptionsSyncResolvesClientByIdOrIdentifierSlug() {
+        String byId = "subc9-byid-" + RUN;
+        var r1 = post(syncPath("subscriptions"),
+                "{\"clientId\":\"" + connClient.id() + "\",\"subscriptions\":[{\"code\":\"" + byId + "\",\"name\":\"ById\",\"target\":\"https://example.test/"
+                        + byId + "\",\"eventTypes\":[{\"eventTypeCode\":\"test:a:b:c\"}]}]}", anchor());
+        assertThat(r1.statusCode()).as("body: %s", r1.body()).isEqualTo(200);
+        assertThat(json(r1).get("created").asInt()).isEqualTo(1);
+
+        String bySlug = "subc9-byslug-" + RUN;
+        // Upper-cased on purpose — identifiers are normalised lower-case at create time.
+        var r2 = post(syncPath("subscriptions"),
+                "{\"clientId\":\"" + connClient.identifier().toUpperCase(Locale.ROOT)
+                        + "\",\"subscriptions\":[{\"code\":\"" + bySlug + "\",\"name\":\"BySlug\",\"target\":\"https://example.test/"
+                        + bySlug + "\",\"eventTypes\":[{\"eventTypeCode\":\"test:a:b:c\"}]}]}", anchor());
+        assertThat(r2.statusCode()).as("body: %s", r2.body()).isEqualTo(200);
+        assertThat(json(r2).get("created").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("subscriptions sync: an unknown clientId is 404 Client_NOT_FOUND")
+    void subscriptionsSyncUnknownClientIsNotFound() {
+        var r = post(syncPath("subscriptions"),
+                "{\"clientId\":\"does-not-exist-" + RUN + "\",\"subscriptions\":[]}", anchor());
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).get("error").asText()).isEqualTo("Client_NOT_FOUND");
+    }
+
     // ── Happy paths ────────────────────────────────────────────────────────
 
     @Test

@@ -222,7 +222,7 @@ public final class PlatformEventSchemas {
         m.put("platform:admin:subscription:resumed", obj(reqStr("subscriptionId"), reqStr("code")));
         m.put("platform:admin:subscription:deleted", obj(reqStr("subscriptionId"), reqStr("code")));
         m.put("platform:admin:subscription:synced", obj(
-                reqStr("applicationCode"),
+                reqStr("applicationCode"), optStr("clientId"),
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
                 reqStrArray("syncedCodes")));
 
