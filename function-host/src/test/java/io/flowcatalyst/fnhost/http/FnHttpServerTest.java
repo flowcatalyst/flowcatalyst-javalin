@@ -425,7 +425,7 @@ class FnHttpServerTest {
                 String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "platform:function:function:view",
                         List.of("clt_1"), List.of(), false, Instant.now().plusSeconds(300));
                 var ok = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
-                assertThat(ok.statusCode()).isEqualTo(200);
+                assertThat(ok.statusCode()).as(new String(ok.body(), StandardCharsets.UTF_8)).isEqualTo(200);
                 JsonNode body = FnHttpTestSupport.json(ok.body());
                 assertThat(body.path("caller").asString()).isEqualTo("Principal");
                 assertThat(body.path("principalId").asString()).isEqualTo("prn_1");
