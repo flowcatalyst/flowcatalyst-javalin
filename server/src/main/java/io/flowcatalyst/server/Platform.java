@@ -347,7 +347,7 @@ public final class Platform {
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
-        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, uow));
+        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, new ApplicationRepository(pool), uow));
         var dispatchPoolRepo = new DispatchPoolRepository(pool);
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
         // R3′ (`docs/spec/router-config-auth.md`): the router-config document moved

@@ -60,17 +60,40 @@ public final class SubscriptionRepository implements Persist<Subscription> {
         return findOne(T.ID.eq(id));
     }
 
-    /// The subscription with `code` under `clientId`; a `null` client id
-    /// matches platform-wide rows only (spec §6).
-    public Optional<Subscription> findByCodeAndClient(String code, String clientId) {
-        Condition client = clientId == null ? T.CLIENT_ID.isNull() : T.CLIENT_ID.eq(clientId);
-        return findOne(T.CODE.eq(code).and(client));
+    /// The subscription with `code` under the three-part key
+    /// `(applicationCode, clientId, code)` — `NULL` is a real value on both
+    /// nullable parts, never a wildcard (spec `code-first-connections.md` §2):
+    /// `(A, null, code)` does not match the shared `(null, null, code)` row,
+    /// nor another client's `(A, B, code)` row. Every part compares with
+    /// `isNotDistinctFrom`, `code` included (spec §2: "every lookup"), even
+    /// though `code` is `NOT NULL` at the schema level, so `eq` and
+    /// `isNotDistinctFrom` are equivalent for it in practice.
+    public Optional<Subscription> findByCode(String code, String applicationCode, String clientId) {
+        return findOne(T.CODE.isNotDistinctFrom(code)
+                .and(T.APPLICATION_CODE.isNotDistinctFrom(applicationCode))
+                .and(T.CLIENT_ID.isNotDistinctFrom(clientId)));
     }
 
     /// Every subscription stamped with `applicationCode`, by code — the set
     /// sync reconciles against (spec §7).
     public List<Subscription> findByApplicationCode(String applicationCode) {
         return findMany(T.APPLICATION_CODE.eq(applicationCode));
+    }
+
+    /// Every subscription owned by `(applicationCode, clientId)` — `NULL`
+    /// client matches `NULL` only (spec `code-first-connections.md` §2).
+    public List<Subscription> findByApplicationAndClient(String applicationCode, String clientId) {
+        return findMany(T.APPLICATION_CODE.isNotDistinctFrom(applicationCode)
+                .and(T.CLIENT_ID.isNotDistinctFrom(clientId)));
+    }
+
+    /// The codes of every subscription referencing `connectionId` — used by
+    /// a connection sync's `removeUnlisted` reference guard (spec
+    /// `code-first-connections.md` §3, C8: 409 `CONNECTION_REFERENCED` names
+    /// these codes).
+    public List<String> findCodesByConnectionId(String connectionId) {
+        return dsl.select(T.CODE).from(T).where(T.CONNECTION_ID.eq(connectionId))
+                .orderBy(T.CODE.asc()).fetch(T.CODE);
     }
 
     /// Subscriptions matching every non-null filter, by code.

@@ -111,6 +111,16 @@ public class MsgConnections extends TableImpl<MsgConnectionsRecord> {
      */
     public final TableField<MsgConnectionsRecord, OffsetDateTime> UPDATED_AT = createField(DSL.name("updated_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
 
+    /**
+     * The column <code>public.msg_connections.application_code</code>.
+     */
+    public final TableField<MsgConnectionsRecord, String> APPLICATION_CODE = createField(DSL.name("application_code"), SQLDataType.VARCHAR(100), this, "");
+
+    /**
+     * The column <code>public.msg_connections.source</code>.
+     */
+    public final TableField<MsgConnectionsRecord, String> SOURCE = createField(DSL.name("source"), SQLDataType.VARCHAR(20).nullable(false).defaultValue(DSL.field(DSL.raw("'UI'::character varying"), SQLDataType.VARCHAR)), this, "");
+
     private MsgConnections(Name alias, Table<MsgConnectionsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }
@@ -147,7 +157,7 @@ public class MsgConnections extends TableImpl<MsgConnectionsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_MSG_CONNECTIONS_CLIENT_ID, Indexes.IDX_MSG_CONNECTIONS_CODE_CLIENT, Indexes.IDX_MSG_CONNECTIONS_SERVICE_ACCOUNT, Indexes.IDX_MSG_CONNECTIONS_STATUS);
+        return Arrays.asList(Indexes.IDX_MSG_CONNECTIONS_CLIENT_ID, Indexes.IDX_MSG_CONNECTIONS_SERVICE_ACCOUNT, Indexes.IDX_MSG_CONNECTIONS_STATUS);
     }
 
     @Override
@@ -158,6 +168,7 @@ public class MsgConnections extends TableImpl<MsgConnectionsRecord> {
     @Override
     public List<Check<MsgConnectionsRecord>> getChecks() {
         return Arrays.asList(
+            Internal.createCheck(this, DSL.name("chk_msg_connections_source"), "(((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[])))", true),
             Internal.createCheck(this, DSL.name("chk_msg_connections_status"), "(((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))", true)
         );
     }

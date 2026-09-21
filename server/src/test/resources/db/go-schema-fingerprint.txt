@@ -237,6 +237,7 @@ COLUMN	iam_user_mfa_recovery_codes	created_at	5	timestamp with time zone			NO	no
 COLUMN	iam_user_mfa_recovery_codes	id	1	character varying	17		NO		NO
 COLUMN	iam_user_mfa_recovery_codes	principal_id	2	character varying	17		NO		NO
 COLUMN	iam_user_mfa_recovery_codes	used_at	4	timestamp with time zone			YES		NO
+COLUMN	msg_connections	application_code	12	character varying	100		YES		NO
 COLUMN	msg_connections	client_id	8	character varying	17		YES		NO
 COLUMN	msg_connections	client_identifier	9	character varying	100		YES		NO
 COLUMN	msg_connections	code	2	character varying	100		NO		NO
@@ -246,6 +247,7 @@ COLUMN	msg_connections	external_id	5	character varying	100		YES		NO
 COLUMN	msg_connections	id	1	character varying	17		NO		NO
 COLUMN	msg_connections	name	3	character varying	255		NO		NO
 COLUMN	msg_connections	service_account_id	7	character varying	17		NO		NO
+COLUMN	msg_connections	source	13	character varying	20		NO	'UI'::character varying	NO
 COLUMN	msg_connections	status	6	character varying	20		NO	'ACTIVE'::character varying	NO
 COLUMN	msg_connections	updated_at	11	timestamp with time zone			NO	now()	NO
 COLUMN	msg_dispatch_job_attempts	attempt_number	3	integer		32	YES		NO
@@ -742,6 +744,7 @@ CONSTRAINT	iam_user_mfa_methods	iam_user_mfa_methods_pkey	p	PRIMARY KEY (id)
 CONSTRAINT	iam_user_mfa_methods	iam_user_mfa_methods_principal_id_fkey	f	FOREIGN KEY (principal_id) REFERENCES iam_principals(id) ON DELETE CASCADE
 CONSTRAINT	iam_user_mfa_recovery_codes	iam_user_mfa_recovery_codes_pkey	p	PRIMARY KEY (id)
 CONSTRAINT	iam_user_mfa_recovery_codes	iam_user_mfa_recovery_codes_principal_id_fkey	f	FOREIGN KEY (principal_id) REFERENCES iam_principals(id) ON DELETE CASCADE
+CONSTRAINT	msg_connections	chk_msg_connections_source	c	CHECK (((source) = ANY (ARRAY['CODE', 'API', 'UI'])))
 CONSTRAINT	msg_connections	chk_msg_connections_status	c	CHECK (((status) = ANY (ARRAY['ACTIVE', 'PAUSED'])))
 CONSTRAINT	msg_connections	msg_connections_pkey	p	PRIMARY KEY (id)
 CONSTRAINT	msg_dispatch_job_attempts	chk_msg_dispatch_job_attempts_error_type	c	CHECK (((error_type IS NULL) OR ((error_type) = ANY (ARRAY['CONNECTION', 'TIMEOUT', 'HTTP_ERROR', 'VALIDATION', 'UNKNOWN']))))
@@ -942,10 +945,10 @@ INDEX	iam_user_mfa_recovery_codes	iam_user_mfa_recovery_codes_pkey	CREATE UNIQUE
 INDEX	iam_user_mfa_recovery_codes	idx_iam_user_mfa_recovery_codes_hash	CREATE INDEX idx_iam_user_mfa_recovery_codes_hash ON public.iam_user_mfa_recovery_codes USING btree (code_hash)	true
 INDEX	iam_user_mfa_recovery_codes	idx_iam_user_mfa_recovery_codes_principal	CREATE INDEX idx_iam_user_mfa_recovery_codes_principal ON public.iam_user_mfa_recovery_codes USING btree (principal_id)	true
 INDEX	msg_connections	idx_msg_connections_client_id	CREATE INDEX idx_msg_connections_client_id ON public.msg_connections USING btree (client_id)	true
-INDEX	msg_connections	idx_msg_connections_code_client	CREATE UNIQUE INDEX idx_msg_connections_code_client ON public.msg_connections USING btree (code, client_id)	true
 INDEX	msg_connections	idx_msg_connections_service_account	CREATE INDEX idx_msg_connections_service_account ON public.msg_connections USING btree (service_account_id)	true
 INDEX	msg_connections	idx_msg_connections_status	CREATE INDEX idx_msg_connections_status ON public.msg_connections USING btree (status)	true
 INDEX	msg_connections	msg_connections_pkey	CREATE UNIQUE INDEX msg_connections_pkey ON public.msg_connections USING btree (id)	true
+INDEX	msg_connections	uq_msg_connections_app_client_code	CREATE UNIQUE INDEX uq_msg_connections_app_client_code ON public.msg_connections USING btree (COALESCE(application_code, ''), COALESCE(client_id, ''), code)	true
 INDEX	msg_dispatch_job_attempts	idx_msg_dispatch_job_attempts_job	CREATE INDEX idx_msg_dispatch_job_attempts_job ON ONLY public.msg_dispatch_job_attempts USING btree (dispatch_job_id)	true
 INDEX	msg_dispatch_job_attempts	idx_msg_dispatch_job_attempts_job_number	CREATE UNIQUE INDEX idx_msg_dispatch_job_attempts_job_number ON ONLY public.msg_dispatch_job_attempts USING btree (dispatch_job_id, attempt_number, created_at)	true
 INDEX	msg_dispatch_job_attempts	msg_dispatch_job_attempts_pkey	CREATE UNIQUE INDEX msg_dispatch_job_attempts_pkey ON ONLY public.msg_dispatch_job_attempts USING btree (id, created_at)	true
@@ -1027,12 +1030,12 @@ INDEX	msg_subscription_event_types	idx_msg_sub_event_types_event_type	CREATE IND
 INDEX	msg_subscription_event_types	idx_msg_sub_event_types_subscription	CREATE INDEX idx_msg_sub_event_types_subscription ON public.msg_subscription_event_types USING btree (subscription_id)	true
 INDEX	msg_subscription_event_types	msg_subscription_event_types_pkey	CREATE UNIQUE INDEX msg_subscription_event_types_pkey ON public.msg_subscription_event_types USING btree (id)	true
 INDEX	msg_subscriptions	idx_msg_subscriptions_client_id	CREATE INDEX idx_msg_subscriptions_client_id ON public.msg_subscriptions USING btree (client_id)	true
-INDEX	msg_subscriptions	idx_msg_subscriptions_code_client	CREATE UNIQUE INDEX idx_msg_subscriptions_code_client ON public.msg_subscriptions USING btree (code, client_id)	true
 INDEX	msg_subscriptions	idx_msg_subscriptions_connection_id	CREATE INDEX idx_msg_subscriptions_connection_id ON public.msg_subscriptions USING btree (connection_id)	true
 INDEX	msg_subscriptions	idx_msg_subscriptions_dispatch_pool	CREATE INDEX idx_msg_subscriptions_dispatch_pool ON public.msg_subscriptions USING btree (dispatch_pool_id)	true
 INDEX	msg_subscriptions	idx_msg_subscriptions_source	CREATE INDEX idx_msg_subscriptions_source ON public.msg_subscriptions USING btree (source)	true
 INDEX	msg_subscriptions	idx_msg_subscriptions_status	CREATE INDEX idx_msg_subscriptions_status ON public.msg_subscriptions USING btree (status)	true
 INDEX	msg_subscriptions	msg_subscriptions_pkey	CREATE UNIQUE INDEX msg_subscriptions_pkey ON public.msg_subscriptions USING btree (id)	true
+INDEX	msg_subscriptions	uq_msg_subscriptions_app_client_code	CREATE UNIQUE INDEX uq_msg_subscriptions_app_client_code ON public.msg_subscriptions USING btree (COALESCE(application_code, ''), COALESCE(client_id, ''), code)	true
 INDEX	oauth_client_allowed_origins	idx_oauth_client_allowed_origins_client	CREATE INDEX idx_oauth_client_allowed_origins_client ON public.oauth_client_allowed_origins USING btree (oauth_client_id)	true
 INDEX	oauth_client_allowed_origins	idx_oauth_client_allowed_origins_origin	CREATE INDEX idx_oauth_client_allowed_origins_origin ON public.oauth_client_allowed_origins USING btree (allowed_origin)	true
 INDEX	oauth_client_allowed_origins	oauth_client_allowed_origins_pkey	CREATE UNIQUE INDEX oauth_client_allowed_origins_pkey ON public.oauth_client_allowed_origins USING btree (oauth_client_id, allowed_origin)	true

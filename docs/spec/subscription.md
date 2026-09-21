@@ -12,17 +12,25 @@ accident?** need an owner ruling — until ruled on, the behaviour is kept.
 A subscription binds one or more **event-type patterns** to a delivery
 target (an `endpoint` URL, optionally through a `connection`), with the
 dispatch settings the router applies (mode, timeout, retries, delay, max
-age, dispatch pool). It is identified by a **code**, unique per client
-(`(code, client_id)` — a platform-wide subscription has `client_id = NULL`;
-the unique index treats `NULL`s as distinct, so uniqueness of platform-wide
-codes is enforced by the operation, not the database — **load-bearing or
-accident?**).
+age, dispatch pool). It is identified by a **code**, unique per
+`(applicationCode, clientId)` — **answered by owner ruling 2026-09-21**
+(`docs/spec/code-first-connections.md`): the old "unique per client,
+`(code, client_id)`, DB treats `NULL` as distinct" question is superseded.
+V12 (`code-first-connections.md` §1, mirroring Go migration 056) replaces
+the old `(code, client_id)` unique index with an expression index on
+`(COALESCE(application_code,''), COALESCE(client_id,''), code)` —
+uniqueness of the three-part key, **`NULL` a real value on every nullable
+part**, is now enforced by the database itself. This unit (K1) migrates the
+admin create/update lookup to the new key with identical *admin* behaviour;
+it does not change `SyncSubscriptions`' own matching rules (§7 below,
+K3's — the hand-off's `connectionCode`/`clientId`/scoping additions land
+there).
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `sub_` + 13-char TSID | generated on create |
 | `code` | string, required | admin create: trimmed + lower-cased, `^[a-z][a-z0-9-]*$`; sync: stored **as given**, only non-blank is checked (§7). Immutable after create |
-| `applicationCode` | string, optional | set only by sync (the owning SDK application); admin creates leave it `null` |
+| `applicationCode` | string, optional | set only by sync (the owning SDK application); admin creates leave it `null`. The first part of the three-part uniqueness key (above) |
 | `name` | string, required | admin create/update: trimmed; sync: as given |
 | `description` | string, optional | |
 | `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient` |
@@ -188,16 +196,19 @@ the application's scope if something else sets its `application_code`).
 
 | Operation | Condition | Code | Status |
 |---|---|---|---|
-| Create | another subscription has the same normalised code **and the same `clientId`** (`null` matches only `null`) | `CODE_EXISTS` | 409 — `Subscription with code '<code>' already exists` |
+| Create | another subscription has the same normalised code under the same three-part key **`(applicationCode, clientId, code)`** (`null` matches only `null` on both nullable parts; admin create always uses `applicationCode = null`) | `CODE_EXISTS` | 409 — `Subscription with code '<code>' already exists` |
 | Update / Delete / Pause / Resume | no subscription with that id | `Subscription_NOT_FOUND` | 404 — `Subscription not found: <id>` |
 | Sync | a row names a `connectionId` that does not exist | `CONNECTION_NOT_FOUND` | 404 — `Connection '<id>' not found` (checked for **every** row, before any write) |
 
-A client-bound create may reuse a code that exists platform-wide or under
-another client (**load-bearing** — multi-tenant codes). Sync never conflicts
-on code: an existing code is updated — and it does **not** check `(code,
-clientId)` at all: a new sync code that already exists platform-wide under a
-*different* `applicationCode` (or none) hits the unique index and fails with
-a 500 `PERSIST`. **load-bearing or accident?**
+A client-bound create may reuse a code that exists platform-wide, under
+another client, or under another application (**load-bearing** — multi-tenant,
+multi-application codes). Sync never conflicts on code: an existing code is
+updated — and it does **not** check `(applicationCode, clientId, code)` at
+all: a new sync code that already exists under a *different* scope hits the
+database's unique index and fails with a 500 `PERSIST`. **load-bearing or
+accident?** (unchanged by K1: V12 reshapes the index sync can hit, from
+`(code, clientId)` to the three-part key, but `SyncSubscriptions` itself is
+not migrated to pre-check it until K3.)
 
 ## 7. Sync semantics
 
@@ -290,7 +301,7 @@ hydrate both junctions in one `IN` query each. List reads order by `code`.
 
 ## 10. Open questions for the owner (summary)
 
-1. Platform-wide code uniqueness relies on the operation's pre-check (`NULL` client ids are distinct to the index); sync does no `(code, clientId)` check at all and can hit the index (500).
+1. ~~Platform-wide code uniqueness relies on the operation's pre-check (`NULL` client ids are distinct to the index)~~ **Answered, owner ruling 2026-09-21**: uniqueness is now `(applicationCode, clientId, code)`, enforced by a database expression index (V12) — see `code-first-connections.md`. Sync still does no pre-check of its own key and can hit that index (500) — unchanged by K1, owed to K3.
 2. `filter` on a binding is accepted everywhere and stored nowhere.
 3. Sync does not normalise/validate the code (`My-Sub` stored verbatim) nor the target URL format; admin create does both.
 4. Sync `dataOnly` is a plain boolean — an SDK that omits it flips an existing `true` to `false` on every sync.

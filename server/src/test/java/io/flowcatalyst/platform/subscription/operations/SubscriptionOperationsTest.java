@@ -65,6 +65,8 @@ class SubscriptionOperationsTest {
     private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
     private static final SubscriptionRepository repo = new SubscriptionRepository(DS);
     private static final ConnectionRepository connections = new ConnectionRepository(DS);
+    private static final io.flowcatalyst.platform.application.ApplicationRepository apps =
+            new io.flowcatalyst.platform.application.ApplicationRepository(DS);
     private static final DispatchPoolRepository pools = new DispatchPoolRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
@@ -126,8 +128,8 @@ class SubscriptionOperationsTest {
 
     /// A real connection for sync's `connectionId` check; the service account is not validated by connections.
     private static String seededConnection(String code) {
-        return runAsAnchor(CreateConnection.of(connections), new io.flowcatalyst.platform.connection.operations.CreateCommand(
-                code, "Sub Sync Conn", null, "sva_subsync1", null, null)).connectionId();
+        return runAsAnchor(CreateConnection.of(connections, apps), new io.flowcatalyst.platform.connection.operations.CreateCommand(
+                code, "Sub Sync Conn", null, "sva_subsync1", null, null, null)).connectionId();
     }
 
     /// A platform-wide pool for sync's `dispatchPoolCode` resolution.
@@ -290,8 +292,8 @@ class SubscriptionOperationsTest {
         var bound = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code, "Bound", ENDPOINT, null, client,
                 null, null, null, BINDINGS, null, null, null, null, null, null, null, null));
         assertThat(reload(bound.subscriptionId()).clientId()).isEqualTo(client);
-        assertThat(repo.findByCodeAndClient(code, client)).isPresent();
-        assertThat(repo.findByCodeAndClient(code, null)).as("platform-wide row is a different one").isPresent()
+        assertThat(repo.findByCode(code, null, client)).isPresent();
+        assertThat(repo.findByCode(code, null, null)).as("platform-wide row is a different one").isPresent()
                 .get().extracting(Subscription::id).isNotEqualTo(bound.subscriptionId());
     }
 
@@ -321,7 +323,7 @@ class SubscriptionOperationsTest {
         // Unauthenticated (no bound principal) → denied before anything is written.
         assertUseCaseError(() -> CreateSubscription.of(repo).run(uow, createCommand(code("subscope-anon"), "X"), ExecutionContext.of(null)),
                 UseCaseError.Authorization.class, "UNAUTHENTICATED");
-        assertThat(repo.findByCodeAndClient(code("subscope-anon"), null)).isEmpty();
+        assertThat(repo.findByCode(code("subscope-anon"), null, null)).isEmpty();
 
         // Bound to the principal's own client → allowed.
         var ev = Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
@@ -495,7 +497,7 @@ class SubscriptionOperationsTest {
         // X-08 (ruled 2026-09-01): one FIFO lane per application.
         assertThat(first.messageGroup()).isEqualTo("platform:subscriptions:" + appCode);
 
-        var a = repo.findByCodeAndClient(code("subsync-a"), null).orElseThrow();
+        var a = repo.findByCode(code("subsync-a"), appCode, null).orElseThrow();
         assertThat(a.source()).as("synced rows are API-sourced").isEqualTo(SubscriptionSource.API);
         assertThat(a.applicationCode()).isEqualTo(appCode);
         assertThat(a.connectionId()).isEqualTo(connId);
@@ -508,7 +510,7 @@ class SubscriptionOperationsTest {
         assertThat(a.createdBy()).isEqualTo(PRINCIPAL);
         assertThat(a.dataOnly()).isTrue();
 
-        var b = repo.findByCodeAndClient(code("subsync-b"), null).orElseThrow();
+        var b = repo.findByCode(code("subsync-b"), appCode, null).orElseThrow();
         assertThat(b.dispatchPoolId()).as("an unresolvable pool code is silently ignored").isNull();
         assertThat(b.dispatchPoolCode()).isNull();
         assertThat(b.dataOnly()).isFalse();
@@ -523,12 +525,12 @@ class SubscriptionOperationsTest {
         assertThat(second.updated()).isEqualTo(1);
         assertThat(second.deleted()).as("only the unlisted API row is removed; the UI row is spared").isEqualTo(1);
 
-        var kept = repo.findByCodeAndClient(code("subsync-a"), null).orElseThrow();
+        var kept = repo.findByCode(code("subsync-a"), appCode, null).orElseThrow();
         assertThat(kept.name()).isEqualTo("A renamed");
         assertThat(kept.connectionId()).as("an absent connectionId clears the link (spec open question 5)").isNull();
         assertThat(kept.dispatchPoolCode()).as("an absent dispatchPoolCode leaves the existing pool link").isEqualTo(code("subsync-pool"));
         assertThat(kept.maxRetries()).as("an absent maxRetries leaves the existing value").isEqualTo(9);
-        assertThat(repo.findByCodeAndClient(code("subsync-b"), null)).as("removeUnlisted hard-deletes unlisted API rows").isEmpty();
+        assertThat(repo.findByCode(code("subsync-b"), appCode, null)).as("removeUnlisted hard-deletes unlisted API rows").isEmpty();
         assertThat(repo.findById(uiRow.subscriptionId())).as("removeUnlisted never touches UI rows").isPresent();
 
         // Per-row events + the rollup, each with an audit row naming the sync command.
@@ -581,7 +583,7 @@ class SubscriptionOperationsTest {
         String appCode = "subsyncraw" + RUN;
         runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
                 row("Raw-" + RUN, "Raw", "not-a-url", null, null, null, true, "subsync:a:b:c")));
-        var got = repo.findByCodeAndClient("Raw-" + RUN, null).orElseThrow();
+        var got = repo.findByCode("Raw-" + RUN, appCode, null).orElseThrow();
         assertThat(got.endpoint()).isEqualTo("not-a-url");
         assertThat(got.applicationCode()).isEqualTo(appCode);
     }

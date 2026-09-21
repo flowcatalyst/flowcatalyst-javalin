@@ -50,6 +50,18 @@ class LockfileCoverageTest {
     private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of(
             "POST /api/dispatch-jobs", "POST /api/oauth-clients/{id}/revoke-previous-secret");
 
+    /// Lockfile operations that exist but are not routed yet, each owed to a
+    /// named follow-up unit — carved OUT of [#REQUIRED_COVERAGE]'s
+    /// denominator (so the 100% gate stays meaningful for everything else)
+    /// and pinned exactly (below) so the gap can never silently grow to more
+    /// than this one route.
+    ///
+    /// `connections/sync`: `docs/spec/code-first-connections.md` §4, slice
+    /// K2 (`SyncConnections` + its route land there; this unit — K1 — is
+    /// schema/domain/lookup only).
+    private static final Set<String> KNOWN_MISSING = Set.of(
+            "POST /api/applications/{appCode}/connections/sync");
+
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {
         Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
@@ -74,12 +86,18 @@ class LockfileCoverageTest {
                 .toList();
         assertThat(drift).as("routes registered but absent from openapi.lock.json").isEmpty();
 
-        // 2. Coverage: how much of the contract is implemented.
-        long covered = contract.stream().filter(registered::contains).count();
-        double coverage = (double) covered / contract.size();
-        System.out.printf("lockfile coverage: %d / %d operations (%.1f%%)%n", covered, contract.size(), coverage * 100);
-        contract.stream().filter(op -> !registered.contains(op)).limit(15)
-                .forEach(op -> System.out.println("  missing: " + op));
+        // 2. Coverage: how much of the contract is implemented, [#KNOWN_MISSING]
+        // excepted — and that set must be EXACTLY what is still missing, so a
+        // newly-unrouted operation cannot hide behind an already-forgiven one.
+        var stillMissing = contract.stream().filter(op -> !registered.contains(op)).collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        assertThat(stillMissing).as("unrouted lockfile operations must be exactly the named, owed set")
+                .isEqualTo(new TreeSet<>(KNOWN_MISSING));
+
+        Set<String> coverageContract = contract.stream().filter(op -> !KNOWN_MISSING.contains(op)).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        long covered = coverageContract.stream().filter(registered::contains).count();
+        double coverage = (double) covered / coverageContract.size();
+        System.out.printf("lockfile coverage: %d / %d operations (%.1f%%), %d known-missing owed to a follow-up unit%n",
+                covered, coverageContract.size(), coverage * 100, KNOWN_MISSING.size());
         assertThat(coverage).isGreaterThanOrEqualTo(REQUIRED_COVERAGE);
     }
 }

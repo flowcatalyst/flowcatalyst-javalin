@@ -91,8 +91,11 @@ As the hand-off states them. Java specifics:
   applies to Java unchanged — check the Java route grants the new permissions to existing roles,
   and pin it.
 - **Lockfile**: `server/src/main/resources/openapi/openapi.lock.json` ← Go `api/openapi.lock.json`
-  at `07184da` (copied, never edited); `sdk/openapi/openapi.json` and the `clients/*/openapi` and
-  `frontend/openapi` copies follow it. This goes **first**: `SchemaValidation` validates request
+  at `07184da` (copied, never edited); `make sdk-spec` carries it to `sdk/openapi/openapi.json` and
+  the two `clients/*/openapi` copies. (**Found in K1:** `frontend/openapi/openapi.json` is *not* one
+  of them — `frontend/openapi-ts.config.ts` reads the server's lockfile directly, nothing writes that
+  file, and it has not changed since the 2026-09-14 SPA import. Left alone; a stale orphan the owner
+  may want deleted.) This goes **first**: `SchemaValidation` validates request
   bodies against the lockfile with `additionalProperties` as the lockfile has it, so the new fields
   are rejected until it lands. `LockfileCoverageTest` must stay at 100 %.
 - `abcd9fa`: the router's release log line says how long the message is held and who asked —
@@ -142,7 +145,9 @@ Two different jobs (`docs/sdk-release-plan.md`, `docs/go-mirror/2026-09-14-sdk-c
 | C1 | V12 on a fresh database: old indexes gone, new ones present with the exact expression; two rows `(NULL, NULL, 'x')` now collide (they did not before — assert the **insert fails**) | omit a `COALESCE`; keep an old index |
 | C2 | V12 refuses a colliding database, naming the group, and changes nothing (columns may exist; **indexes untouched**) — for connections and for subscriptions | drop either pre-check |
 | C3 | V12 is a no-op on a Go-56 database and completes a Go-55 one (`GoAdoptionTest`) | — |
+| C4 (note) | the `code` part is `NOT NULL`, so `eq` vs `isNotDistinctFrom` on it is an **equivalent mutant** — written uniformly, not pinned, and said so in both repositories | — |
 | C4 | lookups treat NULL as a value: `(app=A, client=NULL, code)` does not find the shared `(NULL, NULL, code)` row, nor client B's; each of the three parts | `eq` instead of `isNotDistinctFrom` on each part |
+| C5b | update's duplicate check runs within the row's **own client** (a client-scoped row moved onto an application collides with that client's row there: 409, not the index's 500) — found by the orchestrator's mutant | look among the global rows |
 | C5 | create/update: unknown application 404; no access 403; same code under another application **succeeds**; same three-part key 409; update to a colliding key 409; update re-sending its own key succeeds; `applicationCode` cannot be cleared | each |
 | C6 | connection sync ownership: never updates or removes a UI row with the same key; never sees a shared row, another application's, another client's, or (client-less sync) any client-scoped row — **assert the untouched rows byte-for-byte after the sync, and the counts** | drop each of the three filters (application, client, source) separately |
 | C7 | `service_account_id` is the application's on create **and** update, never the caller's; no application service account ⇒ 400 and nothing written | use the caller's; skip the re-stamp on update |

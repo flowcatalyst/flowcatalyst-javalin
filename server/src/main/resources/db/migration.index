@@ -9,3 +9,4 @@ V8__mail_outbox.sql
 V9__portal_apps.sql
 V10__dispatch_job_queue.sql
 V11__platform_event_schema_version.sql
+V12__connection_application_scope.sql

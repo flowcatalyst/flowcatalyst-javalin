@@ -9,6 +9,9 @@ package io.flowcatalyst.platform.connection.operations;
 /// @param serviceAccountId the owning service account (required, not validated — spec §1)
 /// @param externalId       optional external reference
 /// @param clientId         optional client scope; `null` means platform-wide
+/// @param applicationCode  optional owning application; `null` means shared
+///                         (spec `code-first-connections.md` §3): must name an
+///                         existing application the caller can access
 public record CreateCommand(String code, String name, String description, String serviceAccountId,
-                            String externalId, String clientId) {
+                            String externalId, String clientId, String applicationCode) {
 }

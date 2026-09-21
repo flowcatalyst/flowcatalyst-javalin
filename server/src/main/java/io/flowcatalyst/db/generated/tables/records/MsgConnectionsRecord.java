@@ -174,6 +174,34 @@ public class MsgConnectionsRecord extends UpdatableRecordImpl<MsgConnectionsReco
         return (OffsetDateTime) get(10);
     }
 
+    /**
+     * Setter for <code>public.msg_connections.application_code</code>.
+     */
+    public void setApplicationCode(String value) {
+        set(11, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_connections.application_code</code>.
+     */
+    public String getApplicationCode() {
+        return (String) get(11);
+    }
+
+    /**
+     * Setter for <code>public.msg_connections.source</code>.
+     */
+    public void setSource(String value) {
+        set(12, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_connections.source</code>.
+     */
+    public String getSource() {
+        return (String) get(12);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -197,7 +225,7 @@ public class MsgConnectionsRecord extends UpdatableRecordImpl<MsgConnectionsReco
     /**
      * Create a detached, initialised MsgConnectionsRecord
      */
-    public MsgConnectionsRecord(String id, String code, String name, String description, String externalId, String status, String serviceAccountId, String clientId, String clientIdentifier, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+    public MsgConnectionsRecord(String id, String code, String name, String description, String externalId, String status, String serviceAccountId, String clientId, String clientIdentifier, OffsetDateTime createdAt, OffsetDateTime updatedAt, String applicationCode, String source) {
         super(MsgConnections.MSG_CONNECTIONS);
 
         setId(id);
@@ -211,6 +239,8 @@ public class MsgConnectionsRecord extends UpdatableRecordImpl<MsgConnectionsReco
         setClientIdentifier(clientIdentifier);
         setCreatedAt(createdAt);
         setUpdatedAt(updatedAt);
+        setApplicationCode(applicationCode);
+        setSource(source);
         resetTouchedOnNotNull();
     }
 }

@@ -19,9 +19,12 @@ class LockfileTest {
         // +1 path / +1 operation at the f81fd5a re-vendor: `GET /api/dispatch/router-config`
         // (`router-config-auth.md` R3′, until then a Java-first route outside the lockfile);
         // the same re-vendor added the CreatePrincipalResponse schema (`app-managed-invitations.md`).
-        assertThat(lock.pathCount()).isEqualTo(187);
+        // +1 path / +1 operation at the 07184da re-vendor (spec `code-first-connections.md`):
+        // `POST /api/applications/{appCode}/connections/sync` (syncConnections) — not yet
+        // routed by Java (K1); see LockfileCoverageTest#KNOWN_MISSING, owed to K2.
+        assertThat(lock.pathCount()).isEqualTo(188);
         var ops = lock.operations();
-        assertThat(ops).hasSize(254);
+        assertThat(ops).hasSize(255);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");
