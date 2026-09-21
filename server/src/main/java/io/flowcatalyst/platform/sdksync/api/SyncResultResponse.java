@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.sdksync.api;
 
+import io.flowcatalyst.platform.connection.operations.ConnectionEvents.ConnectionsSynced;
 import io.flowcatalyst.platform.docs.AppDocRepository.ReplaceResult;
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolsSynced;
 import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypesSynced;
@@ -29,6 +30,10 @@ public record SyncResultResponse(String applicationCode, int created, int update
     }
 
     static SyncResultResponse from(SubscriptionsSynced e) {
+        return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deleted(), e.syncedCodes());
+    }
+
+    static SyncResultResponse from(ConnectionsSynced e) {
         return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deleted(), e.syncedCodes());
     }
 

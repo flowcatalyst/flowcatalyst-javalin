@@ -601,7 +601,7 @@ public final class Platform {
         // complete but unregistered, and `/openapi/sync` is its only route.
         var openApiSpecRepo = new OpenApiSpecRepository(pool);
         SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
-                connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
+                connectionRepo, clientRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile

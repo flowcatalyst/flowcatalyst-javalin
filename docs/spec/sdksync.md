@@ -53,6 +53,7 @@ array (`[]` when empty). Each route maps its aggregate's rollup:
 | event-types | `EventTypesSynced.created` | `.updated` | `.deleted` | `.syncedCodes` | `.applicationCode` |
 | roles | `RolesSynced.created` | `.updated` | **`.removed`** | `.syncedCodes` | `.applicationCode` |
 | subscriptions | `SubscriptionsSynced.created` | `.updated` | `.deleted` | `.syncedCodes` | `.applicationCode` |
+| connections | `ConnectionsSynced.created` | `.updated` | `.deleted` | `.syncedCodes` | `.applicationCode` |
 | dispatch-pools | `DispatchPoolsSynced.created` | `.updated` | `.deleted` (= archived) | `.syncedCodes` | `.applicationCode` |
 | processes (both routes) | `ProcessesSynced.created` | `.updated` | `.deleted` | `.syncedCodes` | `.applicationCode` |
 | principals | `PrincipalsSynced.created` | `.updated` | **`.deactivated`** | **`.syncedEmails`** | `.applicationCode` |
@@ -72,6 +73,7 @@ body. `?removeUnlisted` semantics are each aggregate's (column "Unlisted").
 | `/api/applications/{appCode}/event-types/sync` | `EVENT_TYPE_SYNC` \| `EVENT_TYPE_MANAGE` \| `APP_SVC_EVENT_TYPE_{CREATE,UPDATE,DELETE}`; then **handler** `checkApplicationAccess` (the operation is `publicAccess` — the BFF catalogue sync shares it) | `SyncEventTypesRequest{eventTypes[]: {code*, name*, description}}` → `SyncEventTypesCommand(app.code, inputs(schema=null), removeUnlisted)` | `API`-sourced event types of the application not listed are deleted | `SyncResultResponse` |
 | `/api/applications/{appCode}/roles/sync` | `ROLE_MANAGE` \| `ROLE_{CREATE,UPDATE,DELETE}` \| `APP_SVC_ROLE_{CREATE,UPDATE,DELETE}` | `SyncRolesRequest{roles[]: {name*, displayName, description, permissions[], clientManaged}}` → `SyncRolesCommand(app.code, app.id, inputs, removeUnlisted)`; `clientManaged` absent ⇒ `false`, `permissions` absent ⇒ `[]` | the application's `SDK`-sourced roles not listed are removed | `SyncResultResponse` (`deleted` = `removed`) |
 | `/api/applications/{appCode}/subscriptions/sync` | `SUBSCRIPTION_SYNC` \| `SUBSCRIPTION_MANAGE` \| `APP_SVC_SUBSCRIPTION_{CREATE,UPDATE,DELETE}` | `SyncSubscriptionsRequest{subscriptions[]: {code*, name*, description, target*, connectionId, eventTypes*[]: {eventTypeCode*, filter}, dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly}}` → `SyncSubscriptionsCommand(app.id, app.code, inputs, removeUnlisted)`; `dataOnly` absent ⇒ `false` | `API`/`CODE` subscriptions of the application not listed are hard-deleted | `SyncResultResponse` |
+| `/api/applications/{appCode}/connections/sync` | `CONNECTION_SYNC` \| `CONNECTION_MANAGE` \| `APP_SVC_CONNECTION_{CREATE,UPDATE,DELETE}`; the per-application (and, when `clientId` is given, per-client) access check lives in the operation's `authorize` phase (`SyncConnectionsCommand` carries an `applicationId`) | `SyncConnectionsRequest{clientId, connections[]: {code*, name*, description, externalId}}` → `SyncConnectionsCommand(app.id, app.code, resolvedClientId, inputs, removeUnlisted)`; `clientId` is the client's id **or** its identifier slug, resolved to an id by the handler BEFORE the operation runs (unknown → 404 `Client_NOT_FOUND`) so `authorize` sees the id, not a slug; `null`/blank ⇒ a client-less (shared, still application-owned) sync | the application's (and, when scoped, the client's) `API`/`CODE` connections not listed are hard-deleted, refusing the WHOLE sync with `409 CONNECTION_REFERENCED` if any candidate is still referenced by a subscription (`code-first-connections.md` §3) | `SyncResultResponse` |
 | `/api/applications/{appCode}/dispatch-pools/sync` | `DISPATCH_POOL_SYNC` \| `DISPATCH_POOL_MANAGE` | `SyncDispatchPoolsRequest{pools[]: {code*, name*, description, rateLimit, concurrency}}` → `SyncDispatchPoolsCommand(app.id, app.code, inputs, removeUnlisted)`; `concurrency` passed through as `null` when absent — the operation applies `10` | pools (global) not listed are archived | `SyncResultResponse` |
 | `/api/applications/{appCode}/principals/sync` | `USER_MANAGE` \| `USER_{CREATE,UPDATE,DELETE}` \| `USER_ASSIGN_ROLES`; then **handler** `checkApplicationAccess` (the command has no `applicationId`) | `SyncPrincipalsRequest{principals[]: {email*, name*, roles[], active, passwordHash}}` → `SyncPrincipalsCommand(app.code, inputs, removeUnlisted)`; `active` absent ⇒ `true` (**the one wire default applied here** — the command field is a primitive `boolean`; the aggregate has no "absent" to see, so the DTO's `Boolean`→`true` mapping is the only place it can live; flag if the owner prefers a `Boolean` command field) | `SDK_SYNC` roles stripped from unlisted principals | `SyncResultResponse` (`deleted` = `deactivated`, `syncedCodes` = `syncedEmails`) |
 | `/api/applications/{appCode}/docs/sync` | `APP_SVC_DOCS_SYNC` | `SyncDocsRequest{docs[]: {slug*, title, content*}}` → `SyncAppDocsCommand(app.id, app.code, inputs)` — **no** `removeUnlisted`: the payload IS the set | n/a (declarative replace) | `SyncResultResponse` (`syncedCodes` = slugs) |
@@ -94,7 +96,7 @@ lockfile's `required` is informational here.
 
 ## 4. Wiring
 
-`SdkSyncApi.State(apps, eventTypes, roles, subscriptions, connections,
+`SdkSyncApi.State(apps, eventTypes, roles, subscriptions, connections, clients,
 processes, dispatchPools, scheduledJobs, specs, appDocs, principals, uow)` is
 built in `Platform.register` after the aggregate registrations (the
 repositories are the same instances the aggregates' own APIs use — a second
@@ -107,6 +109,12 @@ route this spec expected to defer was built with the rest. This is also where
 `openapispecs` finally reaches the router: the unit was complete but
 unregistered, and `/openapi/sync` is its only route. Lockfile coverage
 180 → 190 of 243.
+
+**`connections/sync` landed `code-first-connections.md` slice K2**: an
+eleventh route, `clients` joined `State` solely to resolve a sync's `clientId`
+(id or identifier slug) before the operation's `authorize` phase runs — no
+other route needs it, since every other sync's `clientId` (where one exists,
+e.g. scheduled jobs) is carried as a bare id already.
 
 ## 5. Tests — `SdkSyncApiTest` (`TestHttp`)
 

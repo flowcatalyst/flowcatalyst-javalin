@@ -81,8 +81,12 @@ class SeederTest {
     // `docs/spec/reach-only-routes.md` §2 (IdP + email-domain-mapping on
     // iam-admin/iam-readonly; config + CORS-origin on admin/admin-readonly/
     // viewer) are Java-first the same way. The fixture's role/perm counts
-    // (15/173, not Go's 14/151) and its own comment record that until Go
-    // mirrors both.
+    // (15/178, not Go's 14/151) and its own comment record that until Go
+    // mirrors both. The 5 `connection:sync`/application-service `connection:*`
+    // permission rows (`code-first-connections.md` slice K2) and the
+    // `platform:admin:connection:synced` event type/schema are hand-added from
+    // Go's seed source (`fixture` header comment), not re-dumped from a live
+    // Go database — see the K2 report for the exact evidence read.
     @Test
     void rolesMatchGo() {
         List<String> actual = db.selectFrom(IAM_ROLES).fetch().stream()
@@ -102,7 +106,7 @@ class SeederTest {
                 .fetch().stream()
                 .map(r -> line("perm", r.value1(), r.value2()))
                 .toList();
-        assertThat(actual).hasSize(173).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
+        assertThat(actual).hasSize(178).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
     }
 
     @Test
@@ -111,7 +115,7 @@ class SeederTest {
                 .map(r -> line("eventtype", r.getCode(), r.getName(), r.getStatus(), r.getSource(),
                         r.getClientScoped(), r.getApplication(), r.getSubdomain(), r.getAggregate()))
                 .toList();
-        assertThat(actual).hasSize(72).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
+        assertThat(actual).hasSize(73).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
         assertThat(db.selectFrom(MSG_EVENT_TYPES).fetch()).allSatisfy(r -> {
             assertThat(r.getId()).startsWith("evt_");
             assertThat(r.getDescription()).isNull();
@@ -138,7 +142,7 @@ class SeederTest {
             assertThat(f[4]).isEqualTo("JSON_SCHEMA");
             assertThat(f[5]).isEqualTo("CURRENT");
         }
-        assertThat(expectedSchemas).hasSize(72);
+        assertThat(expectedSchemas).hasSize(73);
 
         var rows = db.select(MSG_EVENT_TYPES.CODE, MSG_EVENT_TYPE_SPEC_VERSIONS.ID,
                         MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, MSG_EVENT_TYPE_SPEC_VERSIONS.MIME_TYPE,
@@ -147,7 +151,7 @@ class SeederTest {
                 .from(MSG_EVENT_TYPE_SPEC_VERSIONS)
                 .join(MSG_EVENT_TYPES).on(MSG_EVENT_TYPES.ID.eq(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID))
                 .fetch();
-        assertThat(rows).hasSize(72);
+        assertThat(rows).hasSize(73);
         Map<String, JsonNode> actualSchemas = new TreeMap<>();
         for (var r : rows) {
             assertThat(r.value2()).startsWith("sch_");
@@ -247,9 +251,9 @@ class SeederTest {
     void secondRunChangesNothing() {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(15);
-        assertThat(firstRun.get("iam_role_permissions")).hasSize(173);
-        assertThat(firstRun.get("msg_event_types")).hasSize(72);
-        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(72);
+        assertThat(firstRun.get("iam_role_permissions")).hasSize(178);
+        assertThat(firstRun.get("msg_event_types")).hasSize(73);
+        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(73);
         assertThat(firstRun.get("app_applications")).hasSize(1);
         assertThat(firstRun.get("msg_processes")).hasSize(1);
         assertThat(firstRun.get("oauth_identity_providers")).hasSize(1);
@@ -304,7 +308,7 @@ class SeederTest {
         assertThat(d.fetchCount(IAM_PRINCIPAL_ROLES)).isZero();
         // everything else is still seeded
         assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(15);
-        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(72);
+        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(73);
         assertThat(d.fetchCount(APP_APPLICATIONS)).isEqualTo(1);
 
         // email only / password only → still skipped

@@ -193,6 +193,10 @@ public final class PlatformEventSchemas {
                 optStr("name"), optStr("endpoint"), optStr("status")));
         m.put("platform:admin:connection:deleted", obj(
                 reqStr("connectionId"), reqStr("code"), optStr("clientId")));
+        m.put("platform:admin:connection:synced", obj(
+                reqStr("applicationCode"), optStr("clientId"),
+                reqU32("created"), reqU32("updated"), reqU32("deleted"),
+                reqStrArray("syncedCodes")));
 
         // ── platform:admin:dispatch-pool ────────────────────────────────────
         m.put("platform:admin:dispatch-pool:created", obj(

@@ -109,7 +109,7 @@ public final class PlatformEventTypes {
                 "schema-added", "schema-finalised", "schema-deprecated");
         b.push("platform:admin:eventtypes:synced", "Event Types Synced");
 
-        b.group("platform:admin:connection", "created", "updated", "deleted");
+        b.group("platform:admin:connection", "created", "updated", "deleted", "synced");
 
         b.group("platform:admin:dispatch-pool",
                 "created", "updated", "archived", "deleted");

@@ -116,6 +116,20 @@ public record Connection(
                 source, serviceAccountId, newClientId, clientIdentifier, createdAt, updatedAt);
     }
 
+    /// Full replace (hand-off "Connection sync (new)": the synced service
+    /// account is always the OWNING APPLICATION's, re-stamped on every
+    /// update too — never the caller's).
+    public Connection withServiceAccountId(String newServiceAccountId) {
+        return new Connection(id, code, applicationCode, name, description, externalId, status,
+                source, newServiceAccountId, clientId, clientIdentifier, createdAt, updatedAt);
+    }
+
+    /// Full replace — who authored this row (`code-first-connections.md`).
+    public Connection withSource(ConnectionSource newSource) {
+        return new Connection(id, code, applicationCode, name, description, externalId, status,
+                newSource, serviceAccountId, clientId, clientIdentifier, createdAt, updatedAt);
+    }
+
     /// Set-if-provided, never cleared (spec §3: create/update `applicationCode`
     /// — a `null` argument leaves the current value alone, unlike the other
     /// `with*` copies here which are full replaces).

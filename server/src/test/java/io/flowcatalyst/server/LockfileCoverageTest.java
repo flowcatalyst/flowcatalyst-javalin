@@ -56,11 +56,9 @@ class LockfileCoverageTest {
     /// and pinned exactly (below) so the gap can never silently grow to more
     /// than this one route.
     ///
-    /// `connections/sync`: `docs/spec/code-first-connections.md` §4, slice
-    /// K2 (`SyncConnections` + its route land there; this unit — K1 — is
-    /// schema/domain/lookup only).
-    private static final Set<String> KNOWN_MISSING = Set.of(
-            "POST /api/applications/{appCode}/connections/sync");
+    /// Empty since `code-first-connections.md` slice K2: `connections/sync`
+    /// is routed (`SdkSyncApi#syncConnections`).
+    private static final Set<String> KNOWN_MISSING = Set.of();
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {

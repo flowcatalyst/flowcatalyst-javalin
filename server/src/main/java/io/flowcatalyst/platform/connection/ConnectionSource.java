@@ -27,6 +27,16 @@ public enum ConnectionSource {
         };
     }
 
+    /// Whether a connection sync may update or remove a row with this source
+    /// (hand-off "Connection sync (new)": a `UI`-authored row at the same key
+    /// is left untouched).
+    public boolean isSyncManaged() {
+        return switch (this) {
+            case CODE, API -> true;
+            case UI -> false;
+        };
+    }
+
     /// Thrown by [#parse] for a stored value outside the recognised set —
     /// X-06: never a silent default.
     public static final class UnrecognisedConnectionSourceException extends RuntimeException {

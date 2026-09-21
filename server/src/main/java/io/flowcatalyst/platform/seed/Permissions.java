@@ -78,6 +78,7 @@ public final class Permissions {
     public static final String ADMIN_CONNECTION_UPDATE = "platform:messaging:connection:update";
     public static final String ADMIN_CONNECTION_DELETE = "platform:messaging:connection:delete";
     public static final String ADMIN_CONNECTION_MANAGE = "platform:messaging:connection:manage";
+    public static final String ADMIN_CONNECTION_SYNC = "platform:messaging:connection:sync";
 
     // Subscription
     public static final String ADMIN_SUBSCRIPTION_READ = "platform:messaging:subscription:view";
@@ -209,6 +210,10 @@ public final class Permissions {
             "platform:application-service:subscription:create",
             "platform:application-service:subscription:update",
             "platform:application-service:subscription:delete",
+            "platform:application-service:connection:view",
+            "platform:application-service:connection:create",
+            "platform:application-service:connection:update",
+            "platform:application-service:connection:delete",
             "platform:application-service:role:view",
             "platform:application-service:role:create",
             "platform:application-service:role:update",
