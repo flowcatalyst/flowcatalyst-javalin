@@ -206,6 +206,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             return api.port();
         }
 
+        /// `-1` when no TLS listener is up (`FC_TLS_PORT`'s configured value
+        /// is never the answer — this is the ACTUALLY BOUND port, same
+        /// convention as [#mcpPort]).
+        public int tlsPort() {
+            return api.tlsPort();
+        }
+
         public int metricsPort() {
             return metrics.port();
         }
@@ -710,6 +717,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     interface ApiListener {
         int port();
 
+        /// `-1` when no TLS listener is up ([VertxListener#tlsPort]).
+        int tlsPort();
+
         void stop();
     }
 
@@ -782,6 +792,11 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 @Override
                 public int port() {
                     return listener.port();
+                }
+
+                @Override
+                public int tlsPort() {
+                    return listener.tlsPort();
                 }
 
                 @Override

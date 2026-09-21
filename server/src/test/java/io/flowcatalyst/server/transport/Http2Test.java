@@ -50,8 +50,8 @@ class Http2Test {
     /// putting h2c on the plain listener).
     @Test
     void h2cByPriorKnowledge() throws Exception {
-        int apiPort = TransportTestSupport.freePort();
-        running = TransportTestSupport.start(Map.of("FC_API_PORT", String.valueOf(apiPort)));
+        running = TransportTestSupport.start(Map.of("FC_API_PORT", "0"));
+        int apiPort = running.apiPort();
 
         vertx = Vertx.vertx();
         var client = vertx.createHttpClient(new HttpClientOptions()
@@ -75,8 +75,8 @@ class Http2Test {
     /// not merely have received a 200.
     @Test
     void h2cByUpgrade() throws Exception {
-        int apiPort = TransportTestSupport.freePort();
-        running = TransportTestSupport.start(Map.of("FC_API_PORT", String.valueOf(apiPort)));
+        running = TransportTestSupport.start(Map.of("FC_API_PORT", "0"));
+        int apiPort = running.apiPort();
 
         var client = java.net.http.HttpClient.newBuilder()
                 .version(java.net.http.HttpClient.Version.HTTP_2)
@@ -95,8 +95,12 @@ class Http2Test {
     /// connector this unit changed).
     @Test
     void http1Dot1StillWorks() throws Exception {
-        int apiPort = TransportTestSupport.freePort();
-        running = TransportTestSupport.start(Map.of("FC_API_PORT", String.valueOf(apiPort)));
+        running = TransportTestSupport.start(Map.of("FC_API_PORT", "0"));
+        int apiPort = running.apiPort();
+        // No TLS material configured (TlsAlpnTest owns the positive case):
+        // Server.Running#tlsPort must report -1, the same convention as
+        // #mcpPort, never a port that never bound.
+        assertThat(running.tlsPort()).as("no TLS listener configured").isEqualTo(-1);
 
         var client = java.net.http.HttpClient.newBuilder()
                 .version(java.net.http.HttpClient.Version.HTTP_1_1)
@@ -118,8 +122,7 @@ class Http2Test {
     /// assertion here.
     @Test
     void metricsListenerNeverUpgradesToH2c() throws Exception {
-        int apiPort = TransportTestSupport.freePort();
-        running = TransportTestSupport.start(Map.of("FC_API_PORT", String.valueOf(apiPort)));
+        running = TransportTestSupport.start(Map.of("FC_API_PORT", "0"));
 
         var client = java.net.http.HttpClient.newBuilder()
                 .version(java.net.http.HttpClient.Version.HTTP_2)
@@ -139,9 +142,10 @@ class Http2Test {
     /// misconfiguration nobody noticed.
     @Test
     void http3EnabledIsARejectedStartupErrorNotASilentNoOp() {
-        int apiPort = TransportTestSupport.freePort();
+        // The listener never binds (Listeners#resolve throws before
+        // VertxListener.prepare's socket bind), so the port need not be real.
         assertThatThrownBy(() -> TransportTestSupport.start(Map.of(
-                "FC_API_PORT", String.valueOf(apiPort),
+                "FC_API_PORT", "0",
                 "FC_HTTP3_ENABLED", "true")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("FC_HTTP3_ENABLED");

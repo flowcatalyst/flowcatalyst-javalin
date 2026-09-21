@@ -143,19 +143,24 @@ class FunctionHostListenerIntegrationTest {
         new Seeder(DS).run();
         appKey = Encryption.generateKey();
 
-        int apiPort;
-        int metricsPort;
-        try (ServerSocket a = new ServerSocket(0); ServerSocket m = new ServerSocket(0); ServerSocket h = new ServerSocket(0)) {
-            apiPort = a.getLocalPort();
-            metricsPort = m.getLocalPort();
+        // hostPort alone is still probed-and-released: it has to be known BEFORE
+        // this Env is built, because FC_FN_POOL_URL is parsed into the platform's
+        // PoolUrlTemplate at Env.load time, and the real FnHttpServer that will
+        // eventually bind it doesn't exist yet — it starts per-@Test, driven by
+        // hand, AFTER the platform (below) is already up and its own baseUrl is
+        // known (FnHttpServer's Reconciler needs the platform's real apiPort to
+        // make control-plane calls). Chicken-and-egg between the two ports: ask
+        // the platform for its bound port (below), but there is no host listener
+        // yet to ask for this one.
+        try (ServerSocket h = new ServerSocket(0)) {
             hostPort = h.getLocalPort();
         }
         // R8: {pool} is optional — a single-pool template names the host directly (see the class doc).
         String poolUrlTemplate = "http://127.0.0.1:" + hostPort;
 
         Env env = Env.load(Map.of(
-                "FC_API_PORT", String.valueOf(apiPort),
-                "FC_METRICS_PORT", String.valueOf(metricsPort),
+                "FC_API_PORT", "0",
+                "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true",
                 "FLOWCATALYST_APP_KEY", appKey,

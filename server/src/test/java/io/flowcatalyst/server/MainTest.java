@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Pins [Main#needsDb] / [Main#needsMigrateAndSeed]: which deployments get a
 /// database pool at all, and which of those additionally run Flyway +
@@ -135,8 +134,28 @@ class MainTest {
 
         Main.exitAfterStart(e, running, List.of(), null);
 
-        assertThatThrownBy(() -> new Socket("127.0.0.1", apiPort).close())
+        assertThat(ourServerStillAnswersOn(apiPort))
                 .as("the API listener must actually stop accepting connections, not just log that it would")
-                .isInstanceOf(IOException.class);
+                .isFalse();
+    }
+
+    /// "Connection refused" is the expected outcome, but it is not the only
+    /// honest one: the port was ephemeral, and the moment our listener lets go
+    /// of it the OS may hand it to anything else that binds port 0 — another
+    /// process, a listener some earlier test class leaked. A bare
+    /// connect-must-fail assertion fails then, for a reason that has nothing to
+    /// do with `exitAfterStart` (it did, intermittently, under concurrent
+    /// builds). So: refused ⇒ stopped; something answers ⇒ it must not be OUR
+    /// `/health`.
+    private static boolean ourServerStillAnswersOn(int port) throws InterruptedException {
+        var client = java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(2)).build();
+        var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/health"))
+                .timeout(java.time.Duration.ofSeconds(2)).GET().build();
+        try {
+            var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            return response.body().contains("\"status\"");
+        } catch (IOException e) {
+            return false;
+        }
     }
 }

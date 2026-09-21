@@ -47,12 +47,18 @@ class TlsAlpnTest {
         Path keystore = dir.resolve("fc.p12");
         generateKeystore(keystore);
 
-        int tlsPort = TransportTestSupport.freePort();
         running = TransportTestSupport.start(Map.of(
-                "FC_API_PORT", String.valueOf(TransportTestSupport.freePort()),
-                "FC_TLS_PORT", String.valueOf(tlsPort),
+                "FC_API_PORT", "0",
+                "FC_TLS_PORT", "0",
                 "FC_TLS_KEYSTORE_PATH", keystore.toString(),
                 "FC_TLS_KEYSTORE_PASSWORD", PASSWORD));
+        int tlsPort = running.tlsPort();
+        // Pins the production change (Server.Running#tlsPort/ApiListener#tlsPort/
+        // VertxListener#tlsPort): the ACTUALLY BOUND port, never the configured
+        // "0" — a listener that never bound would leave this <= 0, and a
+        // tlsPort() that echoed the configured value instead of the bound one
+        // would return 0 here, both caught below before the HTTPS call even runs.
+        assertThat(tlsPort).as("the actually bound TLS port, not the configured 0").isGreaterThan(0);
 
         SSLContext trustingContext = trustingSslContext(keystore, PASSWORD);
         assertHealthOverTls(tlsPort, trustingContext, HttpClient.Version.HTTP_2);
@@ -72,12 +78,12 @@ class TlsAlpnTest {
         Path keyPem = dir.resolve("fc.key");
         exportPem(keystore, certPem, keyPem);
 
-        int tlsPort = TransportTestSupport.freePort();
         running = TransportTestSupport.start(Map.of(
-                "FC_API_PORT", String.valueOf(TransportTestSupport.freePort()),
-                "FC_TLS_PORT", String.valueOf(tlsPort),
+                "FC_API_PORT", "0",
+                "FC_TLS_PORT", "0",
                 "FC_TLS_CERT_PATH", certPem.toString(),
                 "FC_TLS_KEY_PATH", keyPem.toString()));
+        int tlsPort = running.tlsPort();
 
         SSLContext trustingContext = trustingSslContext(keystore, PASSWORD);
         assertHealthOverTls(tlsPort, trustingContext, HttpClient.Version.HTTP_2);
@@ -88,9 +94,11 @@ class TlsAlpnTest {
         Path keystore = dir.resolve("fc.p12");
         generateKeystore(keystore);
 
+        // TlsMaterial#resolve throws before either listener binds (§2), so
+        // "0" needs no real port behind it.
         var overrides = Map.of(
-                "FC_API_PORT", String.valueOf(TransportTestSupport.freePort()),
-                "FC_TLS_PORT", String.valueOf(TransportTestSupport.freePort()),
+                "FC_API_PORT", "0",
+                "FC_TLS_PORT", "0",
                 "FC_TLS_KEYSTORE_PATH", keystore.toString(),
                 "FC_TLS_KEYSTORE_PASSWORD", "not-the-real-password");
 
@@ -103,8 +111,8 @@ class TlsAlpnTest {
     void missingKeystoreFileIsAStartupErrorNamingThePath() {
         var missing = "/no/such/file/fc.p12";
         var overrides = Map.of(
-                "FC_API_PORT", String.valueOf(TransportTestSupport.freePort()),
-                "FC_TLS_PORT", String.valueOf(TransportTestSupport.freePort()),
+                "FC_API_PORT", "0",
+                "FC_TLS_PORT", "0",
                 "FC_TLS_KEYSTORE_PATH", missing,
                 "FC_TLS_KEYSTORE_PASSWORD", PASSWORD);
 
@@ -122,8 +130,8 @@ class TlsAlpnTest {
         exportPem(keystore, certPem, keyPem);
 
         var overrides = Map.of(
-                "FC_API_PORT", String.valueOf(TransportTestSupport.freePort()),
-                "FC_TLS_PORT", String.valueOf(TransportTestSupport.freePort()),
+                "FC_API_PORT", "0",
+                "FC_TLS_PORT", "0",
                 "FC_TLS_KEYSTORE_PATH", keystore.toString(),
                 "FC_TLS_KEYSTORE_PASSWORD", PASSWORD,
                 "FC_TLS_CERT_PATH", certPem.toString(),

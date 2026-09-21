@@ -31,7 +31,6 @@ import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -87,17 +86,11 @@ class FunctionHostArtifactUploadIntegrationTest {
         blobDir = sharedDir.resolve("platform-blobs");
         Files.createDirectories(blobDir);
 
-        int apiPort;
-        int metricsPort;
-        try (ServerSocket a = new ServerSocket(0); ServerSocket m = new ServerSocket(0)) {
-            apiPort = a.getLocalPort();
-            metricsPort = m.getLocalPort();
-        }
         String appKey = Encryption.generateKey();
 
         Env env = Env.load(Map.of(
-                "FC_API_PORT", String.valueOf(apiPort),
-                "FC_METRICS_PORT", String.valueOf(metricsPort),
+                "FC_API_PORT", "0",
+                "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
                 "FC_AUTH_ALLOW_TEST_HEADERS", "true",
                 "FLOWCATALYST_APP_KEY", appKey,
