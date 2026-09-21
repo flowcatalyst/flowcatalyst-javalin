@@ -14,7 +14,7 @@ D2/D3 (host). Owner rulings 2026-09-20:
 Per **function**, not per version: a value outlives a deploy; what a *version* brings is the list of
 keys it needs (`manifest.config`, `manifest.secrets`, `manifest.db[].secretRef`).
 
-Schema (V11, unreleased, edit in place; Java-only; named per the registry spec's rule):
+Schema (V12, unreleased, edit in place; Java-only; named per the registry spec's rule):
 `fn_config(function_id → fn_functions ON DELETE CASCADE, key VARCHAR(100), value TEXT NOT NULL,
 updated_by, updated_at, pk (function_id, key))`; `fn_secrets(… same …, value_ref TEXT NOT NULL)` —
 `value_ref` is `Encryption`'s `encrypted:` form under `FLOWCATALYST_APP_KEY`, exactly as service-account

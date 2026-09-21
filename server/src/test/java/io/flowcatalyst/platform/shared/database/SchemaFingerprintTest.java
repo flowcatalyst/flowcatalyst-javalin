@@ -29,21 +29,21 @@ class SchemaFingerprintTest {
     /// instead of being pretended away. Each entry names its spec.
     static final java.util.Set<String> JAVA_ONLY_TABLES = java.util.Set.of(
             "mail_outbox",           // docs/spec/mail-outbox.md §2, V8
-            "fn_functions",          // docs/spec/function-registry.md §2, V11
-            "fn_versions",           // docs/spec/function-registry.md §2, V11
-            "fn_aliases",            // docs/spec/function-registry.md §2, V11
-            "fn_hosts",              // docs/spec/function-registry.md §2, V11
-            "fn_client_policies",    // docs/spec/function-registry.md §2, V11
-            "fn_domains",            // docs/spec/function-registry.md §2, V11
-            "fn_routes",             // docs/spec/function-invocation.md §3, reshaping function-registry.md §2, V11
-            "fn_trigger_objects",    // docs/spec/function-invocation.md §4, V11
-            "fn_config",             // docs/spec/function-context.md §1 (D4a), V11
-            "fn_secrets"             // docs/spec/function-context.md §1 (D4a), V11
+            "fn_functions",          // docs/spec/function-registry.md §2, V12
+            "fn_versions",           // docs/spec/function-registry.md §2, V12
+            "fn_aliases",            // docs/spec/function-registry.md §2, V12
+            "fn_hosts",              // docs/spec/function-registry.md §2, V12
+            "fn_client_policies",    // docs/spec/function-registry.md §2, V12
+            "fn_domains",            // docs/spec/function-registry.md §2, V12
+            "fn_routes",             // docs/spec/function-invocation.md §3, reshaping function-registry.md §2, V12
+            "fn_trigger_objects",    // docs/spec/function-invocation.md §4, V12
+            "fn_config",             // docs/spec/function-context.md §1 (D4a), V12
+            "fn_secrets"             // docs/spec/function-context.md §1 (D4a), V12
     );
 
     /// The one line this suite permits to differ from Go on a table Go
     /// **shares** (`msg_subscriptions` is not in [#JAVA_ONLY_TABLES]) —
-    /// `chk_msg_subscriptions_source`, widened in `V11` to admit the new
+    /// `chk_msg_subscriptions_source`, widened in `V12` to admit the new
     /// `FUNCTION` source (`function-invocation.md` §4.1, ruling R6). Named
     /// and exact, not a blanket exclusion: every other line on
     /// `msg_subscriptions`, and every other table, is still compared
@@ -65,7 +65,7 @@ class SchemaFingerprintTest {
     }
 
     /// Every constraint and index is named explicitly, starting with its table's
-    /// name or `idx_<table>_` (V8, V11); a line is Java-only iff its own table
+    /// name or `idx_<table>_` (V8, V12); a line is Java-only iff its own table
     /// column is a Java-only table, or — for a CONSTRAINT/INDEX row specifically
     /// — its object-name column (conname / indexname) starts with `<table>_` or
     /// `idx_<table>_` for one of them. Field positions, from
@@ -156,7 +156,7 @@ class SchemaFingerprintTest {
                 "INDEX\tfn_hosts\tidx_fn_hosts_pool_last_heartbeat\tCREATE INDEX idx_fn_hosts_pool_last_heartbeat ON public.fn_hosts USING btree (pool, last_heartbeat)\ttrue"))
                 .isTrue();
 
-        // fn_trigger_objects (V11, function-invocation.md §4) is hidden exactly.
+        // fn_trigger_objects (V12, function-invocation.md §4) is hidden exactly.
         assertThat(isJavaOnly("TABLE\tfn_trigger_objects\tr\t")).isTrue();
         assertThat(isJavaOnly("CONSTRAINT\tfn_trigger_objects\tfn_trigger_objects_pkey\tp\tPRIMARY KEY (function_id, kind, trigger_key)")).isTrue();
         assertThat(isJavaOnly("TABLE\txfn_trigger_objects_archive\tr\t")).isFalse();

@@ -1568,3 +1568,10 @@ a Go-parity route every SDK and outbox producer uses, so it is its own unit on `
 "owns" means (application-scoped service account → its applications' types; users?), and the
 rollout (log-then-enforce?). The function emit route (`POST /control/functions/events`) enforces it
 from day one.
+
+**Ruled 2026-09-21: parked — trust our own emitters.** Every producer on the ingest path today is
+first-party (our SDKs and outbox processors, each an authenticated service account holding
+`BATCH_EVENTS_WRITE`); an ownership lookup per event would add complexity and cost to the hottest
+write path to defend against ourselves. Functions stay enforced (R13) because they run code the
+platform did not write. **Reopen when** a producer that is not ours gets ingest credentials — a
+partner integration, a tenant-issued service account — and then as log-then-enforce.

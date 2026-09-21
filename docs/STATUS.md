@@ -10,7 +10,7 @@ Java-first, no Go counterpart. Design `docs/function-runner-plan.md` (§10 decis
 `docs/function-runner-workplan.md`. Split: orchestrator writes the spec, `sonnet` writes the code,
 every load-bearing behaviour mutation-checked (spec §8 tables name the mutants).
 
-- **Package A landed** (`2a5ba6f8`..`1170c382`): spec `docs/spec/function-registry.md`; `V11__functions.sql`
+- **Package A landed** (`2a5ba6f8`..`1170c382`): spec `docs/spec/function-registry.md`; `V12__functions.sql`
   (seven Java-only `fn_` tables); `platform/function/` — addresses, route patterns, manifest
   (strict + stored readers, limits frozen at publish), entities, repositories; `Env.functionLimits`
   (`FC_FN_*`). Server suite 4495 run, 1 failure — the one below.
@@ -201,6 +201,20 @@ Progress, 2026-09-11 evening:
   - Missing SQS queues are not consumed and raise no alert (`4b3a42b`).
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
+
+## Seeded event-type schemas are version `1.0`, not `v1` (2026-09-21)
+
+Only the platform seeder wrote `v1`; `CreateEventType` and the SDKs write
+`1.0`, and `SpecVersion#major` cannot pair a `v1` with a later `2.0`. The
+seeder now writes `1.0` and counts a legacy `v1` row as attached.
+`V11__platform_event_schema_version.sql` renames existing seeded rows
+(`platform:%` codes only, guarded against the unique index, idempotent). It
+is adopted from Go's `055_platform_event_schema_version.sql`, which was
+**uncommitted in the Go tree** when this landed — whichever platform deploys
+first does the rename and the other's run matches no rows. Pinned by
+`SeededSchemaVersionTest` (four mutants killed: seeder literal, legacy-row
+check, migration scope, collision guard) and `SeederTest.specVersionsMatchGo`.
+The functions migration is `V12__functions.sql` (renumbered from V11 when this merged).
 
 ## Dispatch-job deliveries now carry the application's webhook credentials (2026-09-19)
 

@@ -43,22 +43,24 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V11 even
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V12 even
         // though the Go database already has V2..V7, V9's effect (053
         // portal_apps, spec `portal-apps.md`) AND V10's effect (054
         // dispatch_job_queue, spec `dispatch-job-priority.md`): each of those
         // is idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op
         // here. Two are genuine additions, created here for the first time:
-        // V8 (`mail_outbox`, spec `mail-outbox.md`, Go mirror item G9) and V11
+        // V8 (`mail_outbox`, spec `mail-outbox.md`, Go mirror item G9) and V12
         // (the ten `fn_` function-registry tables, spec
         // `function-registry.md` §2 — there is no Go for the function service
         // at all, spec §0).
-        assertThat(result.migrationsExecuted).isEqualTo(10);
+        // V11 (Go 055, seeded schema versions v1 -> 1.0) is data-only and
+        // changes no schema.
+        assertThat(result.migrationsExecuted).isEqualTo(11);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(11);
+        assertThat(applied).hasSize(12);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -78,7 +80,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 11; v++) {
+                for (int v = 2; v <= 12; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -93,7 +95,7 @@ class GoAdoptionTest {
                 rs.next();
                 assertThat(rs.getInt(1)).as("mail_outbox created exactly once").isEqualTo(1);
             }
-            // V11's ten fn_ tables are genuinely new here too (Java-only,
+            // V12's ten fn_ tables are genuinely new here too (Java-only,
             // spec `function-registry.md` §0/§2 and `function-invocation.md`
             // §3/§4: there is no Go for the function service at all).
             try (ResultSet rs = st.executeQuery("""
@@ -104,7 +106,7 @@ class GoAdoptionTest {
                 while (rs.next()) {
                     fnTables.add(rs.getString(1));
                 }
-                assertThat(fnTables).as("V11 creates each fn_ table exactly once").containsExactly(
+                assertThat(fnTables).as("V12 creates each fn_ table exactly once").containsExactly(
                         "fn_aliases", "fn_client_policies", "fn_config", "fn_domains", "fn_functions", "fn_hosts",
                         "fn_routes", "fn_secrets", "fn_trigger_objects", "fn_versions");
             }
@@ -171,9 +173,9 @@ class GoAdoptionTest {
             }
         }
         // V2..V7, V9 and V10 still change nothing (flyway_schema_history is
-        // ignored by the fingerprint); V8 (`mail_outbox`) and V11 (the eight
+        // ignored by the fingerprint); V8 (`mail_outbox`) and V12 (the eight
         // fn_ tables) are the genuine additions — assert the only lines the
-        // fingerprint gained are theirs, plus V11's one named, exact widening
+        // fingerprint gained are theirs, plus V12's one named, exact widening
         // of the Go-shared chk_msg_subscriptions_source constraint
         // (function-invocation.md §4.1) — asserted to the exact definition,
         // not blanket-ignored, and excluded from the "nothing else changed" check.
@@ -189,11 +191,11 @@ class GoAdoptionTest {
                 .filter(SchemaFingerprintTest::isDivergentConstraintLine).toList();
         assertThat(afterDivergent).as("exactly one divergent-constraint line").hasSize(1);
         assertThat(afterDivergent.getFirst())
-                .as("V11 widens chk_msg_subscriptions_source to exactly the Java definition, nothing else")
+                .as("V12 widens chk_msg_subscriptions_source to exactly the Java definition, nothing else")
                 .endsWith(SchemaFingerprintTest.DIVERGENT_CONSTRAINT_JAVA_DEF);
         List<String> beforeDivergent = before.lines()
                 .filter(SchemaFingerprintTest::isDivergentConstraintLine).toList();
-        assertThat(beforeDivergent).as("Go's own (un-widened) definition, present before V11 runs").hasSize(1);
+        assertThat(beforeDivergent).as("Go's own (un-widened) definition, present before V12 runs").hasSize(1);
         assertThat(beforeDivergent.getFirst()).isNotEqualTo(afterDivergent.getFirst());
 
         List<String> afterWithoutNewLines = afterLines.stream()
@@ -204,9 +206,9 @@ class GoAdoptionTest {
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9 and V10 change nothing beyond V8's/V11's new Java-only tables and the one named divergent constraint")
+                .as("V2..V7, V9 and V10 change nothing beyond V8's/V12's new Java-only tables and the one named divergent constraint")
                 .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
-        assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V11 adds the fn_ tables").isNotEmpty();
+        assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V12 adds the fn_ tables").isNotEmpty();
 
         // And a second run is still a no-op.
         assertThat(Migrator.migrate(ds).migrationsExecuted).isZero();

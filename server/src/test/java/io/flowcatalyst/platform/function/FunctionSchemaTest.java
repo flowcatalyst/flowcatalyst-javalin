@@ -16,14 +16,14 @@ import org.junit.jupiter.api.Test;
 
 import io.flowcatalyst.testpg.TestPg;
 
-/// Pins the V11 migration's own guardrails (`docs/spec/function-registry.md`
+/// Pins the V12 migration's own guardrails (`docs/spec/function-registry.md`
 /// §2, §8 M13) with raw SQL against the shared [TestPg] database — no
 /// repository/entity code exists yet (a later slice of package A), so this is
 /// Postgres enforcing its own constraints, not Java validating anything. Each
 /// assertion here is required, not decorative: §8 M13 names two of its
 /// mutations directly (drop the partial unique index; the LABEL regex's
 /// trailing-hyphen exclusion), and this class' own report records which
-/// assertion each of the six mutations tried against `V11__functions.sql`
+/// assertion each of the six mutations tried against `V12__functions.sql`
 /// actually kills.
 class FunctionSchemaTest {
 

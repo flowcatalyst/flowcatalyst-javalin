@@ -8,7 +8,7 @@ recorded in the specs that apply them; live state is `docs/STATUS.md`.
 
 | Package | Spec | What it is |
 |---|---|---|
-| A | `function-registry.md` | `fn_` schema (V11, Java-only), addresses, route patterns, manifest (strict + stored readers, limits frozen at publish), entities, repositories |
+| A | `function-registry.md` | `fn_` schema (V12, Java-only), addresses, route patterns, manifest (strict + stored readers, limits frozen at publish), entities, repositories |
 | B | `function-api.md` | functions, signer policies, publish / promote / retire, control plane (desired state + ETag, heartbeat), status, permissions and roles, events; routes outside the Go lockfile |
 | C | `function-artifacts.md` | artifact store by blob digest (`file://`, `oci://`), **JDK-only** Sigstore bundle verification (Rekor v1, no SCT check — both written down) |
 | I | `function-invocation.md` | every invocation is HTTP at `/functions/{address}[:{version}]/{path}`; manifest `endpoints` / `subscriptions` / `schedules` / `public`; wiring created at promote with subscription source `FUNCTION` (deliberate divergence from Go) |

@@ -152,7 +152,7 @@ EOF
 
 `function-invocation.md` §4.1 (ruling R6): the function service's platform-managed subscriptions
 carry a new `SubscriptionSource.FUNCTION`, stored in `msg_subscriptions.source` under a widened
-`chk_msg_subscriptions_source` (`V11`). Go's own subscription reader is as strict as Java's
+`chk_msg_subscriptions_source` (`V12`). Go's own subscription reader is as strict as Java's
 (`UnrecognisedSubscriptionSourceException`'s twin) and does not know this value — **while Go runs
 against the same database, a `FUNCTION`-sourced row breaks Go's subscription reads.**
 

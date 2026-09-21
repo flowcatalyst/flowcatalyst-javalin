@@ -63,6 +63,10 @@ public final class Seeder {
     private static final String BOOTSTRAP_ROLE_SOURCE = "BOOTSTRAP";
     private static final String BOOTSTRAP_DEFAULT_NAME = "Bootstrap Admin";
 
+    /// The version a seeded schema is attached as — the same initial version
+    /// `CreateEventType` writes, so `SpecVersion#major` pairs it with a later `2.0`.
+    private static final String INITIAL_SCHEMA_VERSION = "1.0";
+
     private static final String PLATFORM_APPLICATION_CODE = "platform";
     private static final String PLATFORM_APPLICATION_NAME = "FlowCatalyst Platform";
     private static final String PLATFORM_APPLICATION_DESCRIPTION =
@@ -235,20 +239,23 @@ public final class Seeder {
                         .execute();
             }
 
-            // Schema attach (idempotent). Version "v1" by convention.
+            // Schema attach (idempotent). Version "1.0", the same initial version
+            // CreateEventType and the SDKs use. A legacy "v1" row (what this
+            // seeder wrote before V11 renamed them) also counts as present, so
+            // the same schema is never attached twice.
             if (d.schema() == null) {
                 continue;
             }
-            boolean hasV1 = db.fetchExists(MSG_EVENT_TYPE_SPEC_VERSIONS,
+            boolean attached = db.fetchExists(MSG_EVENT_TYPE_SPEC_VERSIONS,
                     MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID.eq(id)
-                            .and(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION.eq("v1")));
-            if (hasV1) {
+                            .and(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION.in(INITIAL_SCHEMA_VERSION, "v1")));
+            if (attached) {
                 continue;
             }
             db.insertInto(MSG_EVENT_TYPE_SPEC_VERSIONS)
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.ID, EntityType.SCHEMA.generate())
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID, id)
-                    .set(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, "v1")
+                    .set(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, INITIAL_SCHEMA_VERSION)
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.MIME_TYPE, "application/schema+json")
                     .set(MSG_EVENT_TYPE_SPEC_VERSIONS.SCHEMA_CONTENT, JSONB.valueOf(Json.write(d.schema())))
                     // "JSON" (not a SchemaType constant) predates chk_msg_event_type_spec_versions_schema_type

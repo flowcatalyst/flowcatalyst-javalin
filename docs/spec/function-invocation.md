@@ -145,7 +145,7 @@ created_at)`, pk `(function_id, kind, trigger_key)`, unique `(kind, object_id)` 
 
 `SubscriptionSource` gains `FUNCTION`; `isSyncManaged()` is false for it, so an application's SDK
 sync with `removeUnlisted` never touches a function's subscription. `chk_msg_subscriptions_source`
-is widened in `V11` (unreleased). Consequences, accepted by the owner and written down:
+is widened in `V12` (unreleased). Consequences, accepted by the owner and written down:
 
 - The constraint is on a table Go shares. `SchemaFingerprintTest` gains an explicit, named
   **divergent-constraint** allowance for exactly this definition (not a blanket filter), and

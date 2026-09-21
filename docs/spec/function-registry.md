@@ -49,7 +49,7 @@ There is no Go for this. The function service is Java-first; nothing here is che
 `EntityType` gains `FUNCTION("fnc")`, `FUNCTION_VERSION("fnv")`, `FUNCTION_DOMAIN("fnd")`,
 `FUNCTION_ROUTE("fnr")`. Aliases, hosts and client policies have natural keys and no TSID.
 
-## 2. Schema — `V11__functions.sql`
+## 2. Schema — `V12__functions.sql`
 
 All ids `VARCHAR(17)`. All timestamps `TIMESTAMPTZ NOT NULL DEFAULT NOW()` unless marked nullable.
 `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` throughout, like V9. **Every constraint
@@ -121,7 +121,7 @@ anything here — a genuinely new table), and widens one Go-shared constraint
 `isJavaOnly` matcher is substring-based and was written for one table; with the naming rule above it
 is enough that a line's table column equals a Java-only table **or** its object name starts with
 `<table>_` or `idx_<table>_`. Tighten it to that — and keep `mail_outbox` passing. `GoAdoptionTest`
-is updated the same way it was for V8: V11 is a genuine addition on a Go-adopted database, created
+is updated the same way it was for V8: V12 is a genuine addition on a Go-adopted database, created
 once.
 
 ## 3. Addresses
