@@ -15,33 +15,148 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 /// counterpart of Go's `internal/testpg`.
 ///
 /// ONE embedded Postgres (zonky, PG 18) is started per JVM, lazily on first
-/// use, and the `postgres` database is migrated once with [Migrator].
-/// Tests get a shared [DataSource] via [#dataSource()].
+/// use. A template database is migrated once with [Migrator]; **every test
+/// class then gets its own copy of it** (`CREATE DATABASE … TEMPLATE`, tens
+/// of milliseconds), dropped when the class finishes.
 ///
-/// Isolation model (same rule as Go): there is NO truncation between tests.
-/// Tests must seed their own rows under fresh ids and assert on that subset,
-/// never on table-wide counts.
+/// [#dataSource()] is a *router*, not a database: each `getConnection()`
+/// goes to the database of the test class running at that moment
+/// ([TestPgPerClass] tracks it). That is what lets the static fixtures
+/// (`OutboxFixture.DS`, `DispatchJobFixture.DS`, …) stay `static final` and
+/// still be per-class — the alternative, keying by caller, would hand a test
+/// and the fixture it uses two different databases.
 ///
-/// [#newDatabase(String)] creates an extra, empty database on the same
+/// Why per class: the old model — one database for the whole module, "seed
+/// under fresh ids, never assert table-wide" — held for rows a test reads by
+/// id and failed for everything that scans: claim queries, pollers, seeders,
+/// uniqueness on well-known codes, a corrupt row another class planted. It
+/// made the suite order-dependent (`-Dsurefire.runOrder=random` failed six
+/// classes) and let a poller leaked by one class claim another's rows.
+/// Within a class the old rule still applies: methods share a database.
+///
+/// [#newDatabase(String)] creates an extra, EMPTY database on the same
 /// instance for tests that need a pristine schema (migration tests).
 public final class TestPg {
 
     private static final Object LOCK = new Object();
+    private static final String TEMPLATE = "fc_test_template";
+    /// Connections made outside any test class (a static initialiser run at
+    /// discovery, a thread that outlives its class) land here.
+    private static final String UNOWNED = "fc_test_unowned";
+    private static final DataSource ROUTER = new RoutingDataSource();
+
     private static EmbeddedPostgres pg;
-    private static DataSource migrated;
+    private static boolean templateReady;
+    /// The running top-level test class → its database; set by [TestPgPerClass].
+    private static volatile String currentOwner;
+    private static final java.util.Map<String, String> DATABASES = new java.util.HashMap<>();
+    private static int sequence;
 
     private TestPg() {
     }
 
-    /// The shared, migrated database.
+    /// The migrated database of the test class running now — see the class doc.
     public static DataSource dataSource() {
+        return ROUTER;
+    }
+
+    static void enter(String testClass) {
+        currentOwner = testClass;
+    }
+
+    /// Drops the class's database. `WITH (FORCE)`: a pool or a poller the
+    /// class leaked must not keep the database — or the next class's rows —
+    /// alive; its next statement fails in its own thread, which is the
+    /// honest outcome for a thread nobody stopped.
+    static void leave(String testClass) {
+        String database;
         synchronized (LOCK) {
-            if (migrated == null) {
-                DataSource ds = instance().getPostgresDatabase();
-                Migrator.migrate(ds);
-                migrated = ds;
+            if (testClass.equals(currentOwner)) currentOwner = null;
+            database = DATABASES.remove(testClass);
+        }
+        if (database == null) return;
+        try (Connection c = instance().getPostgresDatabase().getConnection(); Statement st = c.createStatement()) {
+            st.execute("DROP DATABASE IF EXISTS " + database + " WITH (FORCE)");
+        } catch (SQLException e) {
+            throw new IllegalStateException("drop database " + database, e);
+        }
+    }
+
+    private static DataSource current() {
+        String owner = currentOwner;
+        String key = owner == null ? UNOWNED : owner;
+        synchronized (LOCK) {
+            String database = DATABASES.get(key);
+            if (database == null) {
+                database = owner == null ? UNOWNED : "fc_test_" + (++sequence);
+                cloneTemplate(database);
+                DATABASES.put(key, database);
             }
-            return migrated;
+            return instance().getDatabase("postgres", database);
+        }
+    }
+
+    private static void cloneTemplate(String database) {
+        EmbeddedPostgres instance = instance();
+        try (Connection c = instance.getPostgresDatabase().getConnection(); Statement st = c.createStatement()) {
+            if (!templateReady) {
+                st.execute("DROP DATABASE IF EXISTS " + TEMPLATE);
+                st.execute("CREATE DATABASE " + TEMPLATE);
+                // A simple (unpooled) DataSource: every connection Flyway opens is closed
+                // again, which CREATE DATABASE … TEMPLATE requires of its source.
+                Migrator.migrate(instance.getDatabase("postgres", TEMPLATE));
+                templateReady = true;
+            }
+            st.execute("DROP DATABASE IF EXISTS " + database + " WITH (FORCE)");
+            st.execute("CREATE DATABASE " + database + " TEMPLATE " + TEMPLATE);
+        } catch (SQLException e) {
+            throw new IllegalStateException("create database " + database, e);
+        }
+    }
+
+    /// Routes every connection to [#current()]; nothing else about it is a database.
+    private static final class RoutingDataSource implements DataSource {
+        @Override
+        public Connection getConnection() throws SQLException {
+            return current().getConnection();
+        }
+
+        @Override
+        public Connection getConnection(String username, String password) throws SQLException {
+            return current().getConnection(username, password);
+        }
+
+        @Override
+        public java.io.PrintWriter getLogWriter() {
+            return null;
+        }
+
+        @Override
+        public void setLogWriter(java.io.PrintWriter out) {
+        }
+
+        @Override
+        public void setLoginTimeout(int seconds) {
+        }
+
+        @Override
+        public int getLoginTimeout() {
+            return 0;
+        }
+
+        @Override
+        public java.util.logging.Logger getParentLogger() {
+            return java.util.logging.Logger.getLogger("io.flowcatalyst.testpg");
+        }
+
+        @Override
+        public <T> T unwrap(Class<T> iface) throws SQLException {
+            return current().unwrap(iface);
+        }
+
+        @Override
+        public boolean isWrapperFor(Class<?> iface) throws SQLException {
+            return current().isWrapperFor(iface);
         }
     }
 
@@ -130,7 +245,8 @@ public final class TestPg {
                     // best effort at JVM exit
                 }
                 pg = null;
-                migrated = null;
+                templateReady = false;
+                DATABASES.clear();
             }
         }
     }
