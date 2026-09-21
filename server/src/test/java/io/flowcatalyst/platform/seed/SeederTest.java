@@ -126,7 +126,7 @@ class SeederTest {
         for (String l : expected.get("schema")) {
             String[] f = l.split("\t", -1);
             expectedSchemas.put(f[1], readTree(f[6]));
-            assertThat(f[2]).isEqualTo("v1");
+            assertThat(f[2]).isEqualTo("1.0");
             assertThat(f[3]).isEqualTo("application/schema+json");
             // "JSON" here (not a SchemaType constant) is a flowcatalyst-go seed
             // defect: internal/platform/seed/event_types.go still writes the
@@ -151,7 +151,7 @@ class SeederTest {
         Map<String, JsonNode> actualSchemas = new TreeMap<>();
         for (var r : rows) {
             assertThat(r.value2()).startsWith("sch_");
-            assertThat(r.value3()).isEqualTo("v1");
+            assertThat(r.value3()).isEqualTo("1.0");
             assertThat(r.value4()).isEqualTo("application/schema+json");
             assertThat(r.value5()).isEqualTo("JSON_SCHEMA");
             assertThat(r.value6()).isEqualTo("CURRENT");

@@ -43,20 +43,21 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V10 even
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V11 even
         // though the Go database already has V2..V7, V9's effect (053
         // portal_apps, spec `portal-apps.md`) AND V10's effect (054
         // dispatch_job_queue, spec `dispatch-job-priority.md`): each of those
         // is idempotent (IF NOT EXISTS / pg_constraint guards) and a no-op
         // here; V8 (`mail_outbox`) is a genuinely new, Java-only table this
         // Go-adopted database does not have yet (spec `mail-outbox.md`,
-        // Go mirror item G9) and is created for the first time.
-        assertThat(result.migrationsExecuted).isEqualTo(9);
+        // Go mirror item G9) and is created for the first time. V11 (Go 055,
+        // seeded schema versions v1 -> 1.0) is data-only and changes no schema.
+        assertThat(result.migrationsExecuted).isEqualTo(10);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(10);
+        assertThat(applied).hasSize(11);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -76,7 +77,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 10; v++) {
+                for (int v = 2; v <= 11; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();

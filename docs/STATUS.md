@@ -22,6 +22,20 @@ Progress, 2026-09-11 evening:
   - The router honours the Rust/Go task definition, including Teams Adaptive
     Cards (`db7c1bb`).
 
+## Seeded event-type schemas are version `1.0`, not `v1` (2026-09-21)
+
+Only the platform seeder wrote `v1`; `CreateEventType` and the SDKs write
+`1.0`, and `SpecVersion#major` cannot pair a `v1` with a later `2.0`. The
+seeder now writes `1.0` and counts a legacy `v1` row as attached.
+`V11__platform_event_schema_version.sql` renames existing seeded rows
+(`platform:%` codes only, guarded against the unique index, idempotent). It
+is adopted from Go's `055_platform_event_schema_version.sql`, which was
+**uncommitted in the Go tree** when this landed — whichever platform deploys
+first does the rename and the other's run matches no rows. Pinned by
+`SeededSchemaVersionTest` (four mutants killed: seeder literal, legacy-row
+check, migration scope, collision guard) and `SeederTest.specVersionsMatchGo`.
+The functions migration on `function-service` moves to V12.
+
 ## Dispatch-job deliveries now carry the application's webhook credentials (2026-09-19)
 
 Fixed the defect `docs/spec/dispatch-delivery-credentials.md` names (owner
