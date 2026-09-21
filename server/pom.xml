@@ -141,6 +141,20 @@
       </exclusions>
     </dependency>
     <dependency>
+      <!-- Function artifact platform store (docs/spec/function-artifact-upload.md
+           §2): FC_FN_ARTIFACT_STORE=s3://... -->
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <exclusions>
+        <!-- Only the sync clients are used (apache5-client); the async Netty client and
+             its 3 MB of Netty were dead weight in both the jar and the native image. -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>elasticloadbalancingv2</artifactId>
       <exclusions>

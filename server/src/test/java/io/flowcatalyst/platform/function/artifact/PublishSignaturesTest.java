@@ -102,7 +102,7 @@ class PublishSignaturesTest {
             String bundle, Signatures signatures) {
         Digest digest = digestOf(artifactDigestBytes);
         var cmd = new PublishCommand(address, "oci://artifact/" + artifactSuffix, digest.value(), bundle, manifestJson());
-        return Auth.runAs(ANCHOR, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, signatures, NONE).run(uow, cmd, EC));
+        return Auth.runAs(ANCHOR, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, signatures, NONE, java.util.Optional.empty()).run(uow, cmd, EC));
     }
 
     private static void assertUseCaseError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call,

@@ -81,7 +81,7 @@ class FunctionApiTest {
             routes.before("/api/*", auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
                     policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
-                    subscriptions, dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
+                    subscriptions, dispatchPools, scheduledJobs, settings, java.util.Optional.empty(), java.util.Optional.empty()));
             // §4.3: needed for P10's real PUT /api/function-policies/{owner} route.
             io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                     new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(

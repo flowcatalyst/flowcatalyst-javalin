@@ -21,6 +21,14 @@ public interface Routes {
 
     Routes put(String path, Handler h);
 
+    /// A streaming write route (`docs/spec/function-artifact-upload.md` §3):
+    /// admission and authentication run exactly as for [#put], but the
+    /// request body is never buffered — the handler reads it through
+    /// `Exchange.bodyStream()`, back-pressured against the socket. Every
+    /// other route registered on this `Routes` keeps the ordinary 1 MB
+    /// buffered body, unchanged.
+    Routes putStreaming(String path, Handler h);
+
     Routes patch(String path, Handler h);
 
     Routes delete(String path, Handler h);

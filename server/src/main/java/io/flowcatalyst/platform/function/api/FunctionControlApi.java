@@ -9,6 +9,7 @@ import io.flowcatalyst.platform.event.Event;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
+import io.flowcatalyst.platform.function.Digest;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
@@ -21,6 +22,10 @@ import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.artifact.ArtifactBlobStore;
+import io.flowcatalyst.platform.function.artifact.ArtifactException;
+import io.flowcatalyst.platform.function.artifact.ArtifactHttpException;
+import io.flowcatalyst.platform.function.artifact.PlatformArtifactRef;
 import io.flowcatalyst.platform.function.operations.DesiredState;
 import io.flowcatalyst.platform.function.operations.MarkVersionReady;
 import io.flowcatalyst.platform.function.operations.MarkVersionReadyCommand;
@@ -38,6 +43,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -84,7 +90,7 @@ public final class FunctionControlApi {
     public record State(FunctionRepository functions, FunctionVersionRepository versions, FunctionHostRepository hosts,
                         UnitOfWork uow, ServiceAccountRepository serviceAccounts, FunctionSettingsRepository settings,
                         ApplicationRepository applications, EventTypeRepository eventTypes, EventRepository events,
-                        FunctionRouteRepository routes) {
+                        FunctionRouteRepository routes, Optional<ArtifactBlobStore> artifactBlobStore) {
         public State {
             Objects.requireNonNull(functions, "functions");
             Objects.requireNonNull(versions, "versions");
@@ -96,6 +102,7 @@ public final class FunctionControlApi {
             Objects.requireNonNull(eventTypes, "eventTypes");
             Objects.requireNonNull(events, "events");
             Objects.requireNonNull(routes, "routes");
+            Objects.requireNonNull(artifactBlobStore, "artifactBlobStore");
         }
     }
 
@@ -110,6 +117,41 @@ public final class FunctionControlApi {
         routes.in(Group.API_READ).get("/control/functions/desired-state", Auth.scoped(ctx -> desiredState(ctx, desiredState)));
         routes.in(Group.API_WRITE).post("/control/functions/heartbeat", Auth.scoped(ctx -> heartbeat(ctx, s)));
         routes.in(Group.API_WRITE).post("/control/functions/events", Auth.scoped(ctx -> emitEvents(ctx, s, desiredState)));
+        routes.in(Group.API_READ).get("/control/functions/artifacts/{versionId}", Auth.scoped(ctx -> downloadArtifact(ctx, s)));
+    }
+
+    // ── GET /control/functions/artifacts/{versionId} (spec `function-artifact-upload.md` §4) ──
+
+    /// Streamed (spec §4: "memory must not scale with the artifact") —
+    /// `Exchange.resultStream`, the response-side counterpart of the
+    /// upload route's `Routes.putStreaming`. Keyed by version id, not
+    /// `(functionId, hex)`: the host asks for "the artifact of the version
+    /// you told me to run", and the platform resolves where that is.
+    private static void downloadArtifact(Exchange ctx, State s) {
+        if (gate(ctx)) {
+            return;
+        }
+        ArtifactBlobStore store = s.artifactBlobStore().orElseThrow(ArtifactHttpException::storeNotConfigured);
+        String versionId = ctx.pathParam("versionId");
+        FunctionVersion v = s.versions().findById(versionId).orElseThrow(() -> HttpError.notFound("FunctionVersion", versionId));
+        PlatformArtifactRef ref = PlatformArtifactRef.parse(v.artifactRef())
+                .orElseThrow(() -> HttpError.notFound("FunctionVersion", versionId));
+        Digest digest = v.digest();
+        long size;
+        InputStream in;
+        try {
+            size = store.size(ref.functionId(), digest);
+            in = store.open(ref.functionId(), digest);
+        } catch (ArtifactException e) {
+            if (e.reason() instanceof ArtifactException.NotFound) {
+                throw HttpError.notFound("FunctionVersion", versionId);
+            }
+            throw HttpError.internal("ARTIFACT_STORE_ERROR", "reading the artifact failed", e);
+        }
+        // Digest: sha256=<base64> is deliberately NOT sent (spec §4): the host already
+        // knows the digest from desired state and recomputes it — a header would be a
+        // second source of truth.
+        ctx.contentType("application/octet-stream").status(200).resultStream(in, size);
     }
 
     // ── GET /control/functions/desired-state (spec §6.1) ────────────────────

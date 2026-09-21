@@ -27,7 +27,10 @@ import java.util.Objects;
 /// `error` carries the error **code**; `details` is omitted when empty. The
 /// status comes from the [UseCaseError] kind (400 validation / 403
 /// authorization / 404 not found / 409 conflict + business rule / 500
-/// internal — there is no 422) or, for bare codes, from [#statusFor].
+/// internal — [UseCaseError] itself has no 422/413/503) or, for bare codes,
+/// from [#statusFor]. [io.flowcatalyst.platform.function.artifact.ArtifactHttpException]
+/// is the one place those three statuses exist, for the reasons named on
+/// that type.
 ///
 /// Install once per Javalin app with [#install]: `UseCaseException` →
 /// envelope, anything unexpected → the same 500 `INTERNAL` envelope Go's
@@ -251,6 +254,9 @@ public record HttpError(
     /// Registers the exception handlers on `routes`:
     ///
     ///   - [UseCaseException] → its envelope at the kind's status;
+    ///   - [io.flowcatalyst.platform.function.artifact.ArtifactHttpException]
+    ///     → its own status (413/422/503) and code, the platform's ordinary
+    ///     `{error, message}` envelope — the one place those statuses exist;
     ///   - [CorruptRowException] (any stored-enum row a strict `parse`
     ///     rejected, X-06) → logged with the row id, 500 `CORRUPT_ROW` —
     ///     distinct from bare `INTERNAL` so an operator can tell "a row is
@@ -267,6 +273,8 @@ public record HttpError(
     ///     superset).
     public static void install(Routes routes) {
         routes.exception(UseCaseException.class, (e, ctx) -> write(ctx, e.error()));
+        routes.exception(io.flowcatalyst.platform.function.artifact.ArtifactHttpException.class,
+                (e, ctx) -> writeRaw(ctx, e.status(), new HttpError(e.code(), e.getMessage())));
         routes.exception(LoginSurfaceException.class, (e, ctx) -> writeLoginSurface(ctx, e.status(), e.code(), e.getMessage()));
         routes.exception(CorruptRowException.class, (e, ctx) -> {
             LOG.atError().setMessage("corrupt row")

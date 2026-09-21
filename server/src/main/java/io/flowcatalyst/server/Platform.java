@@ -650,11 +650,17 @@ public final class Platform {
         // FLOWCATALYST_APP_KEY is unset, never a fallback to plaintext.
         var functionSettingsRepo = new io.flowcatalyst.platform.function.FunctionSettingsRepository(
                 pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
+        // function-artifact-upload.md §2: the composition root's single resolution rule —
+        // a value-taking factory over the raw string, never the process environment read
+        // directly (`fcdev start`'s own default is set through the SAME Env field).
+        var functionArtifactStore =
+                io.flowcatalyst.platform.function.artifact.ArtifactBlobStores.configure(env.fnArtifactStore());
         io.flowcatalyst.platform.function.api.FunctionApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionApi.State(functionRepo, applicationRepo, clientRepo, uow,
                         functionVersionRepo, functionHostRepo, functionPolicyRepo, env.functionLimits(),
                         functionSignatures, functionTriggerSync, triggerObjectRepo, subscriptionRepo, dispatchPoolRepo,
-                        scheduledJobRepo, functionSettingsRepo, Encryption.fromKeys(env.appKey(), env.appKeyPrevious())));
+                        scheduledJobRepo, functionSettingsRepo, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
+                        functionArtifactStore));
         io.flowcatalyst.platform.function.api.FunctionPolicyApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionPolicyApi.State(
                         functionPolicyRepo, clientRepo, uow, env.functionLimits()));
@@ -663,7 +669,7 @@ public final class Platform {
         io.flowcatalyst.platform.function.api.FunctionControlApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionControlApi.State(
                         functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo,
-                        applicationRepo, eventTypeRepo, eventRepo, functionRouteRepo));
+                        applicationRepo, eventTypeRepo, eventRepo, functionRouteRepo, functionArtifactStore));
         // function-public-routes.md §1 (slice F1): domains + route sync's own routes.
         // devMode (spec §1: "dev mode taken from Env and passed into the operation
         // factory") is env.routerDevMode() — the SAME flag Signatures#resolve above

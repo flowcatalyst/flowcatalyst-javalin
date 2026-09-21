@@ -113,7 +113,7 @@ class StartOptionsTest {
         var o = parse(Map.of("FC_DEFAULT_BROKER", "", "FC_JWT_ISSUER", "http://dev.local"),
                 "--api-port", "7000", "--metrics-port", "7001", "--router=false", "--outbox", "--mcp");
         var dev = DevEnv.of(Map.of("FC_DEFAULT_BROKER", "", "FC_JWT_ISSUER", "http://dev.local")).mutable();
-        var env = StartCommand.devEnv(dev, o, "postgresql://postgres:postgres@localhost:15432/flowcatalyst?sslmode=disable");
+        var env = StartCommand.devEnv(dev, o, "postgresql://postgres:postgres@localhost:15432/flowcatalyst?sslmode=disable", PATHS);
         assertThat(env.apiPort()).isEqualTo(7000);
         assertThat(env.metricsPort()).isEqualTo(7001);
         assertThat(env.databaseUrl()).isEqualTo("postgresql://postgres:postgres@localhost:15432/flowcatalyst?sslmode=disable");
@@ -133,10 +133,30 @@ class StartOptionsTest {
         assertThat(env.routerConfigUrl()).isEqualTo("http://localhost:7000/api/dispatch/router-config");
     }
 
+    /// spec `function-artifact-upload.md` §2/§15: the composition-root
+    /// default is wired even with nothing set — `file://<state>/fn-artifacts`,
+    /// the SAME directory `DevPaths#fnArtifactsDir` names.
+    @Test
+    void devEnvDefaultsTheArtifactStoreToStateFnArtifacts() {
+        var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
+        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z", PATHS);
+        assertThat(env.fnArtifactStore()).isEqualTo("file://" + PATHS.fnArtifactsDir());
+    }
+
+    /// An operator who already pointed `FC_FN_ARTIFACT_STORE` elsewhere (a
+    /// real S3 bucket) keeps that value — `setDefault`, not `set`.
+    @Test
+    void devEnvDoesNotOverrideAnExplicitArtifactStore() {
+        var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
+        var env = StartCommand.devEnv(
+                DevEnv.of(Map.of("FC_FN_ARTIFACT_STORE", "s3://my-bucket/fn")).mutable(), o, "postgresql://x@y/z", PATHS);
+        assertThat(env.fnArtifactStore()).isEqualTo("s3://my-bucket/fn");
+    }
+
     @Test
     void explicitDefaultBrokerIsNotOverridden() {
         var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
-        var env = StartCommand.devEnv(DevEnv.of(Map.of("FC_DEFAULT_BROKER", "none")).mutable(), o, "postgresql://x@y/z");
+        var env = StartCommand.devEnv(DevEnv.of(Map.of("FC_DEFAULT_BROKER", "none")).mutable(), o, "postgresql://x@y/z", PATHS);
         assertThat(env.defaultBroker()).isEqualTo("none");
     }
 
@@ -148,7 +168,7 @@ class StartOptionsTest {
         var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
         var env = StartCommand.devEnv(
                 DevEnv.of(Map.of("FLOWCATALYST_CONFIG_URL", "http://integral.example/router-config")).mutable(),
-                o, "postgresql://x@y/z");
+                o, "postgresql://x@y/z", PATHS);
         assertThat(env.routerConfigUrl()).isEqualTo("http://integral.example/router-config");
     }
 
@@ -159,7 +179,7 @@ class StartOptionsTest {
     @Test
     void metricsPortZeroStillSynthesisesTheConfigUrlOffTheApiPort() {
         var o = parse(Map.of(), "--metrics-port", "0");
-        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z");
+        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z", PATHS);
         assertThat(env.routerConfigUrl()).isEqualTo("http://localhost:8080/api/dispatch/router-config");
     }
 
@@ -170,7 +190,7 @@ class StartOptionsTest {
     @Test
     void apiPortZeroDoesNotSynthesiseABogusConfigUrl() {
         var o = parse(Map.of(), "--api-port", "0");
-        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z");
+        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z", PATHS);
         assertThat(env.routerConfigUrl()).isEmpty();
     }
 

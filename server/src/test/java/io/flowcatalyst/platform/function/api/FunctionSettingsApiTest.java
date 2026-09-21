@@ -95,7 +95,7 @@ class FunctionSettingsApiTest {
             routes.before("/api/*", auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
                     policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
-                    subscriptions, dispatchPools, scheduledJobs, settings, Optional.of(ENCRYPTION)));
+                    subscriptions, dispatchPools, scheduledJobs, settings, Optional.of(ENCRYPTION), Optional.empty()));
         });
     }
 

@@ -186,7 +186,7 @@ public final class StartCommand implements Callable<Integer> {
                     : null;
 
             // ── the shared server ─────────────────────────────────────────
-            Env serverEnv = devEnv(dev, opts, databaseUrl);
+            Env serverEnv = devEnv(dev, opts, databaseUrl, paths);
             Server.Spa spa = Frontend.embeddedOrNone();
             switch (spa) {
                 case Server.Spa.Embedded _ -> LOG.info("embedded Vue SPA available");
@@ -302,7 +302,7 @@ public final class StartCommand implements Callable<Integer> {
     /// more. `setDefault`, not `set`, so an operator who has already pointed
     /// `FLOWCATALYST_CONFIG_URL` elsewhere (Integral, say) is never
     /// overridden.
-    static Env devEnv(DevEnv.Mutable dev, StartOptions opts, String databaseUrl) {
+    static Env devEnv(DevEnv.Mutable dev, StartOptions opts, String databaseUrl, DevPaths paths) {
         dev.set("FC_DATABASE_URL", databaseUrl)
                 .set("FC_API_PORT", Integer.toString(opts.apiPort()))
                 .set("FC_METRICS_PORT", Integer.toString(opts.metricsPort()))
@@ -323,6 +323,13 @@ public final class StartCommand implements Callable<Integer> {
                 // setDefault, not set: FLOWCATALYST_DEV_MODE=false still wins.
                 .setDefault("FLOWCATALYST_DEV_MODE", "true")
                 .setDefault("FC_DEFAULT_BROKER", "postgres");
+        // spec `function-artifact-upload.md` §2: "`fcdev start` sets it to
+        // file://<state>/fn-artifacts when unset, so the dev loop needs nothing" —
+        // the SAME directory the CLI's local-publish store used to write into
+        // directly, now the platform's own upload/download routes own it.
+        // setDefault, not set: an operator who already pointed FC_FN_ARTIFACT_STORE
+        // elsewhere (a real S3 bucket, say) keeps that value.
+        dev.setDefault("FC_FN_ARTIFACT_STORE", "file://" + paths.fnArtifactsDir());
         // `docs/spec/function-developer-surface.md` §1: the PLATFORM's own
         // function-publish settings — signature verification off (dev mode is
         // already on) and the pool-URL template pointed at fcdev's own

@@ -121,7 +121,7 @@ class PublishPromoteRetireTest {
     private static PublishVersion.Result publish(AuthContext ac, FunctionAddress address, String digestSuffix,
             tools.jackson.databind.JsonNode manifest) {
         var cmd = new PublishCommand(address, "oci://artifact/" + digestSuffix, digest(digestSuffix).value(), null, manifest);
-        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, NONE).run(uow, cmd, EC));
+        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, NONE, java.util.Optional.empty()).run(uow, cmd, EC));
     }
 
     private static AliasChanged promote(AuthContext ac, FunctionAddress address, int version) {
@@ -323,7 +323,7 @@ class PublishPromoteRetireTest {
         var cmd = new PublishCommand(f.address(), "oci://artifact/p7", digest("p7").value(), null, manifestJson());
 
         assertThatThrownBy(() -> Auth.runAs(ANCHOR, () ->
-                PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, throwing).run(uow, cmd, EC)))
+                PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, throwing, java.util.Optional.empty()).run(uow, cmd, EC)))
                 .isInstanceOf(RuntimeException.class);
 
         assertThat(versions.listByFunction(f.id())).as("mutant: call the seam after commit — no row must survive").isEmpty();

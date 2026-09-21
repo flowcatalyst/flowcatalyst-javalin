@@ -411,6 +411,14 @@ public record Env(
         // "unparseable/invalid still fails loudly" division of labour as [#functionLimits]
         // above (never a silent fallback to the default).
         PoolUrlTemplate fnPoolUrlTemplate,
+        // `FC_FN_ARTIFACT_STORE`, no default here (`fcdev start` sets its own dev default,
+        // `docs/spec/function-artifact-upload.md` §2): `file:///abs/dir`, `s3://bucket[/prefix]`,
+        // or `""` (no store — the upload route and a `platform://` publish/download all answer
+        // 503). Carried as the raw string, resolved to an `Optional<ArtifactBlobStore>` by the
+        // composition root's value-taking factory
+        // [io.flowcatalyst.platform.function.artifact.ArtifactBlobStores#configure] — an
+        // unrecognised scheme fails startup there, naming the variable, never a silent fallback.
+        String fnArtifactStore,
         // The reader every value above came from. Subsystems that parse their own
         // knobs (backoff, mail, passkeys, rate limits) read it too — never the process
         // environment directly, or fcdev's map-loaded environment and the parity
@@ -580,6 +588,7 @@ public record Env(
                 SignaturesMode.parse(e.or("FC_FN_SIGNATURES", "required")),
                 e.get("FC_FN_TRUST_ROOT"),
                 PoolUrlTemplate.parse(e.or("FC_FN_POOL_URL", PoolUrlTemplate.DEFAULT)),
+                e.or("FC_FN_ARTIFACT_STORE", ""),
                 e
         );
     }

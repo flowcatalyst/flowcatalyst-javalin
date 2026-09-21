@@ -115,10 +115,10 @@ class FunctionControlApiTest {
             routes.before(auth);
             FunctionApi.register(routes, new FunctionApi.State(functions, applications, clients, uow, versions, hosts,
                     policies, DEFAULTS, new Signatures.Off(), TriggerSync.none(), triggerObjects, subscriptions,
-                    dispatchPools, scheduledJobs, settings, java.util.Optional.empty()));
+                    dispatchPools, scheduledJobs, settings, java.util.Optional.empty(), java.util.Optional.empty()));
             FunctionControlApi.register(routes,
                     new FunctionControlApi.State(functions, versions, hosts, uow, serviceAccounts, settings,
-                            applications, eventTypes, events, FunctionControlApiTest.routes));
+                            applications, eventTypes, events, FunctionControlApiTest.routes, java.util.Optional.empty()));
         });
     }
 

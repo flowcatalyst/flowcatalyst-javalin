@@ -185,7 +185,7 @@ class FunctionTriggerSyncTest {
     private static PublishVersion.Result publishAs(AuthContext ac, FunctionAddress address, String digestSuffix,
             JsonNode manifest) {
         var cmd = new PublishCommand(address, "oci://artifact/" + digestSuffix, sha256(digestSuffix), null, manifest);
-        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, SYNC).run(uow, cmd, EC));
+        return Auth.runAs(ac, () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, SYNC, java.util.Optional.empty()).run(uow, cmd, EC));
     }
 
     private static String sha256(String s) {
@@ -437,7 +437,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(first.address(), "oci://artifact/w1", sha256("w1"), null, warmManifest);
         FunctionVersion v1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC)).version();
         markReady(first.address(), v1.version());
         Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(first.address(), Function.LIVE, v1.version()), EC));
@@ -445,7 +445,7 @@ class FunctionTriggerSyncTest {
         // A second warm function in the SAME pool now exceeds the cap of 1.
         var cmd2 = new PublishCommand(f.address(), "oci://artifact/w2", sha256("w2"), null, warmManifest);
         assertThatThrownBy(() -> Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC)))
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC)))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(e -> ((UseCaseException) e).code()).isEqualTo("WARM_CAPACITY_EXCEEDED");
         assertThat(versions.listByFunction(f.id())).isEmpty();
@@ -473,7 +473,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex1a", sha256("wex1a"), null, warmManifest);
         FunctionVersion v1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
         Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
@@ -481,7 +481,7 @@ class FunctionTriggerSyncTest {
 
         var cmd2 = new PublishCommand(f1.address(), "oci://artifact/wex1b", sha256("wex1b"), null, warmManifest);
         PublishVersion.Result p2 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC));
         assertThat(p2.version().version()).as("f1 republishing its own warm version succeeds at the cap").isEqualTo(2);
     }
 
@@ -504,7 +504,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex2a", sha256("wex2a"), null, warmManifest);
         FunctionVersion v1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
         Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
@@ -512,7 +512,7 @@ class FunctionTriggerSyncTest {
         Function f2 = createFunction(appId, new FunctionOwner.Platform());
         var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex2b", sha256("wex2b"), null, warmManifest);
         assertThatThrownBy(() -> Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC)))
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC)))
                 .isInstanceOf(UseCaseException.class)
                 .extracting(e -> ((UseCaseException) e).code()).isEqualTo("WARM_CAPACITY_EXCEEDED");
         assertThat(versions.listByFunction(f2.id())).isEmpty();
@@ -534,7 +534,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex3a", sha256("wex3a"), null, warmManifest);
         FunctionVersion v1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
         Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
@@ -543,7 +543,7 @@ class FunctionTriggerSyncTest {
         JsonNode coldManifest = manifest(pool.value(), false, null, List.of(), List.of());
         var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex3b", sha256("wex3b"), null, coldManifest);
         PublishVersion.Result p2 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC));
         assertThat(p2.version().version()).isEqualTo(1);
     }
 
@@ -564,7 +564,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex4a", sha256("wex4a"), null, warmManifest);
         FunctionVersion v1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC)).version();
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC)).version();
         markReady(f1.address(), v1.version());
         Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, tightSync, settings)
                 .run(uow, new PromoteCommand(f1.address(), Function.LIVE, v1.version()), EC));
@@ -573,7 +573,7 @@ class FunctionTriggerSyncTest {
         JsonNode otherPoolWarm = manifest(otherPool.value(), true, null, List.of(), List.of());
         var cmd2 = new PublishCommand(f3.address(), "oci://artifact/wex4b", sha256("wex4b"), null, otherPoolWarm);
         PublishVersion.Result p2 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC));
         assertThat(p2.version().version()).isEqualTo(1);
     }
 
@@ -594,7 +594,7 @@ class FunctionTriggerSyncTest {
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
         var cmd1 = new PublishCommand(f1.address(), "oci://artifact/wex5a", sha256("wex5a"), null, warmManifest);
         PublishVersion.Result p1 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd1, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd1, EC));
         assertThat(p1.version().version()).isEqualTo(1);
         // f1's version is PUBLISHED only — never marked ready, never promoted, so
         // fn_aliases has no `live` row for it.
@@ -602,7 +602,7 @@ class FunctionTriggerSyncTest {
         Function f2 = createFunction(appId, new FunctionOwner.Platform());
         var cmd2 = new PublishCommand(f2.address(), "oci://artifact/wex5b", sha256("wex5b"), null, warmManifest);
         PublishVersion.Result p2 = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync).run(uow, cmd2, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, tightSync, java.util.Optional.empty()).run(uow, cmd2, EC));
         assertThat(p2.version().version()).isEqualTo(1);
     }
 
@@ -661,7 +661,7 @@ class FunctionTriggerSyncTest {
         JsonNode m = manifest("default", false, null, List.of(sub(et1, "/events/a"), sub(et2, "/events/b")), List.of());
         var cmd = new PublishCommand(f.address(), "oci://artifact/kc2", sha256("kc2"), null, m);
         PublishVersion.Result published = Auth.runAs(ANCHOR,
-                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, collidingSync).run(uow, cmd, EC));
+                () -> PublishVersion.of(functions, versions, policies, DEFAULTS, OFF, collidingSync, java.util.Optional.empty()).run(uow, cmd, EC));
         markReady(f.address(), published.version().version());
 
         assertThatThrownBy(() -> Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, collidingSync, settings)

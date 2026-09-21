@@ -13,6 +13,10 @@ import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.SignerIdentity;
+import io.flowcatalyst.platform.function.artifact.ArtifactBlobStore;
+import io.flowcatalyst.platform.function.artifact.ArtifactException;
+import io.flowcatalyst.platform.function.artifact.ArtifactHttpException;
+import io.flowcatalyst.platform.function.artifact.PlatformArtifactRef;
 import io.flowcatalyst.platform.function.artifact.SignatureVerifier;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.artifact.Verification;
@@ -65,7 +69,7 @@ import java.util.regex.Pattern;
 ///    and the NEXT publish still gets the version this one would have taken
 public final class PublishVersion {
 
-    private static final Pattern ARTIFACT_REF = Pattern.compile("^(oci|file|s3)://.+");
+    private static final Pattern ARTIFACT_REF = Pattern.compile("^(oci|file|s3|platform)://.+");
 
     private PublishVersion() {
     }
@@ -80,13 +84,15 @@ public final class PublishVersion {
     }
 
     public static TxOperation<PublishCommand, Result> of(FunctionRepository functions, FunctionVersionRepository versions,
-            ClientPolicyRepository policies, FunctionLimits defaults, Signatures signatures, TriggerSync triggerSync) {
+            ClientPolicyRepository policies, FunctionLimits defaults, Signatures signatures, TriggerSync triggerSync,
+            Optional<ArtifactBlobStore> artifactStore) {
         Objects.requireNonNull(functions, "functions");
         Objects.requireNonNull(versions, "versions");
         Objects.requireNonNull(policies, "policies");
         Objects.requireNonNull(defaults, "defaults");
         Objects.requireNonNull(signatures, "signatures");
         Objects.requireNonNull(triggerSync, "triggerSync");
+        Objects.requireNonNull(artifactStore, "artifactStore");
         return TxOperation.<PublishCommand, Result>named("PublishVersion")
                 .validate(cmd -> {
                     UseCaseException.requireNonBlank(cmd.artifactRef(), "ARTIFACT_REF_REQUIRED", "artifactRef is required");
@@ -105,6 +111,12 @@ public final class PublishVersion {
                     // Step 2 (again — validate already ran, but execute needs the parsed value).
                     validateArtifactRef(cmd.artifactRef());
                     Digest digest = Digest.parse(cmd.digest());
+
+                    // Step 2b (spec `function-artifact-upload.md` §1): a platform:// ref must
+                    // name THIS function and the command's own digest, and must already exist
+                    // in the store — checked before anything else touches the database, so a
+                    // bogus or missing upload never reaches the version row.
+                    checkPlatformRef(artifactStore, cmd.artifactRef(), f.id(), digest);
 
                     // Step 3: the owner's policy → ceilings. Absent row ⇒ the platform defaults.
                     Optional<ClientPolicy> policy = policies.findByOwner(f.owner());
@@ -184,7 +196,34 @@ public final class PublishVersion {
     private static void validateArtifactRef(String artifactRef) {
         if (artifactRef != null && !ARTIFACT_REF.matcher(artifactRef).matches()) {
             throw UseCaseException.validation("ARTIFACT_REF_INVALID",
-                    "artifactRef must start with oci://, file://, or s3://");
+                    "artifactRef must start with oci://, file://, s3://, or platform://");
+        }
+    }
+
+    /// Spec `function-artifact-upload.md` §1: a no-op for every scheme but
+    /// `platform://`. A `platform://` ref must (a) carry `functionId`'s own
+    /// id and `digest`'s own hex — anything else is `ARTIFACT_REF_MISMATCH`
+    /// — and (b) already exist in the store — otherwise `ARTIFACT_NOT_UPLOADED`.
+    /// No store configured is `ARTIFACT_STORE_NOT_CONFIGURED` (503),
+    /// checked first: without a store neither check below can even run.
+    private static void checkPlatformRef(Optional<ArtifactBlobStore> artifactStore, String artifactRef,
+            String functionId, Digest digest) {
+        if (artifactRef == null || !artifactRef.startsWith("platform://")) {
+            return;
+        }
+        ArtifactBlobStore store = artifactStore.orElseThrow(ArtifactHttpException::storeNotConfigured);
+        String expectedHex = digest.value().substring("sha256:".length());
+        PlatformArtifactRef ref = PlatformArtifactRef.parse(artifactRef)
+                .filter(r -> r.functionId().equals(functionId) && r.hex().equals(expectedHex))
+                .orElseThrow(ArtifactHttpException::refMismatch);
+        boolean exists;
+        try {
+            exists = store.exists(ref.functionId(), digest);
+        } catch (ArtifactException e) {
+            throw UseCaseException.internal("ARTIFACT_STORE_ERROR", "checking the uploaded artifact failed", e);
+        }
+        if (!exists) {
+            throw ArtifactHttpException.notUploaded();
         }
     }
 }

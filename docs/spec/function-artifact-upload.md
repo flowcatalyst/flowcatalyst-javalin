@@ -68,7 +68,7 @@ Dependency: `software.amazon.awssdk:s3` in `server/pom.xml` (BOM-managed). No ot
 
 ## 3. Upload — `PUT /api/functions/{address}/artifacts/{digest}`
 
-`{digest}` is `sha256:<hex>`. Body: the raw bytes (`application/octet-stream`). Group `API_WRITE`.
+`{digest}` is `sha256:<hex>`. Body: the raw bytes (`application/octet-stream`). Group **`API_READ`**, not `API_WRITE`: a write group pins a database connection for the whole request, and this request spends minutes reading a body and one statement looking the function up (`RouteGroupTest` refuses the other declaration, rightly).
 Authorised exactly as publish is (`Access` + the publish permission) — if you may publish a version
 of this function, you may upload its artifact; nothing more, nothing less.
 
@@ -79,6 +79,27 @@ on the event loop, admission and authentication run as for any route, and the ha
 virtual thread, receives the body as an `InputStream` (`Exchange.bodyStream()`), back-pressured:
 the socket is read only as fast as the handler consumes. `body()`/`bodyAsBytes()` on a streaming
 exchange throw `IllegalStateException`. **Every other route keeps the 1 MB cap, unchanged.**
+
+**Amended in review (2026-09-21) — three things the first cut got wrong:**
+
+1. **The deadline on a streaming exchange is a stall deadline, not a total one.** The listener's
+   30 s request deadline would need ~70 Mbit/s for a 256 MiB upload and fails a 10 MB jar on a slow
+   link. On a streaming request the loop-owned timer fires only when **no chunk has arrived for a
+   full window**; otherwise it re-arms itself for the remainder (one timer, no per-chunk timer
+   operations, no timed park, no knob). After end-of-body the handler has one last full window for
+   the digest comparison and `put`. The response pump (§4) has the mirror image: no write completed
+   for a full window ⇒ the response is reset, which unblocks the pump and closes the store's stream —
+   without it a host that stops reading holds a thread, a store handle and an admission slot for ever.
+2. **An abandoned body never closes the connection from `close()`.** On HTTP/2 that tears down every
+   sibling stream; on HTTP/1 it races the response and can lose the 413/422. And tagging
+   `Connection: close` is *not* a fix — measured: with unread request bytes on the socket the
+   response was lost entirely. The rule: `close()` only drains and records the abandonment; the
+   listener closes the connection **in the completion of the response's own write**, HTTP/1.x only.
+   An HTTP/2 connection must survive an abandoned upload on it (pinned by the client's local port
+   staying the same for the next request, not merely by a sibling stream completing — a graceful
+   GOAWAY lets the sibling finish and would pass that weaker test).
+3. **A buffered body replaces a pending streamed one** (`json`/`result` after `resultStream`, the
+   exception-mapper case) and closes it; so does the listener's own 500/503 override.
 
 Handler: stream through a `DigestInputStream` into a temp file (`java.io.tmpdir`), abandoning the
 transfer as soon as the count passes **`ArtifactStoreSupport`'s `maxBytes` (256 MiB, the same
@@ -158,12 +179,13 @@ One mutant per condition; assert absence as well as presence. Own database, port
 | U3 | a body over the cap ⇒ `413` both ways (declared `Content-Length`; chunked, discovered mid-stream), nothing stored, no temp file left in `tmpdir` (list it before and after) | check only the header; leak the temp file |
 | U4 | a **3 MB** upload succeeds while a 3 MB JSON body on an ordinary route is still `413` | raise the global cap instead of adding a streaming mode |
 | U5 | caller without publish rights on the function ⇒ `403`/`404` as publish answers, **body unread** (send `Expect`-less 10 MB and assert the answer arrives before the client finishes writing, or assert via a counting stream) — if this cannot be pinned cheaply, say so | authorise after storing |
+| U5b | a publisher who holds the permission but cannot **reach** the function ⇒ `404`, body unread | look the function up without the reach check |
 | U6 | `platform://` ref for **another function's id**, or a hex ≠ the command digest ⇒ `422 ARTIFACT_REF_MISMATCH`; right function but never uploaded ⇒ `422 ARTIFACT_NOT_UPLOADED`; no version row in either case | drop each check |
 | U7 | store unset ⇒ upload, `platform://` publish and download all `503`; an `oci://` publish is unaffected | — |
 | U8 | `FC_FN_ARTIFACT_STORE=ftp://x` fails startup naming the variable | default silently |
 | U9 | store rejects `functionId` `../x` and a 63-char hex | validate in the route only |
 | U10 | download: host role required (`403` for a publisher token); bytes equal the upload; unknown version `404`; an `oci://` version `404` | each |
-| U11 | `S3ArtifactBlobStore` against an in-process fake S3 endpoint (`TestHttp`) — put/exists/open/size/deleteAll and the key layout with and without a prefix | — |
+| U11 | `S3ArtifactBlobStore` against an in-process fake S3 endpoint (a JDK `HttpServer` fake, `FakeS3` — the SDK issues `HEAD`, which `Routes` has no verb for, and adding one for a test is the wrong trade; the client sets `RequestChecksumCalculation.WHEN_REQUIRED`, because the default wraps `PutObject` in `aws-chunked` framing an endpoint that does not advertise support stores verbatim — our own sha256 is the integrity check) — put/exists/open/size/deleteAll and the key layout with and without a prefix | — |
 | U12 | host: `PlatformArtifactStore` fetches through the cache path — a tampered response is `DigestMismatch` and leaves nothing under the digest's name; a 401 refreshes the token once | trust the platform's bytes |
 | U13 | **end to end, in-process** (extend the reconciler's R12): `fn deploy` with no `--artifact-ref` against a platform on `TestPg` with a `file://` store ⇒ host reconciles ⇒ `LOADED` ⇒ invoke answers | — |
 | U14 | function delete removes its blobs; a store that throws on `deleteAll` does not fail the delete | propagate |

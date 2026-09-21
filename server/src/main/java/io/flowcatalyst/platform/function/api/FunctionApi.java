@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.function.api;
 
 import io.flowcatalyst.platform.function.ClientPolicyRepository;
+import io.flowcatalyst.platform.function.Digest;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionAddressPattern;
@@ -16,6 +17,9 @@ import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.SecretValue;
 import io.flowcatalyst.platform.function.SettingKey;
 import io.flowcatalyst.platform.function.SignerIdentity;
+import io.flowcatalyst.platform.function.artifact.ArtifactBlobStore;
+import io.flowcatalyst.platform.function.artifact.ArtifactException;
+import io.flowcatalyst.platform.function.artifact.ArtifactHttpException;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.Access;
 import io.flowcatalyst.platform.function.operations.CreateCommand;
@@ -60,11 +64,23 @@ import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -109,6 +125,8 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// cross-tenant infrastructure state with no owning function to reach.
 public final class FunctionApi {
 
+    private static final Logger LOG = LoggerFactory.getLogger(FunctionApi.class);
+
     private FunctionApi() {
     }
 
@@ -124,7 +142,7 @@ public final class FunctionApi {
                         TriggerSync triggerSync, TriggerObjectRepository triggerObjects,
                         SubscriptionRepository subscriptions, DispatchPoolRepository dispatchPools,
                         ScheduledJobRepository scheduledJobs, FunctionSettingsRepository settings,
-                        Optional<Encryption> encryption) {
+                        Optional<Encryption> encryption, Optional<ArtifactBlobStore> artifactBlobStore) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(applications, "applications");
@@ -142,6 +160,7 @@ public final class FunctionApi {
             Objects.requireNonNull(scheduledJobs, "scheduledJobs");
             Objects.requireNonNull(settings, "settings");
             Objects.requireNonNull(encryption, "encryption");
+            Objects.requireNonNull(artifactBlobStore, "artifactBlobStore");
         }
     }
 
@@ -161,6 +180,11 @@ public final class FunctionApi {
         write.post("/api/functions/{address}/versions/{version}/retire", Auth.scoped(ctx -> retire(ctx, s)));
         write.put("/api/functions/{address}/aliases/{alias}", Auth.scoped(ctx -> promote(ctx, s)));
         routes.get("/api/functions/{address}/aliases", Auth.scoped(ctx -> listAliases(ctx, s)));
+        // spec `function-artifact-upload.md` §3: streamed, never buffered (Routes.putStreaming).
+        // Deliberately NOT `write`: API_WRITE pins a connection for the whole request, and
+        // this one spends its time reading a body, not in a transaction — its only database
+        // work is the reach lookup. API_READ borrows per statement (spec §3).
+        routes.putStreaming("/api/functions/{address}/artifacts/{digest}", Auth.scoped(ctx -> uploadArtifact(ctx, s)));
         // §1 (function-context.md, slice D4a): platform-stored config/secrets.
         routes.get("/api/functions/{address}/config", Auth.scoped(ctx -> getConfig(ctx, s)));
         write.put("/api/functions/{address}/config", Auth.scoped(ctx -> putConfig(ctx, s)));
@@ -213,9 +237,92 @@ public final class FunctionApi {
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
         var req = ctx.bodyAsClass(PublishRequest.class);
         PublishVersion.Result result = PublishVersion
-                .of(s.repo(), s.versions(), s.policies(), s.limits(), s.signatures(), s.triggerSync())
+                .of(s.repo(), s.versions(), s.policies(), s.limits(), s.signatures(), s.triggerSync(), s.artifactBlobStore())
                 .run(s.uow(), req.toCommand(address), Auth.executionContext());
         ctx.status(201).json(PublishResponse.from(result.version()));
+    }
+
+    private static final int UPLOAD_CHUNK_BYTES = 64 * 1024;
+
+    /// spec `function-artifact-upload.md` §3: `PUT
+    /// /api/functions/{address}/artifacts/{digest}`, streamed
+    /// (`Routes.putStreaming` — never buffered). The table's exact order:
+    /// store configured, then the coarse `FUNCTION_PUBLISH` permission
+    /// (`Authorised exactly as publish is`), then reach (404), then the
+    /// `Content-Length` precheck — every one of those before a single byte
+    /// of the body is read (spec's own ordering, U5).
+    private static void uploadArtifact(Exchange ctx, State s) {
+        ArtifactBlobStore store = s.artifactBlobStore().orElseThrow(ArtifactHttpException::storeNotConfigured);
+        Checks.require(Auth.current(), FUNCTION_PUBLISH);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        Digest digest = Digest.parse(ctx.pathParam("digest"));
+
+        long declaredLength = ctx.contentLength();
+        if (declaredLength >= 0 && declaredLength > ArtifactBlobStore.MAX_BYTES) {
+            throw ArtifactHttpException.tooLarge(ArtifactBlobStore.MAX_BYTES);
+        }
+
+        Path temp;
+        try {
+            temp = Files.createTempFile("fc-artifact-upload-", ".tmp");
+        } catch (IOException e) {
+            throw new UncheckedIOException("creating the upload temp file", e);
+        }
+        try {
+            long count = 0;
+            Digest actual;
+            try (InputStream body = ctx.bodyStream();
+                 var out = Files.newOutputStream(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                MessageDigest sha256 = sha256();
+                var digestIn = new DigestInputStream(body, sha256);
+                byte[] buf = new byte[UPLOAD_CHUNK_BYTES];
+                int n;
+                while ((n = digestIn.read(buf)) != -1) {
+                    count += n;
+                    if (count > ArtifactBlobStore.MAX_BYTES) {
+                        throw ArtifactHttpException.tooLarge(ArtifactBlobStore.MAX_BYTES);
+                    }
+                    out.write(buf, 0, n);
+                }
+                actual = new Digest("sha256:" + HexFormat.of().formatHex(sha256.digest()));
+            } catch (IOException e) {
+                throw new UncheckedIOException("reading the uploaded artifact", e);
+            }
+            if (count == 0) {
+                throw ArtifactHttpException.empty();
+            }
+            if (!actual.equals(digest)) {
+                throw ArtifactHttpException.digestMismatch(digest, actual);
+            }
+            try {
+                // Idempotent (spec §3): uploading a digest that is already there is a
+                // 200 with the same body — the bytes are still read and hashed above,
+                // the route never answers for bytes it did not see.
+                store.put(f.id(), digest, temp);
+            } catch (ArtifactException e) {
+                throw HttpError.internal("ARTIFACT_STORE_ERROR", "storing the uploaded artifact failed", e);
+            }
+            String hex = digest.value().substring("sha256:".length());
+            ctx.status(200).json(new UploadArtifactResponse("platform://" + f.id() + "/" + hex, digest.value(), count));
+        } finally {
+            deleteQuietly(temp);
+        }
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException _) {
+            // best-effort cleanup — a leftover temp file is harmless and never served
+        }
     }
 
     /// spec §5.2: `GET /api/functions/{address}/versions`, newest first.
@@ -405,7 +512,21 @@ public final class FunctionApi {
     private static void delete(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_MANAGE);
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
-        DeleteFunction.of(s.repo(), s.triggerSync()).run(s.uow(), new DeleteCommand(address), Auth.executionContext());
+        FunctionEvents.FunctionDeleted event = DeleteFunction.of(s.repo(), s.triggerSync())
+                .run(s.uow(), new DeleteCommand(address), Auth.executionContext());
+        // spec `function-artifact-upload.md` §5 "Function delete" (R4): best-effort,
+        // AFTER the transaction commits — a store failure is a WARN, never a failed
+        // delete. An orphan blob is garbage, not state.
+        s.artifactBlobStore().ifPresent(store -> {
+            try {
+                store.deleteAll(event.functionId());
+            } catch (ArtifactException e) {
+                LOG.atWarn().setMessage("deleting a deleted function's artifacts failed")
+                        .addKeyValue("id", event.functionId())
+                        .setCause(e)
+                        .log();
+            }
+        });
         ctx.status(204);
     }
 
@@ -643,6 +764,11 @@ public final class FunctionApi {
             return new PublishResponse(v.id(), v.version(), "PUBLISHED", v.digest().value(),
                     VersionResponse.SignerResponse.from(v.signer()));
         }
+    }
+
+    /// 200 body of `PUT /api/functions/{address}/artifacts/{digest}` (spec
+    /// `function-artifact-upload.md` §3).
+    public record UploadArtifactResponse(String artifactRef, String digest, long bytes) {
     }
 
     /// One version, on the wire (spec §5.2): the LIST shape when `manifest`

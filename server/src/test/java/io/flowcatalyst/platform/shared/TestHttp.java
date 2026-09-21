@@ -78,6 +78,45 @@ public final class TestHttp implements AutoCloseable {
         return send("DELETE", path, null, headers);
     }
 
+    /// Raw bytes, `application/octet-stream` unless a `Content-Type` header
+    /// is given explicitly — for a streaming route
+    /// (`docs/spec/function-artifact-upload.md` §3) that never accepts JSON.
+    public HttpResponse<byte[]> putBytes(String path, byte[] body, String... headers) {
+        var b = HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path))
+                .PUT(HttpRequest.BodyPublishers.ofByteArray(body));
+        return sendBytes(b, headers, "application/octet-stream");
+    }
+
+    /// Streams `body` with NO declared `Content-Length` (chunked transfer
+    /// encoding, discovered mid-stream on the server side) — the JDK
+    /// `HttpClient` only omits `Content-Length` for a publisher whose
+    /// `contentLength()` is unknown, which `BodyPublishers#ofInputStream`
+    /// gives for free.
+    public HttpResponse<byte[]> putStreamedBytes(String path, java.util.function.Supplier<java.io.InputStream> body,
+            String... headers) {
+        var b = HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path))
+                .PUT(HttpRequest.BodyPublishers.ofInputStream(body));
+        return sendBytes(b, headers, "application/octet-stream");
+    }
+
+    public HttpResponse<byte[]> getBytes(String path, String... headers) {
+        var b = HttpRequest.newBuilder(URI.create("http://" + HOST + ":" + port() + path)).GET();
+        return sendBytes(b, headers, null);
+    }
+
+    private HttpResponse<byte[]> sendBytes(HttpRequest.Builder b, String[] headers, String defaultContentType) {
+        if (defaultContentType != null && !hasContentType(headers)) b.header("Content-Type", defaultContentType);
+        if (headers.length > 0) b.headers(headers);
+        try {
+            return client.send(b.build(), HttpResponse.BodyHandlers.ofByteArray());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
     /// Any method; a non-null body is sent as `application/json` unless a
     /// `Content-Type` header is given explicitly.
     public HttpResponse<String> send(String method, String path, String body, String... headers) {

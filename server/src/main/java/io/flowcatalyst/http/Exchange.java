@@ -32,6 +32,14 @@ public interface Exchange {
     /// The raw request body.
     byte[] bodyAsBytes();
 
+    /// The request body as a back-pressured stream, for a route registered
+    /// with `Routes.putStreaming` (`docs/spec/function-artifact-upload.md`
+    /// §3): the socket is read only as fast as the handler consumes this
+    /// stream, and nothing is buffered in memory. `IllegalStateException` on
+    /// an ordinary (buffered) exchange, exactly as `body()`/`bodyAsBytes()`
+    /// throw `IllegalStateException` on a streaming one.
+    InputStream bodyStream();
+
     /// The request body deserialised through the platform JSON mapper. A
     /// malformed body raises the mapper's own exception.
     <T> T bodyAsClass(Class<T> type);
@@ -100,8 +108,17 @@ public interface Exchange {
     Exchange result(byte[] body);
 
     /// Sets the response body to a stream; the adapter reads and closes it
-    /// after the response ends.
+    /// after the response ends. Buffers the whole stream into memory first —
+    /// for a large body use [#resultStream(InputStream, long)] instead.
     Exchange result(InputStream body);
+
+    /// Streams `body` (`contentLength` bytes, already known) as the response
+    /// without ever buffering it in memory — the response-side counterpart
+    /// to a streaming request (`docs/spec/function-artifact-upload.md` §4).
+    /// The adapter reads and closes `body` after the response is fully
+    /// written. Mutually exclusive with every other `result*`/`json`/`html`
+    /// call on the same exchange; the last one wins, same as those.
+    Exchange resultStream(InputStream body, long contentLength);
 
     /// The body stream set by [#result(InputStream)] / [#result(String)] /
     /// [#result(byte[])], or `null` when no body has been set. Only

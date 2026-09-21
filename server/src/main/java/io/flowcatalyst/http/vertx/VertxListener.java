@@ -13,12 +13,17 @@ import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.net.PfxOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.core.buffer.Buffer;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.sql.Connection;
@@ -30,6 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.postgresql.jdbc.PgConnection;
 import org.slf4j.Logger;
@@ -191,17 +197,17 @@ public final class VertxListener implements AutoCloseable {
                 // A method miss falls through to later routes (Javalin routes per
                 // method, so a GET catch-all still wins); the last route is the 404.
                 if (g == null) rc.next();
-                else listener[0].dispatch(rc, g.group(), g.handler());
+                else listener[0].dispatch(rc, g.group(), g.handler(), g.streaming());
             });
         }
-        router.route().last().handler(rc -> listener[0].dispatch(rc, Group.NO_DB, NOT_FOUND));
+        router.route().last().handler(rc -> listener[0].dispatch(rc, Group.NO_DB, NOT_FOUND, false));
         router.route().failureHandler(rc -> {
             int status = rc.statusCode() > 0 ? rc.statusCode() : 500;
             Throwable failure = rc.failure();
             String message = failure != null && failure.getMessage() != null ? failure.getMessage() : "";
             listener[0].dispatch(rc, Group.NO_DB, x -> {
                 throw new HttpException(status, message);
-            });
+            }, false);
         });
         var serverOptions = new HttpServerOptions()
                 .setHost(options.host())
@@ -273,15 +279,27 @@ public final class VertxListener implements AutoCloseable {
     /// `maxRequestSize`, the excess drained and remembered as "oversized" so the
     /// body accessors answer 413 lazily), captures the request's context and
     /// hands the whole chain to a fresh virtual thread.
-    private void dispatch(RoutingContext rc, Group group, Handler handler) {
+    ///
+    /// `streaming` (spec `function-artifact-upload.md` §3, `Routes.putStreaming`)
+    /// skips ALL of that: [VertxBodyInputStream#attach] sets the handlers and
+    /// pauses the request right here, before admission, and the body is
+    /// never DELIVERED on the loop — the handler's own virtual thread reads
+    /// it lazily once admission and authorization both pass. Every other
+    /// route's 1 MB buffered body is completely unchanged by this branch.
+    private void dispatch(RoutingContext rc, Group group, Handler handler, boolean streaming) {
         Context requestContext = vertx.getOrCreateContext();
         var request = rc.request();
         Group effectiveGroup = effectiveGroup(group, request.path());
+        if (streaming) {
+            VertxBodyInputStream bodyStream = VertxBodyInputStream.attach(requestContext, request);
+            submitOrReject(rc, requestContext, effectiveGroup, handler, null, false, bodyStream);
+            return;
+        }
         if (rc.get(BODY_KEY) != null) {
             // Re-dispatched (failure handler after the body was already read).
             byte[] bytes = rc.get(BODY_KEY);
             boolean oversized = Boolean.TRUE.equals(rc.get(OVERSIZED_KEY));
-            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized);
+            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized, null);
             return;
         }
         String contentType = request.getHeader("Content-Type");
@@ -306,7 +324,7 @@ public final class VertxListener implements AutoCloseable {
             byte[] bytes = buffer.getBytes();
             rc.put(BODY_KEY, bytes);
             rc.put(OVERSIZED_KEY, oversized[0]);
-            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized[0]);
+            submitOrReject(rc, requestContext, effectiveGroup, handler, bytes, oversized[0], null);
         });
     }
 
@@ -324,7 +342,7 @@ public final class VertxListener implements AutoCloseable {
     /// outcome by a different path — `RequestWorkers#submit` already returned `false`
     /// without ever running `task`.
     private void submitOrReject(RoutingContext rc, Context requestContext, Group group, Handler handler,
-                                byte[] requestBody, boolean oversized) {
+                                byte[] requestBody, boolean oversized, VertxBodyInputStream bodyStream) {
         Duration deadline = group == Group.DISPATCH ? options.dispatchDeadline() : options.deadline();
         var claimed = new AtomicBoolean();
         long timerId = vertx.setTimer(deadline.toMillis(), id -> {
@@ -336,7 +354,7 @@ public final class VertxListener implements AutoCloseable {
         boolean accepted = options.workers().submit(group, () -> {
             if (!claimed.compareAndSet(false, true)) return; // the queued-request deadline already answered
             vertx.cancelTimer(timerId);
-            runChain(rc, requestContext, group, handler, requestBody, oversized);
+            runChain(rc, requestContext, group, handler, requestBody, oversized, bodyStream);
         });
         if (!accepted) {
             if (claimed.compareAndSet(false, true)) {
@@ -362,30 +380,26 @@ public final class VertxListener implements AutoCloseable {
     /// model B"): admission scope → deadline → before* → handler → after*,
     /// then one hop back to the loop to write.
     private void runChain(RoutingContext rc, Context requestContext, Group group, Handler handler,
-                          byte[] requestBody, boolean oversized) {
-        var x = new VertxExchange(rc, group, requestBody, oversized);
+                          byte[] requestBody, boolean oversized, VertxBodyInputStream bodyStream) {
+        var x = bodyStream != null
+                ? new VertxExchange(rc, group, bodyStream)
+                : new VertxExchange(rc, group, requestBody, oversized);
         Thread me = Thread.currentThread();
         var admission = new Admission(rc.request().path(), group);
         var deadlineFired = new AtomicBoolean();
         var finished = new AtomicBoolean();
         Duration deadline = group == Group.DISPATCH ? options.dispatchDeadline() : options.deadline();
-        long timer = vertx.setTimer(deadline.toMillis(), id -> {
-            deadlineFired.set(true);
-            var held = admission.heldConnections();
-            if (held.isEmpty()) {
-                // Parked on a semaphore, a lock or a non-JDBC socket: interrupt wakes it.
-                me.interrupt();
-                return;
-            }
-            // Parked in a pgjdbc read: cancelQuery() wakes it with SQLSTATE 57014 and the
-            // connection stays reusable (measured 8–12 ms). An interrupt landing on that
-            // read instead closes the socket and the pool evicts the connection, so the
-            // interrupt is only the fallback if the chain is still running afterwards.
-            for (Connection c : held) cancelQuietly(c);
-            vertx.setTimer(CANCEL_GRACE.toMillis(), id2 -> {
-                if (!finished.get()) me.interrupt();
-            });
-        });
+        var timerId = new AtomicLong();
+        if (bodyStream != null) {
+            // FIX 1 (owner ruling: deadlines live on the event-loop timer wheel, never
+            // per-request timed parks, no new knob): a STREAMING exchange's deadline is a
+            // STALL deadline, not a total one — a slow-but-steady 256 MiB upload must not
+            // time out merely for taking longer than `deadline` in total; only `deadline`
+            // of silence does.
+            scheduleStreamingStallCheck(bodyStream, deadline, me, admission, deadlineFired, finished, timerId);
+        } else {
+            timerId.set(vertx.setTimer(deadline.toMillis(), id -> fireDeadline(me, admission, deadlineFired, finished)));
+        }
         try {
             ScopedValue.where(Admission.CURRENT, admission).call(() -> {
                 chain(x, handler);
@@ -402,11 +416,204 @@ public final class VertxListener implements AutoCloseable {
             if (!deadlineFired.get()) x.override(500, "{\"error\":\"INTERNAL\",\"message\":\"internal error\"}".getBytes(StandardCharsets.UTF_8));
         } finally {
             finished.set(true);
-            vertx.cancelTimer(timer);
+            vertx.cancelTimer(timerId.get());
             Thread.interrupted();
         }
         if (deadlineFired.get()) x.override(503, DEADLINE_BODY);
-        requestContext.runOnContext(v -> x.write(rc.response()));
+        // FIX 3: decided HERE, once, after the chain has genuinely finished — never
+        // from inside VertxBodyInputStream#close itself (see its own doc for why:
+        // closing, or even just tagging `Connection: close`, before the response is
+        // confirmed written raced an unread request body and lost the response to a
+        // TCP reset, reproduced while pinning this exact path). HTTP/2 is excluded
+        // unconditionally: this listener shares h2/h2c on one port, and closing the
+        // connection would tear down every OTHER multiplexed stream on it too.
+        boolean closeConnectionAfterWrite = bodyStream != null && bodyStream.abandonedBeforeEof()
+                && rc.request().version() != HttpVersion.HTTP_2;
+        InputStream streamed = x.streamedBody();
+        if (streamed != null) {
+            // Spec `function-artifact-upload.md` §4: the response-side pump, run
+            // synchronously on this same per-request virtual thread — no different
+            // from a handler that blocks on I/O, and the deadline above has already
+            // been cancelled by this point, exactly as for the buffered write below.
+            streamResponse(rc, requestContext, x, streamed, deadline, closeConnectionAfterWrite);
+        } else {
+            requestContext.runOnContext(v -> x.write(rc.response()).onComplete(ar -> {
+                if (closeConnectionAfterWrite) rc.request().connection().close();
+            }));
+        }
+    }
+
+    /// The plain (non-streaming) request's deadline action — unchanged from
+    /// before FIX 1: fires once, at `deadline`, regardless of progress.
+    /// Shared with [#scheduleStreamingStallCheck], which only decides WHEN to
+    /// call this, never what it does once called.
+    private void fireDeadline(Thread me, Admission admission, AtomicBoolean deadlineFired, AtomicBoolean finished) {
+        deadlineFired.set(true);
+        var held = admission.heldConnections();
+        if (held.isEmpty()) {
+            // Parked on a semaphore, a lock or a non-JDBC socket: interrupt wakes it.
+            me.interrupt();
+            return;
+        }
+        // Parked in a pgjdbc read: cancelQuery() wakes it with SQLSTATE 57014 and the
+        // connection stays reusable (measured 8–12 ms). An interrupt landing on that
+        // read instead closes the socket and the pool evicts the connection, so the
+        // interrupt is only the fallback if the chain is still running afterwards.
+        for (Connection c : held) cancelQuietly(c);
+        vertx.setTimer(CANCEL_GRACE.toMillis(), id2 -> {
+            if (!finished.get()) me.interrupt();
+        });
+    }
+
+    /// FIX 1: arms (or re-arms) a streaming request's STALL timer for exactly
+    /// as long as remains before `bodyStream` will have gone a full `deadline`
+    /// with no progress — a chunk, or EOF
+    /// ([VertxBodyInputStream#lastProgressNanos]; EOF itself counts as
+    /// progress, so the handler still gets one full final window to
+    /// hash-compare and `store.put` once the wire has nothing left to send —
+    /// intentional). On fire, this re-checks rather than trusting the
+    /// schedule: if a chunk arrived since the timer was armed, that only
+    /// shrank the remaining window, so it re-arms for whatever is left; only
+    /// once a full `deadline` has genuinely passed with no progress does it
+    /// fall through to [#fireDeadline] — the existing DB-cancel/interrupt
+    /// behaviour, unchanged. `timerId` always holds the CURRENTLY pending
+    /// timer so `runChain`'s `finally` cancels the right one no matter how
+    /// many times this has re-armed.
+    private void scheduleStreamingStallCheck(VertxBodyInputStream bodyStream, Duration deadline, Thread me,
+            Admission admission, AtomicBoolean deadlineFired, AtomicBoolean finished, AtomicLong timerId) {
+        long idleMillis = (System.nanoTime() - bodyStream.lastProgressNanos()) / 1_000_000L;
+        long remainingMillis = Math.max(deadline.toMillis() - idleMillis, 1);
+        long id = vertx.setTimer(remainingMillis, tid -> {
+            if (finished.get()) {
+                return; // the chain already finished; nothing left to time out
+            }
+            long idleNowMillis = (System.nanoTime() - bodyStream.lastProgressNanos()) / 1_000_000L;
+            if (idleNowMillis >= deadline.toMillis()) {
+                fireDeadline(me, admission, deadlineFired, finished);
+            } else {
+                scheduleStreamingStallCheck(bodyStream, deadline, me, admission, deadlineFired, finished, timerId);
+            }
+        });
+        timerId.set(id);
+    }
+
+    /// How many bytes of a streamed response are held in memory at once
+    /// (spec §4: "memory must not scale with the artifact").
+    private static final int STREAM_CHUNK_BYTES = 64 * 1024;
+
+    /// Pumps `streamed` to the socket a chunk at a time, each
+    /// `HttpServerResponse#write` awaited before the next read — memory never
+    /// holds more than one chunk regardless of the artifact's size. Every
+    /// touch of `rc.response()` still happens on the event loop via
+    /// `runOnContext`, the same discipline the buffered path uses.
+    ///
+    /// FIX 2: a loop-owned STALL timer runs the whole time — a host that
+    /// stops reading backpressures `resp.write`, so `accepted.get()` below
+    /// would otherwise block this virtual thread, the store's open
+    /// `InputStream` (a file handle, an S3 connection) and the API_READ
+    /// admission slot forever. See [#scheduleResponseStallCheck].
+    ///
+    /// `closeConnectionAfterWrite` is FIX 3's own signal (see `runChain`'s
+    /// doc): only after `resp.end()` here is confirmed complete does this
+    /// close the connection, same discipline as the buffered write path.
+    private void streamResponse(RoutingContext rc, Context requestContext, VertxExchange x, InputStream streamed,
+                                Duration deadline, boolean closeConnectionAfterWrite) {
+        var resp = rc.response();
+        var lastProgressNanos = new AtomicLong(System.nanoTime());
+        var pumpDone = new AtomicBoolean();
+        var timerId = new AtomicLong();
+        scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId);
+        try (streamed) {
+            if (!awaitOnLoop(requestContext, () -> {
+                if (!resp.ended() && !resp.closed()) x.writeStreamedHead(resp);
+            })) {
+                return;
+            }
+            if (resp.ended() || resp.closed()) return;
+            byte[] chunk = new byte[STREAM_CHUNK_BYTES];
+            int n;
+            while ((n = streamed.read(chunk)) != -1) {
+                byte[] toWrite = n == chunk.length ? chunk : Arrays.copyOf(chunk, n);
+                var buf = Buffer.buffer(toWrite);
+                var accepted = new CompletableFuture<Void>();
+                requestContext.runOnContext(v -> resp.write(buf).onComplete(ar -> {
+                    if (ar.succeeded()) accepted.complete(null);
+                    else accepted.completeExceptionally(ar.cause());
+                }));
+                accepted.get();
+                lastProgressNanos.set(System.nanoTime());
+            }
+            requestContext.runOnContext(v -> {
+                if (!resp.ended() && !resp.closed()) {
+                    resp.end().onComplete(ar -> {
+                        if (closeConnectionAfterWrite) rc.request().connection().close();
+                    });
+                }
+            });
+        } catch (IOException e) {
+            LOG.debug("streaming the response body failed", e);
+            resetQuietly(requestContext, resp);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            resetQuietly(requestContext, resp);
+        } catch (ExecutionException e) {
+            LOG.debug("writing the streamed response body failed", e.getCause());
+            resetQuietly(requestContext, resp);
+        } finally {
+            pumpDone.set(true);
+            vertx.cancelTimer(timerId.get());
+        }
+    }
+
+    /// FIX 2: the response-pump's own stall timer, the mirror image of
+    /// [#scheduleStreamingStallCheck] on the request side. On a full
+    /// `deadline` with no completed write, `resp.reset()` fails the pending
+    /// write's future — `streamResponse`'s own `catch (ExecutionException)`
+    /// then runs, which closes `streamed` (the try-with-resources) and
+    /// returns; this method never touches `streamed` or interrupts anything
+    /// itself, only the response.
+    private void scheduleResponseStallCheck(Context requestContext, io.vertx.core.http.HttpServerResponse resp,
+            Duration deadline, AtomicLong lastProgressNanos, AtomicBoolean pumpDone, AtomicLong timerId) {
+        long idleMillis = (System.nanoTime() - lastProgressNanos.get()) / 1_000_000L;
+        long remainingMillis = Math.max(deadline.toMillis() - idleMillis, 1);
+        long id = vertx.setTimer(remainingMillis, tid -> {
+            if (pumpDone.get()) {
+                return; // the pump already finished; nothing left to time out
+            }
+            long idleNowMillis = (System.nanoTime() - lastProgressNanos.get()) / 1_000_000L;
+            if (idleNowMillis >= deadline.toMillis()) {
+                resetQuietly(requestContext, resp);
+            } else {
+                scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId);
+            }
+        });
+        timerId.set(id);
+    }
+
+    /// Runs `task` on the loop and blocks this virtual thread until it has,
+    /// returning `false` (having logged nothing further — the caller just
+    /// stops) only if interrupted while waiting.
+    private static boolean awaitOnLoop(Context requestContext, Runnable task) {
+        var done = new CompletableFuture<Void>();
+        requestContext.runOnContext(v -> {
+            task.run();
+            done.complete(null);
+        });
+        try {
+            done.get();
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (ExecutionException e) {
+            return false;
+        }
+    }
+
+    private static void resetQuietly(Context requestContext, io.vertx.core.http.HttpServerResponse resp) {
+        requestContext.runOnContext(v -> {
+            if (!resp.ended() && !resp.closed()) resp.reset();
+        });
     }
 
     private void chain(VertxExchange x, Handler handler) throws Exception {

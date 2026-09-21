@@ -19,8 +19,10 @@ import java.util.regex.Pattern;
 /// pattern, methods dispatched from [Mount#byMethod], so a known path with
 /// the wrong method is a 404 through the platform envelope, never a 405.
 public final class VertxRoutes implements Routes, RouteRegistry {
-    /// A route handler with the group its registration carried.
-    record Grouped(Handler handler, Group group) {
+    /// A route handler with the group its registration carried. `streaming`
+    /// is set only by [#putStreaming] (spec `function-artifact-upload.md`
+    /// §3): [VertxListener] never buffers that route's body.
+    record Grouped(Handler handler, Group group, boolean streaming) {
     }
 
     /// Everything registered under one Javalin-syntax path pattern.
@@ -63,7 +65,11 @@ public final class VertxRoutes implements Routes, RouteRegistry {
     }
 
     private Routes add(String method, String path, Handler h) {
-        mounts.computeIfAbsent(path, Mount::new).byMethod.put(method, new Grouped(h, group));
+        return add(method, path, h, false);
+    }
+
+    private Routes add(String method, String path, Handler h, boolean streaming) {
+        mounts.computeIfAbsent(path, Mount::new).byMethod.put(method, new Grouped(h, group, streaming));
         registrations.add(new Registration(method, path, group));
         return this;
     }
@@ -81,6 +87,11 @@ public final class VertxRoutes implements Routes, RouteRegistry {
     @Override
     public Routes put(String path, Handler h) {
         return add("PUT", path, h);
+    }
+
+    @Override
+    public Routes putStreaming(String path, Handler h) {
+        return add("PUT", path, h, true);
     }
 
     @Override
