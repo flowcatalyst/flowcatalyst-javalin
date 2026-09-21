@@ -13,6 +13,7 @@ final class ScannedDefinitions
      * @param array<array<string, mixed>> $roles
      * @param array<array<string, mixed>> $eventTypes
      * @param array<array<string, mixed>> $subscriptions
+     * @param array<array<string, mixed>> $connections
      * @param array<array<string, mixed>> $dispatchPools
      * @param array<array<string, mixed>> $processes
      * @param array<array<string, mixed>> $scheduledJobs
@@ -22,6 +23,7 @@ final class ScannedDefinitions
         public readonly array $permissions = [],
         public readonly array $eventTypes = [],
         public readonly array $subscriptions = [],
+        public readonly array $connections = [],
         public readonly array $dispatchPools = [],
         public readonly array $processes = [],
         public readonly array $scheduledJobs = [],
@@ -36,6 +38,7 @@ final class ScannedDefinitions
             && empty($this->permissions)
             && empty($this->eventTypes)
             && empty($this->subscriptions)
+            && empty($this->connections)
             && empty($this->dispatchPools)
             && empty($this->processes)
             && empty($this->scheduledJobs);
@@ -50,6 +53,7 @@ final class ScannedDefinitions
             + count($this->permissions)
             + count($this->eventTypes)
             + count($this->subscriptions)
+            + count($this->connections)
             + count($this->dispatchPools)
             + count($this->processes)
             + count($this->scheduledJobs);
@@ -67,6 +71,7 @@ final class ScannedDefinitions
             'permissions' => $this->permissions,
             'eventTypes' => $this->eventTypes,
             'subscriptions' => $this->subscriptions,
+            'connections' => $this->connections,
             'dispatchPools' => $this->dispatchPools,
             'processes' => $this->processes,
             'scheduledJobs' => $this->scheduledJobs,
@@ -85,6 +90,7 @@ final class ScannedDefinitions
             permissions: $data['permissions'] ?? [],
             eventTypes: $data['eventTypes'] ?? [],
             subscriptions: $data['subscriptions'] ?? [],
+            connections: $data['connections'] ?? [],
             dispatchPools: $data['dispatchPools'] ?? [],
             processes: $data['processes'] ?? [],
             scheduledJobs: $data['scheduledJobs'] ?? [],

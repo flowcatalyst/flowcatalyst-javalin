@@ -79,6 +79,16 @@ class DefinitionRepository
     }
 
     /**
+     * Get all connection definitions.
+     *
+     * @return array<array<string, mixed>>
+     */
+    public function connections(): array
+    {
+        return $this->all()->connections;
+    }
+
+    /**
      * Get all dispatch pool definitions.
      *
      * @return array<array<string, mixed>>

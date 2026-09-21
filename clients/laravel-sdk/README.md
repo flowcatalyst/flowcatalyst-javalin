@@ -383,8 +383,8 @@ php artisan flowcatalyst:sync            # push roles (with their permissions) t
 If `spatie/laravel-permission` is installed, `flowcatalyst:sync` **also seeds the
 local Spatie tables** so your app's authorization matches what it pushed (toggle
 with `FLOWCATALYST_SEED_SPATIE` / `--no-spatie`). The same attribute mechanism
-covers `#[AsEventType]`, `#[AsSubscription]`, `#[AsDispatchPool]`, `#[AsProcess]`,
-and `#[AsScheduledJob]`. See [`docs/syncing-definitions.md`](docs/syncing-definitions.md)
+covers `#[AsEventType]`, `#[AsSubscription]`, `#[AsConnection]`, `#[AsDispatchPool]`,
+`#[AsProcess]`, and `#[AsScheduledJob]`. See [`docs/syncing-definitions.md`](docs/syncing-definitions.md)
 for the full reference, including the programmatic `DefinitionSynchronizer`.
 
 ### Multiple applications in one codebase

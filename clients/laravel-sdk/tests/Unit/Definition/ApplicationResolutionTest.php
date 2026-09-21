@@ -107,7 +107,7 @@ final class ApplicationResolutionTest extends TestCase
         )];
         yield 'role' => [new AsRole(name: 'admin', application: 'billing')];
         yield 'subscription' => [new AsSubscription(
-            code: 'c', name: 'N', connectionId: 'conn', queue: 'q',
+            code: 'c', name: 'N', target: '/hook', connectionCode: 'conn', queue: 'q',
             dispatchPoolCode: 'default', application: 'billing'
         )];
         yield 'dispatch pool' => [new AsDispatchPool(code: 'default', application: 'billing')];

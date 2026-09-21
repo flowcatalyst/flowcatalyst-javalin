@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace FlowCatalyst\Definition;
 
+use FlowCatalyst\Attributes\AsConnection;
 use FlowCatalyst\Attributes\AsDispatchPool;
 use FlowCatalyst\Attributes\AsEventType;
 use FlowCatalyst\Attributes\AsPermission;
@@ -39,6 +40,7 @@ class DefinitionScanner
         $permissions = [];
         $eventTypes = [];
         $subscriptions = [];
+        $connections = [];
         $dispatchPools = [];
         $processes = [];
         $scheduledJobs = [];
@@ -55,7 +57,7 @@ class DefinitionScanner
                 $classes = $this->getClassesFromFile($file->getRealPath());
 
                 foreach ($classes as $className) {
-                    $this->processClass($className, $applicationCode, $roles, $permissions, $eventTypes, $subscriptions, $dispatchPools, $processes, $scheduledJobs);
+                    $this->processClass($className, $applicationCode, $roles, $permissions, $eventTypes, $subscriptions, $connections, $dispatchPools, $processes, $scheduledJobs);
                 }
             }
         }
@@ -65,6 +67,7 @@ class DefinitionScanner
             permissions: $permissions,
             eventTypes: $eventTypes,
             subscriptions: $subscriptions,
+            connections: $connections,
             dispatchPools: $dispatchPools,
             processes: $processes,
             scheduledJobs: $scheduledJobs,
@@ -114,6 +117,7 @@ class DefinitionScanner
      * @param array<array<string, mixed>> $roles
      * @param array<array<string, mixed>> $eventTypes
      * @param array<array<string, mixed>> $subscriptions
+     * @param array<array<string, mixed>> $connections
      * @param array<array<string, mixed>> $dispatchPools
      * @param array<array<string, mixed>> $processes
      * @param array<array<string, mixed>> $scheduledJobs
@@ -125,6 +129,7 @@ class DefinitionScanner
         array &$permissions,
         array &$eventTypes,
         array &$subscriptions,
+        array &$connections,
         array &$dispatchPools,
         array &$processes,
         array &$scheduledJobs
@@ -181,6 +186,19 @@ class DefinitionScanner
             $subscriptions[] = array_merge($instance->toArray(), [
                 '_class' => $className,
                 '_application' => $this->resolveApplication($className, $instance),
+                'client' => $this->resolveClient($instance),
+            ]);
+        }
+
+        // Check for AsConnection attribute
+        $connectionAttributes = $reflection->getAttributes(AsConnection::class);
+        foreach ($connectionAttributes as $attribute) {
+            /** @var AsConnection $instance */
+            $instance = $attribute->newInstance();
+            $connections[] = array_merge($instance->toArray(), [
+                '_class' => $className,
+                '_application' => $this->resolveApplication($className, $instance),
+                'client' => $this->resolveClient($instance),
             ]);
         }
 
@@ -232,6 +250,29 @@ class DefinitionScanner
             : null;
 
         return $explicit ?? $this->matchApplicationMap($className);
+    }
+
+    /**
+     * Resolve which FlowCatalyst client a subscription/connection definition
+     * belongs to (single-tenant apps — see `flowcatalyst.client`). Order:
+     *   1. explicit `client:` on the attribute,
+     *   2. the config default `flowcatalyst.client` (`FLOWCATALYST_CLIENT`),
+     *   3. null — global.
+     * Unlike `resolveApplication`, there is no namespace map: a codebase that
+     * defines definitions for more than one client builds one
+     * `SyncDefinitionSet` per client instead (`SyncDefinitionSet::forClient()`).
+     */
+    private function resolveClient(object $instance): ?string
+    {
+        $explicit = (property_exists($instance, 'client') && is_string($instance->client) && $instance->client !== '')
+            ? $instance->client
+            : null;
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        $default = function_exists('config') ? config('flowcatalyst.client') : null;
+        return is_string($default) && $default !== '' ? $default : null;
     }
 
     /**

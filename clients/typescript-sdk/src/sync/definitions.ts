@@ -126,6 +126,37 @@ export interface EventTypeDefinition {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Connection
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A connection declaration.
+ *
+ * A connection carries nothing environment-specific — the platform assigns
+ * the application's own provisioned service account itself, so one
+ * definition serves every environment. It exists purely so a subscription's
+ * `connectionCode` has something to resolve; connections are always synced
+ * BEFORE subscriptions in the same run so that resolution succeeds without a
+ * second sync.
+ */
+export interface ConnectionDefinition {
+	/** Unique connection code — stable across environments; what a subscription's `connectionCode` names */
+	code: string;
+	name: string;
+	description?: string;
+	/** Your own system's identifier for this connection */
+	externalId?: string;
+	/**
+	 * FlowCatalyst client (identifier slug — never an id; ids differ per
+	 * environment) this connection is scoped to. Omit for a global
+	 * connection. For a multi-tenant application, prefer scoping the whole
+	 * `DefinitionSet` with `.forClient(...)` instead of repeating this on
+	 * every row.
+	 */
+	client?: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Subscription
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -146,7 +177,7 @@ export interface SubscriptionEventTypeBinding {
  * A subscription declaration.
  *
  * The subscription describes a downstream consumer: where to deliver
- * (`target` URL or `connectionId` reference), which event types trigger it,
+ * (`target` URL, plus an optional `connectionCode`), which event types trigger it,
  * and how to handle failures.
  */
 export interface SubscriptionDefinition {
@@ -154,10 +185,36 @@ export interface SubscriptionDefinition {
 	code: string;
 	name: string;
 	description?: string;
-	/** Webhook URL where events are delivered */
+	/**
+	 * Where events are delivered. Either an absolute URL (sent verbatim), or
+	 * a path (e.g. `/webhooks/orders`) resolved at sync time against, in
+	 * order: the owning `DefinitionSet`'s `targetBaseUrl` (see
+	 * `.forClient()`), then the synchronizer's `subscriptionTargetBaseUrl`
+	 * option. There is no further fallback. A blank target, or a path with
+	 * no base available, fails that subscription's scope locally (naming
+	 * the subscription) rather than sending a partial list — under
+	 * `removeUnlisted` an omitted row would be deleted.
+	 */
 	target: string;
-	/** Pre-configured connection reference (alternative to `target`) */
+	/**
+	 * Code of the connection that delivers this subscription. Names a
+	 * connection owned by THIS application, unless `sharedConnection` is
+	 * set. Prefer it over `connectionId`: an id is minted per environment, a
+	 * code is the same everywhere.
+	 */
+	connectionCode?: string;
+	/**
+	 * Connection id. Environment-specific — use `connectionCode` in anything
+	 * that is synced to more than one environment.
+	 */
 	connectionId?: string;
+	/**
+	 * When true, `connectionCode` names a SHARED (application-less)
+	 * connection rather than one owned by this application. There is no
+	 * fallback between the two namespaces — the wrong one 404s rather than
+	 * silently resolving to the other connection's credentials.
+	 */
+	sharedConnection?: boolean;
 	/** Event types this subscription consumes */
 	eventTypes: SubscriptionEventTypeBinding[];
 	/** Dispatch pool code; falls back to the platform default when omitted */
@@ -168,6 +225,13 @@ export interface SubscriptionDefinition {
 	timeoutSeconds?: number;
 	/** When true, only the event's `data` field is POSTed (no metadata envelope) */
 	dataOnly?: boolean;
+	/**
+	 * FlowCatalyst client (identifier slug — never an id) this subscription
+	 * is scoped to. Omit for a global subscription. For a multi-tenant
+	 * application, prefer scoping the whole `DefinitionSet` with
+	 * `.forClient(...)` instead of repeating this on every row.
+	 */
+	client?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -293,6 +357,8 @@ export interface DefinitionSet {
 	 */
 	permissions?: PermissionInput[];
 	eventTypes?: EventTypeDefinition[];
+	/** Synced BEFORE subscriptions, so a subscription's `connectionCode` resolves in the same run. */
+	connections?: ConnectionDefinition[];
 	subscriptions?: SubscriptionDefinition[];
 	dispatchPools?: DispatchPoolDefinition[];
 	principals?: PrincipalDefinition[];
@@ -305,6 +371,20 @@ export interface DefinitionSet {
 	 * previously published version.
 	 */
 	openapiSpec?: unknown;
+	/**
+	 * The FlowCatalyst client (identifier slug — never an id) this whole set
+	 * is scoped to. Undefined = global (the default). Set via `.forClient()`
+	 * for a multi-tenant application's per-client set; a connection or
+	 * subscription row's own `client` wins over this.
+	 */
+	client?: string;
+	/**
+	 * Overrides the base URL a subscription's path-style target resolves
+	 * against, for THIS set only — a client-scoped set often has its own
+	 * host. Undefined falls back to the synchronizer's
+	 * `subscriptionTargetBaseUrl` option.
+	 */
+	targetBaseUrl?: string;
 }
 
 /**
@@ -348,11 +428,43 @@ export class DefinitionSetBuilder {
 		return this;
 	}
 
+	/**
+	 * Add connections to the set. Synced BEFORE subscriptions — a
+	 * subscription's `connectionCode` must resolve in the same run.
+	 */
+	withConnections(connections: ConnectionDefinition[]): this {
+		this.set.connections = [...(this.set.connections ?? []), ...connections];
+		return this;
+	}
+
 	withSubscriptions(subscriptions: SubscriptionDefinition[]): this {
 		this.set.subscriptions = [
 			...(this.set.subscriptions ?? []),
 			...subscriptions,
 		];
+		return this;
+	}
+
+	/**
+	 * Scope this whole set to one FlowCatalyst client (identifier slug —
+	 * never an id, ids differ per environment). Every connection/subscription
+	 * added to this set that doesn't set its own `client` inherits this one.
+	 * The optional `targetBaseUrl` overrides the base URL a path-style
+	 * subscription target resolves against, for this set only — client-scoped
+	 * sets often have their own host.
+	 *
+	 * For a multi-tenant application (one codebase, many clients), build one
+	 * set per (application, client): `defineApplication(...)` alone for the
+	 * global set, `.forClient(...)` for each tenant. Sync every set together
+	 * with `DefinitionSynchronizer.syncGrouped()` so the platform sees
+	 * exactly one call per (application, client) scope, global first —
+	 * `sync()`/`syncAll()` do NOT merge multiple sets for the same
+	 * application, and calling them yourself with two sets for one scope
+	 * lets the second call delete what the first just created.
+	 */
+	forClient(client: string, targetBaseUrl?: string): this {
+		this.set.client = client;
+		this.set.targetBaseUrl = targetBaseUrl;
 		return this;
 	}
 

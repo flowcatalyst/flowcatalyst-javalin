@@ -6,6 +6,7 @@ namespace FlowCatalyst\Console\Commands;
 
 use FlowCatalyst\Definition\DefinitionRepository;
 use FlowCatalyst\Sync\DefinitionSynchronizer;
+use FlowCatalyst\Sync\ProvidesSyncDefinitionSets;
 use FlowCatalyst\Sync\SyncDefinitionSet;
 use FlowCatalyst\Sync\SyncOptions;
 use FlowCatalyst\Sync\SyncResult;
@@ -25,6 +26,7 @@ class SyncDefinitionsCommand extends Command
                             {--roles : Sync only roles}
                             {--event-types : Sync only event types}
                             {--subscriptions : Sync only subscriptions}
+                            {--connections : Sync only connections}
                             {--dispatch-pools : Sync only dispatch pools}
                             {--principals : Sync only principals}
                             {--processes : Sync only processes}
@@ -65,6 +67,7 @@ class SyncDefinitionsCommand extends Command
         $syncAll = !$this->option('roles')
             && !$this->option('event-types')
             && !$this->option('subscriptions')
+            && !$this->option('connections')
             && !$this->option('dispatch-pools')
             && !$this->option('principals')
             && !$this->option('processes')
@@ -75,6 +78,7 @@ class SyncDefinitionsCommand extends Command
             syncRoles: $syncAll || $this->option('roles'),
             syncEventTypes: $syncAll || $this->option('event-types'),
             syncSubscriptions: $syncAll || $this->option('subscriptions'),
+            syncConnections: $syncAll || $this->option('connections'),
             syncDispatchPools: $syncAll || $this->option('dispatch-pools'),
             syncPrincipals: $syncAll || $this->option('principals'),
             syncProcesses: $syncAll || $this->option('processes'),
@@ -97,11 +101,6 @@ class SyncDefinitionsCommand extends Command
             unset($groups['']);
         }
 
-        if ($groups === []) {
-            $this->info('No definitions to sync.');
-            return Command::SUCCESS;
-        }
-
         // OpenAPI document (when an explicit file is given) is application-level;
         // it attaches to the default app's group only.
         $openapiSpec = $this->loadOpenapiSpec();
@@ -109,44 +108,68 @@ class SyncDefinitionsCommand extends Command
             return Command::FAILURE;
         }
 
-        if (count($groups) > 1) {
-            $this->info(sprintf('Syncing %d applications: %s', count($groups), implode(', ', array_keys($groups))));
+        // One (global) set per scanned application...
+        $sets = [];
+        foreach ($groups as $groupApp => $data) {
+            $set = SyncDefinitionSet::fromScannedDefinitions($groupApp, $data);
+            if ($openapiSpec !== null && $groupApp === $appCode) {
+                $set = $set->withOpenapiSpec($openapiSpec);
+            }
+            if (!$set->isEmpty()) {
+                $sets[] = $set;
+            }
+        }
+
+        // ...plus every set yielded by a configured provider — the
+        // multi-tenant path, where the tenant list is runtime data no
+        // attribute could express (global + per-client sets, built in code).
+        $sets = [...$sets, ...$this->resolveProviderSets()];
+
+        if ($sets === []) {
+            $this->info('No definitions to sync.');
+            return Command::SUCCESS;
+        }
+
+        $appsInvolved = array_values(array_unique(array_map(
+            static fn(SyncDefinitionSet $s) => $s->applicationCode,
+            $sets,
+        )));
+        if (count($appsInvolved) > 1) {
+            $this->info(sprintf('Syncing %d applications: %s', count($appsInvolved), implode(', ', $appsInvolved)));
             $this->newLine();
         }
 
+        if ($dryRun) {
+            foreach ($sets as $set) {
+                $label = $set->isGlobal() ? $set->applicationCode : "{$set->applicationCode} (client: {$set->getClient()})";
+                $this->info("Would sync to application: {$label}");
+                $this->showDryRunOutput($set, $options);
+                $this->displayPermissionSummary($set);
+            }
+            return Command::SUCCESS;
+        }
+
+        // Grouped by application, global set(s) before client set(s) —
+        // a client-scoped subscription may reference a global connection —
+        // with results for sets sharing an application code summed together.
+        $results = $synchronizer->syncGrouped($sets, $options);
+
         $hadErrors = false;
-        foreach ($groups as $groupApp => $data) {
-            $definitions = SyncDefinitionSet::fromScannedDefinitions($groupApp, $data);
-            if ($openapiSpec !== null && $groupApp === $appCode) {
-                $definitions = $definitions->withOpenapiSpec($openapiSpec);
-            }
-
-            if ($definitions->isEmpty()) {
-                continue;
-            }
-
-            if ($dryRun) {
-                $this->info("Would sync to application: {$groupApp}");
-                $this->showDryRunOutput($definitions, $options);
-                $this->displayPermissionSummary($definitions);
-                continue;
-            }
-
-            $this->info("Syncing definitions to application: {$groupApp}");
-            $result = $synchronizer->sync($definitions, $options);
-
+        foreach ($results as $groupApp => $result) {
+            $this->info("Synced definitions for application: {$groupApp}");
             $this->displayResults($result);
-            $this->displayPermissionSummary($definitions);
-
-            // Mirror roles + permissions into the local Spatie tables (so the
-            // app's authorization model matches what it just pushed). FlowCatalyst
-            // has no standalone permission entity, so permissions reach the
-            // platform via the roles above; this keeps the LOCAL side in step.
-            $this->seedSpatie($definitions);
-
             if ($result->hasErrors()) {
                 $hadErrors = true;
             }
+        }
+
+        // Mirror roles + permissions into the local Spatie tables (so the
+        // app's authorization model matches what it just pushed). FlowCatalyst
+        // has no standalone permission entity, so permissions reach the
+        // platform via the roles above; this keeps the LOCAL side in step.
+        foreach ($sets as $set) {
+            $this->displayPermissionSummary($set);
+            $this->seedSpatie($set);
         }
 
         return $hadErrors ? Command::FAILURE : Command::SUCCESS;
@@ -163,7 +186,7 @@ class SyncDefinitionsCommand extends Command
      */
     private function groupByApplication(array $scannedData, ?string $defaultAppCode): array
     {
-        $categories = ['roles', 'permissions', 'eventTypes', 'subscriptions', 'dispatchPools', 'principals', 'processes', 'scheduledJobs'];
+        $categories = ['roles', 'permissions', 'eventTypes', 'subscriptions', 'connections', 'dispatchPools', 'principals', 'processes', 'scheduledJobs'];
         $default = is_string($defaultAppCode) ? $defaultAppCode : '';
 
         $groups = [];
@@ -256,6 +279,52 @@ class SyncDefinitionsCommand extends Command
             return false;
         }
         return $decoded;
+    }
+
+    /**
+     * Definition sets supplied by configured providers
+     * (`flowcatalyst.definitions.set_providers`) — the multi-tenant path.
+     * Each configured class is resolved from the container and must
+     * implement {@see ProvidesSyncDefinitionSets}; an unresolvable or
+     * non-conforming entry is reported and skipped rather than fatal, so one
+     * bad provider doesn't block the scanned attribute definitions (or other
+     * providers) from syncing.
+     *
+     * @return SyncDefinitionSet[]
+     */
+    private function resolveProviderSets(): array
+    {
+        $classes = config('flowcatalyst.definitions.set_providers', []);
+        if (!is_array($classes)) {
+            return [];
+        }
+
+        $sets = [];
+        foreach ($classes as $class) {
+            if (!is_string($class) || $class === '') {
+                continue;
+            }
+
+            try {
+                $provider = app($class);
+            } catch (\Throwable $e) {
+                $this->warn("Could not resolve FlowCatalyst set provider [{$class}]: {$e->getMessage()}");
+                continue;
+            }
+
+            if (!$provider instanceof ProvidesSyncDefinitionSets) {
+                $this->warn("FlowCatalyst set provider [{$class}] does not implement ProvidesSyncDefinitionSets — skipped.");
+                continue;
+            }
+
+            foreach ($provider->syncDefinitionSets() as $set) {
+                if ($set instanceof SyncDefinitionSet && !$set->isEmpty()) {
+                    $sets[] = $set;
+                }
+            }
+        }
+
+        return $sets;
     }
 
     /**
@@ -355,6 +424,14 @@ class SyncDefinitionsCommand extends Command
             $this->newLine();
         }
 
+        if ($options->syncConnections && $definitions->hasConnections()) {
+            $this->info('Connections to sync:');
+            foreach ($definitions->getConnections() as $conn) {
+                $this->line("  - {$conn['code']}");
+            }
+            $this->newLine();
+        }
+
         if ($options->syncSubscriptions && $definitions->hasSubscriptions()) {
             $this->info('Subscriptions to sync:');
             foreach ($definitions->getSubscriptions() as $sub) {
@@ -432,6 +509,12 @@ class SyncDefinitionsCommand extends Command
                     $result->eventTypes['created'] ?? 0,
                     $result->eventTypes['updated'] ?? 0,
                     $result->eventTypes['deleted'] ?? 0,
+                ],
+                [
+                    'Connections',
+                    $result->connections['created'] ?? 0,
+                    $result->connections['updated'] ?? 0,
+                    $result->connections['deleted'] ?? 0,
                 ],
                 [
                     'Subscriptions',

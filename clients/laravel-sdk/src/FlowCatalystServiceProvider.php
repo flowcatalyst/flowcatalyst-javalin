@@ -212,6 +212,21 @@ class FlowCatalystServiceProvider extends ServiceProvider
     }
 
     /**
+     * The base URL a subscription's path-style target is resolved against.
+     * Explicit config wins; otherwise APP_URL. Null when neither is set — the
+     * sync then rejects any subscription whose target is a path.
+     */
+    protected function subscriptionTargetBaseUrl($app): ?string
+    {
+        $explicit = $app['config']['flowcatalyst']['subscriptions']['target_base_url'] ?? null;
+        if (is_string($explicit) && $explicit !== '') {
+            return $explicit;
+        }
+        $base = $app['config']['app.url'] ?? null;
+        return is_string($base) && $base !== '' ? $base : null;
+    }
+
+    /**
      * Mount the conventional scheduled-job process endpoint, wired to the
      * container's ScheduledJobRunner — apps only register handlers. Disable
      * via `flowcatalyst.scheduled_jobs.register_route` to mount your own
@@ -588,6 +603,7 @@ class FlowCatalystServiceProvider extends ServiceProvider
             return new DefinitionSynchronizer(
                 client: $app->make(FlowCatalystClient::class),
                 defaultScheduledJobTargetUrl: $this->scheduledJobProcessUrl($app),
+                subscriptionTargetBaseUrl: $this->subscriptionTargetBaseUrl($app),
             );
         });
     }
