@@ -27,7 +27,15 @@ the shared database, exposed to any scheduler another class leaked; closed by pe
 `Http2Test.h2cByUpgrade` — probe-and-release; closed. `MainTest.exitAfterStart…` — asserted that a
 connect to a freed ephemeral port is refused, which the OS does not promise; now passes on refusal
 or on an answer that is not our `/health`, and still fails when the server is not stopped (mutant).
-**`FnHttpServerTest` — still open, and now reproduced uncontended:** in one of four full reactor
+**Follow-up 2026-09-22 (`5f487755`):** the whole function-host module in random order ×4 —
+clean, `h4` did not recur; keep the body-printing assertion and treat the next sighting as the
+lead. The loop's 5th iteration failed elsewhere: `VertxListenerTest`'s response stall-timer test
+missed its 10 s bound once (never alone in 11 class runs); its assertion now reports the bytes
+served, which separates the two possible stories. And running that class ALONE exposed a real
+defect in the per-class databases: the JVM's first `getConnection()` carried the whole Flyway run,
+so a 1 s-deadline test that was the first database touch timed out before its query began (8/8
+alone, never behind other classes) — the template is now migrated when the first class starts.
+**`FnHttpServerTest` — as recorded on 2026-09-21:** in one of four full reactor
 runs (random order) `h4_platformBearerToken` answered **404** for its first request; the class alone
 is 12/12 green, so it is an interaction with another class in the same function-host JVM. The
 assertion now prints the body (which 404 — `FUNCTION_NOT_FOUND`, `ENDPOINT_NOT_FOUND`,
