@@ -30,7 +30,7 @@ envelope shared with the platform.
 | `…sdk.outbox` | Transactional outbox: `OutboxManager`, DTO builders, `OutboxDriver` SPI + `JdbcOutboxDriver`, raw SQL migrations in `migrations/` |
 | `…sdk.tsid` | TSID generation (13-char Crockford Base32, platform-compatible; collision-free monotonic sequence) — provided by the `flowcatalyst-usecase` module |
 | `…sdk.sync` | `DefinitionSynchronizer` + `DefinitionSet` — bulk-sync roles / event types / connections / subscriptions / dispatch pools / principals / processes / scheduled jobs / OpenAPI per application, optionally scoped to one client (`forClient`) and merged across sets (`syncGrouped`) |
-| `…sdk.annotations` | `@AsEventType` / `@AsSubscription` (now with `connectionCode` / `sharedConnection`) / `@AsDispatchPool` / `@AsRole` + `DefinitionScanner` (explicit class registration — no classpath scanning; connections have no annotation yet — declare them with `Definitions.Connection` directly) |
+| `…sdk.annotations` | `@AsEventType` / `@AsConnection` / `@AsSubscription` (with `connectionCode` / `sharedConnection` / `client`) / `@AsDispatchPool` / `@AsRole` + `DefinitionScanner` (explicit class registration — no classpath scanning) |
 | `…sdk.webhook` | `WebhookSignature.verify(...)` — HMAC-SHA256 verification of signed deliveries |
 
 ## Auth modes
@@ -140,7 +140,17 @@ Or with annotations and explicit registration:
 @AsEventType(code = "orders:sales:order:placed", name = "Order Placed")
 public record OrderPlaced(String orderId) {}
 
-var set = DefinitionScanner.scan("orders", List.of(OrderPlaced.class));
+@AsConnection(code = "billing-hook", name = "Billing Webhook")
+final class BillingConnection {}
+
+@AsSubscription(code = "order-placed", name = "Order Placed",
+        target = "https://billing.example.com/hook",
+        connectionCode = "billing-hook",
+        eventTypes = {"orders:sales:order:placed"})
+final class OrderPlacedHandler {}
+
+var set = DefinitionScanner.scan("orders",
+        List.of(OrderPlaced.class, BillingConnection.class, OrderPlacedHandler.class));
 client.definitions().sync(set);
 ```
 
@@ -185,6 +195,48 @@ var beta = Definitions.DefinitionSet.define("orders").forClient("beta")
         .withConnections(List.of(Definitions.Connection.of("hook", "Beta Hook")));
 
 Map<String, SyncResult> results = client.definitions().syncGrouped(List.of(acme, beta));
+```
+
+A single row can override which client scope it belongs to with
+`Connection#withClient` / `Subscription#withClient` — it wins over the
+owning `DefinitionSet`'s own client, useful for one codebase-defined set that
+still needs to route a handful of rows to a specific tenant:
+
+```java
+var set = Definitions.DefinitionSet.define("orders")
+        .withConnections(List.of(
+                Definitions.Connection.of("shared-hook", "Shared Hook"),      // global
+                Definitions.Connection.of("acme-hook", "Acme Hook").withClient("acme")));
+
+client.definitions().sync(set, SyncOptions.removingUnlisted()); // two calls: global, then acme
+```
+
+### Subscription target base URL
+
+A subscription's `target` may be a path (`/webhooks/orders`) instead of a
+full URL — resolved at sync time against a base URL, so one definition
+works across every environment. An absolute target (has a scheme) is always
+sent verbatim. The base comes from, in order: the row's own `DefinitionSet`'s
+`forClient(client, targetBaseUrl)` override, then the synchronizer's own
+default (`FlowCatalystClient.Builder.subscriptionTargetBaseUrl(...)`, or the
+second argument to `new DefinitionSynchronizer(transport, baseUrl)` when
+building one directly). A path with no base available anywhere fails that
+subscription's sync locally, naming it, rather than being silently dropped —
+under `removeUnlisted` a dropped subscription would be deleted.
+
+```java
+var client = FlowCatalystClient.builder()
+        .baseUrl("https://platform.flowcatalyst.io")
+        .clientCredentials(id, secret)
+        .subscriptionTargetBaseUrl("https://api.myapp.com") // the default for path-style targets
+        .build();
+
+var tenantSet = Definitions.DefinitionSet.define("orders")
+        .forClient("acme", "https://acme.myapp.com") // this tenant's own host
+        .withSubscriptions(List.of(Definitions.Subscription.of(
+                        "order-placed", "Order Placed", "/webhooks/orders", // resolves per-tenant
+                        List.of(Definitions.SubscriptionEventType.of("orders:sales:order:placed")))
+                .withConnectionCode("billing-hook")));
 ```
 
 `sync`, `syncAll` and `syncGrouped` all throw `DefinitionSyncException` (a

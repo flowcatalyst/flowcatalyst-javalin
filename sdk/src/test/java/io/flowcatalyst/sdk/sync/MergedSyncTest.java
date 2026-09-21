@@ -10,6 +10,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.FlowCatalystClient;
 import io.flowcatalyst.sdk.StubServer;
+import io.flowcatalyst.sdk.annotations.AsConnection;
+import io.flowcatalyst.sdk.annotations.DefinitionScanner;
 import io.flowcatalyst.sdk.sync.Definitions.Connection;
 import io.flowcatalyst.sdk.sync.Definitions.DefinitionSet;
 import io.flowcatalyst.sdk.sync.Definitions.EventType;
@@ -123,6 +125,30 @@ class MergedSyncTest {
         JsonNode body = MAPPER.readTree(connectionCalls.get(0).body());
         assertEquals("acme", body.get("clientId").asText());
         assertEquals(2, body.get("connections").size());
+    }
+
+    /// The SUBSCRIPTION call carries the scope's client too, not only the
+    /// connection call — the server scopes each sync by its own body, so a
+    /// subscription call that lost its clientId would sync (and, with
+    /// removeUnlisted, prune) the application's GLOBAL subscriptions instead.
+    @Test
+    void theSubscriptionCallCarriesItsScopesClientJustAsTheConnectionCallDoes() throws Exception {
+        server.on("POST", "/api/applications/orders/connections/sync", 200, SYNC_OK);
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionSet.define("orders")
+                .forClient("acme")
+                .withConnections(List.of(Connection.of("conn-a", "Connection A")))
+                .withSubscriptions(List.of(Subscription.of("sub-a", "Sub A", "https://acme.example.test/hook",
+                        List.of()).withConnectionCode("conn-a")));
+
+        client().definitions().syncGrouped(List.of(set), SyncOptions.removingUnlisted());
+
+        assertEquals("acme", MAPPER.readTree(callsTo("connections/sync").get(0).body()).get("clientId").asText());
+        List<StubServer.Recorded> subscriptionCalls = callsTo("subscriptions/sync");
+        assertEquals(1, subscriptionCalls.size());
+        JsonNode body = MAPPER.readTree(subscriptionCalls.get(0).body());
+        assertEquals("acme", body.path("clientId").asText(null), "the subscriptions body names the client");
     }
 
     /// Merging applies to every per-application type, not just connections/subscriptions.
@@ -404,5 +430,111 @@ class MergedSyncTest {
                 server.requests.stream()
                         .noneMatch(r -> r.pathAndQuery().contains("/applications/second/roles/sync")),
                 "the second application must NOT have been attempted — genuine exceptions still stop the run");
+    }
+
+    // ── subscription target base URL, per set ───────────────────────────
+
+    /** Per-set targetBaseUrl wins per row after merging; connectionCode-only sets don't need one. */
+    @Test
+    void perSetTargetBaseUrlAppliesAfterMerging() throws Exception {
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        DefinitionSet tenantSet = DefinitionSet.define("orders")
+                .forClient("acme", "https://acme.example.com")
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "/webhooks/orders",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))
+                        .withConnectionCode("conn-a")));
+
+        client().definitions().syncGrouped(List.of(tenantSet));
+
+        JsonNode entry = MAPPER.readTree(callsTo("subscriptions/sync").get(0).body())
+                .get("subscriptions").get(0);
+        assertEquals("https://acme.example.com/webhooks/orders", entry.get("target").asText());
+        assertFalse(entry.has("targetBaseUrl"), "the internal per-set base carrier never reaches the wire");
+    }
+
+    /** client never appears inside a posted entry; sharedConnection only when true. */
+    @Test
+    void clientNeverAppearsInsidePostedEntries() throws Exception {
+        server.on("POST", "/api/applications/orders/connections/sync", 200, SYNC_OK);
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionSet.define("orders")
+                .forClient("acme")
+                .withConnections(List.of(Connection.of("conn-a", "A")))
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "https://a.example.com/hook",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))
+                        .withConnectionCode("conn-a")
+                        .withSharedConnection(false)));
+
+        client().definitions().sync(set, SyncOptions.removingUnlisted());
+
+        JsonNode connBody = MAPPER.readTree(callsTo("connections/sync").get(0).body());
+        assertFalse(connBody.get("connections").get(0).has("client"));
+
+        JsonNode subBody = MAPPER.readTree(callsTo("subscriptions/sync").get(0).body());
+        JsonNode subEntry = subBody.get("subscriptions").get(0);
+        assertFalse(subEntry.has("client"));
+        assertFalse(subEntry.has("sharedConnection"), "sharedConnection omitted when false");
+    }
+
+    // ── @AsConnection scanning + client precedence ──────────────────
+
+    @AsConnection(code = "scanned-conn", name = "Scanned Connection", externalId = "ext-123")
+    static final class NoClientConnection {}
+
+    @AsConnection(code = "scanned-conn-2", name = "Scanned Connection 2", client = "acme")
+    static final class AnnotatedClientConnection {}
+
+    /**
+     * Mutant (item 1a): the scanner ignores the annotation — no connections
+     * end up in the scanned set. Mutant (item 1b): an attribute (here
+     * externalId) is not carried across the scan.
+     */
+    @Test
+    void scannerBuildsConnectionsFromAnnotatedClasses() {
+        DefinitionSet set = DefinitionScanner.scan("orders", List.of(NoClientConnection.class));
+        Connection connection = set.connections().getFirst();
+        assertEquals("scanned-conn", connection.code());
+        assertEquals("Scanned Connection", connection.name());
+        assertEquals("ext-123", connection.externalId(), "externalId must carry across the scan");
+    }
+
+    @Test
+    void annotationClientBeatsConfiguredDefault() {
+        DefinitionSet set = DefinitionScanner.scan(
+                "orders", List.of(AnnotatedClientConnection.class), "default-client");
+        assertEquals("acme", set.connections().getFirst().client());
+    }
+
+    @Test
+    void configuredDefaultAppliesWhenAnnotationHasNoClient() {
+        DefinitionSet set = DefinitionScanner.scan(
+                "orders", List.of(NoClientConnection.class), "default-client");
+        assertEquals("default-client", set.connections().getFirst().client());
+    }
+
+    @Test
+    void noClientAtAllWhenNeitherAnnotationNorDefaultSetsOne() {
+        DefinitionSet set = DefinitionScanner.scan("orders", List.of(NoClientConnection.class));
+        assertEquals(null, set.connections().getFirst().client());
+    }
+
+    /**
+     * A scanned connection is synced exactly like a hand-built one — proves
+     * the scanner path and the synchronizer's row-client grouping agree.
+     */
+    @Test
+    void scannedConnectionWithAnnotationClientSyncsIntoItsOwnScope() throws Exception {
+        server.on("POST", "/api/applications/orders/connections/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionScanner.scan("orders", List.of(AnnotatedClientConnection.class));
+        client().definitions().sync(set);
+
+        JsonNode body = MAPPER.readTree(callsTo("connections/sync").get(0).body());
+        assertEquals("acme", body.get("clientId").asText());
+        assertEquals("scanned-conn-2", body.get("connections").get(0).get("code").asText());
     }
 }

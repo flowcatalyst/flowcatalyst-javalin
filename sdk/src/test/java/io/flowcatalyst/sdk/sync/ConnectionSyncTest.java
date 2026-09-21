@@ -22,10 +22,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Single-set connection/subscription sync (Go's {@code ConnectionSyncTest},
- * ported): ordering and wire shape. Cross-set merging and per-client scoping
- * are covered separately in {@link MergedSyncTest} — this module scopes a
- * client to the whole {@link DefinitionSet} ({@link DefinitionSet#forClient}),
- * not per row, so there is no row-level client split to test here.
+ * ported): ordering, wire shape, row-level client overrides, and subscription
+ * target resolution. Cross-set merging is covered separately in
+ * {@link MergedSyncTest}.
  */
 class ConnectionSyncTest {
 
@@ -154,5 +153,166 @@ class ConnectionSyncTest {
         Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().subscriptions());
         assertTrue(failed.error().contains("dup"));
         assertTrue(syncCalls().isEmpty());
+    }
+
+    // ── row-level client override ────────────────────────────────────
+
+    /**
+     * Entries for client A, client B and no client, all in ONE set (via
+     * per-row {@code withClient}) → three connection requests + three
+     * subscription requests, the right {@code clientId} each (absent for
+     * the global one), global first — never merged into fewer calls.
+     */
+    @Test
+    void rowLevelClientSplitsIntoOneCallPerClientGlobalFirst() throws Exception {
+        server.on("POST", "/api/applications/orders/connections/sync", 200, SYNC_OK);
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withConnections(List.of(
+                        Connection.of("conn-b", "B").withClient("beta"),
+                        Connection.of("conn-none", "None"),
+                        Connection.of("conn-a", "A").withClient("acme")))
+                .withSubscriptions(List.of(
+                        Subscription.of("sub-b", "Sub B", "https://x/hook",
+                                        List.of(SubscriptionEventType.of("orders:sales:order:created")))
+                                .withConnectionCode("conn-b").withClient("beta"),
+                        Subscription.of("sub-none", "Sub None", "https://x/hook",
+                                        List.of(SubscriptionEventType.of("orders:sales:order:created")))
+                                .withConnectionCode("conn-none"),
+                        Subscription.of("sub-a", "Sub A", "https://x/hook",
+                                        List.of(SubscriptionEventType.of("orders:sales:order:created")))
+                                .withConnectionCode("conn-a").withClient("acme")));
+
+        client().definitions().sync(set, SyncOptions.removingUnlisted());
+
+        List<StubServer.Recorded> connCalls = server.requests.stream()
+                .filter(r -> r.pathAndQuery().contains("connections/sync")).toList();
+        List<StubServer.Recorded> subCalls = server.requests.stream()
+                .filter(r -> r.pathAndQuery().contains("subscriptions/sync")).toList();
+        assertEquals(3, connCalls.size());
+        assertEquals(3, subCalls.size());
+
+        JsonNode connGlobal = MAPPER.readTree(connCalls.get(0).body());
+        assertFalse(connGlobal.has("clientId"), "global first, no clientId key");
+        assertEquals(1, connGlobal.get("connections").size());
+
+        JsonNode subGlobal = MAPPER.readTree(subCalls.get(0).body());
+        assertFalse(subGlobal.has("clientId"));
+
+        List<String> connClientIds = connCalls.stream()
+                .skip(1)
+                .map(c -> {
+                    try {
+                        JsonNode n = MAPPER.readTree(c.body()).get("clientId");
+                        return n == null ? null : n.asText();
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                })
+                .toList();
+        assertTrue(connClientIds.containsAll(List.of("beta", "acme")), "both client scopes present");
+    }
+
+    /**
+     * Mutant: "the override ignored" — if {@code withClient} were dropped,
+     * every row would land in the set's own (global) scope, giving exactly
+     * ONE connections call instead of two, and it would carry the
+     * client-scoped connection's code too.
+     */
+    @Test
+    void rowClientOverrideWinsOverTheSetsOwnClient() throws Exception {
+        server.on("POST", "/api/applications/orders/connections/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionSet.define("orders").forClient("acme")
+                .withConnections(List.of(
+                        Connection.of("conn-acme", "Acme"),
+                        Connection.of("conn-beta", "Beta").withClient("beta")));
+
+        client().definitions().sync(set, SyncOptions.removingUnlisted());
+
+        List<StubServer.Recorded> connCalls = server.requests.stream()
+                .filter(r -> r.pathAndQuery().contains("connections/sync")).toList();
+        assertEquals(2, connCalls.size(), "the override splits the row into its own scope");
+
+        JsonNode acmeBody = MAPPER.readTree(connCalls.get(0).body());
+        assertEquals("acme", acmeBody.get("clientId").asText());
+        assertEquals(1, acmeBody.get("connections").size());
+        assertEquals("conn-acme", acmeBody.get("connections").get(0).get("code").asText());
+
+        JsonNode betaBody = MAPPER.readTree(connCalls.get(1).body());
+        assertEquals("beta", betaBody.get("clientId").asText());
+        assertEquals(1, betaBody.get("connections").size());
+        assertEquals("conn-beta", betaBody.get("connections").get(0).get("code").asText());
+    }
+
+    // ── subscription target resolution ─────────────────────────────────
+
+    @Test
+    void absoluteTargetSentVerbatim() throws Exception {
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "https://absolute.example.com/hook",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))));
+
+        client().definitions().sync(set);
+
+        JsonNode body = MAPPER.readTree(syncCalls().get(0).body());
+        assertEquals("https://absolute.example.com/hook",
+                body.get("subscriptions").get(0).get("target").asText());
+    }
+
+    @Test
+    void pathTargetWithNoBaseAvailableFailsLocallyNamingTheSubscriptionAndThrows() {
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "/webhooks/orders",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))));
+
+        DefinitionSyncException ex = assertThrows(
+                DefinitionSyncException.class, () -> client().definitions().sync(set));
+
+        Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().subscriptions());
+        assertTrue(failed.error().contains("sub-a"), "names the subscription: " + failed.error());
+        assertTrue(ex.getMessage().contains("sub-a"), "exception message names it too: " + ex.getMessage());
+        assertTrue(syncCalls().isEmpty(), "no request sent — a partial list would delete under removeUnlisted");
+    }
+
+    @Test
+    void pathTargetResolvesAgainstSynchronizerLevelDefault() throws Exception {
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        var synchronizer = new DefinitionSynchronizer(client().transport(), "https://default.example.com");
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "/webhooks/orders",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))));
+
+        synchronizer.sync(set);
+
+        JsonNode body = MAPPER.readTree(syncCalls().get(0).body());
+        assertEquals("https://default.example.com/webhooks/orders",
+                body.get("subscriptions").get(0).get("target").asText());
+    }
+
+    /// Mutant: trailing/leading slash joined wrongly — a target with no
+    /// leading slash must still join cleanly (one slash, not zero or two).
+    @Test
+    void pathTargetWithoutLeadingSlashStillJoinsCleanly() throws Exception {
+        server.on("POST", "/api/applications/orders/subscriptions/sync", 200, SYNC_OK);
+
+        var synchronizer = new DefinitionSynchronizer(client().transport(), "https://default.example.com/");
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withSubscriptions(List.of(Subscription.of(
+                        "sub-a", "Sub A", "webhooks/orders",
+                        List.of(SubscriptionEventType.of("orders:sales:order:created")))));
+
+        synchronizer.sync(set);
+
+        JsonNode body = MAPPER.readTree(syncCalls().get(0).body());
+        assertEquals("https://default.example.com/webhooks/orders",
+                body.get("subscriptions").get(0).get("target").asText());
     }
 }

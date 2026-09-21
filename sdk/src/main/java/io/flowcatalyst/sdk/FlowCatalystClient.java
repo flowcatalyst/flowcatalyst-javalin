@@ -40,6 +40,7 @@ public final class FlowCatalystClient {
 
     private final Transport transport;
     private final String routerBaseUrl;
+    private final String subscriptionTargetBaseUrl;
     private final ClientCredentialsTokenManager tokenManager;
 
     private EventTypesResource eventTypes;
@@ -63,6 +64,7 @@ public final class FlowCatalystClient {
         this.routerBaseUrl =
                 (builder.routerBaseUrl != null ? builder.routerBaseUrl : builder.baseUrl)
                         .replaceAll("/$", "");
+        this.subscriptionTargetBaseUrl = builder.subscriptionTargetBaseUrl;
 
         TokenProvider provider;
         if (builder.tokenProvider != null) {
@@ -160,14 +162,15 @@ public final class FlowCatalystClient {
     }
 
     /**
-     * Definition synchronizer — bulk-sync roles, event types, subscriptions,
-     * dispatch pools, principals, processes, scheduled jobs, and an OpenAPI
-     * doc per application.
+     * Definition synchronizer — bulk-sync roles, event types, connections,
+     * subscriptions, dispatch pools, principals, processes, scheduled jobs,
+     * and an OpenAPI doc per application.
      */
     public synchronized io.flowcatalyst.sdk.sync.DefinitionSynchronizer definitions() {
         return definitions != null
                 ? definitions
-                : (definitions = new io.flowcatalyst.sdk.sync.DefinitionSynchronizer(transport));
+                : (definitions = new io.flowcatalyst.sdk.sync.DefinitionSynchronizer(
+                        transport, subscriptionTargetBaseUrl));
     }
 
     // ── Advanced access ─────────────────────────────────────────────
@@ -195,6 +198,7 @@ public final class FlowCatalystClient {
         private String tokenUrl;
         private TokenProvider tokenProvider;
         private String routerBaseUrl;
+        private String subscriptionTargetBaseUrl;
         private Duration timeout = Duration.ofSeconds(30);
         private int retryAttempts = 3;
         private Duration retryDelay = Duration.ofMillis(100);
@@ -241,6 +245,20 @@ public final class FlowCatalystClient {
          */
         public Builder routerBaseUrl(String routerBaseUrl) {
             this.routerBaseUrl = routerBaseUrl;
+            return this;
+        }
+
+        /**
+         * Default base URL a subscription's path-style sync target
+         * ({@code /webhooks/orders}) resolves against, used by {@code
+         * definitions().sync(...)} when neither the row nor its {@link
+         * io.flowcatalyst.sdk.sync.Definitions.DefinitionSet#forClient}
+         * override supplies one. Optional; a synchronizer built directly
+         * (e.g. {@code new DefinitionSynchronizer(client.transport(), ...)})
+         * can set a different one per instance.
+         */
+        public Builder subscriptionTargetBaseUrl(String subscriptionTargetBaseUrl) {
+            this.subscriptionTargetBaseUrl = subscriptionTargetBaseUrl;
             return this;
         }
 

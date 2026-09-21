@@ -63,4 +63,16 @@ public @interface AsSubscription {
 
     /** When true, only the event's {@code data} field is POSTed (no metadata envelope). */
     boolean dataOnly() default true;
+
+    /**
+     * The FlowCatalyst client (by identifier slug — never an id; ids differ
+     * per environment) this subscription is scoped to. Empty = the default
+     * client passed to {@link DefinitionScanner#scan(String,
+     * java.util.Collection, String)} (single-tenant apps), and empty there
+     * too means global (no client). For a multi-tenant application, don't
+     * set this on the annotation — build one {@link
+     * io.flowcatalyst.sdk.sync.Definitions.DefinitionSet} per client instead
+     * (see {@code DefinitionSet.forClient}).
+     */
+    String client() default "";
 }

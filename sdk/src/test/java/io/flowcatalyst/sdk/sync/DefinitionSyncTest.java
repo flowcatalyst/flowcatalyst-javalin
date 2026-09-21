@@ -3,6 +3,7 @@ package io.flowcatalyst.sdk.sync;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import tools.jackson.databind.JsonNode;
@@ -149,6 +150,85 @@ class DefinitionSyncTest {
 
         assertEquals(Category.SKIPPED, result.roles());
         assertTrue(server.requests.stream().noneMatch(r -> r.pathAndQuery().contains("/sync")));
+    }
+
+    // ── local duplicate-code checks ─────────────────────────────────
+    //
+    // Go's own SDK test suite added these checks (DefinitionSynchronizer's
+    // syncRoles/syncEventTypes/syncDispatchPools/syncScheduledJobs) without a
+    // single dedicated test for any of them — the connections/subscriptions
+    // duplicate checks are tested, these were not. Ported here in the same
+    // shape as the connections/subscriptions duplicate tests.
+
+    @Test
+    void duplicateRoleNameFailsLocallyAndThrows() {
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withRoles(List.of(Definitions.Role.of("dup"), Definitions.Role.of("dup")));
+
+        DefinitionSyncException ex = assertThrows(
+                DefinitionSyncException.class, () -> client().definitions().sync(set));
+
+        Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().roles());
+        assertTrue(failed.error().contains("dup"));
+        assertTrue(server.requests.stream().noneMatch(r -> r.pathAndQuery().contains("roles/sync")));
+    }
+
+    @Test
+    void duplicateEventTypeCodeFailsLocallyAndThrows() {
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withEventTypes(List.of(
+                        Definitions.EventType.of("orders:sales:order:dup", "First"),
+                        Definitions.EventType.of("orders:sales:order:dup", "Second")));
+
+        DefinitionSyncException ex = assertThrows(
+                DefinitionSyncException.class, () -> client().definitions().sync(set));
+
+        Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().eventTypes());
+        assertTrue(failed.error().contains("orders:sales:order:dup"));
+        assertTrue(server.requests.stream().noneMatch(r -> r.pathAndQuery().contains("event-types/sync")));
+    }
+
+    @Test
+    void duplicateDispatchPoolCodeFailsLocallyAndThrows() {
+        DefinitionSet set = DefinitionSet.define("orders")
+                .withDispatchPools(List.of(
+                        Definitions.DispatchPool.of("dup", "First"),
+                        Definitions.DispatchPool.of("dup", "Second")));
+
+        DefinitionSyncException ex = assertThrows(
+                DefinitionSyncException.class, () -> client().definitions().sync(set));
+
+        Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().dispatchPools());
+        assertTrue(failed.error().contains("dup"));
+        assertTrue(server.requests.stream().noneMatch(r -> r.pathAndQuery().contains("dispatch-pools/sync")));
+    }
+
+    /**
+     * A duplicate scheduled-job code in one clientId group fails just that
+     * group; a distinct group still syncs (mirrors the connections/
+     * subscriptions "one scope's failure doesn't block a sibling" rule).
+     */
+    @Test
+    void duplicateScheduledJobCodeInOneGroupFailsThatGroupButOthersStillSync() throws Exception {
+        server.on("POST", "/api/applications/orders/scheduled-jobs/sync", 200,
+                "{\"applicationCode\":\"orders\",\"created\":[\"j1\"],\"updated\":[],"
+                        + "\"archived\":[]}");
+
+        DefinitionSet set = DefinitionSet.define("orders").withScheduledJobs(List.of(
+                Definitions.ScheduledJob.of("dup", "First", List.of("0 0 * * * *")),
+                Definitions.ScheduledJob.of("dup", "Second", List.of("0 0 * * * *")),
+                Definitions.ScheduledJob.of("ok", "OK", List.of("0 0 * * * *")).withClientId("clt_X")));
+
+        DefinitionSyncException ex = assertThrows(
+                DefinitionSyncException.class, () -> client().definitions().sync(set));
+
+        Category.Failed failed = assertInstanceOf(Category.Failed.class, ex.result().scheduledJobs());
+        assertTrue(failed.error().contains("dup"));
+        assertEquals(1, failed.created(), "the other (non-duplicate) group still synced");
+
+        List<StubServer.Recorded> calls = server.requests.stream()
+                .filter(r -> r.pathAndQuery().contains("scheduled-jobs/sync")).toList();
+        assertEquals(1, calls.size(), "only the clt_X group's request was sent");
     }
 
     // ── annotation scanning ─────────────────────────────────────────

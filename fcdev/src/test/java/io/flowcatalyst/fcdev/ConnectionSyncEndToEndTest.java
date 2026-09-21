@@ -27,6 +27,9 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.FlowCatalystClient;
+import io.flowcatalyst.sdk.annotations.AsConnection;
+import io.flowcatalyst.sdk.annotations.AsSubscription;
+import io.flowcatalyst.sdk.annotations.DefinitionScanner;
 import io.flowcatalyst.sdk.error.FlowCatalystException;
 import io.flowcatalyst.sdk.sync.Definitions.Connection;
 import io.flowcatalyst.sdk.sync.Definitions.DefinitionSet;
@@ -84,6 +87,20 @@ class ConnectionSyncEndToEndTest {
     private static final String APP_CODE = "k4e2e" + RUN;
     private static final String CONN_CODE = "billing-hook-" + RUN;
     private static final String SUB_CODE = "order-placed-" + RUN;
+    // Literal (not RUN-suffixed): annotation attributes must be compile-time
+    // constants. Safe — each test class boots its OWN fresh embedded
+    // database (see #boot), so there is no cross-run collision to avoid.
+    private static final String SCANNED_CONN_CODE = "scanned-billing-hook";
+    private static final String SCANNED_SUB_CODE = "scanned-order-placed";
+
+    @AsConnection(code = SCANNED_CONN_CODE, name = "Scanned Billing Webhook")
+    static final class ScannedBillingConnection {}
+
+    @AsSubscription(code = SCANNED_SUB_CODE, name = "Scanned Order Placed",
+            target = "/webhooks/orders-scanned",
+            connectionCode = SCANNED_CONN_CODE,
+            eventTypes = {"scanned:sales:order:placed"})
+    static final class ScannedOrderPlacedHandler {}
 
     private Path root;
     private StartCommand.Started started;
@@ -244,6 +261,35 @@ class ConnectionSyncEndToEndTest {
         assertThat(subRow.get(MSG_SUBSCRIPTIONS.CLIENT_ID)).as("scoped to the client the sync named").isEqualTo(client.id());
         assertThat(subRow.get(MSG_SUBSCRIPTIONS.CONNECTION_ID)).as("resolved from connectionCode to the connection's real id")
                 .isEqualTo(connectionId);
+
+        // ── @AsConnection scanning + per-client subscription target base URL ──
+        //
+        // Proves the annotation path and target resolution reach the REAL
+        // platform, not just a stub: the connection is declared with
+        // @AsConnection (scanned, not Definitions.Connection.of(...)), and
+        // the subscription's target is a bare PATH resolved at sync time
+        // against this client's own base URL (DefinitionSet#forClient's
+        // targetBaseUrl overload) rather than sent as-is.
+
+        DefinitionSet scannedConnectionSet =
+                DefinitionScanner.scan(APP_CODE, List.of(ScannedBillingConnection.class));
+        sdk.definitions().sync(scannedConnectionSet);
+
+        DefinitionSet scannedSubscriptionSet =
+                DefinitionScanner.scan(APP_CODE, List.of(ScannedOrderPlacedHandler.class))
+                        .forClient(client.identifier(), "https://acme.example.test");
+        sdk.definitions().sync(scannedSubscriptionSet);
+
+        Record scannedSubRow = db.select(MSG_SUBSCRIPTIONS.CLIENT_ID, MSG_SUBSCRIPTIONS.TARGET)
+                .from(MSG_SUBSCRIPTIONS)
+                .where(MSG_SUBSCRIPTIONS.CODE.eq(SCANNED_SUB_CODE).and(MSG_SUBSCRIPTIONS.APPLICATION_CODE.eq(APP_CODE)))
+                .fetchOne();
+        assertThat(scannedSubRow).as("the scanned subscription the SDK just synced").isNotNull();
+        assertThat(scannedSubRow.get(MSG_SUBSCRIPTIONS.CLIENT_ID))
+                .as("scoped to the client via the scanned set's forClient()").isEqualTo(client.id());
+        assertThat(scannedSubRow.get(MSG_SUBSCRIPTIONS.TARGET))
+                .as("the relative target resolved against this client's own base URL, not sent as a bare path")
+                .isEqualTo("https://acme.example.test/webhooks/orders-scanned");
 
         // ── sync again, connection unlisted + removeUnlisted, while referenced ──
 
