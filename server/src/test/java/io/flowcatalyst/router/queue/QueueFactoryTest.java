@@ -161,7 +161,7 @@ class QueueFactoryTest {
     /// `postgres` — so a queue URI naming it looks exactly like a real
     /// operator-supplied `postgres://user:pass@host/db` queue.
     private static String testPgUri() {
-        return "postgres://postgres@localhost:" + TestPg.instance().getPort() + "/postgres";
+        return "postgres://postgres@localhost:" + TestPg.instance().getPort() + "/" + TestPg.databaseName();
     }
 
     @Test

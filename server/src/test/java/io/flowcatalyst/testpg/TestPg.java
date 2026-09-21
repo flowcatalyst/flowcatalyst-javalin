@@ -51,6 +51,7 @@ public final class TestPg {
     private static volatile String currentOwner;
     private static final java.util.Map<String, String> DATABASES = new java.util.HashMap<>();
     private static int sequence;
+    private static final java.util.List<java.util.function.Consumer<DataSource>> INITIALISERS = new java.util.ArrayList<>();
 
     private TestPg() {
     }
@@ -58,6 +59,30 @@ public final class TestPg {
     /// The migrated database of the test class running now — see the class doc.
     public static DataSource dataSource() {
         return ROUTER;
+    }
+
+    /// The name of the running test class's database, for a test that must
+    /// build its OWN connection string (a second pool, a queue URI) and still
+    /// meet the rows it seeds through [#dataSource()]. Never hardcode
+    /// `postgres`: that database is not migrated and belongs to no class.
+    public static String databaseName() {
+        current();
+        synchronized (LOCK) {
+            String owner = currentOwner;
+            return DATABASES.get(owner == null ? UNOWNED : owner);
+        }
+    }
+
+    /// Schema a fixture creates outside the migrations (the outbox tables, which
+    /// belong to the SDK's consumer, not to the platform): `init` runs against
+    /// every class database created from now on, and against the current one.
+    /// A fixture's `static {}` block runs once per JVM — without this only the
+    /// first class to touch the fixture would ever get its tables.
+    public static void forEveryDatabase(java.util.function.Consumer<DataSource> init) {
+        synchronized (LOCK) {
+            INITIALISERS.add(init);
+        }
+        init.accept(current());
     }
 
     static void enter(String testClass) {
@@ -91,6 +116,8 @@ public final class TestPg {
                 database = owner == null ? UNOWNED : "fc_test_" + (++sequence);
                 cloneTemplate(database);
                 DATABASES.put(key, database);
+                DataSource fresh = instance().getDatabase("postgres", database);
+                for (var init : INITIALISERS) init.accept(fresh);
             }
             return instance().getDatabase("postgres", database);
         }

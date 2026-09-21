@@ -24,7 +24,9 @@ final class OutboxFixture {
     static final DataSource DS = TestPg.dataSource();
 
     static {
-        new PostgresOutboxRepository(DS).initSchema();
+        // Per-class databases (TestPg): a static block alone would create the tables
+        // in the first class's database only.
+        TestPg.forEveryDatabase(ds -> new PostgresOutboxRepository(ds).initSchema());
     }
 
     private OutboxFixture() {

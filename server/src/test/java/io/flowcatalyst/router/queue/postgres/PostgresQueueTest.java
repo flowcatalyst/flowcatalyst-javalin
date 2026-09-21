@@ -419,7 +419,7 @@ class PostgresQueueTest {
     /// [#closeClosesAnOwnedPoolButNeverABorrowedOne] can close it without
     /// affecting `DS`.
     private static String ownPoolUrl() {
-        return "postgres://postgres@localhost:" + TestPg.instance().getPort() + "/postgres";
+        return "postgres://postgres@localhost:" + TestPg.instance().getPort() + "/" + TestPg.databaseName();
     }
 
     @Test
