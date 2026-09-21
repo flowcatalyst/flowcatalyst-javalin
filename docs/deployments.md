@@ -506,3 +506,38 @@ above, which is real bench data for `fc-server`) — size it the same way
 ARM64/EC2/bridge) and revisit once a host has run under real function-load
 data; `docs/spec/jvm-memory.md` §4 is the memory-fence half of that story
 (heap/direct/metaspace split from one container limit).
+
+### Image registry — ECR through GitHub OIDC (R14, `function-artifact-upload.md` §6)
+
+`.github/workflows/fnhost-image.yml` pushes the image once three **repository variables**
+(Settings → Secrets and variables → Actions → Variables) are set; until then its push steps are
+skipped.
+
+| Variable | Example | |
+|---|---|---|
+| `FNHOST_AWS_ROLE_ARN` | `arn:aws:iam::<account>:role/gha-fnhost-ecr-push` | assumed through GitHub OIDC — no stored keys |
+| `FNHOST_AWS_REGION` | `af-south-1` | the ECR repository's region |
+| `FNHOST_ECR_REPOSITORY` | `flowcatalyst/fc-fnhost` | repository name, without the registry host |
+
+Tags pushed: `<git sha>` always; `latest` from `main`; `<tag>` on a tag build. A task definition
+should pin the sha (or the tag), never `latest`.
+
+The role's trust policy admits this repository only, and its permissions are the push set on the
+one repository:
+
+```json
+{ "Effect": "Allow",
+  "Principal": { "Federated": "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com" },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+    "StringLike":   { "token.actions.githubusercontent.com:sub": "repo:flowcatalyst/flowcatalyst-javalin:*" } } }
+```
+
+`ecr:GetAuthorizationToken` on `*`; `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`,
+`ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage` on the repository's ARN.
+
+Function **artifacts** (the jars) do not go here: they are uploaded to the platform, which writes
+them to `FC_FN_ARTIFACT_STORE` (`file:///…` or `s3://bucket/prefix`) — the platform's task role
+needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on the prefix and `s3:ListBucket` on the
+bucket. Hosts need no storage permissions at all.

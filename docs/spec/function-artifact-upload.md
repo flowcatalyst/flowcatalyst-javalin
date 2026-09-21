@@ -144,7 +144,7 @@ a failure is a WARN, never a failed delete.
 `aws-actions/amazon-ecr-login`, push `${{ vars.FNHOST_ECR_REPOSITORY }}:<git sha>` and `:latest` on
 `main`, `:<tag>` on a release tag. The job needs `permissions: id-token: write`. The push steps run
 only `if: vars.FNHOST_AWS_ROLE_ARN != ''`, so the workflow stays green until the owner sets the
-three variables. Actions pinned by commit SHA, as the other workflows do. `docs/deployments.md`
+three variables. Actions pinned by major tag, as the other workflows do. `docs/deployments.md`
 gains the three variables and the IAM trust policy the role needs.
 
 ## 7. Tests

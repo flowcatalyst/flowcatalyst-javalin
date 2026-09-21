@@ -7,9 +7,9 @@ name: fnhost-image
 # (packages the fc-fnhost exec jar, then runs it for real, P9 in
 # docs/spec/function-host-process.md §4) so a broken host never reaches the image build.
 #
-# The PUSH step is a placeholder: this repo's registry conventions are not established
-# yet (unlike ci.yml's Docker jobs, which only build-and-smoke-test locally, nothing here
-# has ever pushed an image anywhere) — see the TODO on that step before enabling it.
+# The image is pushed to ECR through GitHub OIDC once the repository variables
+# FNHOST_AWS_ROLE_ARN, FNHOST_AWS_REGION and FNHOST_ECR_REPOSITORY are set; until then
+# the push steps are skipped and this workflow only builds and smoke-tests.
 # Never `mvn install` (CLAUDE.md): `make fnhost-smoke` resolves function-api/server
 # through the reactor.
 
@@ -42,6 +42,9 @@ jobs:
     name: Build the fc-fnhost image
     needs: smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # GitHub OIDC → the ECR push role
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -66,13 +69,32 @@ jobs:
         if: always()
         run: docker rm -f fnhost || true
 
-      # TODO(owner): this repo's container registry is not established — no existing
-      # workflow here pushes an image anywhere (checked: `grep -rn "docker push\|registry"
-      # .github/workflows/` finds nothing before this file). Fill in the registry
-      # login + `docker push` (or `docker/build-push-action`) once one is chosen, and
-      # remove this comment and the `if: false` guard below.
-      - name: Push (disabled — no registry configured yet)
-        if: false
+      # Push to ECR (owner ruling R14, docs/spec/function-artifact-upload.md §6). GitHub
+      # OIDC assumes the role — no stored keys. Every push step is skipped until the
+      # three repository variables are set (docs/deployments.md), so the workflow stays
+      # green on a repo that has not been wired to an AWS account yet.
+      - name: Configure AWS credentials (GitHub OIDC)
+        if: vars.FNHOST_AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.FNHOST_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.FNHOST_AWS_REGION }}
+      - name: Log in to ECR
+        if: vars.FNHOST_AWS_ROLE_ARN != ''
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Push
+        if: vars.FNHOST_AWS_ROLE_ARN != ''
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.FNHOST_ECR_REPOSITORY }}
         run: |
-          echo "no registry configured — see the TODO above" >&2
-          exit 1
+          docker tag flowcatalyst-fnhost:ci "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:${GITHUB_SHA}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            docker tag flowcatalyst-fnhost:ci "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            docker tag flowcatalyst-fnhost:ci "$IMAGE:${GITHUB_REF_NAME}"
+            docker push "$IMAGE:${GITHUB_REF_NAME}"
+          fi
