@@ -378,11 +378,12 @@ class VertxListenerTest {
     void anAbandonedStreamedDownloadClosesTheStoreStreamWithinTheDeadline() throws Exception {
         var closedLatch = new CountDownLatch(1);
         long totalBytes = 64L * 1024 * 1024;
+        var served = new LazyInputStream(totalBytes, closedLatch);
         var options = VertxListener.Options.local(0).withDeadline(Duration.ofMillis(400));
         try (var l = VertxListener.start(options, routes -> {
             mapHttpExceptions(routes);
             routes.get("/big-download", ctx -> ctx.contentType("application/octet-stream").status(200)
-                    .resultStream(new LazyInputStream(totalBytes, closedLatch), totalBytes));
+                    .resultStream(served, totalBytes));
         })) {
             // A tiny advertised receive window forces the server's write to genuinely
             // back-pressure quickly, regardless of how generously an OS auto-tunes
@@ -407,8 +408,13 @@ class VertxListenerTest {
                 int n = in.read(little);
                 assertThat(n).isGreaterThan(0);
                 // Stop reading entirely from here on — the socket stays open, nobody drains it.
-                assertThat(closedLatch.await(10, TimeUnit.SECONDS))
-                        .as("mutant: drop the response stall timer")
+                // Seen once in ~12 random-order runs of the whole module (2026-09-22), never
+                // alone: the latch missed its bound. The count says which story it was —
+                // a few MB and stuck ⇒ the buffers were full and the timer did not act;
+                // tens of MB ⇒ the pump was too slow under load to fill them in 10 s.
+                boolean closed = closedLatch.await(10, TimeUnit.SECONDS);
+                assertThat(closed)
+                        .as("mutant: drop the response stall timer — pump had served %d bytes", served.served())
                         .isTrue();
             }
         }
@@ -629,10 +635,12 @@ class VertxListenerTest {
     /// Emits `total` zero bytes then EOF, without ever materialising them,
     /// and records when it is closed — FIX 2/FIX 4(b)'s shared fixture.
     private static final class LazyInputStream extends InputStream {
-        private long remaining;
+        private final long total;
+        private volatile long remaining;
         private final CountDownLatch closedLatch;
 
         LazyInputStream(long total, CountDownLatch closedLatch) {
+            this.total = total;
             this.remaining = total;
             this.closedLatch = closedLatch;
         }
@@ -651,6 +659,10 @@ class VertxListenerTest {
             Arrays.fill(b, off, off + n, (byte) 0);
             remaining -= n;
             return n;
+        }
+
+        long served() {
+            return total - remaining;
         }
 
         @Override

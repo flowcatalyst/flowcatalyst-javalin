@@ -87,6 +87,29 @@ public final class TestPg {
 
     static void enter(String testClass) {
         currentOwner = testClass;
+        prepareTemplate();
+    }
+
+    /// Migrates the template once per JVM, at the first class's start rather
+    /// than on the first `getConnection()`: that first connection used to
+    /// carry the whole Flyway run (seconds), so a test with a short deadline
+    /// that happened to be the JVM's first database touch timed out before
+    /// its query began — `VertxListenerTest`'s stuck-query test, run alone,
+    /// failed every time. A class's own clone still happens on its first
+    /// connection (tens of milliseconds).
+    private static void prepareTemplate() {
+        synchronized (LOCK) {
+            if (templateReady) return;
+            EmbeddedPostgres instance = instance();
+            try (Connection c = instance.getPostgresDatabase().getConnection(); Statement st = c.createStatement()) {
+                st.execute("DROP DATABASE IF EXISTS " + TEMPLATE);
+                st.execute("CREATE DATABASE " + TEMPLATE);
+            } catch (SQLException e) {
+                throw new IllegalStateException("create database " + TEMPLATE, e);
+            }
+            Migrator.migrate(instance.getDatabase("postgres", TEMPLATE));
+            templateReady = true;
+        }
     }
 
     /// Drops the class's database. `WITH (FORCE)`: a pool or a poller the
@@ -125,15 +148,8 @@ public final class TestPg {
 
     private static void cloneTemplate(String database) {
         EmbeddedPostgres instance = instance();
+        prepareTemplate();
         try (Connection c = instance.getPostgresDatabase().getConnection(); Statement st = c.createStatement()) {
-            if (!templateReady) {
-                st.execute("DROP DATABASE IF EXISTS " + TEMPLATE);
-                st.execute("CREATE DATABASE " + TEMPLATE);
-                // A simple (unpooled) DataSource: every connection Flyway opens is closed
-                // again, which CREATE DATABASE … TEMPLATE requires of its source.
-                Migrator.migrate(instance.getDatabase("postgres", TEMPLATE));
-                templateReady = true;
-            }
             st.execute("DROP DATABASE IF EXISTS " + database + " WITH (FORCE)");
             st.execute("CREATE DATABASE " + database + " TEMPLATE " + TEMPLATE);
         } catch (SQLException e) {
